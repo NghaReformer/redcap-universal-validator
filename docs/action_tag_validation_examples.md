@@ -1786,6 +1786,103 @@ stay fields of this record. Three switches must all be on:
 3. **Surveys,** only when the searched project answers any signed-in user, also
    ticks "Also answer survey respondents", and the rule says `"surveys":true`.
 
+### Level 6 — copy fields of the entry found (`return`)
+
+```text
+# on: result_specimen_id — fill the site and collection date of the registered specimen
+@UVEXISTS={"in":"[specimen_id]","return":{"lab_site":"[result_site]","coll_date":"[result_coll_date]"}}
+
+# the same, and the record the specimen was registered in
+@UVEXISTS={"in":"[specimen_id]","return":{"record":"[source_record]","coll_date":"[result_coll_date]"}}
+
+# on: mother_record_id — the mother's enrolment date, read from the enrolment event
+@UVEXISTS={"in":"record","event":"enrolment_arm_1","return":{"enrol_date":"[mother_enrol_date]"}}
+
+# from the lab project, when its agreement lets this project copy site_code
+@UVEXISTS={"in":"[specimen_id]","project":"lab","return":{"site_code":"[result_site]"}}
+```
+
+`return` maps a field of the entry found (the key) to a field of this form
+(the value), the same way round as `match`. `record` is the record ID of the
+entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
+`lab_site` 2 and `coll_date` 2026-03-01, the first rule writes `2` into
+`result_site` and, for a `result_coll_date` shown as D-M-Y, `01-03-2026`.
+
+- **The rule owns its fields.** A found value fills them. *Not found*, a blank
+  value, a Missing Data Code, a `when` that is false and a branch that does not
+  apply empty them. *Could not check* leaves them as they are. A branched rule
+  owns the fields of every branch, so the active branch fills its own and
+  empties the others'. Mark the fields `@READONLY`, since a person who types
+  there is overwritten at the next judgement.
+- **Several entries.** When more than one saved entry holds the value, the
+  values are copied only when every entry holds the same ones. Otherwise
+  nothing is copied, the page adds an amber line under the green *Found* ("3
+  saved entries hold this value with different values to copy"), and the
+  post-save audit logs a rule problem. Narrow the lookup with `match`. Copying
+  `record` from two records is a disagreement too.
+- **Data Access Groups.** A user in a group gets values only from entries of
+  their own group. A value found only in another group is still *found*, but
+  nothing is copied and the amber line says so.
+- **Where the values come from.** The entry where `in` and every `match`
+  matched: the same record, event and repeat instance. A copied field must be
+  on the form of `in` or on a form that does not repeat; a field of another
+  repeating form is refused, since the entry found has many instances of it.
+  A copied field whose form is not in the event of the entry found copies as
+  blank. With `"in":"record"` every copied field must be on a form that does
+  not repeat, and a longitudinal project names the event the values are read
+  from with `event`, which must not be a repeating event.
+- **What a field here can take.** The value is copied as REDCap stores it, so
+  the field here must be able to hold every value the field there can:
+
+  | Field there | Field here |
+  | ----------- | ---------- |
+  | any value | a Text field without validation, or a Notes field |
+  | dropdown, radio, yes/no, true/false | a choice field that has each of its codes, or a Text field without validation (it gets the code) |
+  | a date, datetime or time | a Text field with the same kind of date or time; the order it shows the date in may differ |
+  | a number | a Text field with number validation, the same decimal mark and at least as many decimal places; an integer field only from an integer |
+  | any other validation | a Text field with the same validation |
+
+  The field here must be on this form, not this field, not a field the lookup
+  reads, not the record ID, and not a calc, slider, SQL, checkbox, file or
+  descriptive field, nor a field filled by `@CALCTEXT`, `@CALCDATE` or
+  `@SETVALUE`. A field flagged Identifier there may go only into a field
+  flagged Identifier here, so a de-identified export does not carry it.
+- **Rights.** A copied value is data, not only *found*. The page fills the
+  fields only for a user who may open every form the copied fields are on,
+  besides the forms the lookup reads; anyone else gets *could not check*. The
+  save checks the person who saved the same way. A rule with `return` cannot
+  use `"surveys":true`, and a save with no signed-in user (a survey) writes
+  nothing.
+- **When the values are written.** The page fills the fields as it opens and
+  after each answer. The first fill does not mark the form as changed; later
+  fills raise an input and a change event, so calculations and branching logic
+  that read the fields run. Save waits for a lookup on its way, even with
+  `"blockSave":"off"`. After the save, the post-save audit asks again as the
+  person who saved and writes the values that differ, together with any
+  `@UVRANGE` returned values, in one save per entry. A number field holding
+  the same number spelled another way (`7.80` for `7.8`) is not rewritten;
+  any other field is written exactly, so `007` replaces `7`.
+- **A copy, not a link.** The values are copied when this record is judged. A
+  later change to the entry found shows on the page when this form is opened,
+  and reaches the saved record when this record is saved again.
+- **The cost.** A rule with `return` reads every saved value of the searched
+  field and of the copied fields on each lookup, the read a *not found* makes
+  for any other rule, because a narrowed read can miss an entry spelled
+  another way.
+- **No chains.** A rule that copies values cannot read a field that a rule
+  copies or returns to: not as its own field, nor in `in`, `match` or `when`.
+  The save works out every value before it writes any, so a chain would lag
+  one save behind. The rule that reads is refused and names the rule that
+  writes.
+- **Turning the write on save off.** The project setting "@UVEXISTS returned
+  values" (`exists-return-no-save`) keeps the page fill and writes nothing when
+  a record is saved. The Validation scan never writes.
+- **Another project.** The searched project lists the fields others may copy,
+  separately from the fields they may search ("Fields of this project whose
+  values it may copy", `record` for its record ID), and only under "Only users
+  who have rights". A rule that copies a field not on that list gets the same
+  setup error as any other refusal there.
+
 ### Semantics worth knowing
 
 - **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
@@ -1883,8 +1980,10 @@ stay fields of this record. Three switches must all be on:
   lists fields, not events. Field errors (a field missing there, a different
   kind of date) come only after the agreement passes. A withdrawn agreement
   shows up the same way on the form, and a survey shows its generic notice.
-- **The record found there is never shown.** Staff get found / not found and,
-  for *could not check*, a reason.
+- **The record found there is not shown.** Staff get found / not found and,
+  for *could not check*, a reason. A rule that copies `record` writes it into
+  this record only when the agreement lists `record` among the fields it may
+  copy.
 - **Lookups are logged in the searched project.** Once the module can read that
   project's agreement, its module log gets one `uv-exists-probe` line per
   lookup, answered or refused: the asking project, the channel (staff, survey,
@@ -1898,7 +1997,10 @@ stay fields of this record. Three switches must all be on:
   the line says `extra_read: record ids`. Nothing is written there while the
   Control Center switch is off or the module is not enabled in that project.
   Over a budget, only the first refused lookup of the minute is logged, so a
-  flood of refused lookups is not a flood of log lines.
+  flood of refused lookups is not a flood of log lines. A lookup that copied
+  values adds `returned` (the fields copied) and `copied_from` (the record
+  they came from); with "How to log invalid values" set to "none" the record
+  is kept as a keyed hash (`copied_from_hmac`), and with "off" it is left out.
 - **Budgets.** Each searched project keeps three counters, so no kind of caller
   can use up another's: staff lookups (1,200 a minute from every project
   together, plus 30 a minute per signed-in session), survey lookups (120 a
@@ -1933,8 +2035,9 @@ stay fields of this record. Three switches must all be on:
 
 ### `@UVEXISTS` JSON keys
 
-`in`, `project`, `event`, `scope`, `match`, `surveys`, `when`, `message`,
-`blockSave` and `caseSensitive`. Any other key is a configuration error.
+`in`, `project`, `event`, `scope`, `match`, `return`, `surveys`, `when`,
+`message`, `blockSave` and `caseSensitive`. Any other key is a configuration
+error.
 
 These are refused when the rule is saved:
 
@@ -1979,7 +2082,7 @@ These are refused when the rule is saved:
 # refused: cannot be combined
 @UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"event"}
 
-# A record ID belongs to the whole record.
+# A record ID belongs to the whole record. "event" only says where copied values are read.
 # refused: does not apply to "in":"record"
 @UVEXISTS={"in":"record","event":"enrolment_arm_1"}
 
@@ -2002,6 +2105,26 @@ These are refused when the rule is saved:
 # A quoted boolean.
 # refused: "surveys" must be true or false
 @UVEXISTS={"in":"[voucher_issued]","surveys":"true"}
+
+# "return" maps a field there to a field of this form.
+# refused: "return" must be an object
+@UVEXISTS={"in":"[specimen_id]","return":["[result_site]"]}
+
+# The value is a field reference.
+# refused: must be one field reference of this form
+@UVEXISTS={"in":"[specimen_id]","return":{"lab_site":"result_site"}}
+
+# Two values into one field.
+# refused: to the same field
+@UVEXISTS={"in":"[specimen_id]","return":{"lab_site":"[result_site]","site_code":"[result_site]"}}
+
+# A field the lookup reads cannot be written.
+# refused: which this lookup reads or searches
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"return":{"lab_site":"[site]"}}
+
+# Copied values need rights a survey respondent does not have.
+# refused: cannot be used with "surveys"
+@UVEXISTS={"in":"[specimen_id]","surveys":true,"return":{"lab_site":"[result_site]"}}
 ```
 
 ## `@UVRANGE` — numbers within plausible limits

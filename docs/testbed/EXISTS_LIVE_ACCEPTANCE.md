@@ -162,7 +162,7 @@ This section needs a second project on the same server, the source project.
 Its outcome is also the pilot gate for the framework calls the module makes
 about a project other than the one of the request.
 
-Fixtures: [`uvexists_cross_fields.csv`](uvexists_cross_fields.csv) (10 rows,
+Fixtures: [`uvexists_cross_fields.csv`](uvexists_cross_fields.csv) (16 rows,
 instrument `uv_exists_cross`, appended to pid 149),
 [`uvexists_cross_source.csv`](uvexists_cross_source.csv) (the source project's
 dictionary, instrument `lab`) and
@@ -176,7 +176,7 @@ Setup:
    import its two records. Note its project id; the steps write it as SRC.
 2. Enable the module in the source project. Give the test account rights to the
    `lab` form there. Keep a second account with rights in pid 149 only.
-3. Append the 10 rows to pid 149's dictionary and designate `uv_exists_cross`
+3. Append the 16 rows to pid 149's dictionary and designate `uv_exists_cross`
    on `event_1_arm_1`.
 4. In pid 149's module settings, add the alias `lab` for SRC.
 
@@ -184,7 +184,7 @@ Setup:
 |---|---|---|
 | I1 | Control Center: "@UVEXISTS in other projects" off. Open `uv_exists_cross` on XE-1 | Every `uxc_*` rule except `uxc_bad_alias` shows "looking in another project ("project") is turned off on this REDCap server". `uxc_bad_alias` names the alias setting |
 | I2 | Turn the switch on; the source project lists nothing yet. Reload | Every `uxc_*` rule except `uxc_bad_alias` shows "project SRC cannot be searched from this project", word for word the same |
-| I3 | Source project settings, "Projects that may look up values here": add 149, fields `lab_spec, lab_site, lab_date, record, lab_donor, lab_ghost`, "Only users who have rights" (default). Save, reload the form | `uxc_spec`, `uxc_rec`, `uxc_m`, `uxc_date`, `uxc_donor` set up. `uxc_bad_secret` still shows the same "cannot be searched" text. `uxc_bad_ghost`: "lab_ghost" is not a field of project SRC. `uxc_survey`: "does not answer survey respondents" |
+| I3 | Source project settings, "Projects that may look up values here": add 149, fields `lab_spec, lab_site, lab_date, record, lab_donor, lab_ghost`, "Only users who have rights" (default). Save, reload the form | `uxc_spec`, `uxc_rec`, `uxc_m`, `uxc_date`, `uxc_donor` set up. `uxc_bad_secret`, `uxc_ret` and `uxc_bad_ret_secret` still show the same "cannot be searched" text (nothing may be copied yet). `uxc_bad_ghost`: "lab_ghost" is not a field of project SRC. `uxc_survey`: "does not answer survey respondents" |
 | I4 | Read the config rules for `uxc_spec` | No `existsProject`, `existsPid`, `existsRemoteTargets` or `existsIn` key; SRC and `lab_spec` appear nowhere |
 | I5 | `uxc_spec` = LS-001, then LS-999 and press Save | Green "Found." with no record named; then red "Register this specimen in the lab project first." and the save is blocked |
 | I6 | `uxc_rec` = L-2, then L-9 | Found, then not found |
@@ -201,6 +201,12 @@ Setup:
 | I17 | [only if the source project has DAGs] Put the test account in a group there; `uxc_spec` = a specimen of another group | Not found (the lookup stays in the account's group there). A scan then counts no finding for `uxc_spec`; the "Data Access Group of project SRC" wording is pinned offline by `tests/exists_cross_php.php` |
 | I18 | [only if I17 ran] Same account, still in the group there: import `uxc_spec` = LS-001 for XE-1 | Module log of pid 149: `uvalidate-unconfigurable` for `uxc_spec`, "your account is in a Data Access Group of the other project, so the check after saving cannot see values saved in its other groups". Source project log: channel `audit`, result `refused`. Take the account out of the group after |
 | I19 | [deferred until the scan report page returns] Second account (rights in 149 only, and to the Validation scan): open the scan report from I15 | The report is not shown: "this scan looks values up in project SRC, which does not answer your lookups, so its results are not shown to you". Pinned offline by `tests/exists_cross_php.php` meanwhile |
+| I20 | Source project row for 149, "Only users who have rights": set "Fields of this project whose values it may copy" to `lab_site, lab_date, record`. Save, reload the form | `uxc_ret` sets up. `uxc_bad_ret_secret` still shows the same "cannot be searched" text: `lab_secret` is not on the copy list |
+| I21 | `uxc_ret` = ls-001 and leave the field; then LS-999 | Green "Found." with no record named, and `uxc_ret_site` North, `uxc_ret_date` 01-02-2026, `uxc_ret_from` L-1. Then red, and the three fields are emptied |
+| I22 | Source project module log | The probe line for LS-001 carries `returned` `lab_site,lab_date,record` and `copied_from` `L-1` besides `value_hash`; the LS-999 line has neither |
+| I23 | Second account (rights in 149 only): `uxc_ret` = LS-001 | Amber "Could not check"; the three fields keep what they hold |
+| I24 | Source project: switch the row to "Any signed-in user of the asking project" with the copy list still filled, and save | The Configure dialog refuses the row: values can be copied only by users with rights there. Cancel, so the row stays as I20 left it |
+| I25 | Test account: `uxc_ret` = LS-002, then save the form | Page: South, 03-02-2026, L-2. After the save the record holds `uxc_ret_date` 2026-02-03 (a data export shows the stored value), and the source project's log has a channel `audit` line with `copied_from` `L-2` |
 
 ---
 
@@ -222,6 +228,39 @@ next step.
 | J9 | On XE-1 save `ux_uq_num` = 7. Open XE-2, type 007 and leave the field. Then save -5 on XE-1 and type -05 on XE-2 | "already recorded (record XE-1)" both times: numbers compare by value |
 | J10 | Import `ux_uq` = `UQ-5 ` (a space after it) for XE-1 with Data Import, then open XE-1 and record whether the space was kept. Open XE-2, type UQ-5 and leave the field | "already recorded (record XE-1)" whether REDCap kept the space or not: a value with spaces around it is compared without them |
 
+---
+
+## Section K: copying fields of the entry found (`"return"`)
+
+Fixture: [`uvexists_return_fields.csv`](uvexists_return_fields.csv), 23 rows on
+one new instrument `uv_exists_return`: 4 rule fields copy values, 5
+`uxr_bad_*` fields carry a refused `"return"`, the rest are the fields they
+fill. Every expectation below was run offline through the module against the
+seed data in `event_instance/` first (a scratch script, not shipped). Append
+the rows, designate `uv_exists_return` on `event_1_arm_1`, and open it on
+XE-2. Keep the second account of section I, or another one without rights to
+the `xr_specimen` form.
+
+| # | Action | Expect |
+|---|---|---|
+| K1 | Open the form; read the config rules | `uxr_spec`, `uxr_code`, `uxr_rec`, `uxr_when` set up, each with `existsReturnFields` and `existsReturnNumbers` (`["uxr_rec_wt"]` for `uxr_rec`, `[]` for the others). No rule without an error names `xs_type`, `xs_date`, `xs_barcode`, `xe_site`, `xe_weight` or `xe_consent_date`, and none carries `existsReturn` |
+| K2 | The `uxr_bad_*` fields | `uxr_bad_survey`: "cannot be used with "surveys"". `uxr_bad_rep`: ""xs_id" is on the repeating form "xr_specimen", not on "xe_enrol"". `uxr_bad_kind`: "holds no date or time and "xs_date" holds dates". `uxr_bad_noevent`: "needs "event" in a longitudinal project". `uxr_bad_codes`: "has no choice "3"" |
+| K3 | `uxr_spec` = S-001 and leave the field | Green "Found (record XE-1)."; `uxr_type` Sputum, `uxr_date` 15-01-2026, `uxr_from` XE-1. Record whether REDCap marks the form as changed |
+| K4 | `uxr_spec` = s-003 | Blood, 10-02-2026, XE-1 |
+| K5 | `uxr_spec` = S-100 | Green "Found (record XE-2)." with an amber line "2 saved entries hold this value with different values to copy"; the three fields still hold K4's values |
+| K6 | `uxr_spec` = S-999, then clear it | Red, and the three fields are emptied; clearing it asks nothing and leaves them empty |
+| K7 | `uxr_code` = PX-0002 | North is checked on the radio `uxr_site`; `uxr_consent` 2026-01-10. PX-9999 then turns red and empties both, leaving no radio button checked |
+| K8 | `uxr_rec` = XE-2 | `uxr_rec_code` PX-0002, `uxr_rec_wt` 70. Type 70.0 into `uxr_rec_wt` with the browser's console (`document.getElementsByName('uxr_rec_wt')[0].value='70.0'`), change `uxr_rec` to XE-1 and back to XE-2: `uxr_rec_wt` keeps 70.0, the same number |
+| K9 | `uxr_gate` = No, `uxr_when` = S-001 | Nothing is asked and `uxr_bc` stays empty. Gate Yes: `uxr_bc` BC-S-001. Gate No again: `uxr_bc` is emptied |
+| K10 | `uxr_spec` = S-003 and press Save at once, without leaving the field | The save waits for the answer ("still being checked") although the rule does not block; the next Save goes through and the record holds `uxr_type` 2, `uxr_date` 2026-02-10 (stored), `uxr_from` XE-1 |
+| K11 | Reopen XE-2's form and leave it without touching anything | The fields show K10's values, and leaving raises no "unsaved changes" prompt: the fill made as the page opens does not mark the form as changed |
+| K12 | Data Import Tool: for XE-2 import `uxr_spec` = S-001 with `uxr_type`, `uxr_date` and `uxr_from` blank | After the import XE-2 holds 1, 2026-01-15, XE-1. The record's log shows the module's write as an update by the importing user |
+| K13 | Import `uxr_spec` = S-100 for XE-2 | The three fields keep K12's values. Module log: `uvalidate-unconfigurable` for `uxr_spec`, "2 saved entries hold this value with different values to copy" |
+| K14 | Second account (no rights to `xr_specimen`): open XE-2, `uxr_spec` = S-003 | Amber "Could not check this value just now (you do not have access to every form this lookup reads)."; the fields keep what they hold. Importing S-003 as that account writes nothing, and the module log names the rule problem "the person who saved may not open every form "return" copies from" |
+| K15 | Project setting "@UVEXISTS returned values" on. Import `uxr_spec` = S-999 for XE-2 | Nothing is written, and the fields keep their values. Opening the form still shows red and empties the fields on the page, without saving them. Turn the setting off |
+| K16 | [only if the project has DAGs] As a user in one group, `uxr_spec` = a specimen saved only in a record of another group | Green "Found" with the amber line "It is saved outside your Data Access Group", and nothing copied; or, if this REDCap confines the user's reads, the H10 answer. Record which |
+| K17 | Run the Validation scan | No field of `uv_exists_return` changes; the scan writes nothing |
+
 ## Sign-off
 
 | # | Gate | Result |
@@ -235,6 +274,7 @@ next step.
 | 7 | Section H: choice fields, reset, autocomplete, branches, groups | ☐ |
 | 8 | Section I: another project. Agreement, rights there, probe log, surveys, audit, scan. This is also the pilot gate for `getProjectSetting`/`getSubSettings` with another project id, `log()` with `project_id`, the `project-id` setting type, `isModuleEnabled`, `getProjectStatus`, `\Project` event and group names, and `User::getRights` for another project | ☐ |
 | 9 | Section J: `caseSensitive`, record IDs in another case, the record itself, numbers by value, `@UVUNIQUE` the same way, Save asking again | ☐ |
+| 10 | Section K and I20 to I25: `"return"` fills, empties and leaves fields as documented, on the page and at save; dropdown, radio and D-M-Y targets; rights, the agreement's copy list, the probe log, the kill switch; the page-open fill does not mark the form as changed | ☐ |
 
 ## Cleanup
 
@@ -244,4 +284,5 @@ specimen J8 registered on XE-1. Remove the
 survey setting if D1 enabled it, and the one-section-per-page setting if D5
 changed it. After section I, delete the `uv_exists_cross` instrument and the alias
 row, delete the source project, and turn "@UVEXISTS in other projects" off
-again unless it stays in use.
+again unless it stays in use. After section K, delete the `uv_exists_return`
+instrument and make sure "@UVEXISTS returned values" is off.

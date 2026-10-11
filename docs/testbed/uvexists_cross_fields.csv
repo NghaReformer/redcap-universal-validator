@@ -9,3 +9,9 @@ uxc_donor,uv_exists_cross,,text,Donor name in the lab project (an Identifier the
 uxc_bad_secret,uv_exists_cross,,text,Broken: a field the lab project did not list,,Shows the one setup error that does not say why.,,,,,,,,,,,"@UVEXISTS={""in"":""[lab_secret]"",""project"":""lab""}"
 uxc_bad_ghost,uv_exists_cross,,text,Broken: a listed field that does not exist there,,"Field error, shown only because the agreement passed.",,,,,,,,,,,"@UVEXISTS={""in"":""[lab_ghost]"",""project"":""lab""}"
 uxc_bad_alias,uv_exists_cross,,text,Broken: an alias not set up here,,Names the alias setting.,,,,,,,,,,,"@UVEXISTS={""in"":""[lab_spec]"",""project"":""nolab""}"
+uxc_ret,uv_exists_cross,"Copy fields from the lab project (UVEXISTS ""return"")",text,"Specimen ID in the lab project: copy its site, date and lab record",,"LS-001: North, 01-02-2026, L-1, once the lab project lets this project copy lab_site, lab_date and record.",,,,,,,,,,,"@UVEXISTS={""in"":""[lab_spec]"",""project"":""lab"",""return"":{""lab_site"":""[uxc_ret_site]"",""lab_date"":""[uxc_ret_date]"",""record"":""[uxc_ret_from]""}}"
+uxc_ret_site,uv_exists_cross,,dropdown,Lab site (copied),"1, North | 2, South",,,,,,,,,,,,@READONLY
+uxc_ret_date,uv_exists_cross,,text,"Collection date (copied, D-M-Y)",,,date_dmy,,,,,,,,,,@READONLY
+uxc_ret_from,uv_exists_cross,,text,Lab record (copied),,,,,,,,,,,,,@READONLY
+uxc_bad_ret_secret,uv_exists_cross,,text,Refused: copies a field the lab project does not list,,Same setup error as any other refusal there.,,,,,,,,,,,"@UVEXISTS={""in"":""[lab_spec]"",""project"":""lab"",""return"":{""lab_secret"":""[uxc_ret_any]""}}"
+uxc_ret_any,uv_exists_cross,,text,Target of a refused rule,,,,,,,,,,,,,

@@ -382,6 +382,7 @@ namespace {
     $d2 = $DICT;
     $d2['r_two'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[r_from]"}}'));
     $d2['r_reads'] = f('result', ux('{"in":"[specimen_id]","match":{"code_id":"[r_code]"},"return":{"lab_site":"[t_any]"}}'));
+    $d2['r_selfwhen'] = f('result', ux('{"in":"[specimen_id]","when":"[t_mail]<>\'\'","return":{"mail":"[t_mail]"}}'));
     \REDCap::$dictionaries = [149 => $d2];
     $m = mod();
     \REDCap::$dictionaries = [149 => $d2];
@@ -389,6 +390,8 @@ namespace {
     check('two rules writing one field are both refused', strpos(errOf($cfg3, 'r_two'), 'shares "[r_from]"') !== false
         && strpos(errOf($cfg3, 'r_spec'), 'shares "[r_from]"') !== false);
     check('a returning rule that reads a returned field is refused, named by its tag', strpos(errOf($cfg3, 'r_reads'), '@UVEXISTS "return": it reads "[r_code]"') !== false);
+    check('a rule whose "when" reads a field it fills itself is refused (got ' . json_encode(errOf($cfg3, 'r_selfwhen')) . ')',
+        strpos(errOf($cfg3, 'r_selfwhen'), 'it reads "[t_mail]", which this rule returns a value to') !== false);
 
     // ---- 3) the exists-check endpoint ------------------------------------------------------------
     $m = mod();

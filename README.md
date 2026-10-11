@@ -694,7 +694,8 @@ the specimen ID on the collection form.
   project, found / not found only, with no Identifier searched). Surveys are
   answered only when that project also allows it. Until its agreement
   passes, every problem shows one setup error and nothing of that project is
-  read. Its record is never shown. Each lookup, answered or refused, leaves a
+  read. Its record is never shown, unless a rule copies `record` and the
+  agreement lists it. Each lookup, answered or refused, leaves a
   `uv-exists-probe` line in that project's module log, with the value as a
   keyed hash under its key. At most 30 lookups a minute per browser session
   into one project. One project answers at most 1,200 a minute for signed-in
@@ -702,6 +703,24 @@ the specimen ID on the collection form.
   respondents (the first two are Control Center settings), so one kind of
   caller cannot use up another's. Over any of them the answer is *could not
   check*, and the searched project's log gets one "throttled" line a minute.
+- **Copy fields of the entry found (`return`).**
+  `"return":{"lab_site":"[result_site]","record":"[source_record]"}` writes
+  fields of the entry the lookup found (`record`: its record ID) into fields of
+  this form, up to 10, from the same record, event and instance as the match.
+  The rule owns them: found fills, *not found*, a blank value or a false
+  `when` empties, *could not check* leaves them. Several entries with
+  different values copy nothing and an amber line says so; a user in a Data
+  Access Group gets values only from their own group. The page fills the
+  fields for a user who may open the forms they come from, and the post-save
+  audit writes the values that differ as the person who saved (the project
+  setting "@UVEXISTS returned values" turns that write off). The setup is
+  checked when the rule is saved: copied fields hold one value on the form of
+  `in` or a form that does not repeat, each field here can hold what the field
+  there holds (choice codes, kind of date, decimal mark and places,
+  validation), an Identifier goes only into an Identifier. Refused with
+  `"surveys":true`. Another project must list the fields it lets others copy,
+  under "Only users who have rights"; its probe log then names the fields
+  copied and the record they came from.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.
@@ -997,6 +1016,10 @@ check-character primitive, but the full runtime path the module actually uses:
   switch, the alias, the searched project's agreement (one refusal for every
   reason, nothing read before it passes), rights there, the probe log, the
   budgets, the audit and the scan.
+  `tests/exists_return_php.php` and `tests/exists_return_dom_js.cjs` cover
+  `"return"`: the grammar and setup checks, the values the endpoint sends and
+  the save writes, entries that disagree or sit in another group, rights, the
+  agreement's list of fields another project may copy, and the page fill.
 - `tests/range_js.cjs` / `tests/range_php.php` — the `@UVRANGE` verdict
   (edges, exact decimals past 2^53, comma decimals, what is not a number) in
   both runtimes from one fixture, `tests/range_fixture.json`, plus the grammar.
@@ -1069,6 +1092,8 @@ php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDC
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
+php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, endpoint values, save write, rights
+node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json

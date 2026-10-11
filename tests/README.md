@@ -23,6 +23,8 @@ php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDC
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
+php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, endpoint values, save write, rights
+node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/unique_dom_js.cjs      # @UVUNIQUE browser rule (transport, fail-open, cache, "also" message)
@@ -294,6 +296,26 @@ window, one "throttled" line a minute), the audit (including a saver in a group
 there), the scan judged branch by branch, a stored scan refused to a reader the
 other project would not answer, a deleted project, a field named `record`, and
 the Configure dialog checks of the alias and agreement rows.
+
+`exists_return_php.php` covers `"return"`, the fields a lookup copies from the
+entry it found. Its mocks join the two above and keep settings, dictionaries,
+data, rights and repeating forms per project id, `REDCap::getData` honouring
+records, events and `filterLogic`, and `REDCap::saveData` recording each
+write. It covers the grammar, every setup refusal and its wording (fields
+there on a repeating form, fields here of a kind that cannot hold the value,
+an Identifier into a field that is not one, a repeating event with
+`"in":"record"`), the page config (the fields filled, never where the values
+come from), the endpoint (values as the page shows them, entries that agree
+or disagree, an entry only in another group, the form rights of the copied
+fields, the full read a rule with `"return"` always makes), the save (stored
+values, only what differs, one lookup per save, the survey and the saver
+without rights writing nothing, the `exists-return-no-save` switch), the
+scan that never asks for values, and another project (the agreement's list of
+fields it may copy, the "answer" mode, the probe log, the Configure dialog
+checks). `exists_return_dom_js.cjs` drives the page fill: each kind of field,
+the quiet fill as the page opens, the answers that fill, empty or leave the
+fields, branches, the save held while a lookup is on its way, and late
+answers.
 
 ## `range_*` — the plausibility contract
 

@@ -1,0 +1,24 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+uxr_spec,uv_exists_return,"Copy fields of the entry found (UVEXISTS ""return"")",text,"Specimen ID: copy its type, collection date and record",,"S-001: Sputum, 15-01-2026, XE-1. S-100 is saved twice with different types: nothing is copied. S-999: not found, the three fields below are emptied.",,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""return"":{""xs_type"":""[uxr_type]"",""xs_date"":""[uxr_date]"",""record"":""[uxr_from]""}}"
+uxr_type,uv_exists_return,,dropdown,Specimen type (copied),"1, Sputum | 2, Blood | 3, Urine",Filled by the lookup above.,,,,,,,,,,,@READONLY
+uxr_date,uv_exists_return,,text,"Collection date (copied, D-M-Y)",,Stored Y-M-D in the specimen form; shown here D-M-Y.,date_dmy,,,,,,,,,,@READONLY
+uxr_from,uv_exists_return,,text,Record the specimen was registered in (copied),,,,,,,,,,,,,@READONLY
+uxr_code,uv_exists_return,,text,Participant code: copy the enrolment site and consent date,,PX-0002: North (radio) and 2026-01-10. PX-9999: not found.,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""return"":{""xe_site"":""[uxr_site]"",""xe_consent_date"":""[uxr_consent]""}}"
+uxr_site,uv_exists_return,,radio,Enrolment site (copied),"1, North | 2, South | 3, East",,,,,,,,,,,,@READONLY
+uxr_consent,uv_exists_return,,text,Consent date (copied),,,date_ymd,,,,,,,,,,@READONLY
+uxr_rec,uv_exists_return,,text,Record ID: copy its participant code and enrolment weight,,"XE-2: PX-0002 and 70, read from event_1_arm_1.",,,,,,,,,,,"@UVEXISTS={""in"":""record"",""event"":""event_1_arm_1"",""return"":{""xe_code"":""[uxr_rec_code]"",""xe_weight"":""[uxr_rec_wt]""}}"
+uxr_rec_code,uv_exists_return,,text,Participant code (copied),,,,,,,,,,,,,@READONLY
+uxr_rec_wt,uv_exists_return,,text,Enrolment weight (copied),,"A number field: 70.0 here is not rewritten to 70.",number,,,,,,,,,,@READONLY
+uxr_gate,uv_exists_return,,yesno,Copy the barcode?,,,,,,,,,,,,,
+uxr_when,uv_exists_return,,text,Specimen ID: copy its barcode while the gate above is Yes,,"Gate Yes, S-001: BC-S-001. Gate No: the barcode field is emptied and nothing is asked.",,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""when"":""[uxr_gate]='1'"",""return"":{""xs_barcode"":""[uxr_bc]""}}"
+uxr_bc,uv_exists_return,,text,Barcode (copied),,,,,,,,,,,,,@READONLY
+uxr_bad_survey,uv_exists_return,Refused set-ups,text,"Refused: ""return"" with ""surveys""",,,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""surveys"":true,""return"":{""xs_type"":""[uxr_any1]""}}"
+uxr_bad_rep,uv_exists_return,,text,Refused: a field of another repeating form,,,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""return"":{""xs_id"":""[uxr_any2]""}}"
+uxr_bad_kind,uv_exists_return,,text,Refused: a date into an integer field,,,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""return"":{""xs_date"":""[uxr_int]""}}"
+uxr_bad_noevent,uv_exists_return,,text,"Refused: ""in"":""record"" without ""event""",,,,,,,,,,,,,"@UVEXISTS={""in"":""record"",""return"":{""xe_code"":""[uxr_any3]""}}"
+uxr_bad_codes,uv_exists_return,,text,Refused: a dropdown without every code,,,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""return"":{""xs_type"":""[uxr_two]""}}"
+uxr_any1,uv_exists_return,,text,Target of a refused rule,,,,,,,,,,,,,
+uxr_any2,uv_exists_return,,text,Target of a refused rule,,,,,,,,,,,,,
+uxr_any3,uv_exists_return,,text,Target of a refused rule,,,,,,,,,,,,,
+uxr_int,uv_exists_return,,text,Target of a refused rule (integer),,,integer,,,,,,,,,,
+uxr_two,uv_exists_return,,dropdown,Target of a refused rule (two codes),"1, Sputum | 2, Blood",,,,,,,,,,,,
