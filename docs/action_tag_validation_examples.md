@@ -1832,9 +1832,11 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   on the form of `in` or on a form that does not repeat; a field of another
   repeating form is refused, since the entry found has many instances of it.
   In a longitudinal project the form of each copied field must also be in
-  every event the entry can be found in (the `event` named, or else every
-  event that holds the form of `in`); otherwise the rule is refused, since
-  the entry found there would have no value for it. With `"in":"record"`
+  every event the entry can be found in: the `event` named, or else every
+  event that holds the form of `in`, and with `"scope":"event"` only those
+  events that also hold this field's form. Otherwise the rule is refused,
+  since the entry found there would have no value for it. The record ID,
+  copied as `record` or by its field name, is in every event. With `"in":"record"`
   every copied field must be on a form that does not repeat, and a
   longitudinal project names the event the values are read from with
   `event`, which must not be a repeating event.
@@ -1868,7 +1870,8 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
 - **Surveys and saves without a user.** A survey respondent's save neither
   fills nor empties the fields, even when the form is also a survey. A save
   REDCap runs without a signed-in user (a scheduled job, for example) copies
-  no value; a blank value or a Missing Data Code still empties the fields.
+  no value and asks for none. A blank value, a Missing Data Code, a `when`
+  that is false or a branch that does not apply still empties the fields.
 - **When the values are written.** The page fills the fields as it opens and
   after each answer. The fill made as the page opens does not mark the form as
   changed, though calculations and branching logic that read the fields still
@@ -1912,7 +1915,10 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   that project is built (a copied field on a repeating form or missing from an
   event, an event that repeats) gives one message instead: "project N cannot
   give the values "return" asks for". A choice field here that lacks a code of
-  the field there is refused without naming the code.
+  the field there is refused without naming the code. The page and the save
+  check the user's rights in both projects: here the forms of this field and
+  of each `match` field here, there the forms of the fields searched and
+  copied.
 
 ### Semantics worth knowing
 

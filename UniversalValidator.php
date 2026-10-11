@@ -849,8 +849,10 @@ class UniversalValidator extends AbstractExternalModule
         if ($user === null) return $keep();
         // The same fields the page asks rights for (existsCheck): the field
         // searched and the "match" fields tell which entry holds the value as
-        // much as the fields copied do.
-        if (empty($rule['existsPid']) && $this->firstUnreadableField($project_id, $user, self::existsReadFields($rule, $field)) !== null) {
+        // much as the fields copied do. For a rule that searches another
+        // project these are the fields here it reads; crossLookup checks
+        // the rest there.
+        if ($this->firstUnreadableField($project_id, $user, self::existsReadFields($rule, $field)) !== null) {
             return $keep('the person who saved may not open every form this lookup reads, so ' . $targets
                 . ' keep their values — the next save by someone who may fills them');
         }
@@ -1014,7 +1016,8 @@ class UniversalValidator extends AbstractExternalModule
         // A save that writes nothing the rule copies (returnsWrittenOnSave)
         // asks for no values: none are read, and none is logged as handed
         // over in another project (logCrossProbe).
-        if (empty($meta['returns'])) $rule = self::withoutReturn($rule);
+        // A save with no signed-in user copies nothing either (returnsExists).
+        if (empty($meta['returns']) || $this->currentUsername() === null) $rule = self::withoutReturn($rule);
         if (!empty($meta['existsIndex'])) return $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
         // serialize, not json_encode: a value that is not valid UTF-8 would
         // make json_encode fail, and every such lookup share one answer.
@@ -1030,7 +1033,7 @@ class UniversalValidator extends AbstractExternalModule
     private $existsLookupMemo = [];
 
     /**
-     * @var array serialize(getData parameters) => ['params' => them, 'data' => the read]:
+     * @var array serialize([getData parameters, user]) => ['params' => them, 'data' => the read]:
      * the full reads of rules that copy values ("return"), kept for the request
      * (existsFullRead)
      */
@@ -1039,14 +1042,15 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * The full read findExisting makes for a rule that copies values: every
      * entry, never narrowed, so one import of many records would read the
-     * whole project once per record and rule. It is made once per request and
-     * parameters instead, and each save of a record of that project re-reads
-     * that record into it (refreshExistsReads), so a later lookup sees what
-     * was saved since. A read that fails is not kept.
+     * whole project once per record and rule. It is made once per request,
+     * parameters and signed-in user (REDCap may confine a user's reads to
+     * their group) instead, and each save of a record of that project
+     * re-reads that record into it (refreshExistsReads), so a later lookup
+     * sees what was saved since. A read that fails is not kept.
      */
     private function existsFullRead(array $params)
     {
-        $k = serialize($params);
+        $k = serialize([$params, $this->currentUsername()]);
         if (!isset($this->existsReads[$k])) {
             $data = \REDCap::getData($params);
             if (!is_array($data)) return $data;
@@ -1059,15 +1063,17 @@ class UniversalValidator extends AbstractExternalModule
      * Record $record of project $pid was just saved: every read existsFullRead
      * keeps of that project takes the record's rows as they are now, in its
      * place (gone when it no longer has any). A read that cannot be refreshed
-     * is dropped, so the next lookup reads afresh.
+     * is dropped, so the next lookup reads afresh. The read is changed where
+     * it is kept: a copy of it per save would cost a pass over the project.
      */
     private function refreshExistsReads($pid, $record)
     {
         if ($record === null || $record === '') return;
-        foreach ($this->existsReads as $k => $kept) {
-            if ((int) $kept['params']['project_id'] !== (int) $pid) continue;
+        foreach (array_keys($this->existsReads) as $k) {
+            $params = $this->existsReads[$k]['params'];
+            if ((int) $params['project_id'] !== (int) $pid) continue;
             try {
-                $fresh = \REDCap::getData(['records' => [(string) $record]] + $kept['params']);
+                $fresh = \REDCap::getData(['records' => [(string) $record]] + $params);
             } catch (\Throwable $e) {
                 $fresh = null;
             }
@@ -1075,10 +1081,8 @@ class UniversalValidator extends AbstractExternalModule
                 unset($this->existsReads[$k]);
                 continue;
             }
-            $data = $kept['data'];
-            if (isset($fresh[$record])) $data[$record] = $fresh[$record];
-            else unset($data[$record]);
-            $this->existsReads[$k]['data'] = $data;
+            if (isset($fresh[$record])) $this->existsReads[$k]['data'][$record] = $fresh[$record];
+            else unset($this->existsReads[$k]['data'][$record]);
         }
     }
 
@@ -5301,7 +5305,8 @@ class UniversalValidator extends AbstractExternalModule
      * longitudinal project needs "event", the event the values are read from.
      * In a longitudinal project each field's form must also be in every event
      * the entry can be found in ("event", or each event that holds the form
-     * of "in"): elsewhere the entry has no value for it. Each field here
+     * of "in", and with "scope":"event" this field's form too): elsewhere the
+     * entry has no value for it. The record ID is in every event. Each field here
      * passes returnTargetBasics (on this form, not this field, not a field
      * the lookup reads, not the record ID, not filled by REDCap) and can hold
      * the value (existsReturnPairProblem). A field flagged Identifier there
@@ -5342,8 +5347,17 @@ class UniversalValidator extends AbstractExternalModule
                 $ev = $there === '' ? $this->eventIdOf($pidThere, $frag['existsEvent']) : $this->eventIdIn($pidThere, $frag['existsEvent']);
                 $events = $ev === null ? [] : [(int) $ev];
             } else {
+                // "scope":"event" looks only in the event of the entry being
+                // edited, so only in events that also hold this field's form
+                // (the scope is this project's: refused with "project").
+                $home = (($frag['existsScope'] ?? null) === 'event' && $there === '' && isset($ddHere[$name]['form_name']))
+                    ? (string) $ddHere[$name]['form_name'] : null;
                 $events = [];
-                foreach ($byEvent as $e => $forms) if ($inForm !== null && isset($forms[$inForm])) $events[] = (int) $e;
+                foreach ($byEvent as $e => $forms) {
+                    if ($inForm === null || !isset($forms[$inForm])) continue;
+                    if ($home !== null && !isset($forms[$home])) continue;
+                    $events[] = (int) $e;
+                }
             }
         }
         if ($in === 'record' && $events) {
@@ -5376,8 +5390,8 @@ class UniversalValidator extends AbstractExternalModule
                     . ($in === 'record' ? '' : ', not on "' . (string) $inForm . '" with "' . $in . '"')
                     . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.');
             }
-            // The record ID is in every event of the record.
-            if ($s !== 'record' && $events !== null && $form !== $inForm) {
+            // The record ID is in every event of the record, by either name.
+            if ($src !== $pkThere && $events !== null && $form !== $inForm) {
                 foreach ($events as $e) {
                     if (isset($byEvent[$e][$form])) continue;
                     return $hide($short . $there . ' is on the form "' . $form . '", which is not in every event '

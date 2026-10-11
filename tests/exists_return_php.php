@@ -180,7 +180,8 @@ namespace {
             $this->eventsForms = self::$eventsFormsBy[$this->pid] ?? null;
         }
         public function getUniqueEventNames() { return self::$events[$this->pid] ?? []; }
-        public function getUniqueGroupNames() { return []; }
+        public static $groupsBy = [300 => [31 => 'lab_east', 32 => 'lab_west']];
+        public function getUniqueGroupNames() { return self::$groupsBy[$this->pid] ?? []; }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -255,6 +256,13 @@ namespace {
         'r_mk_site'  => f('result'),
         // number_1dp into number validation without a place count
         'r_anydp'    => f('result', ux('{"in":"[specimen_id]","return":{"dose":"[t_dose_any]"}}')),
+        // the record ID copied by its own name, and the entry of this event only
+        'r_pk'       => f('result', ux('{"in":"[specimen_id]","return":{"record_id":"[t_pk]"}}')),
+        't_pk'       => f('result'),
+        'r_sev'      => f('result', ux('{"in":"[specimen_id]","scope":"event","return":{"site_note":"[t_sev]"}}')),
+        't_sev'      => f('result'),
+        'r_sevsite'  => f('result', ux('{"in":"[specimen_id]","scope":"event","return":{"lab_site":"[t_sevsite]"}}')),
+        't_sevsite'  => f('result'),
     ];
     // Refused set-ups: field => [the "return" (or whole tag), the words the refusal holds]
     $BAD = [
@@ -320,6 +328,9 @@ namespace {
         '14' => [351 => ['record_id' => '14', 'specimen_id' => 'SP-U', 'code_id' => "B\xE9"]],
         '15' => [351 => ['record_id' => '15', 'specimen_id' => "SP-\xE91", 'lab_site' => '1']],
         '16' => [351 => ['record_id' => '16', 'specimen_id' => "SP-\xE92", 'lab_site' => '2']],
+        // one record, the value in two events with different values
+        '17' => [351 => ['record_id' => '17', 'specimen_id' => 'SP-ME', 'lab_site' => '1'],
+                 352 => ['record_id' => '17', 'specimen_id' => 'SP-ME', 'lab_site' => '2']],
     ];
     $DATA['1'][351]['key_code'] = 'K1';
     $FULL = ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '1', 'rep_form' => '1', 'lab_meta' => '1', 'lab_key' => '1'], 'group_id' => null, 'expiration' => ''];
@@ -451,6 +462,21 @@ namespace {
     \Project::$eventsFormsBy[149] = null;
     $m = mod();
     check('longitudinal: the forms of each event cannot be read: refused', strpos(errOf(page($m), 'r_spec'), 'which forms each event holds in this project could not be read') !== false);
+    // the searched form is also in event 353, which holds neither lab_meta nor enrol
+    \Project::$eventsFormsBy[149] = [351 => $keepEf[351], 352 => ['enrol', 'lab_reg', 'result', 'lab_meta'], 353 => ['lab_reg']];
+    $d5 = $DICT;
+    $d5['r_home_copy'] = f('result', ux('{"in":"[specimen_id]","return":{"home":"[t_hc]"}}'));
+    $d5['t_hc'] = f('result');
+    foreach ($d5 as $k => $_) $d5[$k]['field_name'] = $k;
+    $m = mod();
+    \REDCap::$dictionaries = [149 => $d5];
+    $cfgE = page($m);
+    check('longitudinal: an event of the searched form without the copied field\'s form refuses the rule',
+        strpos(errOf($cfgE, 'r_meta'), 'is on the form "lab_meta"') !== false && strpos(errOf($cfgE, 'r_home_copy'), 'is on the form "enrol"') !== false);
+    check('..."scope":"event" counts only the events that also hold this field\'s form (got ' . json_encode(errOf($cfgE, 'r_sev')) . ')',
+        errOf($cfgE, 'r_sev') === '');
+    check('...the record ID copied by either name is in every event (got ' . json_encode(errOf($cfgE, 'r_pk')) . ')',
+        errOf($cfgE, 'r_pk') === '' && errOf($cfgE, 'r_spec') === '');
     \Project::$eventsFormsBy[149] = $keepEf;
     \Project::$long[149] = false;
     // unreadable repeating map
@@ -548,9 +574,25 @@ namespace {
     check('a signed-in caller on a survey page: found, no values, and no copied field read (got ' . json_encode($r) . ')',
         ($r['state'] ?? null) === 'found' && !isset($r['values']) && !isset($r['fill']) && !$copiedRead);
     $m = mod();
-    $r = ask($m, 'r_spec', 'SP-TRI');
-    check('three entries, two agreeing: the count is of entries (got ' . json_encode($r) . ')',
+    $r = ask($m, 'r_off', 'SP-TRI');
+    check('three entries, two agreeing: the count is of entries, not of the values they hold (got ' . json_encode($r) . ')',
         ($r['fill'] ?? null) === 'conflict' && ($r['count'] ?? null) === 3);
+    // one record holding the value in two events
+    \Project::$long[149] = true;
+    $m = mod();
+    $r = ask($m, 'r_off', 'SP-ME');
+    check('one record, the value in two events with different values to copy: a conflict of 2 entries (got ' . json_encode($r) . ')',
+        ($r['fill'] ?? null) === 'conflict' && ($r['count'] ?? null) === 2);
+    $m = mod();
+    check('..."scope":"event" copies from the entry of this event only',
+        (ask($m, 'r_sevsite', 'SP-ME')['values'] ?? null) === ['t_sevsite' => '1']);
+    \Project::$long[149] = false;
+    $m = mod();
+    ask($m, 'r_spec', 'SP-1');
+    $GLOBALS['__TEST_USER'] = 'north';
+    \REDCap::reset();
+    ask($m, 'r_spec', 'SP-1', 7);
+    check('the kept full read is per user: another user in the same request reads afresh (' . fullReads() . ')', fullReads() === 1);
     $m = mod();
     $r = ask($m, 'r_text', 'SP-U');
     check('two entries whose values are not valid UTF-8 and differ: a conflict, not one answer (got ' . json_encode(array_keys($r)) . ')',
@@ -584,6 +626,28 @@ namespace {
     save($m);
     check('a later save looks again: the entry found changed since (got ' . json_encode(written()) . ')', written() === ['r_site' => '2']);
     check('...from the kept read, with record 1 read again (' . fullReads() . ' full reads)', fullReads() === 0);
+    $EMPTIED = ['r_site' => '', 'r_date' => '', 'r_dose' => '', 'r_from' => ''];
+    $m = mod();
+    save($m);
+    \REDCap::$data[149]['1'][351]['specimen_id'] = 'SP-1X';
+    $m->redcap_save_record(149, '1', 'lab_reg', 351, null, null, null, 1);
+    \REDCap::reset();
+    save($m);
+    check('a later save, the entry found no longer holds the value: the fields are emptied (got ' . json_encode(written()) . ')',
+        written() === $EMPTIED && fullReads() === 0);
+    $m = mod();
+    save($m);
+    unset(\REDCap::$data[149]['1']);
+    $m->redcap_save_record(149, '1', 'lab_reg', 351, null, null, null, 1);
+    \REDCap::reset();
+    save($m);
+    check('...and a record with no rows left drops out of the kept read (got ' . json_encode(written()) . ')', written() === $EMPTIED);
+    $m = mod();
+    save($m, null, 'hash');
+    \REDCap::reset();
+    save($m);
+    check('a survey save does not make the next save on the same module one (got ' . json_encode(written()) . ')',
+        (written()['r_site'] ?? null) === '1');
     $m = mod();
     row9(['r_spec' => 'NA', 'r_site' => '2']);
     save($m);
@@ -633,6 +697,7 @@ namespace {
     $m = mod(null);
     save($m);
     check('a save with no signed-in user (a job, an API call) copies nothing, and that is no rule problem', !\REDCap::$saves && !unconfigurable($m));
+    check('...and asks for no values', !array_filter(\REDCap::$calls, function ($c) { return in_array('coll_date', $c['fields'] ?? [], true); }));
     $m = mod(null);
     row9(['r_spec' => '', 'r_site' => '2']);
     save($m);
@@ -753,6 +818,9 @@ namespace {
     $DICT_X['x_pick_t'] = f('result', '', '', 'dropdown', '', '1, A | 2, B');
     $DICT_X['x_v'] = f('result', ux('{"in":"[specimen_id]","project":300,"return":{"v_note":"[x_v_t]"}}'));
     $DICT_X['x_v_t'] = f('result');
+    // a "match" field here on a form of its own (enrol)
+    $DICT_X['x_m'] = f('result', ux('{"in":"[specimen_id]","project":300,"match":{"site_code":"[home]"},"return":{"lab_date":"[x_m_date]"}}'));
+    $DICT_X['x_m_date'] = f('result');
     foreach ($DICT_X as $k => $_) $DICT_X[$k]['field_name'] = $k;
     function xmod($user = 'nurse', array $row = null, $logMode = 'hashed') {
         global $DICT_X, $DICT_B, $DATA, $FULL;
@@ -842,6 +910,54 @@ namespace {
     $cfg = page($m);
     check('another project: a rule the agreement refuses never reads the dictionary there',
         strpos(errOf($cfg, 'x_donor'), 'cannot be searched') !== false && !in_array(300, \REDCap::$ddCalls, true));
+
+    // a user in a Data Access Group there: live, only that group's entries count; the save refuses
+    $xdag = function ($user) use ($FULL) {
+        $m = xmod($user);
+        \REDCap::$rightsBy[149]['east'] = $FULL;
+        \REDCap::$rightsBy[300]['east'] = ['forms' => ['lab' => '1', 'lab2' => '0'], 'group_id' => 31, 'expiration' => ''];
+        \REDCap::$data[300]['L1'][901]['redcap_data_access_group'] = 'lab_east';
+        \REDCap::$data[300]['L2'] = [901 => ['record_id' => 'L2', 'specimen_id' => 'LS-1', 'site_code' => 'South',
+                                             'lab_date' => '2026-02-01', 'redcap_data_access_group' => 'lab_west']];
+        return $m;
+    };
+    $m = $xdag('east');
+    $r = ask($m, 'x_spec', 'LS-1');
+    check('another project, a user in a group there: the values of their group\'s entry only (got ' . json_encode($r) . ')',
+        ($r['values'] ?? null) === ['x_site' => 'North', 'x_date' => '02-01-2026', 'x_from' => 'L1']);
+    $m = $xdag('nurse');
+    check('...while a user in no group there sees both entries disagree', (ask($m, 'x_spec', 'LS-1')['fill'] ?? null) === 'conflict');
+    $m = $xdag('east');
+    row9(['x_spec' => 'LS-1']);
+    save($m);
+    check('...and a save by the user in a group there copies nothing (got ' . json_encode(written()) . ')',
+        !array_intersect_key(written(), ['x_site' => 1, 'x_date' => 1, 'x_from' => 1])
+        && strpos(implode(' ', unconfigurable($m)), 'Data Access Group of the other project') !== false);
+
+    // the save checks the saver's rights to this project's fields the lookup reads
+    $XM = ['exists-consumer-project' => '149', 'exists-consumer-targets' => 'specimen_id, site_code',
+           'exists-consumer-returns' => 'lab_date', 'exists-consumer-mode' => 'rights'];
+    $m = xmod('nurse', $XM);
+    check('another project, a "match" field here: a sound rule (got ' . json_encode(errOf(page($m), 'x_m')) . ')', errOf(page($m), 'x_m') === '');
+    $m = xmod('noenrol', $XM);
+    \REDCap::$rightsBy[149]['noenrol'] = ['forms' => ['enrol' => '0'] + $FULL['forms'], 'group_id' => null, 'expiration' => ''];
+    \REDCap::$rightsBy[300]['noenrol'] = \REDCap::$rightsBy[300]['nurse'];
+    row9(['x_m' => 'LS-1', 'home' => 'North', 'x_m_date' => '']);
+    save($m);
+    check('another project: a saver who may not open the form of a "match" field here: nothing written, a rule problem (got ' . json_encode(written()) . ')',
+        !isset(written()['x_m_date']) && strpos(implode(' ', unconfigurable($m)), 'may not open every form this lookup reads') !== false);
+    $m = xmod('nurse', $XM);
+    row9(['x_m' => 'LS-1', 'home' => 'North', 'x_m_date' => '']);
+    save($m);
+    check('...while a saver who may open it gets the value', (written()['x_m_date'] ?? null) === '2026-02-01');
+
+    // a save with no signed-in user is refused there, and hands nothing over
+    $m = xmod(null);
+    row9(['x_spec' => 'LS-1']);
+    save($m);
+    $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
+    check('another project, a save with no signed-in user: nothing written, and the probe line there names no copied fields (got ' . json_encode($probe) . ')',
+        !\REDCap::$saves && count($probe) === 1 && !isset($probe[0][1]['returned']));
 
     // ---- 7) the Configure dialog checks -------------------------------------------------------------------
     $csp = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'crossSettingsProblems');

@@ -581,6 +581,19 @@ function later(ms, fn) {
     check('...and Save does not ask again 31 s later', saved(env) && stub.calls.length === 1 && !env.win._alerts.length);
   });
 }
+{
+  // Another branch fills fields, so the save is watched; the branch that applies blocks and fills nothing.
+  const f = form('SP-1');
+  f.spec.readOnly = true;
+  const k = select('k', [['A', 'a'], ['B', 'b']], 'A');
+  const stub = makeTransportStub();
+  stub.next = 'HANG';
+  const env = boot(f.list.concat([k]), { rules: [{ type: 'exists', fields: ['spec'], branches: [
+    { when: "[k]='A'", blockSave: 'hard' },
+    { when: "[k]='B'", blockSave: 'off', existsReturnFields: ['r_from'] }] }] }, stub);
+  check('a read-only field, a blocking branch without "return": a lookup on its way does not hold the save',
+    stub.calls.length === 1 && saved(env) && !env.win._alerts.length);
+}
 
 // ---- 9) more that must hold ------------------------------------------------------------------------------------------
 {
