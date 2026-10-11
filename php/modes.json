@@ -225,7 +225,7 @@
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
       "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets",
                      "existsProject", "existsPid", "existsRemoteTargets", "existsReturn"],
-      "returns": {"method": "returnsExists", "targets": "existsReturn", "noSave": "exists-return-no-save"},
+      "returns": {"method": "returnsExists", "targets": "existsReturn", "noSave": "exists-return-no-save", "noSurveySave": true},
       "needs": ["transport"],
       "dialog": false,
       "js": {"factories": {"exists": "QRIDExistsInit"}},

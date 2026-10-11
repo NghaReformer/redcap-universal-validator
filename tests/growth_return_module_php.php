@@ -423,8 +423,11 @@ NASK, Not asked";
     refused(dict(['wfa_z' => f('enrol_form')]), 'must be on that form', 'a target on another form is refused');
     refused(dict(['wfa_rng' => f('anthro_form', '', 'integer')]), 'would refuse a text such as', 'a range target with validation is refused');
     refused(dict(['wfa_z' => f('anthro_form', '', 'integer')]), 'cannot hold a number written with decimals', 'an integer z-score target is refused');
-    refused(dict(['wfa_z' => f('anthro_form', '', 'number_1dp')]), 'takes 1 decimal place and this value is written with 2', 'a z-score target with one decimal is refused');
-    refused(dict(['wfa_lo' => f('anthro_form', '', 'number_1dp')], tag('"decimals":2,' . RET_ALL)), 'takes 1 decimal place and this value is written with 2', 'bounds with more decimals than the field takes are refused');
+    refused(dict(['wfa_z' => f('anthro_form', '', 'number_1dp')]), 'takes exactly 1 decimal place and this value is written with 2', 'a z-score target with one decimal is refused');
+    refused(dict(['wfa_lo' => f('anthro_form', '', 'number_1dp')], tag('"decimals":2,' . RET_ALL)), 'takes exactly 1 decimal place and this value is written with 2', 'bounds with more decimals than the field takes are refused');
+    // REDCap's number_Ndp takes exactly N places: "7.5" fails number_2dp, "8" fails number_1dp
+    refused(dict(['wfa_lo' => f('anthro_form', '', 'number_2dp')]), 'takes exactly 2 decimal places and this value is written with 1', 'bounds with fewer decimals than the field takes are refused');
+    refused(dict(['wfa_z' => f('anthro_form', '', 'number_3dp')]), 'takes exactly 3 decimal places and this value is written with 2', 'a z-score target with three decimals is refused');
     refused(dict([], tag('"return":{"z":"[weight]"}')), 'is the measured field itself', 'returning to the measured field is refused');
     refused(dict([], tag('"return":{"z":"[sex]"}')), 'which this rule reads', 'returning to an input is refused');
     refused(dict([], tag('"return":{"z":"[record_id]"}')), 'is the record ID', 'returning to the record id is refused');
@@ -483,7 +486,9 @@ NASK, Not asked";
         $r && $r['rangeReturn'] === ['z' => 'wfa_z', 'lower' => 'wfa_lo', 'upper' => 'wfa_hi', 'range' => 'wfa_rng']);
     check('... the decimals of the measured field (number_1dp: 1)', $r['rangeDecimals'] === 1);
     check('... and the decimal mark each field takes', $r['rangeReturnComma'] === ['z' => true, 'lower' => false, 'upper' => true, 'range' => false]);
-    $m = mod(dict(['weight' => f('anthro_form', tag(RET_ALL), 'integer')]), ['2' => [EVT => row()]]);
+    // whole-number bounds go into integer fields (number_1dp would refuse "8")
+    $m = mod(dict(['weight' => f('anthro_form', tag(RET_ALL), 'integer'), 'wfa_lo' => f('anthro_form', '', 'integer'),
+        'wfa_hi' => f('anthro_form', '', 'integer')]), ['2' => [EVT => row()]]);
     $cfg = page($m);
     foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
     check('a measured integer field returns bounds with no decimals', $r['rangeDecimals'] === 0);
@@ -676,14 +681,16 @@ NASK, Not asked";
     $grams = GrowthReference::measure('9600', false, '0.001');
     $gWant = GrowthReference::outputs($entry, GrowthReference::table($entry), 'male', $a365['x'], $grams['y'],
         ['lo' => '-2', 'hi' => '2'], 0, false, '0.001', 'g');
-    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,"unit":"g",' . RET_ALL), 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
+    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,"unit":"g",' . RET_ALL), 'integer'), 'wfa_lo' => f('anthro_form', '', 'integer'),
+        'wfa_hi' => f('anthro_form', '', 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
     save($m);
     check('grams typed into a table in kg: the bounds are whole grams and the range says g (got ' . json_encode(written()) . ')',
         written() === ['2' => [EVT => wantFields($gWant)]] && preg_match('/^\d{4,5} to \d{4,5} g$/', $gWant['range']) === 1
         // the kg bounds are rounded inward to 0.1 kg; the gram bounds lie within those 100 g
         && $gWant['z'] === $want['wfa_z'] && (int) $gWant['lower'] <= 1000 * (float) $want['wfa_lo'] && (int) $gWant['lower'] > 1000 * (float) $want['wfa_lo'] - 100
         && (int) $gWant['upper'] >= 1000 * (float) $want['wfa_hi'] && (int) $gWant['upper'] < 1000 * (float) $want['wfa_hi'] + 100);
-    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,' . RET_ALL), 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
+    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,' . RET_ALL), 'integer'), 'wfa_lo' => f('anthro_form', '', 'integer'),
+        'wfa_hi' => f('anthro_form', '', 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
     save($m);
     check('... without "unit" the range names no unit (not the table\'s kg) (got ' . json_encode(written()['2'][EVT]['wfa_rng'] ?? null) . ')',
         (written()['2'][EVT]['wfa_rng'] ?? null) === $gWant['lower'] . ' to ' . $gWant['upper']);

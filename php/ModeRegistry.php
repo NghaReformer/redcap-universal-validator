@@ -77,6 +77,10 @@ final class ModeRegistry
                         || !is_string($rt['targets']) || !in_array($rt['targets'], $m['branchKeys'], true)) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns that is not a method name and one of its branchKeys');
                 }
+                if ((isset($rt['noSave']) && (!is_string($rt['noSave']) || $rt['noSave'] === ''))
+                        || (isset($rt['noSurveySave']) && !is_bool($rt['noSurveySave']))) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns whose noSave is not a setting name or whose noSurveySave is not true or false');
+                }
             }
             if (isset($m['uniformBranchKeys'])) {
                 $u = $m['uniformBranchKeys'];
@@ -349,8 +353,10 @@ final class ModeRegistry
     /**
      * What a mode's rules write besides judging: ["method" => the
      * UniversalValidator method that works the values out, "targets" => the
-     * rule key holding value name => field name], or null for a mode that
-     * writes nothing (php/modes.json "returns").
+     * rule key holding value name => field name, optionally "noSave" => the
+     * project setting that turns the write on save off, "noSurveySave" =>
+     * true when a survey respondent's save writes nothing, "sameNumber"], or
+     * null for a mode that writes nothing (php/modes.json "returns").
      */
     public static function returns($mode)
     {

@@ -142,9 +142,14 @@ class UniversalValidator extends AbstractExternalModule
         // entered, so it is not audited a second time.
         if (self::$returnWriting) return;
         $this->returnQueue = [];
+        // A survey respondent's save: a mode whose returned values come from
+        // other records writes nothing then (returnsWrittenOnSave).
+        $this->surveySave = $survey_hash !== null && $survey_hash !== '';
         // One import saves many records in one request: a lookup answered for
-        // an earlier one may no longer be true.
+        // an earlier one may no longer be true, and a read kept for the lookups
+        // of this request shows this record as it was before this save.
         $this->existsLookupMemo = [];
+        $this->refreshExistsReads($project_id, $record);
         try {
             // $project_id comes straight from the hook and is reliable in every
             // save context (form, survey, API, import, cron); $this->getProjectId()
@@ -429,11 +434,12 @@ class UniversalValidator extends AbstractExternalModule
         $meta['instance'] = $repeat_instance;
         // The save audit also works out the values a rule returns to fields
         // (the scan, which calls ruleFindings itself, does not): they are
-        // queued and written once the audit is done (applyReturns), unless the
-        // project turned that write off for the rule's mode.
-        $meta['returns'] = true;
+        // queued and written once the audit is done (applyReturns), unless
+        // this save writes nothing for the rule's mode (returnsWrittenOnSave).
+        // Then they are not worked out at all: no lookup asks for them.
+        $meta['returns'] = $this->returnsWrittenOnSave($rule, $project_id);
         $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution, $meta);
-        if (isset($f['returns']) && is_array($f['returns']) && !$this->returnsOffOnSave($rule, $project_id)) {
+        if (isset($f['returns']) && is_array($f['returns'])) {
             $this->queueReturns($f['returns'], (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [], $event_id, $repeat_instance,
                 self::looseReturns($rule, $f['returns']));
         }
@@ -812,9 +818,10 @@ class UniversalValidator extends AbstractExternalModule
      * The rule owns its fields: a blank value (or a Missing Data Code) and a
      * value that is not found empty them. Values of another record go only to
      * a person who may read them, so nothing is copied when the save has no
-     * signed-in user (a survey, a job, an API call REDCap runs without one),
-     * nor when the person who saved may not open the form of every field
-     * copied (in another project, crossLookup asks the same). Nothing is
+     * signed-in user (a job, an API call REDCap runs without one; a survey
+     * save never gets here, returnsWrittenOnSave), nor when the person who
+     * saved may not open the form of every field the lookup reads
+     * (existsReadFields; in another project, crossLookup asks the same). Nothing is
      * copied when the entries found disagree on the values, or are all in
      * other Data Access Groups than the saver's, or when the lookup could not
      * be made (findingsExists logs that one).
@@ -840,12 +847,12 @@ class UniversalValidator extends AbstractExternalModule
         }
         $user = $this->currentUsername();
         if ($user === null) return $keep();
-        if (empty($rule['existsPid'])) {
-            $sources = array_values(array_diff(array_map('strval', array_keys($ret)), ['record']));
-            if ($sources && $this->firstUnreadableField($project_id, $user, $sources) !== null) {
-                return $keep('the person who saved may not open every form "return" copies from, so ' . $targets
-                    . ' keep their values — the next save by someone who may fills them');
-            }
+        // The same fields the page asks rights for (existsCheck): the field
+        // searched and the "match" fields tell which entry holds the value as
+        // much as the fields copied do.
+        if (empty($rule['existsPid']) && $this->firstUnreadableField($project_id, $user, self::existsReadFields($rule, $field)) !== null) {
+            return $keep('the person who saved may not open every form this lookup reads, so ' . $targets
+                . ' keep their values — the next save by someone who may fills them');
         }
         $lv = [];
         foreach ((isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [] as $lf) {
@@ -1004,8 +1011,14 @@ class UniversalValidator extends AbstractExternalModule
         // the values copied (returnsExists) share the answer, so another
         // project is read, counted and logged once. The scan answers from its
         // own index and would only fill the memo record by record.
+        // A save that writes nothing the rule copies (returnsWrittenOnSave)
+        // asks for no values: none are read, and none is logged as handed
+        // over in another project (logCrossProbe).
+        if (empty($meta['returns'])) $rule = self::withoutReturn($rule);
         if (!empty($meta['existsIndex'])) return $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
-        $mk = json_encode([(int) $pid, self::existsRuleKey($rule), (string) $value, $locals, (string) $eventId, (string) $record,
+        // serialize, not json_encode: a value that is not valid UTF-8 would
+        // make json_encode fail, and every such lookup share one answer.
+        $mk = serialize([(int) $pid, self::existsRuleKey($rule), (string) $value, $locals, (string) $eventId, (string) $record,
             array_key_exists('dag', $meta) ? $meta['dag'] : '~', isset($meta['callerGroup']) ? $meta['callerGroup'] : null]);
         if (!isset($this->existsLookupMemo[$mk])) {
             $this->existsLookupMemo[$mk] = $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
@@ -1015,6 +1028,59 @@ class UniversalValidator extends AbstractExternalModule
 
     /** @var array existsLookup answers, per save (redcap_save_record clears it) */
     private $existsLookupMemo = [];
+
+    /**
+     * @var array serialize(getData parameters) => ['params' => them, 'data' => the read]:
+     * the full reads of rules that copy values ("return"), kept for the request
+     * (existsFullRead)
+     */
+    private $existsReads = [];
+
+    /**
+     * The full read findExisting makes for a rule that copies values: every
+     * entry, never narrowed, so one import of many records would read the
+     * whole project once per record and rule. It is made once per request and
+     * parameters instead, and each save of a record of that project re-reads
+     * that record into it (refreshExistsReads), so a later lookup sees what
+     * was saved since. A read that fails is not kept.
+     */
+    private function existsFullRead(array $params)
+    {
+        $k = serialize($params);
+        if (!isset($this->existsReads[$k])) {
+            $data = \REDCap::getData($params);
+            if (!is_array($data)) return $data;
+            $this->existsReads[$k] = ['params' => $params, 'data' => $data];
+        }
+        return $this->existsReads[$k]['data'];
+    }
+
+    /**
+     * Record $record of project $pid was just saved: every read existsFullRead
+     * keeps of that project takes the record's rows as they are now, in its
+     * place (gone when it no longer has any). A read that cannot be refreshed
+     * is dropped, so the next lookup reads afresh.
+     */
+    private function refreshExistsReads($pid, $record)
+    {
+        if ($record === null || $record === '') return;
+        foreach ($this->existsReads as $k => $kept) {
+            if ((int) $kept['params']['project_id'] !== (int) $pid) continue;
+            try {
+                $fresh = \REDCap::getData(['records' => [(string) $record]] + $kept['params']);
+            } catch (\Throwable $e) {
+                $fresh = null;
+            }
+            if (!is_array($fresh)) {
+                unset($this->existsReads[$k]);
+                continue;
+            }
+            $data = $kept['data'];
+            if (isset($fresh[$record])) $data[$record] = $fresh[$record];
+            else unset($data[$record]);
+            $this->existsReads[$k]['data'] = $data;
+        }
+    }
 
     /** What makes two exists rules ask the same question. */
     private static function existsRuleKey(array $rule)
@@ -1152,7 +1218,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($narrow && isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) {
                 return $unknown + ['why' => 'too many lookups in the last minute'];
             }
-            $data = \REDCap::getData($params);
+            $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
             if ($spec['returns']) {
                 $hits = self::existsHitsIn($data, $spec, $scope, $dag);
@@ -1480,8 +1546,8 @@ class UniversalValidator extends AbstractExternalModule
      * What a rule that copies values ("return") copies, from the entries the
      * lookup found:
      *   ['returned' => field => value]  every visible entry holds the same values;
-     *   ['returnConflict' => n]          n visible entries hold different ones:
-     *                                    nothing is copied;
+     *   ['returnConflict' => n]          the n visible entries do not all hold
+     *                                    the same ones: nothing is copied;
      *   ['returnWithheld' => true]       the value is saved only outside group
      *                                    $visible: nothing is copied.
      * $visible is the Data Access Group of the person the lookup runs for
@@ -1491,14 +1557,19 @@ class UniversalValidator extends AbstractExternalModule
     private static function existsReturnOutcome(array $hits, array $returns, $visible)
     {
         $tuples = [];
+        $seen = 0;
         foreach ($hits as $h) {
             if ($visible !== null && $h['dag'] !== $visible) continue;
+            $seen++;
             $vals = [];
             foreach ($returns as $f) $vals[$f] = isset($h['values'][$f]) ? (string) $h['values'][$f] : '';
-            $tuples[json_encode($vals)] = $vals;
+            // serialize, not json_encode: a value that is not valid UTF-8 (a
+            // legacy import) makes json_encode fail, and every such tuple
+            // would then share one key and read as agreeing.
+            $tuples[serialize($vals)] = $vals;
         }
         if (!$tuples) return ['returnWithheld' => true];
-        if (count($tuples) > 1) return ['returnConflict' => count($tuples)];
+        if (count($tuples) > 1) return ['returnConflict' => $seen];
         return ['returned' => reset($tuples)];
     }
 
@@ -1721,6 +1792,16 @@ class UniversalValidator extends AbstractExternalModule
         . 'list this project, with every field this lookup searches, under "Projects that may look up values here" '
         . 'in its module settings, and an "event" must be one of its unique event names.';
 
+    /**
+     * The one refusal of a "return" whose reason would describe how another
+     * project is built (existsReturnProblem). That project's team can say which
+     * of these applies.
+     */
+    const CROSS_RETURN_UNAVAILABLE = 'project %d cannot give the values "return" asks for in the entry the lookup finds. '
+        . 'Each field copied must be on the form searched or on a form that does not repeat, and on a form of every event '
+        . 'the value can be found in; with "in":"record" in a longitudinal project, "event" must name an event that does '
+        . 'not repeat.';
+
     /** @var array "a|b" => consent row or null, per request */
     private $crossConsents = [];
     /** @var array pid => \Project or null, per request */
@@ -1919,6 +2000,31 @@ class UniversalValidator extends AbstractExternalModule
             foreach (array_keys($n['existsReturn']) as $s) $out[(string) $s] = true;
         }
         return array_keys($out);
+    }
+
+    /** An exists rule (or branch) as one that copies nothing: the same lookup, without "return". */
+    private static function withoutReturn(array $rule)
+    {
+        unset($rule['existsReturn'], $rule['existsReturnFields'], $rule['existsReturnNumbers']);
+        return $rule;
+    }
+
+    /**
+     * The fields of this project an exists rule on $field reads to answer one
+     * lookup here: the field itself, its "match" fields, the fields it
+     * searches and the fields it copies (not the record ID). The person a
+     * lookup runs for must be able to open the form of each, on the page
+     * (existsCheck) and when a save copies values (returnsExists). A rule that
+     * searches another project reads only $field and its "match" fields here;
+     * the rest is checked there (crossCaller).
+     */
+    private static function existsReadFields(array $rule, $field)
+    {
+        $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
+        if (!empty($rule['existsPid'])) return array_values(array_unique(array_merge([(string) $field], $locals)));
+        $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
+        $copied = array_values(array_diff(self::returnSources($rule), ['record']));
+        return array_values(array_unique(array_merge([(string) $field], $locals, $targets, $copied)));
     }
 
     /**
@@ -5193,34 +5299,57 @@ class UniversalValidator extends AbstractExternalModule
      * entry of another repeating form would be any of its instances). With
      * "in":"record" every field must be on a form that does not repeat, and a
      * longitudinal project needs "event", the event the values are read from.
-     * Each field here passes returnTargetBasics (on this form, not this field,
-     * not a field the lookup reads, not the record ID, not filled by REDCap)
-     * and can hold the value (existsReturnPairProblem). A field flagged
-     * Identifier there may go only into a field flagged Identifier here, so a
-     * de-identified export does not carry it.
+     * In a longitudinal project each field's form must also be in every event
+     * the entry can be found in ("event", or each event that holds the form
+     * of "in"): elsewhere the entry has no value for it. Each field here
+     * passes returnTargetBasics (on this form, not this field, not a field
+     * the lookup reads, not the record ID, not filled by REDCap) and can hold
+     * the value (existsReturnPairProblem). A field flagged Identifier there
+     * may go only into a field flagged Identifier here, so a de-identified
+     * export does not carry it.
+     *
+     * Another project's forms, events and choice codes are not named here: a
+     * refusal that would name them gives CROSS_RETURN_UNAVAILABLE instead, as
+     * annotateExistsRemote does for an event that is not one of its events.
      */
     private function existsReturnProblem(array &$frag, $name, array $ddThere, array $ddHere, $pidThere, $pidHere, $there, $idsThere)
     {
         $in = isset($frag['existsIn']) ? (string) $frag['existsIn'] : '';
         $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
         $inForm = ($in !== 'record' && isset($ddThere[$in]['form_name'])) ? (string) $ddThere[$in]['form_name'] : null;
+        $hide = function ($why) use ($there, $pidThere) {
+            return $there === '' ? $why : sprintf(self::CROSS_RETURN_UNAVAILABLE, (int) $pidThere);
+        };
         $layout = $this->repeatingLayout($pidThere);
         if ($layout === null) {
             return 'which forms repeat in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
                 . ' could not be read, so "return" cannot be checked.';
         }
         $repeating = $layout['forms'];
-        if ($in === 'record' && !isset($frag['existsEvent'])) {
-            $long = $this->projectLongitudinal($pidThere);
-            if ($long !== false) {
-                return '"return" with "in":"record" needs "event" in a longitudinal project: the event whose values are copied.';
+        $long = $this->projectLongitudinal($pidThere);
+        if ($in === 'record' && !isset($frag['existsEvent']) && $long !== false) {
+            return $hide('"return" with "in":"record" needs "event" in a longitudinal project: the event whose values are copied.');
+        }
+        // The events the entry found can be in, when the project has events.
+        $events = null;
+        if ($long !== false) {
+            $byEvent = $this->eventForms($pidThere);
+            if ($byEvent === null) {
+                return 'which forms each event holds in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
+                    . ' could not be read, so "return" cannot be checked.';
+            }
+            if (isset($frag['existsEvent'])) {
+                $ev = $there === '' ? $this->eventIdOf($pidThere, $frag['existsEvent']) : $this->eventIdIn($pidThere, $frag['existsEvent']);
+                $events = $ev === null ? [] : [(int) $ev];
+            } else {
+                $events = [];
+                foreach ($byEvent as $e => $forms) if ($inForm !== null && isset($forms[$inForm])) $events[] = (int) $e;
             }
         }
-        if ($in === 'record' && isset($frag['existsEvent'])) {
-            $ev = $there === '' ? $this->eventIdOf($pidThere, $frag['existsEvent']) : $this->eventIdIn($pidThere, $frag['existsEvent']);
-            if ($ev !== null && isset($layout['events'][(int) $ev])) {
-                return '"return" with "in":"record" reads one entry of "event" "' . $frag['existsEvent'] . '"' . $there
-                    . ', and that event repeats — name an event that does not repeat.';
+        if ($in === 'record' && $events) {
+            if (isset($layout['events'][$events[0]])) {
+                return $hide('"return" with "in":"record" reads one entry of "event" "' . $frag['existsEvent'] . '"' . $there
+                    . ', and that event repeats — name an event that does not repeat.');
             }
         }
         $idsHere = $this->projectIdentifierFields($pidHere);
@@ -5243,9 +5372,18 @@ class UniversalValidator extends AbstractExternalModule
             $form = isset($ms['form_name']) ? (string) $ms['form_name'] : '';
             // $inForm is null with "in":"record": no repeating form is allowed
             if (isset($repeating[$form]) && $form !== $inForm) {
-                return $short . $there . ' is on the repeating form "' . $form . '"'
+                return $hide($short . $there . ' is on the repeating form "' . $form . '"'
                     . ($in === 'record' ? '' : ', not on "' . (string) $inForm . '" with "' . $in . '"')
-                    . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.';
+                    . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.');
+            }
+            // The record ID is in every event of the record.
+            if ($s !== 'record' && $events !== null && $form !== $inForm) {
+                foreach ($events as $e) {
+                    if (isset($byEvent[$e][$form])) continue;
+                    return $hide($short . $there . ' is on the form "' . $form . '", which is not in every event '
+                        . (isset($frag['existsEvent']) ? '"' . $frag['existsEvent'] . '" names' : 'that holds "' . (string) $inForm . '"')
+                        . ' — the entry found there has no value for it. Name an "event" that holds both forms, or copy fields of a form every such event holds.');
+                }
             }
             $label = $short . ' field "' . $t . '"';
             $why = self::returnTargetBasics((string) $t, $short, $label, $name, 'this field', $ddHere, $inputs,
@@ -5271,8 +5409,9 @@ class UniversalValidator extends AbstractExternalModule
      * validation, which gets the code. A Text field with validation takes a
      * value of the same kind: the same kind of date or time (the order the
      * date is shown in may differ: REDCap stores Y-M-D), a number with the
-     * same decimal mark and no more decimal places than the field allows (an
-     * integer only from an integer), or any other validation only from the
+     * same decimal mark and, when the field fixes the decimal places
+     * (integer, number_Ndp), from a field that fixes the same number of
+     * them, or any other validation only from the
      * same one. A Notes field and a Text field without validation take any
      * value. Nothing goes into a calc, slider, SQL, checkbox, file or
      * descriptive field.
@@ -5294,8 +5433,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             $missing = array_diff(self::choiceCodesOf($ms), self::choiceCodesOf($mt));
             if ($missing) {
+                // Another project's codes are not shown (existsReturnProblem).
+                if ($there !== '') {
+                    return $label . ' lacks a choice code that "' . $s . '"' . $there . ' can hold — give it every code of that field.';
+                }
                 return $label . ' has no choice ' . implode(', ', array_map(function ($c) { return '"' . $c . '"'; }, array_slice(array_values($missing), 0, 5)))
-                    . ' that "' . $s . '"' . $there . ' can hold — give it every code of that field.';
+                    . ' that "' . $s . '" can hold — give it every code of that field.';
             }
             return null;
         }
@@ -5322,12 +5465,14 @@ class UniversalValidator extends AbstractExternalModule
             }
             $why = self::markMismatch($s, $markS, (string) ($mt['field_name'] ?? 'the field here'), $markT, $there);
             if ($why !== null) return $label . ': ' . $why;
+            // REDCap's number_Ndp takes exactly N decimal places, and the value
+            // is copied as saved: "7" fails number_1dp as "7.25" does.
             $placesS = self::numberPlaces($ms);
             $placesT = self::numberPlaces($mt);
-            if ($placesT !== null && ($placesS === null || $placesS > $placesT)) {
-                return $label . ' takes ' . ($placesT === 0 ? 'whole numbers' : 'at most ' . $placesT . ' decimal place' . ($placesT === 1 ? '' : 's'))
-                    . ' and "' . $s . '"' . $there . ' may hold ' . ($placesS === null ? 'any number of decimals' : $placesS . ' decimal place' . ($placesS === 1 ? '' : 's'))
-                    . ' — give it number validation with room for them.';
+            if ($placesT !== null && $placesS !== $placesT) {
+                return $label . ' takes ' . ($placesT === 0 ? 'whole numbers' : 'numbers with exactly ' . $placesT . ' decimal place' . ($placesT === 1 ? '' : 's'))
+                    . ' and "' . $s . '"' . $there . ' holds ' . ($placesS === null ? 'any number of decimals' : ($placesS === 0 ? 'whole numbers' : $placesS . ' decimal place' . ($placesS === 1 ? '' : 's')))
+                    . ' — give it the same validation as "' . $s . '", or number validation without a place count.';
             }
             return null;
         }
@@ -5390,6 +5535,19 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /** The forms of each event of project $pid (event_id => form => true), or null when they cannot be read. */
+    private function eventForms($pid)
+    {
+        $p = $this->projectObject($pid);
+        if (!$p || !isset($p->eventsForms) || !is_array($p->eventsForms)) return null;
+        $out = [];
+        foreach ($p->eventsForms as $e => $forms) {
+            if (!is_array($forms)) continue;
+            foreach ($forms as $f) if (is_string($f) && $f !== '') $out[(int) $e][$f] = true;
+        }
+        return $out;
     }
 
     /** Whether project $pid is longitudinal, or null when that cannot be read. */
@@ -5853,9 +6011,9 @@ class UniversalValidator extends AbstractExternalModule
      * Text field of the measured field's own form (and so of its event and
      * instance), and not the measured field, an input of the rule or the record
      * ID. "range" is text ("7.7 to 12.0 kg") and needs a field without
-     * validation; the numbers (z, lower, upper) need none or number validation,
-     * with room for the decimals they are written with: two for z, "decimals"
-     * for a bound. A bound written with "decimals":0 may also go into an
+     * validation; the numbers (z, lower, upper) need none or number validation
+     * that takes the decimals they are written with (number_Ndp: exactly N):
+     * two for z, "decimals" for a bound. A bound written with "decimals":0 may also go into an
      * integer field. A number goes in the field's own decimal mark; a field
      * without validation takes the measured field's.
      */
@@ -5897,11 +6055,13 @@ class UniversalValidator extends AbstractExternalModule
                 return $label . ' has "' . $v . '" validation, which cannot hold a number written with decimals — give it number '
                     . 'validation, or none.';
             }
+            // REDCap's number_Ndp takes exactly N decimal places, and a value
+            // is written with exactly $need.
             $need = $k === 'z' ? 2 : $decimals;
             $room = (isset($mm[1]) && $mm[1] !== '') ? (int) $mm[1] : null;
-            if ($room !== null && $need > $room) {
-                return $label . ' takes ' . $room . ' decimal place' . ($room === 1 ? '' : 's') . ' and this value is written with ' . $need
-                    . ' — give it number validation without a place count' . ($k === 'z' ? ', or number_2dp' : ', or lower "decimals" to ' . $room) . '.';
+            if ($room !== null && $need !== $room) {
+                return $label . ' takes exactly ' . $room . ' decimal place' . ($room === 1 ? '' : 's') . ' and this value is written with ' . $need
+                    . ' — give it number validation without a place count' . ($k === 'z' ? ', or number_2dp' : ', or set "decimals" to ' . $room) . '.';
             }
             $marks[$k] = !empty($mm[2]);
         }
@@ -5917,8 +6077,9 @@ class UniversalValidator extends AbstractExternalModule
      * given, says why the field's type cannot hold the value (null when it
      * can); it runs before the form is compared. Last, REDCap must not fill $t
      * itself: @CALCTEXT, @CALCDATE and @SETVALUE write their own value, and
-     * the two writers would overwrite each other. $short names the "return"
-     * entry and $label the entry with its field.
+     * the two writers would overwrite each other; nor show a widget that keeps
+     * its own text (@RICHTEXT, a BioPortal ontology search). $short names the
+     * "return" entry and $label the entry with its field.
      */
     private static function returnTargetBasics($t, $short, $label, $name, $what, array $dd, array $inputs, ?callable $type = null)
     {
@@ -5942,6 +6103,17 @@ class UniversalValidator extends AbstractExternalModule
         if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE)\b/i', $note, $tag)) {
             return $label . ' is filled by REDCap\'s @' . strtoupper($tag[1]) . ', which would overwrite the returned value '
                 . '(and the other way round) — remove @' . strtoupper($tag[1]) . ', or write to another field.';
+        }
+        // Widgets that keep their own copy of the text: the page writes the
+        // field under them, the widget goes on showing (and, for the rich
+        // text editor, saving) its own.
+        if (preg_match('/@RICHTEXT\b/i', $note)) {
+            return $label . ' shows a rich text editor (@RICHTEXT), which keeps its own copy of the text and saves it over the '
+                . 'returned value — remove @RICHTEXT, or write to another field.';
+        }
+        $enum = isset($m['select_choices_or_calculations']) ? ltrim((string) $m['select_choices_or_calculations']) : '';
+        if (isset($m['field_type']) && $m['field_type'] === 'text' && stripos($enum, 'BIOPORTAL:') === 0) {
+            return $label . ' searches an ontology (BioPortal), whose search box keeps its own text — write to a field without one.';
         }
         return null;
     }
@@ -9137,8 +9309,7 @@ class UniversalValidator extends AbstractExternalModule
                 // Generic on purpose: naming the field would tell the page where
                 // the rule looks. The fields a rule copies ("return") are read
                 // too; another project's are checked there (crossCaller).
-                $copied = empty($rule['existsPid']) ? array_values(array_diff(self::returnSources($rule), ['record'])) : [];
-                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $locals, $targets, $copied)) !== null) {
+                if ($this->firstUnreadableField($project_id, $user_id, self::existsReadFields($rule, $field)) !== null) {
                     return $unknown('you do not have access to every form this lookup reads');
                 }
                 if ($this->recordBeyondCallerGroup($project_id, $record, $group_id)) {
@@ -9205,11 +9376,16 @@ class UniversalValidator extends AbstractExternalModule
                 $opts['callerDag'] = ScanPageView::dagNameOf($group_id);
                 if ($opts['callerDag'] === null) return $unknown('your Data Access Group could not be read');
             }
+            // "return": values go only to a signed-in person on a data-entry
+            // form. Any other caller's lookup asks for none, so none is read,
+            // and another project logs none as handed over (logCrossProbe).
+            $handOver = $isAuthenticated && !$isSurvey;
+            $ask = $handOver ? $rule : self::withoutReturn($rule);
             // Another project: its agreement, the caller's standing there and its
             // budget decide; the group that matters is the caller's group THERE.
             $r = !empty($rule['existsPid'])
-                ? $this->crossLookup($project_id, $rule, $value, $lv, $isAuthenticated ? 'staff' : 'survey', $opts)
-                : $this->findExisting($project_id, $rule, $value, $lv, $event_id, $dag, true, $opts);
+                ? $this->crossLookup($project_id, $ask, $value, $lv, $isAuthenticated ? 'staff' : 'survey', $opts)
+                : $this->findExisting($project_id, $ask, $value, $lv, $event_id, $dag, true, $opts);
             if ($r['state'] === 'unknown') {
                 return $unknown(isset($r['why']) && $r['why'] !== null ? $r['why'] : 'the saved values could not be read just now');
             }
@@ -9223,12 +9399,12 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             $resp = ['state' => $r['state'], 'record' => $recOut];
-            // "return": the values for the fields here, as the page shows them,
-            // only to a signed-in person on a data-entry form (a survey never
-            // gets them; the rule refuses "surveys" anyway). Keyed by the field
-            // here: the page never learns which fields they came from.
-            $ret = (isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [];
-            if ($ret && $r['state'] === 'found' && $isAuthenticated && !$isSurvey) {
+            // "return": the values for the fields here, as the page shows them
+            // (a survey never gets them; the rule refuses "surveys" anyway).
+            // Keyed by the field here: the page never learns which fields
+            // they came from.
+            $ret = (isset($ask['existsReturn']) && is_array($ask['existsReturn'])) ? $ask['existsReturn'] : [];
+            if ($ret && $r['state'] === 'found') {
                 if (isset($r['returned']) && is_array($r['returned'])) {
                     $vals = [];
                     foreach ($ret as $s => $t) $vals[$t] = isset($r['returned'][$s]) ? (string) $r['returned'][$s] : '';

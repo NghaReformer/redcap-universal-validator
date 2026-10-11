@@ -238,9 +238,12 @@ check('range returns values through returnsRange, from rangeReturn',
     ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn',
                                         'noSave' => 'range-return-no-save', 'sameNumber' => 'always']);
 // @UVEXISTS "return": values of the entry found. A Text field holding "007"
-// is not "7", so only fields that hold numbers compare as numbers.
-check('exists returns values through returnsExists, from existsReturn',
-    ModeRegistry::returns('exists') === ['method' => 'returnsExists', 'targets' => 'existsReturn', 'noSave' => 'exists-return-no-save']);
+// is not "7", so only fields that hold numbers compare as numbers. They come
+// from other records, so a survey respondent's save writes none.
+check('exists returns values through returnsExists, from existsReturn, never on a survey save',
+    ModeRegistry::returns('exists') === ['method' => 'returnsExists', 'targets' => 'existsReturn', 'noSave' => 'exists-return-no-save',
+                                         'noSurveySave' => true]);
+check('...while @UVRANGE values, made from the form itself, are', empty(ModeRegistry::returns('range')['noSurveySave']));
 $cfgKeys = [];
 foreach (json_decode(file_get_contents($root . '/config.json'), true)['project-settings'] as $s) $cfgKeys[$s['key']] = $s['type'];
 foreach (['range', 'exists'] as $rm) {
@@ -409,6 +412,12 @@ $cases = [
         return json_encode($g); })($good),
     'returns targets not a branch key' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') $g['modes'][$i]['returns'] = ['method' => 'returnsRange', 'targets' => 'nope'];
+        return json_encode($g); })($good),
+    'returns noSave not a setting name' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['returns']['noSave'] = '';
+        return json_encode($g); })($good),
+    'returns noSurveySave not true or false' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['returns']['noSurveySave'] = 'yes';
         return json_encode($g); })($good),
     'uniform key without a name' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso' => ''];

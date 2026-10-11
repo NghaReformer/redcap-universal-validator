@@ -168,6 +168,25 @@ trait ReturnedValues
         return $off === true || $off === 1 || $off === '1';
     }
 
+    /** @var bool whether the save being audited is a survey respondent's (redcap_save_record) */
+    private $surveySave = false;
+
+    /**
+     * Whether the save being audited writes the values $rule returns: not for
+     * a mode that returns nothing, not when the project turned the write off
+     * (returnsOffOnSave), and not on a survey respondent's save for a mode
+     * whose values come from other records (php/modes.json "returns"
+     * "noSurveySave": a respondent who resumes the survey would see them).
+     * The fields are then neither filled nor emptied.
+     */
+    private function returnsWrittenOnSave(array $rule, $pid)
+    {
+        $rt = ModeRegistry::returns(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+        if ($rt === null) return false;
+        if ($this->surveySave && !empty($rt['noSurveySave'])) return false;
+        return !$this->returnsOffOnSave($rule, $pid);
+    }
+
     /** The returned fields of $rule queueReturns compares as numbers whatever they hold ("sameNumber":"always"). */
     private static function looseReturns(array $rule, array $returned)
     {
@@ -292,6 +311,9 @@ trait ReturnedValues
                     new \RuntimeException('the returned values could not be saved in event ' . (string) $w['event_id']
                         . ', instance ' . $w['instance'] . ': ' . (string) $why), 'return values');
             }
+            // This write is not audited (redcap_save_record returns at once),
+            // so a read kept for later lookups learns of it here.
+            if ($wrote) $this->refreshExistsReads($pid, $record);
             return $wrote;
         } catch (\Throwable $e) {
             self::$returnWriting = false;
