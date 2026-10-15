@@ -33,6 +33,7 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
 node tests/silent_change_dom_js.cjs  # values written without an event (calc, slider, Today button); save dialog names labels
+node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown choices get translated, dialog labels read live, survey rows
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, 5,000-point parity hash
 php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder, limits

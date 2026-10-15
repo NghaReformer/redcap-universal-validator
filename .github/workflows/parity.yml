@@ -73,6 +73,8 @@ jobs:
           node tests/range_dom_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
+      - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
+        run: node tests/mlm_dom_js.cjs
       - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract, returned values)
         run: |
           node tests/growth_js.cjs

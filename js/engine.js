@@ -1244,28 +1244,65 @@ function QRID_debounced(fn){
   wrapped.cancel = function(){ if (timer !== null){ clearTimeout(timer); timer = null; } };
   return wrapped;
 }
-/* Best-effort visible label for a field (REDCap data-entry rows put it in a
-   .labelrc cell); falls back to the internal field name. Used so save-block
-   dialogs and announcements speak the language of the FORM, not the data
-   dictionary (A11Y-001). */
+/* Best-effort visible label for a field; falls back to the internal field
+   name. Used so save-block dialogs and announcements speak the language of the
+   FORM, not the data dictionary (A11Y-001).
+   REDCap renders the label as <label id="label-<field>"> on data entry forms
+   and surveys alike, and points the input's aria-labelledby at it; both are
+   asked before the row's cells. The row is the last resort, and its FIRST
+   .labelrc cell is not the label on a survey with question numbers: that cell
+   is the empty number column, so the dialog named "block_hard" to the
+   respondent. Empty cells are skipped. */
 function QRID_fieldLabel(input, fieldName){
+  function text(el){
+    var t = el && el.textContent ? el.textContent.replace(/\s+/g, " ").trim() : "";
+    return t ? t.slice(0, 80) : "";
+  }
   try {
     var t = input.getAttribute && input.getAttribute("aria-label");
     if (t && t.replace(/\s+/g, "").length) return t.replace(/\s+/g, " ").trim().slice(0, 80);
-    if (input.labels && input.labels.length && input.labels[0].textContent) {
-      t = input.labels[0].textContent.replace(/\s+/g, " ").trim();
-      if (t) return t.slice(0, 80);
+    if (document.getElementById) {
+      t = text(document.getElementById("label-" + fieldName));
+      if (t) return t;
+      var ids = (input.getAttribute && input.getAttribute("aria-labelledby")) || "";
+      ids = ids.split(/\s+/);
+      for (var i = 0; i < ids.length; i++) {
+        t = ids[i] ? text(document.getElementById(ids[i])) : "";
+        if (t) return t;
+      }
+    }
+    if (input.labels && input.labels.length) {
+      t = text(input.labels[0]);
+      if (t) return t;
     }
     var row = input.closest ? input.closest("tr") : null;
-    if (row && row.querySelector) {
-      var cell = row.querySelector("td.labelrc, .labelrc");
-      if (cell && cell.textContent) {
-        t = cell.textContent.replace(/\s+/g, " ").trim();
-        if (t) return t.slice(0, 80);
+    if (row && row.querySelectorAll) {
+      var cells = row.querySelectorAll("td.labelrc, .labelrc");
+      for (var c = 0; c < cells.length; c++) {
+        t = text(cells[c]);
+        if (t) return t;
       }
+    } else if (row && row.querySelector) {
+      t = text(row.querySelector("td.labelrc, .labelrc"));
+      if (t) return t;
     }
   } catch(e){}
   return fieldName;
+}
+/* The label a save dialog names a field by, read when the dialog opens. Read
+   once when the field was bound, it stayed in the page's first language after
+   Multi-Language Management switched it, and in the base language whenever
+   the engine bound before MLM's first pass (it always does: the engine runs at
+   the top of the page). A plain guard object carries the element to read it
+   from; the label read at bind time is kept for when no element answers. */
+function QRID_guardLabel(el){
+  var name = el.__qridFieldName;
+  var src = el.__qridLabelEl || (el.getAttribute ? el : null);
+  if(src){
+    var t = QRID_fieldLabel(src, name);
+    if(t && t !== name) return t;
+  }
+  return el.__qridFieldLabel || name;
 }
 /* Stable, selector-safe id for a field's status region (aria-describedby). */
 function QRID_msgId(fieldName){
@@ -2982,7 +3019,7 @@ function QRID_registerBlocker(input, fieldName, blockMode){
        or after QRID_PENDING_MS. */
     var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
     if(!bad.length && !pend.length) return;
-    var label = function(el){ return el.__qridFieldLabel || el.__qridFieldName; };
+    var label = QRID_guardLabel;
     var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; })).join(", ");
     var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
@@ -3860,7 +3897,7 @@ function QRIDConstraintInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
@@ -4219,7 +4256,7 @@ function QRIDWindowInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
@@ -4728,7 +4765,7 @@ function QRIDRangeInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
@@ -5007,7 +5044,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
@@ -5098,15 +5135,49 @@ function QRIDRequiredInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* Where a dropdown's hidden options wait: one unnamed, disabled select per
+   field, inside one hidden box on the page. Kept out of the page entirely,
+   they missed REDCap's Multi-Language Management, which rewrites every
+   [data-mlm-field][data-mlm-type=enum] element it finds (inside #center on a
+   data entry form, anywhere on a survey). An option hidden before a language
+   switch came back in the old language, and one hidden before MLM's first pass
+   was never translated at all, because the engine binds first. A select with
+   no name is never submitted, never matched by a select[name=...] lookup, and
+   the box sits outside every field's row. null when the page offers no place
+   to put it; the caller then takes options out of the page as before. */
+function QRID_choiceParking(fieldName){
+  try {
+    if(!document.createElement || !document.getElementById) return null;
+    var box = document.getElementById("uvalidate-choice-parking");
+    if(!box){
+      var host = document.getElementById("center") || document.body;
+      if(!host || !host.appendChild) return null;
+      box = document.createElement("div");
+      box.setAttribute("id", "uvalidate-choice-parking");
+      box.setAttribute("aria-hidden", "true");
+      box.hidden = true;
+      if(box.style) box.style.display = "none";
+      host.appendChild(box);
+    }
+    var sel = document.createElement("select");
+    sel.disabled = true;
+    sel.tabIndex = -1;
+    sel.setAttribute("data-uv-parking", fieldName);
+    box.appendChild(sel);
+    return sel;
+  } catch(e){ return null; }
+}
 /* ---- choice filter (@UVCHOICES) --------------------------------------------
    Dynamic choice filtering: show/hide individual options of a radio, dropdown
    or checkbox field while a condition holds (REDCap's @HIDECHOICE is static).
    Each branch carries a "show" whitelist or "hide" blacklist; the hidden set
    is show ? complement over choicesAll (the field's full code list, attached
    server-side from the data dictionary) : the hide list. Rendering:
-     dropdown  — hidden <option>s are physically REMOVED and re-inserted in
-                 their original order when unhidden (Safari ignores hidden/
-                 display:none on <option>, removal is the one portable way);
+     dropdown  — hidden <option>s are physically REMOVED from the select and
+                 re-inserted in their original order when unhidden (Safari
+                 ignores hidden/display:none on <option>, removal is the one
+                 portable way); they wait in a hidden parking select
+                 (QRID_choiceParking) so a language switch still reaches them;
      radio     — the input named <field>___radio with value=code hides its
                  parent wrapper; the hidden mirror input is never touched;
      checkbox  — the input named __chk__<field>_RC_<code> hides its parent.
@@ -5227,7 +5298,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled && !optionsLocked()){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 __qridRecheck: function(){ check(); },
                 focus: function(){ try { (autocompleteInput || input).focus(); } catch(e){} } };
@@ -5238,6 +5309,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     /* ---- the three renderers (kind detected per call — late DOM tolerant) */
     var select = (input.tagName || "").toLowerCase() === "select" ? input : null;
     var selectOrig = [];   /* options retain their original parent and order */
+    var parking = null;    /* where hidden options wait (QRID_choiceParking) */
     var activeHidden = Object.create(null), autocompleteInput = null;
     function snapshotOptions(){
       function visit(parent){
@@ -5330,10 +5402,13 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         var isCur = (val !== "" && val === cur);
         var show = (val === "") || isCur || !hiddenSet[val];
         if(show && o.parentNode !== parent){
+          if(o.parentNode && o.parentNode.removeChild) o.parentNode.removeChild(o);   /* out of the parking select */
           parent.insertBefore(o, parent.__qridNext || null);
           changed = true;
         } else if(!show && o.parentNode === parent){
           parent.removeChild(o);
+          if(!parking || parking.parentNode == null) parking = QRID_choiceParking(fieldName);
+          if(parking) parking.appendChild(o);
           changed = true;
         }
         /* The kept stale answer is MARKED, never disabled. A browser leaves a
@@ -5617,7 +5692,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
@@ -5896,7 +5971,7 @@ function QRIDExistsInit(QRID_CONFIG){
     var EDITABLE = !input.readOnly && !input.disabled;
     if(!configError && ((ANY_BLOCK && EDITABLE) || OWNED_ANY)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
-                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off");
