@@ -357,6 +357,10 @@ enforced with the same message/confirm/block modes as everything else:
   The flag covers both the `assert` and the `when` of that tag.
 - `message` is your own wording, shown on failure (a generic line is used if you
   omit it — recommended to set one, since only you can word an arbitrary relationship).
+  Under Multi-Language Management it may be a map of language id to text,
+  `{"default":"End is before start","fr":"La fin précède le début"}`, on this tag
+  and every other tag that takes a `message`; the page shows the language on screen
+  ([Messages in several languages](docs/action_tag_validation_examples.md#messages-in-several-languages)).
 - Optional `when` enforces the constraint only while a condition is true; several
   `@UVASSERT` tags with different `when` conditions **branch** (plus at most one
   without, as the fallback), exactly like `@UVALIDATE`.

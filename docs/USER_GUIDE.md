@@ -873,7 +873,18 @@ To catch bad imported values reliably, run the **Validation scan** page after
 bulk imports: it re-checks every rule against every saved record on demand.
 
 **Can I translate the messages?**
-Not yet — messages are English only in this version.
+Your own messages, yes, in a project that uses Multi-Language Management (MLM).
+In any tag that takes a `message` (every tag except `@UVALIDATE`), write the
+message as a map of MLM language id to text:
+`@UVREQUIRED={"message":{"default":"Phone number is needed","fr":"Le numéro de téléphone est requis"}}`.
+The form or survey shows the text of the language on screen and changes it when
+the person switches language; `default` covers any other language and pages
+without MLM. A plain string message keeps working as before, so rules already in
+use need no change; to translate one, replace its string with a map that keeps the
+old text under `default`. The audit log and the Validation scan use the default
+text. The module's own wording (the line shown when a rule has no `message`, the
+save dialogs, configuration errors) is English only. Details and limits:
+[Messages in several languages](action_tag_validation_examples.md#messages-in-several-languages).
 
 **Which fields can I validate?**
 Check-character and format rules: Text and Notes fields only. Constraint

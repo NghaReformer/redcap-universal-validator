@@ -715,6 +715,85 @@ function QRID_escapeHtml(t){
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+/* ---- rule text in the page's language (Multi-Language Management) ---------
+   A text key of a rule (php/modes.json "textKeys": the "message") always
+   arrives as a plain string, the default. A tag that gave it as a language
+   map also sends the other languages under V.i18n[key], keyed by lowercased
+   MLM language id (AnnotationRules::takeTexts). The page shows the text of
+   the language MLM has on screen, else the default. A rule with no map
+   renders exactly as it did before maps existed: QRID_ruleHtml returns the
+   same escaped string and nothing listens for language changes. */
+var UV_texts = [];                         /* [{def, map}], indexed by data-uv-text */
+var UV_lang = { hooked: false, waiting: false };
+function QRID_mlm(){
+  try { return (window.REDCap && window.REDCap.MultiLanguage) || null; } catch(e){ return null; }
+}
+function QRID_currentLang(){
+  try {
+    var M = QRID_mlm();
+    var id = M && typeof M.getCurrentLanguage === "function" ? M.getCurrentLanguage() : "";
+    return typeof id === "string" ? id.toLowerCase() : "";
+  } catch(e){ return ""; }
+}
+/* The text for the language on screen: that id, else its primary part ("fr"
+   for "fr-cm"), else another variant of the same primary part, else def. */
+function QRID_pickText(def, map){
+  var lang = map ? QRID_currentLang() : "";
+  if(!lang) return def;
+  function has(k){ return Object.prototype.hasOwnProperty.call(map, k) && typeof map[k] === "string" && map[k] !== ""; }
+  if(has(lang)) return map[lang];
+  var base = lang.split(/[-_]/)[0];
+  if(has(base)) return map[base];
+  for(var k in map) if(has(k) && k.split(/[-_]/)[0] === base) return map[k];
+  return def;
+}
+/* Escaped HTML for V[key] ("" when the rule has none). A rule with a language
+   map gets a marked span that QRID_relabelTexts swaps in place when the
+   language changes, so a switch never re-runs a check: a check may ask the
+   server, or write fields (@UVEXISTS and @UVRANGE "return"). */
+function QRID_ruleHtml(V, key){
+  var def = V ? V[key] : "";
+  if(typeof def !== "string" || def === "") return "";
+  var map = V.i18n && typeof V.i18n === "object" ? V.i18n[key] : null;
+  if(!map || typeof map !== "object") return QRID_escapeHtml(def);
+  if(!V.__qridTextId) V.__qridTextId = {};
+  var id = V.__qridTextId[key];
+  if(id === undefined){
+    id = V.__qridTextId[key] = UV_texts.length;
+    UV_texts.push({ def: def, map: map });
+  }
+  QRID_watchLang();
+  return '<span data-uv-text="' + id + '">' + QRID_escapeHtml(QRID_pickText(def, map)) + "</span>";
+}
+function QRID_relabelTexts(){
+  try {
+    if(!document.querySelectorAll) return;
+    var els = document.querySelectorAll("[data-uv-text]");
+    for(var i = 0; i < els.length; i++){
+      var t = UV_texts[+els[i].getAttribute("data-uv-text")];
+      if(t) els[i].textContent = QRID_pickText(t.def, t.map);
+    }
+  } catch(e){}
+}
+/* Hooked once, by the first rule that shows a translated text. MLM runs its
+   callbacks after it rewrites the page, and once at start-up; one already past
+   start-up is caught by the relabel right after hooking. Without MLM on the
+   page yet, try again once the page has loaded; without it then, the defaults
+   stay. */
+function QRID_watchLang(){
+  if(UV_lang.hooked) return;
+  var M = QRID_mlm();
+  if(M && typeof M.onLangChanged === "function"){
+    UV_lang.hooked = true;
+    try { M.onLangChanged(QRID_relabelTexts); } catch(e){}
+    QRID_relabelTexts();
+    return;
+  }
+  if(!UV_lang.waiting && window.addEventListener){
+    UV_lang.waiting = true;
+    window.addEventListener("load", function(){ QRID_watchLang(); });
+  }
+}
 /* Whether a pattern uses a \p{}/\P{}/\u{}/\x{}/\k<> escape that only works with the
    RegExp "u" flag — the browser compiles ID patterns WITHOUT it, so such a pattern
    enforces a different value set than the server's PCRE /u (F2, F2-BYPASS-01).
@@ -3875,6 +3954,7 @@ function QRIDConstraintInit(QRID_CONFIG){
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { constraint: true } };
   }
@@ -3964,7 +4044,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       QRID_setModeState(input, "c", ok ? "ok" : "bad");
       setGuard(!ok, V.blockSave);
       QRID_setModeState(input, "c", ok ? "ok" : "bad");
-      var base = V.message ? QRID_escapeHtml(V.message)
+      var base = V.message ? QRID_ruleHtml(V, "message")
             : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
                               : "This value fails its validation rule for this field.");
       /* Survey respondents get no field names or technical detail, as elsewhere. */
@@ -4119,6 +4199,7 @@ function QRIDWindowInit(QRID_CONFIG){
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: { lo: lo, hi: hi, unit: (typeof cfg.windowUnit === "string" && cfg.windowUnit !== "") ? cfg.windowUnit : "days",
                      period: period, offLo: offLo, offHi: offHi, weekStart: cfg.windowWeekStart === "sunday" ? "sunday" : "monday",
@@ -4337,7 +4418,7 @@ function QRIDWindowInit(QRID_CONFIG){
       styleMsg(msg, ok);
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
       setGuard(!ok, clockHit ? V.futureBlock : V.blockSave);
-      var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
+      var base = V.message ? QRID_ruleHtml(V, "message") : describe(V, r);
       /* Why a verdict that rests on a value read when the page was opened does
          not block: named by what read it, the "from" date or the condition
          that decides whether the rule applies (snapshotGate). */
@@ -4561,6 +4642,7 @@ function QRIDRangeInit(QRID_CONFIG){
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
                         : (ON_SAVE && QRID_CONFIG.deferredWhy && QRID_CONFIG.deferredWhy.length) ? QRID_CONFIG.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: spec,
              plausibleLo: plausibleLo, plausibleHi: plausibleHi, scale: scale,
@@ -4608,7 +4690,7 @@ function QRIDRangeInit(QRID_CONFIG){
     return (r.tier === "hard" && r.reason === "not-a-number") ? r : null;
   }
   function describe(V, r){
-    if(V.message) return QRID_escapeHtml(V.message);
+    if(V.message) return QRID_ruleHtml(V, "message");
     if(r.reason === "not-a-number") return "This is not a number.";
     if(r.reason === "not-positive") return "A measurement must be above 0.";
     if(r.reason === "plausible-low" || r.reason === "plausible-high"){
@@ -5025,6 +5107,7 @@ function QRIDRequiredInit(QRID_CONFIG){
              deferred: DEFERRED,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { required: true } };
   }
@@ -5086,7 +5169,7 @@ function QRIDRequiredInit(QRID_CONFIG){
       QRID_setModeState(input, "r", "bad");
       setGuard(true, V.blockSave);
       QRID_setModeState(input, "r", "bad");
-      msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+      msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
         : "This field must not be left blank" + (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") + ".");
     }
     var debounced = QRID_debounced(function(){ check(); });
@@ -5230,6 +5313,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     return { configError: configError, gate: GATE, blockSave: BLOCK,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              all: all, hiddenSet: hiddenSet, hiddenList: hiddenList,
              mode: { choices: true } };
@@ -5547,7 +5631,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       styleMsg(msg);
       setGuard(true, V.blockSave);
       setState("bad");
-      msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+      msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
         : "The selected choice is no longer available" +
           (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") +
           " — pick one of the choices shown (the current answer is kept until you do).");
@@ -5670,6 +5754,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     return { configError: configError, gate: GATE, blockSave: BLOCK,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              localAsts: cfg.uniqueRecordAsts || {},
              uniqueWith: (cfg.uniqueWith && cfg.uniqueWith.length) ? cfg.uniqueWith.slice() : [],
              surveys: !!cfg.uniqueSurveys,
@@ -5717,7 +5802,7 @@ function QRIDUniqueInit(QRID_CONFIG){
         setGuard(true, V.blockSave);
         QRID_setModeState(input, "q", "bad");
         /* resp.field: the "also" field the value was found in (staff only). */
-        msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+        msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
             : "This value is already recorded" +
               (resp.field ? " in field <b>" + QRID_escapeHtml(String(resp.field)) + "</b>" : "") +
               (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".");
@@ -5929,6 +6014,7 @@ function QRIDExistsInit(QRID_CONFIG){
              deferred: !configError && !!cfg.deferred,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
              returns: (cfg.existsReturnFields && cfg.existsReturnFields.length) ? cfg.existsReturnFields.slice() : [],
              numbers: (cfg.existsReturnNumbers && cfg.existsReturnNumbers.length) ? cfg.existsReturnNumbers.slice() : [],
@@ -6075,7 +6161,7 @@ function QRIDExistsInit(QRID_CONFIG){
         styleMsg(msg, "bad");
         QRID_setModeState(input, "x", "bad");
         setGuard(true, V.blockSave);
-        msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+        msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
           : "This value is not saved where it should be. Check it, or record it there first.");
         emptyOwned(quiet);
       } else {
@@ -6897,9 +6983,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var DEFAULT_KEYS = ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
                       "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
-                      "message", "deferred", "deferredWhy", "snapshotFields", "uniqueWith",
-                      "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
-                      "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
+                      "message", "deferred", "deferredWhy", "snapshotFields", "i18n",
+                      "uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts",
+                      "choicesShow", "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
                       "windowFromOpWhy", "windowLo", "windowHi", "windowUnit",
                       "windowNotFuture", "dateType", "dateFormat", "fromType", "fromFormat",
                       "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi",

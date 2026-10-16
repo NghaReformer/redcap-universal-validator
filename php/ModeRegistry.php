@@ -71,6 +71,15 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['textKeys'])) {
+                // A text key's other languages travel under "i18n", so a mode
+                // that has one must carry "i18n" to its branches and the page.
+                $tk = $m['textKeys'];
+                if (!is_array($tk) || array_values($tk) !== $tk || array_filter($tk, function ($k) { return !is_string($k) || $k === ''; })
+                        || !in_array('i18n', $m['branchKeys'], true) || !in_array('i18n', $m['clientKeys'], true)) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a textKeys that is not a list of key names, or does not list "i18n" in its branchKeys and clientKeys');
+                }
+            }
             if (isset($m['returns'])) {
                 $rt = $m['returns'];
                 if (!is_array($rt) || !isset($rt['method'], $rt['targets']) || !is_string($rt['method']) || $rt['method'] === ''
@@ -214,6 +223,16 @@ final class ModeRegistry
             foreach (self::all() as $m) foreach ($m['clientKeys'] as $k) $out[$k] = true;
             return array_keys($out);
         });
+    }
+
+    /**
+     * Rule keys of a mode that an annotation may give as a map of language id
+     * to text (modes.json "textKeys"); [] when the mode has none.
+     */
+    public static function textKeys($mode)
+    {
+        $m = self::mode($mode);
+        return (isset($m['textKeys']) && is_array($m['textKeys'])) ? $m['textKeys'] : [];
     }
 
     /**

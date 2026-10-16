@@ -39,6 +39,7 @@ the dialog are the same rules through different doors, and they mix freely.
   - [`@UVEXISTS` recipes](#uvexists-recipes)
   - [`@UVRANGE` recipes](#uvrange-recipes)
   - [Combination recipes](#combination-recipes)
+- [Messages in several languages](#messages-in-several-languages)
 - [Tags the module refuses](#tags-the-module-refuses)
 - [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
 - [Parameter reference tables](#parameter-reference-tables)
@@ -110,6 +111,11 @@ in every tag's `when`, in branch selectors and in `@UVASSERT`. The values
 `@UVEXISTS` looks up and `@UVUNIQUE` compares ignore it too. Add
 `"caseSensitive":true` to a tag's JSON for exact matching. See
 [Letter case](#letter-case).
+
+**`message` may come in several languages.** In a project that uses Multi-Language
+Management, every tag that takes a `message` also takes a map of language id to text,
+and the form or survey shows the text of the language on screen. A plain string works
+as before. See [Messages in several languages](#messages-in-several-languages).
 
 **Identical tags group.** Fifty fields carrying byte-identical tags become one rule
 with fifty fields, not fifty rules.
@@ -4729,6 +4735,52 @@ format pattern as the else branch; the field is required either way.
 | `@UVREQUIRED` or `@UVUNIQUE` on a **calc** field | Configuration error — a data enterer cannot fix a calc           |
 | `@UVALIDATE` on a dropdown/radio/slider                  | Configuration error — check/format rules are Text and Notes only |
 
+## Messages in several languages
+
+Every tag except `@UVALIDATE` takes a `message`, one string that every reader sees.
+In a project that uses REDCap's Multi-Language Management (MLM), `message` may instead
+be a map from language id to text.
+
+```text
+@UVREQUIRED={"message":{"default":"Phone number is needed","fr":"Le numéro de téléphone est requis"},"blockSave":"hard"}
+@UVRANGE={"hard":[40,250],"unit":"mmHg","message":{"default":"Check the blood pressure","fr":"Vérifiez la tension artérielle"}}
+@UVASSERT={"assert":"[end_date]>=[start_date]","message":{"en":"End date is before the start date","fr":"La date de fin précède la date de début"}}
+```
+
+- The language ids are the ones on the project's Multi-Language Management page, such
+  as `en`, `fr` or `fr-CM`. Letter case does not matter.
+- `default` is the text for any language the map does not name, and for a page without
+  MLM. Without a `default` key, the first language listed is the default: `en` in the
+  third example.
+- The form or survey shows the text of the language on screen. A regional id with no
+  text of its own uses its main language (`fr-CM` uses `fr`), or another region of that
+  language, before the default.
+- Switching language changes the message at once. The switch does not run the check
+  again: it asks the server nothing and writes no field.
+- The post-save audit log and the Validation scan report use the default text.
+- A rule with a plain string message is unchanged. To translate one, replace the string
+  with a map that keeps the old text under `default`. The rest of the rule stays as it
+  is.
+
+The module's own wording stays in English. That covers the line shown when a rule has
+no `message`, notes such as "Could not check", the save dialogs and configuration
+errors. The `@UVRANGE` `unit` label and messages typed in the Configure dialog, which
+takes one string, stay as written.
+
+A map names at most 50 languages, `default` included. These are refused, with a
+configuration error under the field:
+
+```text invalid
+# refused: must be a string, or an object of language id to text
+@UVREQUIRED={"message":["Phone number is needed","Le numéro est requis"]}
+# refused: names language "fr" twice
+@UVREQUIRED={"message":{"fr":"Requis","FR":"Obligatoire"}}
+# refused: text for "fr" must be a non-empty string
+@UVREQUIRED={"message":{"default":"Phone number is needed","fr":""}}
+# refused: language id "fr ca" is not valid
+@UVREQUIRED={"message":{"default":"Phone number is needed","fr ca":"Requis"}}
+```
+
 ---
 
 ## Tags the module refuses
@@ -4892,7 +4944,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Key               | Type    | Default        | Notes                                                   |
 | ----------------- | ------- | -------------- | ------------------------------------------------------- |
 | `assert`        | string  | *(required)* | The condition that must hold; a missing one is an error |
-| `message`       | string  | generic line   | Your own wording — recommended                         |
+| `message`       | string or map | generic line   | Your own wording — recommended                         |
 | `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
 | `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
 | `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
@@ -4902,7 +4954,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Key               | Type    | Default      | Notes                                                   |
 | ----------------- | ------- | ------------ | ------------------------------------------------------- |
 | `when`          | string  | *(none)*   | Required only while true; the bare short form sets this |
-| `message`       | string  | generic line | Your own wording                                        |
+| `message`       | string or map | generic line | Your own wording                                        |
 | `blockSave`     | string  | `off`      | `off`, `confirm`, `hard`                          |
 | `caseSensitive` | boolean | `false`    | Exact-case text in`when`                              |
 
@@ -4915,7 +4967,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `scope`         | string          | `project`  | `project`, `dag`, `event`, `record` (record needs event and instance references enabled); the bare short form sets this |
 | `surveys`       | boolean         | `false`    | Opt in to the check on surveys; boolean answer only            |
 | `when`          | string          | *(none)*   | Check this record's value only while true; other records are searched whatever their `when` says |
-| `message`       | string          | generic line | Your own wording                                               |
+| `message`       | string or map   | generic line | Your own wording                                               |
 | `blockSave`     | string          | `off`      | `off`, `confirm`, `hard`                                 |
 | `caseSensitive` | boolean         | `false`    | Exact-case text in`when` and the duplicate check             |
 
@@ -4926,7 +4978,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `show`          | list of strings | *(one of)*   | Offer only these choice codes; up to 200 codes                         |
 | `hide`          | list of strings | *(one of)*   | Offer every code except these. Exactly one of `show`/`hide`        |
 | `when`          | string          | *(none)*     | The branch applies while true; a tag without `when` is the fallback  |
-| `message`       | string          | generic line   | Shown when a saved or selected code is not offered                     |
+| `message`       | string or map   | generic line   | Shown when a saved or selected code is not offered                     |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`                                         |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
@@ -4939,7 +4991,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `unit`          | string          | `days`       | `days`, `weeks`; on datetime fields also `minutes`, `hours`. Needs `from` |
 | `notFuture`     | boolean         | `false`      | The date may not be after today (a datetime: after now), by the server's clock |
 | `when`          | string          | *(none)*     | Check only while true                                                  |
-| `message`       | string          | generic line   | Replaces the line that names the allowed dates                         |
+| `message`       | string or map   | generic line   | Replaces the line that names the allowed dates                         |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `from` date on another form never blocks |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
@@ -4955,7 +5007,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `return`        | object          | *(none)*     | `{"field there":"[field of this form]"}`, up to 10 pairs; `record` copies the record ID found. Fills the fields from the entry found |
 | `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier, and with `return` |
 | `when`          | string          | *(none)*     | Check only while true                                                  |
-| `message`       | string          | generic line   | Replaces the "not found" line                                          |
+| `message`       | string or map   | generic line   | Replaces the "not found" line                                          |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when` and in the lookup                          |
 
@@ -4969,7 +5021,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `hardBlock`     | string          | `hard`       | `confirm`, `hard`: for a value outside `hard` or not a number; a calc never blocks |
 | `unit`          | string          | *(none)*     | Label shown after the limits in the notes, up to 20 characters         |
 | `when`          | string          | *(none)*     | Check only while true; another event or instance needs event and instance references |
-| `message`       | string          | generic line   | Replaces the generated note for both levels                            |
+| `message`       | string or map   | generic line   | Replaces the generated note for both levels                            |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`, and exact sex codes for a growth reference  |
 | `reference`     | string          | *(none)*     | A growth reference id, such as `who-wfa`; `soft` and `hard` are then z-scores, from -20 to 20 |
 | `sex`           | string          | *(none)*     | With `reference`: the field holding the sex, e.g. `"[sex]"`            |
@@ -4988,6 +5040,7 @@ number keeps. `blockSave` is refused.
 | -------------- | ------ | -------------------------------------------------------------------------------------- |
 | `references` | object | Named bindings used as `{alias}` in `when`/`assert`; at most 20; feature must be enabled |
 | `alternates` | list   | `@UVALIDATE` only: `label`, `pattern`, `algorithm`, `source`, `strip`, `lengths` per entry |
+| `message`    | string or map | Every tag except `@UVALIDATE`: one string, or a map of language id to text ([Messages in several languages](#messages-in-several-languages)) |
 
 ### `references` binding keys
 
@@ -5046,6 +5099,7 @@ number keeps. `blockSave` is refused.
 | `@UVEXISTS` lookups one project answers for post-save checks and scans of other projects | 1,200 a minute (same setting, its own count) |
 | `@UVEXISTS` lookups one project answers for survey respondents of other projects | 120 a minute |
 | `@UVRANGE` `unit` label | 20 characters |
+| Languages in one `message` map | 50, `default` included |
 
 ### Algorithms
 

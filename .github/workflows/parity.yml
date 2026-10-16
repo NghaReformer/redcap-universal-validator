@@ -75,6 +75,8 @@ jobs:
         run: node tests/silent_change_dom_js.cjs
       - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
         run: node tests/mlm_dom_js.cjs
+      - name: JS rule messages in the Multi-Language Management language (string messages unchanged, a switch asks nothing)
+        run: node tests/mlm_messages_dom_js.cjs
       - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract, returned values)
         run: |
           node tests/growth_js.cjs
@@ -199,6 +201,8 @@ jobs:
         run: php tests/when_fuzz_php.php
       - name: PHP @UVALIDATE annotation parser
         run: php tests/annotation_php.php
+      - name: PHP rule message as a language map (grammar, refusals, string messages unchanged)
+        run: php tests/message_i18n_php.php
       - name: PHP @UVCHOICES choices parser + branching
         run: php tests/choices_php.php
       - name: PHP @UVWINDOW verdict vs fixture, hooks, fold, audit and scan clock

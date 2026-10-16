@@ -45,6 +45,9 @@ class AnnotationRules
     const TAG_EXISTS = '@UVEXISTS';
     const TAG_RANGE = '@UVRANGE';
 
+    /** Most languages one text key (a "message" map) may name, "default" included. */
+    const MAX_TEXT_LANGUAGES = 50;
+
     /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
     const MAX_RANGE_UNIT = 20;
     /** Longest @UVRANGE limit, in characters once any exponent is written out. */
@@ -390,6 +393,7 @@ class AnnotationRules
             if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
             $out['uniqueSurveys'] = $cfg['surveys'];
         }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -450,6 +454,7 @@ class AnnotationRules
             }
             $out[$ruleKey] = $codes;
         }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -497,6 +502,7 @@ class AnnotationRules
                 . ' — valid: ' . implode(', ', $allowed) . '.'];
         }
         $out = ['type' => 'required'];
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach ($strings as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -541,6 +547,7 @@ class AnnotationRules
                 . ' — valid: ' . implode(', ', $allowed) . '.'];
         }
         $out = ['type' => 'constraint'];
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach ($strings as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -656,6 +663,7 @@ class AnnotationRules
         // An explicit false IS the default, so it is dropped, as caseSensitive is.
         if (array_key_exists('notFuture', $cfg) && $cfg['notFuture'] !== false) $out['windowNotFuture'] = $cfg['notFuture'];
         if (array_key_exists('notPast', $cfg) && $cfg['notPast'] !== false) $out['windowNotPast'] = $cfg['notPast'];
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -793,6 +801,7 @@ class AnnotationRules
             if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
             if ($cfg['surveys']) $out['existsSurveys'] = true;
         }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -906,6 +915,7 @@ class AnnotationRules
             }
             $out['rangeMeasureScale'] = $b;
         }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['softBlock' => 'rangeSoftBlock', 'hardBlock' => 'rangeHardBlock', 'unit' => 'rangeUnit',
                   'when' => 'when', 'message' => 'message'] as $k => $key) {
             if (!isset($cfg[$k])) continue;
@@ -1789,6 +1799,55 @@ class AnnotationRules
         if (array_key_exists('caseSensitive', $cfg) && $cfg['caseSensitive'] !== false) {
             $out['caseSensitive'] = $cfg['caseSensitive'];
         }
+    }
+
+    /**
+     * A tag's text keys (modes.json "textKeys", e.g. "message") may be one
+     * string, as always, or a map of Multi-Language Management language id to
+     * text: {"default":"Too high","fr":"Trop élevé"}. A map is turned back
+     * into the plain string every other reader expects (the audit, the scan,
+     * pages without MLM): "default", else the first language listed. The
+     * other languages go to $out["i18n"][key], keyed by lowercased language
+     * id, for the page to pick from. A string, or no key, is left alone, so a
+     * tag written before maps existed parses to exactly what it did before.
+     * Returns the refusal, or null.
+     */
+    private static function takeTexts(array &$cfg, array &$out)
+    {
+        $mode = ModeRegistry::modeOfType(isset($out['type']) ? $out['type'] : '');
+        foreach (ModeRegistry::textKeys($mode) as $k) {
+            if (!isset($cfg[$k]) || !is_array($cfg[$k])) continue;
+            $map = $cfg[$k];
+            $eg = ' — e.g. "' . $k . '":{"default":"…","fr":"…"}.';
+            if (!$map || array_values($map) === $map) {
+                return '"' . $k . '" must be a string, or an object of language id to text' . $eg;
+            }
+            if (count($map) > self::MAX_TEXT_LANGUAGES) {
+                return '"' . $k . '" names more than ' . self::MAX_TEXT_LANGUAGES . ' languages.';
+            }
+            $langs = [];
+            $default = null;
+            foreach ($map as $lang => $text) {
+                // PHP turns a key such as "12" into an integer: not a language id either.
+                if (!is_string($lang) || !preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,49}$/D', $lang)) {
+                    return '"' . $k . '" language id ' . json_encode((string) $lang) . ' is not valid: use the id the '
+                        . 'project\'s Multi-Language Management shows (letters, digits, "-" or "_"), or "default"' . $eg;
+                }
+                $id = strtolower($lang);
+                if (isset($langs[$id]) || ($id === 'default' && $default !== null)) {
+                    return '"' . $k . '" names language "' . $id . '" twice (language ids ignore case).';
+                }
+                if (!is_string($text) || trim($text) === '') {
+                    return '"' . $k . '" text for "' . $lang . '" must be a non-empty string.';
+                }
+                if ($id === 'default') $default = $text;
+                else $langs[$id] = $text;
+            }
+            if ($default === null) $default = reset($langs);
+            $cfg[$k] = $default;
+            if ($langs) $out['i18n'][$k] = $langs;
+        }
+        return null;
     }
 
     /**

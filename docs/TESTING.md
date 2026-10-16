@@ -120,11 +120,20 @@ until all are done and recorded (date, versions, who ran it):
       configured fields): form save latency and module log growth stay
       acceptable.
 
-Known limitation to disclose at submission: validation messages are English
-only. The module does not yet use the framework's JavaScript Module Object /
-`tt()` translation plumbing, so Multi-Language Management cannot translate its
-strings; MLM language switching must not break validation (re-check the form
-after switching), it only leaves the messages untranslated.
+Disclose this limitation at submission. The module's own wording is English
+only. REDCap gives modules no way to register strings with Multi-Language
+Management, and the framework's `tt()` ignores the language on screen, so the
+generic messages, notes, save dialogs and configuration errors stay in English. A
+rule's own `message` can be translated: written as a map of MLM language id to
+text, it follows the language on screen
+(`tests/mlm_messages_dom_js.cjs`, `tests/message_i18n_php.php`).
+
+- [ ] **MLM language switch, live.** On a project with MLM and two languages, a
+      rule whose `message` is a map shows the text of the language on screen,
+      changes when the language is switched on a form and on a survey, and falls
+      back to `default` for a language the map does not name. A rule with a plain
+      string message shows the same text in every language. Switching sends no
+      module request (browser network panel) and changes no field value.
 
 ## Install / framework
 

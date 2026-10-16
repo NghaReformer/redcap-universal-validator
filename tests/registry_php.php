@@ -65,6 +65,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'suggestFix', 'note',
     'assert', 'caseSensitive', 'message', 'references',
+    // a rule message's other languages (modes.json textKeys)
+    'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys',
     // @UVUNIQUE "also" (must be the same on every branch: uniformBranchKeys)
     'uniqueAlso',
@@ -99,6 +101,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'keepChars', 'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'when', 'whenAst',
     'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy', 'snapshotFields',
+    // a rule message's other languages (modes.json textKeys)
+    'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',
     'choicesShow', 'choicesHide', 'choicesAll',
     // 2.2.0 @UVWINDOW
@@ -223,6 +227,12 @@ check('refFields: "also" fields are field lists', ModeRegistry::refFields($ua, [
 check('fieldListRefs: the lookup role leaves "also" out', ModeRegistry::fieldListRefs($ua, ['lookup']) === ['w']);
 check('serverKeys holds uniqueAlso', in_array('uniqueAlso', ModeRegistry::serverKeys(), true));
 check('uniqueAlso is not a client key', !in_array('uniqueAlso', ModeRegistry::clientKeys(), true));
+// Every mode whose page shows a rule message takes that message as a language
+// map; the ID check has no message of its own.
+foreach (['constraint', 'required', 'unique', 'choices', 'window', 'exists', 'range'] as $m) {
+    check($m . ' takes "message" as a language map', ModeRegistry::textKeys($m) === ['message']);
+}
+check('the ID check has no text keys', ModeRegistry::textKeys('check') === []);
 $shaped = ModeRegistry::clientShape($ua);
 check('clientShape removes "also" from every branch', !isset($shaped['branches'][0]['uniqueAlso'])
     && !isset($shaped['branches'][1]['uniqueAlso']) && $shaped['uniqueWith'] === ['w']);
@@ -421,6 +431,15 @@ $cases = [
         return json_encode($g); })($good),
     'uniform key without a name' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso' => ''];
+        return json_encode($g); })($good),
+    'textKeys not a list' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'required') $g['modes'][$i]['textKeys'] = 'message';
+        return json_encode($g); })($good),
+    'textKeys without i18n as a client key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'required') $g['modes'][$i]['clientKeys'] = array_values(array_diff($m['clientKeys'], ['i18n']));
+        return json_encode($g); })($good),
+    'textKeys without i18n as a branch key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'required') $g['modes'][$i]['branchKeys'] = array_values(array_diff($m['branchKeys'], ['i18n']));
         return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {
