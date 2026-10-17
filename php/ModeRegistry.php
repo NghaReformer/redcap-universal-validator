@@ -71,6 +71,9 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['bareValue']) && !in_array($m['bareValue'], ['token', 'condition'], true)) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a bareValue that is not token or condition');
+            }
             if (isset($m['textKeys'])) {
                 // A text key's other languages travel under "i18n", so a mode
                 // that has one must carry "i18n" to its branches and the page.
@@ -342,6 +345,17 @@ final class ModeRegistry
      * 'skip' (the value is not an answer to judge; nothing is checked) or
      * 'answer' (it counts as filled in, as for @UVREQUIRED).
      */
+    /**
+     * How an unquoted, non-JSON tag value ends: 'condition' for the tags whose
+     * bare value IS a condition (read whole, see Logic::parsePrefix), else
+     * 'token' (the first space ends it).
+     */
+    public static function bareValue($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['bareValue']) ? $m['bareValue'] : 'token';
+    }
+
     public static function missingCodes($mode)
     {
         return self::mode($mode)['missingCodes'];

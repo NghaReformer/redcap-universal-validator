@@ -159,6 +159,60 @@ class Logic
     private static $parsed = [];
     const PARSE_MEMO = 512;   // distinct condition texts remembered per request
 
+    /**
+     * The longest leading condition of an unquoted annotation value, for the
+     * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
+     * A value used to end at the first space, so everything after "and" was
+     * silently dropped. Reading stops at the end of the line, or at a word that
+     * starts with "@" (the next action tag), outside quotes; a note written
+     * after the condition is therefore still ignored.
+     *
+     * Returns ['length' => n, 'continues' => bool]. n is the byte length of the
+     * longest prefix, ending at a word boundary, that parses as a complete
+     * condition (0 when none does). continues is true when the text after it
+     * goes on with "and", "or" or a comparison operator: the reader then cannot
+     * tell where the designer meant the condition to end, and the caller
+     * refuses the rule instead of guessing. Prefixes are parsed with the
+     * qualified option only to find the boundary; the rule's own options apply
+     * when the value is checked. Annotations are parsed on the server only, so
+     * this has no JavaScript twin.
+     */
+    public static function parsePrefix($text)
+    {
+        $text = (string) $text;
+        $n = strlen($text);
+        $ends = [];
+        $quote = null;
+        $inWord = false;
+        $i = 0;
+        for (; $i < $n; $i++) {
+            $ch = $text[$i];
+            if ($quote !== null) {
+                if ($ch === $quote) $quote = null;
+                continue;
+            }
+            if ($ch === "\n" || $ch === "\r") break;
+            if ($ch === ' ' || $ch === "\t") {
+                if ($inWord) $ends[] = $i;
+                $inWord = false;
+                continue;
+            }
+            if (!$inWord && $ch === '@' && $i > 0) break;
+            $inWord = true;
+            if ($ch === '"' || $ch === "'") $quote = $ch;
+        }
+        if ($inWord) $ends[] = $i;
+        $best = 0;
+        foreach ($ends as $e) {
+            // parseText, not parse(): the prefixes are throwaway texts and would
+            // push the rule conditions out of the bounded memo.
+            if (self::parseText(substr($text, 0, $e), ['qualified' => true])['ok']) $best = $e;
+        }
+        $after = $best > 0 ? ltrim(substr($text, $best), " \t") : '';
+        $continues = $best > 0 && preg_match('/^(?:(?:and|or)\b|[=<>]|!=)/i', $after) === 1;
+        return ['length' => $best, 'continues' => $continues];
+    }
+
     private static function parseText($expr, array $opts)
     {
         $s = strtr($expr, "\t\r\n", '   ');

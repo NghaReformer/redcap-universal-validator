@@ -13,6 +13,7 @@ require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\AnnotationRules;
 use INSPIRE\UniversalValidator\CheckCharacter;
+use INSPIRE\UniversalValidator\Logic;
 use INSPIRE\UniversalValidator\ModeRegistry;
 
 $n = 0;
@@ -396,6 +397,41 @@ check('required bad blockSave -> error', isset($f[0]['error']));
 
 // @UVREQUIRED does not collide with @UVREQUIREDX (boundary rule)
 check('@UVREQUIREDX is a different tag', AnnotationRules::parseAllTags('@UVREQUIREDX=1') === null);
+
+// ---- an unquoted condition is read whole (it used to end at the first space) ----
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' and [b]='2'");
+check('unquoted required: and-condition read whole', $f[0]['type'] === 'required' && $f[0]['when'] === "[a]='1' and [b]='2'");
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=([a]='1' OR [b]='2') AND not [c]='x y' @HIDDEN");
+check('unquoted required: parentheses, any-case keywords, quoted space, stops at the next tag',
+    $f[0]['when'] === "([a]='1' OR [b]='2') AND not [c]='x y'");
+$f = AnnotationRules::parseAllTags("@UVASSERT=[end]>=[start] or [start]=''");
+check('unquoted assert: or-condition read whole', $f[0]['type'] === 'constraint' && $f[0]['assert'] === "[end]>=[start] or [start]=''");
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' Needed once consent is given");
+check('unquoted required: a note after the condition is still ignored', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1'\nand [b]='2' is on the next line");
+check('unquoted required: reading stops at the end of the line', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' and then the PI decides");
+check('unquoted required: text that goes on with "and" is refused, not cut',
+    isset($f[0]['error']) && $f[0]['_tag'] === '@UVREQUIRED' && strpos($f[0]['error'], 'in quotes') !== false);
+$f = AnnotationRules::parseAllTags("@UVASSERT=[a]>1 OR [b]");
+check('unquoted assert: "OR" with nothing complete after it is refused', isset($f[0]['error']) && strpos($f[0]['error'], 'in quotes') !== false);
+$f = AnnotationRules::parseAllTags("@UVASSERT=[a]>1 =2");
+check('unquoted assert: an operator after the condition is refused', isset($f[0]['error']) && strpos($f[0]['error'], 'in quotes') !== false);
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' (see the SOP)");
+check('unquoted required: a parenthesised note is ignored', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=([a]='1' or");
+check('unquoted required: an unreadable condition keeps its own error', isset($f[0]['error'])
+    && strpos($f[0]['error'], 'in quotes') === false);
+$f = AnnotationRules::parseAllTags('@UVREQUIRED="[a]=\'1\' and [b]=\'2\'" @UVASSERT=[x]>0');
+// parseAllTags lists fragments in mode order: constraint before required
+check('quoted required unchanged, and the next tag is still found',
+    $f[1]['when'] === "[a]='1' and [b]='2'" && $f[0]['assert'] === '[x]>0');
+check('extractTagsFor keeps token values for other tags',
+    AnnotationRules::extractTagsFor("@UVUNIQUE=event and more", '@UVUNIQUE') === ['event']);
+$d = AnnotationRules::extractTagsDetailed("@UVREQUIRED=[a]='1' and [b]='2' @UVREQUIRED=[c]='3'", '@UVREQUIRED', 'condition');
+check('extractTagsDetailed: two condition values, offsets right',
+    array_column($d, 'value') === ["[a]='1' and [b]='2'", "[c]='3'"] && $d[0]['error'] === null && $d[1]['error'] === null);
+check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false]);
 
 // three modes on one field -> three frags, three distinct modes
 $f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]" @UVREQUIRED');

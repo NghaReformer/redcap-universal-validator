@@ -254,6 +254,13 @@ check('exists returns values through returnsExists, from existsReturn, never on 
     ModeRegistry::returns('exists') === ['method' => 'returnsExists', 'targets' => 'existsReturn', 'noSave' => 'exists-return-no-save',
                                          'noSurveySave' => true]);
 check('...while @UVRANGE values, made from the form itself, are', empty(ModeRegistry::returns('range')['noSurveySave']));
+// A bare value that IS a condition is read whole (@UVREQUIRED=[a]='1' and
+// [b]='2'); every other tag's bare value ends at the first space.
+$bare = [];
+foreach (ModeRegistry::all() as $m) $bare[$m['mode']] = ModeRegistry::bareValue($m['mode']);
+check('only @UVASSERT and @UVREQUIRED read a bare value as a condition',
+    array_keys(array_filter($bare, function ($b) { return $b === 'condition'; })) === ['constraint', 'required']
+    && count(array_filter($bare, function ($b) { return $b === 'token'; })) === count($bare) - 2);
 $cfgKeys = [];
 foreach (json_decode(file_get_contents($root . '/config.json'), true)['project-settings'] as $s) $cfgKeys[$s['key']] = $s['type'];
 foreach (['range', 'exists'] as $rm) {
@@ -428,6 +435,9 @@ $cases = [
         return json_encode($g); })($good),
     'returns noSurveySave not true or false' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['returns']['noSurveySave'] = 'yes';
+        return json_encode($g); })($good),
+    'bareValue not token or condition' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'required') $g['modes'][$i]['bareValue'] = 'line';
         return json_encode($g); })($good),
     'uniform key without a name' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso' => ''];
