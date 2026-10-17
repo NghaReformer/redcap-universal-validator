@@ -88,8 +88,9 @@ if (b < 0 || e < 0 || e < b) fail('js/engine.js has no "@generated mode-registry
 let generated = src.slice(0, b) + '  ' + block + src.slice(e + END.length);
 
 // The growth output catalog, as GrowthOutputs::clientCopy gives it: id =>
-// written, needs, and for a number places and integer, and the parameter's
-// range. tests/growth_outputs_php.php compares the block with clientCopy.
+// written, needs, and for a number places and integer, the parameter's
+// range, the shapes, the line name, the unit and the label.
+// tests/growth_outputs_php.php compares the block with clientCopy.
 let cat = null;
 try { cat = JSON.parse(fs.readFileSync(OUTPUTS, 'utf8')); } catch (e) { fail('php/growth_outputs.json cannot be read: ' + e.message); }
 if (!cat || cat.format !== 'uv-growth-outputs-1' || !cat.outputs || typeof cat.outputs !== 'object' || Array.isArray(cat.outputs)) {
@@ -111,6 +112,10 @@ for (const id of Object.keys(cat.outputs)) {
   if (o.places !== undefined) c.places = o.places;
   if (o.written === 'number') c.integer = o.integer;
   if (o.param) c.param = { min: o.param.min, max: o.param.max, decimals: o.param.decimals };
+  c.shapes = o.shapes;
+  if (o.line !== undefined) c.line = o.line;
+  if (o.unit !== undefined) c.unit = o.unit;
+  c.label = o.label;
   copy[id] = c;
 }
 const outBlock = [

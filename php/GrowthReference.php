@@ -31,6 +31,8 @@ final class GrowthReference
     const MAX_TABLE_BYTES = 4194304;
     /** References one page may carry tables for, unless index.json says otherwise. */
     const PAGE_TABLES = 4;
+    /** Curve sets of growth charts (and curve tables) one page may carry, unless index.json says otherwise. */
+    const PAGE_CHARTS = 4;
     /** The largest z-score zText writes (see there). */
     const MAX_Z_TEXT = 999.99;
     /** The largest axis value a "valid" bound may name (days, months or cm). */
@@ -51,7 +53,7 @@ final class GrowthReference
      * (php/growth_outputs.json) that is not here, so a value is never declared
      * without the code that makes it. Twin: QRID_GROWTH_COMPUTED.
      */
-    const COMPUTED = ['z', 'lower', 'upper', 'range', 'percentile', 'valueAtZ', 'valueAtPercentile'];
+    const COMPUTED = ['z', 'lower', 'upper', 'range', 'percentile', 'valueAtZ', 'valueAtPercentile', 'age', 'value'];
     /**
      * A bound, or a value at a z-score or percentile, counted in more units
      * than this is not written: both runtimes hold such a count exactly, far
@@ -92,15 +94,20 @@ final class GrowthReference
      * change something, and judging against the table they meant to replace,
      * with no sign of it, is worse than a configuration error.
      *
+     * An entry whose "source" names an entry of the index's "sources" with a
+     * "title" gets it as 'sourceTitle', which the growth chart shows.
+     *
      * @return array ['references' => [id => entry + ['dir' => folder]],
-     *                'pageTables' => int, 'problems' => [string, ...],
-     *                'refused' => [id => why], 'broken' => why|null]
+     *                'pageTables' => int, 'pageCharts' => int,
+     *                'problems' => [string, ...], 'refused' => [id => why],
+     *                'broken' => why|null]
      */
     public static function catalog($extraDir = null)
     {
         $extraDir = is_string($extraDir) ? trim($extraDir) : '';
         if (isset(self::$catalogMemo[$extraDir])) return self::$catalogMemo[$extraDir];
-        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'problems' => [], 'refused' => [], 'broken' => null];
+        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS,
+                'problems' => [], 'refused' => [], 'broken' => null];
         $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
         if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
@@ -114,7 +121,9 @@ final class GrowthReference
                 }
                 continue;
             }
-            if (isset($index['pageTables'])) $out['pageTables'] = $index['pageTables'];
+            foreach (['pageTables', 'pageCharts'] as $cap) {
+                if (isset($index[$cap])) $out[$cap] = $index[$cap];
+            }
             foreach ($index['references'] as $id => $e) {
                 $why = self::entryProblem($id, $e);
                 if ($why !== null) {
@@ -126,6 +135,10 @@ final class GrowthReference
                 }
                 $e['dir'] = $d['dir'];
                 $e['id'] = $id;
+                unset($e['sourceTitle']);
+                $src = isset($e['source']) && is_string($e['source']) && isset($index['sources'][$e['source']]['title'])
+                    ? $index['sources'][$e['source']]['title'] : null;
+                if (is_string($src) && trim($src) !== '' && !preg_match('/[\x00-\x1f\x7f]/', $src)) $e['sourceTitle'] = trim($src);
                 $out['references'][$id] = $e;
             }
         }
@@ -178,12 +191,13 @@ final class GrowthReference
             return ['error' => 'index.json must say "format": "' . self::INDEX_FORMAT . '".'];
         }
         if (!isset($j['references']) || !is_array($j['references'])) return ['error' => 'index.json has no "references".'];
-        $out = ['references' => $j['references']];
-        if (isset($j['pageTables'])) {
-            if (!is_int($j['pageTables']) || $j['pageTables'] < 0 || $j['pageTables'] > 50) {
-                return ['error' => '"pageTables" must be a whole number from 0 to 50.'];
+        $out = ['references' => $j['references'], 'sources' => (isset($j['sources']) && is_array($j['sources'])) ? $j['sources'] : []];
+        foreach (['pageTables', 'pageCharts'] as $cap) {
+            if (!isset($j[$cap])) continue;
+            if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > 50) {
+                return ['error' => '"' . $cap . '" must be a whole number from 0 to 50.'];
             }
-            $out['pageTables'] = $j['pageTables'];
+            $out[$cap] = $j[$cap];
         }
         return $out;
     }
@@ -768,24 +782,26 @@ final class GrowthReference
     {
         list($l, $m, $s) = $lms;
         $z = (float) $z;
-        if (abs($l) < self::MIN_L) {
-            $sd = function ($k) use ($m, $s) { return $m * exp($s * $k); };
-        } else {
-            $sd = function ($k) use ($l, $m, $s) {
-                $b = 1 + $l * $s * $k;
-                return $b > 0 ? $m * pow($b, 1 / $l) : NAN;
-            };
-        }
+        // sdAt, not a closure: a growth chart evaluates this at every row of
+        // every curve when the page is built
         if ($restricted && $z > 3) {
-            $sd3 = $sd(3);
-            $y = $sd3 + ($z - 3) * ($sd3 - $sd(2));
+            $sd3 = self::sdAt(3, $l, $m, $s);
+            $y = $sd3 + ($z - 3) * ($sd3 - self::sdAt(2, $l, $m, $s));
         } elseif ($restricted && $z < -3) {
-            $sd3 = $sd(-3);
-            $y = $sd3 + ($z + 3) * ($sd(-2) - $sd3);
+            $sd3 = self::sdAt(-3, $l, $m, $s);
+            $y = $sd3 + ($z + 3) * (self::sdAt(-2, $l, $m, $s) - $sd3);
         } else {
-            $y = $sd($z);
+            $y = self::sdAt($z, $l, $m, $s);
         }
         return (is_finite($y) && $y > 0) ? $y : null;
+    }
+
+    /** The measurement at z-score $k by the LMS formula alone (NAN where 1 + L*S*k is at or below 0). */
+    private static function sdAt($k, $l, $m, $s)
+    {
+        if (abs($l) < self::MIN_L) return $m * exp($s * $k);
+        $b = 1 + $l * $s * $k;
+        return $b > 0 ? $m * pow($b, 1 / $l) : NAN;
     }
 
     /**
@@ -915,6 +931,23 @@ final class GrowthReference
         return $out;
     }
 
+    /**
+     * An axis value (days, months or cm) as text: rounded half away from zero
+     * to two decimals the way roundedUnits() rounds, with no trailing zeros,
+     * so 365 is "365", 12.5 months "12.5" and 400/30.4375 months "13.14".
+     * Null for a value that is not a finite number. Twin: QRID_growthAxisText.
+     */
+    public static function axisText($x)
+    {
+        $x = (float) $x;
+        if (!is_finite($x)) return null;
+        $n = self::roundedUnits(abs($x), 2);
+        if ($n === null) return null;
+        $t = self::unitsText($n, 2);
+        $t = rtrim(rtrim($t, '0'), '.');
+        return ($x < 0 && $n !== 0 ? '-' : '') . $t;
+    }
+
     /** A number as text with the decimal mark of the field it is written to: "7.7", or "7,7" for a comma. */
     public static function markText($text, $comma)
     {
@@ -927,20 +960,39 @@ final class GrowthReference
      * or null when there is nothing to write:
      *   percentile         the percentile of measurement $y (null without one);
      *   valueAtZ           the measurement at z-score $param;
-     *   valueAtPercentile  the measurement at percentile $param.
+     *   valueAtPercentile  the measurement at percentile $param;
+     *   age                the axis value $x (axisText), a column only;
+     *   value              the measurement as it was typed ($typed, trimmed;
+     *                      null without one), a column only.
      * $places is the decimals the value is written with. $y is in the
      * reference's unit; a measurement written out is in the measured field's
      * (divided by $scale). Twin: QRID_growthOutput.
      */
-    public static function output(array $entry, array $table, $sex, $x, $y, $of, $param, $places, $scale = null)
+    public static function output(array $entry, array $table, $sex, $x, $y, $of, $param, $places, $scale = null, $typed = null)
     {
-        if ($of === 'percentile') return $y === null ? null : self::percentile($entry, $table, $sex, $x, $y, $places);
-        if ($of === 'valueAtZ') return self::valueAtText($entry, $table, $sex, $x, (float) $param, $places, $scale);
-        if ($of === 'valueAtPercentile') {
-            $z = self::normalQuantile((float) $param / 100);
-            return is_finite($z) ? self::valueAtText($entry, $table, $sex, $x, $z, $places, $scale) : null;
+        if ($of === 'age') return self::axisText($x);
+        if ($of === 'value') {
+            $t = $typed === null ? '' : trim((string) $typed, " \t\r\n");
+            return $t === '' ? null : $t;
         }
-        return null;
+        if ($of === 'percentile') return $y === null ? null : self::percentile($entry, $table, $sex, $x, $y, $places);
+        $z = self::lineZ($of, $param);
+        return $z === null ? null : self::valueAtText($entry, $table, $sex, $x, $z, $places, $scale);
+    }
+
+    /**
+     * The z-score output $of stands for at parameter $param: the z-score
+     * itself for valueAtZ, the quantile of the percentile for
+     * valueAtPercentile; null for another output, or a percentile with no
+     * finite z-score. A chart curve is the measurement at this z-score.
+     * Twin: QRID_growthLineZ.
+     */
+    public static function lineZ($of, $param)
+    {
+        if ($of === 'valueAtZ') return (float) $param;
+        if ($of !== 'valueAtPercentile') return null;
+        $z = self::normalQuantile((float) $param / 100);
+        return is_finite($z) ? $z : null;
     }
 
     /**

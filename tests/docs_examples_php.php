@@ -276,7 +276,7 @@ foreach ($docs as $doc) {
         $lastLine = null;
         foreach ($statements($body, $start) as $st) {
             list($lineNo, $tagText, $reason) = $st;
-            $frags = AnnotationRules::parseAllTags($tagText, ['qualified' => true]);
+            $frags = AnnotationRules::parseAllTags($tagText, ['qualified' => true, 'referenceDir' => $examples]);
             $checks++;
             $last = null;
             if ($frags === null) { $failures[] = "$doc:$lineNo no tag recognised: " . substr($tagText, 0, 90); continue; }

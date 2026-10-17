@@ -756,14 +756,20 @@ function QRID_ruleHtml(V, key){
   if(typeof def !== "string" || def === "") return "";
   var map = V.i18n && typeof V.i18n === "object" ? V.i18n[key] : null;
   if(!map || typeof map !== "object") return QRID_escapeHtml(def);
+  var id = QRID_textId(V, key, def, map);
+  QRID_watchLang();
+  return '<span data-uv-text="' + id + '">' + QRID_escapeHtml(QRID_pickText(def, map)) + "</span>";
+}
+/* The data-uv-text id of V's text key, registered once per variant and key,
+   so drawing a text again never grows UV_texts. */
+function QRID_textId(V, key, def, map){
   if(!V.__qridTextId) V.__qridTextId = {};
   var id = V.__qridTextId[key];
   if(id === undefined){
     id = V.__qridTextId[key] = UV_texts.length;
     UV_texts.push({ def: def, map: map });
   }
-  QRID_watchLang();
-  return '<span data-uv-text="' + id + '">' + QRID_escapeHtml(QRID_pickText(def, map)) + "</span>";
+  return id;
 }
 function QRID_relabelTexts(){
   try {
@@ -774,6 +780,7 @@ function QRID_relabelTexts(){
       if(t) els[i].textContent = QRID_pickText(t.def, t.map);
     }
   } catch(e){}
+  for(var h = 0; h < UV_relabelHooks.length; h++){ try { UV_relabelHooks[h](); } catch(e){} }
 }
 /* Hooked once, by the first rule that shows a translated text. MLM runs its
    callbacks after it rewrites the page, and once at start-up; one already past
@@ -2322,13 +2329,15 @@ var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"
 /* @generated growth-outputs BEGIN — written from php/growth_outputs.json by tests/gen_mode_registry.cjs.
    Edit php/growth_outputs.json and re-run that script; never edit this block. */
 var QRID_GROWTH_OUTPUTS = {
-  "z": {"written":"number","needs":"measurement","places":"z","integer":false},
-  "lower": {"written":"number","needs":"limit-low","places":"decimals","integer":true},
-  "upper": {"written":"number","needs":"limit-high","places":"decimals","integer":true},
-  "range": {"written":"text","needs":"limit-any","places":"decimals"},
-  "percentile": {"written":"number","needs":"measurement","places":"percentileDecimals","integer":true},
-  "valueAtZ": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"-6","max":"6","decimals":2}},
-  "valueAtPercentile": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"0.1","max":"99.9","decimals":2}}
+  "z": {"written":"number","needs":"measurement","places":"z","integer":false,"shapes":["value","column"],"label":"z-score"},
+  "lower": {"written":"number","needs":"limit-low","places":"decimals","integer":true,"shapes":["value","column"],"unit":"measure","label":"lowest usual value"},
+  "upper": {"written":"number","needs":"limit-high","places":"decimals","integer":true,"shapes":["value","column"],"unit":"measure","label":"highest usual value"},
+  "range": {"written":"text","needs":"limit-any","places":"decimals","shapes":["value","column"],"label":"usual range"},
+  "percentile": {"written":"number","needs":"measurement","places":"percentileDecimals","integer":true,"shapes":["value","column"],"label":"percentile"},
+  "valueAtZ": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"-6","max":"6","decimals":2},"shapes":["value","column","line"],"line":"z","unit":"measure","label":"value at z-score {param}"},
+  "valueAtPercentile": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"0.1","max":"99.9","decimals":2},"shapes":["value","column","line"],"line":"percentiles","unit":"measure","label":"value at percentile {param}"},
+  "age": {"written":"number","needs":"none","places":"axis","integer":false,"shapes":["column"],"unit":"axis","label":"{axis}"},
+  "value": {"written":"number","needs":"measurement","places":"typed","integer":false,"shapes":["column"],"unit":"measure","label":"{measure}"}
 };
 /* @generated growth-outputs END */
 /* Where on the reference's axis a measurement sits. `input` holds what the
@@ -2529,18 +2538,20 @@ function QRID_growthMarkText(text, comma){ return comma ? String(text).replace(/
    decimals a rule may ask for are the server's too (GrowthReference
    MAX_DECIMALS, MAX_PERCENTILE_DECIMALS, DEFAULT_PERCENTILE_DECIMALS;
    tests/growth_outputs_php.php compares them). */
-var QRID_GROWTH_COMPUTED = ["z", "lower", "upper", "range", "percentile", "valueAtZ", "valueAtPercentile"];
+var QRID_GROWTH_COMPUTED = ["z", "lower", "upper", "range", "percentile", "valueAtZ", "valueAtPercentile", "age", "value"];
 var QRID_GROWTH_MAX_DECIMALS = 6, QRID_GROWTH_MAX_PERCENTILE_DECIMALS = 3, QRID_GROWTH_DEFAULT_PERCENTILE_DECIMALS = 1;
-/* A "return" key read against the catalog (QRID_GROWTH_OUTPUTS): { of, param,
-   spec }, or null when it names no output, one this engine does not compute,
-   or its parameter is out of range. Twin of GrowthOutputs::parse, which says
-   why a key is refused. */
-function QRID_growthOutputOf(key){
+/* A key read against the catalog (QRID_GROWTH_OUTPUTS): { of, param, spec },
+   or null when it names no output, one this engine does not compute, one
+   without the shape asked for ("value", a "return" key, by default;
+   "column", a column of the page table), or its parameter is out of range.
+   Twin of GrowthOutputs::parse, which says why a key is refused. */
+function QRID_growthOutputOf(key, shape){
   if(typeof key !== "string") return null;
   var colon = key.indexOf(":");
   var id = colon < 0 ? key : key.slice(0, colon), param = colon < 0 ? null : key.slice(colon + 1);
   if(!Object.prototype.hasOwnProperty.call(QRID_GROWTH_OUTPUTS, id) || QRID_GROWTH_COMPUTED.indexOf(id) < 0) return null;
   var spec = QRID_GROWTH_OUTPUTS[id];
+  if(!spec.shapes || spec.shapes.indexOf(shape || "value") < 0) return null;
   if(!spec.param) return param === null ? { of: id, param: null, spec: spec } : null;
   var d = spec.param.decimals;
   var re = new RegExp("^-?(?:0|[1-9][0-9]*)" + (d > 0 ? "(?:\\.[0-9]{1," + d + "})?" : "") + "$");
@@ -2549,18 +2560,39 @@ function QRID_growthOutputOf(key){
   return { of: id, param: param, spec: spec };
 }
 /* One value other than the four QRID_growthOutputs makes: percentile (null
-   without a measurement), valueAtZ or valueAtPercentile, as text with a
-   decimal point, or null. places is the decimals it is written with. Twin of
-   GrowthReference::output. */
-function QRID_growthOutput(ref, sex, x, y, of, param, places, scale){
+   without a measurement), valueAtZ or valueAtPercentile, age (the axis
+   value, QRID_growthAxisText) or value (the measurement as typed, trimmed;
+   null without one), as text with a decimal point, or null. places is the
+   decimals it is written with. Twin of GrowthReference::output. */
+function QRID_growthOutput(ref, sex, x, y, of, param, places, scale, typed){
   if(scale === undefined) scale = null;
-  if(of === "percentile") return (y === null || y === undefined) ? null : QRID_growthPercentile(ref, sex, x, y, places);
-  if(of === "valueAtZ") return QRID_growthValueAtText(ref, sex, x, parseFloat(param), places, scale);
-  if(of === "valueAtPercentile"){
-    var z = QRID_growthNormalQuantile(parseFloat(param) / 100);
-    return isFinite(z) ? QRID_growthValueAtText(ref, sex, x, z, places, scale) : null;
+  if(of === "age") return QRID_growthAxisText(x);
+  if(of === "value"){
+    var t = (typed === null || typeof typed === "undefined") ? "" : QRID_whenTrim(String(typed));
+    return t === "" ? null : t;
   }
-  return null;
+  if(of === "percentile") return (y === null || y === undefined) ? null : QRID_growthPercentile(ref, sex, x, y, places);
+  var z = QRID_growthLineZ(of, param);
+  return z === null ? null : QRID_growthValueAtText(ref, sex, x, z, places, scale);
+}
+/* The z-score output of stands for at parameter param (valueAtZ: the z-score;
+   valueAtPercentile: the quantile of the percentile), or null. A chart curve
+   is the measurement at this z-score. Twin of GrowthReference::lineZ. */
+function QRID_growthLineZ(of, param){
+  if(of === "valueAtZ") return parseFloat(param);
+  if(of !== "valueAtPercentile") return null;
+  var z = QRID_growthNormalQuantile(parseFloat(param) / 100);
+  return isFinite(z) ? z : null;
+}
+/* An axis value as text, half away from zero to two decimals, no trailing
+   zeros ("365", "12.5", "13.14"); null when not finite. Twin of
+   GrowthReference::axisText. */
+function QRID_growthAxisText(x){
+  if(typeof x !== "number" || !isFinite(x)) return null;
+  var n = QRID_growthRoundedUnits(Math.abs(x), 2);
+  if(n === null) return null;
+  var t = QRID_growthUnitsText(n, 2).replace(/0+$/, "").replace(/\.$/, "");
+  return (x < 0 && n !== 0 ? "-" : "") + t;
 }
 /* The percentile of y: 100 times the normal distribution function of its
    unrounded z-score. Twin of GrowthReference::percentile. */
@@ -4670,6 +4702,505 @@ function QRIDWindowInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- @UVRANGE "show": the growth chart and the page table -----------------
+   Page only: nothing here is saved, and nothing here changes a verdict. The
+   server sends the reference curves (UniversalValidator::attachGrowthCurves,
+   built by GrowthCurve::build) and the rows of a table of reference values;
+   the browser computes only this visit's point, with the functions the
+   verdict uses, and moves only the marker when the value changes. Every
+   element is made with createElement(NS) and filled with textContent, never
+   innerHTML, and styled with SVG presentation attributes or the style object,
+   never a style attribute, so a strict style-src policy keeps it working.
+   tests/growth_chart_dom_js.cjs locks it. */
+var QRID_SVG_NS = "http://www.w3.org/2000/svg";
+/* The chart's geometry, in the SVG's own units. plotWidth, plotHeight,
+   maxZoom and yFloor are the twins of GrowthCurve PLOT_WIDTH, PLOT_HEIGHT,
+   MAX_ZOOM and Y_FLOOR, which bound the error of the curves the server
+   simplifies (tests/growth_curve_php.php compares them). */
+var QRID_CHART = { width: 640, height: 400, left: 56, top: 40, plotWidth: 512, plotHeight: 312, maxZoom: 8, yFloor: 0.1 };
+/* Run after QRID_relabelTexts swaps the marked texts: a text made of several
+   labels and numbers (a chart's description) is written again. */
+var UV_relabelHooks = [];
+/* A tick step for range spread over about count steps: 1, 2 or 5 times a
+   power of ten. */
+function QRID_chartStep(range, count){
+  if(!(range > 0) || !isFinite(range)) return 1;
+  var raw = range / count, mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10)), f = raw / mag;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+}
+/* The ticks from lo to hi at step: whole multiples of step, as { v, text },
+   with the decimals the step has and decimal mark comma. */
+function QRID_chartTicks(lo, hi, step, comma){
+  var places = Math.max(0, -Math.floor(Math.log(step) / Math.LN10 + 1e-9));
+  var out = [], i0 = Math.ceil(lo / step - 1e-9), i1 = Math.floor(hi / step + 1e-9);
+  for(var i = i0; i <= i1 && out.length < 60; i++){
+    var t = (i * step).toFixed(places);
+    if(/^-[0.]+$/.test(t)) t = t.slice(1);
+    out.push({ v: i * step, text: QRID_growthMarkText(t, comma) });
+  }
+  return out;
+}
+/* How the x axis counts: a tick at t stands for axis value t * div. An age
+   counts in months while the window is under two years wide, in years above;
+   another axis in its own unit. */
+function QRID_chartXUnit(ref, lo, hi){
+  if(ref.axis !== "age") return { div: 1, word: ref.axisUnit };
+  var perMonth = ref.axisUnit === "days" ? QRID_GROWTH_DAYS_PER_MONTH : 1;
+  return (hi - lo) / perMonth < 24 ? { div: perMonth, word: "months" } : { div: perMonth * 12, word: "years" };
+}
+/* A reference's whole span, [lo, hi]: its "valid" range, a "below" counting
+   as the end. Twin of GrowthCurve::span for "auto". */
+function QRID_growthSpan(ref){
+  var v = ref.valid;
+  return [parseFloat(v.min), parseFloat(v.max !== undefined ? v.max : v.below)];
+}
+/* The window an "auto" chart shows for a point at x: from the start of the
+   span to a quarter past the point, never narrower than 1/maxZoom of the
+   span nor past its end; the whole span without a point. */
+function QRID_chartWindow(span, x){
+  var lo = span[0], hi = span[1];
+  if(x === null || x === undefined || !isFinite(x)) return [lo, hi];
+  return [lo, Math.min(hi, lo + Math.max((hi - lo) / QRID_CHART.maxZoom, (x - lo) * 1.25))];
+}
+/* One curve (GrowthCurve::build segments: [key, units, key, units, ...]) as
+   polylines of [x, y] inside [lo, hi], cut at the window's edges. */
+function QRID_chartClip(segs, xScale, d, lo, hi){
+  var out = [], p = Math.pow(10, d);
+  for(var s = 0; s < (segs ? segs.length : 0); s++){
+    var a = segs[s], pts = [], x0 = null, y0 = null;
+    for(var i = 0; i + 1 < a.length; i += 2){
+      var x1 = a[i] / xScale, y1 = a[i + 1] / p;
+      if(a.length === 2){ if(x1 >= lo && x1 <= hi) pts.push([x1, y1]); break; }
+      /* a segment with some length inside the window; one that only touches
+         an edge adds nothing the next or the last one does not */
+      if(x0 !== null && x1 > lo && x0 < hi){
+        if(!pts.length) pts.push(x0 < lo ? [lo, y0 + (y1 - y0) * (lo - x0) / (x1 - x0)] : [x0, y0]);
+        pts.push(x1 > hi ? [hi, y0 + (y1 - y0) * (hi - x0) / (x1 - x0)] : [x1, y1]);
+      }
+      x0 = x1; y0 = y1;
+    }
+    if(pts.length) out.push(pts);
+  }
+  return out;
+}
+/* The y axis for polylines: their lowest and highest value, at least yFloor
+   of the highest apart (GrowthCurve::minRange counts on this), widened to
+   whole ticks. { lo, hi, step }, or null without a point. */
+function QRID_chartYRange(polys){
+  var lo = Infinity, hi = -Infinity;
+  for(var a = 0; a < polys.length; a++) for(var b = 0; b < polys[a].length; b++){
+    for(var c = 0; c < polys[a][b].length; c++){
+      var y = polys[a][b][c][1];
+      if(y < lo) lo = y;
+      if(y > hi) hi = y;
+    }
+  }
+  if(!(hi >= lo)) return null;
+  var floor = QRID_CHART.yFloor * Math.abs(hi);
+  if(hi - lo < floor){ var mid = (hi + lo) / 2; lo = mid - floor / 2; hi = mid + floor / 2; }
+  if(!(hi > lo)){ lo -= 0.5; hi += 0.5; }
+  var step = QRID_chartStep(hi - lo, 6);
+  return { lo: Math.floor(lo / step + 1e-9) * step, hi: Math.ceil(hi / step - 1e-9) * step, step: step };
+}
+/* A rule's "show" as the server parsed it (AnnotationRules::parseShow), or
+   null when it is missing or not that shape: { chart: { lines: { kind,
+   values }, bands, y, span, open, labels } | null, table: { rows, step, span,
+   columns, open, labels } | null }. */
+function QRID_showOf(s){
+  if(!s || typeof s !== "object" || s.length !== undefined) return null;
+  function texts(a){ if(!a || a.length === undefined) return false; for(var i = 0; i < a.length; i++) if(typeof a[i] !== "string") return false; return true; }
+  function labels(l){ return !l || typeof l !== "object" || l.length !== undefined ? {} : l; }
+  function span(v){ return (v && v.length === 2 && texts(v)) ? v : null; }
+  var out = { chart: null, table: null };
+  var c = s.chart;
+  if(c && typeof c === "object" && c.lines && typeof c.lines === "object" && QRID_growthLineOf(c.lines.kind) !== null
+      && texts(c.lines.values) && c.lines.values.length > 0 && (c.y === "value" || c.y === "z")){
+    out.chart = { lines: { kind: c.lines.kind, values: c.lines.values.slice() }, bands: c.bands === true, y: c.y,
+                  span: span(c.span), open: typeof c.open === "boolean" ? c.open : null, labels: labels(c.labels) };
+  }
+  var t = s.table;
+  if(t && typeof t === "object" && (t.rows === "history" || t.rows === "curve") && texts(t.columns) && t.columns.length > 0){
+    out.table = { rows: t.rows, step: typeof t.step === "string" ? t.step : null, span: span(t.span), columns: t.columns.slice(),
+                  open: typeof t.open === "boolean" ? t.open : null, labels: labels(t.labels) };
+  }
+  return (out.chart || out.table) ? out : null;
+}
+/* A drawing coordinate as text, to a tenth of a unit. */
+function QRID_chartNum(v){ var t = (Math.round(v * 10) / 10).toFixed(1); return t === "-0.0" ? "0.0" : t; }
+function QRID_svgEl(tag, attrs, parent){
+  var e = document.createElementNS(QRID_SVG_NS, tag);
+  for(var k in attrs) if(Object.prototype.hasOwnProperty.call(attrs, k)) e.setAttribute(k, String(attrs[k]));
+  if(parent) parent.appendChild(e);
+  return e;
+}
+function QRID_emptyEl(el){ while(el.firstChild) el.removeChild(el.firstChild); }
+/* The colour of a curve by its z-score: the median green, +-2 SD red, +-3 SD
+   and beyond black, the rest grey (the WHO charts' convention). */
+function QRID_chartStroke(z){
+  var a = Math.abs(z);
+  return a < 0.005 ? "#2e7d32" : (a >= 2.995 ? "#212121" : (a >= 1.995 ? "#c62828" : "#607d8b"));
+}
+/* The catalog output whose "line" name is kind ("z" -> "valueAtZ"). */
+function QRID_growthLineOf(kind){
+  for(var id in QRID_GROWTH_OUTPUTS){
+    if(Object.prototype.hasOwnProperty.call(QRID_GROWTH_OUTPUTS, id) && QRID_GROWTH_OUTPUTS[id].line === kind) return id;
+  }
+  return null;
+}
+function QRID_capital(t){ t = String(t || ""); return t.charAt(0).toUpperCase() + t.slice(1); }
+/* A label of a chart or a table: the rule's own (show.<part>.labels.<name>,
+   a textKeys path, so possibly with other languages under V.i18n) in the
+   page's language, else def. With el, the element gets the text, and a text
+   with other languages is marked for QRID_relabelTexts. */
+function QRID_showLabel(V, part, name, def, el){
+  var labels = (V.show[part] && V.show[part].labels) || {};
+  var own = typeof labels[name] === "string" && labels[name] !== "";
+  var text = own ? labels[name] : def, key = "show." + part + ".labels." + name;
+  var map = (own && V.i18n && typeof V.i18n[key] === "object") ? V.i18n[key] : null;
+  var shown = map ? QRID_pickText(text, map) : text;
+  if(el){
+    if(map){ el.setAttribute("data-uv-text", String(QRID_textId(V, key, text, map))); QRID_watchLang(); }
+    el.textContent = shown;
+  }
+  return shown;
+}
+/* Whether the rule gives one of part's labels in other languages. */
+function QRID_showTranslated(V, part){
+  if(!V.i18n) return false;
+  for(var k in V.i18n){
+    if(Object.prototype.hasOwnProperty.call(V.i18n, k) && k.indexOf("show." + part + ".labels.") === 0) return true;
+  }
+  return false;
+}
+/* The unit the measured field holds: "unit" (beside "measureScale"), else
+   the reference's own when there is no scale, else none. */
+function QRID_growthFieldUnit(V){
+  return V.returnUnit !== null ? V.returnUnit : (V.scale === null ? (V.growth.ref.unit || "") : "");
+}
+/* The header of a page table column: the catalog's label, its slots filled
+   from the reference ({param}, {measure}, {axis}), a value in the field's
+   unit followed by it. */
+function QRID_growthColumnLabel(V, of){
+  var ref = V.growth.ref, unit = QRID_growthFieldUnit(V), spec = of.spec, t = spec.label;
+  var measure = QRID_capital(ref.measure) + (unit ? " (" + unit + ")" : "");
+  var hasMeasure = t.indexOf("{measure}") >= 0;
+  t = t.replace("{param}", of.param === null ? "" : QRID_growthMarkText(of.param, V.spec.decimalComma))
+       .replace("{measure}", measure).replace("{axis}", QRID_capital(ref.axis) + " (" + ref.axisUnit + ")");
+  if(spec.unit === "measure" && !hasMeasure && unit) t += " (" + unit + ")";
+  return QRID_capital(t);
+}
+/* This visit as a chart and a table see it, for variant V and the typed
+   value: { sex, x, yRef (in the reference's unit, for the z-score), y (in
+   the field's unit, for the chart), z, pct, typed }, each null when there is
+   none; null when an input is not on this page. */
+function QRID_growthChartPoint(V, point, typed){
+  if(!point || point.state === "withheld") return null;
+  var ref = V.growth.ref, out = { sex: point.sex || null, x: point.state === "ok" ? point.x : null,
+    yRef: null, y: null, z: null, pct: null, typed: typed };
+  var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
+  if(m.state === "ok"){
+    out.yRef = m.y;
+    out.y = parseFloat(QRID_rangeNumber(typed, V.spec.decimalComma));
+  }
+  if(out.sex && out.x !== null && out.yRef !== null){
+    var z = QRID_growthZScore(ref, out.sex, out.x, out.yRef);
+    if(z.state === "ok") out.z = z.z;
+    out.pct = QRID_growthPercentile(ref, out.sex, out.x, out.yRef, V.percentileDecimals);
+  }
+  return out;
+}
+/* A growth chart for variant V (its "show" "chart"): a <details> holding an
+   SVG with role="img", a <title> and a <desc> that says what it shows and
+   where this visit lies. Returns { el, update(point) }: update draws the
+   curves again only when the sex or the window changes, else moves the
+   marker. */
+function QRID_growthChart(V, uid){
+  var C = QRID_CHART, ref = V.growth.ref, show = V.show.chart, comma = V.spec.decimalComma;
+  var all = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growthCurves) || null;
+  var set = (all && typeof V.curveKey === "string" && Object.prototype.hasOwnProperty.call(all, V.curveKey)) ? all[V.curveKey] : null;
+  var isZ = show.y === "z", lineOf = QRID_growthLineOf(show.lines.kind);
+  var zs = [];
+  for(var li = 0; li < show.lines.values.length; li++) zs.push(QRID_growthLineZ(lineOf, show.lines.values[li]));
+  var span = (set && set.span) ? [set.span[0], set.span[1]]
+    : (show.span ? [parseFloat(show.span[0]), parseFloat(show.span[1])] : QRID_growthSpan(ref));
+  var band = show.bands ? [V.spec.softLo !== undefined ? parseFloat(V.spec.softLo) : null,
+                           V.spec.softHi !== undefined ? parseFloat(V.spec.softHi) : null] : null;
+  var unit = QRID_growthFieldUnit(V);
+
+  var details = document.createElement("details");
+  details.open = show.open !== null && show.open !== undefined ? show.open === true : !QRID_IS_SURVEY;
+  var summary = document.createElement("summary");
+  QRID_showLabel(V, "chart", "summary", "Growth chart", summary);
+  details.appendChild(summary);
+  var svg = QRID_svgEl("svg", { viewBox: "0 0 " + C.width + " " + C.height, role: "img", width: "100%",
+    "aria-labelledby": uid + "-title", "aria-describedby": uid + "-desc", "font-family": "sans-serif", "font-size": "11" }, details);
+  if(svg.style) svg.style.maxWidth = C.width + "px";
+  var tEl = QRID_svgEl("title", { id: uid + "-title" }, svg), dEl = QRID_svgEl("desc", { id: uid + "-desc" }, svg);
+  QRID_svgEl("rect", { x: 0, y: 0, width: C.width, height: C.height, fill: "#ffffff" }, svg);
+  var clip = QRID_svgEl("clipPath", { id: uid + "-clip" }, QRID_svgEl("defs", {}, svg));
+  QRID_svgEl("rect", { x: C.left, y: C.top, width: C.plotWidth, height: C.plotHeight }, clip);
+  var gGrid = QRID_svgEl("g", { stroke: "#e0e0e0", "stroke-width": "1" }, svg);
+  var gTicks = QRID_svgEl("g", { fill: "#424242" }, svg);
+  var gPlot = QRID_svgEl("g", { "clip-path": "url(#" + uid + "-clip)" }, svg);
+  var gBand = QRID_svgEl("g", {}, gPlot), gCurves = QRID_svgEl("g", { fill: "none" }, gPlot);
+  QRID_svgEl("rect", { x: C.left, y: C.top, width: C.plotWidth, height: C.plotHeight, fill: "none", stroke: "#9e9e9e" }, svg);
+  var gLines = QRID_svgEl("g", { fill: "#424242", "font-size": "10" }, svg);
+  var heading = QRID_svgEl("text", { x: C.left, y: 16, "font-size": "13", "font-weight": "bold", fill: "#212121" }, svg);
+  QRID_showLabel(V, "chart", "title", ref.title, heading);
+  var sub = QRID_svgEl("text", { x: C.left, y: 32, "font-size": "10", fill: "#616161" }, svg);
+  var xTitle = QRID_svgEl("text", { x: C.left + C.plotWidth / 2, y: C.height - 8, "text-anchor": "middle", fill: "#424242" }, svg);
+  var yTitle = QRID_svgEl("text", { x: 14, y: C.top + C.plotHeight / 2, "text-anchor": "middle", fill: "#424242",
+    transform: "rotate(-90 14 " + (C.top + C.plotHeight / 2) + ")" }, svg);
+  QRID_showLabel(V, "chart", "y", isZ ? "z-score" : QRID_capital(ref.measure) + (unit ? " (" + unit + ")" : ""), yTitle);
+  var linesHead = QRID_svgEl("text", { x: C.left + C.plotWidth + 4, y: C.top - 6, "font-size": "10", fill: "#616161" }, svg);
+  QRID_showLabel(V, "chart", "lines", show.lines.kind === "percentiles" ? "Percentiles" : "z-scores", linesHead);
+  /* the legend, right-aligned on the heading's lines */
+  var legX = C.left + C.plotWidth;
+  QRID_svgEl("circle", { cx: legX - 4, cy: 12, r: 4, fill: "#1565c0", stroke: "#ffffff" }, svg);
+  QRID_showLabel(V, "chart", "point", "This visit", QRID_svgEl("text", { x: legX - 12, y: 16, "text-anchor": "end", fill: "#212121" }, svg));
+  if(band){
+    QRID_svgEl("rect", { x: legX - 8, y: 22, width: 8, height: 8, fill: "#c8e6c9" }, svg);
+    QRID_showLabel(V, "chart", "band", "Usual range", QRID_svgEl("text", { x: legX - 12, y: 30, "text-anchor": "end", fill: "#212121" }, svg));
+  }
+  var empty = QRID_svgEl("text", { x: C.left + C.plotWidth / 2, y: C.top + C.plotHeight / 2, "text-anchor": "middle",
+    fill: "#757575", visibility: "hidden" }, svg);
+  var marker = QRID_svgEl("circle", { r: 4, fill: "#1565c0", stroke: "#ffffff", "stroke-width": "1.5", visibility: "hidden" }, svg);
+  var mTitle = QRID_svgEl("title", {}, marker);
+  var arrow = QRID_svgEl("polygon", { fill: "#1565c0", visibility: "hidden" }, svg);
+  var aTitle = QRID_svgEl("title", {}, arrow);
+
+  var drawn = { sex: undefined, win: null, y: null, xu: null };
+  var fitted = false, last = null;
+  function px(x){ return C.left + (x - drawn.win[0]) / (drawn.win[1] - drawn.win[0]) * C.plotWidth; }
+  function py(y){ return C.top + C.plotHeight - (y - drawn.y.lo) / (drawn.y.hi - drawn.y.lo) * C.plotHeight; }
+  /* the curves of one sex in the window: [{ z, polys }], band ones apart */
+  function curvesFor(sex, win){
+    var out = { lines: [], band: [null, null] };
+    if(isZ){
+      for(var i = 0; i < zs.length; i++) if(zs[i] !== null) out.lines.push({ z: zs[i], polys: [[[win[0], zs[i]], [win[1], zs[i]]]] });
+      if(band) for(var b = 0; b < 2; b++) if(band[b] !== null) out.band[b] = [[[win[0], band[b]], [win[1], band[b]]]];
+      return out;
+    }
+    var s = (set && sex) ? set[sex] : null;
+    if(!s) return null;
+    for(var j = 0; j < zs.length; j++) out.lines.push({ z: zs[j], polys: QRID_chartClip(s.lines[j], set.xScale, s.d, win[0], win[1]) });
+    if(set.band) for(var k = 0; k < 2; k++){
+      if(set.band[k] !== null && set.band[k] !== undefined) out.band[k] = QRID_chartClip(s.lines[set.band[k]], set.xScale, s.d, win[0], win[1]);
+    }
+    return out;
+  }
+  function draw(sex, win){
+    QRID_emptyEl(gGrid); QRID_emptyEl(gTicks); QRID_emptyEl(gBand); QRID_emptyEl(gCurves); QRID_emptyEl(gLines);
+    drawn.sex = sex; drawn.win = win;
+    drawn.xu = QRID_chartXUnit(ref, win[0], win[1]);
+    QRID_showLabel(V, "chart", "x", QRID_capital(ref.axis) + " (" + drawn.xu.word + ")", xTitle);
+    var cv = (isZ || sex) ? curvesFor(sex, win) : null;
+    var polys = [];
+    if(cv){
+      for(var i = 0; i < cv.lines.length; i++) polys.push(cv.lines[i].polys);
+      for(var b = 0; b < 2; b++) if(cv.band[b]) polys.push(cv.band[b]);
+    }
+    drawn.y = QRID_chartYRange(polys);
+    if(drawn.y && isZ){ drawn.y = { lo: drawn.y.lo - drawn.y.step, hi: drawn.y.hi + drawn.y.step, step: drawn.y.step }; }
+    if(!drawn.y){
+      empty.textContent = sex ? "No reference curves to show here." : "The curves show once the sex is entered.";
+      empty.setAttribute("visibility", "visible");
+      drawn.y = null;
+      return;
+    }
+    empty.setAttribute("visibility", "hidden");
+    var xt = QRID_chartTicks(win[0] / drawn.xu.div, win[1] / drawn.xu.div,
+      QRID_chartStep((win[1] - win[0]) / drawn.xu.div, 8), comma);
+    for(var t = 0; t < xt.length; t++){
+      var X = QRID_chartNum(px(xt[t].v * drawn.xu.div));
+      QRID_svgEl("line", { x1: X, x2: X, y1: C.top, y2: C.top + C.plotHeight }, gGrid);
+      QRID_svgEl("text", { x: X, y: C.top + C.plotHeight + 14, "text-anchor": "middle" }, gTicks).textContent = xt[t].text;
+    }
+    var yt = QRID_chartTicks(drawn.y.lo, drawn.y.hi, drawn.y.step, comma);
+    for(var u = 0; u < yt.length; u++){
+      var Y = QRID_chartNum(py(yt[u].v));
+      QRID_svgEl("line", { x1: C.left, x2: C.left + C.plotWidth, y1: Y, y2: Y }, gGrid);
+      QRID_svgEl("text", { x: C.left - 4, y: QRID_chartNum(py(yt[u].v) + 3.5), "text-anchor": "end" }, gTicks).textContent = yt[u].text;
+    }
+    if(cv.band[0] || cv.band[1]) bandPath(cv.band);
+    var ends = [];
+    for(var c = 0; c < cv.lines.length; c++){
+      var L = cv.lines[c], d = pathOf(L.polys);
+      if(d) QRID_svgEl("path", { d: d, stroke: QRID_chartStroke(L.z), "stroke-width": Math.abs(L.z) < 0.005 ? "1.6" : "1" }, gCurves);
+      var lp = L.polys.length ? L.polys[L.polys.length - 1] : null;
+      var end = lp ? lp[lp.length - 1] : null;
+      /* a curve that reaches the right edge (within 2 units: a table may end
+         a little before its "below") is named there */
+      if(end && px(end[0]) >= C.left + C.plotWidth - 2) ends.push({ y: py(end[1]), text: QRID_growthMarkText(show.lines.values[c], comma) });
+    }
+    /* the line names at the right edge, kept 11 units apart */
+    ends.sort(function(a, b){ return a.y - b.y; });
+    for(var e = 1; e < ends.length; e++) if(ends[e].y - ends[e - 1].y < 11) ends[e].y = ends[e - 1].y + 11;
+    for(var f = 0; f < ends.length; f++){
+      QRID_svgEl("text", { x: C.left + C.plotWidth + 4, y: QRID_chartNum(Math.min(C.top + C.plotHeight + 30, ends[f].y + 3.5)) }, gLines).textContent = ends[f].text;
+    }
+  }
+  function pathOf(polys){
+    var d = "";
+    for(var p = 0; p < polys.length; p++){
+      for(var q = 0; q < polys[p].length; q++) d += (q ? "L" : "M") + QRID_chartNum(px(polys[p][q][0])) + " " + QRID_chartNum(py(polys[p][q][1]));
+    }
+    return d;
+  }
+  /* the soft range shaded: between the two band curves, or from one to the
+     plot's edge when the rule has a limit on one side only */
+  function bandPath(bp){
+    var lo = bp[0] && bp[0].length === 1 ? bp[0][0] : null, hi = bp[1] && bp[1].length === 1 ? bp[1][0] : null;
+    if((bp[0] && !lo) || (bp[1] && !hi)) return;   /* a curve with a gap: no band */
+    var w = drawn.win;
+    if(!lo) lo = [[w[0], drawn.y.lo], [w[1], drawn.y.lo]];
+    if(!hi) hi = [[w[0], drawn.y.hi], [w[1], drawn.y.hi]];
+    var d = "";
+    for(var i = 0; i < lo.length; i++) d += (i ? "L" : "M") + QRID_chartNum(px(lo[i][0])) + " " + QRID_chartNum(py(lo[i][1]));
+    for(var j = hi.length - 1; j >= 0; j--) d += "L" + QRID_chartNum(px(hi[j][0])) + " " + QRID_chartNum(py(hi[j][1]));
+    QRID_svgEl("path", { d: d + "Z", fill: "#c8e6c9", "fill-opacity": "0.7", stroke: "none" }, gBand);
+  }
+  /* the words for this visit, in the page's language where the rule gives them */
+  function pointText(pt){
+    var name = QRID_showLabel(V, "chart", "point", "This visit");
+    if(!pt || pt.x === null || pt.y === null) return null;
+    var xu = drawn.xu || QRID_chartXUnit(ref, span[0], span[1]);
+    var xs = QRID_growthMarkText(QRID_growthAxisText(pt.x / xu.div) || "", comma);
+    return name + ": " + QRID_whenTrim(String(pt.typed)) + (unit ? " " + unit : "") + " at " + xs + " " + xu.word
+      + (pt.z !== null ? ", z-score " + QRID_growthMarkText(pt.z, comma) : "")
+      + (pt.pct !== null ? ", percentile " + QRID_growthMarkText(pt.pct, comma) : "");
+  }
+  function describe(pt, outside){
+    var head = QRID_showLabel(V, "chart", "title", ref.title);
+    tEl.textContent = head;
+    var vals = [];
+    for(var i = 0; i < show.lines.values.length; i++) vals.push(QRID_growthMarkText(show.lines.values[i], comma));
+    var p = pointText(pt);
+    dEl.textContent = head + "." + (sub.textContent ? " " + sub.textContent + "." : "") + " "
+      + QRID_showLabel(V, "chart", "lines", show.lines.kind === "percentiles" ? "Percentiles" : "z-scores") + ": " + vals.join(", ") + "."
+      + (p ? " " + p + "." : " No measurement to show yet.")
+      + (outside ? " This visit lies outside the chart; an arrow at its edge points to it." : "");
+    mTitle.textContent = p || "";
+    aTitle.textContent = p ? p + " (outside the chart)" : "";
+  }
+  function place(pt){
+    marker.setAttribute("visibility", "hidden");
+    arrow.setAttribute("visibility", "hidden");
+    if(!pt || pt.x === null || !drawn.y) return false;
+    var v = isZ ? (pt.z === null ? null : parseFloat(pt.z)) : pt.y;
+    if(v === null || !isFinite(v)) return false;
+    var X = px(pt.x), Y = py(v), L = C.left, R = C.left + C.plotWidth, T = C.top, B = C.top + C.plotHeight;
+    if(X >= L && X <= R && Y >= T && Y <= B){
+      marker.setAttribute("cx", QRID_chartNum(X));
+      marker.setAttribute("cy", QRID_chartNum(Y));
+      marker.setAttribute("visibility", "visible");
+      return false;
+    }
+    /* outside: an arrow at the nearest edge, pointing out */
+    var cx = Math.max(L + 7, Math.min(R - 7, X)), cy = Math.max(T + 7, Math.min(B - 7, Y)), pts;
+    if(X < L) pts = [[L, cy], [L + 9, cy - 5], [L + 9, cy + 5]];
+    else if(X > R) pts = [[R, cy], [R - 9, cy - 5], [R - 9, cy + 5]];
+    else if(Y < T) pts = [[cx, T], [cx - 5, T + 9], [cx + 5, T + 9]];
+    else pts = [[cx, B], [cx - 5, B - 9], [cx + 5, B - 9]];
+    var s = "";
+    for(var i = 0; i < pts.length; i++) s += (i ? " " : "") + QRID_chartNum(pts[i][0]) + "," + QRID_chartNum(pts[i][1]);
+    arrow.setAttribute("points", s);
+    arrow.setAttribute("visibility", "visible");
+    return true;
+  }
+  function update(pt){
+    last = pt;
+    var sex = pt ? pt.sex : null, win = drawn.win;
+    if(show.span) win = span;
+    else if(pt && pt.x !== null){
+      /* refit when the point leaves the window, or would fit one less than
+         half as wide (a corrected age): not at every small change */
+      var fit = QRID_chartWindow(span, pt.x);
+      if(!fitted || win === null || pt.x < win[0] || pt.x > win[1] || (fit[1] - fit[0]) * 2 < win[1] - win[0]){ win = fit; fitted = true; }
+    }
+    else if(win === null) win = QRID_chartWindow(span, null);
+    sub.textContent = (V.chartSource ? V.chartSource : "") + (sex ? (V.chartSource ? " · " : "") + sex : "");
+    if(sex !== drawn.sex || drawn.win === null || win[0] !== drawn.win[0] || win[1] !== drawn.win[1]) draw(sex, win);
+    describe(pt, place(pt));
+  }
+  if(QRID_showTranslated(V, "chart")) UV_relabelHooks.push(function(){ if(drawn.win) describe(last, arrow.getAttribute("visibility") === "visible"); });
+  return { el: details, update: update };
+}
+/* A page table for variant V (its "show" "table"): this visit's row
+   ("rows":"history"), or the reference values the server sent for the
+   child's sex ("rows":"curve"). Returns { el, update(point) }. */
+function QRID_growthTable(V){
+  var show = V.show.table, ref = V.growth.ref, comma = V.spec.decimalComma, curve = show.rows === "curve";
+  var cols = [];
+  for(var c = 0; c < show.columns.length; c++){
+    var of = QRID_growthOutputOf(show.columns[c], "column");
+    if(of) cols.push({ key: show.columns[c], of: of });
+  }
+  var details = document.createElement("details");
+  details.open = show.open !== null && show.open !== undefined ? show.open === true : !QRID_IS_SURVEY;
+  QRID_showLabel(V, "table", "summary", curve ? "Reference values" : "This visit", details.appendChild(document.createElement("summary")));
+  var table = details.appendChild(document.createElement("table"));
+  if(table.style){ table.style.borderCollapse = "collapse"; table.style.fontSize = "13px"; table.style.margin = "4px 0"; }
+  QRID_showLabel(V, "table", "caption", ref.title, table.appendChild(document.createElement("caption")));
+  var hr = table.appendChild(document.createElement("thead")).appendChild(document.createElement("tr"));
+  for(var h = 0; h < cols.length; h++){
+    var th = hr.appendChild(document.createElement("th"));
+    th.setAttribute("scope", "col");
+    if(th.style){ th.style.padding = "2px 8px"; th.style.borderBottom = "1px solid #9e9e9e"; th.style.textAlign = "right"; }
+    QRID_showLabel(V, "table", cols[h].key, QRID_growthColumnLabel(V, cols[h].of), th);
+  }
+  var body = table.appendChild(document.createElement("tbody"));
+  var shownSex;
+  function row(cells){
+    var tr = body.appendChild(document.createElement("tr"));
+    for(var i = 0; i < cells.length; i++){
+      var td = tr.appendChild(document.createElement("td"));
+      if(td.style){ td.style.padding = "2px 8px"; td.style.textAlign = "right"; }
+      /* a note in place of the rows spans them all */
+      if(cells.length === 1 && cols.length > 1) td.setAttribute("colspan", String(cols.length));
+      td.textContent = cells[i];
+    }
+  }
+  /* a number in the field's decimal mark; "range" was written in it already */
+  function mark(col, t){ return (t === null || t === undefined) ? "" : (col.of.spec.written === "number" && col.of.of !== "value" ? QRID_growthMarkText(t, comma) : t); }
+  function visit(pt){
+    var out = [], o = null, sex = pt ? pt.sex : null, x = pt ? pt.x : null;
+    if(sex && x !== null){
+      var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
+      o = QRID_growthOutputs(ref, sex, x, pt.yRef, { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
+        V.decimals, comma, V.scale, V.returnUnit);
+    }
+    for(var i = 0; i < cols.length; i++){
+      var of = cols[i].of, t = null;
+      if(o !== null && Object.prototype.hasOwnProperty.call(o, of.of)) t = o[of.of];
+      else if(o !== null){
+        var places = of.spec.places === "z" ? 2 : (of.spec.places === "percentileDecimals" ? V.percentileDecimals : V.decimals);
+        t = QRID_growthOutput(ref, sex, x, pt.yRef, of.of, of.param, places, V.scale, pt.yRef === null ? null : pt.typed);
+      }
+      out.push(mark(cols[i], t));
+    }
+    return out;
+  }
+  function update(pt){
+    var sex = pt ? pt.sex : null;
+    if(curve){
+      if(sex === shownSex) return;
+      shownSex = sex;
+      QRID_emptyEl(body);
+      var rows = (V.tableRows && sex && V.tableRows[sex]) || null;
+      if(!rows){ row([sex ? "No reference values to show here." : "The values show once the sex is entered."]); return; }
+      for(var r = 0; r < rows.length; r++){
+        var cells = [];
+        for(var k = 0; k < cols.length; k++) cells.push(mark(cols[k], rows[r][k]));
+        row(cells);
+      }
+      return;
+    }
+    QRID_emptyEl(body);
+    row(visit(pt));
+  }
+  return { el: details, update: update };
+}
 /* ---- range validator (@UVRANGE) --------------------------------------------
    Two tiers of plausibility limits for a number. Outside "soft" the value is
    unusual: an amber note, and with softBlock "confirm" the save asks first.
@@ -4731,31 +5262,33 @@ function QRIDRangeInit(QRID_CONFIG){
         returns[rv] = rt;
         retOf[rv] = rof;
       }
-      if(cfg.rangePercentileDecimals !== undefined){
-        if(typeof cfg.rangePercentileDecimals !== "number" || cfg.rangePercentileDecimals % 1 !== 0
-            || cfg.rangePercentileDecimals < 0 || cfg.rangePercentileDecimals > QRID_GROWTH_MAX_PERCENTILE_DECIMALS){
-          if(!configError) configError = '@UVRANGE "percentileDecimals" must be a whole number from 0 to '
-            + QRID_GROWTH_MAX_PERCENTILE_DECIMALS + '.';
-        } else retPctDecimals = cfg.rangePercentileDecimals;
-      }
       if(!rkeys.length && !configError) configError = '@UVRANGE "return" names no field.';
       if(typeof cfg.rangeReference !== "string" || cfg.rangeReference === ""){
         if(!configError) configError = '@UVRANGE "return" needs a growth "reference".';
-      }
-      if(cfg.rangeReturnLimits !== undefined && cfg.rangeReturnLimits !== "soft" && cfg.rangeReturnLimits !== "hard"){
-        if(!configError) configError = '@UVRANGE "returnLimits" must be "soft" or "hard".';
-      } else if(cfg.rangeReturnLimits === "hard") retLimits = "hard";
-      if(cfg.rangeDecimals !== undefined){
-        if(typeof cfg.rangeDecimals !== "number" || cfg.rangeDecimals % 1 !== 0 || cfg.rangeDecimals < 0
-            || cfg.rangeDecimals > QRID_GROWTH_MAX_DECIMALS){
-          if(!configError) configError = '@UVRANGE "decimals" must be a whole number from 0 to ' + QRID_GROWTH_MAX_DECIMALS + '.';
-        } else retDecimals = cfg.rangeDecimals;
       }
       if(cfg.rangeReturnComma && typeof cfg.rangeReturnComma === "object"){
         for(var rc in cfg.rangeReturnComma){
           if(Object.prototype.hasOwnProperty.call(cfg.rangeReturnComma, rc)) retComma[rc] = cfg.rangeReturnComma[rc] === true;
         }
       }
+    }
+    /* How the values a rule returns or its page table shows are made: the
+       limits they come from, and their decimals. */
+    if(cfg.rangePercentileDecimals !== undefined){
+      if(typeof cfg.rangePercentileDecimals !== "number" || cfg.rangePercentileDecimals % 1 !== 0
+          || cfg.rangePercentileDecimals < 0 || cfg.rangePercentileDecimals > QRID_GROWTH_MAX_PERCENTILE_DECIMALS){
+        if(!configError) configError = '@UVRANGE "percentileDecimals" must be a whole number from 0 to '
+          + QRID_GROWTH_MAX_PERCENTILE_DECIMALS + '.';
+      } else retPctDecimals = cfg.rangePercentileDecimals;
+    }
+    if(cfg.rangeReturnLimits !== undefined && cfg.rangeReturnLimits !== "soft" && cfg.rangeReturnLimits !== "hard"){
+      if(!configError) configError = '@UVRANGE "returnLimits" must be "soft" or "hard".';
+    } else if(cfg.rangeReturnLimits === "hard") retLimits = "hard";
+    if(cfg.rangeDecimals !== undefined){
+      if(typeof cfg.rangeDecimals !== "number" || cfg.rangeDecimals % 1 !== 0 || cfg.rangeDecimals < 0
+          || cfg.rangeDecimals > QRID_GROWTH_MAX_DECIMALS){
+        if(!configError) configError = '@UVRANGE "decimals" must be a whole number from 0 to ' + QRID_GROWTH_MAX_DECIMALS + '.';
+      } else retDecimals = cfg.rangeDecimals;
     }
     var onlyZ = returns !== null && Object.keys(retOf).length > 0;
     for(var rok in retOf){
@@ -4853,6 +5386,13 @@ function QRIDRangeInit(QRID_CONFIG){
              plausibleText: (typeof cfg.rangePlausibleText === "string") ? cfg.rangePlausibleText : "",
              softText: (typeof cfg.rangeSoftText === "string") ? cfg.rangeSoftText : "",
              hardText: (typeof cfg.rangeHardText === "string") ? cfg.rangeHardText : "",
+             /* "show": what the page draws, never part of the verdict, so a
+                shape not understood shows nothing instead of an error */
+             show: (growth && !configError) ? QRID_showOf(cfg.rangeShow) : null,
+             curveKey: typeof cfg.growthCurveKey === "string" ? cfg.growthCurveKey : null,
+             tableRows: (cfg.growthTableRows && typeof cfg.growthTableRows === "object") ? cfg.growthTableRows : null,
+             chartWhy: (cfg.growthChartWhy && typeof cfg.growthChartWhy === "object") ? cfg.growthChartWhy : null,
+             chartSource: typeof cfg.growthChartSource === "string" ? cfg.growthChartSource : "",
              mode: { range: true } };
   }
 
@@ -4941,8 +5481,9 @@ function QRIDRangeInit(QRID_CONFIG){
      { state: "withheld" } when an input was not sent to this page,
      { state: "typing" } while a date on this page is not yet a whole date,
      or { state: "inert", why } (a blank or unreadable input, a sex code that
-     is neither, outside the reference). Server twin:
-     GrowthReference::inputsFor. */
+     is neither, outside the reference). Once the sex is known, "typing" and
+     "inert" carry it too, so a chart can draw that sex's curves. Server
+     twin: GrowthReference::inputsFor. */
   function growthPoint(V){
     var g = V.growth;
     var withheld = false, ins = {}, k;
@@ -4968,9 +5509,9 @@ function QRIDRangeInit(QRID_CONFIG){
         /* A date on this page is re-read at every keystroke: one still being
            typed says nothing. A saved one the rule cannot read gets the
            server's words (GrowthReference::inputsFor). */
-        if((dobBad ? g.ops.AgeDob : g.ops.AgeAt)[0] !== "lit") return { state: "typing" };
-        return { state: "inert", why: dobBad ? "the date of birth is not a date this rule can read"
-                                             : "the date of the measurement is not a date this rule can read" };
+        if((dobBad ? g.ops.AgeDob : g.ops.AgeAt)[0] !== "lit") return { state: "typing", sex: sex };
+        return { state: "inert", sex: sex, why: dobBad ? "the date of birth is not a date this rule can read"
+                                                       : "the date of the measurement is not a date this rule can read" };
       }
     } else {
       if(g.ops.AgeDays) input.days = ins.AgeDays;
@@ -4978,7 +5519,7 @@ function QRIDRangeInit(QRID_CONFIG){
       if(g.ops.By) input.by = ins.By;
     }
     var a = QRID_growthAxis(g.ref, input);
-    if(a.state !== "ok") return { state: "inert", why: a.why };
+    if(a.state !== "ok") return { state: "inert", why: a.why, sex: sex };
     return { state: "ok", sex: sex, x: a.x };
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
@@ -5053,6 +5594,65 @@ function QRIDRangeInit(QRID_CONFIG){
     if(input.getAttribute && input.getAttribute("data-qrid-bound-n")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-n", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "n");
+    /* The growth charts and page tables ("show"), after the note: one panel
+       per variant that shows something, in the rule's order, filled the
+       first time its variant applies and hidden while it does not. */
+    var panels = [], chartBox = null;
+    for(var pvi = 0; pvi < VS.all.length; pvi++){
+      if(!VS.all[pvi].show || configError) continue;
+      if(!chartBox){
+        chartBox = document.createElement("div");
+        chartBox.id = "uvalidate-chart-" + String(fieldName).replace(/[^A-Za-z0-9_-]/g, "_");
+        msg.parentNode.insertBefore(chartBox, msg.nextSibling);
+      }
+      var holder = chartBox.appendChild(document.createElement("div"));
+      holder.hidden = true;
+      panels.push({ V: VS.all[pvi], holder: holder, parts: null, uid: chartBox.id + "-" + panels.length });
+    }
+    function buildPanel(P){
+      var V = P.V, why = V.chartWhy || {};
+      P.parts = [];
+      /* a chart or table left off for the page's cap: staff are told why */
+      function note(part){
+        if(QRID_IS_SURVEY || typeof why[part] !== "string") return;
+        var n = P.holder.appendChild(document.createElement("div"));
+        if(n.style){ n.style.margin = "4px 0"; n.style.fontSize = "12px"; n.style.color = "#555"; }
+        n.textContent = "ℹ " + (part === "chart" ? "Growth chart" : "Table") + " not shown: " + why[part];
+      }
+      if(V.show.chart){
+        if(typeof why.chart === "string") note("chart");
+        else P.parts.push(QRID_growthChart(V, P.uid));
+      }
+      if(V.show.table){
+        if(typeof why.table === "string") note("table");
+        else P.parts.push(QRID_growthTable(V));
+      }
+      for(var i = 0; i < P.parts.length; i++) P.holder.appendChild(P.parts[i].el);
+    }
+    /* Draw what the variants that apply show; only this visit's point is
+       worked out here, and a chart moves its marker unless the sex or the
+       window changed. A failure draws nothing more and never reaches the
+       check. */
+    function showPanels(act){
+      if(!panels.length) return;
+      var on = [];
+      if(!act.conflict && !(act.length > 1 && !VS.grouped)) on = act;
+      var typed = null;
+      for(var pi = 0; pi < panels.length; pi++){
+        var P = panels[pi];
+        if(on.indexOf(P.V) < 0 || P.V.deferred || !P.V.growth || !P.V.growth.ref){ P.holder.hidden = true; continue; }
+        try {
+          if(!P.parts) buildPanel(P);
+          if(typed === null){
+            typed = QRID_WHEN.readRef(fieldName, null);
+            typed = (typed == null || typeof typed === "object" || QRID_isMissingCode(typed)) ? "" : String(typed);
+          }
+          var pt = QRID_growthChartPoint(P.V, growthPoint(P.V), typed);
+          for(var k = 0; k < P.parts.length; k++) P.parts[k].update(pt);
+          P.holder.hidden = false;
+        } catch(e){ P.holder.hidden = true; }
+      }
+    }
     /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
        time: the note waits for the field to be left, the guard does not. */
     var GITEM = null;
@@ -5168,6 +5768,7 @@ function QRIDRangeInit(QRID_CONFIG){
     function check(){
       var act = QRID_activeVariants(VS);
       publish(act);
+      showPanels(act);
       if(!act.length){
         /* No branch applies. A rule left off for the table cap is checked on
            save only where it applies, so it has nothing to say here; any other
@@ -7212,7 +7813,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangePlausibleText", "rangeMeasureScale", "rangeReturn",
                       "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals",
                       "rangeReturnComma", "deferredOnSave", "extendedAdvisory", "growthIdle",
-                      "selectorBlocked"];
+                      "selectorBlocked", "rangeShow", "growthCurveKey", "growthTableRows",
+                      "growthChartWhy", "growthChartSource"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -7422,7 +8024,12 @@ window.INSPIREUniversalValidator = {
     output: QRID_growthOutput, outputOf: QRID_growthOutputOf, catalog: QRID_GROWTH_OUTPUTS,
     percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
     normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
-    roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED
+    roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED,
+    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ
+  },
+  chartLogic: {                              /* @UVRANGE "show", locked by tests/growth_chart_dom_js.cjs */
+    geometry: QRID_CHART, step: QRID_chartStep, ticks: QRID_chartTicks, xUnit: QRID_chartXUnit, span: QRID_growthSpan,
+    window: QRID_chartWindow, clip: QRID_chartClip, yRange: QRID_chartYRange, showOf: QRID_showOf
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,

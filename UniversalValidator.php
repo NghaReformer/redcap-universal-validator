@@ -26,6 +26,7 @@ require_once __DIR__ . '/php/ModeRegistry.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/GrowthReference.php';
 require_once __DIR__ . '/php/GrowthOutputs.php';
+require_once __DIR__ . '/php/GrowthCurve.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ValueStamps.php';
@@ -3523,6 +3524,8 @@ class UniversalValidator extends AbstractExternalModule
         }
         // after the codes: a saved input holding one is blank (growthPageNeed)
         $config = $this->attachGrowthTables($config);
+        // after the tables: a chart is drawn only where the page judges the rule
+        $config = $this->attachGrowthCurves($config);
         // The date fields of this form shown day- or month-first: a condition on
         // the page compares the value REDCap stores (Y-M-D), as the server does.
         if ($config['rules'] && $pid !== null && is_string($instrument) && $instrument !== '') {
@@ -3757,6 +3760,143 @@ class UniversalValidator extends AbstractExternalModule
         $a = GrowthReference::axisValue($entry, $in);
         $out['xs'] = $a['state'] === 'ok' ? [$a['x']] : [];
         return $out;
+    }
+
+    /**
+     * What the growth charts and page tables of this page ("show") need from
+     * the server. A chart of measurements gets its reference curves
+     * (GrowthCurve::build) in config.growthCurves, keyed by GrowthCurve::key so
+     * charts that draw the same curves share one copy, with the rule's
+     * growthCurveKey pointing at it; a table of reference values ("rows":
+     * "curve") gets its rows as growthTableRows. Both are built for the sexes
+     * the page can read (growthPageNeed): one when the sex is a saved value,
+     * both when it is typed on this page. The reference's source title travels
+     * as growthChartSource, for the chart's caption.
+     *
+     * Only a rule or branch the page judges with its table (config.growth)
+     * draws: a deferred one, an idle one or one with an input withheld shows
+     * nothing. The catalog's "pageCharts" caps the curve sets and the tables
+     * of reference values together. One past the cap is left off with the
+     * reason (growthChartWhy, a note for staff), and nothing else changes: a
+     * chart never decides what is checked.
+     */
+    private function attachGrowthCurves(array $config)
+    {
+        if (empty($config['growth']) || !is_array($config['growth'])) return $config;
+        $dir = null;
+        $cap = null;
+        $sets = [];     // curve key => the curve set
+        $tableKeys = []; // tables of reference values on the page, by what they hold
+        $entries = [];  // reference id => [entry, table], or null when it cannot be read
+        foreach ($config['rules'] as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || !empty($r['deferred'])) continue;
+            $branched = isset($r['branches']) && is_array($r['branches']);
+            foreach ($branched ? $r['branches'] : [$r] as $bi => $n) {
+                if (!is_array($n) || !isset($n['rangeShow']) || !is_array($n['rangeShow']) || !$n['rangeShow']) continue;
+                if (!isset($n['rangeReference']) || !is_string($n['rangeReference']) || !isset($config['growth'][$n['rangeReference']])) continue;
+                if (!empty($n['deferred']) || !empty($n['growthIdle']) || $this->anyOperandWithheld($n)) continue;
+                if ($cap === null) {
+                    $dir = $this->referenceDir();
+                    $cap = GrowthReference::catalog($dir)['pageCharts'];
+                }
+                $id = $n['rangeReference'];
+                if (!array_key_exists($id, $entries)) {
+                    $entry = GrowthReference::entry($id, $dir);
+                    try {
+                        $entries[$id] = $entry === null ? null : [$entry, GrowthReference::table($entry)];
+                    } catch (\Throwable $e) {
+                        $entries[$id] = null;
+                    }
+                }
+                if ($entries[$id] === null) continue;
+                list($entry, $table) = $entries[$id];
+                $need = $this->growthPageNeed($n, $entry, $config);
+                $sexes = array_keys(array_filter($need['sexes']));
+                $show = $n['rangeShow'];
+                $add = [];
+                $why = [];
+                if (isset($entry['sourceTitle'])) $add['growthChartSource'] = $entry['sourceTitle'];
+                $scale = isset($n['rangeMeasureScale']) && is_string($n['rangeMeasureScale']) ? $n['rangeMeasureScale'] : null;
+                // a chart of z-scores draws flat lines: it needs no curves
+                if (isset($show['chart']) && is_array($show['chart']) && (isset($show['chart']['y']) ? $show['chart']['y'] : 'value') === 'value') {
+                    $c = $show['chart'];
+                    $kinds = GrowthOutputs::lineKinds();
+                    $of = $kinds[$c['lines']['kind']];
+                    $zs = [];
+                    foreach ($c['lines']['values'] as $v) $zs[] = GrowthReference::lineZ($of, $v);
+                    // the band is drawn between two more curves: the soft limits
+                    $band = null;
+                    if (!empty($c['bands'])) {
+                        $band = [];
+                        foreach (['rangeSoftLo', 'rangeSoftHi'] as $k) {
+                            if (isset($n[$k]) && is_string($n[$k]) && $n[$k] !== '') {
+                                $band[] = GrowthCurve::numText($n[$k]);
+                                $zs[] = (float) $n[$k];
+                            } else {
+                                $band[] = null;
+                            }
+                        }
+                    }
+                    $span = GrowthCurve::span($entry, isset($c['span']) ? $c['span'] : null);
+                    $key = GrowthCurve::key($id, $scale, $span, $c['lines']['kind'], $c['lines']['values'], $band);
+                    if (!isset($sets[$key]) && count($sets) + count($tableKeys) >= $cap) {
+                        $why['chart'] = self::chartCapWhy(count($sets) + count($tableKeys), $cap, 'chart');
+                    } else {
+                        if (!isset($sets[$key])) {
+                            $at = count($c['lines']['values']);
+                            $bandAt = null;
+                            if ($band !== null) {
+                                $bandAt = [$band[0] === null ? null : $at, $band[1] === null ? null : $at + ($band[0] === null ? 0 : 1)];
+                            }
+                            $sets[$key] = ['kind' => $c['lines']['kind'], 'values' => $c['lines']['values'], 'band' => $bandAt,
+                                           'span' => $span, 'xScale' => $table['scale']];
+                        }
+                        foreach ($sexes as $sex) {
+                            if (isset($sets[$key][$sex])) continue;
+                            $b = GrowthCurve::build($entry, $table, $sex, $zs, $span, $scale);
+                            $sets[$key][$sex] = $b === null ? null : ['d' => $b['d'], 'lines' => $b['lines']];
+                        }
+                        $add['growthCurveKey'] = $key;
+                    }
+                }
+                if (isset($show['table']['rows']) && $show['table']['rows'] === 'curve') {
+                    $t = $show['table'];
+                    $tier = isset($n['rangeReturnLimits']) && $n['rangeReturnLimits'] === 'hard' ? 'Hard' : 'Soft';
+                    $lim = function ($k) use ($n) { return isset($n[$k]) && is_string($n[$k]) && $n[$k] !== '' ? $n[$k] : null; };
+                    $ctx = ['limits' => ['lo' => $lim('range' . $tier . 'Lo'), 'hi' => $lim('range' . $tier . 'Hi')],
+                            'decimals' => isset($n['rangeDecimals']) ? (int) $n['rangeDecimals'] : 1,
+                            'percentileDecimals' => isset($n['rangePercentileDecimals']) ? (int) $n['rangePercentileDecimals']
+                                : GrowthReference::DEFAULT_PERCENTILE_DECIMALS,
+                            'comma' => !empty($n['decimalComma']), 'scale' => $scale,
+                            'unit' => isset($n['rangeUnit']) && is_string($n['rangeUnit']) && $n['rangeUnit'] !== '' ? $n['rangeUnit'] : null];
+                    $tkey = json_encode([$id, $t['span'], $t['step'], $t['columns'], $ctx, $sexes]);
+                    if (!isset($tableKeys[$tkey]) && count($sets) + count($tableKeys) >= $cap) {
+                        $why['table'] = self::chartCapWhy(count($sets) + count($tableKeys), $cap, 'table');
+                    } else {
+                        $tableKeys[$tkey] = true;
+                        $rows = [];
+                        foreach ($sexes as $sex) {
+                            $rows[$sex] = GrowthCurve::tableRows($entry, $table, $sex, $t['span'], $t['step'], $t['columns'], $ctx);
+                        }
+                        $add['growthTableRows'] = $rows;
+                    }
+                }
+                if ($why) $add['growthChartWhy'] = $why;
+                if (!$add) continue;
+                if ($branched) $config['rules'][$i]['branches'][$bi] = $add + $config['rules'][$i]['branches'][$bi];
+                else $config['rules'][$i] = $add + $config['rules'][$i];
+            }
+        }
+        if ($sets) $config['growthCurves'] = $sets;
+        return $config;
+    }
+
+    /** Why a chart or a table of reference values is left off this page: the "pageCharts" cap. */
+    private static function chartCapWhy($count, $cap, $part)
+    {
+        return 'this form already shows ' . $count . ' growth chart' . ($count === 1 ? '' : 's')
+            . ' or table' . ($count === 1 ? '' : 's') . ' of reference values, the most one page may show (' . $cap
+            . '), so this ' . ($part === 'chart' ? 'chart' : 'table') . ' is not shown. The check itself is not affected.';
     }
 
     /** Two pages' reads of one reference together: every row either needs. */
@@ -5882,23 +6022,25 @@ class UniversalValidator extends AbstractExternalModule
         } elseif ($ftype === 'calc') {
             $frag['rangeComputed'] = true;
         }
-        // Bounds a rule returns are written with the decimals the measured
-        // field takes: none for an integer, N for number_Ndp, one otherwise
-        // ("decimals" says otherwise). Resolved here so both runtimes get a
-        // number, never a default of their own.
-        if (isset($frag['rangeReturn']) && !array_key_exists('rangeDecimals', $frag)) {
+        // Bounds a rule returns, or its page table shows, are written with the
+        // decimals the measured field takes: none for an integer, N for
+        // number_Ndp, one otherwise ("decimals" says otherwise). Resolved
+        // here so both runtimes get a number, never a default of their own.
+        $columns = isset($frag['rangeShow']['table']['columns']) && is_array($frag['rangeShow']['table']['columns'])
+            ? $frag['rangeShow']['table']['columns'] : [];
+        if ((isset($frag['rangeReturn']) || $columns) && !array_key_exists('rangeDecimals', $frag)) {
             $v = $ftype === 'text' ? strtolower(self::validationOf($meta)) : '';
             if (preg_match('/^number_([1-9])dp/', $v, $dp)) $frag['rangeDecimals'] = min((int) $dp[1], GrowthReference::MAX_DECIMALS);
             elseif ($v === 'int' || $v === 'integer') $frag['rangeDecimals'] = 0;
             else $frag['rangeDecimals'] = 1;
         }
-        // A returned percentile is not in the field's unit: one decimal unless
+        // A percentile is not in the field's unit: one decimal unless
         // "percentileDecimals" says otherwise, set only when a value written
-        // with it is returned (the catalog's "places").
-        if (isset($frag['rangeReturn']) && is_array($frag['rangeReturn']) && !array_key_exists('rangePercentileDecimals', $frag)
-                && GrowthOutputs::problem() === null
-                && GrowthOutputs::anyWhere(array_keys($frag['rangeReturn']),
-                    function ($e) { return isset($e['places']) && $e['places'] === 'percentileDecimals'; })) {
+        // with it is returned or shown (the catalog's "places").
+        $pct = function ($e) { return isset($e['places']) && $e['places'] === 'percentileDecimals'; };
+        if (!array_key_exists('rangePercentileDecimals', $frag) && GrowthOutputs::problem() === null
+                && ((isset($frag['rangeReturn']) && is_array($frag['rangeReturn']) && GrowthOutputs::anyWhere(array_keys($frag['rangeReturn']), $pct))
+                    || GrowthOutputs::anyWhere($columns, $pct, 'column'))) {
             $frag['rangePercentileDecimals'] = GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
         }
         $unit = isset($frag['rangeUnit']) ? $frag['rangeUnit'] : '';
@@ -5955,6 +6097,12 @@ class UniversalValidator extends AbstractExternalModule
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
         if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
+        // a chart's or a table's "span" must lie inside the reference, and a
+        // table of reference values must fit its row cap over the span
+        if (isset($frag['rangeShow']) && is_array($frag['rangeShow'])) {
+            $why = GrowthCurve::showProblem($frag['rangeShow'], $entry);
+            if ($why !== null) return $refuse($why);
+        }
         // "plausible" is in the reference's unit, after "measureScale"
         $pt = self::rangeText($lim('rangePlausibleLo'), $lim('rangePlausibleHi'), (string) $entry['unit'], false);
         if ($pt !== null) $frag['rangePlausibleText'] = $pt;

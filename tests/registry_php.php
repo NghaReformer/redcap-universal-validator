@@ -93,6 +93,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
     // @UVRANGE return values (written to fields, with the bounds' limits and decimals)
     'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangePercentileDecimals', 'rangeReturnComma',
+    // @UVRANGE "show": the growth chart and the page table
+    'rangeShow',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -132,6 +134,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // a branch settled false that the page has no table for; a branch group
     // whose selector the server could not resolve
     'growthIdle', 'selectorBlocked',
+    // @UVRANGE "show", and what the server adds for it: the curve set the
+    // chart draws, the page table's rows, why the chart is left off, and the
+    // reference's source line
+    'rangeShow', 'growthCurveKey', 'growthTableRows', 'growthChartWhy', 'growthChartSource',
 ]);
 
 // Branching::modeOfType.
@@ -229,9 +235,12 @@ check('serverKeys holds uniqueAlso', in_array('uniqueAlso', ModeRegistry::server
 check('uniqueAlso is not a client key', !in_array('uniqueAlso', ModeRegistry::clientKeys(), true));
 // Every mode whose page shows a rule message takes that message as a language
 // map; the ID check has no message of its own.
-foreach (['constraint', 'required', 'unique', 'choices', 'window', 'exists', 'range'] as $m) {
+foreach (['constraint', 'required', 'unique', 'choices', 'window', 'exists'] as $m) {
     check($m . ' takes "message" as a language map', ModeRegistry::textKeys($m) === ['message']);
 }
+// @UVRANGE also takes the chart's and the page table's labels, by path
+check('range takes "message" and the "show" labels as language maps',
+    ModeRegistry::textKeys('range') === ['message', 'show.chart.labels.*', 'show.table.labels.*']);
 check('the ID check has no text keys', ModeRegistry::textKeys('check') === []);
 $shaped = ModeRegistry::clientShape($ua);
 check('clientShape removes "also" from every branch', !isset($shaped['branches'][0]['uniqueAlso'])

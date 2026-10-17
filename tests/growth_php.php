@@ -201,9 +201,22 @@ $plain = G::outputs($R['t-days'], $R['t-days'], 'male', 2, 11.0, ['lo' => '-2', 
 foreach (G::COMPUTED as $id) {
     $spec = GrowthOutputs::spec($id);
     $got = array_key_exists($id, $plain) ? $plain[$id]
-        : G::output($R['t-days'], $R['t-days'], 'male', 2, 11.0, $id, isset($spec['param']) ? $spec['param']['max'] : null, 1);
+        : G::output($R['t-days'], $R['t-days'], 'male', 2, 11.0, $id, isset($spec['param']) ? $spec['param']['max'] : null, 1, null, ' 11.0 ');
     check('computed: ' . $id . ' gives a value (got ' . json_encode($got) . ')', is_string($got) && $got !== '');
 }
+// the page table's own columns: the axis value and the measurement as typed
+check('output age: the axis value, two decimals at most, no trailing zeros',
+    G::output($R['t-days'], $R['t-days'], 'male', 365, null, 'age', null, 1) === '365'
+    && G::output($R['t-days'], $R['t-days'], 'male', 12.5, null, 'age', null, 1) === '12.5'
+    && G::output($R['t-days'], $R['t-days'], 'male', 13.145, null, 'age', null, 1) === '13.15'
+    && G::output($R['t-days'], $R['t-days'], 'male', 0, null, 'age', null, 1) === '0');
+check('axisText: nothing for what is not finite', G::axisText(NAN) === null && G::axisText(INF) === null && G::axisText(-1.5) === '-1.5');
+check('output value: the typed text, trimmed; nothing when blank', G::output($R['t-days'], $R['t-days'], 'male', 2, 11.0, 'value', null, 1, null, " 7,70\t") === '7,70'
+    && G::output($R['t-days'], $R['t-days'], 'male', 2, null, 'value', null, 1, null, '  ') === null
+    && G::output($R['t-days'], $R['t-days'], 'male', 2, null, 'value', null, 1) === null);
+check('lineZ: a z-score as itself, a percentile as its quantile, nothing else',
+    G::lineZ('valueAtZ', '-2') === -2.0 && abs(G::lineZ('valueAtPercentile', '97.5') - 1.959963984540054) < 1e-12
+    && G::lineZ('z', null) === null && G::lineZ('valueAtPercentile', '0') === null);
 check('percentileText: no probability, no text', G::percentileText(NAN, 1) === null && G::percentileText(INF, 1) === null
     && G::percentileText(-INF, 1) === null);
 check('roundedUnits: what is not a number at 0 or above gives nothing', G::roundedUnits(NAN, 1) === null
