@@ -417,8 +417,18 @@ $f = AnnotationRules::parseAllTags("@UVASSERT=[end]>=[start] or [start]=''");
 check('unquoted assert: or-condition read whole', $f[0]['type'] === 'constraint' && $f[0]['assert'] === "[end]>=[start] or [start]=''");
 $f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' Needed once consent is given");
 check('unquoted required: a note after the condition is still ignored', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
-$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1'\nand [b]='2' is on the next line");
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1'\nThe PI reviews it on the next line");
 check('unquoted required: reading stops at the end of the line', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+foreach (["@UVREQUIRED=[a]='1'\nand [b]='2'", "@UVREQUIRED=[a]='1'\r\n  OR [b]='2'", "@UVASSERT=[x]>0\n\n|| [y]>0"] as $ann) {
+    $f = AnnotationRules::parseAllTags($ann);
+    check('unquoted condition that ends its line and goes on at the next is refused, not cut: ' . json_encode($ann),
+        isset($f[0]['error']) && strpos($f[0]['error'], 'in quotes') !== false);
+}
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1'\n@HIDDEN");
+check('unquoted required: an action tag on the next line is not a continuation', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' see the SOP\nand the lab manual");
+check('unquoted required: a note on the condition\'s own line keeps the next line a note too',
+    $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
 $f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' and then the PI decides");
 check('unquoted required: text that goes on with "and" is refused, not cut',
     isset($f[0]['error']) && $f[0]['_tag'] === '@UVREQUIRED' && strpos($f[0]['error'], 'in quotes') !== false);
@@ -440,7 +450,33 @@ check('extractTagsFor keeps token values for other tags',
 $d = AnnotationRules::extractTagsDetailed("@UVREQUIRED=[a]='1' and [b]='2' @UVREQUIRED=[c]='3'", '@UVREQUIRED', 'condition');
 check('extractTagsDetailed: two condition values, offsets right',
     array_column($d, 'value') === ["[a]='1' and [b]='2'", "[c]='3'"] && $d[0]['error'] === null && $d[1]['error'] === null);
-check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false]);
+check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false, 'hint' => null]);
+// "&&", "||", "&", "|", "!" and "not [field]" after a complete condition go on
+// with it: refused, never cut, and "&&"/"||"/"!" name the word to write.
+foreach ([
+    "@UVREQUIRED=[a]='1' && [b]='2'"           => 'write "and" instead',
+    "@UVASSERT=[x]>0 || [y]>0"                 => 'write "or" instead',
+    "@UVREQUIRED=[a]='1' AND [b]='2' && [c]='3'" => 'write "and" instead',
+    "@UVREQUIRED=[a]='1' & [b]='2'"            => 'write "and" instead',
+    "@UVASSERT=[x]>0 | [y]>0"                  => 'write "or" instead',
+    "@UVREQUIRED=[a]='1' ! [b]='2'"            => 'write "not" instead',
+    "@UVREQUIRED=[a]='1' NOT [b]='2'"          => 'in quotes',
+    "@UVREQUIRED=[a]='1' not([b]='2')"         => 'in quotes',
+] as $ann => $want) {
+    $f = AnnotationRules::parseAllTags($ann);
+    check('unquoted condition going on with ' . json_encode($ann) . ' is refused naming ' . json_encode($want),
+        isset($f[0]['error']) && strpos($f[0]['error'], $want) !== false && strpos($f[0]['error'], 'in quotes') !== false);
+}
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' not needed at screening");
+check('unquoted required: a note that starts with "not" is still a note', $f[0]['when'] === "[a]='1'" && !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags("@UVASSERT=[x]>0 !=1");
+check('unquoted assert: "!=" after the condition is refused without the "!" advice',
+    isset($f[0]['error']) && strpos($f[0]['error'], 'in quotes') !== false && strpos($f[0]['error'], 'write "not"') === false);
+// A long annotation line costs one pass: no prefix past the 500-character cap is parsed.
+$long = "[a]='1' " . str_repeat('x ', 40000);
+$t0 = microtime(true);
+$p = Logic::parsePrefix($long);
+check('Logic::parsePrefix: an 80 KB line is read in well under a second', $p['length'] === 7 && microtime(true) - $t0 < 0.5);
 // Only a mode flagged "bareValue":"condition" reads a condition whole; any
 // other mode keeps one word, even when the words make a condition.
 check('extractTagsDetailed: a token mode reads one word of a condition-shaped value',

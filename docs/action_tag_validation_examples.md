@@ -1037,13 +1037,22 @@ records:
 
 Earlier releases stopped the unquoted form at the first space and checked only
 `[consent]='1'`. Text after a complete condition is still ignored as a note. Text that
-goes on with `and`, `or` or a comparison but does not finish the condition is refused,
-since the module cannot tell where the condition ends:
+goes on with `and`, `or`, `not (` or `not [`, a comparison, or one of `&&`, `||`, `&`,
+`|` and `!`, but does not finish the condition, is refused, since the module cannot tell
+where the condition ends. For `&&`, `||` and `!` the error also names the word to write:
 
 ```text invalid
 # refused: put the whole condition in quotes
 @UVREQUIRED=[consent]='1' and see protocol section 4
+
+# refused: uses "&&" — write "and" instead
+@UVREQUIRED=[consent]='1' && [site]<>'9'
 ```
+
+An unquoted condition ends with its line. A next line that starts with `and`, `or` or
+another of those words is refused the same way, so quote a condition that runs over two
+lines. A next line that starts with anything else, such as another action tag or a
+note, is not read.
 
 ### Semantics worth knowing
 
@@ -1799,9 +1808,10 @@ searched value: one event row, or one repeat instance together with its event ro
 `project` names another project on the same REDCap server, by its project id or
 by an alias. An alias is set in this project's module settings ("@UVEXISTS
 project aliases"), so the data dictionary can move between a test and a
-production server unchanged; only the alias row differs. `in`, `event` and the
-`match` targets then name fields and events of that project; the `match` values
-stay fields of this record. Three switches must all be on:
+production server unchanged; only the alias row differs. `in`, `event`, the
+`match` targets and the fields of a `where` (Level 7) then name fields and
+events of that project; the `match` values stay fields of this record. Three
+switches must all be on:
 
 1. **The server.** An administrator turns on "@UVEXISTS in other projects" in the
    module's Control Center settings. It is off by default.
@@ -2002,6 +2012,22 @@ SP-1 with consent=1, status=3, coll_date=2026-03-01                             
 The second line passes because a blank `status` is not `'3'`. The last fails
 because a blank side of `>` gives no answer.
 
+A comparison with a blank side of `<`, `>`, `<=` or `>=` never lets an entry
+pass, and `not(...)` around it does not change that:
+
+```text
+# on: result_specimen_id — not a low-volume specimen
+@UVEXISTS={"in":"[specimen_id]","where":"not([volume]<2)"}
+```
+
+```text expect
+SP-1 with volume=5    => found
+SP-1 with volume=1    => filtered
+SP-1                  => filtered
+```
+
+To let an entry with no volume pass, say so: `"not([volume]<2) or [volume]=''"`.
+
 A checkbox is tested one box at a time, as `[field(code)]`:
 
 ```text
@@ -2054,7 +2080,8 @@ this record.
   `where`: staff see the rule's `whereMessage`, or "This value is saved, but not
   in an entry that meets this rule's conditions." It shows red and is enforced
   as *not found* is, per `blockSave`. The Validation scan report explains it
-  with the same `whereMessage`, never with `message`. A survey respondent sees the plain *not
+  with the same `whereMessage`, or else with "The value is saved, but not in an
+  entry that meets this rule's conditions.", never with `message`. A survey respondent sees the plain *not
   found* wording, so a survey tells nothing about entries it cannot see. A value
   saved nowhere is *not found*, with the rule's `message`, as before. *Could not
   check* is unchanged.
@@ -2064,8 +2091,9 @@ this record.
   on a form that does not repeat, read from a repeat instance, reads the boxes
   of the event row.
 - **How values compare.** As in `when`: `=`, `<>` (or `!=`), `<`, `>`, `<=`,
-  `>=`. Two numbers compare by value, so `'007'` equals `'7'`. A blank side of
-  `<`, `>`, `<=` or `>=` fails the comparison. A blank value is not `'3'`, so
+  `>=`. Two numbers compare by value, so `'007'` equals `'7'`. A comparison
+  with a blank side of `<`, `>`, `<=` or `>=` is never true, and `not(...)`
+  around it does not make it true. A blank value is not `'3'`, so
   `[status]<>'3'` passes an entry with no status; write
   `[status]<>'' and [status]<>'3'` to require one. Missing Data Codes are plain
   values: a saved `NA` is not blank.
@@ -2091,8 +2119,9 @@ this record.
   `"surveys":true` is refused when one of them is an Identifier.
 - **With `return`.** Values are copied only from an entry that meets `where`.
   The fourth answer empties the fields the rule fills, as *not found* does.
-- **The condition stays on the server.** The page holds `whereMessage` but not
-  `where`. `whereMessage` takes a map of language id to text, as `message` does
+- **The condition stays on the server.** A form page holds `whereMessage` but
+  not `where`; a survey page holds neither, since a respondent never sees the
+  fourth answer. `whereMessage` takes a map of language id to text, as `message` does
   (see [Messages in several languages](#messages-in-several-languages)).
 - **Another project.** The agreement there lists the `where` fields among the
   fields this project may search or filter on. A refusal that would describe
@@ -2105,12 +2134,18 @@ this record.
   reason `filtered`. The Validation scan shows it as "Saved, but not where its
   conditions hold" in the Issue column.
 - **The cost.** The `where` fields are read with the searched field. The
-  narrowed read a lookup tries first may leave out rows `where` needs, so with
-  `where` it only names candidate records: a second read of those records,
-  with no filter logic, decides whether one passes. A value with no entry that
-  passes gets the read of the whole field that any *not found* gets. The scan
-  reads fewer records per chunk for each `where` field, to keep its index
-  within the memory limit.
+  narrowed read a signed-in user's lookup tries first may leave out rows
+  `where` needs, so with `where` it only names candidate records: a second read
+  of those records, with no filter logic, decides whether one passes. A value
+  with no entry that passes gets the read of the whole field that any *not
+  found* gets. A survey lookup with `where` skips the narrowed read and reads
+  the whole field once, under the survey's read budget, so a found, a filtered
+  and an absent value take the same reads. A record-ID lookup reads the `where`
+  fields with the record ID. When that read finds no record that passes and
+  the value could name a record another way (another letter case, or `007` for
+  record 7), one more read takes every record's ID and `where` fields. The scan reads fewer records per chunk
+  for each `where` field, so a chunk holds about as many values as one without
+  `where`.
 
 ### Semantics worth knowing
 
@@ -2323,7 +2358,8 @@ These are refused when the rule is saved:
 # refused: cannot be combined
 @UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"event"}
 
-# A record ID belongs to the whole record. "event" only says where copied values are read.
+# A record ID belongs to the whole record. "event" only says where copied values are read
+# ("return") or where "where" is tested.
 # refused: does not apply to "in":"record"
 @UVEXISTS={"in":"record","event":"enrolment_arm_1"}
 
@@ -3879,8 +3915,11 @@ The rules:
 - `blockSave`, `suggestFix` and `message` are **per branch** — Compulsory for blood
   specimens, informational otherwise.
 - **Rejected at save time** (a visible configuration error, never silent): two when-less
-  tags of the same kind on one field; two tags with byte-identical `when` strings (they
-  could never be told apart); a single-value and a pooled `@UVALIDATE` sharing a field.
+  tags of the same kind on one field; two tags whose `when` conditions say the same
+  thing, however written (keyword case, spacing, quote style, parentheses, the order of
+  `and`/`or` members and of a comparison's sides aside; letter case too when both rules
+  ignore it), since they could never be told apart; a single-value and a pooled
+  `@UVALIDATE` sharing a field.
 - **Overlapping conditions are a runtime conflict.** If two conditions are ever true at
   once, the field shows a "Validation conflict" notice naming both, validates nothing,
   and **never** blocks the save; the server logs the same conflict. Mutually exclusive
@@ -3918,8 +3957,9 @@ The same dialect powers `when` on every tag and `assert` on `@UVASSERT`. It is a
 
 One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`, then `or`,
 as in REDCap: `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`.
-Add parentheses when you mean the other grouping. Parentheses nest up to 10 deep, and a
-condition holds at most 500 characters and 20 field references.
+Add parentheses when you mean the other grouping. A condition nests at most 10 levels
+deep, where each pair of parentheses and each `not` is one level, and holds at most 500
+characters and 20 field references.
 
 ```text
 @UVASSERT="([visit_type]='1' or [visit_type]='2') and [visit_date]>=[enrol_date]"
@@ -5067,10 +5107,10 @@ format pattern as the else branch; the field is required either way.
 
 | Attempt                                                    | Result                                                            |
 | ---------------------------------------------------------- | ----------------------------------------------------------------- |
-| Two`@UVALIDATE` tags, neither with a `when`            | Configuration error — two when-less rules of one kind            |
-| Two`@UVASSERT` tags with byte-identical `when`         | Configuration error — they could never be told apart             |
-| A`single` and a `pooled` `@UVALIDATE` on one field   | Configuration error — mixed types in one kind                    |
-| Two`@UVREQUIRED` tags whose conditions are true at once  | Runtime conflict — a notice, validates nothing, never blocks     |
+| Two `@UVALIDATE` tags, neither with a `when`            | Configuration error — two when-less rules of one kind            |
+| Two `@UVASSERT` tags whose `when` says the same thing (`[a]='1' AND [b]='2'` and `([b]='2') and [a]='1'`) | Configuration error — they could never be told apart |
+| A `single` and a `pooled` `@UVALIDATE` on one field   | Configuration error — mixed types in one kind                    |
+| Two `@UVREQUIRED` tags whose conditions are true at once  | Runtime conflict — a notice, validates nothing, never blocks     |
 | `@UVREQUIRED` or `@UVUNIQUE` on a **calc** field | Configuration error — a data enterer cannot fix a calc           |
 | `@UVALIDATE` on a dropdown/radio/slider                  | Configuration error — check/format rules are Text and Notes only |
 
@@ -5341,15 +5381,17 @@ target the same field: different kinds compose, and the same kind branches by `w
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
 | `in`            | string          | *(none)*     | `record`, or one field reference such as `[specimen_id]`; the shorthand `@UVEXISTS=[field]` sets it |
 | `project`       | number or string | *(this project)* | Another project's id, or an alias from this project's settings. Not with `"scope":"dag"` or `"scope":"event"` |
-| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"`; with `"in":"record"` only beside `return`, where it names the event the values are read from |
+| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"`; with `"in":"record"` only beside `return` or `where`, where it names the event the values are read or tested in |
 | `scope`         | string          | `project`    | `project`, `dag` (this record's group), `event` (this entry's event)   |
 | `match`         | object          | *(none)*     | `{"target_field":"[field of this record]"}`, up to 5 pairs, same entry as the searched value |
 | `return`        | object          | *(none)*     | `{"field there":"[field of this form]"}`, up to 10 pairs; `record` copies the record ID found. Fills the fields from the entry found |
+| `where`         | string          | *(none)*     | A condition on the entry found: up to 10 of its fields, against fixed values or each other (Level 7) |
 | `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier, and with `return` |
 | `when`          | string          | *(none)*     | Check only while true                                                  |
 | `message`       | string or map   | generic line   | Replaces the "not found" line                                          |
+| `whereMessage`  | string or map   | generic line   | Replaces the line for a value saved only in entries that fail `where`; staff only. Needs `where` |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
-| `caseSensitive` | boolean         | `false`      | Exact-case text in `when` and in the lookup                          |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`, in the lookup and in `where`              |
 
 ### `@UVRANGE`
 

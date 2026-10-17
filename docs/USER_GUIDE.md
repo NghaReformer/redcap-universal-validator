@@ -596,9 +596,12 @@ tags, the `@UVASSERT` test, the `@UVREQUIRED` condition) reads the same language
 The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
 `@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
 or the next action tag. Text after a complete condition is ignored as a note. If that
-text goes on with `and`, `or` or a comparison and does not finish the condition, the
-rule is refused with "put the whole condition in quotes". Earlier releases stopped
-an unquoted condition at the first space.
+text goes on with `and`, `or`, `not (` or `not [`, a comparison, or one of `&&`, `||`,
+`&`, `|` and `!`, and does not finish the condition, the rule is refused with "put the
+whole condition in quotes"; for `&&`, `||` and `!` the error also names the word to
+write. An unquoted condition ends with its line, so a next line that starts the same
+way is refused too: quote a condition that runs over two lines. Earlier releases
+stopped an unquoted condition at the first space.
 
 **Behavior worth knowing.**
 
@@ -1048,12 +1051,14 @@ with `and`, `or` and `not`, with parentheses, keywords in any letter case. Its f
 fields of the entry found, compared with fixed values or with each other; to
 compare with a field of this record, use `match`. A checkbox box is tested as
 `[field(code)]`. Dates are written Y-M-D (`'2026-03-01'`) and numbers with a
-decimal point. A blank side of `<`, `>`, `<=` or `>=` fails the comparison.
+decimal point. A comparison with a blank side of `<`, `>`, `<=` or `>=` is
+never true, and `not(...)` around it does not make it true.
 When the value is saved but no entry holding it meets `where`, staff see the
 rule's `whereMessage`, or "This value is saved, but not in an entry that meets
-this rule's conditions.", and the save is held as for "not found". A survey
-respondent sees the plain "not found". `where` tests at most 10 fields, each on
-the form searched or on a form that does not repeat. With `"in":"record"`, a
+this rule's conditions.", and it is enforced as "not found" is, per
+`blockSave`. A survey respondent sees the plain "not found". `where` tests at
+most 10 fields, each on the form searched or on a form that does not repeat,
+and in every event the entry can be found in. With `"in":"record"`, a
 longitudinal project names the event the record's entry is read from with
 `event`. The `where` fields count as fields the lookup reads, for user rights,
 for Identifier checks on surveys and, in another project, for the list of

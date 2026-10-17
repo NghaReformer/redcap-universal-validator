@@ -363,6 +363,7 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
+check('only "whereMessage" is kept off survey pages', ModeRegistry::staffOnlyKeys() === ['whereMessage']);
 check('exists explains a filtered finding with "whereMessage"', ModeRegistry::reasonMessageKeys('exists') === ['filtered' => 'whereMessage']
     && ModeRegistry::reasonMessageKeys('range') === []);
 check('exists issue labels', ModeRegistry::issueLabel('exists', 'filtered') === 'Saved, but not where its conditions hold'
@@ -472,6 +473,12 @@ $cases = [
         return json_encode($g); })($good),
     'reasonMessages naming a key that is not a text key' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['filtered' => 'existsWhere'];
+        return json_encode($g); })($good),
+    'staffOnlyKeys naming a key the page does not get' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['staffOnlyKeys'] = ['existsWhere'];
+        return json_encode($g); })($good),
+    'staffOnlyKeys not a list' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['staffOnlyKeys'] = 'whereMessage';
         return json_encode($g); })($good),
     'reasonMessages as a list' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['whereMessage'];

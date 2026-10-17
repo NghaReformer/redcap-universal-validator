@@ -1908,7 +1908,12 @@ function QRID_whenQualifiedRefs(ast){
 
 function QRID_whenParse(expr, opts){
   if(typeof expr !== "string") return QRID_whenErr("must be a non-empty condition string.");
-  var s = expr.replace(/[\t\r\n]/g, " ").replace(/^ +| +$/g, "");
+  /* trimmed by index, not /^ +| +$/: that regex retries " +$" from every
+     space of a run inside the condition, which is quadratic in its length */
+  var s = expr.replace(/[\t\r\n]/g, " "), a = 0, b = s.length;
+  while(a < b && s.charCodeAt(a) === 32) a++;
+  while(b > a && s.charCodeAt(b - 1) === 32) b--;
+  s = s.slice(a, b);
   if(s === "") return QRID_whenErr("must be a non-empty condition string.");
   if(/[^\x20-\x7E]/.test(s)) return QRID_whenErr("must contain printable ASCII only.");
   if(s.length > QRID_WHEN_MAX_LEN) return QRID_whenErr("is limited to " + QRID_WHEN_MAX_LEN + " characters.");

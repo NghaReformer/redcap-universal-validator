@@ -113,5 +113,20 @@ for (const weird of [null, undefined, 7, 1.5, true, ['x'], {}, "[a]='1'"]) {
     !threw && r && typeof r.ok === 'boolean');
 }
 
+// ---- a long run of spaces is trimmed in linear time ----
+// /^ +| +$/ retried " +$" from every space of a run inside the condition:
+// 100,000 spaces there took 4.5 seconds.
+{
+  let t0 = Date.now();
+  let r = W.parse(' '.repeat(100000) + "[a]='1'" + ' '.repeat(100000));
+  check('trim: 200,000 spaces around a condition parse in well under a second',
+    r.ok === true && Date.now() - t0 < 500);
+  t0 = Date.now();
+  r = W.parse("[a]='1'" + ' '.repeat(100000) + "and [b]='2'");
+  check('trim: 100,000 spaces inside a condition are refused for length in well under a second',
+    r.ok === false && /limited to 500 characters/.test(r.error) && Date.now() - t0 < 500);
+  check('trim: spaces only is the empty-condition error', W.parse('     ').error === 'must be a non-empty condition string.');
+}
+
 console.log(`when_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

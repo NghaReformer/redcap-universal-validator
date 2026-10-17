@@ -208,17 +208,25 @@ class Logic
      * A value used to end at the first space, so everything after "and" was
      * silently dropped. Reading stops at the end of the line, or at a word that
      * starts with "@" (the next action tag), outside quotes; a note written
-     * after the condition is therefore still ignored.
+     * after the condition is therefore still ignored. A condition that ends
+     * its line and whose next line starts as a condition goes on is treated
+     * as going on (continues below).
      *
-     * Returns ['length' => n, 'continues' => bool]. n is the byte length of the
-     * longest prefix, ending at a word boundary, that parses as a complete
-     * condition (0 when none does). continues is true when the text after it
-     * goes on with "and", "or" or a comparison operator: the reader then cannot
-     * tell where the designer meant the condition to end, and the caller
-     * refuses the rule instead of guessing. Prefixes are parsed with the
-     * qualified option only to find the boundary; the rule's own options apply
-     * when the value is checked. Annotations are parsed on the server only, so
-     * this has no JavaScript twin.
+     * Returns ['length' => n, 'continues' => bool, 'hint' => string|null]. n is
+     * the byte length of the longest prefix, ending at a word boundary, that
+     * parses as a complete condition (0 when none does). continues is true
+     * when the text after it goes on as a condition would: "and", "or", "not"
+     * before a [field] or "(", a comparison operator, or "&", "|" or "!". The
+     * reader then cannot tell where the designer meant the condition to end,
+     * and the caller refuses the rule instead of guessing. hint is the
+     * lexer's advice when it goes on with "&&", "||" or "!" ('uses "&&" —
+     * write "and" instead.'), so the refusal names the word to write. A note
+     * after the condition that starts with any other word ("not needed at
+     * screening") is still a note. Prefixes are parsed with the qualified
+     * option only to find the boundary; the rule's own options apply when the
+     * value is checked. No prefix longer than MAX_EXPR_LEN is tried, since
+     * none can parse, which keeps a long annotation line linear. Annotations
+     * are parsed on the server only, so this has no JavaScript twin.
      */
     public static function parsePrefix($text)
     {
@@ -246,14 +254,24 @@ class Logic
         }
         if ($inWord) $ends[] = $i;
         $best = 0;
+        $lead = strspn($text, " \t");
         foreach ($ends as $e) {
+            if ($e - $lead > self::MAX_EXPR_LEN) break;
             // parseText, not parse(): the prefixes are throwaway texts and would
             // push the rule conditions out of the bounded memo.
             if (self::parseText(substr($text, 0, $e), ['qualified' => true])['ok']) $best = $e;
         }
         $after = $best > 0 ? ltrim(substr($text, $best), " \t") : '';
-        $continues = $best > 0 && preg_match('/^(?:(?:and|or)\b|[=<>]|!=)/i', $after) === 1;
-        return ['length' => $best, 'continues' => $continues];
+        // A condition that ends its line may go on at the start of the next
+        // one ("[a]='1'" then "and [b]='2'"): that is read as going on too.
+        if ($after !== '' && ($after[0] === "\n" || $after[0] === "\r")) $after = ltrim($after, " \t\r\n");
+        $continues = $best > 0 && preg_match('/^(?:(?:and|or)\b|not\s*[\[(]|[=<>!&|])/i', $after) === 1;
+        $hint = null;
+        if ($continues && preg_match('/^(?:&&?|\|\|?|!(?!=))/', $after, $m)) {
+            $lex = self::lex($m[0]);
+            $hint = isset($lex['error']) ? $lex['error'] : null;
+        }
+        return ['length' => $best, 'continues' => $continues, 'hint' => $hint];
     }
 
     private static function parseText($expr, array $opts)

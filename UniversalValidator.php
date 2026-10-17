@@ -1138,6 +1138,11 @@ class UniversalValidator extends AbstractExternalModule
     private function refreshExistsReads($pid, $record)
     {
         if ($record === null || $record === '') return;
+        // A record-ID lookup's read of every record's "where" values
+        // (recordRowsOf) is read afresh: it is small beside a full read.
+        foreach (array_keys($this->recordRows) as $k) {
+            if (strpos($k, (int) $pid . "\0") === 0) unset($this->recordRows[$k]);
+        }
         foreach (array_keys($this->existsReads) as $k) {
             $params = $this->existsReads[$k]['params'];
             if ((int) $params['project_id'] !== (int) $pid) continue;
@@ -1250,8 +1255,13 @@ class UniversalValidator extends AbstractExternalModule
                 $pk = $this->recordIdFieldOf($pid);
                 if ($pk === '') return $unknown;
                 $self = (isset($opts['self']) && $opts['self'] !== null && $opts['self'] !== '') ? (string) $opts['self'] : null;
+                // With "where" the same read brings the values it tests, so a
+                // record that exists costs no read more than one that does not:
+                // a survey cannot tell "saved, but filtered" from "absent" by
+                // how many reads its answer took.
+                $read = $spec['where'] === null ? [$pk] : array_values(array_unique(array_merge([$pk], $spec['where']['fields'])));
                 $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [$value],
-                                          'fields' => [$pk], 'exportDataAccessGroups' => true]);
+                                          'fields' => $read, 'exportDataAccessGroups' => true]);
                 if (!is_array($data)) return $unknown;
                 $ids = [];
                 foreach ($data as $rec => $node) {
@@ -1262,9 +1272,8 @@ class UniversalValidator extends AbstractExternalModule
                 if ($spec['where'] === null) {
                     $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
                 } else {
-                    $hit = $this->recordWhereHit($pid, $spec, self::recordIdMatches($ids, $value, $spec['fold'], $scope, $dag, $self, $mark),
-                                                 $filtered);
-                    if ($hit === false) return $unknown + ['why' => 'the saved values could not be read just now'];
+                    $hit = self::recordWhereHit($spec, self::recordIdMatches($ids, $value, $spec['fold'], $scope, $dag, $self, $mark),
+                                                $data, $filtered);
                 }
                 if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 // REDCap finds a record by its exact name only, so a value that
@@ -1272,15 +1281,19 @@ class UniversalValidator extends AbstractExternalModule
                 // another way ("007" for record 7), needs every record ID.
                 if (($spec['fold'] && preg_match('/[A-Za-z]/', $value))
                         || ($mark !== null && Logic::numberKey($value, $mark) !== null)) {
-                    $all = $this->recordIdsOf($pid, $this->fullReadGate($pid, $opts));
+                    // With "where", one read of every record's ID and "where"
+                    // values, whatever it finds (recordRowsOf).
+                    $rows = $spec['where'] === null ? null
+                        : $this->recordRowsOf($pid, $spec['where']['fields'], $this->fullReadGate($pid, $opts));
+                    $all = $spec['where'] === null ? $this->recordIdsOf($pid, $this->fullReadGate($pid, $opts))
+                        : ($rows === null ? null : self::recordIdsIn($rows));
                     if ($all === null) return $unknown + ['why' => 'the record IDs could not be read just now'];
                     if ($spec['where'] === null) {
                         $hit = self::recordIdMatch($all, $value, $spec['fold'], $scope, $dag, $self, $mark);
                     } else {
-                        // The records the exact read already judged are not read again.
+                        // The records the exact read already judged are not judged again.
                         $more = array_diff_key(self::recordIdMatches($all, $value, $spec['fold'], $scope, $dag, $self, $mark), $ids);
-                        $hit = $this->recordWhereHit($pid, $spec, $more, $filtered);
-                        if ($hit === false) return $unknown + ['why' => 'the saved values could not be read just now'];
+                        $hit = self::recordWhereHit($spec, $more, $rows, $filtered);
                     }
                     if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 }
@@ -1295,7 +1308,13 @@ class UniversalValidator extends AbstractExternalModule
             // A rule that copies values ("return") must see every entry that
             // holds the value, to tell one answer from several: the narrowed
             // read can miss one (collisionFilterLogic), so it reads in full.
-            if ($narrow && !$spec['returns']) {
+            // A caller under a read budget (a survey) with "where" reads in
+            // full too, once, under that budget: the read confirming a
+            // narrowed hit costs about as much and would escape the budget,
+            // and how many reads an answer took would tell a value saved but
+            // filtered from an absent one.
+            $budgeted = isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']);
+            if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
                 if ($fl !== null) {
                     try {
@@ -1356,23 +1375,18 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * For a record-ID lookup with "where": the first of $cands (record ID =>
-     * DAG, in the order to prefer) whose entry meets the condition, as
-     * ['record','dag']; null when none does (with $filtered set when any was
-     * judged); false when the values could not be read. A record's entries
-     * are its event rows ("event" alone when the rule names one, which a
-     * longitudinal project needs: existsEntryShape), never a repeat instance,
-     * since "where" tests forms that do not repeat; a record with no row
-     * there has no entry, so it fails. The candidates' values are read in
-     * one call.
+     * DAG, in the order to prefer) whose entry in $d (a getData read that
+     * holds their "where" fields) meets the condition, as ['record','dag'];
+     * null when none does (with $filtered set when any was judged). A
+     * record's entries are its event rows ("event" alone when the rule names
+     * one, which a longitudinal project needs: existsEntryShape), never a
+     * repeat instance, since "where" tests forms that do not repeat; a record
+     * with no row there has no entry, so it fails. The values come from the
+     * read that found the IDs, so judging costs no read of its own.
      */
-    private function recordWhereHit($pid, array $spec, array $cands, &$filtered)
+    private static function recordWhereHit(array $spec, array $cands, array $d, &$filtered)
     {
         if (!$cands) return null;
-        $p = ['project_id' => $pid, 'return_format' => 'array', 'records' => array_map('strval', array_keys($cands)),
-              'fields' => array_values(array_unique(array_merge([$this->recordIdFieldOf($pid)], $spec['where']['fields'])))];
-        if ($spec['event'] !== null) $p['events'] = [$spec['event']];
-        $d = \REDCap::getData($p);
-        if (!is_array($d)) return false;
         foreach ($cands as $rec => $rdag) {
             $rec = (string) $rec;
             $filtered = true;
@@ -1471,6 +1485,47 @@ class UniversalValidator extends AbstractExternalModule
 
     /** @var array pid => record ID => DAG, or null for a read that failed (recordIdsOf) */
     private $recordIds = [];
+
+    /**
+     * Every record of project $pid with its ID and the fields $fields (a
+     * record-ID lookup's "where" fields), in one read under $gate, as
+     * recordIdsOf reads the IDs alone: it notes the groups the read shows,
+     * and is kept for the request per field list. Null when the gate refuses
+     * or the read fails.
+     */
+    private function recordRowsOf($pid, array $fields, ?callable $gate = null)
+    {
+        $k = (int) $pid . "\0" . implode(',', $fields);
+        if (array_key_exists($k, $this->recordRows)) return $this->recordRows[$k];
+        if ($gate !== null && !call_user_func($gate)) return null;
+        $this->recordRows[$k] = null;
+        $this->groupVisibilityRead[$pid] = true;
+        try {
+            $pk = $this->recordIdFieldOf($pid);
+            if ($pk === '') return null;
+            $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
+                                      'fields' => array_values(array_unique(array_merge([$pk], $fields))),
+                                      'exportDataAccessGroups' => true]);
+            if (!is_array($data)) return null;
+            $this->noteGroupsSeen($pid, $data, true);
+            return $this->recordRows[$k] = $data;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** @var array "pid\0fields" => a getData read, or null for one that failed (recordRowsOf) */
+    private $recordRows = [];
+
+    /** Record ID => DAG of the records in a getData read. */
+    private static function recordIdsIn(array $data)
+    {
+        $ids = [];
+        foreach ($data as $rec => $node) {
+            if (is_array($node)) $ids[(string) $rec] = self::dagOfRecordNode($node);
+        }
+        return $ids;
+    }
 
     /**
      * The gate for a read of a whole searched field or of every record ID
@@ -5334,7 +5389,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($isPid($p)) $seen[(int) $p] = true;
             $fields = self::consumerTargets($t);
             if (!$fields) {
-                $errors[] = $where . 'list the fields that project may search, separated by commas ("record" for the record ID).';
+                $errors[] = $where . 'list the fields that project may search or filter on, separated by commas ("record" for the record ID).';
                 continue;
             }
             foreach (array_keys($fields) as $f) {

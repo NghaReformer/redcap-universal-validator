@@ -53,7 +53,7 @@ MUTATIONS = [
      "&& $isAuthenticated && !$isSurvey) $resp['filtered'] = true;",
      ") $resp['filtered'] = true;", WHERE),
     ('record IDs in another letter case not judged', UV,
-     '$hit = $this->recordWhereHit($pid, $spec, $more, $filtered);',
+     '$hit = self::recordWhereHit($spec, $more, $rows, $filtered);',
      '$hit = null;', WHERE),
     ('no kind check of "where" comparisons', UV,
      "$why = self::existsWhereKindProblem($p['ast'], $ddThere);",
@@ -89,6 +89,29 @@ MUTATIONS = [
      "return Logic::evaluate($ast, $values, Logic::BLANK_INERT",
      "return true || Logic::evaluate($ast, $values, Logic::BLANK_INERT",
      'tests/docs_examples_php.php'),
+    ('a survey with "where" takes the narrowed read', UV,
+     "if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {",
+     "if ($narrow && !$spec['returns']) {", WHERE),
+    ('"whereMessage" sent to a survey page', 'php/modes.json',
+     '"staffOnlyKeys": ["whereMessage"],',
+     '"staffOnlyKeys": [],', WHERE),
+    ('a record ID read without its "where" fields', UV,
+     "$read = $spec['where'] === null ? [$pk] : array_values(array_unique(array_merge([$pk], $spec['where']['fields'])));",
+     '$read = [$pk];', WHERE),
+    ('a condition going on at the next line read as a note', 'php/Logic.php',
+     r'''if ($after !== '' && ($after[0] === "\n" || $after[0] === "\r")) $after = ltrim($after, " \t\r\n");''',
+     '', 'tests/annotation_php.php'),
+    ('"&&", "||", "!" and "not (" after a condition read as a note', 'php/Logic.php',
+     r"(?:and|or)\b|not\s*[\[(]|[=<>!&|])/i'",
+     r"(?:and|or)\b|[=<>])/i'", 'tests/annotation_php.php'),
+    ('no cap on the ends a bare condition is tried at', 'php/Logic.php',
+     'if ($e - $lead > self::MAX_EXPR_LEN) break;',
+     '', 'tests/annotation_php.php'),
+    ('the page trims a condition with a regex', 'js/engine.js',
+     '  while(a < b && s.charCodeAt(a) === 32) a++;\n'
+     '  while(b > a && s.charCodeAt(b - 1) === 32) b--;\n'
+     '  s = s.slice(a, b);',
+     '  s = s.replace(/^ +| +$/g, "");', 'tests/when_js.cjs'),
 ]
 
 

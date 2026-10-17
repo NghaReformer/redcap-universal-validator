@@ -240,6 +240,7 @@
       "textKeys": ["message", "whereMessage"],
       "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets",
                      "existsProject", "existsPid", "existsRemoteTargets", "existsReturn", "existsWhere", "existsWhereFields"],
+      "staffOnlyKeys": ["whereMessage"],
       "returns": {"method": "returnsExists", "targets": "existsReturn", "noSave": "exists-return-no-save", "noSurveySave": true},
       "needs": ["transport"],
       "dialog": false,

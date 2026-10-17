@@ -192,7 +192,7 @@ Setup:
 | I8 | `uxc_date` = 01-02-2026, then 02-02-2026 | Found (stored 2026-02-01), then not found |
 | I9 | Source project module log | One `uv-exists-probe` line per lookup in I5 to I8: `source_project` 149, channel `staff`, the user, the field, the result, and `value_hash` (64 hex characters). No value appears raw. The not-found line for `uxc_rec` = L-9 also carries `extra_read` `record ids` (the lookup read the record IDs there to make sure the miss was real); no other line does |
 | I10 | Second account (rights in 149 only): `uxc_spec` = LS-001 | Amber "Could not check ... (you do not have rights in the project this lookup searches)"; a `refused` line in the source project's log |
-| I11 | Source project: switch the row to "Any signed-in user of the asking project". Second account: `uxc_spec` = LS-001 | Found. `uxc_donor` now shows "field "lab_donor" of project SRC is an Identifier there" |
+| I11 | Source project: un-flag `lab_donor` as an Identifier, switch the row to "Any signed-in user of the asking project" and save, then flag `lab_donor` as an Identifier again. Second account: `uxc_spec` = LS-001 | Found. Reloaded as the test account, `uxc_donor` shows "field "lab_donor" of project SRC is an Identifier there". The Configure dialog refuses the switch while `lab_donor` is flagged ("is an Identifier, so it can be searched only by users with rights"), which is why the flag comes off first |
 | I12 | Source project: also tick "Also answer survey respondents". Enable `uv_exists_cross` as a survey, open it, `uxc_survey` = LS-001, then LS-999 | Found, then not found, no record named; the source project's log shows channel `survey`, user `survey` |
 | I13 | Source project settings: try to save a second row for 149, a row with field `nope`, and a row with surveys ticked under "Only users who have rights" | The dialog refuses each and names the row |
 | I14 | Back to "Only users who have rights". Import `uxc_spec` = LS-999 for XE-1 with the Data Import Tool (the form itself blocks that save) | Module log of pid 149: `invalid-id-saved`, `type: exists`, reason `not-found`; source project log: channel `audit` |
@@ -265,15 +265,17 @@ uses the account of C3 (no access to `xr_specimen`); give it access to
 ## Section L: only entries that meet conditions (`"where"`)
 
 Fixture: [`uvexists_where_fields.csv`](uvexists_where_fields.csv), 16 rows on
-one new instrument `uv_exists_where`: 4 rule fields in this project, 7
-`uxw_bad_*` fields with a refused `where`, and 5 `uxw_lab*` rows that look in
-the source project of section I. Every expectation below was run offline
-through the module, from XE-4, against the seed data in `event_instance/`
-(the `uxw_lab*` rows through `tests/exists_cross_php.php`). Append the rows,
-designate `uv_exists_where` on `event_1_arm_1`, and open it on XE-4. Run this
-section after section I and before its cleanup, with the source project's row
-for 149 as I3 left it ("Only users who have rights", fields `lab_spec, lab_site,
-lab_date, record, lab_donor, lab_ghost`).
+one new instrument `uv_exists_where`: 4 rule fields in this project, 7 rules
+with a `where` this project refuses, and 5 rows that look in the source
+project of section I (2 of them refused). The expectations for this project
+were run offline through the module, from XE-4, against the seed data in
+`event_instance/`. The rows that look in the lab project follow
+`tests/exists_cross_php.php`, and L10's survey wording follows
+`tests/exists_where_dom_js.cjs`. Append the rows, designate `uv_exists_where`
+on `event_1_arm_1`, and open it on XE-4. Run this section after section I and
+before its cleanup, with the source project's row for 149 as I24 left it:
+"Only users who have rights", the fields of I3 (`lab_spec, lab_site, lab_date,
+record, lab_donor, lab_ghost`) and the copy list of I20.
 
 | # | Action | Expect |
 |---|---|---|
@@ -286,7 +288,7 @@ lab_date, record, lab_donor, lab_ghost`).
 | L7 | `uxw_base` = S-303, then S-301 | Red "This value is saved, but not in an entry that meets this rule's conditions." both times: S-303 was collected on 10 January; XE-3 has no Baseline visit status. The rule is advisory, so Save goes through |
 | L8 | `uxw_rec` = XE-1, xe-3, XE-2, XE-9, XE-4 | Found, found (another letter case), red "This participant had an adverse event at enrolment or did not consent to specimens.", red "This value is not saved where it should be. Check it, or record it there first.", and the same for XE-4 (the record being edited does not find itself) |
 | L9 | `uxw_code` = PX-0004, then PX-0001 | Found (record XE-4): its arm 2 enrolment weighs 78 kg, though its arm 1 enrolment weighs 70. Then red "This participant weighed 75 kg or less at enrolment." |
-| L10 | Enable `uv_exists_where` as a survey and open it; `uxw_code` = PX-0004, then PX-0001 | Found, no record named; then the plain survey wording "This value was not found.", not the `whereMessage`. Disable the survey after |
+| L10 | Enable `uv_exists_where` as a survey and open it; `uxw_code` = PX-0004, then PX-0001 | Found, no record named; then "This value is not saved where it should be. Check it, or record it there first.", the line for a value not found, never the `whereMessage`. Disable the survey after |
 | L11 | [optional] Flag `xe_weight` as an Identifier, reload the data entry form | `uxw_code` shows "field "xe_weight" is an Identifier, so the survey lookup ("surveys") cannot be enabled". Unflag after |
 | L12 | In User Rights set `xe_visit` to No Access for the test account; `uxw_base` = S-001, `uxw_or` = S-003 | `uxw_base`: amber "Could not check this value just now (you do not have access to every form this lookup reads)."; `uxw_or`: found, since it reads no `xe_visit` field. Then set `xe_enrol` to No Access too: `uxw_rec` = XE-1 gives the same amber answer. Give both forms back |
 | L13 | Save XE-4 with `uxw_base` = S-301 | Module log: `invalid-id-saved`, `type: exists`, reason `filtered`, field `uxw_base`. Saving again with S-001 adds no line |
@@ -294,7 +296,7 @@ lab_date, record, lab_donor, lab_ghost`).
 | L15 | `uxw_lab` = LS-001, then LS-002 | Found, no record named; then red "Registered in the lab project, but not at North and not after 5 February." (LS-002 is South, 3 February) |
 | L16 | Source project module log | The LS-002 line of L15 has `field` `lab_spec,lab_site,lab_date`, result `not-found` and `filtered` `true`; the LS-001 line has no `filtered` |
 | L17 | `uxw_lab_rec` = L-2, then l-1 | Found; then red "This value is saved, but not in an entry that meets this rule's conditions.": L-1 is North |
-| L18 | Source project: switch the row for 149 to "Any signed-in user of the asking project", save, reload | `uxw_lab_donor` shows "field "lab_donor" of project SRC is an Identifier there". Switch the row back to "Only users who have rights" |
+| L18 | Source project: clear the row's copy list (I20), un-flag `lab_donor` as an Identifier, switch the row for 149 to "Any signed-in user of the asking project" and save. Then flag `lab_donor` as an Identifier again and reload the form in pid 149 | `uxw_lab_donor` shows "field "lab_donor" of project SRC is an Identifier there". The Configure dialog would refuse the switch while `lab_donor` is flagged ("is an Identifier, so it can be searched only by users with rights") or while the copy list is filled. Then switch the row back to "Only users who have rights" and restore I20's copy list |
 
 ## Sign-off
 
