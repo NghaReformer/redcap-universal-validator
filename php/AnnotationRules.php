@@ -248,10 +248,13 @@ class AnnotationRules
                 continue;
             }
             $read = self::readValue(substr($ann, $after + 1), $bare);
-            $out[] = ['value' => $read['value'], 'error' => $read['continues']
-                ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                    . $tag . '="[a]=\'1\' and [b]=\'2\'".'
-                : null];
+            $eg = $tag . '="[a]=\'1\' and [b]=\'2\'".';
+            $out[] = ['value' => $read['value'], 'error' => !$read['continues'] ? null
+                : (isset($read['hint'])
+                    ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
+                        . ' Then put the whole condition in quotes, e.g. ' . $eg
+                    : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
+                        . $eg)];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -263,7 +266,8 @@ class AnnotationRules
     /**
      * Read one tag value: {json} (brace-balanced), quoted text, or a bare
      * value — one token, or with $bare 'condition' the longest condition.
-     * Returns ['value', 'length' => bytes consumed, 'continues' => bool].
+     * Returns ['value', 'length' => bytes consumed, 'continues' => bool], plus
+     * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!".
      */
     private static function readValue($rest, $bare = 'token')
     {
@@ -300,7 +304,8 @@ class AnnotationRules
         if ($bare === 'condition') {
             $p = Logic::parsePrefix($rest);
             if ($p['length'] > 0) {
-                return ['value' => substr($rest, 0, $p['length']), 'length' => $p['length'], 'continues' => $p['continues']];
+                return ['value' => substr($rest, 0, $p['length']), 'length' => $p['length'], 'continues' => $p['continues'],
+                        'hint' => $p['hint']];
             }
             // nothing parses: keep the first token, so the parser reports the
             // condition's own error, as before

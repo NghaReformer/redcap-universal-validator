@@ -324,9 +324,10 @@ keywords in any letter case.</p>
     every <code>match</code> matched: one event row, or one repeat instance with its event
     row. One entry that passes is enough.</li>
 <li><strong>How values compare.</strong> Text compares with the rule's letter case, and two
-    numbers by value. A blank side of <code>&lt;</code>, <code>&gt;</code>,
-    <code>&lt;=</code> or <code>&gt;=</code> fails the comparison, but a blank status is not
-    <code>'3'</code>, so <code>[status]&lt;&gt;'3'</code> passes it. Missing Data Codes are
+    numbers by value. A comparison with a blank side of <code>&lt;</code>, <code>&gt;</code>,
+    <code>&lt;=</code> or <code>&gt;=</code> is never true, and <code>not(...)</code> around it
+    does not make it true. A blank status is not <code>'3'</code>, so
+    <code>[status]&lt;&gt;'3'</code> passes it. Missing Data Codes are
     plain values. Dates are written Y-M-D, times as <code>'08:30'</code>, and numbers with a
     decimal point; a decimal-comma field is read by value. A checkbox box is tested as
     <code>[field(code)]</code>.</li>

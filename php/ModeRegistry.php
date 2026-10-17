@@ -83,6 +83,14 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a textKeys that is not a list of key names, or does not list "i18n" in its branchKeys and clientKeys');
                 }
             }
+            if (isset($m['staffOnlyKeys'])) {
+                // keys the page gets, except on a survey (clientShape)
+                $so = $m['staffOnlyKeys'];
+                if (!is_array($so) || array_values($so) !== $so
+                        || array_filter($so, function ($k) use ($m) { return !is_string($k) || !in_array($k, $m['clientKeys'], true); })) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a staffOnlyKeys that is not a list of its clientKeys');
+                }
+            }
             if (isset($m['scan']['reasonMessages'])) {
                 // reason => one of the mode's text keys: the report explains a
                 // finding of that reason with it (ScanDimensions, MessageCatalog).
@@ -296,10 +304,28 @@ final class ModeRegistry
     }
 
     /**
+     * Client keys a survey page never shows (each mode's optional
+     * staffOnlyKeys): the @UVEXISTS "whereMessage" explains an answer only
+     * staff get, and often restates the condition, so a survey page does not
+     * carry it, nor its other languages.
+     */
+    public static function staffOnlyKeys()
+    {
+        return self::memo('staffOnlyKeys', function () {
+            $out = [];
+            foreach (self::all() as $m) {
+                foreach ((isset($m['staffOnlyKeys']) && is_array($m['staffOnlyKeys'])) ? $m['staffOnlyKeys'] : [] as $k) $out[$k] = true;
+            }
+            return array_keys($out);
+        });
+    }
+
+    /**
      * A rule as the page may see it: every server key removed, on the rule and
      * on each branch. On a survey page ($survey) the configuration error of a
      * mode that has server keys is replaced by a generic one: its text names
-     * the fields the rule reads, which the page must not learn.
+     * the fields the rule reads, which the page must not learn; and the staff-
+     * only keys go too, with their languages under "i18n".
      */
     public static function clientShape(array $r, $survey = false)
     {
@@ -315,11 +341,19 @@ final class ModeRegistry
                 }
             }
         }
-        foreach (self::serverKeys() as $k) unset($r[$k]);
+        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys()) : self::serverKeys();
+        $strip = function (array $x) use ($drop, $survey) {
+            foreach ($drop as $k) unset($x[$k]);
+            if ($survey && isset($x['i18n']) && is_array($x['i18n'])) {
+                foreach (self::staffOnlyKeys() as $k) unset($x['i18n'][$k]);
+                if (!$x['i18n']) unset($x['i18n']);
+            }
+            return $x;
+        };
+        $r = $strip($r);
         if (isset($r['branches']) && is_array($r['branches'])) {
             foreach ($r['branches'] as $i => $b) {
-                if (!is_array($b)) continue;
-                foreach (self::serverKeys() as $k) unset($r['branches'][$i][$k]);
+                if (is_array($b)) $r['branches'][$i] = $strip($b);
             }
         }
         return $r;

@@ -323,8 +323,10 @@ Rules worth knowing:
 - **All configuration channels mix freely** — a dialog rule and an
   `@UVALIDATE` tag may legally share a field, as long as the sharing is gated.
 - **Rejected at save time** (a configuration error, never silent): two
-  when-less rules on one field; two rules with byte-identical conditions; a
-  single-value rule and a pooled rule sharing a field.
+  when-less rules on one field; two rules whose conditions say the same thing,
+  however written (keyword case, spacing, quote style, parentheses, the order
+  of `and`/`or` members and of a comparison's sides aside); a single-value rule
+  and a pooled rule sharing a field.
 - **Overlapping conditions are a runtime conflict**: if two conditions are
   ever true at once, the field shows a "Validation conflict" notice naming
   both conditions, validates nothing, and NEVER blocks the save; the server
@@ -740,13 +742,14 @@ the specimen ID on the collection form.
   condition takes the language of `when` (`and`, `or`, `not`, parentheses) and
   tests up to 10 fields of the entry found, against fixed values or each other;
   `match` stays the way to compare with this record. A value saved only in
-  entries that fail it gets its own answer for staff (`whereMessage`, or "The
+  entries that fail it gets its own answer for staff (`whereMessage`, or "This
   value is saved, but not in an entry that meets this rule's conditions."),
   enforced as *not found*; a survey shows the plain *not found*. The audit
   reason is `filtered`. The `where` fields are fields the lookup reads, for
   rights, survey Identifier checks and another project's agreement, and must be
-  on the form searched or a form that does not repeat. The condition stays on
-  the server.
+  on the form searched or a form that does not repeat, in every event the entry
+  can be found in. The condition stays on the server, and a survey page does not
+  get `whereMessage` either.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.

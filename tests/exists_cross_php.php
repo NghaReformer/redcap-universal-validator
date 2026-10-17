@@ -716,7 +716,7 @@ namespace {
     check('dialog: an Identifier cannot be searched under the answer mode', strpos($e, '"donor_name" is an Identifier') !== false);
     $e = $v(['exists-consumer-project' => ['149'], 'exists-consumer-targets' => [''], 'exists-consumer-mode' => ['rights'],
         'exists-consumer-surveys' => [false]]);
-    check('dialog: a row needs fields', strpos($e, 'list the fields that project may search') !== false);
+    check('dialog: a row needs fields', strpos($e, 'list the fields that project may search or filter on') !== false);
     $e = $v(['exists-alias' => ['lab', 'Lab', '9lab', ''], 'exists-alias-project' => ['300', '300', '300', '301']], 149);
     check('dialog: an alias used twice is refused', strpos($e, 'alias 2: the alias "lab" is set up twice') !== false);
     check('dialog: an alias must start with a letter', strpos($e, 'alias 3: the alias must start with a letter') !== false);

@@ -188,6 +188,7 @@ namespace {
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\Logic;
     use INSPIRE\UniversalValidator\MessageCatalog;
+    use INSPIRE\UniversalValidator\ModeRegistry;
     use INSPIRE\UniversalValidator\ScanDimensions;
 
     $n = 0; $fail = 0;
@@ -378,6 +379,16 @@ namespace {
     $json = json_encode($cfg);
     check('page: the condition and its fields never reach the page', strpos($json, 'existsWhere') === false
         && strpos($json, '[status]') === false && strpos($json, 'existsTargets') === false);
+    // A survey page never shows "whereMessage" (the server tells surveys only
+    // "not found"), so its config carries neither the text nor its languages.
+    $shaped = ModeRegistry::clientShape(['type' => 'exists', 'message' => 'M', 'whereMessage' => 'W',
+        'i18n' => ['message' => ['fr' => 'Mf'], 'whereMessage' => ['fr' => 'Wf']],
+        'branches' => [['when' => "[a]='1'", 'whereMessage' => 'Wb', 'i18n' => ['whereMessage' => ['fr' => 'Wbf']]]]], true);
+    check('survey page: no "whereMessage", on the rule or a branch, in any language',
+        !isset($shaped['whereMessage']) && !isset($shaped['i18n']['whereMessage']) && $shaped['i18n']['message'] === ['fr' => 'Mf']
+        && !isset($shaped['branches'][0]['whereMessage']) && !isset($shaped['branches'][0]['i18n']));
+    $staff = ModeRegistry::clientShape(['type' => 'exists', 'whereMessage' => 'W', 'i18n' => ['whereMessage' => ['fr' => 'Wf']]], false);
+    check('staff page: "whereMessage" and its languages stay', $staff['whereMessage'] === 'W' && $staff['i18n']['whereMessage'] === ['fr' => 'Wf']);
 
     // ---- 3) the live check: evaluation -------------------------------------------------------
     $cases = [
@@ -405,6 +416,8 @@ namespace {
         ['w_rep', 'R-1', 'found'],
         ['w_rep', 'R-2', 'filtered'],          // the event row says withdrawn
         ['w_rec', 'AB-1', 'found'],            // AB-1 fails, ab-1 passes
+        ['w_rec', 'ab-1', 'found'],            // passes on the exact read
+        ['w_rec', '6', 'found'],               // no letters: the exact read alone decides
         ['w_rec', 'XY-9', 'filtered'],
         ['w_rec', 'NR-1', 'filtered'],         // no row in enrolment_arm_1
         ['w_rec', 'ZZ-0', 'not-found'],
@@ -444,6 +457,38 @@ namespace {
     check('survey: a filtered value is a plain "not found"', askSurvey($m, 'w_s', 'SP-NOCON') === ['state' => 'not-found', 'record' => null]);
     $m = mod();
     check('survey: found', askSurvey($m, 'w_s', 'SP-OK') === ['state' => 'found', 'record' => null]);
+    // A survey's lookup with "where" reads the whole field once, under the
+    // survey read budget, whatever it finds: no narrowed read and no read of
+    // candidate records, so the number of reads tells nothing.
+    $reads = [];
+    foreach (['SP-OK', 'SP-NOCON', 'SP-404'] as $v) {
+        $m = mod();
+        \REDCap::reset();
+        askSurvey($m, 'w_s', $v);
+        $reads[$v] = array_map(function ($c) { return isset($c['filterLogic']) || isset($c['records']) ? 'narrow' : 'full'; },
+            \REDCap::$calls);
+    }
+    check('survey: found, filtered and absent each take one full read', $reads['SP-OK'] === ['full']
+        && $reads['SP-NOCON'] === ['full'] && $reads['SP-404'] === ['full']);
+    // A record-ID lookup reads its "where" values with the IDs it reads, so a
+    // record that exists but fails costs as many reads as one that is absent.
+    $count = [];
+    foreach (['XY-9', 'ZZ-0'] as $v) {
+        $m = mod();
+        \REDCap::reset();
+        $r = ask($m, 'w_rec', $v);
+        $count[$v] = [outcome($r), count(\REDCap::$calls)];
+    }
+    check('record ID: filtered and absent take the same number of reads',
+        $count['XY-9'][0] === 'filtered' && $count['ZZ-0'][0] === 'not-found' && $count['XY-9'][1] === $count['ZZ-0'][1]);
+    // The exact read carries the "where" fields, so an ID that passes on it is
+    // decided by that one read.
+    $m = mod();
+    \REDCap::reset();
+    $r = ask($m, 'w_rec', 'ab-1');
+    check('record ID: a passing ID is found by the one exact read, which reads the "where" fields',
+        outcome($r) === 'found' && count(\REDCap::$calls) === 1
+        && in_array('consent', \REDCap::$calls[0]['fields'], true) && (\REDCap::$calls[0]['records'] ?? null) === ['ab-1']);
     $m = mod();
     $r = ask($m, 'w_s', 'SP-NOCON');
     check('staff: the same value is filtered', outcome($r) === 'filtered' && $r['record'] === null);
