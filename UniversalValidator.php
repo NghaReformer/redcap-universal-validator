@@ -4834,7 +4834,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($rule[$condKey]) && $types !== null) {
                     $w = Logic::parse($rule[$condKey], $opts);
                     if (!empty($w['ok'])) {
-                        foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
+                        foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey) as $e) {
                             $errors[] = $e;
                         }
                     }
@@ -5255,7 +5255,7 @@ class UniversalValidator extends AbstractExternalModule
                         $types = $this->projectFieldTypes($pid);
                         $choices = $this->projectFieldChoices($pid);
                     }
-                    $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
+                    $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices, $condKey);
                     if ($errs) {
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
                             '_tag' => ModeRegistry::tag($mode)];

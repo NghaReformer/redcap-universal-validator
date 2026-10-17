@@ -906,6 +906,15 @@ namespace {
     $html = ob_get_clean();
     check('annotation when with an unknown ref -> visible config error',
         strpos($html, 'not a field in this project') !== false);
+    // an @UVASSERT test with an unknown ref names "assert", not "when"
+    $annDict['tagged']['field_annotation'] = "@UVASSERT=[ghost]='1' and [stype]='2'";
+    $m = newModule([], $annDict, [], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'f', 351, null, 1);
+    $html = ob_get_clean();
+    // the page carries the message as JSON with quotes written "
+    check('annotation assert with an unknown ref names the "assert" condition, read whole',
+        strpos($html, substr(json_encode('the "assert" condition references "[ghost]"', JSON_HEX_QUOT), 1, -1)) !== false);
     // and a sound annotation condition still gates the audit end-to-end
     $annDict['tagged']['field_annotation'] = '@UVALIDATE={"when":"[stype]=\'2\'"}';
     $m = newModule([], $annDict, [2 => [351 => ['tagged' => $badSid, 'stype' => '1']]], 149);

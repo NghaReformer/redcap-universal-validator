@@ -33,8 +33,9 @@
  *     has one group, so its resolution is the one described above.
  *   - Config-time legality (a violation becomes a per-field configError rule
  *     instead of a branch rule): at most one sharing rule without "when" per
- *     group; no two sharing rules of one group with byte-identical "when"
- *     strings (they could never be told apart); all sharing rules must have
+ *     group; no two sharing rules of one group whose "when" conditions say
+ *     the same thing (Logic::canonicalKey: keyword case, spacing, quote style,
+ *     parentheses and member order aside — they could never be told apart); all sharing rules must have
  *     the same type (single/pooled); all sharing rules must give each of
  *     their mode's uniformBranchKeys the same value (php/modes.json;
  *     @UVUNIQUE "also").
@@ -50,6 +51,7 @@
 namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/ModeRegistry.php';
+require_once __DIR__ . '/Logic.php';
 
 class Branching
 {
@@ -272,14 +274,24 @@ class Branching
         foreach ($idxs as $i) {
             $g = self::groupOf($rules[$i], $groupKey);
             $w = self::whenOf($rules[$i]);
+            // two conditions that say the same thing in other words (keyword
+            // case, parentheses, member order) could never be told apart
+            // either; nor could 'Yes' and 'yes' when both rules ignore case
+            $keys = [];
+            if ($w !== null) {
+                $keys[] = 'x' . Logic::canonicalKey($w);
+                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
+            }
+            $seen = null;
+            foreach ($keys as $k) if ($seen === null && isset($whens[$g][$k])) $seen = $whens[$g][$k];
             if ($w === null) {
                 $unconditional[$g][] = $i;
-            } elseif (isset($whens[$g][$w])) {
+            } elseif ($seen !== null) {
                 if ($identical === null) {
-                    $identical = ['kind' => 'identical-when', 'rules' => [$whens[$g][$w], $i], 'detail' => $w];
+                    $identical = ['kind' => 'identical-when', 'rules' => [$seen, $i], 'detail' => $w];
                 }
             } else {
-                $whens[$g][$w] = $i;
+                foreach ($keys as $k) $whens[$g][$k] = $i;
             }
             $t = (isset($rules[$i]['type']) && $rules[$i]['type'] !== '') ? $rules[$i]['type'] : 'single';
             $types[$t] = $i;

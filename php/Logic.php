@@ -160,6 +160,49 @@ class Logic
     const PARSE_MEMO = 512;   // distinct condition texts remembered per request
 
     /**
+     * A key that is the same for two conditions that say the same thing:
+     * keyword case, spacing, quote style, parentheses, the order of the
+     * members of one "and"/"or", and which side of a comparison a field is
+     * written on do not change it. Literals keep their letter case unless
+     * $fold is true, for a rule that compares text ignoring case. A text that
+     * does not parse keys as its trimmed self. Used where two conditions are
+     * compared, e.g. two branches of one field that give the same "when"
+     * (Branching), and in lookup keys.
+     */
+    public static function canonicalKey($text, $fold = false)
+    {
+        $r = is_string($text) ? self::parse($text, ['qualified' => true]) : ['ok' => false];
+        if (!$r['ok']) return 'text:' . trim((string) $text);
+        return 'ast:' . json_encode(self::canonicalNode($r['ast'], $fold));
+    }
+
+    private static function canonicalNode(array $n, $fold)
+    {
+        if ($n[0] === 'lit') return $fold ? ['lit', self::lower($n[1])] : $n;
+        if ($n[0] === 'and' || $n[0] === 'or') {
+            $kids = [];
+            foreach ($n[1] as $c) {
+                $c = self::canonicalNode($c, $fold);
+                if ($c[0] === $n[0]) { foreach ($c[1] as $g) $kids[] = $g; }
+                else $kids[] = $c;
+            }
+            $keyed = [];
+            foreach ($kids as $c) $keyed[json_encode($c)] = $c;   // a repeated member says nothing new
+            ksort($keyed, SORT_STRING);
+            return count($keyed) === 1 ? reset($keyed) : [$n[0], array_values($keyed)];
+        }
+        if ($n[0] === 'not') return ['not', self::canonicalNode($n[1], $fold)];
+        if ($n[0] === 'cmp') {
+            $n = ['cmp', $n[1], self::canonicalNode($n[2], $fold), self::canonicalNode($n[3], $fold)];
+            if (strcmp(json_encode($n[2]), json_encode($n[3])) > 0) {
+                $mirror = ['<' => '>', '>' => '<', '<=' => '>=', '>=' => '<=', '=' => '=', '<>' => '<>'];
+                return ['cmp', $mirror[$n[1]], $n[3], $n[2]];
+            }
+        }
+        return $n;
+    }
+
+    /**
      * The longest leading condition of an unquoted annotation value, for the
      * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
      * A value used to end at the first space, so everything after "and" was
@@ -420,10 +463,12 @@ class Logic
      * channel that has the data dictionary at hand. $types is field => REDCap
      * field type; $choicesByField is checkboxField => [codes] (absent field =
      * codes unknown, membership not checked). Returns full-sentence error
-     * strings, [] when sound.
+     * strings, [] when sound. $key names the rule key the condition came
+     * from ("when", "assert", ...), so the message names it.
      */
-    public static function checkRefs(array $ast, array $types, array $choicesByField)
+    public static function checkRefs(array $ast, array $types, array $choicesByField, $key = 'when')
     {
+        $label = 'the "' . $key . '" condition';
         $errors = [];
         $refs = self::referencedFields($ast);
         foreach (self::qualifiedRefs($ast) as $q) if ($q[0] === 'qref') $refs[] = [$q[1], $q[2]];
@@ -431,27 +476,27 @@ class Logic
             $f = $ref[0];
             $code = $ref[1];
             if (!array_key_exists($f, $types)) {
-                $errors[] = 'the "when" condition references "[' . $f . ']", which is not a field in this project.';
+                $errors[] = $label . ' references "[' . $f . ']", which is not a field in this project.';
                 continue;
             }
             $type = (string) $types[$f];
             if ($type === 'file' || $type === 'descriptive') {
-                $errors[] = 'the "when" condition cannot reference "[' . $f . ']" — file and descriptive fields have no comparable value.';
+                $errors[] = $label . ' cannot reference "[' . $f . ']" — file and descriptive fields have no comparable value.';
                 continue;
             }
             if ($type === 'checkbox') {
                 $codes = (isset($choicesByField[$f]) && is_array($choicesByField[$f])) ? $choicesByField[$f] : [];
                 if ($code === null) {
-                    $errors[] = 'in the "when" condition, "[' . $f . ']" is a checkbox — reference one option as ['
+                    $errors[] = 'in ' . $label . ', "[' . $f . ']" is a checkbox — reference one option as ['
                         . $f . '(code)]' . ($codes ? '; its codes are: ' . implode(', ', $codes) . '.' : '.');
                 } elseif ($codes && !in_array((string) $code, array_map('strval', $codes), true)) {
-                    $errors[] = 'in the "when" condition, checkbox "' . $f . '" has no choice code "' . $code
+                    $errors[] = 'in ' . $label . ', checkbox "' . $f . '" has no choice code "' . $code
                         . '" — its codes are: ' . implode(', ', $codes) . '.';
                 }
                 continue;
             }
             if ($code !== null) {
-                $errors[] = 'in the "when" condition, "[' . $f . '(' . $code . ')]": only checkbox fields take a (code).';
+                $errors[] = 'in ' . $label . ', "[' . $f . '(' . $code . ')]": only checkbox fields take a (code).';
             }
         }
         return $errors;

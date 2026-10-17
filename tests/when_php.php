@@ -197,6 +197,10 @@ $e = refErrors("[cb2]='1'", $types, $choices);
 check('checkRefs: code still required without choices', count($e) === 1 && stripos($e[0], 'is a checkbox') !== false);
 $e = refErrors("[missing]='1' and [cb]='1'", $types, $choices);
 check('checkRefs: one error per bad ref', count($e) === 2);
+check('checkRefs: the message names "when" by default', strpos($e[0], 'the "when" condition references "[missing]"') === 0);
+$e = Logic::checkRefs(Logic::parse("[missing]='1' and [cb]='1'")['ast'], $types, $choices, 'assert');
+check('checkRefs: the message names the key it was given', strpos($e[0], 'the "assert" condition references') === 0
+    && strpos($e[1], 'in the "assert" condition, "[cb]" is a checkbox') === 0);
 
 // ---- parseChoiceCodes ----
 check('choices: basic', Logic::parseChoiceCodes('1, Yes | 2, No') === ['1', '2']);
