@@ -36,8 +36,8 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            does while a run plans (review R5-9). Null skips
  *                            that case.
  */
-function storeContract(callable $newStore, $label, callable $age, callable $clocked = null,
-                       callable $dropPlan = null)
+function storeContract(callable $newStore, $label, callable $age, ?callable $clocked = null,
+                       ?callable $dropPlan = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 

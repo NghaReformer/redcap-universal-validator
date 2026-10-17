@@ -292,5 +292,14 @@ check('QRID_CHART is GrowthCurve\'s geometry (got ' . json_encode($geo) . ')', $
     && $geo['plotWidth'] == GC::PLOT_WIDTH && $geo['plotHeight'] == GC::PLOT_HEIGHT && $geo['maxZoom'] == GC::MAX_ZOOM
     && $geo['yFloor'] == GC::Y_FLOOR);
 
+// A curve point's units do not depend on the PHP version. round() dropped its
+// pre-rounding in PHP 8.4, so round(1.005 * 100), held as 100.49999999999999,
+// is 101 up to 8.3 and 100 on 8.4; the curves round through roundedUnits.
+$units = new ReflectionMethod(GC::class, 'units');
+$units->setAccessible(true);
+check('a curve point held just under a decimal tie rounds as the decimal (1.005 to 101 hundredths) on every PHP',
+    $units->invoke(null, 1.005, 2) === 101 && $units->invoke(null, -1.005, 2) === -101
+    && $units->invoke(null, 17.145, 3) === 17145 && $units->invoke(null, 0.0, 3) === 0);
+
 echo "growth_curve_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

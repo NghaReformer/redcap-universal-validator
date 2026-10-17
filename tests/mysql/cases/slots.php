@@ -104,9 +104,12 @@ $NEIGHBOUR = uv_neighbour($PID);
     $slotsA->provision(1200);
     $limit = \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve(
         ['scan-system-max-concurrent-projects' => '70000'], [])['maxProjects'];
+    // An hour's lease, not a minute's: 1201 acquires on a loaded MySQL 5.7 can
+    // take longer than 60 seconds, and the first slots would then expire and be
+    // taken again, admitting more than the limit for a reason this check is not about.
     $got = 0; $over = 0; $refusedAt = null;
     for ($i = 1; $i <= 1201; $i++) {
-        $s = (($i % 2) ? $slotsA : $slotsB)->acquire('w' . $i, $i, 60, $limit);
+        $s = (($i % 2) ? $slotsA : $slotsB)->acquire('w' . $i, $i, 3600, $limit);
         if ($s === null) { if ($refusedAt === null) $refusedAt = $i; continue; }
         $got++;
         if ($s['slot_no'] > $limit) $over++;

@@ -63,7 +63,7 @@ final class ScanStoreUnavailable extends \RuntimeException
     /** @var string what the server said, with the participant data taken out. */
     private $detail;
 
-    public function __construct($detail, \Throwable $previous = null)
+    public function __construct($detail, ?\Throwable $previous = null)
     {
         // The exception MESSAGE is deliberately the same fixed string for every
         // instance. An uncaught throw prints its message, and a stack trace on

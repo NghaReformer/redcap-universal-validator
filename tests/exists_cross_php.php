@@ -286,7 +286,7 @@ namespace {
                 'exists-consumer-mode' => $mode, 'exists-consumer-surveys' => $surveys];
     }
     /** A module: 149 asks as $user, 300 answers under $rows. */
-    function mod($user = 'nurse', array $rows = null, $switch = true) {
+    function mod($user = 'nurse', ?array $rows = null, $switch = true) {
         global $DICT_A, $DICT_B, $DATA_A, $DATA_B, $RIGHTS_A, $RIGHTS_B;
         $GLOBALS['__TEST_USER'] = $user;
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();

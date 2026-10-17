@@ -828,7 +828,7 @@ namespace {
     $DICT_X['x_m'] = f('result', ux('{"in":"[specimen_id]","project":300,"match":{"site_code":"[home]"},"return":{"lab_date":"[x_m_date]"}}'));
     $DICT_X['x_m_date'] = f('result');
     foreach ($DICT_X as $k => $_) $DICT_X[$k]['field_name'] = $k;
-    function xmod($user = 'nurse', array $row = null, $logMode = 'hashed') {
+    function xmod($user = 'nurse', ?array $row = null, $logMode = 'hashed') {
         global $DICT_X, $DICT_B, $DATA, $FULL;
         $m = mod($user);
         $m->systemSettings['exists-system-cross-project'] = true;

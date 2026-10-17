@@ -219,7 +219,6 @@ final class GrowthCurve
             return ['why' => 'the curves of "' . $entry['id'] . '" reach values too large to send (above ' . number_format(self::MAX_UNITS, 0, '.', ',')
                 . ' in the field\'s unit). The check itself is not affected.'];
         }
-        $p = pow(10, $d);
         $n = count($keys);
         $lines = [];
         $points = 0;
@@ -233,7 +232,7 @@ final class GrowthCurve
                 $flat = [];
                 foreach (self::simplify($keys, $col, $a, $b, $tol) as $i) {
                     $flat[] = $keys[$i];
-                    $flat[] = (int) round($col[$i] * $p);
+                    $flat[] = self::units($col[$i], $d);
                 }
                 $points += count($flat) / 2;
                 $out[] = $flat;
@@ -307,6 +306,19 @@ final class GrowthCurve
             if ($j >= $m) break;
         }
         return ($best !== null && $best > 0) ? $best : null;
+    }
+
+    /**
+     * $y as a count of units of 10^-$d, half away from zero, through
+     * GrowthReference::roundedUnits so the payload is the same on every PHP.
+     * round() is not: PHP 8.4 dropped its pre-rounding, and a curve point
+     * held as 17145.4999... read 17145 there and 17146 on 8.3 and below.
+     * A z-score chart's lines go below 0, so the sign is put back after.
+     */
+    private static function units($y, $d)
+    {
+        $y = (float) $y;
+        return $y < 0 ? -GrowthReference::roundedUnits(-$y, $d) : GrowthReference::roundedUnits($y, $d);
     }
 
     /**

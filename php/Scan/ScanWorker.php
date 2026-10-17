@@ -702,7 +702,7 @@ final class ScanWorker
      *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int, why:?string}
      */
-    private function batch($pid, $runId, $epoch, array $claimed, WorkBudget $budget = null)
+    private function batch($pid, $runId, $epoch, array $claimed, ?WorkBudget $budget = null)
     {
         $ids = [];
         // ordinal => claim token, the shape every write about these rows takes.

@@ -86,7 +86,7 @@ class ScriptedDb implements ScanDb
      * reads both and a fake message would test the redaction against text no
      * server produces.
      */
-    public function failAt($needle, $nth, \Throwable $e = null)
+    public function failAt($needle, $nth, ?\Throwable $e = null)
     {
         if ($e === null) {
             $e = new \RuntimeException('Deadlock found when trying to get lock; '

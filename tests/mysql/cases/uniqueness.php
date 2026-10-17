@@ -487,7 +487,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         }
         return array('ok' => true, 'values' => $out, 'why' => null);
     };
-    $finL = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $readerL));
+    $finL = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $readerL));
     check('lookup: both groups are discovered', $finL->discover($GENL, 100) === 2);
     $st = $finL->status($GENL);
     check('lookup: a group of lookups only is settled at discovery, not verified',
