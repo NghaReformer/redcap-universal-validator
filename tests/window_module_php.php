@@ -192,6 +192,17 @@ namespace {
     check('date counted from a datetime: refused', strpos($err('bad_family'), 'holds dates with a time and this field holds dates') !== false);
     check('notes field: refused by eligibility', strpos($err('bad_notes'), 'does not support "notes" fields') !== false);
     check('every refusal names @UVWINDOW', strpos($err('bad_family'), '@UVWINDOW on "bad_family"') === 0);
+    // A "when" with AND, OR, NOT and parentheses gates the post-save audit.
+    $DC = $DICT + ['grp' => f('visit_form'), 'adult' => f('visit_form'),
+        'fut' => f('visit_form', '@UVWINDOW={"notFuture":true,"when":"([grp]=\'a\' OR [grp]=\'b\') and not [adult]=\'no\'"}', 'date_ymd')];
+    foreach ([[['grp' => 'A', 'adult' => 'yes'], true], [['grp' => 'b', 'adult' => ''], true],
+              [['grp' => 'c', 'adult' => 'yes'], false], [['grp' => 'a', 'adult' => 'No'], false]] as $case) {
+        $V = $DATA; $V['2'][351] = array_merge($V['2'][351], $case[0], ['fut' => '2026-12-31']);
+        $m = mod($DC, $V, $FULL, 'nurse');
+        $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+        $hit = (bool) array_filter(findings($m), function ($e) { return ($e['field'] ?? '') === 'fut'; });
+        check('audit: compound "when" ' . json_encode($case[0]) . ($case[1] ? ' applies' : ' does not apply'), $hit === $case[1]);
+    }
     // With event and instance references on, [event-name][f] and [f][current-instance]
     // are this same entry too; [f][previous-instance] is another entry.
     $SELF = $DICT;

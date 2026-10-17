@@ -350,6 +350,15 @@ foreach ($tagForms as $tag => $form) {
     check($tag . ' caseSensitive non-boolean -> error', isset($f[0]['error'])
         && strpos($f[0]['error'], 'caseSensitive') !== false);
 }
+// Every tag's "when" reads one condition dialect: AND, OR, NOT and
+// parentheses together, keywords in any case.
+$compound = "([a]='x' OR [b]='2') and NOT ([c]='3' Or [d]<>'')";
+foreach ($tagForms as $tag => $form) {
+    $f = AnnotationRules::parseAllTags(str_replace("\"when\":\"[a]='x'\"", '"when":"' . $compound . '"', sprintf($form, '"caseSensitive":true')));
+    check($tag . ' takes a compound "when"', !isset($f[0]['error']) && $f[0]['when'] === $compound);
+    $f = AnnotationRules::parseAllTags(str_replace("\"when\":\"[a]='x'\"", "\"when\":\"[a]='x' && [b]='2'\"", sprintf($form, '"caseSensitive":true')));
+    check($tag . ' refuses && in "when", naming "and"', isset($f[0]['error']) && strpos($f[0]['error'], 'write "and" instead') !== false);
+}
 foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) {
     $frag = array_merge(['type' => $t, 'caseSensitive' => 'yes'], $modeSamples[$m['mode']]['fragment']);
     $errs = AnnotationRules::checkFragment($frag);

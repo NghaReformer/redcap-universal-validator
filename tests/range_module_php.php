@@ -265,6 +265,18 @@ namespace {
     check('audit: blank values check nothing',
         !array_filter(findings($m), function ($e) { return ($e['type'] ?? '') === 'range'; }));
 
+    // A "when" with AND, OR, NOT and parentheses gates the audit as it gates the page.
+    $DC = $DICT + ['grp' => f('enrol_form'), 'adult' => f('enrol_form'),
+        'hb_c' => f('labs_form', '@UVRANGE={"hard":[3,25],"when":"([sex]=\'1\' OR [grp]=\'b\') AND NOT [adult]=\'no\'"}', 'number')];
+    foreach ([[['sex' => '1', 'grp' => 'a', 'adult' => 'yes'], true], [['sex' => '2', 'grp' => 'B', 'adult' => ''], true],
+              [['sex' => '2', 'grp' => 'a', 'adult' => 'yes'], false], [['sex' => '1', 'grp' => 'b', 'adult' => 'NO'], false]] as $case) {
+        $V = $DATA; $V['2'][351] = array_merge($V['2'][351], $case[0], ['hb_c' => '40']);
+        $m = mod($DC, $V, $FULL, 'nurse');
+        $m->redcap_save_record(149, '2', 'labs_form', 351, null, null, null, 1);
+        $hit = (bool) array_filter(findings($m), function ($e) { return ($e['field'] ?? '') === 'hb_c'; });
+        check('audit: compound "when" ' . json_encode($case[0]) . ($case[1] ? ' applies' : ' does not apply'), $hit === $case[1]);
+    }
+
     // ---- 4) the scan ---------------------------------------------------------------
     $m = mod($DICT, $DATA, $FULL, 'nurse');
     $res = $m->scanProject(149);

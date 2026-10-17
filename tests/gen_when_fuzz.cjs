@@ -40,13 +40,20 @@ function operand() {
   return pick(['1', '2', '10', '-1', '2.5']);
 }
 function cmp() { return operand() + ' ' + pick(OPS) + ' ' + operand(); }
+/* keywords are case-insensitive: write them as REDCap users do, in any case */
+function kw(w) {
+  const r = rnd();
+  if (r < 0.6) return w;
+  if (r < 0.8) return w.toUpperCase();
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
 function expr(depth) {
   if (depth <= 0) return cmp();
   const r = rnd();
   if (r < 0.45) return cmp();
-  if (r < 0.60) return 'not ' + expr(depth - 1);
+  if (r < 0.60) return kw('not') + ' ' + expr(depth - 1);
   if (r < 0.75) return '(' + expr(depth - 1) + ')';
-  const op = rnd() < 0.5 ? ' and ' : ' or ';
+  const op = ' ' + kw(rnd() < 0.5 ? 'and' : 'or') + ' ';
   const parts = [];
   const n = 2 + int(2);
   for (let i = 0; i < n; i++) parts.push(expr(depth - 1));
@@ -65,6 +72,7 @@ function values() {
 
 const MUT_BASE = [
   "[a]='1'", "[a]='1' and [b]='2'", "[a]='1' or [b]='2' and [c]='3'",
+  "[a]='1' OR [b]='2' AND NOT [c]='3'", "[a]='1' && [b]='2'", "[a]='1' || [b]='2'",
   "not [a]='1'", "not([a]='1' or [b]='2')", "([a]='1' or [b]='2') and [c]='3'",
   "[cb(2)]='1'", "[age]>'17' and [age]<='65'", "[a]<>'' and [b]!='x'",
   "'1'='1'", "[a]=[b]", "[a]>-1", "[a]='2.50'",

@@ -433,5 +433,42 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   check('compiled date node: 01-03-2026 is before', t.sid.__qridInvalid === false);
 }
 
+// ---- AND, OR, NOT and parentheses in one "when", keywords in any case -----
+// One condition dialect for every tag: a compound gate switches the
+// validators that judge on the page (check, @UVASSERT, @UVREQUIRED) on and
+// off live, read from the server's AST and from the text alike.
+{
+  const WHEN = "([a]='x' OR [b]='2') AND NOT [c]='3'";
+  const kinds = {
+    single: { value: BAD_ID, keys: { algorithm: 'iso7064_mod37_36' } },
+    constraint: { value: 'v', keys: { assert: '1=0' } },
+    required: { value: '', keys: {} },
+  };
+  for (const type of Object.keys(kinds)) {
+    for (const withAst of [false, true]) {
+      const t = makeEl('input'); t.name = 'target'; t.value = kinds[type].value;
+      const a = makeEl('input'); a.name = 'a'; a.value = '0';
+      const b = makeEl('input'); b.name = 'b'; b.value = '0';
+      const c = makeEl('input'); c.name = 'c'; c.value = '0';
+      const rule = Object.assign({ type, fields: ['target'], blockSave: 'hard', when: WHEN }, kinds[type].keys);
+      if (withAst) {
+        rule.whenAst = ['and', [['or', [['cmp', '=', ['ref', 'a', null], ['lit', 'x']], ['cmp', '=', ['ref', 'b', null], ['lit', '2']]]],
+                                ['not', ['cmp', '=', ['ref', 'c', null], ['lit', '3']]]]];
+      }
+      const env = boot([t, a, b, c], { singleFields: [], pooledFields: [], rules: [rule] });
+      const label = type + (withAst ? ' (AST)' : ' (text)') + ': ';
+      const judged = () => t.getAttribute('aria-invalid') === 'true';
+      const blocks = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev._prevented; };
+      check(label + 'neither side of the OR -> inert', !judged() && blocks() === false);
+      b.value = '2'; b.fire('change');
+      check(label + 'second side of the OR -> judged and blocked', judged() && blocks() === true);
+      c.value = '3'; c.fire('change');
+      check(label + 'AND NOT fails -> inert again', !judged() && blocks() === false);
+      c.value = '0'; b.value = '0'; a.value = 'X'; a.fire('change');
+      check(label + 'first side of the OR, letter case ignored -> judged', judged() && blocks() === true);
+    }
+  }
+}
+
 console.log(`when_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

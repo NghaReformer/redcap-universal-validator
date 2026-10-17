@@ -667,6 +667,12 @@ class Logic
                 return ['error' => 'contains the bare word "' . $m[0] . '" — field references are written '
                     . 'in [brackets], text values in quotes.'];
             }
+            // REDCap logic spells these and/or/not; name the word to write instead
+            if ($ch === '&' || $ch === '|') {
+                $sym = ($i + 1 < $n && $s[$i + 1] === $ch) ? $ch . $ch : $ch;
+                return ['error' => 'uses "' . $sym . '" — write "' . ($ch === '&' ? 'and' : 'or') . '" instead.'];
+            }
+            if ($ch === '!') return ['error' => 'uses "!" — write "not" instead, or "<>" for "not equal".'];
             return ['error' => 'contains an unexpected character "' . $ch . '".'];
         }
         return ['tokens' => $tokens];
