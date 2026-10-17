@@ -154,6 +154,7 @@ namespace {
     require_once __DIR__ . '/../UniversalValidator.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
+    use INSPIRE\UniversalValidator\GrowthOutputs;
     use INSPIRE\UniversalValidator\GrowthReference;
 
     $n = 0; $fail = 0;
@@ -755,6 +756,194 @@ NASK, Not asked";
     check('live fixture: a boy of 365 days, 9.6 kg and 9600 g (J2, J3, J15) (got ' . json_encode(written()) . ')',
         written() === ['2' => [EVT => ['ugr_z' => '-0.04', 'ugr_low' => '7.8', 'ugr_high' => '11.9', 'ugr_range' => '7.8 to 11.9 kg',
             'ugr_height_range' => '64 to 87 cm', 'ugr_range_g' => '7737 to 11989 g']]]);
+
+    // ---- 14) the percentile and the values at a z-score or percentile (php/growth_outputs.json) -------------
+    /** What GrowthReference works out for the boy of row(): output $of with $param, to $places. */
+    function expectedOutput($of, $param, $places, $y = 9.6, $sex = 'male') {
+        $entry = GrowthReference::entry('who-wfa', null);
+        $table = GrowthReference::table($entry);
+        $a = GrowthReference::axisValue($entry, ['comma' => false, 'dobDays' => 0, 'atDays' => 365]);
+        return GrowthReference::output($entry, $table, $sex, $a['x'], $y, $of, $param, $places);
+    }
+    // the values docs/action_tag_validation_examples.md (Level 6), README.md, USER_GUIDE.md and CHANGELOG.md print
+    foreach ([['male', 'percentile', null, 9.6, '48.3'], ['male', 'valueAtZ', '-2', null, '7.7'],
+              ['male', 'valueAtPercentile', '50', null, '9.6'], ['male', 'valueAtPercentile', '97', null, '11.8'],
+              ['female', 'percentile', null, 9.6, '71.6'], ['female', 'valueAtZ', '-2', null, '7.0'],
+              ['female', 'valueAtPercentile', '50', null, '8.9'], ['female', 'valueAtPercentile', '97', null, '11.3'],
+              ['male', 'percentile', null, 6.6, '0.1']] as $c) {
+        $got = expectedOutput($c[1], $c[2], 1, $c[3], $c[0]);
+        check("outputs: the documented $c[0] $c[1]" . ($c[2] === null ? '' : ":$c[2]") . " is $c[4] (got " . json_encode($got) . ')', $got === $c[4]);
+    }
+    $ret = '"return":{"percentile":"[wfa_pct]","valueAtZ:-2":"[wfa_m2]","valueAtPercentile:50":"[wfa_p50]"}';
+    $newDict = function (array $over = [], $ann = null) use ($ret) {
+        return dict(array_merge(['wfa_pct' => f('anthro_form', '', 'number_1dp'), 'wfa_m2' => f('anthro_form', '', 'number_1dp'),
+            'wfa_p50' => f('anthro_form')], $over), $ann === null ? tag($ret) : $ann);
+    };
+    $want = ['wfa_pct' => expectedOutput('percentile', null, 1), 'wfa_m2' => expectedOutput('valueAtZ', '-2', 1),
+             'wfa_p50' => expectedOutput('valueAtPercentile', '50', 1)];
+    check('outputs: the example values exist (got ' . json_encode($want) . ')',
+        preg_match('/^\d+\.\d$/', $want['wfa_pct']) === 1 && preg_match('/^\d+\.\d$/', $want['wfa_m2']) === 1
+        && preg_match('/^\d+\.\d$/', $want['wfa_p50']) === 1);
+    check('outputs: the median is the measurement at z 0', $want['wfa_p50'] === expectedOutput('valueAtZ', '0', 1));
+    $m = mod($newDict(), ['2' => [EVT => row()]]);
+    save($m);
+    check('outputs: a save writes the percentile and the reference values (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => $want]]);
+    \REDCap::$saves = [];
+    save($m);
+    check('outputs: saved again, nothing to write', !\REDCap::$saves);
+    $m = mod($newDict(), ['2' => [EVT => row(['weight' => ''])]]);
+    save($m);
+    check('outputs: no measurement leaves the percentile empty, the reference values are written (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_m2' => $want['wfa_m2'], 'wfa_p50' => $want['wfa_p50']]]]);
+    // no limits needed when no value is made from one
+    $free = '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},' . $ret . '}';
+    $p = AnnotationRules::parseAllTags($free);
+    check('outputs: a rule returning only the percentile and reference values needs no limits (got '
+        . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')', !isset($p[0]['error']) && !isset($p[0]['rangeSoftLo']));
+    $m = mod($newDict([], $free), ['2' => [EVT => row()]]);
+    save($m);
+    check('outputs: ... and it writes them', written() === ['2' => [EVT => $want]]);
+    $p = AnnotationRules::parseAllTags('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"return":{"percentile":"[a]","lower":"[b]"}}');
+    check('outputs: a bound beside them still needs its limit', isset($p[0]['error']) && strpos($p[0]['error'], 'needs "soft" or "hard" limits') !== false);
+    // the grammar
+    $many = [];
+    for ($i = 0; $i < 17; $i++) $many[] = '"valueAtZ:' . sprintf('%.1f', ($i - 8) / 2) . '":"[f' . $i . ']"';
+    foreach ([['"return":{"valueAtZ:9":"[a]"}', 'a number from -6 to 6 with at most 2 decimals'],
+              ['"return":{"valueAtPercentile":"[a]"}', 'takes the percentile after a colon'],
+              ['"return":{"percentile:3":"[a]"}', 'unknown "return" value "percentile:3"'],
+              ['"return":{"valueAtPercentile:97":"a"}', 'such as "[wfa_p97]"'],
+              ['"return":{"percentile":"[a]"},"percentileDecimals":5', '"percentileDecimals" must be a whole number from 0 to 3'],
+              ['"return":{"percentile":"[a]"},"percentileDecimals":"1"', '"percentileDecimals" must be a whole number from 0 to 3'],
+              ['"percentileDecimals":2', '"percentileDecimals" only applies with "return"'],
+              ['"return":{"z":"[a]"},"percentileDecimals":2', 'and "return" has none'],
+              ['"return":{' . implode(',', $many) . '}', '"return" is limited to 16 values']] as $pair) {
+        $p = AnnotationRules::parseAllTags(tag($pair[0]));
+        check('outputs: refused ' . substr($pair[0], 0, 60) . ' (got ' . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')',
+            isset($p[0]['error']) && strpos($p[0]['error'], $pair[1]) !== false);
+    }
+    $p = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"percentileDecimals":1}');
+    check('outputs: "percentileDecimals" without a reference is refused', isset($p[0]['error'])
+        && strpos($p[0]['error'], 'only apply with a "reference"') !== false);
+    $p = AnnotationRules::parseAllTags(tag('"return":{"percentile":"[a]","valueAtZ:-2.25":"[b]"},"percentileDecimals":2'));
+    check('outputs: keys and percentileDecimals are kept as written', !isset($p[0]['error'])
+        && $p[0]['rangeReturn'] === ['percentile' => 'a', 'valueAtZ:-2.25' => 'b'] && $p[0]['rangePercentileDecimals'] === 2);
+    // the fields the values go to
+    refused($newDict(['wfa_pct' => f('anthro_form', '', 'number_2dp')]), 'takes exactly 2 decimal places and this value is written with 1 — give it number validation without a place count, or set "percentileDecimals" to 2',
+        'outputs: a percentile field with two places and the default one decimal is refused');
+    refused($newDict(['wfa_pct' => f('anthro_form', '', 'integer')]), 'set "percentileDecimals" to 0',
+        'outputs: an integer percentile field needs "percentileDecimals":0');
+    refused($newDict(['wfa_m2' => f('anthro_form', '', 'number_2dp')]), 'or set "decimals" to 2',
+        'outputs: a reference value takes "decimals"');
+    refused($newDict(['wfa_p50' => f('anthro_form', '', 'date_ymd')]), 'cannot hold a number written with decimals',
+        'outputs: a date field cannot take a reference value');
+    refused($newDict(['wfa_p50' => f('anthro_form', '', '', 'notes')]), 'goes into a Text field',
+        'outputs: a Notes field cannot take a reference value');
+    $m = mod($newDict(['wfa_pct' => f('anthro_form', '', 'integer')], tag('"return":{"percentile":"[wfa_pct]"},"percentileDecimals":0')),
+        ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    $r = null;
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('outputs: an integer field takes a percentile written without decimals', $r && empty($r['configError']));
+    // what the page is given
+    $m = mod($newDict(['wfa_m2' => f('anthro_form', '', 'number_comma_decimal')]), ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    $r = null;
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('outputs: the page carries the keys as written (got ' . json_encode($r['rangeReturn'] ?? null) . ')',
+        $r && $r['rangeReturn'] === ['percentile' => 'wfa_pct', 'valueAtZ:-2' => 'wfa_m2', 'valueAtPercentile:50' => 'wfa_p50']);
+    check('outputs: ... percentileDecimals resolved to its default of one', $r['rangePercentileDecimals'] === 1);
+    check('outputs: ... and the decimal mark of each field', $r['rangeReturnComma'] === ['percentile' => false, 'valueAtZ:-2' => true, 'valueAtPercentile:50' => false]);
+    $m = mod(dict(), ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    $r = null;
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('outputs: a rule without a percentile carries no percentileDecimals (its page is as before)',
+        $r && !array_key_exists('rangePercentileDecimals', $r));
+
+    // ---- 15) review fixes: one value once, keys that shape nothing, hints, a catalog that cannot be read -----------------
+    foreach ([['"valueAtZ:2":"[a]","valueAtZ:2.0":"[b]"', '"return" "valueAtZ:2" and "valueAtZ:2.0" are the same value'],
+              ['"valueAtZ:0":"[a]","valueAtZ:-0":"[b]"', 'are the same value'],
+              ['"valueAtPercentile:50":"[a]","valueAtPercentile:50.00":"[b]"', 'are the same value']] as $pair) {
+        $p = AnnotationRules::parseAllTags(tag('"return":{' . $pair[0] . '}'));
+        check('review: refused ' . $pair[0] . ' (got ' . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')',
+            isset($p[0]['error']) && strpos($p[0]['error'], $pair[1]) !== false);
+    }
+    $p = AnnotationRules::parseAllTags(tag('"return":{"valueAtZ:2":"[a]","valueAtZ:2.5":"[b]","valueAtZ:-2":"[c]"}'));
+    check('review: different values at a z-score are kept', !isset($p[0]['error']) && count($p[0]['rangeReturn']) === 3);
+    $sixteen = [];
+    for ($i = 0; $i < 16; $i++) $sixteen[] = '"valueAtZ:' . sprintf('%.1f', ($i - 8) / 2) . '":"[f' . $i . ']"';
+    $p = AnnotationRules::parseAllTags(tag('"return":{' . implode(',', $sixteen) . '}'));
+    check('review: 16 values are the most, and are taken (got ' . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')',
+        !isset($p[0]['error']) && count($p[0]['rangeReturn']) === 16);
+    $free = '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"}';
+    foreach ([[$free . ',"return":{"z":"[a]"},"decimals":3}',
+               '"decimals" sets the decimals of "lower", "upper", "range", "valueAtZ" and "valueAtPercentile", and "return" has none of them.'],
+              [$free . ',"return":{"percentile":"[a]"},"decimals":2}', '"decimals" sets the decimals of'],
+              [$free . ',"return":{"percentile":"[a]"},"returnLimits":"hard"}',
+               '"returnLimits" picks the limits "lower", "upper" and "range" are made from, and "return" has none of them.'],
+              [$free . ',"return":{"z":"[a]"},"percentileDecimals":2}', '"percentileDecimals" sets the decimals of "percentile", and "return" has none.'],
+              [tag('"return":{"z":"[a]"},"returnLimits":"soft"'), '"returnLimits" picks the limits']] as $pair) {
+        $p = AnnotationRules::parseAllTags($pair[0]);
+        check('review: a key that shapes nothing returned is refused: ' . substr($pair[0], strpos($pair[0], '"return"')) . ' (got '
+            . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')', isset($p[0]['error']) && strpos($p[0]['error'], $pair[1]) !== false);
+    }
+    foreach ([tag('"return":{"range":"[a]"},"returnLimits":"hard","decimals":0'), tag('"return":{"lower":"[a]"},"decimals":2'),
+              $free . ',"return":{"valueAtZ:-2":"[a]"},"decimals":2}', $free . ',"return":{"percentile":"[a]","z":"[b]"},"percentileDecimals":0}'] as $ok) {
+        $p = AnnotationRules::parseAllTags($ok);
+        check('review: a key that shapes a returned value is kept: ' . substr($ok, strpos($ok, '"return"')) . ' (got '
+            . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')', !isset($p[0]['error']));
+    }
+    $p = AnnotationRules::parseAllTags('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"hard":[-5,5],"return":{"upper":"[a]"}}');
+    check('review: the limit message names the key written (got ' . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')',
+        isset($p[0]['error']) && strpos($p[0]['error'], '"return" "upper" is made from the high "soft" limit') !== false);
+    // a place count the key cannot reach is not offered
+    $m = mod($newDict(['wfa_pct' => f('anthro_form', '', 'number_4dp')]), ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    $err = '';
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true) && !empty($x['configError'])) $err = $x['configError'];
+    check('review: a percentile field with four places is told to drop the count, not to set percentileDecimals to 4 (got ' . json_encode($err) . ')',
+        strpos($err, 'takes exactly 4 decimal places') !== false && strpos($err, 'percentileDecimals" to 4') === false
+        && strpos($err, 'without a place count.') !== false);
+    refused($newDict(['wfa_pct' => f('anthro_form', '', 'number_3dp')]), 'or set "percentileDecimals" to 3',
+        'review: a place count the key can reach is still offered');
+    // the catalog cannot be read: the rules that return values are refused, every other rule still runs
+    $mixed = $newDict(['other' => f('anthro_form', '@UVRANGE={"soft":[1,2],"hard":[0,5]}', 'number_1dp')]);
+    GrowthOutputs::useFile(__DIR__ . '/no_such_growth_outputs.json');
+    $m = mod($mixed, ['2' => [EVT => row(['other' => '9'])]]);
+    $cfg = null;
+    $threw = null;
+    try { $cfg = page($m); } catch (\Throwable $t) { $threw = $t->getMessage(); }
+    $wErr = null;
+    $other = null;
+    foreach (($cfg && isset($cfg['rules'])) ? $cfg['rules'] : [] as $x) {
+        if (in_array('weight', $x['fields'], true)) $wErr = isset($x['configError']) ? $x['configError'] : '';
+        if (in_array('other', $x['fields'], true)) $other = $x;
+    }
+    check('review: without the catalog the page still opens (got ' . json_encode($threw) . ')', $threw === null && is_array($cfg));
+    check('review: ... the rule that returns values says why (got ' . json_encode($wErr) . ')',
+        is_string($wErr) && strpos($wErr, '"return" cannot be checked: growth output catalog no_such_growth_outputs.json could not be read') !== false);
+    check('review: ... and another rule on the form is still given to the page', $other !== null && empty($other['configError']));
+    $threw = null;
+    try { save($m); } catch (\Throwable $t) { $threw = $t->getMessage(); }
+    check('review: ... the save runs (got ' . json_encode($threw) . '), writes nothing and logs no audit error',
+        $threw === null && !\REDCap::$saves && !logs($m, 'uvalidate-audit-error'));
+    check('review: ... and the other rule is still audited', (bool) array_filter($m->logCalls, function ($c) {
+        return isset($c[1]['field']) && $c[1]['field'] === 'other';
+    }));
+    // a rule parsed while the catalog was readable keeps its fields when it no longer is
+    GrowthOutputs::useFile(null);
+    $m = mod($newDict(), ['2' => [EVT => row()]]);
+    $all = $rules->invoke($m, PID);
+    $rule = null;
+    foreach ($all as $x) if (in_array('weight', $x['fields'], true)) $rule = $x;
+    GrowthOutputs::useFile(__DIR__ . '/no_such_growth_outputs.json');
+    $rr = new \ReflectionMethod($m, 'returnsRange');
+    $rr->setAccessible(true);
+    $got = $rr->invoke($m, $rule, row(), [], null, PID, [], []);
+    check('review: returnsRange with no catalog leaves the fields as they are (got ' . json_encode($got) . ')',
+        is_array($got) && $got['values'] === null && strpos((string) $got['problem'], 'cannot be checked') !== false);
+    GrowthOutputs::useFile(null);
 
     echo "growth_return_module_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

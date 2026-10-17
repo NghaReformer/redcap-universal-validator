@@ -2770,7 +2770,7 @@ case need `caseSensitive`.
   (not under the identifier-redacted mode), and the detail line then reads "Its
   z-score is -3.40 on the growth reference who-wfa."
 
-### Level 6 — write the z-score, the bounds or the range into fields
+### Level 6 — write the z-score, the percentile, the bounds or a reference value into fields
 
 A growth rule can also write what it worked out into Text fields of the same
 form, so the z-score or the usual range is on the record and in exports:
@@ -2801,13 +2801,89 @@ and the bounds are then in grams. `unit` names the unit `range` is written in:
 ```
 
 For the same boy weighing 9600 g, `wfa_range_g` reads `7737 to 11989 g`.
-Without `unit` it reads `7737 to 11989`: the table's kg would be wrong.
+Without `unit` it reads `7737 to 11989`, with no unit, since the table's kg
+would be wrong.
+
+The percentile, and the weight at a given z-score or percentile, go to fields
+the same way:
+
+```text
+# on: weight_kg — the percentile, and the weights at -2 SD, the median and the 97th percentile
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"return":{"percentile":"[wfa_pct]","valueAtZ:-2":"[wfa_sd_m2]","valueAtPercentile:50":"[wfa_p50]","valueAtPercentile:97":"[wfa_p97]"}}
+```
+
+For the same boy of one year weighing 9.6 kg:
+
+| Field | Written | What it is |
+| ----- | ------- | ---------- |
+| `wfa_pct` | `48.3` | the percentile of the measurement, to one decimal |
+| `wfa_sd_m2` | `7.7` | the weight whose z-score is -2 (7.74 kg), to one decimal |
+| `wfa_p50` | `9.6` | the median weight for his age and sex |
+| `wfa_p97` | `11.8` | the weight at the 97th percentile |
+
+For a girl of the same age they read `71.6`, `7.0`, `8.9` and `11.3`. With
+the weight blank, `wfa_pct` stays empty and the three weights are still
+written, so the form shows them before anything is measured. This rule has
+no `soft` or `hard`: none of the four is made from a limit.
+
+- **The percentile** is 100 times the normal distribution function of the
+  z-score, the unrounded one, so it does not move in steps of 0.01 SD. Beside
+  a z-score written `-0.04` this boy's percentile reads `48.3`, the
+  percentile of -0.0437, not `48.4`. It is written with `percentileDecimals`
+  decimals and rounded half away from zero.
+- **The ends of the scale.** The percentile stays one unit of its last
+  decimal inside 0 and 100: 1 to 99 with no decimals, 0.1 to 99.9 with one,
+  0.001 to 99.999 with three. So at one decimal `0.1` stands for every
+  percentile below 0.15, the ones under 0.1 included, and `99.9` for every
+  one from 99.85 up. A boy of 6.6 kg (z-score -3.40, a percentile of 0.03)
+  gets `0.1`.
+- **A value at a z-score** names the z-score after a colon:
+  `valueAtZ:-2`, `valueAtZ:2.5`. The z-score lies from -6 to 6, with at most
+  two decimals. The value is the measurement whose z-score the rule works
+  out as that number. A z-score no measurement above 0 has leaves the field
+  empty.
+- **Beyond ±3 SD.** On the references WHO reads with its restricted method
+  beyond ±3 SD (weight, BMI, arm circumference and the skinfolds), the
+  percentile and the values at a z-score or percentile use that method, as
+  the z-score does. On length or height and head circumference, and on a
+  reference of your own with `"adjust":"none"`, they use the LMS formula
+  throughout.
+- **A value at a percentile** names the percentile after a colon:
+  `valueAtPercentile:97`, `valueAtPercentile:2.5`. It lies from 0.1 to 99.9,
+  with at most two decimals. The percentile is turned into its z-score
+  without rounding, so `valueAtPercentile:50` is the median and equals
+  `valueAtZ:0`.
+- **Rounded, not the last that passes.** The values at a z-score or
+  percentile are written with `decimals` and rounded to the nearest unit of
+  their last decimal, so 7.74 kg is written `7.7`. `lower` and `upper` are
+  the last values the rule accepts, so beside a low `soft` limit of -2 the
+  two can differ: for this boy `valueAtZ:-2` is `7.7`, and `lower` is `7.8`,
+  since 7.7 kg scores -2.05 and is flagged.
+- **A tie rounds up.** The rounding first reads the value to 15
+  significant digits, the most a computer's number holds for any decimal,
+  so a median of 9.165 kg is written `9.17` at two decimals, although the
+  computer holds 9.165 as a number just below it. The page and the save
+  round a tie the same way.
+- **What is not written.** A value that rounds to 0, and one that would
+  take more than 10^15 units of its last decimal, leave the field empty, as
+  a bound does.
+- **Up to 16 values, each key once.** One rule returns at most 16 values,
+  each to its own field. `valueAtZ:2` and `valueAtZ:2.0` are one key
+  written two ways, as are `valueAtZ:0` and `valueAtZ:-0`, and a rule with
+  both is refused.
+- **Keys that shape nothing are refused.** `returnLimits` applies to
+  `lower`, `upper` and `range`, `decimals` to those and to the values at a
+  z-score or percentile, and `percentileDecimals` to `percentile`. A rule
+  that writes one of these keys and returns none of the values it applies to
+  is refused, so `"return":{"z":"[wfa_z]"},"decimals":3` is a configuration
+  error.
 
 | Key | Value | Default |
 | --- | ----- | ------- |
-| `return` | `{"z":"[field]","lower":"[field]","upper":"[field]","range":"[field]"}`: any of the four, each to its own field | none |
+| `return` | an object from a value to a field, `{"z":"[wfa_z]","valueAtPercentile:97":"[wfa_p97]"}`. The values are `z`, `lower`, `upper`, `range`, `percentile`, `valueAtZ:<z-score>` and `valueAtPercentile:<percentile>`, at most 16, each to its own field | none |
 | `returnLimits` | `soft` or `hard`: the limits `lower`, `upper` and `range` are made from | `soft` |
-| `decimals` | 0 to 6: the decimals of `lower` and `upper` | the measured field's: `number_1dp` 1, `integer` 0, `number_2dp` 2, otherwise 1 |
+| `decimals` | 0 to 6: the decimals of `lower`, `upper`, the bounds in `range`, and the values at a z-score or percentile | the measured field's: `number_Ndp` N (`number_1dp` 1, `number_2dp` 2, and their comma forms), `integer` 0, otherwise 1 |
+| `percentileDecimals` | 0 to 3: the decimals of `percentile` | 1 |
 
 - **The last value that passes.** `lower` is the smallest and `upper` the
   largest measurement, written with `decimals`, whose two-decimal z-score the
@@ -2818,17 +2894,20 @@ Without `unit` it reads `7737 to 11989`: the table's kg would be wrong.
   With only a low limit `range` reads `at least 7.8 kg`, with only a high one
   `at most 11.9 kg`. A limit the table cannot reach (a z-score no measurement
   has) leaves its bound and the range empty.
-- **No limits needed for `z`.** A rule that returns only the z-score needs no
-  `soft` or `hard`; a bound needs the limit it is made from, and the rule is
-  refused without it.
+- **Limits only for the values made from them.** A rule that returns only
+  `z`, `percentile` and values at a z-score or percentile needs no `soft` or
+  `hard`. `lower`, `upper` and `range` need the limit they are made from, and
+  the rule is refused without it.
 - **The fields.** Text fields on the same form as the measured field, so in
   the same event and instance. Not the measured field, an input of the rule,
   or the record ID, and no two values to one field. A `range` field takes no
-  validation; `z`, `lower` and `upper` take none, number validation without a
-  place count, or a place count equal to the decimals they are written with
-  (two for `z`, `decimals` for a bound): REDCap's `number_2dp` takes exactly
-  two places, so it refuses `7.5` as it refuses `7.512`. A bound with
-  `"decimals":0` may go into an integer field. A field with comma-decimal
+  validation. The other values take none, number validation without a place
+  count, or a place count equal to the decimals they are written with (two
+  for `z`, `percentileDecimals` for `percentile`, `decimals` for the rest):
+  REDCap's `number_2dp` takes exactly two places, so it refuses `7.5` as it
+  refuses `7.512`. A value written with no decimals (`decimals` 0, the
+  default on an integer measured field, or `"percentileDecimals":0` for the
+  percentile) may go into an integer field; `z` never does. A field with comma-decimal
   validation gets a comma, and a field without validation takes the mark of
   the measured field. Nor a field filled by `@CALCTEXT`, `@CALCDATE` or
   `@SETVALUE`, or one that shows a widget keeping its own text (`@RICHTEXT`,
@@ -3376,9 +3455,10 @@ for the folder before a rule meets them.
 
 `soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
 `caseSensitive`, and for a growth reference `reference`, `sex`, `male`,
-`female`, `age`, `by`, `plausible`, `measureScale`, `return`, `returnLimits`
-and `decimals`. A rule needs `soft` or `hard` limits, unless it returns only
-`z`. Any other key is a configuration error.
+`female`, `age`, `by`, `plausible`, `measureScale`, `return`, `returnLimits`,
+`decimals` and `percentileDecimals`. A rule needs `soft` or `hard` limits,
+unless every value it returns is `z`, `percentile`, `valueAtZ:<z-score>` or
+`valueAtPercentile:<percentile>`. Any other key is a configuration error.
 
 These are refused when the rule is saved:
 
@@ -3454,7 +3534,32 @@ These are refused when the rule is saved:
 
 # "decimals" sets how the returned bounds are written.
 # refused: "decimals" must be a whole number from 0 to 6
-@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"z":"[wfa_z]"},"decimals":9}
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"lower":"[wfa_low]"},"returnLimits":"hard","decimals":9}
+
+# "decimals" shapes the bounds and the values at a z-score or percentile;
+# a rule that returns none of them is refused.
+# refused: and "return" has none of them
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"z":"[wfa_z]"},"decimals":3}
+
+# Each key once: "valueAtZ:2" and "valueAtZ:2.0" are one key written two ways.
+# refused: are the same value
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"valueAtZ:2":"[wfa_sd2]","valueAtZ:2.0":"[wfa_sd2b]"}}
+
+# A value at a z-score names a z-score from -6 to 6 after a colon.
+# refused: a number from -6 to 6 with at most 2 decimals
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"valueAtZ:9":"[wfa_sd9]"}}
+
+# A value at a percentile needs the percentile.
+# refused: takes the percentile after a colon
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"valueAtPercentile":"[wfa_p97]"}}
+
+# "percentileDecimals" sets how the percentile is written, 0 to 3 decimals.
+# refused: "percentileDecimals" must be a whole number from 0 to 3
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"percentile":"[wfa_pct]"},"percentileDecimals":5}
+
+# ... and applies only when "return" has a percentile.
+# refused: and "return" has none
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"return":{"z":"[wfa_z]"},"percentileDecimals":2}
 
 # A reference sets the unit itself. "unit" goes with a reference only
 # beside "measureScale", to name the unit the field holds.
@@ -5030,6 +5135,10 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `by`            | string          | *(none)*     | With a reference read by length or height: the field holding it, in cm |
 | `plausible`     | list of two     | *(none)*     | With `reference`: `[low, high]` in the reference's unit, judged when no z-score can be worked out |
 | `measureScale`  | number          | *(none)*     | With `reference`: multiplies the typed value before the z-score, 0.000001 to 1000000 |
+| `return`        | object          | *(none)*     | With `reference`: `{"z":"[wfa_z]"}`, a value to a field of this form, up to 16. The values are `z`, `lower`, `upper`, `range`, `percentile`, `valueAtZ:<z-score>` and `valueAtPercentile:<percentile>` |
+| `returnLimits`  | string          | `soft`       | With `return`: `soft` or `hard`, the limits `lower`, `upper` and `range` are made from |
+| `decimals`      | integer         | the measured field's | With `return`: 0 to 6, the decimals of `lower`, `upper`, the bounds in `range`, and the values at a z-score or percentile |
+| `percentileDecimals` | integer    | `1`          | With a returned `percentile`: 0 to 3, its decimals                     |
 
 A limit is a JSON number, or a decimal in quotes for more digits than a JSON
 number keeps. `blockSave` is refused.

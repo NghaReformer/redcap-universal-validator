@@ -1,0 +1,6485 @@
+{
+ "_comment": "Percentiles and measurements at a z-score or percentile on the bundled tables, worked out with mpmath 1.3.0 at 50 digits by tools/growth_outputs_golden.py.",
+ "points": [
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 273.0,
+   "kind": "percentile",
+   "arg": "10.13",
+   "places": 3,
+   "want": "88.575"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1359.0,
+   "kind": "percentile",
+   "arg": "15.49",
+   "places": 3,
+   "want": "43.906"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 607.0,
+   "kind": "percentile",
+   "arg": "8.31",
+   "places": 1,
+   "want": "0.3"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1448.0,
+   "kind": "percentile",
+   "arg": "25.25",
+   "places": 2,
+   "want": "99.97"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1077.0,
+   "kind": "percentile",
+   "arg": "15.76",
+   "places": 1,
+   "want": "79.9"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 108.0,
+   "kind": "percentile",
+   "arg": "8.85",
+   "places": 1,
+   "want": "99.2"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1662.0,
+   "kind": "percentile",
+   "arg": "23.24",
+   "places": 3,
+   "want": "98.366"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1297.0,
+   "kind": "percentile",
+   "arg": "19.14",
+   "places": 3,
+   "want": "95.558"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1406.0,
+   "kind": "percentile",
+   "arg": "21.37",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1232.0,
+   "kind": "percentile",
+   "arg": "13.97",
+   "places": 1,
+   "want": "26.5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 839.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 3,
+   "want": "16.229"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1212.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 2,
+   "want": "22.45"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 246.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "11.91"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 711.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1353.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 3,
+   "want": "9.479"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 972.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "16.3"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1554.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "13.1"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 516.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "8.59"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1610.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 0,
+   "want": "24"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 914.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 2,
+   "want": "9.37"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 583.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "8.9"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 325.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 1,
+   "want": "10.0"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1287.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 0,
+   "want": "20"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 707.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "8.88"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1808.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 0,
+   "want": "20"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 187.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 1,
+   "want": "6.2"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1125.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1463.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 3,
+   "want": "12.217"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1630.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "21.5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "male",
+   "x": 1038.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 634.0,
+   "kind": "percentile",
+   "arg": "8.77",
+   "places": 2,
+   "want": "3.98"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 663.0,
+   "kind": "percentile",
+   "arg": "6.79",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1046.0,
+   "kind": "percentile",
+   "arg": "19.16",
+   "places": 3,
+   "want": "99.482"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 902.0,
+   "kind": "percentile",
+   "arg": "11.30",
+   "places": 2,
+   "want": "18.33"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1678.0,
+   "kind": "percentile",
+   "arg": "26.22",
+   "places": 1,
+   "want": "99.6"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 52.0,
+   "kind": "percentile",
+   "arg": "5.19",
+   "places": 1,
+   "want": "67.9"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 130.0,
+   "kind": "percentile",
+   "arg": "9.05",
+   "places": 1,
+   "want": "99.5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 82.0,
+   "kind": "percentile",
+   "arg": "8.47",
+   "places": 3,
+   "want": "99.942"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1393.0,
+   "kind": "percentile",
+   "arg": "19.98",
+   "places": 1,
+   "want": "95.6"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1343.0,
+   "kind": "percentile",
+   "arg": "23.22",
+   "places": 1,
+   "want": "99.8"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 978.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 3,
+   "want": "18.324"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 827.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "14.72"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1766.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 3,
+   "want": "16.623"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1736.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 0,
+   "want": "18"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 419.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "12.0"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 3.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 0,
+   "want": "5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 126.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 1,
+   "want": "6.5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1193.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 0,
+   "want": "14"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1132.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "21.4"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1356.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "14.4"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 988.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 0,
+   "want": "11"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 213.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 0,
+   "want": "7"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1408.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 1,
+   "want": "23.2"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1072.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 2,
+   "want": "10.30"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1607.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 2,
+   "want": "11.22"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 283.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 3,
+   "want": "9.020"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1449.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "13.5"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1115.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 1130.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 1,
+   "want": "16.7"
+  },
+  {
+   "ref": "who-wfa",
+   "sex": "female",
+   "x": 222.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 3,
+   "want": "6.346"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1748.0,
+   "kind": "percentile",
+   "arg": "65.28",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1613.0,
+   "kind": "percentile",
+   "arg": "131.14",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 361.0,
+   "kind": "percentile",
+   "arg": "103.08",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 828.0,
+   "kind": "percentile",
+   "arg": "134.99",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1693.0,
+   "kind": "percentile",
+   "arg": "109.13",
+   "places": 1,
+   "want": "63.7"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1164.0,
+   "kind": "percentile",
+   "arg": "109.41",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 635.0,
+   "kind": "percentile",
+   "arg": "101.74",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1081.0,
+   "kind": "percentile",
+   "arg": "91.85",
+   "places": 1,
+   "want": "14.4"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1468.0,
+   "kind": "percentile",
+   "arg": "102.14",
+   "places": 1,
+   "want": "37.7"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 298.0,
+   "kind": "percentile",
+   "arg": "41.89",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1824.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 2,
+   "want": "119.19"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1806.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 2,
+   "want": "112.69"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 941.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 3,
+   "want": "83.967"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 748.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 2,
+   "want": "99.97"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 871.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 0,
+   "want": "94"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1004.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 0,
+   "want": "82"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1723.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 1,
+   "want": "119.4"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 222.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 0,
+   "want": "62"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 151.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 0,
+   "want": "64"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1576.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "114.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1821.0,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 3,
+   "want": "120.635"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1635.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "97.71"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 472.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 0,
+   "want": "84"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 520.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "84.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 655.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 3,
+   "want": "88.622"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 801.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 2,
+   "want": "79.19"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 558.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 1,
+   "want": "76.3"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1093.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 2,
+   "want": "100.77"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 1237.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "88.66"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "male",
+   "x": 206.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "63.08"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 873.0,
+   "kind": "percentile",
+   "arg": "68.15",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1232.0,
+   "kind": "percentile",
+   "arg": "93.56",
+   "places": 0,
+   "want": "13"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 881.0,
+   "kind": "percentile",
+   "arg": "55.35",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1670.0,
+   "kind": "percentile",
+   "arg": "132.74",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 857.0,
+   "kind": "percentile",
+   "arg": "74.94",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 313.0,
+   "kind": "percentile",
+   "arg": "50.03",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1339.0,
+   "kind": "percentile",
+   "arg": "62.03",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1457.0,
+   "kind": "percentile",
+   "arg": "97.25",
+   "places": 2,
+   "want": "10.46"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 540.0,
+   "kind": "percentile",
+   "arg": "109.09",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1297.0,
+   "kind": "percentile",
+   "arg": "108.51",
+   "places": 1,
+   "want": "98.7"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 699.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "79.15"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1077.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "94.62"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 821.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 3,
+   "want": "74.743"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 134.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 1,
+   "want": "68.4"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1276.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "94.93"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1072.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "98.281"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1135.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 2,
+   "want": "103.67"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 639.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "88.26"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 272.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 0,
+   "want": "75"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 328.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 3,
+   "want": "63.706"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 637.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "86.8"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 165.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 3,
+   "want": "68.450"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1352.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "92.73"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 114.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "67.25"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 383.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 0,
+   "want": "67"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 892.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "83.1"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1598.0,
+   "kind": "valueAtPercentile",
+   "arg": "97.72",
+   "places": 2,
+   "want": "114.29"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 248.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 0,
+   "want": "67"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1590.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 3,
+   "want": "105.185"
+  },
+  {
+   "ref": "who-lhfa",
+   "sex": "female",
+   "x": 1107.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "95.3"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1590.0,
+   "kind": "percentile",
+   "arg": "11.40",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 724.0,
+   "kind": "percentile",
+   "arg": "16.60",
+   "places": 1,
+   "want": "74.8"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 755.0,
+   "kind": "percentile",
+   "arg": "12.84",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 912.0,
+   "kind": "percentile",
+   "arg": "24.83",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 854.0,
+   "kind": "percentile",
+   "arg": "25.33",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1091.0,
+   "kind": "percentile",
+   "arg": "14.39",
+   "places": 3,
+   "want": "15.052"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1008.0,
+   "kind": "percentile",
+   "arg": "23.80",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 896.0,
+   "kind": "percentile",
+   "arg": "11.48",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 859.0,
+   "kind": "percentile",
+   "arg": "16.15",
+   "places": 1,
+   "want": "59.2"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 423.0,
+   "kind": "percentile",
+   "arg": "13.28",
+   "places": 3,
+   "want": "0.172"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 492.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "17.2"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 581.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "14.86"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 26.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "19.01"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1372.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "16.7"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1228.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 331.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 1,
+   "want": "20.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 541.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 859.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "20.34"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1130.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 1,
+   "want": "15.6"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 757.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "18.8"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1547.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 2,
+   "want": "17.98"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 215.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "22.479"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 677.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 1,
+   "want": "13.0"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 468.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 2,
+   "want": "21.28"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 250.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 228.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "22.449"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 413.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "20.74"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 1028.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 2,
+   "want": "17.37"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 556.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 3,
+   "want": "14.609"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "male",
+   "x": 733.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 3,
+   "want": "13.490"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1756.0,
+   "kind": "percentile",
+   "arg": "16.80",
+   "places": 1,
+   "want": "83.2"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1790.0,
+   "kind": "percentile",
+   "arg": "21.11",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 14.0,
+   "kind": "percentile",
+   "arg": "21.40",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1676.0,
+   "kind": "percentile",
+   "arg": "9.80",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1643.0,
+   "kind": "percentile",
+   "arg": "9.48",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1132.0,
+   "kind": "percentile",
+   "arg": "19.75",
+   "places": 1,
+   "want": "99.7"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1647.0,
+   "kind": "percentile",
+   "arg": "21.90",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1466.0,
+   "kind": "percentile",
+   "arg": "18.51",
+   "places": 0,
+   "want": "98"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 432.0,
+   "kind": "percentile",
+   "arg": "21.29",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1794.0,
+   "kind": "percentile",
+   "arg": "23.66",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 274.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "17.8"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1270.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "16.761"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 642.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "17.0"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 249.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "15.4"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1572.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1257.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 2,
+   "want": "14.67"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1242.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "14.1"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1805.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 1,
+   "want": "15.3"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1060.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 3,
+   "want": "12.616"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 58.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "15.69"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1721.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 2,
+   "want": "14.32"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 881.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "20.615"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1234.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "12.98"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1668.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 1,
+   "want": "12.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1402.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "12.19"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 651.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "13.9"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1278.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 2,
+   "want": "17.81"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 1082.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 0,
+   "want": "15"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 981.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-bfa",
+   "sex": "female",
+   "x": 138.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "14.0"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1001.0,
+   "kind": "percentile",
+   "arg": "62.76",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 165.0,
+   "kind": "percentile",
+   "arg": "57.25",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 117.0,
+   "kind": "percentile",
+   "arg": "25.72",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1223.0,
+   "kind": "percentile",
+   "arg": "60.54",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1655.0,
+   "kind": "percentile",
+   "arg": "72.99",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1178.0,
+   "kind": "percentile",
+   "arg": "65.12",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1741.0,
+   "kind": "percentile",
+   "arg": "56.28",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1007.0,
+   "kind": "percentile",
+   "arg": "67.16",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 530.0,
+   "kind": "percentile",
+   "arg": "65.02",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1303.0,
+   "kind": "percentile",
+   "arg": "56.03",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1626.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "50.47"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1173.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "50.6"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 586.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 0,
+   "want": "53"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1137.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "53.13"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1728.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "47.6"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 960.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 2,
+   "want": "50.48"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 673.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "52.05"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1555.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 2,
+   "want": "51.35"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 315.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 0,
+   "want": "41"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 515.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "51.14"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1029.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "46.46"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 714.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 3,
+   "want": "48.181"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1563.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 3,
+   "want": "51.900"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 642.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 1,
+   "want": "51.4"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 735.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 2,
+   "want": "50.02"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1406.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "52.5"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1228.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 3,
+   "want": "48.800"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1036.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 2,
+   "want": "51.63"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 1384.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 0,
+   "want": "52"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "male",
+   "x": 337.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 2,
+   "want": "45.78"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 197.0,
+   "kind": "percentile",
+   "arg": "34.25",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 974.0,
+   "kind": "percentile",
+   "arg": "63.95",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 714.0,
+   "kind": "percentile",
+   "arg": "48.37",
+   "places": 1,
+   "want": "81.8"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1220.0,
+   "kind": "percentile",
+   "arg": "61.28",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1529.0,
+   "kind": "percentile",
+   "arg": "54.80",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 474.0,
+   "kind": "percentile",
+   "arg": "58.36",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1288.0,
+   "kind": "percentile",
+   "arg": "39.21",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1644.0,
+   "kind": "percentile",
+   "arg": "29.16",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1256.0,
+   "kind": "percentile",
+   "arg": "42.68",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 200.0,
+   "kind": "percentile",
+   "arg": "53.23",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 441.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "49.7"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1011.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "52.49"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 620.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 2,
+   "want": "41.78"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1507.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 2,
+   "want": "43.73"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1278.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 3,
+   "want": "46.128"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 317.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 0,
+   "want": "46"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 77.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "42.04"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 555.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "43.5"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1650.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 0,
+   "want": "45"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 468.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 0,
+   "want": "47"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 239.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 2,
+   "want": "41.11"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 446.0,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 1,
+   "want": "48.8"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 61.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 2,
+   "want": "39.51"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 428.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 2,
+   "want": "43.69"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1103.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "44.78"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1573.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "53.921"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1152.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "45.8"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 188.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 0,
+   "want": "45"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1379.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 1,
+   "want": "44.8"
+  },
+  {
+   "ref": "who-hcfa",
+   "sex": "female",
+   "x": 1324.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 1,
+   "want": "46.7"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1508.0,
+   "kind": "percentile",
+   "arg": "19.41",
+   "places": 2,
+   "want": "98.29"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 196.0,
+   "kind": "percentile",
+   "arg": "20.20",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 422.0,
+   "kind": "percentile",
+   "arg": "8.68",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1252.0,
+   "kind": "percentile",
+   "arg": "8.85",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1096.0,
+   "kind": "percentile",
+   "arg": "17.74",
+   "places": 1,
+   "want": "93.1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 942.0,
+   "kind": "percentile",
+   "arg": "9.11",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1753.0,
+   "kind": "percentile",
+   "arg": "15.72",
+   "places": 1,
+   "want": "29.8"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 177.0,
+   "kind": "percentile",
+   "arg": "14.12",
+   "places": 3,
+   "want": "46.673"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1063.0,
+   "kind": "percentile",
+   "arg": "9.72",
+   "places": 0,
+   "want": "1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 658.0,
+   "kind": "percentile",
+   "arg": "13.50",
+   "places": 3,
+   "want": "8.329"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1360.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "16.9"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 330.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "15.766"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1353.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 0,
+   "want": "21"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 268.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "15.7"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1699.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "19.5"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1299.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1130.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 2,
+   "want": "11.50"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1455.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 2,
+   "want": "13.20"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1790.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1371.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1418.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "16.1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1153.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "20.4"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1081.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 2,
+   "want": "14.90"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 677.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 2,
+   "want": "15.86"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 444.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "13.3"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1107.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "20.268"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 416.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 1,
+   "want": "14.0"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 724.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "18.62"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1105.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 2,
+   "want": "18.34"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "male",
+   "x": 1640.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 2,
+   "want": "18.23"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1019.0,
+   "kind": "percentile",
+   "arg": "10.67",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1801.0,
+   "kind": "percentile",
+   "arg": "18.23",
+   "places": 1,
+   "want": "80.6"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 556.0,
+   "kind": "percentile",
+   "arg": "22.62",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 851.0,
+   "kind": "percentile",
+   "arg": "15.29",
+   "places": 0,
+   "want": "54"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1567.0,
+   "kind": "percentile",
+   "arg": "18.85",
+   "places": 1,
+   "want": "93.5"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1642.0,
+   "kind": "percentile",
+   "arg": "9.41",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 368.0,
+   "kind": "percentile",
+   "arg": "12.06",
+   "places": 1,
+   "want": "2.2"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1446.0,
+   "kind": "percentile",
+   "arg": "16.63",
+   "places": 3,
+   "want": "61.022"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1041.0,
+   "kind": "percentile",
+   "arg": "11.32",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1187.0,
+   "kind": "percentile",
+   "arg": "25.22",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1636.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 0,
+   "want": "24"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 576.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 3,
+   "want": "11.444"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 102.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 3,
+   "want": "16.959"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1538.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 1,
+   "want": "22.0"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1295.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "14.67"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 442.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "18.4"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 591.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 2,
+   "want": "13.98"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1641.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1768.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 187.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 0,
+   "want": "15"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1229.0,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 1,
+   "want": "14.5"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 171.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 318.0,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 429.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "16.4"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 567.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 3,
+   "want": "11.345"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1293.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 2,
+   "want": "15.08"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 825.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 2,
+   "want": "17.66"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1207.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 1,
+   "want": "12.7"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 1526.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 1,
+   "want": "13.3"
+  },
+  {
+   "ref": "who-acfa",
+   "sex": "female",
+   "x": 568.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1308.0,
+   "kind": "percentile",
+   "arg": "3.81",
+   "places": 1,
+   "want": "0.7"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 145.0,
+   "kind": "percentile",
+   "arg": "6.70",
+   "places": 1,
+   "want": "28.9"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 427.0,
+   "kind": "percentile",
+   "arg": "8.09",
+   "places": 0,
+   "want": "91"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1136.0,
+   "kind": "percentile",
+   "arg": "6.39",
+   "places": 0,
+   "want": "72"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1479.0,
+   "kind": "percentile",
+   "arg": "5.73",
+   "places": 3,
+   "want": "57.053"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 987.0,
+   "kind": "percentile",
+   "arg": "6.16",
+   "places": 1,
+   "want": "62.7"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 800.0,
+   "kind": "percentile",
+   "arg": "6.57",
+   "places": 1,
+   "want": "72.1"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 102.0,
+   "kind": "percentile",
+   "arg": "4.24",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 569.0,
+   "kind": "percentile",
+   "arg": "7.76",
+   "places": 2,
+   "want": "89.96"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1679.0,
+   "kind": "percentile",
+   "arg": "3.39",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 506.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 3,
+   "want": "6.161"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1598.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 1,
+   "want": "3.0"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 213.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 2,
+   "want": "4.70"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 328.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 2,
+   "want": "9.61"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 650.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 135.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 0,
+   "want": "15"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1334.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 2,
+   "want": "3.79"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1369.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 2,
+   "want": "3.54"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1799.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "7.56"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1200.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "7.8"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1109.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "4.14"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 674.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 3,
+   "want": "10.517"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1183.0,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 1,
+   "want": "4.8"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 292.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "12.3"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1291.0,
+   "kind": "valueAtPercentile",
+   "arg": "97.72",
+   "places": 1,
+   "want": "8.9"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 873.0,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 0,
+   "want": "5"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1138.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 3,
+   "want": "4.354"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1636.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 1,
+   "want": "8.5"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 673.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 2,
+   "want": "8.28"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "male",
+   "x": 1481.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "4.07"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 260.0,
+   "kind": "percentile",
+   "arg": "5.44",
+   "places": 3,
+   "want": "9.930"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1406.0,
+   "kind": "percentile",
+   "arg": "9.28",
+   "places": 0,
+   "want": "95"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1727.0,
+   "kind": "percentile",
+   "arg": "8.84",
+   "places": 1,
+   "want": "91.7"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1583.0,
+   "kind": "percentile",
+   "arg": "8.62",
+   "places": 3,
+   "want": "91.082"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1176.0,
+   "kind": "percentile",
+   "arg": "7.20",
+   "places": 1,
+   "want": "78.0"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 243.0,
+   "kind": "percentile",
+   "arg": "5.52",
+   "places": 2,
+   "want": "10.51"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 977.0,
+   "kind": "percentile",
+   "arg": "3.97",
+   "places": 0,
+   "want": "1"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1817.0,
+   "kind": "percentile",
+   "arg": "7.62",
+   "places": 1,
+   "want": "80.9"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1380.0,
+   "kind": "percentile",
+   "arg": "9.28",
+   "places": 1,
+   "want": "95.1"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1002.0,
+   "kind": "percentile",
+   "arg": "8.20",
+   "places": 2,
+   "want": "90.96"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 192.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "7.11"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1217.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "7.631"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 432.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 0,
+   "want": "9"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 445.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 1,
+   "want": "3.3"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1675.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "17.34"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1753.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "4.93"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1585.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "13.12"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1413.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "5.0"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 432.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 2,
+   "want": "3.93"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 619.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 2,
+   "want": "3.21"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 646.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 1,
+   "want": "8.0"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 806.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 1,
+   "want": "7.0"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1743.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 3,
+   "want": "7.952"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 160.0,
+   "kind": "valueAtPercentile",
+   "arg": "97.72",
+   "places": 1,
+   "want": "10.8"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1324.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "4.7"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 1357.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 1,
+   "want": "5.3"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 175.0,
+   "kind": "valueAtPercentile",
+   "arg": "97.72",
+   "places": 2,
+   "want": "10.67"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 857.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 3,
+   "want": "5.368"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 799.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 2,
+   "want": "3.69"
+  },
+  {
+   "ref": "who-ssfa",
+   "sex": "female",
+   "x": 437.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 2,
+   "want": "7.80"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 136.0,
+   "kind": "percentile",
+   "arg": "9.37",
+   "places": 1,
+   "want": "47.0"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 96.0,
+   "kind": "percentile",
+   "arg": "6.79",
+   "places": 3,
+   "want": "1.560"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1396.0,
+   "kind": "percentile",
+   "arg": "7.04",
+   "places": 1,
+   "want": "33.4"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1750.0,
+   "kind": "percentile",
+   "arg": "6.94",
+   "places": 0,
+   "want": "36"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1593.0,
+   "kind": "percentile",
+   "arg": "8.63",
+   "places": 1,
+   "want": "68.3"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 460.0,
+   "kind": "percentile",
+   "arg": "9.49",
+   "places": 0,
+   "want": "83"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 567.0,
+   "kind": "percentile",
+   "arg": "9.01",
+   "places": 3,
+   "want": "78.514"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 622.0,
+   "kind": "percentile",
+   "arg": "9.65",
+   "places": 1,
+   "want": "87.1"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1618.0,
+   "kind": "percentile",
+   "arg": "4.47",
+   "places": 2,
+   "want": "0.83"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1473.0,
+   "kind": "percentile",
+   "arg": "9.05",
+   "places": 1,
+   "want": "74.4"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 522.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "9.443"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 509.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "5.28"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 890.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "6.33"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 887.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "9.6"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1098.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 1,
+   "want": "19.3"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1239.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "5.11"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 115.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 3,
+   "want": "10.796"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1598.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 0,
+   "want": "7"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1416.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 0,
+   "want": "5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 630.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 3,
+   "want": "6.942"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 129.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 0,
+   "want": "11"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 752.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "9.5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 767.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 2,
+   "want": "4.89"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 612.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 1,
+   "want": "4.6"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 373.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 1,
+   "want": "4.5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 1029.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "6.0"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 260.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 3,
+   "want": "11.056"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 716.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 3,
+   "want": "5.197"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 716.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 1,
+   "want": "4.2"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "male",
+   "x": 678.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 3,
+   "want": "11.345"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 107.0,
+   "kind": "percentile",
+   "arg": "6.13",
+   "places": 1,
+   "want": "0.7"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1028.0,
+   "kind": "percentile",
+   "arg": "6.13",
+   "places": 2,
+   "want": "8.73"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 308.0,
+   "kind": "percentile",
+   "arg": "12.52",
+   "places": 1,
+   "want": "97.8"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 718.0,
+   "kind": "percentile",
+   "arg": "4.50",
+   "places": 1,
+   "want": "0.2"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 924.0,
+   "kind": "percentile",
+   "arg": "12.84",
+   "places": 1,
+   "want": "98.1"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1788.0,
+   "kind": "percentile",
+   "arg": "8.74",
+   "places": 2,
+   "want": "48.94"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1591.0,
+   "kind": "percentile",
+   "arg": "5.06",
+   "places": 2,
+   "want": "1.08"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 762.0,
+   "kind": "percentile",
+   "arg": "11.64",
+   "places": 1,
+   "want": "96.5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 468.0,
+   "kind": "percentile",
+   "arg": "10.92",
+   "places": 1,
+   "want": "94.7"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1785.0,
+   "kind": "percentile",
+   "arg": "5.72",
+   "places": 3,
+   "want": "3.902"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 859.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 3,
+   "want": "7.987"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 264.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "6.9"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1229.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 0,
+   "want": "3"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 526.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 3,
+   "want": "3.885"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 149.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "8.5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1758.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "13.1"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 106.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "11.5"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 133.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 2,
+   "want": "11.44"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1476.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "10.1"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1348.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 1,
+   "want": "3.4"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1714.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 0,
+   "want": "14"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 923.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 3,
+   "want": "4.719"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 352.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 3,
+   "want": "8.048"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1641.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "5.55"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1604.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 0,
+   "want": "12"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 600.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 2,
+   "want": "10.93"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 424.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "7.9"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1416.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "19.1"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 1418.0,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 2,
+   "want": "15.48"
+  },
+  {
+   "ref": "who-tsfa",
+   "sex": "female",
+   "x": 746.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 3,
+   "want": "4.955"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 90.7,
+   "kind": "percentile",
+   "arg": "18.03",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 91.5,
+   "kind": "percentile",
+   "arg": "14.95",
+   "places": 1,
+   "want": "94.9"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 65.3,
+   "kind": "percentile",
+   "arg": "6.40",
+   "places": 2,
+   "want": "4.41"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 101.5,
+   "kind": "percentile",
+   "arg": "21.97",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 90.7,
+   "kind": "percentile",
+   "arg": "12.35",
+   "places": 1,
+   "want": "29.7"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 48.5,
+   "kind": "percentile",
+   "arg": "4.41",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 73.3,
+   "kind": "percentile",
+   "arg": "5.81",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 102.6,
+   "kind": "percentile",
+   "arg": "13.59",
+   "places": 1,
+   "want": "2.6"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 80.1,
+   "kind": "percentile",
+   "arg": "7.92",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 108.5,
+   "kind": "percentile",
+   "arg": "16.53",
+   "places": 0,
+   "want": "20"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 75.8,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 3,
+   "want": "8.904"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 46.5,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 2,
+   "want": "1.89"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 65.4,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 3,
+   "want": "8.720"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 60.6,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 2,
+   "want": "4.46"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 74.5,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 1,
+   "want": "11.7"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 57.2,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "5.9"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 97.7,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 0,
+   "want": "18"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 97.9,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "15.4"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 64.7,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 1,
+   "want": "5.5"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 62.9,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "8.8"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 71.2,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 2,
+   "want": "7.61"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 46.3,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "3.572"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 67.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "6.60"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 90.1,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 0,
+   "want": "15"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 100.9,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "13.1"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 107.1,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 83.8,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "14.08"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 60.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 2,
+   "want": "5.67"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 89.1,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 3,
+   "want": "10.430"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "male",
+   "x": 67.3,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 2,
+   "want": "9.51"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 51.8,
+   "kind": "percentile",
+   "arg": "5.78",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 102.5,
+   "kind": "percentile",
+   "arg": "12.17",
+   "places": 3,
+   "want": "0.149"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 90.0,
+   "kind": "percentile",
+   "arg": "14.61",
+   "places": 0,
+   "want": "96"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 52.7,
+   "kind": "percentile",
+   "arg": "5.42",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 72.8,
+   "kind": "percentile",
+   "arg": "8.83",
+   "places": 2,
+   "want": "55.17"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 65.7,
+   "kind": "percentile",
+   "arg": "9.62",
+   "places": 3,
+   "want": "99.844"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 61.8,
+   "kind": "percentile",
+   "arg": "6.83",
+   "places": 3,
+   "want": "79.639"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 108.1,
+   "kind": "percentile",
+   "arg": "14.86",
+   "places": 1,
+   "want": "3.0"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 52.4,
+   "kind": "percentile",
+   "arg": "4.36",
+   "places": 1,
+   "want": "89.2"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 67.0,
+   "kind": "percentile",
+   "arg": "11.79",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 54.1,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "4.6"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 92.9,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 2,
+   "want": "15.87"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 82.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "12.06"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 108.3,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 107.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 0,
+   "want": "23"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 58.1,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "5.1"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 97.6,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "12.1"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 105.9,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 2,
+   "want": "16.09"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 55.3,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 0,
+   "want": "4"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 103.8,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "17.7"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 46.1,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 1,
+   "want": "3.4"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 68.9,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 0,
+   "want": "6"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 104.3,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "13.66"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 100.3,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 1,
+   "want": "13.8"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 46.6,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "3.0"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 47.8,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 0,
+   "want": "3"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 103.9,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 0,
+   "want": "17"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 59.8,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "5.8"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 58.9,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "7.5"
+  },
+  {
+   "ref": "who-wfl",
+   "sex": "female",
+   "x": 75.9,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 2,
+   "want": "7.83"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 118.6,
+   "kind": "percentile",
+   "arg": "16.38",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 104.4,
+   "kind": "percentile",
+   "arg": "14.63",
+   "places": 1,
+   "want": "5.8"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 76.3,
+   "kind": "percentile",
+   "arg": "8.51",
+   "places": 1,
+   "want": "3.1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 84.8,
+   "kind": "percentile",
+   "arg": "16.18",
+   "places": 3,
+   "want": "99.996"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 108.8,
+   "kind": "percentile",
+   "arg": "12.42",
+   "places": 0,
+   "want": "1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 119.2,
+   "kind": "percentile",
+   "arg": "27.86",
+   "places": 1,
+   "want": "99.2"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 111.9,
+   "kind": "percentile",
+   "arg": "26.04",
+   "places": 3,
+   "want": "99.943"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 83.1,
+   "kind": "percentile",
+   "arg": "13.48",
+   "places": 1,
+   "want": "98.5"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 85.4,
+   "kind": "percentile",
+   "arg": "7.16",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 67.2,
+   "kind": "percentile",
+   "arg": "6.35",
+   "places": 1,
+   "want": "0.2"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 77.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 3,
+   "want": "7.576"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 93.6,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 3,
+   "want": "19.125"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 89.9,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 2,
+   "want": "10.21"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 112.8,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 0,
+   "want": "15"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 67.2,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 2,
+   "want": "6.27"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 80.4,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 1,
+   "want": "8.7"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 98.5,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 0,
+   "want": "18"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 75.1,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "11.0"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 100.7,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "19.28"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 68.7,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "10.7"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 92.5,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "11.5"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 94.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "17.9"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 111.6,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "21.0"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 114.6,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "17.13"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 90.6,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 1,
+   "want": "12.3"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 86.8,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 2,
+   "want": "12.80"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 80.5,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 1,
+   "want": "13.4"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 111.5,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "16.0"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 68.8,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "9.5"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "male",
+   "x": 73.4,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 3,
+   "want": "10.715"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 100.2,
+   "kind": "percentile",
+   "arg": "11.54",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 109.7,
+   "kind": "percentile",
+   "arg": "26.18",
+   "places": 2,
+   "want": "99.98"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 76.9,
+   "kind": "percentile",
+   "arg": "5.56",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 79.3,
+   "kind": "percentile",
+   "arg": "8.57",
+   "places": 1,
+   "want": "3.0"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 78.4,
+   "kind": "percentile",
+   "arg": "6.74",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 79.7,
+   "kind": "percentile",
+   "arg": "8.21",
+   "places": 3,
+   "want": "0.624"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 110.0,
+   "kind": "percentile",
+   "arg": "10.71",
+   "places": 3,
+   "want": "0.001"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 97.4,
+   "kind": "percentile",
+   "arg": "21.79",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 76.1,
+   "kind": "percentile",
+   "arg": "6.25",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 82.5,
+   "kind": "percentile",
+   "arg": "12.22",
+   "places": 3,
+   "want": "91.417"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 112.9,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 3,
+   "want": "18.008"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 79.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 0,
+   "want": "7"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 70.2,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 2,
+   "want": "7.98"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 75.3,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "10.2"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 68.1,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 2,
+   "want": "7.57"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 67.1,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "8.86"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 116.5,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 1,
+   "want": "21.3"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 110.3,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 1,
+   "want": "13.7"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 76.5,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 3,
+   "want": "12.694"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 99.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 1,
+   "want": "18.9"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 82.8,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 1,
+   "want": "12.2"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 102.4,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 1,
+   "want": "14.5"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 74.8,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 3,
+   "want": "7.092"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 90.9,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 3,
+   "want": "16.491"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 84.5,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 0,
+   "want": "9"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 77.2,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 0,
+   "want": "9"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 75.3,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "7.8"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 87.2,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 1,
+   "want": "12.7"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 115.7,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "18.6"
+  },
+  {
+   "ref": "who-wfh",
+   "sex": "female",
+   "x": 115.1,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 3,
+   "want": "20.706"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 114.0,
+   "kind": "percentile",
+   "arg": "24.91",
+   "places": 1,
+   "want": "12.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 88.0,
+   "kind": "percentile",
+   "arg": "24.90",
+   "places": 1,
+   "want": "63.5"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 113.0,
+   "kind": "percentile",
+   "arg": "29.57",
+   "places": 1,
+   "want": "52.1"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 93.0,
+   "kind": "percentile",
+   "arg": "31.06",
+   "places": 1,
+   "want": "93.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 76.0,
+   "kind": "percentile",
+   "arg": "25.14",
+   "places": 1,
+   "want": "88.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 89.0,
+   "kind": "percentile",
+   "arg": "33.08",
+   "places": 0,
+   "want": "98"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 113.0,
+   "kind": "percentile",
+   "arg": "35.98",
+   "places": 3,
+   "want": "88.910"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 66.0,
+   "kind": "percentile",
+   "arg": "27.20",
+   "places": 1,
+   "want": "99.3"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 120.0,
+   "kind": "percentile",
+   "arg": "27.83",
+   "places": 1,
+   "want": "23.6"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 90.0,
+   "kind": "percentile",
+   "arg": "26.73",
+   "places": 1,
+   "want": "76.1"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 65.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "16.9"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 67.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 0,
+   "want": "24"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 61.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 0,
+   "want": "14"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 83.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 1,
+   "want": "41.0"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 83.0,
+   "kind": "valueAtZ",
+   "arg": "-3",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 120.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "50.20"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 85.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "25.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 117.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "36.0"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 118.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 2,
+   "want": "21.43"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 80.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "22.08"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 60.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 3,
+   "want": "26.152"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 106.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 3,
+   "want": "37.753"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 81.0,
+   "kind": "valueAtPercentile",
+   "arg": "15",
+   "places": 1,
+   "want": "19.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 103.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "27.0"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 78.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 3,
+   "want": "27.369"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 115.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "22.73"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 116.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "30.1"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 68.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 0,
+   "want": "25"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 65.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 3,
+   "want": "17.600"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "male",
+   "x": 72.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "14.66"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 107.0,
+   "kind": "percentile",
+   "arg": "30.81",
+   "places": 1,
+   "want": "71.6"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 104.0,
+   "kind": "percentile",
+   "arg": "29.00",
+   "places": 1,
+   "want": "65.7"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 121.0,
+   "kind": "percentile",
+   "arg": "47.12",
+   "places": 1,
+   "want": "97.8"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 105.0,
+   "kind": "percentile",
+   "arg": "40.56",
+   "places": 2,
+   "want": "98.29"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 102.0,
+   "kind": "percentile",
+   "arg": "21.04",
+   "places": 3,
+   "want": "6.549"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 75.0,
+   "kind": "percentile",
+   "arg": "26.32",
+   "places": 1,
+   "want": "93.4"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 63.0,
+   "kind": "percentile",
+   "arg": "27.29",
+   "places": 1,
+   "want": "99.2"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 75.0,
+   "kind": "percentile",
+   "arg": "18.86",
+   "places": 1,
+   "want": "26.5"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 111.0,
+   "kind": "percentile",
+   "arg": "42.68",
+   "places": 1,
+   "want": "97.9"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 76.0,
+   "kind": "percentile",
+   "arg": "21.21",
+   "places": 1,
+   "want": "54.3"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 60.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 3,
+   "want": "13.007"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 64.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "25.6"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 62.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 0,
+   "want": "30"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 116.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 0,
+   "want": "45"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 74.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 1,
+   "want": "40.0"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 78.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "29.6"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 80.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 3,
+   "want": "16.250"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 64.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 0,
+   "want": "32"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 94.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "18.3"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 72.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "22.3"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 101.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 2,
+   "want": "29.48"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 113.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 1,
+   "want": "20.8"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 109.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 1,
+   "want": "18.1"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 68.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 0,
+   "want": "23"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 78.0,
+   "kind": "valueAtPercentile",
+   "arg": "75",
+   "places": 1,
+   "want": "23.6"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 120.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "54.37"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 76.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 0,
+   "want": "16"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 66.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 2,
+   "want": "15.25"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 99.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 1,
+   "want": "17.5"
+  },
+  {
+   "ref": "who2007-wfa",
+   "sex": "female",
+   "x": 117.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "52.48"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 104.0,
+   "kind": "percentile",
+   "arg": "153.66",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 202.0,
+   "kind": "percentile",
+   "arg": "110.51",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 87.0,
+   "kind": "percentile",
+   "arg": "126.68",
+   "places": 3,
+   "want": "74.470"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 154.0,
+   "kind": "percentile",
+   "arg": "152.54",
+   "places": 1,
+   "want": "37.8"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 105.0,
+   "kind": "percentile",
+   "arg": "193.19",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 215.0,
+   "kind": "percentile",
+   "arg": "237.46",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 222.0,
+   "kind": "percentile",
+   "arg": "123.73",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 129.0,
+   "kind": "percentile",
+   "arg": "87.79",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 70.0,
+   "kind": "percentile",
+   "arg": "65.99",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 171.0,
+   "kind": "percentile",
+   "arg": "93.37",
+   "places": 0,
+   "want": "1"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 149.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 2,
+   "want": "156.71"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 185.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "155.20"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 204.0,
+   "kind": "valueAtZ",
+   "arg": "-2.5",
+   "places": 2,
+   "want": "156.05"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 155.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 1,
+   "want": "166.5"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 195.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "169.7"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 224.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 3,
+   "want": "172.768"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 102.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 1,
+   "want": "124.1"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 140.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 1,
+   "want": "160.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 175.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "162.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 201.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 2,
+   "want": "190.10"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 137.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 1,
+   "want": "154.3"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 163.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 2,
+   "want": "168.17"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 116.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 3,
+   "want": "155.377"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 183.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 1,
+   "want": "146.0"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 215.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 0,
+   "want": "167"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 204.0,
+   "kind": "valueAtPercentile",
+   "arg": "2.28",
+   "places": 1,
+   "want": "159.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 193.0,
+   "kind": "valueAtPercentile",
+   "arg": "5",
+   "places": 1,
+   "want": "160.4"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 174.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 2,
+   "want": "145.70"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 61.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 0,
+   "want": "110"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "male",
+   "x": 169.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 1,
+   "want": "149.2"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 110.0,
+   "kind": "percentile",
+   "arg": "141.93",
+   "places": 1,
+   "want": "91.4"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 66.0,
+   "kind": "percentile",
+   "arg": "141.75",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 151.0,
+   "kind": "percentile",
+   "arg": "214.60",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 183.0,
+   "kind": "percentile",
+   "arg": "195.21",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 76.0,
+   "kind": "percentile",
+   "arg": "175.52",
+   "places": 2,
+   "want": "99.99"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 70.0,
+   "kind": "percentile",
+   "arg": "127.03",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 80.0,
+   "kind": "percentile",
+   "arg": "149.55",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 174.0,
+   "kind": "percentile",
+   "arg": "191.47",
+   "places": 3,
+   "want": "99.999"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 135.0,
+   "kind": "percentile",
+   "arg": "176.34",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 176.0,
+   "kind": "percentile",
+   "arg": "247.84",
+   "places": 1,
+   "want": "99.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 89.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "111.97"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 60.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 3,
+   "want": "106.702"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 187.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 1,
+   "want": "189.6"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 87.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "138.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 216.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 0,
+   "want": "189"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 166.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 1,
+   "want": "166.3"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 177.0,
+   "kind": "valueAtZ",
+   "arg": "-1",
+   "places": 2,
+   "want": "154.42"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 108.0,
+   "kind": "valueAtZ",
+   "arg": "1.5",
+   "places": 2,
+   "want": "141.66"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 96.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 1,
+   "want": "143.9"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 134.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "142.7"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 148.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 3,
+   "want": "153.121"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 195.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 2,
+   "want": "149.91"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 103.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 0,
+   "want": "140"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 91.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "133.5"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 82.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 0,
+   "want": "120"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 159.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 1,
+   "want": "148.5"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 138.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 2,
+   "want": "156.83"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 195.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 3,
+   "want": "153.962"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 121.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.9",
+   "places": 1,
+   "want": "159.0"
+  },
+  {
+   "ref": "who2007-hfa",
+   "sex": "female",
+   "x": 62.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.4",
+   "places": 1,
+   "want": "97.4"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 161.0,
+   "kind": "percentile",
+   "arg": "28.31",
+   "places": 1,
+   "want": "99.4"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 126.0,
+   "kind": "percentile",
+   "arg": "22.12",
+   "places": 1,
+   "want": "98.0"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 189.0,
+   "kind": "percentile",
+   "arg": "20.06",
+   "places": 3,
+   "want": "45.856"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 202.0,
+   "kind": "percentile",
+   "arg": "19.38",
+   "places": 3,
+   "want": "24.791"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 86.0,
+   "kind": "percentile",
+   "arg": "20.27",
+   "places": 2,
+   "want": "99.33"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 90.0,
+   "kind": "percentile",
+   "arg": "10.78",
+   "places": 2,
+   "want": "0.01"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 144.0,
+   "kind": "percentile",
+   "arg": "25.60",
+   "places": 1,
+   "want": "99.2"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 111.0,
+   "kind": "percentile",
+   "arg": "21.92",
+   "places": 1,
+   "want": "99.1"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 73.0,
+   "kind": "percentile",
+   "arg": "15.24",
+   "places": 2,
+   "want": "47.69"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 154.0,
+   "kind": "percentile",
+   "arg": "26.60",
+   "places": 3,
+   "want": "99.115"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 200.0,
+   "kind": "valueAtZ",
+   "arg": "-4",
+   "places": 3,
+   "want": "13.880"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 154.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 1,
+   "want": "33.1"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 227.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 2,
+   "want": "35.51"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 99.0,
+   "kind": "valueAtZ",
+   "arg": "3",
+   "places": 0,
+   "want": "23"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 198.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 3,
+   "want": "41.723"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 72.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 3,
+   "want": "13.040"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 193.0,
+   "kind": "valueAtZ",
+   "arg": "4",
+   "places": 1,
+   "want": "41.7"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 131.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 2,
+   "want": "14.03"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 64.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 1,
+   "want": "20.8"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 114.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 2,
+   "want": "16.23"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 167.0,
+   "kind": "valueAtPercentile",
+   "arg": "3",
+   "places": 1,
+   "want": "15.6"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 138.0,
+   "kind": "valueAtPercentile",
+   "arg": "85",
+   "places": 1,
+   "want": "19.6"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 79.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 2,
+   "want": "18.54"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 118.0,
+   "kind": "valueAtPercentile",
+   "arg": "0.1",
+   "places": 2,
+   "want": "12.65"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 124.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 0,
+   "want": "25"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 75.0,
+   "kind": "valueAtPercentile",
+   "arg": "25",
+   "places": 3,
+   "want": "14.485"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 190.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "26.0"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 81.0,
+   "kind": "valueAtPercentile",
+   "arg": "90",
+   "places": 1,
+   "want": "17.5"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 78.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 0,
+   "want": "19"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "male",
+   "x": 69.0,
+   "kind": "valueAtPercentile",
+   "arg": "10",
+   "places": 2,
+   "want": "13.76"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 81.0,
+   "kind": "percentile",
+   "arg": "23.11",
+   "places": 0,
+   "want": "99"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 201.0,
+   "kind": "percentile",
+   "arg": "25.94",
+   "places": 0,
+   "want": "91"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 178.0,
+   "kind": "percentile",
+   "arg": "27.92",
+   "places": 1,
+   "want": "97.6"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 90.0,
+   "kind": "percentile",
+   "arg": "8.69",
+   "places": 1,
+   "want": "0.1"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 178.0,
+   "kind": "percentile",
+   "arg": "19.89",
+   "places": 0,
+   "want": "47"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 173.0,
+   "kind": "percentile",
+   "arg": "25.96",
+   "places": 3,
+   "want": "95.213"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 192.0,
+   "kind": "percentile",
+   "arg": "18.55",
+   "places": 1,
+   "want": "20.4"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 151.0,
+   "kind": "percentile",
+   "arg": "21.57",
+   "places": 3,
+   "want": "85.354"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 209.0,
+   "kind": "percentile",
+   "arg": "26.82",
+   "places": 2,
+   "want": "93.34"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 220.0,
+   "kind": "percentile",
+   "arg": "14.45",
+   "places": 3,
+   "want": "0.078"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 148.0,
+   "kind": "valueAtZ",
+   "arg": "2",
+   "places": 3,
+   "want": "25.387"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 119.0,
+   "kind": "valueAtZ",
+   "arg": "-2",
+   "places": 1,
+   "want": "13.4"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 191.0,
+   "kind": "valueAtZ",
+   "arg": "3.25",
+   "places": 2,
+   "want": "37.84"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 199.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "32.30"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 197.0,
+   "kind": "valueAtZ",
+   "arg": "1",
+   "places": 3,
+   "want": "24.290"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 121.0,
+   "kind": "valueAtZ",
+   "arg": "-3.5",
+   "places": 2,
+   "want": "11.86"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 200.0,
+   "kind": "valueAtZ",
+   "arg": "0",
+   "places": 1,
+   "want": "20.9"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 82.0,
+   "kind": "valueAtZ",
+   "arg": "2.5",
+   "places": 2,
+   "want": "21.23"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 183.0,
+   "kind": "valueAtZ",
+   "arg": "0.67",
+   "places": 1,
+   "want": "22.5"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 180.0,
+   "kind": "valueAtZ",
+   "arg": "-0.5",
+   "places": 1,
+   "want": "18.9"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 145.0,
+   "kind": "valueAtPercentile",
+   "arg": "95",
+   "places": 1,
+   "want": "23.4"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 75.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 2,
+   "want": "12.36"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 143.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 1,
+   "want": "17.9"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 77.0,
+   "kind": "valueAtPercentile",
+   "arg": "1",
+   "places": 3,
+   "want": "12.363"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 95.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 2,
+   "want": "22.98"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 167.0,
+   "kind": "valueAtPercentile",
+   "arg": "50",
+   "places": 2,
+   "want": "19.50"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 168.0,
+   "kind": "valueAtPercentile",
+   "arg": "99",
+   "places": 2,
+   "want": "29.31"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 155.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 2,
+   "want": "25.48"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 82.0,
+   "kind": "valueAtPercentile",
+   "arg": "99.6",
+   "places": 3,
+   "want": "21.751"
+  },
+  {
+   "ref": "who2007-bfa",
+   "sex": "female",
+   "x": 114.0,
+   "kind": "valueAtPercentile",
+   "arg": "97",
+   "places": 0,
+   "want": "22"
+  }
+ ]
+}

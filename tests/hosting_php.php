@@ -787,14 +787,20 @@ namespace {
         // -- the memory limit, end to end ---------------------------------------
         // Hold a real allocation, then set a limit whose 70% sits below it. The
         // limit stays comfortably above ACTUAL usage, so nothing fatals; only
-        // the guard's threshold is crossed.
+        // the guard's threshold is crossed. The limit is measured, not fixed:
+        // a fixed 30M failed on PHP 8.3/8.4 in CI once the baseline grew past a
+        // 2 MB heap chunk, because PHP refuses a limit below current usage.
         $ballast = str_repeat('x', 20 * 1024 * 1024);
         $oldMem = ini_get('memory_limit');
-        ini_set('memory_limit', '30M');              // cap = 21M, usage > 21M
+        $used = memory_get_usage(true);
+        $limitMb = (int) ceil($used / 1048576) + 4;  // 70% of this is below usage
+        $limitSet = ini_set('memory_limit', $limitMb . 'M') !== false;
         $res3 = mkMod($D, $mkData(4))->scanProject(PID, null, 1);
         ini_set('memory_limit', (string) $oldMem);
         unset($ballast);
 
+        check('H-08: the test memory limit was accepted, with its 70% below usage',
+            $limitSet && $limitMb * 1048576 * 0.70 < $used);
         check('H-08: a scan near the memory limit reports incomplete, never complete',
             $res3['status'] === 'incomplete');
         // X1. The headline count used to be the MANIFEST, set before the loop and
