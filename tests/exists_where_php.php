@@ -463,8 +463,10 @@ namespace {
 
     // ---- 6) the post-save audit --------------------------------------------------------------
     $AUD = $DATA;
-    $AUD['9'][351] += ['w_and' => 'SP-WD', 'w_c0' => 'SP-NOCON', 'w_upper' => 'SP-404', 'w_ci' => 'SP-OK', 'w_rec' => 'XY-9',
-                       'w_ret' => 'SP-NOCON', 't_site' => '1'];
+    // w_c0 and w_s differ only in "where" and hold one value: a save asks each
+    // its own question (the lookup memo is keyed by the condition).
+    $AUD['9'][351] += ['w_and' => 'SP-WD', 'w_c0' => 'SP-NOCON', 'w_s' => 'SP-NOCON', 'w_upper' => 'SP-404', 'w_ci' => 'SP-OK',
+                       'w_rec' => 'XY-9', 'w_ret' => 'SP-NOCON', 't_site' => '1'];
     $m = mod();
     \REDCap::$data = [149 => $AUD];
     $m->redcap_save_record(149, '9', 'result', 351, null, null, null, 1);
@@ -472,7 +474,8 @@ namespace {
     foreach (findings($m) as $e) $by[$e['field']] = $e;
     check('audit: a value that fails "where" is logged with reason filtered', ($by['w_and']['reason'] ?? null) === 'filtered'
         && $by['w_and']['type'] === 'exists');
-    check('audit: a different "where" on the same value gets its own answer', !isset($by['w_c0']));
+    check('audit: a different "where" on the same value gets its own answer', !isset($by['w_c0'])
+        && ($by['w_s']['reason'] ?? null) === 'filtered');
     check('audit: a value not saved anywhere stays not-found', ($by['w_upper']['reason'] ?? null) === 'not-found');
     check('audit: a value that passes is not logged', !isset($by['w_ci']));
     check('audit: a record-ID lookup that fails "where" is filtered', ($by['w_rec']['reason'] ?? null) === 'filtered');
@@ -488,7 +491,7 @@ namespace {
     foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[$v['field']] = $v['reason'] ?? null;
     ksort($hits);
     check('scan: the same verdicts as the audit, reasons included',
-        $hits === ['w_and' => 'filtered', 'w_rec' => 'filtered', 'w_ret' => 'filtered', 'w_upper' => 'not-found']);
+        $hits === ['w_and' => 'filtered', 'w_rec' => 'filtered', 'w_ret' => 'filtered', 'w_s' => 'filtered', 'w_upper' => 'not-found']);
     $idx = array_values(array_filter(\REDCap::$calls, function ($c) {
         return empty($c['filterLogic']) && isset($c['fields']) && $c['fields'][0] === 'specimen_id';
     }));
