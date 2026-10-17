@@ -285,7 +285,7 @@
                      "rangeReturn", "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals", "rangeReturnComma",
                      "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked", "i18n",
-                     "rangeShow", "growthCurveKey", "growthTableRows", "growthChartWhy", "growthChartSource"],
+                     "rangeShow", "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource"],
       "textKeys": ["message", "show.chart.labels.*", "show.table.labels.*"],
       "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always"},
       "needs": [],

@@ -70,6 +70,13 @@ final class GrowthReference
 
     const AXES = ['age' => ['days', 'months'], 'length' => ['cm'], 'height' => ['cm']];
     const LOOKUPS = ['round', 'floor', 'linear'];
+    /**
+     * How a growth chart counts an age axis ("chartUnit", optional): "auto"
+     * (the default) counts months while the chart shows under two years and
+     * years beyond; the others count that unit always, such as "weeks" for a
+     * reference by gestational age. Twin: QRID_chartXUnit.
+     */
+    const CHART_UNITS = ['auto', 'days', 'weeks', 'months', 'years'];
     const ADJUSTS = ['none', 'who-restricted'];
     /** A reference id: 1 to 64 lower-case letters, digits, ".", "_" or "-". */
     const ID_RE = '/^[a-z0-9][a-z0-9_.-]{0,63}$/D';
@@ -124,6 +131,9 @@ final class GrowthReference
             foreach (['pageTables', 'pageCharts'] as $cap) {
                 if (isset($index[$cap])) $out[$cap] = $index[$cap];
             }
+            // a cap out of range keeps the default: it limits what a page
+            // carries, and is no reason to stop every reference
+            foreach ($index['capProblems'] as $why) $out['problems'][] = $d['what'] . ': ' . $why;
             foreach ($index['references'] as $id => $e) {
                 $why = self::entryProblem($id, $e);
                 if ($why !== null) {
@@ -138,7 +148,7 @@ final class GrowthReference
                 unset($e['sourceTitle']);
                 $src = isset($e['source']) && is_string($e['source']) && isset($index['sources'][$e['source']]['title'])
                     ? $index['sources'][$e['source']]['title'] : null;
-                if (is_string($src) && trim($src) !== '' && !preg_match('/[\x00-\x1f\x7f]/', $src)) $e['sourceTitle'] = trim($src);
+                if (is_string($src) && trim($src) !== '' && self::oneLine($src)) $e['sourceTitle'] = trim($src);
                 $out['references'][$id] = $e;
             }
         }
@@ -191,15 +201,28 @@ final class GrowthReference
             return ['error' => 'index.json must say "format": "' . self::INDEX_FORMAT . '".'];
         }
         if (!isset($j['references']) || !is_array($j['references'])) return ['error' => 'index.json has no "references".'];
-        $out = ['references' => $j['references'], 'sources' => (isset($j['sources']) && is_array($j['sources'])) ? $j['sources'] : []];
-        foreach (['pageTables', 'pageCharts'] as $cap) {
-            if (!isset($j[$cap])) continue;
+        $out = ['references' => $j['references'], 'sources' => (isset($j['sources']) && is_array($j['sources'])) ? $j['sources'] : [],
+                'capProblems' => []];
+        foreach (['pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS] as $cap => $default) {
+            if (!array_key_exists($cap, $j)) continue;
             if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > 50) {
-                return ['error' => '"' . $cap . '" must be a whole number from 0 to 50.'];
+                $out['capProblems'][] = '"' . $cap . '" must be a whole number from 0 to 50, so the default (' . $default . ') applies.';
+                continue;
             }
             $out[$cap] = $j[$cap];
         }
         return $out;
+    }
+
+    /**
+     * Whether $s is text for one line: no control character, line or
+     * paragraph separator, or bidirectional override (which would reorder
+     * the text around it). $s must be valid UTF-8 (json_decode makes sure).
+     */
+    public static function oneLine($s)
+    {
+        return is_string($s)
+            && preg_match('/[\x00-\x1f\x7f\x{80}-\x{9f}\x{2028}\x{2029}\x{202a}-\x{202e}\x{2066}-\x{2069}]/u', $s) === 0;
     }
 
     /** Why an index entry cannot be used, or null. */
@@ -219,6 +242,12 @@ final class GrowthReference
         if (!isset(self::AXES[$e['axis']])) return 'has "axis" "' . $e['axis'] . '"; it must be age, length or height.';
         if (!in_array($e['axisUnit'], self::AXES[$e['axis']], true)) {
             return 'has "axisUnit" "' . $e['axisUnit'] . '"; with axis ' . $e['axis'] . ' it must be ' . implode(' or ', self::AXES[$e['axis']]) . '.';
+        }
+        if (array_key_exists('chartUnit', $e)) {
+            if ($e['axis'] !== 'age') return 'has "chartUnit", which only an age reference takes.';
+            if (!in_array($e['chartUnit'], self::CHART_UNITS, true)) {
+                return 'has "chartUnit" ' . json_encode($e['chartUnit']) . '; it must be ' . implode(', ', self::CHART_UNITS) . '.';
+            }
         }
         if (!in_array($e['lookup'], self::LOOKUPS, true)) return 'has "lookup" "' . $e['lookup'] . '"; it must be round, floor or linear.';
         if (!in_array($e['adjust'], self::ADJUSTS, true)) return 'has "adjust" "' . $e['adjust'] . '"; it must be none or who-restricted.';
@@ -512,6 +541,7 @@ final class GrowthReference
     {
         $out = [];
         foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];
+        if (isset($entry['chartUnit']) && $entry['chartUnit'] !== 'auto') $out['chartUnit'] = $entry['chartUnit'];
         foreach (['scale', 'first', 'male', 'female'] as $k) $out[$k] = $table[$k];
         if ($need === null) return $out;
         if (isset($need['xs']) && is_array($need['xs'])) {

@@ -1025,7 +1025,13 @@ class AnnotationRules
         }
         // The growth chart and the table shown on the page (page only).
         if (array_key_exists('show', $cfg)) {
-            $s = self::parseShow($cfg['show'], isset($exact['show']) ? $exact['show'] : null, $out);
+            // the chart's lines and the table's columns are catalog outputs:
+            // an unreadable catalog refuses this rule only, as for "return"
+            $bad = GrowthOutputs::problem();
+            if ($bad !== null) return ['error' => '"show" cannot be checked: ' . $bad . '.'];
+            $raw = json_decode($val, false, 512, JSON_BIGINT_AS_STRING);
+            $s = self::parseShow($cfg['show'], isset($exact['show']) ? $exact['show'] : null, $out,
+                (is_object($raw) && property_exists($raw, 'show')) ? $raw->show : null);
             if (isset($s['error'])) return $s;
             $out['rangeShow'] = $s;
         }
@@ -1096,7 +1102,7 @@ class AnnotationRules
      * texts (or, through takeTexts, per-language maps). The result is the
      * page's rangeShow: every default filled in, numbers as canonical text.
      */
-    private static function parseShow($show, $exact, array $out)
+    private static function parseShow($show, $exact, array &$out, $raw = null)
     {
         if (!is_array($show) || !$show || array_values($show) === $show) {
             return ['error' => '"show" must say what the page shows, e.g. {"chart":{"lines":{"percentiles":[3,50,97]}}} or {"table":true}.'];
@@ -1108,12 +1114,15 @@ class AnnotationRules
             if (!array_key_exists($part, $show)) continue;
             $p = $show[$part];
             if ($p === true) $p = [];
-            if (!is_array($p) || ($p && array_values($p) === $p)) {
+            // the tag as written ($raw, decoded to objects) tells [] from {}
+            $rp = (is_object($raw) && property_exists($raw, $part)) ? $raw->$part : null;
+            if (!is_array($p) || ($p && array_values($p) === $p) || is_array($rp)) {
                 return ['error' => '"show" "' . $part . '" must be true or an object of its settings, e.g. "' . $part . '":{"open":false}.'];
             }
             $ex = (is_array($exact) && isset($exact[$part]) && is_array($exact[$part])) ? $exact[$part] : [];
-            $r = $part === 'chart' ? self::parseShowChart($p, $ex, $out)
-                : self::parseShowTable($p, $ex, $out, isset($res['chart']) ? $res['chart'] : null);
+            $rl = (is_object($rp) && property_exists($rp, 'labels')) ? $rp->labels : null;
+            $r = $part === 'chart' ? self::parseShowChart($p, $ex, $out, $rl)
+                : self::parseShowTable($p, $ex, $out, isset($res['chart']) ? $res['chart'] : null, $rl);
             if (isset($r['error'])) return $r;
             $res[$part] = $r;
         }
@@ -1126,13 +1135,18 @@ class AnnotationRules
     const MAX_TABLE_COLUMNS = 16;
     /** Longest chart or table label, in characters. */
     const MAX_SHOW_LABEL = 200;
-    /** The labels a chart and a table take ("labels"); a table also takes one per column it shows. */
-    const CHART_LABELS = ['summary', 'title', 'x', 'y', 'point', 'lines', 'band'];
+    /**
+     * The labels a chart and a table take ("labels"); a table also takes one
+     * per column it shows. A chart's "x" may hold "{unit}", the word for the
+     * unit its axis counts in, and the unit and sex words are labels too
+     * ("months", "male"), so the chart reads in the page's language.
+     */
+    const CHART_LABELS = ['summary', 'title', 'x', 'y', 'point', 'lines', 'band', 'days', 'weeks', 'months', 'years', 'male', 'female'];
     const TABLE_LABELS = ['summary', 'caption'];
     /** The columns of a table that has no "columns": this visit's row, or reference values beside the age. */
     const HISTORY_COLUMNS = ['age', 'value', 'z', 'percentile'];
 
-    private static function parseShowChart(array $p, array $ex, array $out)
+    private static function parseShowChart(array $p, array $ex, array &$out, $rawLabels)
     {
         $keys = ['lines', 'bands', 'y', 'span', 'open', 'labels'];
         $unknown = array_diff(array_keys($p), $keys);
@@ -1161,13 +1175,13 @@ class AnnotationRules
             if (isset($s['error'])) return $s;
             $c['span'] = $s['span'];
         }
-        $lab = self::parseShowLabels($p, 'chart', self::CHART_LABELS, $out);
+        $lab = self::parseShowLabels($p, 'chart', self::CHART_LABELS, $out, $rawLabels);
         if (isset($lab['error'])) return $lab;
         $c['labels'] = $lab;
         return $c;
     }
 
-    private static function parseShowTable(array $p, array $ex, array $out, $chart)
+    private static function parseShowTable(array $p, array $ex, array &$out, $chart, $rawLabels)
     {
         $keys = ['rows', 'step', 'span', 'columns', 'open', 'labels'];
         $unknown = array_diff(array_keys($p), $keys);
@@ -1197,21 +1211,27 @@ class AnnotationRules
                     . ((is_int($p['step']) || is_float($p['step'])) && $typed !== null ? $typed : json_encode($p['step'])) . '.'];
             }
             $t['step'] = GrowthCurve::numText($st);
+            $whose = 'its';
             if (array_key_exists('span', $p)) {
                 $s = self::parseShowSpan($p['span'], isset($ex['span']) ? $ex['span'] : null, 'table');
                 if (isset($s['error'])) return $s;
                 $t['span'] = $s['span'];
             } elseif ($chart !== null) {
                 $t['span'] = $chart['span'];   // the chart's, when there is one
+                $whose = 'the chart\'s';
             }
+            // Counted here only up to the span's end, not at it: a reference
+            // that ends "below" that value has no row there. The page counts
+            // again with the reference in hand (GrowthCurve::showProblems).
             if (is_array($t['span'])) {
-                $n = count(GrowthCurve::xsBetween((float) $t['span'][0], (float) $t['span'][1], (float) $t['step'], null));
+                $n = count(GrowthCurve::xsBetween((float) $t['span'][0], (float) $t['span'][1], (float) $t['step'], (float) $t['span'][1]));
                 if ($n > GrowthCurve::MAX_CURVE_ROWS) {
                     return ['error' => '"show" "table" with "rows":"curve" and "step" ' . $t['step'] . ' has more than ' . GrowthCurve::MAX_CURVE_ROWS
-                        . ' rows over its "span" — take a larger "step", or a shorter "span".'];
+                        . ' rows over ' . $whose . ' "span" [' . $t['span'][0] . ', ' . $t['span'][1] . '] — take a larger "step", or a shorter "span".'];
                 }
             }
         }
+        $canon = [];   // a column as the catalog writes it => as the tag wrote it, for its label
         if (array_key_exists('columns', $p)) {
             $cols = $p['columns'];
             if (!is_array($cols) || !$cols || array_values($cols) !== $cols) {
@@ -1221,16 +1241,15 @@ class AnnotationRules
             if (count($cols) > self::MAX_TABLE_COLUMNS) {
                 return ['error' => '"show" "table" "columns" is limited to ' . self::MAX_TABLE_COLUMNS . ' columns.'];
             }
-            $seen = [];
             foreach ($cols as $col) {
                 if (!is_string($col)) return ['error' => '"show" "table" "columns" must be a list of column names such as "z" — got ' . json_encode($col) . '.'];
                 $known = GrowthOutputs::parse($col, '"show" "table" "columns"', 'column', 'entry');
                 if (isset($known['error'])) return ['error' => $known['error']];
-                $canon = GrowthOutputs::canonicalKey($col, 'column');
-                if (isset($seen[$canon])) {
-                    return ['error' => '"show" "table" "columns" "' . $seen[$canon] . '" and "' . $col . '" are the same column — list it once.'];
+                $ck = GrowthOutputs::canonicalKey($col, 'column');
+                if (isset($canon[$ck])) {
+                    return ['error' => '"show" "table" "columns" "' . $canon[$ck] . '" and "' . $col . '" are the same column — list it once.'];
                 }
-                $seen[$canon] = $col;
+                $canon[$ck] = $col;
                 if ($curve && GrowthOutputs::spec($known['of'])['needs'] === 'measurement') {
                     return ['error' => '"show" "table" column "' . $col . '" needs a measurement, and a table of reference values ("rows":"curve") '
                         . 'has none — show it with "rows":"history".'];
@@ -1238,17 +1257,22 @@ class AnnotationRules
             }
             $t['columns'] = $cols;
         } elseif ($curve) {
+            // a column per curve of the chart (or per default line) that a
+            // column can name: a default line at a limit beyond what
+            // "valueAtZ:" takes is drawn, not listed
             $lines = $chart !== null ? $chart['lines'] : self::defaultLines($out);
             $id = GrowthOutputs::lineKinds()[$lines['kind']];
-            $t['columns'] = array_merge(['age'], array_map(function ($v) use ($id) { return $id . ':' . $v; }, $lines['values']));
+            $t['columns'] = ['age'];
+            foreach ($lines['values'] as $v) if (GrowthOutputs::paramOk($id, $v)) $t['columns'][] = $id . ':' . $v;
         } else {
             $t['columns'] = self::HISTORY_COLUMNS;
         }
+        if (!$canon) foreach ($t['columns'] as $col) $canon[GrowthOutputs::canonicalKey($col, 'column')] = $col;
         if (array_key_exists('open', $p)) {
             if (!is_bool($p['open'])) return ['error' => '"show" "table" "open" must be true or false (unquoted).'];
             $t['open'] = $p['open'];
         }
-        $lab = self::parseShowLabels($p, 'table', array_merge(self::TABLE_LABELS, $t['columns']), $out);
+        $lab = self::parseShowLabels($p, 'table', array_merge(self::TABLE_LABELS, $t['columns']), $out, $rawLabels, $canon);
         if (isset($lab['error'])) return $lab;
         $t['labels'] = $lab;
         return $t;
@@ -1257,8 +1281,9 @@ class AnnotationRules
     /**
      * A chart's "lines": {"z":[-2,0,2]} or {"percentiles":[3,50,97]}, the
      * names and the numbers each takes from the catalog (the outputs of the
-     * line shape). ['kind' => name, 'values' => [text, ...]] in ascending
-     * order, or ['error' => why].
+     * line shape). Numbers are read as limits are (rangeBound: 2.5e0 is
+     * 2.5). ['kind' => name, 'values' => [text, ...]] in ascending order, or
+     * ['error' => why].
      */
     private static function parseShowLines($l, $exact)
     {
@@ -1280,13 +1305,13 @@ class AnnotationRules
         $norm = [];
         foreach ($vals as $i => $v) {
             $typed = (is_array($exact) && isset($exact[$kind][$i]) && is_string($exact[$kind][$i])) ? $exact[$kind][$i] : null;
-            $t = (is_int($v) || is_float($v)) ? $typed : (is_string($v) ? trim($v) : null);
-            if ($t === null || !GrowthOutputs::paramOk($id, $t)) {
+            $b = self::rangeBound($v, $typed);
+            $n = is_string($b) ? GrowthCurve::numText($b) : null;
+            if ($n === null || !GrowthOutputs::paramOk($id, $n)) {
                 // a number as typed; anything else as JSON, so a word shows its quotes
                 return ['error' => '"show" "chart" "lines" "' . $kind . '" takes ' . GrowthOutputs::paramText($id) . ' for each line — got '
                     . ((is_int($v) || is_float($v)) && $typed !== null ? $typed : json_encode($v)) . '.'];
             }
-            $n = GrowthCurve::numText($t);
             if (isset($seen[$n])) return ['error' => '"show" "chart" "lines" "' . $kind . '" names ' . $n . ' twice.'];
             $seen[$n] = true;
             $norm[] = $n;
@@ -1295,14 +1320,19 @@ class AnnotationRules
         return ['kind' => $kind, 'values' => $norm];
     }
 
-    /** The lines of a chart that names none: 0 and the rule's limits a z-score line may have, in ascending order. */
+    /**
+     * The lines of a chart that names none: 0 and each of the rule's limits,
+     * in ascending order, as z-score lines. A limit is drawn whatever its
+     * value (valueAt reads any z-score), so every limit the check uses is on
+     * the chart.
+     */
     private static function defaultLines(array $out)
     {
         $seen = ['0' => true];
         foreach (['rangeHardLo', 'rangeSoftLo', 'rangeSoftHi', 'rangeHardHi'] as $k) {
-            if (!isset($out[$k])) continue;
+            if (!isset($out[$k]) || !is_string($out[$k])) continue;
             $n = GrowthCurve::numText($out[$k]);
-            if ($n !== null && GrowthOutputs::paramOk('valueAtZ', $n)) $seen[$n] = true;
+            if ($n !== null) $seen[$n] = true;
         }
         $vals = array_map('strval', array_keys($seen));
         usort($vals, function ($a, $b) { return Logic::numCompare($a, $b); });
@@ -1330,48 +1360,64 @@ class AnnotationRules
 
     /**
      * The "labels" of a chart or a table: each a text of at most
-     * MAX_SHOW_LABEL characters without control characters, in every
-     * language a map gives (takeTexts has already put the default here and
-     * the other languages under "i18n").
+     * MAX_SHOW_LABEL characters on one line (GrowthReference::oneLine), in
+     * every language a map gives (takeTexts has already put the default here
+     * and the other languages under "i18n"). A table's column label may name
+     * its column as the catalog writes it ($canon: "valueAtZ:2.5" for a
+     * column written "valueAtZ:2.50"); it is kept under the column's own
+     * spelling, its other languages too. $rawLabels is "labels" as written,
+     * to tell a list from an object.
      */
-    private static function parseShowLabels(array $p, $part, array $allowed, array $out)
+    private static function parseShowLabels(array $p, $part, array $allowed, array &$out, $rawLabels, array $canon = [])
     {
         if (!array_key_exists('labels', $p)) return [];
         $l = $p['labels'];
-        if (!is_array($l) || ($l && array_values($l) === $l)) {
+        if (!is_array($l) || ($l && array_values($l) === $l) || is_array($rawLabels)) {
             return ['error' => '"show" "' . $part . '" "labels" must be an object of label name to text, e.g. {"title":"Weight"}.'];
         }
         $res = [];
         foreach ($l as $k => $text) {
             $k = (string) $k;
+            $name = $k;
             if (!in_array($k, $allowed, true)) {
-                return ['error' => 'unknown "show" "' . $part . '" label "' . $k . '" — valid: ' . implode(', ', $allowed) . '.'];
+                $ck = $canon && strpos($k, ':') !== false ? GrowthOutputs::canonicalKey($k, 'column') : null;
+                if ($ck === null || !isset($canon[$ck])) {
+                    return ['error' => 'unknown "show" "' . $part . '" label "' . $k . '" — valid: ' . implode(', ', $allowed) . '.'];
+                }
+                $name = $canon[$ck];
+            }
+            if (array_key_exists($name, $res)) {
+                return ['error' => '"show" "' . $part . '" labels "' . $name . '" twice, written two ways — give it once.'];
             }
             $texts = [$text];
-            $map = isset($out['i18n']['show.' . $part . '.labels.' . $k]) ? $out['i18n']['show.' . $part . '.labels.' . $k] : [];
+            $from = 'show.' . $part . '.labels.' . $k;
+            $map = isset($out['i18n'][$from]) ? $out['i18n'][$from] : [];
             foreach ($map as $t) $texts[] = $t;
             foreach ($texts as $t) {
-                if (!is_string($t) || trim($t) === '' || preg_match('/[\x00-\x1f\x7f]/', $t)
+                if (!is_string($t) || trim($t) === '' || !GrowthReference::oneLine($t)
                         || (function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : strlen($t)) > self::MAX_SHOW_LABEL) {
                     return ['error' => '"show" "' . $part . '" label "' . $k . '" must be a text of 1 to ' . self::MAX_SHOW_LABEL
                         . ' characters on one line, or an object of language id to such texts.'];
                 }
             }
-            $res[$k] = $text;
+            if ($name !== $k && $map) {
+                $out['i18n']['show.' . $part . '.labels.' . $name] = $map;
+                unset($out['i18n'][$from]);
+            }
+            $res[$name] = $text;
         }
         return $res;
     }
 
     /**
      * The "show" part of a growth rule, once its other keys are known: bands
-     * need a "soft" limit, a table column made from a limit needs that limit
-     * (of the "returnLimits" tier, as a returned bound does), and, when the
-     * caller names the reference folder ($opts['referenceDir'], or null for
-     * the bundled references only), the span and the table of reference
-     * values must fit the reference (GrowthCurve::showProblem; the dictionary
-     * hook checks this for every rule).
+     * need a "soft" limit, and a table column made from a limit needs that
+     * limit (of the "returnLimits" tier, as a returned bound does). Whether
+     * a span and a table of reference values fit the reference is for the
+     * page (GrowthCurve::showProblems, through the dictionary hook): it
+     * leaves that part off and never refuses the rule.
      */
-    private static function checkShow(array $frag, array $limits, array $opts)
+    private static function checkShow(array $frag, array $limits)
     {
         $errors = [];
         $s = $frag['rangeShow'];
@@ -1380,30 +1426,40 @@ class AnnotationRules
             $errors[] = '"show" "chart" "bands" shades the "soft" range, and this rule has no "soft" limits.';
         }
         $tier = isset($frag['rangeReturnLimits']) && $frag['rangeReturnLimits'] === 'hard' ? 'hard' : 'soft';
-        $T = ucfirst($tier);
-        $lo = isset($limits['range' . $T . 'Lo']);
-        $hi = isset($limits['range' . $T . 'Hi']);
-        $other = $tier === 'soft' ? '"returnLimits":"hard"' : '"returnLimits":"soft"';
         foreach ((isset($s['table']['columns']) && is_array($s['table']['columns'])) ? $s['table']['columns'] : [] as $col) {
             $p = GrowthOutputs::parse($col, '"show" "table" "columns"', 'column', 'entry');
             if (!isset($p['of'])) continue;
-            $need = GrowthOutputs::spec($p['of'])['needs'];
-            $side = $need === 'limit-low' && !$lo ? 'the low "' . $tier . '" limit'
-                : ($need === 'limit-high' && !$hi ? 'the high "' . $tier . '" limit'
-                : ($need === 'limit-any' && !$lo && !$hi ? 'the "' . $tier . '" limits' : null));
-            if ($side !== null) {
-                $errors[] = '"show" "table" column "' . $col . '" is made from ' . $side . ', which this rule does not have — add '
-                    . ($need === 'limit-any' ? 'them' : 'one') . ', or write ' . $other . '.';
-            }
-        }
-        if (array_key_exists('referenceDir', $opts) && isset($frag['rangeReference']) && is_string($frag['rangeReference'])) {
-            $entry = GrowthReference::entry($frag['rangeReference'], $opts['referenceDir']);
-            if ($entry !== null) {
-                $why = GrowthCurve::showProblem($s, $entry);
-                if ($why !== null) $errors[] = $why;
+            $miss = self::missingLimit(GrowthOutputs::spec($p['of'])['needs'], $tier, $limits);
+            if ($miss !== null) {
+                $errors[] = '"show" "table" column "' . $col . '" is made from ' . $miss[0] . ', which this rule does not have — ' . $miss[1] . '.';
             }
         }
         return $errors;
+    }
+
+    /**
+     * What a value made from limits ($need, the catalog's "needs") lacks
+     * when it is made from the $tier limits of a rule with $limits:
+     * [what it is made from, what to do], or null when the tier has them.
+     * The other tier is suggested only when it has what the value needs.
+     */
+    private static function missingLimit($need, $tier, array $limits)
+    {
+        $ok = function ($t) use ($need, $limits) {
+            $T = ucfirst($t);
+            $lo = isset($limits['range' . $T . 'Lo']);
+            $hi = isset($limits['range' . $T . 'Hi']);
+            if ($need === 'limit-low') return $lo;
+            if ($need === 'limit-high') return $hi;
+            if ($need === 'limit-any') return $lo || $hi;
+            return true;
+        };
+        if ($ok($tier)) return null;
+        $other = $tier === 'soft' ? 'hard' : 'soft';
+        $what = $need === 'limit-low' ? 'the low "' . $tier . '" limit'
+            : ($need === 'limit-high' ? 'the high "' . $tier . '" limit' : 'the "' . $tier . '" limits');
+        $add = $need === 'limit-any' ? 'add them' : 'add one';
+        return [$what, $ok($other) ? $add . ', or write "returnLimits":"' . $other . '"' : $add];
     }
 
     /**
@@ -2629,14 +2685,18 @@ class AnnotationRules
                     . ', such as 0.001 for grams typed into a reference in kg — got ' . (is_string($s) ? $s : json_encode($s)) . '.';
             }
         }
-        // A rule with a reference whose returned values are none of them made
-        // from a limit (the z-score, the percentile, reference values) judges
-        // nothing and needs no limits.
-        $onlyZ = isset($frag['rangeReference']) && isset($frag['rangeReturn']) && is_array($frag['rangeReturn'])
-            && GrowthOutputs::problem() === null
-            && GrowthOutputs::limitFree(array_map('strval', array_keys($frag['rangeReturn'])));
+        // A rule with a reference that returns or shows values none of them
+        // made from a limit (the z-score, the percentile, reference values,
+        // a chart) judges nothing and needs no limits: what it does is give
+        // those values. A value or a column made from a limit says so itself.
+        $limitFree = isset($frag['rangeReference']) && GrowthOutputs::problem() === null
+            && ((isset($frag['rangeReturn']) && is_array($frag['rangeReturn']) && $frag['rangeReturn']
+                 && GrowthOutputs::limitFree(array_map('strval', array_keys($frag['rangeReturn']))))
+                || (isset($frag['rangeShow']) && is_array($frag['rangeShow']) && $frag['rangeShow']
+                    && (!isset($frag['rangeReturn']) || (is_array($frag['rangeReturn'])
+                        && GrowthOutputs::limitFree(array_map('strval', array_keys($frag['rangeReturn'])))))));
         if (!array_key_exists('rangeSoftLo', $frag) && !array_key_exists('rangeSoftHi', $frag)
-                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag) && !$onlyZ) {
+                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag) && !$limitFree) {
             $errors[] = self::TAG_RANGE . ' needs "soft" or "hard" limits, e.g. "soft":[12,17.5],"hard":[3,25].';
         }
         $zLimits = array_intersect_key($b, array_flip(['rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi']));
@@ -2764,7 +2824,7 @@ class AnnotationRules
                 : $label . ' must be exactly one field reference, e.g. "[' . self::growthExample($k) . ']" or "[baseline_arm_1]['
                   . self::growthExample($k) . ']" (not a checkbox code, a {binding} or a list of instances).';
         }
-        if (array_key_exists('rangeShow', $frag)) $errors = array_merge($errors, self::checkShow($frag, $limits, $opts));
+        if (array_key_exists('rangeShow', $frag)) $errors = array_merge($errors, self::checkShow($frag, $limits));
         return array_merge($errors, self::checkReturn($frag, $limits, array_keys($inputs), $opts));
     }
 
@@ -2844,21 +2904,9 @@ class AnnotationRules
             $errors[] = '"returnLimits" must be "soft" or "hard".';
             return $errors;
         }
-        $T = $tier === 'soft' ? 'Soft' : 'Hard';
-        $lo = isset($limits['range' . $T . 'Lo']);
-        $hi = isset($limits['range' . $T . 'Hi']);
-        $other = $tier === 'soft' ? '"returnLimits":"hard"' : '"returnLimits":"soft"';
         foreach ($needs as $k => $need) {
-            if ($need === 'limit-low' && !$lo) {
-                $errors[] = '"return" "' . $k . '" is made from the low "' . $tier . '" limit, which this rule does not have — add one, or write '
-                    . $other . '.';
-            } elseif ($need === 'limit-high' && !$hi) {
-                $errors[] = '"return" "' . $k . '" is made from the high "' . $tier . '" limit, which this rule does not have — add one, or write '
-                    . $other . '.';
-            } elseif ($need === 'limit-any' && !$lo && !$hi) {
-                $errors[] = '"return" "' . $k . '" is made from the "' . $tier . '" limits, which this rule does not have — add them, or write '
-                    . $other . '.';
-            }
+            $miss = self::missingLimit($need, $tier, $limits);
+            if ($miss !== null) $errors[] = '"return" "' . $k . '" is made from ' . $miss[0] . ', which this rule does not have — ' . $miss[1] . '.';
         }
         return array_merge($errors, self::returnShapingErrors($frag, array_keys($ret), $columns));
     }

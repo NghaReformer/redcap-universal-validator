@@ -13,12 +13,19 @@
  *
  * The tolerance keeps the drawn curve within MAX_ERROR of the exact one,
  * vertically, in the chart's own units, at the largest zoom the chart allows:
- * its narrowest window is 1/MAX_ZOOM of the span. A window's y axis spans at
- * least the curves inside it (the browser uses the same floor, Y_FLOOR), so
- * the smallest such range over every window of that width sets how many units
- * one unit of the drawing area is. tests/growth_curve_php.php measures the
- * bound against a dense exact evaluation, and tests/growth_chart_dom_js.cjs
- * against the paths the browser draws.
+ * its narrowest window is 1/MAX_ZOOM of the span ("auto"), or the whole span
+ * when the rule fixes it. A window's y axis spans at least the curves inside
+ * it (the browser uses the same floor, Y_FLOOR), so the smallest such range
+ * over every window of that width sets how many units one unit of the drawing
+ * area is.
+ *
+ * The curve is exact at the table's rows. With "lookup" "round" or "floor"
+ * the reference reads the row at or below an age, a step from row to row, so
+ * the browser draws this visit's point at the age of the row the check
+ * reads (QRID_growthReadX), where the curve is exact; with "linear" it reads
+ * between rows as the curve is drawn. tests/growth_curve_php.php measures the
+ * bound at every row and, for "linear", at quarter rows between them, and
+ * tests/growth_chart_dom_js.cjs against the paths the browser draws.
  *
  * The payload is whole numbers only: a row key (the axis value times the
  * table's "scale") and the measurement in units of 10^-d, so its size does
@@ -35,7 +42,12 @@ require_once __DIR__ . '/GrowthOutputs.php';
 
 final class GrowthCurve
 {
-    /** The chart's drawing area, in the SVG's own units. Twin: QRID_CHART in js/engine.js. */
+    /**
+     * The chart's drawing area, in the SVG's own units. Twin: QRID_CHART in
+     * js/engine.js. PLOT_WIDTH is the widest: the browser narrows the plot to
+     * fit the field's cell, which the error bound (vertical) does not depend
+     * on.
+     */
     const PLOT_WIDTH = 512;
     const PLOT_HEIGHT = 312;
     /** The narrowest window the chart shows is 1/MAX_ZOOM of its span. */
@@ -59,6 +71,12 @@ final class GrowthCurve
     /** The most decimals a sent measurement has, and the largest whole number it may become. */
     const MAX_DECIMALS = 9;
     const MAX_UNITS = 9.0e15;
+    /**
+     * The most points one chart's curves may take for one sex (about 60 KB).
+     * WHO's tables need a few hundred; a table too ragged to simplify is left
+     * off the page instead of sent whole.
+     */
+    const MAX_SET_POINTS = 5000;
 
     /** A number as the text a key holds: canonical, no trailing zeros, "-0" as "0". */
     public static function numText($s)
@@ -82,34 +100,42 @@ final class GrowthCurve
     }
 
     /**
-     * Why a rule's "show" does not fit reference $entry, or null: a "span"
+     * Why a part of a rule's "show" does not fit reference $entry: a "span"
      * outside the reference's "valid" range, and a table of reference values
-     * longer than MAX_CURVE_ROWS over the span. $show is the parsed rangeShow.
+     * longer than MAX_CURVE_ROWS over its span. $show is the parsed
+     * rangeShow. Returns ['chart' => why, 'table' => why], each part only
+     * when it has a problem. These depend on the reference, which an
+     * administrator may replace, so they leave that part off the page with
+     * the reason for staff and never stop the check
+     * (UniversalValidator::annotateRangeDictionary).
      */
-    public static function showProblem(array $show, array $entry)
+    public static function showProblems(array $show, array $entry)
     {
         $v = $entry['valid'];
         $min = (string) $v['min'];
         $hasMax = array_key_exists('max', $v);
         $max = (string) ($hasMax ? $v['max'] : $v['below']);
         $range = $min . ' to ' . ($hasMax ? $max : 'under ' . $max) . ' ' . $entry['axisUnit'];
+        $out = [];
         foreach (['chart', 'table'] as $part) {
             $span = isset($show[$part]['span']) ? $show[$part]['span'] : null;
             if (!is_array($span)) continue;
-            if (Logic::numCompare($span[0], $min) < 0 || Logic::numCompare($span[1], $max) > 0) {
-                return '"show" "' . $part . '" "span" [' . $span[0] . ', ' . $span[1] . '] lies outside "' . $entry['id'] . '", which covers '
+            if (Logic::numCompare($span[0], $min) < 0 || Logic::numCompare($span[1], $max) > 0
+                    || (!$hasMax && Logic::numCompare($span[0], $max) >= 0)) {
+                $out[$part] = 'its "span" [' . $span[0] . ', ' . $span[1] . '] lies outside "' . $entry['id'] . '", which covers '
                     . $range . '.';
             }
         }
-        if (isset($show['table']['rows']) && $show['table']['rows'] === 'curve' && isset($show['table']['step'])) {
-            $n = count(self::curveXs($entry, isset($show['table']['span']) ? $show['table']['span'] : null, $show['table']['step']));
+        if (!isset($out['table']) && isset($show['table']['rows']) && $show['table']['rows'] === 'curve' && isset($show['table']['step'])) {
+            $span = isset($show['table']['span']) ? $show['table']['span'] : null;
+            $n = count(self::curveXs($entry, $span, $show['table']['step']));
             if ($n > self::MAX_CURVE_ROWS) {
-                return '"show" "table" with "rows":"curve" and "step" ' . $show['table']['step'] . ' has more than ' . self::MAX_CURVE_ROWS
-                    . ' rows over ' . (isset($show['table']['span']) ? 'its "span"' : '"' . $entry['id'] . '" (' . $range . ')')
+                $out['table'] = '"step" ' . $show['table']['step'] . ' gives more than ' . self::MAX_CURVE_ROWS
+                    . ' rows over ' . (is_array($span) ? '[' . $span[0] . ', ' . $span[1] . ']' : '"' . $entry['id'] . '" (' . $range . ')')
                     . ' — take a larger "step", or a shorter "span".';
             }
         }
-        return null;
+        return $out;
     }
 
     /**
@@ -145,16 +171,20 @@ final class GrowthCurve
     /**
      * The curves of one chart for one sex. $zs lists each curve's z-score
      * (GrowthReference::lineZ), $span is [lo, hi] (span()), $scale the
-     * rule's "measureScale" or null.
+     * rule's "measureScale" or null, and $zoom how far the chart may narrow
+     * its window: MAX_ZOOM for an "auto" span, 1 for a span the rule fixes
+     * (the browser then always shows all of it).
      *
      * @return array|null ['d' => decimals, 'tolerance' => float (field
      *   units), 'lines' => [[segment, ...] per curve]] where a segment is a
      *   flat list of whole numbers [key, units, key, units, ...] (x = key /
      *   the table's "scale", y = units / 10^d) and a gap between segments is
-     *   where no measurement above 0 has that z-score. Null when no curve has
-     *   a point in the span.
+     *   where no measurement above 0 has that z-score; ['why' => reason] when
+     *   the curves cannot be sent (values too large to send as whole numbers,
+     *   or more than MAX_SET_POINTS points); null when no curve has a point in
+     *   the span.
      */
-    public static function build(array $entry, array $table, $sex, array $zs, array $span, $scale = null)
+    public static function build(array $entry, array $table, $sex, array $zs, array $span, $scale = null, $zoom = self::MAX_ZOOM)
     {
         list($lo, $hi) = $span;
         $f = $scale === null ? 1.0 : (float) $scale;
@@ -177,17 +207,22 @@ final class GrowthCurve
             }
             $ys[$li] = $col;
         }
-        $range = self::minRange($keys, $ys, $ts, $lo, $hi);
+        $range = self::minRange($keys, $ys, $ts, $lo, $hi, max(1, (int) $zoom));
         if ($range === null) return null;
         $tol = self::MAX_ERROR * self::SHARE * $range / self::PLOT_HEIGHT;
         $top = 0.0;
-        foreach ($ys as $col) foreach ($col as $y) if ($y !== null && $y > $top) $top = $y;
+        foreach ($ys as $col) foreach ($col as $y) if ($y !== null && abs($y) > $top) $top = abs($y);
         $d = (int) ceil(-log10($tol / 4));
         $d = max(0, min(self::MAX_DECIMALS, $d));
         while ($d > 0 && $top * pow(10, $d) > self::MAX_UNITS) $d--;
+        if ($top > self::MAX_UNITS) {
+            return ['why' => 'the curves of "' . $entry['id'] . '" reach values too large to send (above ' . number_format(self::MAX_UNITS, 0, '.', ',')
+                . ' in the field\'s unit). The check itself is not affected.'];
+        }
         $p = pow(10, $d);
         $n = count($keys);
         $lines = [];
+        $points = 0;
         foreach ($ys as $col) {
             $out = [];
             // each run of rows with a value is one segment
@@ -200,22 +235,28 @@ final class GrowthCurve
                     $flat[] = $keys[$i];
                     $flat[] = (int) round($col[$i] * $p);
                 }
+                $points += count($flat) / 2;
                 $out[] = $flat;
             }
             $lines[] = $out;
+        }
+        if ($points > self::MAX_SET_POINTS) {
+            return ['why' => 'the curves of "' . $entry['id'] . '" need ' . $points . ' points to be drawn to within half a unit, more than the '
+                . self::MAX_SET_POINTS . ' one chart may send (the table\'s rows are not smooth enough). '
+                . 'The check itself is not affected.'];
         }
         return ['d' => $d, 'tolerance' => $tol, 'lines' => $lines];
     }
 
     /**
-     * The smallest y range the chart can give a window of 1/MAX_ZOOM of the
+     * The smallest y range the chart can give a window of 1/$zoom of the
      * span: over every such window inside [lo, hi], the curves' highest value
      * less their lowest, or Y_FLOOR of the highest when that is more. Windows
      * start at rows and are one row narrower than the chart's, so each window
      * the chart shows holds one of them and spans at least its range. Null
      * when no curve has a point in the span.
      */
-    private static function minRange(array $keys, array $ys, $ts, $lo, $hi)
+    private static function minRange(array $keys, array $ys, $ts, $lo, $hi, $zoom)
     {
         $n = count($keys);
         $xs = [];
@@ -239,7 +280,7 @@ final class GrowthCurve
         }
         $m = count($xs);
         if (!$m) return null;
-        $w = max(0.0, ($hi - $lo) / self::MAX_ZOOM - 1 / $ts);
+        $w = max(0.0, ($hi - $lo) / $zoom - 1 / $ts);
         // two pointers, with the window's highest and lowest kept in deques
         // (a list and the index of its head)
         $best = null;

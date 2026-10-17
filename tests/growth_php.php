@@ -377,7 +377,11 @@ foreach ($og['points'] as $p) {
     if ($got !== $p['want']) { $bad++; if ($ex === '') $ex = ': ' . json_encode($p) . ' got ' . json_encode($got); }
 }
 check('outputs golden: every point equals mpmath at 50 digits (' . $bad . ' mismatches' . $ex . ')', $bad === 0);
-/** The parity lines of the outputs (tests/growth_js.cjs builds the same). */
+/**
+ * The parity lines of the outputs (tests/growth_js.cjs builds the same): the
+ * percentile, the values at a z-score and a percentile, the age and the
+ * typed value a page table shows, and a percentile line's z-score.
+ */
 function outputLines(array $fx, array $ids)
 {
     $s = $fx['parityOutputs']['seed'];
@@ -404,7 +408,10 @@ function outputLines(array $fx, array $ids)
             $out = [G::output($e, $t, $sex, $a['x'], $y, 'percentile', null, 1),
                     G::output($e, $t, $sex, $a['x'], $y, 'percentile', null, 3),
                     G::output($e, $t, $sex, $a['x'], null, 'valueAtZ', $pz, $d),
-                    G::output($e, $t, $sex, $a['x'], null, 'valueAtPercentile', $pp, $d)];
+                    G::output($e, $t, $sex, $a['x'], null, 'valueAtPercentile', $pp, $d),
+                    G::output($e, $t, $sex, $a['x'], $y, 'age', null, 0),
+                    G::output($e, $t, $sex, $a['x'], $y, 'value', null, $d, null, $yt),
+                    sprintf('%.12e', G::lineZ('valueAtPercentile', $pp))];
         }
         $lines[] = implode('|', array_merge([$id, $sex, $xt, $yt, $pz, $pp, $d], array_map(function ($v) { return $v === null ? '-' : $v; }, $out)));
     }
@@ -480,9 +487,6 @@ $indexCases = [
     'not JSON'           => ['{', 'index.json is not valid JSON.'],
     'no format'          => ['{"references":{}}', 'index.json must say "format": "uv-references-1".'],
     'no references'      => ['{"format":"uv-references-1"}', 'index.json has no "references".'],
-    'pageTables below 0' => ['{"format":"uv-references-1","references":{},"pageTables":-1}', '"pageTables" must be a whole number from 0 to 50.'],
-    'pageTables past 50' => ['{"format":"uv-references-1","references":{},"pageTables":51}', '"pageTables" must be a whole number from 0 to 50.'],
-    'pageTables as text' => ['{"format":"uv-references-1","references":{},"pageTables":"4"}', '"pageTables" must be a whole number'],
 ];
 foreach ($indexCases as $label => $case) {
     file_put_contents($dir . '/index.json', $case[0]);
@@ -501,6 +505,42 @@ check('extra: a broken replacement removes the bundled reference', G::entry('who
     && G::unavailableWhy('who-lhfa', $dir) === null && G::entry('who-lhfa', $dir) !== null);
 writeIndex($dir, [], ['pageTables' => 0]);
 check('extra index: pageTables 0 is allowed and taken', G::catalog($dir)['pageTables'] === 0);
+// A cap out of range is a problem of the folder, and the default applies: it
+// limits what a page carries, and stops no reference.
+$capCases = [
+    'pageTables below 0' => [['pageTables' => -1], 'pageTables', 4],
+    'pageTables past 50' => [['pageTables' => 51], 'pageTables', 4],
+    'pageTables as text' => [['pageTables' => '4'], 'pageTables', 4],
+    'pageCharts past 50' => [['pageCharts' => 51], 'pageCharts', 4],
+    'pageCharts of null' => [['pageCharts' => null], 'pageCharts', 4],
+];
+foreach ($capCases as $label => $case) {
+    writeIndex($dir, ['mine' => $base], $case[0]);
+    $c = G::catalog($dir);
+    check('extra index: ' . $label . ' keeps the default and every reference (got ' . json_encode($c['problems']) . ')',
+        $c['problems'] === ['the reference folder in the module settings: "' . $case[1] . '" must be a whole number from 0 to 50, so the default ('
+            . $case[2] . ') applies.'] && $c[$case[1]] === $case[2] && $c['broken'] === null && count($c['references']) === 13);
+}
+// "chartUnit": how a growth chart counts an age axis
+writeIndex($dir, ['mine' => $base + ['chartUnit' => 'weeks'], 'auto' => $base + ['chartUnit' => 'auto']]);
+$c = G::catalog($dir);
+check('extra: "chartUnit" weeks and auto are taken, and reach the page copy unless auto', $c['problems'] === []
+    && G::pageCopy(G::entry('mine', $dir), G::table(G::entry('mine', $dir)))['chartUnit'] === 'weeks'
+    && !array_key_exists('chartUnit', G::pageCopy(G::entry('auto', $dir), G::table(G::entry('auto', $dir))))
+    && !array_key_exists('chartUnit', G::pageCopy(G::entry('who-wfa'), G::table(G::entry('who-wfa')))));
+foreach (['on a length axis' => [['axis' => 'length', 'axisUnit' => 'cm', 'chartUnit' => 'weeks'], 'has "chartUnit", which only an age reference takes.'],
+          'unknown' => [['chartUnit' => 'fortnights'], 'has "chartUnit" "fortnights"; it must be auto, days, weeks, months, years.']] as $label => $case) {
+    writeIndex($dir, ['mine' => $case[0] + $base]);
+    $p = implode(' ', G::catalog($dir)['problems']);
+    check('extra: refused, a chartUnit ' . $label . ' (got ' . json_encode($p) . ')', strpos($p, $case[1]) !== false);
+}
+// a source title the chart shows is one line of text
+foreach (['a plain title' => ['WHO 2006', true], 'a line separator' => ["A\u{2028}B", false],
+          'a direction override' => ["A\u{202E}B", false], 'a C1 control' => ["A\u{85}B", false]] as $label => $case) {
+    writeIndex($dir, ['mine' => $base + ['source' => 's']], ['sources' => ['s' => ['title' => $case[0]]]]);
+    $e = G::entry('mine', $dir);
+    check('extra: the source title, ' . $label, $case[1] ? ($e['sourceTitle'] ?? null) === $case[0] : !isset($e['sourceTitle']));
+}
 // Notepad saves UTF-8 with a byte-order mark; the index reads the same.
 file_put_contents($dir . '/index.json', "\xEF\xBB\xBF" . json_encode(['format' => 'uv-references-1', 'references' => ['mine' => $base]]));
 G::reset();

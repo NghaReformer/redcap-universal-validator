@@ -276,6 +276,56 @@ Setup:
 
 ---
 
+## Section K: growth chart and page table
+
+Fixture: [`uvrange_chart_test_fields.csv`](uvrange_chart_test_fields.csv), 13
+fields on one new instrument, `uv_growth_chart`. It holds its own inputs
+(`ugc_sex`, `ugc_dob`, `ugc_visit`), six rules that show a chart or a table
+(`ugc_weight` with percentile curves, the band and this visit's row;
+`ugc_weight_z` on a z-score axis with its own title and an x title holding
+`{unit}`; `ugc_height` with a chart and a table of the reference at each
+birthday; `ugc_head`, which only shows and has no limits; `ugc_arm`, the fifth
+set of curves on the page; `ugc_span`, whose `span` reaches past the
+reference), and four broken rules (`ugc_bad_*`).
+`tests/growth_chart_module_php.php` loads this CSV as the data dictionary and
+checks the rule errors of K1, the page's sets of curves and its cap (K2, K7,
+K8), the length table of K5 and the percentiles below. The texts on the chart
+were read from the engine drawing this page in a browser.
+
+Setup:
+
+1. Append the 13 rows of the CSV, as in setup step 2. The diff must report one
+   new instrument and 13 new fields.
+2. Designate `uv_growth_chart` on `event_1_arm_1` (351).
+3. Open the form for XE-1, event 351. It is new and blank.
+
+A chart sits under its field's note, in a box headed "Growth chart"; a table
+sits under the chart, in its own box. Hover the point to read its tooltip; the
+same text ends the chart's description (`desc` inside the `svg`, read by
+screen readers).
+
+| # | Action | Expect |
+|---|---|---|
+| K1 | Look at the form | `ugc_bad_noref` shows ""show" only applies with a "reference""; `ugc_bad_bands` shows ""bands" shades the "soft" range, and this rule has no "soft" limits"; `ugc_bad_list` shows ""show" "chart" must be true or an object of its settings"; `ugc_bad_rows` shows "has more than 100 rows over its "span" [0, 365]". The other fields show no error. `ugc_head` takes no limits and shows no error |
+| K2 | Same page, blank | `ugc_weight`, `ugc_weight_z`, `ugc_height` and `ugc_head` each show an open "Growth chart" box saying "The curves show once the sex is entered."; the table under `ugc_height` says "The values show once the sex is entered.". `ugc_arm` shows the grey note "Growth chart not shown: this form already shows 4 growth charts or tables of reference values, the most one page may show (4). The check itself is not affected." `ugc_span` shows "Growth chart not shown: its "span" [0, 2000] lies outside "who-wfa", which covers 0 to under 1826.25 days." In the config (read as in Setup), `growthCurves` has 3 sets and `growthCurveTables` 1 |
+| K3 | `ugc_sex` = Male, `ugc_dob` = 10-01-2025, `ugc_visit` = 2026-01-10 | The charts draw the boy's curves; the heading reads "Weight-for-age, WHO 2006 (birth to 5 years)", "WHO Child Growth Standards (2006) · male" and the legend "This visit", plus "Usual range" on `ugc_weight` only. The x axis reads "Age (months)", with ticks at 0, 5 and 10, and "Age in months" on `ugc_weight_z`. With no measurement each chart's description ends "No measurement to show yet." |
+| K4 | `ugc_weight` = 9.6, leave | A point at 12 months between the 15th and 85th percentile curves, inside the band. Tooltip: "This visit: 9.6 kg at 11.99 months, z-score -0.04, percentile 48.3". The table under the chart reads Age (days) 365, Weight (kg) 9.6, Z-score -0.04, Percentile 48.3. No note under the field. The axes did not move |
+| K5 | `ugc_height` = 75.7, leave | Tooltip "This visit: 75.7 cm at 11.99 months, z-score -0.02, percentile 49.3". The table "Reference values" has 5 rows: 0, 365.25, 730.5, 1095.75 and 1461 days; the row 365.25 reads 71.3, 75.7 and 80.2 (the 3rd, 50th and 97th percentile, cm) |
+| K6 | `ugc_head` = 46, leave. Then 0 | The chart draws the median only. Tooltip "This visit: 46 cm at 11.99 months, z-score -0.05, percentile 48.0", and no note under the field (the rule has no limits). At 0 the red note "A measurement must be above 0." shows and the description ends "The measurement is not above 0." |
+| K7 | `ugc_arm` = 15, leave | No chart; the cap note of K2 stays. The check runs as usual, with no note at 15 (percentile 62.3) and the amber note "lower than usual" at 11 |
+| K8 | `ugc_span` = 9.6, then 6.6, leave | No chart; the span note of K2 stays. At 6.6 the amber note "lower than usual" shows, as on `ugc_weight` |
+| K9 | `ugc_weight_z` = 9.6, leave | The y axis is the z-score, from -4 to 4 or wider, with flat lines at -3, -2, 0, 2 and 3. The point sits just under the 0 line. The title reads "Weight-for-age z-score" |
+| K10 | `ugc_weight` = 7, leave | Only the point moves, below the 3rd percentile curve and outside the band; the amber note "lower than usual" shows; the table's row follows (7, z-score and percentile change) |
+| K11 | `ugc_visit` = 2027-07-10 | The charts are drawn again for a window of 0 to 3 years: "Age (years)" on `ugc_weight` and "Age in years" on `ugc_weight_z`. With 9.6 kg the tooltip reads "This visit: 9.6 kg at 2.49 years, z-score -2.78, percentile 0.3", and the amber note shows. Set `ugc_visit` back to 2026-01-10 |
+| K12 | `ugc_sex` = Female | The curves change to the girl's; the heading says "female"; the table of reference values shows the girl's values (row 365.25: 69.2, 74.0, 78.8) |
+| K13 | Collapse the "Growth chart" box of `ugc_weight` and type a new weight | The box stays closed; the note under the field still follows the value |
+| K14 | Narrow the browser window until the form's data column is under 640 pixels wide, then type a new `ugc_weight` and leave | While the window narrows the chart shrinks as a whole and nothing overflows the column. After the new value it is drawn again to the column's width (at least 320 pixels), with its text at the size it had in a wide column. Widen the window and type another value, and it grows back, up to 640 pixels |
+| K15 | Save the form. Open it again | The fields hold only what was typed: no chart or table value is saved. Logging shows no field the chart wrote |
+| K16 | Enable `uv_growth_chart` as a survey and open it for XE-3 | The chart and table boxes start closed. An opened box draws as on the form. The cap and span notes of K2 do not show on the survey (`ugc_arm` and `ugc_span` show nothing), and the broken rules show the survey's general notice |
+| K17 | In the browser's developer tools, look at the chart's markup | No element under `uvalidate-chart-ugc_weight` has a `style` attribute; the console shows no Content Security Policy error |
+
+---
+
 ## Sign-off
 
 | # | Gate | Result |
@@ -290,10 +340,11 @@ Setup:
 | 8 | Section H: a missing data code is never judged | ☐ |
 | 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; on a data entry form the z-scores of the rules on `uv_growth_more` and of event-qualified rules never block (a value that is not a number or is 0 or below on `uv_growth_more` does), and the fifth whole table is checked on save while the page still holds 0; two references on one field both judge; `measureScale`, `plausible` and a lower-case sex code work; on a survey only a value that is not a number above 0 is held; a reference's `when` and its event/instance values affect only that reference, and a rule whose `when` is settled false needs no table; the audit logs findings with their reference, their z-score only with raw values, and values not evaluated | ☐ |
 | 10 | Section J: the returned fields follow the inputs on the page, are emptied when an input is blank, are written for an import and a survey, and the project setting turns the save write off | ☐ |
+| 11 | Section K: the charts and tables draw for the inputs on the page, the point and the table match the values above, only the point moves on a new value, the axes follow the age, a rule that only shows needs no limits, the cap and the span leave a note for staff and nothing on a survey, nothing is saved, and no inline style is used | ☐ |
 
 ## Cleanup
 
-Delete the `uv_range_test`, `uv_growth_test`, `uv_growth_more` and
-`uv_growth_return` instruments, or restore the dictionary downloaded in setup
-step 2. Remove the survey settings if G1, I29 or J14 enabled them, and the
-missing data code if section H added it.
+Delete the `uv_range_test`, `uv_growth_test`, `uv_growth_more`,
+`uv_growth_return` and `uv_growth_chart` instruments, or restore the dictionary
+downloaded in setup step 2. Remove the survey settings if G1, I29, J14 or K16
+enabled them, and the missing data code if section H added it.

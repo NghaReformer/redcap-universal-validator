@@ -46,9 +46,7 @@
  * The inputs are read by GrowthReference::inputsFor, the reading the
  * post-save audit uses, against the references the module ships and the
  * made-up ones in data/references/examples, read as a folder of extra
- * references is ($examples below). Every tag is parsed with that folder as
- * its "referenceDir", so a "show" span outside its reference is refused
- * here as the dictionary hook refuses it on a server.
+ * references is ($examples below).
  *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which
@@ -278,7 +276,7 @@ foreach ($docs as $doc) {
         $lastLine = null;
         foreach ($statements($body, $start) as $st) {
             list($lineNo, $tagText, $reason) = $st;
-            $frags = AnnotationRules::parseAllTags($tagText, ['qualified' => true, 'referenceDir' => $examples]);
+            $frags = AnnotationRules::parseAllTags($tagText, ['qualified' => true]);
             $checks++;
             $last = null;
             if ($frags === null) { $failures[] = "$doc:$lineNo no tag recognised: " . substr($tagText, 0, 90); continue; }

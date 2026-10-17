@@ -137,7 +137,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // @UVRANGE "show", and what the server adds for it: the curve set the
     // chart draws, the page table's rows, why the chart is left off, and the
     // reference's source line
-    'rangeShow', 'growthCurveKey', 'growthTableRows', 'growthChartWhy', 'growthChartSource',
+    'rangeShow', 'growthCurveKey', 'growthTableKey', 'growthChartWhy', 'growthChartSource',
 ]);
 
 // Branching::modeOfType.

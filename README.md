@@ -825,8 +825,8 @@ slip:
   97th percentile; for the same boy `48.3`, `7.7` and `11.8`. Give up to 16,
   each its own field and each key once. A rule that returns only `z`,
   `percentile` and values at a z-score or percentile needs no limits, and
-  `decimals`, `returnLimits` or `percentileDecimals` on a rule that returns
-  nothing they shape is refused. The page fills the fields as it opens and after each
+  `decimals`, `returnLimits` or `percentileDecimals` on a rule that neither
+  returns nor shows in a page table anything they shape is refused. The page fills the fields as it opens and after each
   change; the save fills them again, also for an API or import save, writes
   only the fields that differ, and judges every other rule after that write.
   A field with nothing to report (sex blank, age outside the reference) is
@@ -835,28 +835,40 @@ slip:
   not read a returned field. The project setting "@UVRANGE returned values"
   turns the save-time write off.
 - **A growth chart and a table on the form.** `show` draws the reference's
-  curves with this visit's point under the field, and a table beside them,
+  curves with this visit's point under the field, and a table under them,
   on the page only:
 
   ```text
   @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[3,15,50,85,97]},"bands":true},"table":true}}
   ```
 
-  The chart draws up to 9 percentile or z-score curves (by default 0 and the
-  rule's limits), shades the `soft` range with `bands`, and marks this visit
-  with a point, or an arrow at the edge when it lies outside. The SVG has a
-  title and a description that state the reference, the value, the z-score
-  and the percentile. The server builds the curves (`php/GrowthCurve.php`),
-  within half a unit of the 312-unit-tall plot of the exact ones at the
-  narrowest window; the browser moves only the point when the value changes.
-  `"y":"z"` draws z-scores, `span` fixes the ages shown, and `"table"` shows
-  this visit's age, value, z-score and percentile, or any value `return`
-  takes (`columns`), or the reference's own values every `step`
-  (`"rows":"curve"`). The labels may be per-language maps. The box is open on
-  data entry and closed on surveys unless `open` says otherwise. A page shows
-  at most 4 sets of curves and tables of reference values (`pageCharts` in
-  `index.json`); past it, staff see why and the check is unchanged. Nothing
-  shown is saved, and nothing is drawn with `innerHTML` or inline styles.
+  The chart draws up to 9 percentile or z-score curves (by default 0 and
+  each of the rule's limits), shades the `soft` range with `bands`, and marks
+  this visit with a point, or an arrow at the edge when it lies outside. On a
+  table read by `round` or `floor` the point sits at the row the check reads,
+  so it falls on the side of a curve the verdict gives. The chart fits the
+  field's cell, 320 to 640 pixels wide, under a heading with the reference,
+  its source, the sex and a legend. The SVG has a title and a description that
+  state the reference, the value, the z-score and the percentile. The server
+  builds the curves (`php/GrowthCurve.php`), within half a unit of the
+  312-unit-tall plot of the exact ones at every row the check can read, at the
+  narrowest window, and at most 5,000 points; the browser moves only the point
+  when the value changes. `"y":"z"` draws z-scores, `span` fixes the ages
+  shown, the age axis counts months, years, or the `chartUnit` of the
+  reference's `index.json` entry (weeks for a reference by gestational age),
+  and `"table"` shows this visit's age, value, z-score and percentile, or any
+  value `return` takes (`columns`), or the reference's own values every `step`
+  (`"rows":"curve"`, one copy per page for fields with the same table). A rule
+  that only shows needs no limits. The labels, the axis title's `{unit}` word
+  and the sex words may be per-language maps; the module's other words are
+  English. The box is open on data entry and closed on surveys unless `open`
+  says otherwise. A page shows at most 4 sets of curves and tables of
+  reference values (`pageCharts` in `index.json`); past it, staff see why and
+  the check is unchanged. A `span` the reference does not cover, a table of
+  more than 100 rows over a reference with no `span`, or a sex saved blank
+  leaves that part off with a note to staff, never a configuration error.
+  Nothing shown is saved, and nothing is drawn with `innerHTML` or inline
+  styles.
 
 ## The Validation scan — checking data that is already saved
 

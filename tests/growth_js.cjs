@@ -332,7 +332,9 @@ check('parity: 5,000 points hash to the pinned SHA-256 (got ' + hash + ')', hash
       const m = G.measure(yt, false);
       const y = m.state === 'ok' ? m.y : null;
       out = [G.output(ref, sex, a.x, y, 'percentile', null, 1), G.output(ref, sex, a.x, y, 'percentile', null, 3),
-        G.output(ref, sex, a.x, null, 'valueAtZ', pz, d), G.output(ref, sex, a.x, null, 'valueAtPercentile', pp, d)];
+        G.output(ref, sex, a.x, null, 'valueAtZ', pz, d), G.output(ref, sex, a.x, null, 'valueAtPercentile', pp, d),
+        G.output(ref, sex, a.x, y, 'age', null, 0), G.output(ref, sex, a.x, y, 'value', null, d, null, yt),
+        G.lineZ('valueAtPercentile', pp).toExponential(12)];
     }
     oLines.push([id, sex, xt, yt, pz, pp, d].concat(out.map((v) => v === null ? '-' : v)).join('|'));
   }

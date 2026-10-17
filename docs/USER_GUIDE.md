@@ -882,8 +882,10 @@ the person switches language; `default` covers any other language and pages
 without MLM. A plain string message keeps working as before, so rules already in
 use need no change; to translate one, replace its string with a map that keeps the
 old text under `default`. The audit log and the Validation scan use the default
-text. The module's own wording (the line shown when a rule has no `message`, the
-save dialogs, configuration errors) is English only. Details and limits:
+text. The labels of an `@UVRANGE` growth chart or page table take the same maps,
+one per label. The module's own wording (the line shown when a rule has no
+`message`, the save dialogs, configuration errors, and a chart's words that have
+no label of the rule's own) is English only. Details and limits:
 [Messages in several languages](action_tag_validation_examples.md#messages-in-several-languages).
 
 **Which fields can I validate?**
@@ -1140,8 +1142,8 @@ the value is written with (`percentileDecimals` for the percentile,
 integer field. A rule that returns only these and `z` needs no `soft` or
 `hard`. One rule returns at most 16 values, each key once (`valueAtZ:2` and
 `valueAtZ:2.0` are one key written two ways), and `decimals`, `returnLimits` or
-`percentileDecimals` on a rule that returns nothing they shape is a
-configuration error.
+`percentileDecimals` on a rule that neither returns nor shows in a page table
+anything they shape is a configuration error.
 
 **Can a growth chart be shown on the form?**
 Yes. Add `show` to a growth rule:
@@ -1149,21 +1151,28 @@ Yes. Add `show` to a growth rule:
 Under the field's note a box opens with the reference's percentile curves
 (or z-score curves with `{"z":[...]}`, at most 9), the `soft` range shaded,
 and a point for this visit at the child's age and the typed measurement. An
-arrow at the edge marks a point outside the chart. The chart's description,
-read by screen readers, states the reference, the value, the z-score and the
-percentile. The box is open on a data entry form and closed on a survey;
-`"open"` changes that. Only the point moves when the value changes. The
-chart is not saved, and the check is the same without it. A page shows at
-most 4 charts' curves and tables of reference values (`pageCharts` in the
-references' `index.json`); past that, staff see a note saying why.
+arrow at the edge marks a point outside the chart. The chart fits the field's
+cell (320 to 640 pixels wide), and counts the age in months, in years past two
+years, or in the unit the reference's `index.json` entry sets with
+`chartUnit` (weeks for a reference by gestational age). The chart's
+description, read by screen readers, states the reference, the value, the
+z-score and the percentile. The box is open on a data entry form and closed on
+a survey; `"open"` changes that. Only the point moves when the value changes.
+The chart is not saved, and the check is the same without it; a rule that only
+shows needs no `soft` or `hard`. A page shows at most 4 charts' curves and
+tables of reference values (`pageCharts` in the references' `index.json`);
+past that, staff see a note saying why. A `span` the reference does not cover,
+or a sex saved blank on another form, also leaves the chart off with a note to
+staff instead of a configuration error.
 
 **Can a table of the visit, or of the reference, be shown?**
 Yes. `"show":{"table":true}` shows this visit's age, weight, z-score and
-percentile beside the chart; `"columns"` picks any value `return` can write,
+percentile under the chart; `"columns"` picks any value `return` can write,
 plus `age` and `value`. `"rows":"curve"` with `"step":365.25` lists the
-reference's own values at each birthday for the child's sex instead. Each
-label of the chart and the table can be a text per Multi-Language Management
-language. Earlier visits are not shown yet.
+reference's own values at each birthday for the child's sex instead, at most
+100 rows. Each label of the chart and the table can be a text per
+Multi-Language Management language, and the chart's x title can hold `{unit}`
+for the word of the unit it counts in. Earlier visits are not shown yet.
 
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"
