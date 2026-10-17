@@ -152,6 +152,37 @@ for every moderately malnourished child unless <code>"softBlock":"off"</code>.</
     <code>convert.php --check</code>.</li>
 </ul>
 
+<h2>Growth chart and table on the form</h2>
+
+<p><code>show</code> draws the reference's curves with this visit's point under the
+field, and a table beside them. They are on the page only: nothing is saved, and the
+check is the same without them.</p>
+
+<pre><code>@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
+          "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],
+          "show":{"chart":{"lines":{"percentiles":[3,15,50,85,97]},"bands":true},
+                  "table":true}}</code></pre>
+
+<ul>
+<li>Up to 9 curves, at percentiles or z-scores (<code>{"z":[-2,0,2]}</code>); without
+    <code>lines</code>, 0 and the rule's limits. <code>bands</code> shades the
+    <code>soft</code> range.</li>
+<li>The point sits at the child's age and the typed value, or as an arrow at the edge
+    when it lies outside. The chart's description, for screen readers, gives the
+    reference, the value, the z-score and the percentile. Only the point moves when the
+    value changes.</li>
+<li>The x axis counts months while the chart spans less than two years, years beyond, or
+    cm for weight-for-length. <code>"y":"z"</code> draws z-scores instead of the
+    measurement, and <code>span</code> fixes the ages shown.</li>
+<li><code>"table":true</code> shows this visit's age, value, z-score and percentile;
+    <code>columns</code> picks any value <code>return</code> writes. <code>"rows":"curve"</code>
+    with a <code>step</code> lists the reference's own values instead, at most 100 rows.</li>
+<li>Each label can be a text per Multi-Language Management language. The box is open on
+    data entry and closed on surveys; <code>open</code> changes that.</li>
+<li>A page shows at most 4 sets of curves and tables of reference values
+    (<code>pageCharts</code>); past that, staff see why, and the check is unchanged.</li>
+</ul>
+
 <h2>Audit</h2>
 
 <p>The post-save audit logs a value outside either range as <code>type: range</code>

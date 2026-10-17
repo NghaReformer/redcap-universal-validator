@@ -1143,6 +1143,28 @@ integer field. A rule that returns only these and `z` needs no `soft` or
 `percentileDecimals` on a rule that returns nothing they shape is a
 configuration error.
 
+**Can a growth chart be shown on the form?**
+Yes. Add `show` to a growth rule:
+`"show":{"chart":{"lines":{"percentiles":[3,15,50,85,97]},"bands":true}}`.
+Under the field's note a box opens with the reference's percentile curves
+(or z-score curves with `{"z":[...]}`, at most 9), the `soft` range shaded,
+and a point for this visit at the child's age and the typed measurement. An
+arrow at the edge marks a point outside the chart. The chart's description,
+read by screen readers, states the reference, the value, the z-score and the
+percentile. The box is open on a data entry form and closed on a survey;
+`"open"` changes that. Only the point moves when the value changes. The
+chart is not saved, and the check is the same without it. A page shows at
+most 4 charts' curves and tables of reference values (`pageCharts` in the
+references' `index.json`); past that, staff see a note saying why.
+
+**Can a table of the visit, or of the reference, be shown?**
+Yes. `"show":{"table":true}` shows this visit's age, weight, z-score and
+percentile beside the chart; `"columns"` picks any value `return` can write,
+plus `age` and `value`. `"rows":"curve"` with `"step":365.25` lists the
+reference's own values at each birthday for the child's sex instead. Each
+label of the chart and the table can be a text per Multi-Language Management
+language. Earlier visits are not shown yet.
+
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"
 button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not

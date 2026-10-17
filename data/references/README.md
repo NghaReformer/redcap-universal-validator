@@ -144,6 +144,13 @@ page. A rule whose sex, date or axis field is on a form the viewer cannot see
 work out its z-score, so it only checks that the measurement is a number
 above 0.
 
+`pageCharts` (0 to 50, default 4) caps the growth charts of `@UVRANGE`
+`show` on one page: each set of reference curves the page draws, and each
+table of reference values, counts 1. Charts that draw the same curves share
+one set, and a chart of z-scores or a table of the visit counts nothing. A
+chart past the cap is not shown, staff see why, and the check is the same.
+A set of 7 curves for both sexes is a few kilobytes.
+
 Some rows cap the z-score a measurement can get. With `adjust` `none`, a row
 whose L is below 0 never scores above 1/(|L| × S), and one whose L is above 0
 never below -1/(L × S); with `who-restricted`, a measurement near 0 never

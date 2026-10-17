@@ -834,6 +834,29 @@ slip:
   on one field each fill their own fields, and a rule that returns values may
   not read a returned field. The project setting "@UVRANGE returned values"
   turns the save-time write off.
+- **A growth chart and a table on the form.** `show` draws the reference's
+  curves with this visit's point under the field, and a table beside them,
+  on the page only:
+
+  ```text
+  @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[3,15,50,85,97]},"bands":true},"table":true}}
+  ```
+
+  The chart draws up to 9 percentile or z-score curves (by default 0 and the
+  rule's limits), shades the `soft` range with `bands`, and marks this visit
+  with a point, or an arrow at the edge when it lies outside. The SVG has a
+  title and a description that state the reference, the value, the z-score
+  and the percentile. The server builds the curves (`php/GrowthCurve.php`),
+  within half a unit of the 312-unit-tall plot of the exact ones at the
+  narrowest window; the browser moves only the point when the value changes.
+  `"y":"z"` draws z-scores, `span` fixes the ages shown, and `"table"` shows
+  this visit's age, value, z-score and percentile, or any value `return`
+  takes (`columns`), or the reference's own values every `step`
+  (`"rows":"curve"`). The labels may be per-language maps. The box is open on
+  data entry and closed on surveys unless `open` says otherwise. A page shows
+  at most 4 sets of curves and tables of reference values (`pageCharts` in
+  `index.json`); past it, staff see why and the check is unchanged. Nothing
+  shown is saved, and nothing is drawn with `innerHTML` or inline styles.
 
 ## The Validation scan — checking data that is already saved
 
@@ -1061,7 +1084,11 @@ check-character primitive, but the full runtime path the module actually uses:
   `tests/growth_return_dom_js.cjs` and `tests/growth_return_module_php.php`
   cover the values a rule returns to fields: the fill on the page, and the one
   save that writes only what differs, in the order that lets a rule on a
-  returned field see it.
+  returned field see it. `tests/growth_curve_php.php` measures how close the
+  chart's simplified curves lie to the exact ones on every bundled reference,
+  `tests/growth_chart_module_php.php` covers the `show` grammar, the page's
+  curves and their cap, and `tests/growth_chart_dom_js.cjs` the chart and
+  table the browser draws from them.
 - `tests/missing_codes_dom_js.cjs` / `tests/missing_codes_php.php` — a field
   marked with a missing data code is not judged by any mode, on the page, in
   the audit, in the scan or by the lookup endpoints; `@UVREQUIRED` counts it
@@ -1127,6 +1154,9 @@ node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes
 php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": values written into fields on the page
 php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches
+php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
+php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, page curves and cap; --write refreshes growth_chart_fixture.json
+node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks

@@ -46,7 +46,9 @@
  * The inputs are read by GrowthReference::inputsFor, the reading the
  * post-save audit uses, against the references the module ships and the
  * made-up ones in data/references/examples, read as a folder of extra
- * references is ($examples below).
+ * references is ($examples below). Every tag is parsed with that folder as
+ * its "referenceDir", so a "show" span outside its reference is refused
+ * here as the dictionary hook refuses it on a server.
  *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which

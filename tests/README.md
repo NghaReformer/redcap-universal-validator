@@ -44,6 +44,9 @@ node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score 
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, percentile, bounds and reference values written into fields on the page
 php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
+php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
+php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, refusals, page curves, the pageCharts cap; --write refreshes growth_chart_fixture.json
+node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
@@ -459,6 +462,33 @@ the same constants, cut-offs and branches.
   refusals (chains and two references sharing a field included), and the live
   fixture `docs/testbed/uvrange_return_test_fields.csv` loaded as the data
   dictionary.
+- `growth_curve_php.php` measures the claim `php/GrowthCurve.php` makes: on
+  every bundled reference, both sexes and three sets of lines (beyond ±3 SD
+  included), it decodes the curves the page gets, evaluates them at every
+  table row (and halfway between rows for a table read by linear
+  interpolation), and divides the worst error in each window of the
+  narrowest width by the y range the browser gives that window. The bound is
+  0.5 of the 312-unit-tall plot; the run prints the worst it found. It also
+  covers the payload size, `measureScale`, a curve with a gap, the span
+  against the reference, the rows of a table of reference values, and that
+  `QRID_CHART` in the engine has the same geometry.
+- `growth_chart_module_php.php` covers `show` through the module: the
+  grammar with its defaults and refusals, the dictionary hook's span check,
+  the page's curve sets (one sex for a saved sex, both for a typed one, none
+  for a chart of z-scores), the rows of a table of reference values, and the
+  `pageCharts` cap. It also builds the three pages `growth_chart_dom_js.cjs`
+  draws, with the cells the server computes for five visits, and writes them
+  to `growth_chart_fixture.json` with `--write` (the run fails when the file
+  is stale).
+- `growth_chart_dom_js.cjs` drives the real range factory with those pages
+  through a DOM stub that knows `createElementNS`, attributes and
+  `textContent`. It checks the helpers (ticks, the x unit, the window, cutting
+  a curve, the y axis), the container and its `<details>`, the SVG's role,
+  title and description, that nothing in the container uses `innerHTML` or a
+  `style` attribute, the curves as drawn against the exact ones, the marker
+  moving alone, an arrow for a point outside, both tables (this visit's cells
+  equal to the server's, in the field's decimal mark), the cap note, a branch
+  that does not apply, and a language switch that relabels in place.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.

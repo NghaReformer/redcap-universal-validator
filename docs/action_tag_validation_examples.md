@@ -3329,7 +3329,8 @@ The whole `index.json` of this level, beside the three tables:
 - **Several references in one folder** are entries of one `index.json`. Two
   entries may share one table file with a different `valid` or `lookup`.
 - **`pageTables`**, at the top of the folder's `index.json`, sets how many
-  tables one page carries (0 to 50, default 4).
+  tables one page carries (0 to 50, default 4), and **`pageCharts`** how many
+  sets of chart curves and tables of reference values (Level 8).
 
 #### Tables of other shapes
 
@@ -3384,6 +3385,133 @@ replaced.
 
 `php convert.php --check <id> --folder <folder> …` prints the same problems
 for the folder before a rule meets them.
+
+### Level 8 — a growth chart and a table on the form (`show`)
+
+`show` draws the reference's curves with this visit's point under the field,
+and a table beside them. Both are on the page only. Nothing is saved, and the
+check is the same with or without them.
+
+```text
+# on: weight_kg — the WHO percentile curves, the usual range shaded, this visit as a point
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[3,15,50,85,97]},"bands":true}}}
+```
+
+The chart sits under the field's note, in a box that opens and closes ("Growth
+chart"). It shows:
+
+- **The curves.** One per percentile in `lines`, or per z-score with
+  `"lines":{"z":[-3,-2,0,2,3]}`, at most 9, each named at the right edge. The
+  median is green, ±2 SD red, ±3 SD and beyond black, the others grey. Without
+  `lines` the chart draws 0 and the rule's limits, here -5, -2, 0, 2 and 5.
+- **The band.** With `"bands":true`, the `soft` range is shaded between its two
+  curves (from one curve to the edge when the rule has only one `soft` limit).
+  It needs a `soft` limit.
+- **This visit.** A point at the child's age and the typed measurement. Its
+  tooltip and the chart's description give the value, the age, the z-score and
+  the percentile, for a boy of 100 days weighing 6.4 kg `This visit: 6.4 kg
+  at 3.29 months, z-score -0.23, percentile 41.1`. A point outside the chart is an arrow at the nearest edge,
+  and the description says so.
+- **The axes.** The age in months while the chart spans less than two years,
+  in years beyond, or the length or height in cm. The measurement in the
+  field's unit: in grams with `"measureScale":0.001`, since the server divides
+  the scale back out. With `"y":"z"` the y axis is the z-score and every curve
+  is a flat line.
+- **The title and the source.** The reference's title, and under it its source
+  ("WHO Child Growth Standards (2006)") and the sex the chart is for.
+
+**Which ages it shows.** Without `span` the curves cover the whole reference,
+and the chart shows from its start to a quarter past the child's age, never
+less than an eighth of the reference: 0 to 7.5 months for a baby of 100 days on
+`who-wfa`. It moves only when the age leaves that window, or the age is
+corrected to one that fits a window half as wide, so typing a new weight never
+moves the axes. `"span":[0,730]` shows birth to two years whatever the age.
+
+**What moves.** The curves are drawn once for the sex and the window. A new
+weight, read when the field is left or changed, moves only the point. A
+different sex draws that sex's curves.
+
+**This visit in a table.** `"table":true` shows a row for this visit under the
+chart: the age, the weight, the z-score and the percentile. `columns` picks
+others:
+
+```text
+# on: weight_kg — this visit with its usual range and the weight at the 97th percentile
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"table":{"columns":["age","value","z","percentile","range","valueAtPercentile:97"]}}}
+```
+
+A column is any value `return` can write, or `age` (in the reference's axis
+unit) or `value` (the measurement as typed), at most 16. `returnLimits`,
+`decimals` and `percentileDecimals` shape the columns as they shape returned
+values, and a column made from a limit needs that limit. Numbers use the
+measured field's decimal mark.
+
+**A table of reference values.** `"rows":"curve"` lists the reference itself,
+one row every `step` in the reference's axis unit, for the child's sex:
+
+```text
+# on: weight_kg — the 3rd, 50th and 97th percentile at each birthday
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[3,50,97]}},"table":{"rows":"curve","step":365.25}}}
+```
+
+Without `columns` it has the age and a column per curve of the chart (or per
+default line). Its columns cannot need a measurement (`z`, `percentile`,
+`value`), and it has at most 100 rows over its `span`, which is the chart's
+when it names none.
+
+**Labels.** Each text the chart and the table show can be the rule's own,
+written as one text or as a text per Multi-Language Management language:
+
+```text
+# on: weight_kg — French labels beside the English ones
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":{"labels":{"title":{"en":"Weight for age","fr":"Poids pour l'âge"},"point":{"en":"Today","fr":"Aujourd'hui"}}},"table":{"labels":{"z":{"en":"z-score","fr":"score z"}}}}}
+```
+
+The chart takes `summary` (the box's heading), `title`, `x`, `y`, `point`,
+`lines` (the heading over the curve names) and `band`; the table takes
+`summary`, `caption` and one per column it shows, named by the column. A
+label is at most 200 characters on one line, and shows as text: `<b>` stays
+`<b>`. A switch of language relabels the chart and the table in place, without
+checking again. The module's own words ("Growth chart", "This visit",
+"Percentiles") are English; give a label to translate them.
+
+**When nothing is drawn.**
+
+- **The sex is not entered yet.** The chart says the curves show once it is.
+- **The rule is not checked on this page.** An input on a form the page does
+  not show, a rule past the page's table cap (see "How many references a page
+  carries" above), a branch that does not apply: the chart and the table
+  follow the check and are not shown.
+- **The page's chart cap.** The curves of one chart take a few kilobytes. A
+  page carries at most 4 sets of curves and tables of reference values, set by
+  `"pageCharts"` in the folder's `index.json` (0 to 50). Charts that draw the
+  same curves share one set, and a chart of z-scores or a table of this visit
+  costs nothing. Past the cap, staff see "Growth chart not shown:" with the
+  reason; a survey shows nothing. The check is not affected.
+
+**Surveys.** On a survey the box starts closed, and on a data entry form open.
+`"open":true` or `"open":false` on the chart or the table sets it.
+
+**How close the curves are.** The server works out each curve at every row of
+the reference with the same functions the check uses, the WHO restricted method
+beyond ±3 SD included, and keeps only the points the drawing needs. A drawn
+curve lies within half a unit of the chart's 312-unit-tall plot of the exact
+one, at the narrowest window the chart shows; the module's tests measure this
+on every bundled reference.
+
+| Key | Value | Default |
+| --- | ----- | ------- |
+| `show` | `{"chart":…}`, `{"table":…}` or both; each `true` for its defaults | none |
+| `chart.lines` | `{"percentiles":[…]}` (0.1 to 99.9) or `{"z":[…]}` (-6 to 6), at most 9, two decimals at most | 0 and the rule's limits |
+| `chart.bands` | `true` shades the `soft` range | `false` |
+| `chart.y` | `value` (the measurement) or `z` | `value` |
+| `chart.span` | `auto`, or `[low, high]` in the reference's axis unit, inside the reference | `auto` |
+| `chart.open`, `table.open` | `true` or `false`: the box open when the page opens | open on data entry, closed on surveys |
+| `chart.labels`, `table.labels` | label name to a text, or to a text per language | the module's English |
+| `table.rows` | `history` (this visit) or `curve` (reference values) | `history` |
+| `table.step` | above 0, in the reference's axis unit; `curve` only, and needed there | none |
+| `table.span` | as `chart.span`; `curve` only | the chart's, else `auto` |
+| `table.columns` | a list of values `return` takes, `age` and `value`, at most 16 | `age`, `value`, `z`, `percentile`; for `curve` the age and the chart's curves |
 
 ### Semantics worth knowing
 
@@ -3456,7 +3584,7 @@ for the folder before a rule meets them.
 `soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
 `caseSensitive`, and for a growth reference `reference`, `sex`, `male`,
 `female`, `age`, `by`, `plausible`, `measureScale`, `return`, `returnLimits`,
-`decimals` and `percentileDecimals`. A rule needs `soft` or `hard` limits,
+`decimals`, `percentileDecimals` and `show`. A rule needs `soft` or `hard` limits,
 unless every value it returns is `z`, `percentile`, `valueAtZ:<z-score>` or
 `valueAtPercentile:<percentile>`. Any other key is a configuration error.
 
@@ -3601,6 +3729,50 @@ These are refused when the rule is saved:
 # A scale of 0 would make every value 0.
 # refused: "measureScale" must be a number from 0.000001 to 1000000
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-6,5],"measureScale":0}
+
+# A chart draws the curves of a growth reference.
+# refused: "show" only applies with a "reference"
+@UVRANGE={"hard":[3,25],"show":{"chart":true}}
+
+# At most 9 curves on one chart.
+# refused: has more than 9 lines
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[1,3,5,10,25,50,75,90,95,97]}}}}
+
+# A percentile curve lies from 0.1 to 99.9.
+# refused: "show" "chart" "lines" "percentiles" takes a number from 0.1 to 99.9 with at most 2 decimals for each line — got 100.
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"chart":{"lines":{"percentiles":[3,50,100]}}}}
+
+# The span lies inside the reference: who-wfa ends before 1826.25 days.
+# refused: lies outside "who-wfa", which covers 0 to under 1826.25 days
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"chart":{"span":[0,2000]}}}
+
+# The band shades the usual range, so it needs "soft" limits.
+# refused: "bands" shades the "soft" range
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"chart":{"bands":true}}}
+
+# A table of reference values needs the distance between its rows.
+# refused: "rows":"curve" needs "step"
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"table":{"rows":"curve"}}}
+
+# ... and at most 100 of them: a row a day for five years is too many.
+# refused: has more than 100 rows over "who-wfa"
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"table":{"rows":"curve","step":1}}}
+
+# "step" is for a table of reference values.
+# refused: only applies with "rows":"curve"
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"table":{"step":30}}}
+
+# Reference values have no measurement, so no z-score.
+# refused: needs a measurement, and a table of reference values
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"table":{"rows":"curve","step":365.25,"columns":["age","z"]}}}
+
+# A column is a value "return" takes, "age" or "value".
+# refused: unknown "show" "table" "columns" entry "bmi"
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"table":{"columns":["age","bmi"]}}}
+
+# A label is one line of text.
+# refused: must be a text of 1 to 200 characters on one line
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"show":{"chart":{"labels":{"title":" "}}}}
 ```
 
 These are refused once the data dictionary is read, with a configuration error
