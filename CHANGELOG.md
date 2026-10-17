@@ -3,7 +3,9 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
-## Unreleased
+## 2.3.0-rc.1 — 2026-10-17
+
+**Growth charts, filtered lookups and a sturdier scan.** `@UVRANGE` draws a growth chart and a table on the form and returns the percentile and the measurement at a z-score or percentile. `@UVEXISTS` accepts only entries that meet a `where` condition. Rule messages follow Multi-Language Management. The durable validation scan carries remediation waves 6 to 9 and part of wave 10. Some rules that saved under 2.1.0-rc.2 now get a configuration error or new duplicate findings; see the upgrade note below.
 
 ### Added
 
@@ -188,6 +190,7 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - **A branched rule's scan findings now carry that branch's wording.** In the scan's own result (`scanProject`), a finding names the branch that judged it, and the report's rule snapshot keeps each branch's message and detail values, so a finding shows its own branch's message and limits. Before, a branched rule showed the catalog wording with no detail line. The stored durable scan does not keep the branch yet; its report exporter has not shipped.
 - **Missing data codes were judged as values.** A field marked with one of the project's missing data codes (REDCap's "M" button, or an imported `UNK` or `-99`) holds the code, which REDCap does not validate. The module judged it anyway. A check character or format failed, `@UVASSERT` and `@UVWINDOW` reported it, `@UVRANGE` held the save on "not a number" or "below the plausible range", `@UVEXISTS` looked it up, and `@UVUNIQUE` reported every record marked `UNK` as a duplicate of the others. Each mode now declares in `php/modes.json` what a code means to it (`missingCodes`): `skip` treats the field as blank, on the page, in the post-save audit and in the scan; `@UVREQUIRED` (`answer`) counts the code as an answer. The page receives the codes (never their labels) as `missingCodes`, `unique-check` answers a code as not used, and `exists-check` as nothing to look up. A `match` field or a `@UVWINDOW` "from" date holding a code is treated like a blank one. A code in a field a rule only refers to, in `when` or in an `@UVASSERT` expression, is read as the code itself, as REDCap's own logic reads it. An `@UVUNIQUE` answer still on its way when the field is cleared or marked with a code no longer shows on it ("already recorded" under `UNK`), and the field tests of the ID check (`validators.<field>.test`) answer a code with null, as the other modes' do.
 - **The module log was not written for a save with no signed-in user.** With framework 11 and later, `log()` throws when nobody is signed in unless `config.json` sets `enable-no-auth-logging`, so post-save audit findings from survey saves and from saves made without a user were lost. The flag is now set.
+- **No deprecation notices on PHP 8.4.** `ScanStoreUnavailable::__construct()` and `ScanWorker::batch()` took a typed parameter with a null default, which PHP 8.4 reports as an implicitly nullable type. Both are now declared nullable.
 
 ### Security
 
@@ -288,6 +291,7 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - For wave 7 the matrix asserts the stored clean decision as `clean IS NULL` on the server, a duplicates-only project finishing complete and not clean, a rule problem marked from two connections landing as one row, and the production record-existence query telling a hidden record from a deleted one. It also found a defect the in-memory store could not: a variable name shared with the supersede statement dropped every rule-problem mark in a batch that closed earlier findings.
 - The report layer has its own suite, `tests/scan_report_php.php` (111 checks). It renders one record through the legacy scan and through the durable evaluator and compares every cell, and each group carries a control that shows its assertion can fail. 14 mutations of the new code were each caught.
 - Waves 6 and 7 were reviewed adversarially before merging: six reviewers, each on its own copy of the tree, with executed reproductions on PHP 7.4 and 8.3 and on MySQL and MariaDB. They found 7 high, 10 medium and 17 low findings. All were fixed, including those older than these waves, and each fix has a test that fails when the fix is reverted. A second round reviewed the fixes. The findings and what changed are recorded in `reports/scan-remediation-plan-2026-08-25.md`.
+- For this release candidate the database matrix (MySQL 5.7 and 8.0, MariaDB 10.5 and 10.11, each on the default isolation and `READ COMMITTED`) passes with 837 and 839 checks and no tables left behind, and the PHP suites pass on PHP 7.4, 8.1, 8.3 and 8.4. Live REDCap acceptance of the growth chart, `@UVEXISTS` `where` and the scan changes is still pending.
 
 ## 2.1.0-rc.2 — 2026-10-07
 
