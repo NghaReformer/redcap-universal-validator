@@ -152,6 +152,199 @@ for every moderately malnourished child unless <code>"softBlock":"off"</code>.</
     <code>convert.php --check</code>.</li>
 </ul>
 
+<h2>Writing values into fields</h2>
+
+<p>A growth rule can also write what it works out into Text fields on the same form, so
+the z-score, the percentile or the usual range is saved with the record and appears in
+exports. <code>return</code> maps each value to a field.</p>
+
+<pre><code>@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
+          "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],
+          "return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}}
+
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
+          "age":{"dob":"[dob]","at":"[visit_date]"},
+          "return":{"percentile":"[wfa_pct]","valueAtZ:-2":"[wfa_sd_m2]",
+                    "valueAtPercentile:50":"[wfa_p50]","valueAtPercentile:97":"[wfa_p97]"}}</code></pre>
+
+<p>For a boy of exactly one year weighing 9.6 kg the two rules write these values.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Field</th><th>Written</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td><code>wfa_z</code></td><td><code>-0.04</code></td><td>The z-score of the weight</td></tr>
+<tr><td><code>wfa_low</code></td><td><code>7.8</code></td><td>The lightest weight, to one
+    decimal, whose z-score passes -2, the low <code>soft</code> limit</td></tr>
+<tr><td><code>wfa_high</code></td><td><code>11.9</code></td><td>The heaviest weight, to one
+    decimal, whose z-score passes 2, the high <code>soft</code> limit</td></tr>
+<tr><td><code>wfa_range</code></td><td><code>7.8 to 11.9 kg</code></td><td>The two as text,
+    with the reference's unit</td></tr>
+<tr><td><code>wfa_pct</code></td><td><code>48.3</code></td><td>The percentile of the weight,
+    to one decimal</td></tr>
+<tr><td><code>wfa_sd_m2</code></td><td><code>7.7</code></td><td>The weight whose z-score is -2
+    (7.74 kg), to one decimal</td></tr>
+<tr><td><code>wfa_p50</code></td><td><code>9.6</code></td><td>The median weight for his age
+    and sex</td></tr>
+<tr><td><code>wfa_p97</code></td><td><code>11.8</code></td><td>The weight at the 97th
+    percentile</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The second rule has no <code>soft</code> or <code>hard</code>, since none of its four
+values is made from a limit. With the weight still blank, <code>wfa_z</code> and
+<code>wfa_pct</code> stay empty and the bounds and the three weights are still written, so
+the form shows them before anything is measured. For a girl of the same age the range is
+<code>7.1 to 11.5 kg</code>.</p>
+
+<h3>The values and the keys that shape them</h3>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Value</th><th>What is written</th></tr></thead>
+<tbody>
+<tr><td><code>z</code></td><td>The z-score, with two decimals</td></tr>
+<tr><td><code>lower</code>, <code>upper</code></td><td>The smallest and the largest
+    measurement, written with <code>decimals</code>, whose two-decimal z-score passes the
+    low and the high limit. One unit of the last decimal beyond a bound is flagged</td></tr>
+<tr><td><code>range</code></td><td>The two bounds as text, such as
+    <code>7.8 to 11.9 kg</code>. With only a low limit it reads <code>at least 7.8 kg</code>,
+    with only a high one <code>at most 11.9 kg</code></td></tr>
+<tr><td><code>percentile</code></td><td>100 times the normal distribution function of the
+    unrounded z-score, written with <code>percentileDecimals</code> and rounded half away
+    from zero. Beside a z-score written <code>-0.04</code> this boy's percentile reads
+    <code>48.3</code>, the percentile of -0.0437</td></tr>
+<tr><td><code>valueAtZ:&lt;z-score&gt;</code></td><td>The measurement at that z-score, such
+    as <code>valueAtZ:-2</code> or <code>valueAtZ:2.5</code>. The z-score lies from -6 to 6,
+    with at most two decimals</td></tr>
+<tr><td><code>valueAtPercentile:&lt;percentile&gt;</code></td><td>The measurement at that
+    percentile, such as <code>valueAtPercentile:97</code> or
+    <code>valueAtPercentile:2.5</code>. The percentile lies from 0.1 to 99.9, with at most
+    two decimals. <code>valueAtPercentile:50</code> is the median and equals
+    <code>valueAtZ:0</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>return</code></td><td>An object from a value to a field of this form, such as
+    <code>{"z":"[wfa_z]","valueAtPercentile:97":"[wfa_p97]"}</code>. At most 16 values,
+    each key once and each to its own field</td></tr>
+<tr><td><code>returnLimits</code></td><td><code>soft</code> (default) or <code>hard</code>,
+    the limits <code>lower</code>, <code>upper</code> and <code>range</code> are made
+    from</td></tr>
+<tr><td><code>decimals</code></td><td>0 to 6, the decimals of <code>lower</code>,
+    <code>upper</code>, the bounds in <code>range</code> and the values at a z-score or
+    percentile. The default is the measured field's: N for <code>number_Ndp</code> (2 for
+    <code>number_2dp</code>, comma forms included), 0 for <code>integer</code>, otherwise
+    1</td></tr>
+<tr><td><code>percentileDecimals</code></td><td>0 to 3, the decimals of
+    <code>percentile</code>. The default is 1</td></tr>
+</tbody>
+</table>
+</div>
+
+<ul>
+<li><strong>Limits only where they are used.</strong> A rule that returns only
+    <code>z</code>, <code>percentile</code> and values at a z-score or percentile needs no
+    <code>soft</code> or <code>hard</code>. <code>lower</code>, <code>upper</code> and
+    <code>range</code> need the limit they are made from, and the rule is refused without
+    it.</li>
+<li><strong>Each key once.</strong> <code>valueAtZ:2</code> and <code>valueAtZ:2.0</code>
+    are one key written two ways, as are <code>valueAtZ:0</code> and
+    <code>valueAtZ:-0</code>, and a rule with both is refused. So are a z-score outside -6
+    to 6, a percentile outside 0.1 to 99.9, and <code>valueAtPercentile</code> with no
+    percentile after the colon.</li>
+<li><strong>Keys that shape nothing are refused.</strong> <code>returnLimits</code> applies
+    to <code>lower</code>, <code>upper</code> and <code>range</code>, <code>decimals</code>
+    to those and to the values at a z-score or percentile, and
+    <code>percentileDecimals</code> to <code>percentile</code>. A rule that sets one of
+    these keys and returns none of the values it applies to is refused, so
+    <code>"return":{"z":"[wfa_z]"},"decimals":3</code> is a configuration error.</li>
+<li><strong>The ends of the percentile scale.</strong> The percentile stays one unit of its
+    last decimal inside 0 and 100. At one decimal <code>0.1</code> stands for every
+    percentile below 0.15 and <code>99.9</code> for every one from 99.85 up, so a boy of
+    6.6 kg (z-score -3.40, a percentile of 0.03) gets <code>0.1</code>.</li>
+<li><strong>Rounded values and accepted bounds.</strong> A value at a z-score or percentile
+    is rounded to the nearest unit of its last decimal, so 7.74 kg is written
+    <code>7.7</code>. <code>lower</code> and <code>upper</code> are the last values the rule
+    accepts, so the two can differ beside a <code>soft</code> limit of -2. For this boy
+    <code>valueAtZ:-2</code> is <code>7.7</code> and <code>lower</code> is <code>7.8</code>,
+    since 7.7 kg scores -2.05 and is flagged.</li>
+<li><strong>Beyond 3 SD.</strong> On the references WHO reads with its restricted method
+    beyond 3 SD either side (weight, BMI, arm circumference and the skinfolds), the
+    percentile and the values at a z-score or percentile use that method, as the z-score
+    does. Length or height and head circumference use the LMS formula throughout.</li>
+<li><strong>Grams against a table in kg.</strong> With <code>"measureScale":0.001</code>
+    the bounds are in grams. Add <code>"unit":"g"</code> and <code>range</code> reads
+    <code>7737 to 11989 g</code> for the same boy. Without <code>unit</code> the range has
+    no unit, since the table's kg would be wrong.</li>
+<li><strong>Empty fields.</strong> A z-score that no measurement above 0 has, a limit the
+    table cannot reach, and a value that rounds to 0 leave the field empty.</li>
+</ul>
+
+<h3>The fields</h3>
+
+<ul>
+<li>Text fields on the same form as the measured field, so in the same event and
+    instance. The measured field, an input of the rule and the record ID cannot take a
+    value, and no field takes two. Two rules cannot return to one field, and both are
+    refused, naming each other. Two references on one field each fill the fields of their
+    own branches and cannot share one.</li>
+<li>A <code>range</code> field takes no validation. The other values take none, number
+    validation without a place count, or a place count equal to the decimals they are
+    written with (two for <code>z</code>, <code>percentileDecimals</code> for
+    <code>percentile</code>, <code>decimals</code> for the rest). REDCap's
+    <code>number_2dp</code> takes exactly two places, so it refuses <code>7.5</code> as it
+    refuses <code>7.512</code>.</li>
+<li>A value written with no decimals (<code>decimals</code> 0, the default on an integer
+    measured field, or <code>"percentileDecimals":0</code>) may go into an integer field;
+    <code>z</code> never does. A field with comma-decimal validation gets a comma, and a
+    field without validation takes the decimal mark of the measured field.</li>
+<li>A field filled by <code>@CALCTEXT</code>, <code>@CALCDATE</code> or
+    <code>@SETVALUE</code>, or one that shows <code>@RICHTEXT</code> or a BioPortal
+    ontology search, is refused.</li>
+<li><strong>No chains.</strong> A rule that returns values cannot read a returned field,
+    its own or another rule's, in its <code>when</code>, an input or its measurement. The
+    save works out every returned value from the record as it was saved, so a chain would
+    always lag one save behind. The rule that reads is refused and names the rule that
+    writes.</li>
+</ul>
+
+<h3>When the values are written</h3>
+
+<ul>
+<li><strong>On the page</strong>, as the page opens and again after the measurement or an
+    input changes, whatever the verdict (a weight outside the limits still gets its
+    z-score). The first fill does not mark the form as changed. After a change REDCap hears
+    an input and a change event, so its calculations and branching logic that read the
+    field run. When an input is on a form the page may not show, the page leaves the
+    fields as they are and the save writes them.</li>
+<li><strong>On save</strong>, for a form, a survey, an import and the API. The post-save
+    audit works out the same values from the saved record and writes those that differ.
+    The write appears in the record's log as an update by the user who saved, and is not
+    audited again. These values are written before any other rule is checked, so an
+    <code>@UVREQUIRED</code> on the z-score field checks the new value. An entry REDCap
+    refuses to write, such as a locked form, is logged, and the others are still
+    written.</li>
+<li>A rule with an input in another event is checked in every visit it applies to, so
+    saving the enrolment form after correcting the date of birth refills the fields of
+    every visit.</li>
+<li><strong>The rule owns its fields.</strong> When there is nothing to report (a blank
+    sex, an age or length outside the reference, a <code>when</code> that is false) the
+    fields are emptied. A field holding the same number spelled another way
+    (<code>7.80</code> for <code>7.8</code>) is not rewritten. Mark the fields
+    <code>@READONLY</code>, since a value typed there is overwritten at the next
+    check.</li>
+<li>The project setting "@UVRANGE returned values" (<code>range-return-no-save</code>)
+    keeps the page fill and writes nothing when a record is saved. The Validation scan
+    never writes.</li>
+</ul>
+
 <h2>Audit</h2>
 
 <p>The post-save audit logs a value outside either range as <code>type: range</code>
