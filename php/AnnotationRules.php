@@ -2218,6 +2218,25 @@ class AnnotationRules
     }
 
     /**
+     * Whether one entry's values ($values: field => stored value, a checkbox
+     * as code => "0"/"1") meet a parsed "where" condition. A blank side of
+     * < > <= >= gives no answer, so the comparison fails (Logic::BLANK_INERT);
+     * text compares with $caseSensitive; a field listed in $commaFields holds
+     * numbers with a decimal comma and is read by value ("3,5" is 3.5).
+     * UniversalValidator::existsWherePasses gives it an entry of a lookup's
+     * read; tests/docs_examples_php.php the entries the docs describe.
+     */
+    public static function existsWhereHolds(array $ast, array $values, $caseSensitive, array $commaFields = [])
+    {
+        foreach ($commaFields as $f) {
+            if (!isset($values[$f]) || is_array($values[$f])) continue;
+            $n = Logic::normalizeNumber($values[$f], true);
+            if ($n !== null && $n !== '') $values[$f] = $n;
+        }
+        return Logic::evaluate($ast, $values, Logic::BLANK_INERT, (bool) $caseSensitive);
+    }
+
+    /**
      * The "where" part of an exists rule: a condition that parses without
      * event or instance references, tests at least one field and at most
      * MAX_EXISTS_WHERE, and never "record" (the record ID is what

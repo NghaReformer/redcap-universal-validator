@@ -1244,6 +1244,24 @@ namespace {
     $idx = logsOf($m, 'uv-exists-index-read');
     check('where there: the scan\'s read there names the "where" field',
         (bool) array_filter($idx, function ($l) { return $l['field'] === 'specimen_id,lab_ok' && $l['result'] === 'read'; }));
+
+    // "in":"record" in a classic project there: the record's one row is its entry.
+    Project::$design = [300 => ['longitudinal' => false]];
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $cfg = page($m);
+    check('where there: "in":"record" in a classic project needs no "event"', ruleFor($cfg, 'x_wrec') !== null && errOf($cfg, 'x_wrec') === '');
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'L1']);
+    check('where there: a record whose row passes is found', ($r['state'] ?? null) === 'found' && $r['record'] === null);
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'l2']);
+    $probe = logsOf($m, 'uv-exists-probe');
+    $last = end($probe);
+    check('where there: a record whose row fails is filtered, found in another letter case',
+        ($r['state'] ?? null) === 'not-found' && !empty($r['filtered']) && $last && ($last['filtered'] ?? null) === 'true');
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'L9']);
+    check('where there: a record that does not exist is plain not found', ($r['state'] ?? null) === 'not-found' && empty($r['filtered']));
     $DICT_A = $DICT_A_BEFORE; $DICT_B = $DICT_B_BEFORE; $DATA_B = $DATA_B_BEFORE;
     Project::$design = [];
 

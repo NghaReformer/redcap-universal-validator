@@ -45,7 +45,7 @@ final class ScanDimensions
     public $fieldLabels = [];
     /** @var array field name => form name */
     public $fieldForms = [];
-    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>, 'fields'=>, 'detail'=>] */
+    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'messages'=>, 'assert'=>, 'type'=>, 'fields'=>, 'detail'=>] */
     public $rules = [];
     /**
      * @var array rule source id => rule ordinal. A STORED finding names its rule
@@ -203,10 +203,11 @@ final class ScanDimensions
             $type = isset($r['type']) ? (string) $r['type'] : '';
             $t = self::ruleText($r, $type);
             $d->rules[$i + 1] = [
-                'type'    => $type,
-                'label'   => $t['label'],
-                'message' => $t['message'],
-                'assert'  => $t['assert'],
+                'type'     => $type,
+                'label'    => $t['label'],
+                'message'  => $t['message'],
+                'messages' => $t['messages'],
+                'assert'   => $t['assert'],
                 'fields'  => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
                 'detail'  => $t['detail'],
             ];
@@ -234,11 +235,18 @@ final class ScanDimensions
             if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
         }
         $detail += ModeRegistry::derivedDetail($type, $r);
+        // reason => the rule's text for it (scan.reasonMessages), '' when the
+        // rule has none: MessageCatalog then uses the catalog, not "message".
+        $messages = [];
+        foreach (ModeRegistry::reasonMessageKeys($type) as $reason => $k) {
+            $messages[$reason] = (isset($r[$k]) && is_string($r[$k])) ? $r[$k] : '';
+        }
         return [
-            'label'   => isset($r['note']) ? (string) $r['note'] : '',
-            'message' => isset($r['message']) ? (string) $r['message'] : '',
-            'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
-            'detail'  => $detail,
+            'label'    => isset($r['note']) ? (string) $r['note'] : '',
+            'message'  => isset($r['message']) ? (string) $r['message'] : '',
+            'messages' => $messages,
+            'assert'   => isset($r['assert']) ? (string) $r['assert'] : '',
+            'detail'   => $detail,
         ];
     }
 
@@ -315,7 +323,7 @@ final class ScanDimensions
     public function rule($ordinal, $branch = null)
     {
         if (!isset($this->rules[$ordinal])) {
-            return ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => []];
+            return ['type' => '', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '', 'fields' => [], 'detail' => []];
         }
         $r = $this->rules[$ordinal];
         // The branch that judged a finding speaks for it: its message and its

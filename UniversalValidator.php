@@ -1656,20 +1656,15 @@ class UniversalValidator extends AbstractExternalModule
                 && is_array($ctx['node'][$ctx['event_id']])) {
             $base = $ctx['node'][$ctx['event_id']];
         }
+        $comma = [];
         foreach ($spec['where']['fields'] as $f) {
-            if (!isset($vals[$f])) continue;
-            if (is_array($vals[$f])) {
-                if ($base !== null && isset($base[$f]) && is_array($base[$f]) && !in_array('1', array_map('strval', $vals[$f]), true)) {
-                    $vals[$f] = $base[$f];
-                }
-                continue;
-            }
-            if (isset($spec['where']['marks'][$f]) && $spec['where']['marks'][$f] === 'comma') {
-                $n = Logic::normalizeNumber($vals[$f], true);
-                if ($n !== null && $n !== '') $vals[$f] = $n;
+            if (isset($spec['where']['marks'][$f]) && $spec['where']['marks'][$f] === 'comma') $comma[] = $f;
+            if ($base !== null && isset($vals[$f]) && is_array($vals[$f]) && isset($base[$f]) && is_array($base[$f])
+                    && !in_array('1', array_map('strval', $vals[$f]), true)) {
+                $vals[$f] = $base[$f];
             }
         }
-        return Logic::evaluate($spec['where']['ast'], $vals, Logic::BLANK_INERT, !$spec['fold']);
+        return AnnotationRules::existsWhereHolds($spec['where']['ast'], $vals, !$spec['fold'], $comma);
     }
 
     /**

@@ -363,6 +363,10 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
+check('exists explains a filtered finding with "whereMessage"', ModeRegistry::reasonMessageKeys('exists') === ['filtered' => 'whereMessage']
+    && ModeRegistry::reasonMessageKeys('range') === []);
+check('exists issue labels', ModeRegistry::issueLabel('exists', 'filtered') === 'Saved, but not where its conditions hold'
+    && ModeRegistry::issueLabel('exists', 'not-found') === 'Not found in its source');
 $tv = ModeRegistry::eligibility('range')['textValidations'];
 foreach (['' => true, 'integer' => true, 'int' => true, 'float' => true, 'number' => true, 'number_2dp' => true,
           'number_comma_decimal' => true, 'number_1dp_comma_decimal' => true, 'date_ymd' => false, 'email' => false,
@@ -465,6 +469,12 @@ $cases = [
         return json_encode($g); })($good),
     'textKeys without i18n as a branch key' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'required') $g['modes'][$i]['branchKeys'] = array_values(array_diff($m['branchKeys'], ['i18n']));
+        return json_encode($g); })($good),
+    'reasonMessages naming a key that is not a text key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['filtered' => 'existsWhere'];
+        return json_encode($g); })($good),
+    'reasonMessages as a list' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['whereMessage'];
         return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {

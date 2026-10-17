@@ -83,6 +83,16 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a textKeys that is not a list of key names, or does not list "i18n" in its branchKeys and clientKeys');
                 }
             }
+            if (isset($m['scan']['reasonMessages'])) {
+                // reason => one of the mode's text keys: the report explains a
+                // finding of that reason with it (ScanDimensions, MessageCatalog).
+                $rm = $m['scan']['reasonMessages'];
+                $tk = isset($m['textKeys']) && is_array($m['textKeys']) ? $m['textKeys'] : [];
+                if (!is_array($rm) || !$rm || array_values($rm) === $rm
+                        || array_filter($rm, function ($k) use ($tk) { return !is_string($k) || !in_array($k, $tk, true); })) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a scan.reasonMessages that is not reason => one of its textKeys');
+                }
+            }
             if (isset($m['returns'])) {
                 $rt = $m['returns'];
                 if (!is_array($rt) || !isset($rt['method'], $rt['targets']) || !is_string($rt['method']) || $rt['method'] === ''
@@ -464,6 +474,18 @@ final class ModeRegistry
         $reason = (string) $reason;
         if ($reason !== '' && isset($labels[$reason])) return $labels[$reason];
         return isset($labels['*']) ? $labels['*'] : 'Wrong value';
+    }
+
+    /**
+     * reason => rule key: the reasons of this type whose findings a report
+     * explains with a text key of their own instead of "message"
+     * (scan.reasonMessages of the type's mode; @UVEXISTS "filtered" =>
+     * "whereMessage").
+     */
+    public static function reasonMessageKeys($type)
+    {
+        $scan = self::mode(self::modeOfType($type))['scan'] ?? [];
+        return (isset($scan['reasonMessages']) && is_array($scan['reasonMessages'])) ? $scan['reasonMessages'] : [];
     }
 
     /**

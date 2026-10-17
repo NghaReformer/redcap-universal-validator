@@ -187,6 +187,8 @@ namespace {
 
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\Logic;
+    use INSPIRE\UniversalValidator\MessageCatalog;
+    use INSPIRE\UniversalValidator\ScanDimensions;
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -493,6 +495,26 @@ namespace {
     $sets = array_unique(array_map(function ($c) { return implode(',', $c['fields']); }, $idx));
     check('scan: rules with different "where" build their own index, each reading its "where" fields',
         in_array('specimen_id,consent,status', $sets, true) && in_array('specimen_id,consent', $sets, true));
+
+    // ---- 8) the report's wording ---------------------------------------------------------------
+    // A filtered finding is explained as the page explains it: "whereMessage"
+    // (its default text), or else the catalog's sentence, never "message".
+    $explain = function ($ann, $reason) {
+        $rule = AnnotationRules::parseAllTags($ann, ['qualified' => true])[0];
+        $snap = ScanDimensions::build(149, [], [$rule])->rule(1);
+        return MessageCatalog::explain(['type' => 'exists', 'reason' => $reason, 'rule' => 1], $snap, 'staff');
+    };
+    $both = w('{"in":"[specimen_id]","where":"[consent]=\'1\'","message":"Register it first.",'
+        . '"whereMessage":{"default":"Not eligible.","fr":"Non éligible."}}');
+    $e = $explain($both, 'filtered');
+    check('report: a filtered finding reads "whereMessage" in its default text', $e['text'] === 'Not eligible.' && $e['source'] === 'rule-message');
+    $e = $explain($both, 'not-found');
+    check('report: a value saved nowhere reads "message"', $e['text'] === 'Register it first.' && $e['source'] === 'rule-message');
+    $e = $explain(w('{"in":"[specimen_id]","where":"[consent]=\'1\'","message":"Register it first."}'), 'filtered');
+    check('report: a filtered finding without "whereMessage" reads the catalog, never "message"', $e['source'] === 'catalog'
+        && $e['text'] === "The value is saved, but not in an entry that meets this rule's conditions.");
+    $e = $explain(w('{"in":"[specimen_id]","message":"Register it first."}'), 'not-found');
+    check('report: a rule without "where" is explained as before', $e['text'] === 'Register it first.');
 
     fwrite(STDOUT, "exists_where_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
