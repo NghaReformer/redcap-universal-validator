@@ -25,6 +25,7 @@ final class Db implements ScanDb {
         return $out;
     }
     public function exec($sql, array $p = []) { $this->query($sql, $p); return true; }
+    public function execNoCount($sql, array $p = []) { $this->exec($sql, $p); }
     public function affected() { return $this->m->affected_rows; }
     public function begin() { $this->m->begin_transaction(); }
     public function commit() { $this->m->commit(); }

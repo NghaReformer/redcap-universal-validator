@@ -107,6 +107,132 @@ interface ScanStore
     const REC_UNSTORED   = 104;
 
     /**
+     * Terminal WITHOUT having been examined. One list, because two places ask:
+     * promotion, where any of these caps coverage at partial, and the progress
+     * figure, which must not call them done. A tombstone is not here - a record
+     * deleted from the project was not skipped, it stopped existing.
+     */
+    const NOT_EXAMINED = [self::REC_UNREADABLE, self::REC_UNSTABLE, self::REC_UNSTORED];
+
+    /**
+     * What run() returns: these keys, in this order, from both stores.
+     *
+     * ONE LIST, ON THE INTERFACE. SqlScanStore used to carry a SELECT list and,
+     * a few lines below it, a hand-kept list of keys to zip the row against.
+     * Add a column to one and not the other and array_combine() returns false -
+     * not an error, a false - so run() answered false, promote() asked
+     * isset($run['phase']) of a boolean, and three test fixtures built as
+     * positional arrays drifted the same way, twice. The SELECT list is now
+     * imploded from this constant and a row of the wrong length throws.
+     *
+     * The first 22 are in their original order. Anything new is APPENDED, so a
+     * fixture keyed by position stays valid for the columns it knew about.
+     */
+    const RUN_COLUMNS = [
+        'run_id', 'project_id', 'scope_dag', 'phase', 'terminal', 'coverage', 'detail',
+        'values_state', 'policy_revision', 'fingerprint', 'manifest_total', 'manifest_done',
+        // run_seq is the interval a finding written by this run OPENS, so a
+        // caller building a batch needs it as much as it needs the generation.
+        'cursor_ordinal', 'lease_epoch', 'generation_id', 'run_seq', 'created_by', 'detail_rows',
+        // fence_open, fence_target and cancel_requested_at because promotion
+        // reads the run row to decide what it may claim: a fence it cannot see
+        // is a fence it treats as absent, which silently downgrades every
+        // fenced run to manifest-complete.
+        'detail_bytes', 'fence_open', 'fence_target', 'cancel_requested_at',
+        // Why it ended, the three clocks, and what promotion decided. `clean`
+        // is NULL until a run finishes as complete or partial, and stays NULL
+        // for one that failed, was cancelled or expired: those make no claim
+        // about the project at all.
+        'terminal_reason', 'created_at', 'updated_at', 'progress_at',
+        'clean', 'gap_count', 'rule_problem_count', 'not_examined',
+        // The policy the run started under, as JSON. status() reads which
+        // other projects the run looked values up in from it (review R3U-N1):
+        // the reader's plan can no longer say once the rule is gone.
+        'policy_json',
+    ];
+
+    /**
+     * The keys every finding handed to commitBatch() must carry, non-null.
+     *
+     * Each names a NOT NULL column of uv_finding that has no default the store
+     * could honestly supply. Both stores refuse a finding missing any of them,
+     * and refuse the whole batch with it, before anything is written.
+     *
+     * WHY THE STORE ASKS RATHER THAN THE SERVER (review ST-2). A single-row
+     * INSERT of a NULL into a NOT NULL column is error 1048 under every
+     * sql_mode. A MULTI-row INSERT under a non-strict sql_mode is not: the
+     * server stores the column's implicit default - '' or 0 - with a warning,
+     * and the row count still matches what was sent. Batching the findings
+     * INSERT (M9) therefore turned a refusal into a finding with an empty
+     * instrument or an empty rule, on exactly the servers that are configured
+     * leniently. The columns the store fills itself when a key is absent
+     * (valid_from_seq, instance, rule_ord, the flags) are not listed.
+     *
+     * tests/mysql/cases/store.php compares this list with the NOT NULL columns
+     * the server reports, so a column added to the table without being added
+     * here fails the database matrix.
+     */
+    const FINDING_REQUIRED = [
+        'generation_id', 'identity', 'record_hash', 'record_id_bin', 'host_form', 'field',
+        'rule_source_id', 'rule_revision', 'check_type', 'reason_code',
+    ];
+
+    /**
+     * Four uv_finding columns that are RESERVED: in the table, written with
+     * their schema default by both stores, read by nothing (review W7-R7).
+     *
+     *   arm_id        the event's arm. The store is handed an event id and no
+     *                 event metadata, so filling it would cost a read of
+     *                 REDCap's event table per batch, which no reader needs.
+     *   value_binary  whether the stored value is text. value_bin is cut at
+     *                 byte 255, so "not valid UTF-8" also describes a text value
+     *                 cut inside a character; FindingRowMapper decides from the
+     *                 bytes themselves (W7-R5), and a second answer here would
+     *                 be the wrong one for every cut value.
+     *   severity      no rule kind has a severity.
+     *   status_key    the form's completion status. Not read by the scan, and a
+     *                 second read per record to fill a column nothing shows.
+     *
+     * None is in FindingRowMapper::INPUT_KEYS, so findings() does not return
+     * them and the report cannot branch on a default. Giving one a producer is
+     * a change to UniversalValidator's finding literal, not to the schema,
+     * which already holds them.
+     */
+    const FINDING_RESERVED = ['arm_id', 'value_binary', 'severity', 'status_key'];
+
+    /**
+     * How many windows of $limit rows one claimPending() call may retire
+     * before it answers. See claimPending(): a call that retires a whole
+     * window looks at the next one, and this is where it stops looking, so one
+     * call holds the run row's lock for a bounded number of statements however
+     * many dead rows sit in front of the live ones. Both stores use it.
+     */
+    const SWEEP_WINDOWS = 16;
+
+    /**
+     * Seconds one claimPending() call may spend walking windows before it
+     * answers (review R3S-1). SWEEP_WINDOWS bounds the number of statements,
+     * and a count of statements is not a bound on time: each window used to
+     * walk every finished row in front of the free ones, 98,499 rows a window
+     * at 100,000 records and 498,499 at 500,000, while every commit, claim and
+     * Stop of the run waited on the row lock behind it. The first window always
+     * runs; a later one starts only while the call is younger than this, so an
+     * answer of [] with rows retired can mean this bound was reached as well.
+     */
+    const SWEEP_SECONDS = 1.0;
+
+    /**
+     * The most rows one retention or supersede statement may touch.
+     *
+     * An unpaged DELETE of 500,000 findings was measured at 160 seconds as one
+     * statement, holding its row locks throughout. Every statement that walks
+     * findings, manifest rows or aggregates on behalf of retention is bounded
+     * by this, and every method built on one answers whether there is more, so
+     * a caller runs a fixed slice and comes back. ScanRetention::PAGE is this.
+     */
+    const PAGE = 5000;
+
+    /**
      * Create a run and take the project's active slot, or report busy.
      *
      * MUST fail rather than wait when the slot is held (I1). Returns the run on
@@ -148,9 +274,77 @@ interface ScanStore
      * Refused unless the run is still planning: a manifest that can grow after
      * work has started is a manifest that can redefine what "all" means.
      *
-     * @return int rows actually added
+     * THE PAGE AND WHERE THE WALK STANDS ARE ONE WRITE (B10). Planning runs
+     * across requests, so a request can die anywhere. With $plan the page's
+     * rows, the walk's cursor, carry and counters, and the run's progress
+     * clock commit in one transaction: a request that dies has written both
+     * or neither. Written apart, a page committed without its cursor is read
+     * again by the next request and every later ordinal moves by a page; a
+     * cursor committed without its page skips that page's records for good.
+     *
+     * $plan is ScanPlanner's, and is fenced: the run must still be planning,
+     * at `epoch`, not asked to stop, and leased to `owner` by claimPlan(), and
+     * the plan row claimPlan() wrote must still be there. A missing row is
+     * refused, never written here: something other than the walk removed it,
+     * and the walk's position went with it (review R5-9). It
+     * carries the walk's state as absolute values - `cursor`, `carry` (opaque
+     * to the store), `listed`, `outOfScope` - and `done` when the source said
+     * it had nothing past this page. `release` hands the lease back with the
+     * page, so a slice's last page and the end of its lease are one write;
+     * otherwise the lease is renewed for `leaseSeconds`. A page with no rows
+     * in scope is still a page: the cursor moves and the counters with it.
+     *
+     * EVERY APPEND IS A HEARTBEAT, with or without $plan: `updated_at` and
+     * `progress_at` move with it. Planning used to write neither until the
+     * freeze, so a planner appending its hundredth page looked exactly like
+     * one that had died at the first - to the page, which said "stopped", and
+     * to the abandoned-run sweep (review R3U-2).
+     *
+     * @param array|null $plan {owner:string, epoch:int, cursor:?string, carry:?string,
+     *                          listed:int, outOfScope:int, done:bool, release:bool,
+     *                          leaseSeconds:int}
+     * @return int|false rows actually added, or FALSE when refused. Zero is an
+     *         answer - every record was already there, or none was in scope -
+     *         and a refusal is a different one: the walk must stop on it.
      */
-    public function appendManifest($runId, array $records);
+    public function appendManifest($runId, array $records, ?array $plan = null);
+
+    /**
+     * Take the planning lease and read where the walk stands.
+     *
+     * ONE PLANNER AT A TIME. Two tabs driving the same run would each read the
+     * same cursor and list the same page; the second append would be refused
+     * and its page read wasted. A lease held by another owner and not yet
+     * expired answers `held`, and the caller comes back later.
+     *
+     * THE ATTEMPT IS COUNTED HERE, before the slice is tried (I3b). A planning
+     * request dies at max_execution_time or memory_limit, an uncatchable
+     * fatal, so nothing it runs afterwards can count its failure. Counting at
+     * the claim, in a transaction the slice cannot roll back, is how wave 5
+     * counts a record's attempts for the same reason; appendManifest() puts
+     * the count back to zero with the first page the slice commits. A slice
+     * that dies before its first page leaves its count standing, and when
+     * `maxAttempts` slices in a row have died on the same page the claim
+     * answers `exhausted` instead of letting another try.
+     *
+     * @return array|false FALSE when the run is not planning, its epoch moved
+     *         or it was asked to stop. Otherwise {state: 'ok'|'held'|'exhausted'|'done',
+     *         cursor:?string, carry:?string, pages:int, listed:int, outOfScope:int,
+     *         attempts:int}. Only `ok` holds the lease, and only `ok` writes the
+     *         plan row when the run has none yet.
+     */
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts);
+
+    /**
+     * Give the planning lease back without listing anything.
+     *
+     * For a slice whose page read failed: its attempt was counted at the
+     * claim, and the next request should not have to wait out the lease to
+     * try again. Changes nothing unless $owner holds the lease.
+     *
+     * @return bool whether a lease was released
+     */
+    public function releasePlan($runId, $owner);
 
     /**
      * Publish the total and leave planning.
@@ -159,7 +353,13 @@ interface ScanStore
      * them, so a retried or partially applied append cannot make the published
      * total disagree with the manifest it describes.
      *
-     * @return int|false the frozen total, or false when the run was not planning
+     * ONLY ONCE THE SOURCE HAS SAID IT IS DONE (B10). The persisted
+     * `plan_done` is the gate, not the walk having returned: a walk that
+     * returned because its request ran out of time has listed part of the
+     * project, and a manifest frozen there certifies the rest as checked.
+     *
+     * @return int|false the frozen total, or false when the run was not
+     *         planning or its walk has not reached the end of the source
      */
     public function freezeManifest($runId);
 
@@ -223,10 +423,44 @@ interface ScanStore
      * the whole of the takeover fence: the old holder's commit then matches no
      * row and is discarded, without disturbing any other worker of the run.
      *
+     * ABANDONED MEANS STALE, NOT MERELY STAMPED (review R2S-1). With
+     * $maxAttempts, a row left by a worker that died is charged the attempt
+     * that worker could not count, and goes out alone. A row is that worker's
+     * only when it is free, still carries a token AND that token is older than
+     * $staleSeconds - the same age a CLAIMED row needs before it is free at
+     * all. A scanning-phase claim stamps a token on rows it leaves PENDING, so
+     * "free and stamped" also describes a LIVE worker still evaluating its last
+     * scanning batch; charging those rows retired healthy records as unreadable
+     * the moment a second tab reached catch-up. A fresh stamp is taken over
+     * uncharged, as every straggler was before attempts were counted here.
+     *
+     * Rows retired here, out of attempts, are counted into the optional
+     * `&$retired` out-parameter, so the caller can report them as the blocking
+     * exclusions they are: such a row never reaches a batch, and nothing else
+     * would say it was excluded. Both stores set it on every call, to 0 unless
+     * a row was retired and the retirement was kept.
+     *
+     * A WINDOW THAT WAS ALL RETIRED IS NOT THE END (review R2S-5). The call
+     * looks at free rows a window of $limit at a time, in ordinal order. When
+     * every row of a full window was retired and nothing was claimed, it looks
+     * at the next window in the same transaction, up to SWEEP_WINDOWS of them
+     * and while the call is younger than SWEEP_SECONDS. The SQL store used to
+     * answer [] after the first window while free rows remained behind it, and
+     * the worker read that as "records are still out with another worker". An
+     * answer of [] with $retired > 0 can therefore still mean a bound was
+     * reached: the caller asks again rather than concluding anything from it.
+     *
+     * EACH WINDOW STARTS AFTER THE LAST ROW OF THE ONE BEFORE (review R3S-1).
+     * Every row of that window was retired, so nothing at or below its last
+     * ordinal is free any more; reading from the start of the run again only
+     * made the next window walk the same ground.
+     *
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900);
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE,
+                                 &$retired = null);
 
     /**
      * Commit one batch: record states, findings and uniqueness candidates, in
@@ -245,6 +479,33 @@ interface ScanStore
      * that produced it. Both are required: a row without a token cannot be
      * fenced, and a finding that cannot be attributed to a claimed record
      * cannot be held back when that record is lost.
+     *
+     * TRUE DOES NOT MEAN ANYTHING WAS KEPT. A batch whose every record was
+     * taken over commits: there is nothing to refuse. It writes no finding, no
+     * state and no mark, because it holds no record and so has no standing to
+     * say anything about the run. A caller that remembers what it sent on
+     * `true` therefore needs to know whether the batch held anything (review
+     * ST-4). ScanWorker remembers the presence marks it has sent so that it
+     * stops offering them, and a mark it remembers but the store dropped is
+     * never offered again.
+     *
+     * So ArrayScanStore and SqlScanStore take an optional FIFTH parameter,
+     * by reference: `&$heldCount = null`. They set it to the number of the
+     * batch's records still held when it committed, and to 0 whenever nothing
+     * was written: a refusal, a rollback, or a batch that held no record. It
+     * is not in the signature above because adding it here would break every
+     * implementation that predates it, including the test doubles that
+     * override this method with four parameters. A caller passes a variable
+     * set to null. When the variable comes back still null, the store does not
+     * report holding, and the caller keeps its old reading of `true`.
+     *
+     * AND A SIXTH, `&$heldOrdinals = null`, for the same reason and in the
+     * same way (review R2S-1). A count says how many records were kept and
+     * not which, and a worker that reports what it examined needs which: a
+     * batch whose records were taken over mid-evaluation used to report every
+     * one of them as worked while the new holder committed them. Both stores
+     * set it to the list of ordinals the commit held, and to [] whenever
+     * nothing was written.
      *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
@@ -292,12 +553,22 @@ interface ScanStore
      * somehow reached 255 must not roll over to 0 and start again, nor be
      * silently clamped by a permissive sql_mode.
      *
+     * AND IT HANDS THE REST BACK, in the same transaction (review R2S-4). A row
+     * counted here and not retired is released exactly as releaseClaims()
+     * would release it: a straggler returns to PENDING, the claim is cleared,
+     * the cursor moves back over it. The caller used to call releaseClaims()
+     * next, in a transaction of its own; when that failed, or a takeover
+     * landed between the two, the row kept a token on an attempt already
+     * counted, aged into "abandoned", and the straggler sweep charged the same
+     * failure again. Every caller released straight after, so the two are one
+     * write now and a caller does not release these claims itself.
+     *
      * @param array $claims   ordinal => claim token, as claim() reported them
      * @param int   $maxAttempts  the run's configured limit
      * @param int   $exhausted    the terminal state for rows that reach it -
      *                            REC_UNSTORED for a refused commit,
      *                            REC_UNREADABLE for a failed read
-     * @return array{counted:int, retired:int}
+     * @return array{counted:int, retired:int, released:int}
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted);
@@ -305,6 +576,17 @@ interface ScanStore
     /**
      * Is every manifest row terminal? A PREDICATE over states (I4), never a
      * comparison of counters.
+     *
+     * An existence test, and it must FAIL CLOSED: an answer that could not be
+     * read is "not complete". A run with an EMPTY manifest answers true - the
+     * predicate is vacuous there, and it is ScanPromotion's emptyScope fact, not
+     * this method, that stops an empty run being certified.
+     *
+     * A RUN THAT DOES NOT EXIST IS NOT COMPLETE, from both stores (W6-N1). The
+     * SQL store used to answer true for it - no unfinished row, because no row
+     * at all - while the in-memory store answered false, and the contract had
+     * pinned the disagreement rather than chosen. "Nothing is unfinished" about
+     * a run nobody can find is the vacuous reading in the dangerous direction.
      */
     public function manifestComplete($runId);
 
@@ -345,14 +627,97 @@ interface ScanStore
     // one owner held two. A resource with two mechanisms is a resource where
     // the unused mechanism collects the defects.
 
-    /** One keyset page of findings for a generation, already filtered. */
+    /**
+     * One keyset page of a generation's ACTIVE findings, already filtered.
+     *
+     * EACH ROW IS KEYED BY FindingRowMapper::INPUT_KEYS, in that order, from
+     * both stores (B5-N1). The SQL store used to hand back twelve positional
+     * columns and the in-memory one its whole internal row, so a report built
+     * against either would have read nothing correctly from the other. The SQL
+     * store selects exactly that list and zips it with array_combine(), the way
+     * run() zips RUN_COLUMNS, and a row of the wrong width throws.
+     *
+     * KEYSET ON finding_id: rows come back with finding_id > $afterId, in
+     * finding_id order, so the last row's finding_id is the next page's
+     * $afterId and no row is ever returned on two pages. $limit is clamped to
+     * 1..100. $filter takes host_form, reason_code, dag_key and check_type;
+     * any other key is ignored rather than interpolated.
+     */
     public function findings($projectId, $generationId, array $filter, $afterId, $limit);
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);
 
-    /** Expire stored value previews whose TTL has passed. Returns rows affected. */
-    public function expireValues($now);
+    /**
+     * Close the active findings of this project's OLDER generations, one page.
+     *
+     * When a run ends `complete`, every earlier generation of its project is
+     * history. Each reader is scoped to one generation, so nothing reads them
+     * as current - but "the current state of this project" stays a question
+     * about the newest generation only until their rows are closed, and
+     * valid_to_seq is how an "as of run N" view knows when they stopped being
+     * true (W4-D1). Closing is active_slot = NULL and valid_to_seq = this run's
+     * run_seq, never a delete (I5).
+     *
+     * ONE PAGE PER CALL, at most min($limit, PAGE) rows, inside one
+     * transaction that holds this run's row FOR UPDATE and moves
+     * scan_run.supersede_cursor with the page. The cursor is a GENERATION:
+     * every older generation below it has been closed. A generation is
+     * finished when a page closes fewer rows than it was allowed; the cursor
+     * then moves past it. When no older generation is left the cursor becomes
+     * the run's own generation, which is how a caller can tell a finished
+     * supersede from one that has not started without calling it.
+     *
+     * NEVER this run's own generation, never a newer one, never another
+     * project: the generations come from this project's own runs and must be
+     * below this run's. Only a run that ended `complete` supersedes anything; a
+     * partial, failed, cancelled or expired run leaves the previous report as
+     * the current one, which is why this happens at promotion and not at start.
+     *
+     * Idempotent and safe from two requests at once: the second waits on the
+     * run row and then finds the rows already closed or the cursor moved.
+     *
+     * ONLY A WHOLE-PROJECT RUN SUPERSEDES (review R8-1). A run scoped to one
+     * data access group examined that group's records and no others, and
+     * closing every older generation closed the other groups' findings as well
+     * - each stamped as superseded by a run that never read its record, and
+     * gone from any reading of the project's current state. A scoped run
+     * therefore closes nothing and answers done with SUPERSEDE_SCOPED; the
+     * older generations stay current until a whole-project run completes,
+     * which closes all of them, scoped ones included. Closing only the group's
+     * share was considered and is not done, for three reasons. The store
+     * cannot name it: scope_dag is REDCap's group id and a finding's dag_key
+     * the group's unique name, two axes. A group is not a fixed set of
+     * records: a record that moved out of the group since the older run was
+     * never read by this one, and closing its findings by their old group
+     * closes what may be its only current evidence. And closing by this run's
+     * own manifest needs a position inside an older generation, which
+     * supersede_cursor (a generation) cannot hold: without one every page
+     * walks again each out-of-scope row in front of it. Leaving the group's
+     * older rows open over-reports - a record re-examined by the scoped run
+     * shows its older findings beside its new ones until the next whole-project
+     * run - which is the direction that hides nothing.
+     *
+     * @return array{done:bool, rows:int, cursor:int, why:?string} `done` is
+     *         true when nothing is left for this run to close - including a
+     *         run that may not supersede (`why` says which) - and false while
+     *         a further call has work to do. A run still in progress is not
+     *         done: it may yet complete.
+     * @throws ScanStoreUnavailable when the storage failed; nothing is closed
+     */
+    public function supersedePrevious($pid, $runId, $limit);
+
+    /** Why a scan of one data access group closed nothing. See supersedePrevious(). */
+    const SUPERSEDE_SCOPED = 'this scan covered one data access group, so it supersedes nothing: the '
+                           . 'previous reports stay current until a scan of the whole project completes';
+
+    // expireValues() IS GONE FROM THIS CONTRACT TOO, for purgeRuns()'s reason.
+    //
+    // Each store carried its own unpaged installation-wide UPDATE of
+    // value_expires_at beside ScanRetention::expireValues(), which the cron
+    // calls; nothing in production called the store's. Two implementations of
+    // the one clear that touches participant data is one more than can be
+    // kept paged, scoped and tested.
 
     // purgeRuns() IS GONE FROM THIS CONTRACT, DELIBERATELY.
     //
@@ -420,6 +785,39 @@ interface ScanStore
     public function setProgressState($runId, $epoch, array $state);
 
     /**
+     * Why a summary page may not be counted. One copy, both stores, as BUSY_WHY.
+     *
+     * The run is gone, or the lease moved, or the run has already ended. They
+     * reach the worker as the reason it stopped, so each says what happened to
+     * the page and names nothing about the run.
+     */
+    const ROLLUP_NO_RUN     = 'this run could not be read, so no summary was built';
+    const ROLLUP_TAKEN_OVER = 'another worker took over this scan, so the summary page was '
+        . 'discarded rather than counted twice';
+    const ROLLUP_FINISHED   = 'this scan has already finished, so the summary page was '
+        . 'discarded rather than added to a summary that is no longer being built';
+
+    /**
+     * Hold the run row for one summary page, and say where the summary has got to.
+     *
+     * CALLED INSIDE THE CALLER'S TRANSACTION, before the page's counts are
+     * added, and the hold lasts until that transaction ends. The answer is the
+     * rollup cursor as it stands under the hold, as an int, or one of the
+     * ROLLUP_* sentences above when this worker may not add to the summary at
+     * all: no such run, a different lease epoch, or a run that has ended.
+     *
+     * WHY THE EPOCH IS NOT ENOUGH. The epoch moves only on cancel, so two
+     * workers sharing a run hold the same one. Both could read cursor 0, read
+     * the same page of findings, and add it, and the counters ADD. The caller
+     * compares the cursor this returns with the one its page started from and
+     * discards the page when they differ. Under the hold, a second worker
+     * waits for the first to commit and then sees the cursor it moved. A run
+     * that has ended takes no page for the same reason it takes no late commit:
+     * its stored verdict was read from the summary as it stood.
+     */
+    public function holdRollupCursor($runId, $epoch);
+
+    /**
      * Add to a counted aggregate.
      *
      * ADDS rather than sets, because an aggregate is built from bounded pages
@@ -428,6 +826,28 @@ interface ScanStore
      * that says the page is done.
      */
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null);
+
+    /**
+     * Record that something is PRESENT in this run. Once, however often it is said.
+     *
+     * The other verb ADDS, which is right for a count built from pages and wrong
+     * for a fact. "Rule 4 cannot be evaluated" is true once per run whether one
+     * record met it or a million did, whether one worker saw it or six, and
+     * whether the planner that first noted it ran once or was resumed. Through
+     * addAggregate() each of those is another +1, and the number the run ends
+     * with measures how often the question was asked.
+     *
+     * So: the row (run, kind, axis1, axis2) exists with cnt = 1, and saying it
+     * again changes nothing a reader can see. SUM(cnt) over a kind is then the
+     * number of DISTINCT things marked, which is what ScanPromotion::tally()
+     * reports. `blocks` only ever rises and the first `samples` is kept, as
+     * addAggregate() does.
+     *
+     * Safe to retry and safe from two workers at once. A mark carried in
+     * commitBatch()'s `marks` is written under that batch's fences; one written
+     * directly is unfenced, which suits the planner - it holds the only lease.
+     */
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null);
 
     /** How many aggregate kinds block coverage. Zero is the only value that permits complete. */
     public function blockingAggregates($runId);

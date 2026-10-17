@@ -84,7 +84,7 @@ final class ScanPlanner
     }
 
     /**
-     * Create a run, freeze its manifest, and hand it back ready to be worked.
+     * Create a run and list the first slice of its manifest.
      *
      * THE ORDER IS THE SAFETY. Everything that can refuse does so BEFORE a run
      * exists, because a refused start costs a message and an abandoned run costs
@@ -92,6 +92,16 @@ final class ScanPlanner
      * exist, every remaining failure finishes it terminally rather than leaving
      * it - a planner that dies quietly is indistinguishable from one still
      * working, and the difference is a project that cannot scan again.
+     *
+     * ONE SLICE, NOT THE WHOLE LIST (B10). This walked, hashed and inserted the
+     * entire record list inside the scan-start request, and ScanService passed
+     * it no deadline and no memory cap. A project large enough to outlast
+     * max_execution_time died mid-walk, an uncatchable fatal, and the run sat
+     * in `planning` holding the project's slot with nothing able to move it.
+     * Now the start lists what its budget allows - see step() - and hands back
+     * a run still planning when there is more; the browser's work requests
+     * list the rest, a slice each, through ScanWorker. A run whose list
+     * finished inside the first slice comes back frozen, as it always did.
      *
      * @param array $req {
      *   source:        RecordManifestSource, required
@@ -105,7 +115,7 @@ final class ScanPlanner
      *   engine:        string  the validation engine's version
      *   dagFilter:     ?string scope this run to one group. THE NUMERIC GROUP
      *                  ID, as a string - never the friendly DAG name. It is
-     *                  compared at stream() against redcap_record_list.dag_id
+     *                  compared at step() against redcap_record_list.dag_id
      *                  and stored verbatim as scope_dag, which
      *                  ScanAuthorization then compares against
      *                  $rights['group_id']. ScanPageView::scanScope() is the
@@ -114,8 +124,13 @@ final class ScanPlanner
      *   createdBy:     string
      *   generation:    int
      *   pageSize:      int
-     *   deadline:      ?float  unix time planning must stop by
-     *   memCap:        ?int    bytes of resident memory planning must stay under
+     *   budget:        WorkBudget|false  what the first slice may spend. ABSENT
+     *                  IS A BROWSER BUDGET, not "no limit": an unbounded walk
+     *                  is the defect, so a caller has to ask for one by
+     *                  passing false, and only a test does.
+     *   owner:         string  the planning lease's owner; one is made up when absent
+     *   attempts:      int     slices in a row that may die on one page (step())
+     *   leaseSeconds:  int     how long the planning lease lasts unrenewed
      * }
      * @return array{ok:bool, busy:bool, run:?array, why:?string, stats:array}
      */
@@ -172,7 +187,7 @@ final class ScanPlanner
             'baseline_generation' => isset($req['baseline']) ? $req['baseline'] : null,
             'fingerprint'   => $fp,
             'fence_open'    => $open,
-            'policy_json'   => json_encode(isset($req['policy']) ? $req['policy'] : []),
+            'policy_json'   => json_encode(self::storedPolicy($req)),
             'values_state'  => isset($req['policy']['valueMode'])
                                ? $req['policy']['valueMode'] : 'none',
         ]);
@@ -209,21 +224,261 @@ final class ScanPlanner
                 . 'to evaluate, so it was not started rather than started without them');
         }
 
-        $walk = $this->stream($runId, $src, $pid, $dag, $req);
-        if (!$walk['ok']) {
-            // Terminal, not abandoned. See the method note: an abandoned run
-            // holds the project's scan slot and looks like one still working.
+        // THE FIRST SLICE. Its own budget unless the caller brought one: see
+        // the `budget` note above for why absence is not "no limit".
+        $slice = $this->step($pid, $runId, array_merge($req, [
+            'source'    => $src,
+            'dagFilter' => $dag,
+            'epoch'     => isset($run['lease_epoch']) ? (int) $run['lease_epoch'] : 0,
+            'owner'     => (isset($req['owner']) && is_string($req['owner']) && $req['owner'] !== '')
+                           ? $req['owner'] : 'planner:' . bin2hex(random_bytes(6)),
+            'budget'    => array_key_exists('budget', $req)
+                           ? $req['budget'] : new WorkBudget(['mode' => 'browser']),
+        ]));
+        $stats = $slice['stats'];
+
+        if (!empty($slice['frozen'])) {
+            if (!empty($slice['empty'])) {
+                // step() has finished the run as an empty scope, with the rule
+                // problems this method recorded above. A refusal, as it always
+                // was: see step() for why an empty manifest is not a clean one.
+                return ['ok' => false, 'busy' => false, 'run' => null, 'stats' => $stats,
+                        'why' => $slice['why']];
+            }
+            return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
+                    'why' => null, 'stats' => $stats];
+        }
+        if (!empty($slice['ok']) && $slice['phase'] === ScanPhase::PLANNING) {
+            // MORE TO LIST. The run exists, is leased to nobody, and the next
+            // work request lists the next slice.
+            return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
+                    'why' => null, 'stats' => $stats];
+        }
+        if ($slice['phase'] === ScanPhase::PLANNING) {
+            // The first page could not be read. A later slice would try again,
+            // but nobody has been told there is a run to drive yet: the start
+            // is refused and the run ended, as it was before planning resumed.
+            // Terminal, not abandoned - see the method note.
             $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
-            return ['ok' => false, 'busy' => false, 'run' => null, 'why' => $walk['why'],
-                    'stats' => $walk['stats']];
+        }
+        return ['ok' => false, 'busy' => false, 'run' => null, 'why' => $slice['why'],
+                'stats' => $stats];
+    }
+
+    /**
+     * List one budgeted slice of a run's manifest, and freeze it when the
+     * source says there is nothing left (B10).
+     *
+     * THE SLICE IS FENCED, COUNTED AND RESUMABLE:
+     *
+     *   claimPlan() leases the run's planning to this request and counts the
+     *   attempt before anything is tried - wave 5's rule for records, I3b,
+     *   because a request that dies at its time or memory limit runs no code
+     *   afterwards that could count it. maxAttempts is the worker's own
+     *   (policy `recordAttempts`); a page that has killed that many slices in
+     *   a row is retired, and with it the run, which ends `failed` with
+     *   PLAN_GAVE_UP rather than sitting in `planning` holding the project.
+     *
+     *   Each page, its cursor and carry, the counters and the run's progress
+     *   clock are one appendManifest() transaction. A request that dies leaves
+     *   both or neither, and the next one carries on from the last page that
+     *   committed.
+     *
+     *   The FIRST page of a slice always runs, so every request moves the walk
+     *   even when the host spent the budget before the scan began (review
+     *   BU-2's rule); after it, the budget decides. Whether another page will
+     *   follow is decided BEFORE the append, so the last page of a slice hands
+     *   the lease back in the same write.
+     *
+     *   An append refused because the run left planning - Stop, the reaper, a
+     *   finish elsewhere - ends the walk AT ONCE, and the answer says the run
+     *   was stopped (review R3U-2). The walk used to ignore the refusal, read
+     *   the rest of the project for nothing, and then answer the Start tab with
+     *   "the record list could not be frozen".
+     *
+     * ONE PAGE IN MEMORY. A page is read, hashed, appended and dropped; the
+     * carry between pages is the boundary group, at most TIE_CAP ids. Nothing
+     * earlier is read again: the cursor is a keyset position.
+     *
+     * @param array $req {
+     *   source:       ?RecordManifestSource  null is a source that could not be opened,
+     *                 which is a failed attempt like a page that could not be read
+     *   dagFilter:    ?string  the run's scope_dag - see plan()
+     *   pageSize:     int      rows per page; 1000 when absent. See PAGE_SIZE.
+     *   budget:       ?WorkBudget|false  null or false is unbounded
+     *   owner:        string   the lease's owner, the same for the whole request
+     *   epoch:        int      the run's lease_epoch as this request read it
+     *   attempts:     int      slices in a row that may die on one page
+     *   leaseSeconds: int
+     *   keep:         ?callable(): bool  renews the worker's installation slot;
+     *                 false stops the slice after the page in hand
+     *   limits:       array    maxFindings and maxBytes, for a stopped run's finish
+     * }
+     * @return array{ok:bool, phase:string, frozen:bool, empty:bool, total:?int,
+     *               listed:int, stop:?string, why:?string, stats:array}
+     *         `listed` is what THIS request listed; `stats` the walk so far.
+     */
+    public function step($pid, $runId, array $req)
+    {
+        $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
+        $epoch = isset($req['epoch']) ? (int) $req['epoch'] : 0;
+        $cap = isset($req['attempts']) ? max(1, (int) $req['attempts']) : ScanPolicy::D_RECORD_ATTEMPTS;
+        $lease = isset($req['leaseSeconds']) ? max(1, (int) $req['leaseSeconds']) : self::LEASE_SECONDS;
+        $budget = (isset($req['budget']) && $req['budget'] instanceof WorkBudget) ? $req['budget'] : null;
+        $keep = (isset($req['keep']) && is_callable($req['keep'])) ? $req['keep'] : null;
+        $src = (isset($req['source']) && $req['source'] instanceof RecordManifestSource)
+            ? $req['source'] : null;
+        $dag = isset($req['dagFilter']) && $req['dagFilter'] !== '' ? (string) $req['dagFilter'] : null;
+        // P4: DO NOT REDUCE THIS TO MAKE PLANNING FASTER. Measured, 6.3 s of an
+        // 8 s plan was database wait spread over 809 queries; the cost is per
+        // page, so halving the page doubles the queries and the wait with them.
+        $pageSize = isset($req['pageSize']) ? max(1, (int) $req['pageSize']) : self::PAGE_SIZE;
+        $listedNow = 0;
+        $appended = 0;
+        $stats = ['pages' => 0, 'listed' => 0, 'appended' => 0, 'outOfScope' => 0];
+
+        // A REQUEST THAT CANNOT HOLD EVEN ONE PAGE says so before it takes the
+        // lease: the next request would arrive with the same footprint.
+        if ($budget !== null) {
+            $gate = $budget->admit();
+            if ($gate !== null && empty($gate['resumable'])) {
+                return self::slice(false, ScanPhase::PLANNING, $gate['stop'], $gate['why'], 0, $stats);
+            }
         }
 
+        $claim = $this->store->claimPlan($runId, $owner, $epoch, $lease, $cap);
+        if ($claim === false) {
+            return $this->notPlanning($pid, $runId, $req, 0, $stats);
+        }
+        $stats['pages'] = (int) $claim['pages'];
+        $stats['listed'] = (int) $claim['listed'];
+        $stats['outOfScope'] = (int) $claim['outOfScope'];
+        if ($claim['state'] === 'held') {
+            return self::slice(true, ScanPhase::PLANNING, 'held', self::PLAN_HELD, 0, $stats);
+        }
+        if ($claim['state'] === 'exhausted') {
+            // RETIRED, as a record out of attempts is - and a manifest with a
+            // page nobody can list is no manifest, so the run ends with it.
+            // Through the finish every unrecoverable failure takes; the
+            // sentence is the stored reason, because it is the only record of
+            // why this run never examined anything.
+            $out = array_merge(ScanOutcome::derive(['failed' => true]), ['why' => self::PLAN_GAVE_UP]);
+            $this->store->finish($runId, $out);
+            return self::slice(false, ScanPhase::TERMINAL, 'failed', self::PLAN_GAVE_UP, 0, $stats);
+        }
+
+        if ($claim['state'] === 'ok') {
+            $cursor = $claim['cursor'];
+            $carry = self::carryIn($claim['carry'], $src === null ? null : $src->via(), $cursor);
+            if ($carry === null) {
+                // A DIFFERENT SOURCE, OR A CARRY THAT CANNOT BE READ: START THE
+                // WALK AGAIN. A cursor is a position in one table's collation,
+                // and the carry is the set of ids that collation calls equal to
+                // it; RecordManifestSource::open() prefers the record index and
+                // falls back to the data table, and which one answers can change
+                // between two requests. Carried across, the cursor can step over
+                // records the other collation sorts differently. Appending is
+                // idempotent, so a second walk costs time and adds nothing twice.
+                $cursor = null;
+                $carry = [];
+                $stats['listed'] = 0;
+                $stats['outOfScope'] = 0;
+            }
+            if ($src === null) {
+                $this->store->releasePlan($runId, $owner);
+                return self::slice(false, ScanPhase::PLANNING, 'read', self::NO_SOURCE, 0, $stats);
+            }
+
+            while (true) {
+                $mark = $budget === null ? null : $budget->mark('manifest');
+                $pg = $src->page($cursor, $carry, $pageSize);
+                if (empty($pg['ok'])) {
+                    // The attempt was counted when the lease was taken. The lease
+                    // goes back now, so trying again does not wait it out.
+                    $this->store->releasePlan($runId, $owner);
+                    return self::slice(false, ScanPhase::PLANNING, 'read',
+                        isset($pg['why']) ? $pg['why'] : self::NO_SOURCE, $listedNow, $stats);
+                }
+                $batch = [];
+                foreach ($pg['rows'] as $row) {
+                    $stats['listed']++;
+                    $listedNow++;
+                    // BOTH SIDES ARE GROUP IDS. $row['dag'] is
+                    // redcap_record_list.dag_id (or the __GROUPID__ value on the
+                    // data-table fallback), which REDCap stores as the numeric
+                    // group id; $dag is scanScope()['dag'], which is the same. A
+                    // friendly name on either side matches nothing, and the failure
+                    // is silent in the worst possible direction: every record is
+                    // counted out of scope, the manifest freezes at zero, and the
+                    // run promotes to a clean certificate over nothing. The
+                    // outOfScope counter below does NOT catch it - ScanService::start
+                    // discards the whole stats array, and outOfScope === listed is
+                    // produced identically by a group that genuinely holds no
+                    // records. The gate is the domain test, not the counter.
+                    if ($dag !== null && (string) $row['dag'] !== (string) $dag) {
+                        $stats['outOfScope']++;
+                        continue;
+                    }
+                    $batch[] = ['id_bin' => $row['id'],
+                                'hash' => Hmac::raw(Hmac::P_RECORD, $pid, $row['id'], $this->key),
+                                'dag' => $row['dag']];
+                }
+                $done = !empty($pg['done']);
+                // WILL ANOTHER PAGE FOLLOW? Asked before the append, so a slice's
+                // last page hands the lease back in its own transaction. The
+                // page that ends the list hands it back too: the freeze needs no
+                // lease, and one left on a frozen run is a worker holding it as
+                // far as Stop can tell - a Stop pressed in the two minutes after
+                // a small project's Start waited for a worker that never came.
+                $more = false;
+                $stop = null;
+                $why = null;
+                if (!$done) {
+                    $gate = $budget === null ? null : $budget->admit();
+                    if ($gate !== null) {
+                        $stop = $gate['stop'];
+                        $why = $gate['why'];
+                    } elseif ($keep !== null && !$keep()) {
+                        $stop = 'slot';
+                        $why = self::LOST_SLOT;
+                    } else {
+                        $more = true;
+                    }
+                }
+                $n = $this->store->appendManifest($runId, $batch, [
+                    'owner' => $owner, 'epoch' => $epoch,
+                    'cursor' => $pg['cursor'],
+                    'carry' => self::carryOut($src->via(), $pg['emitted']),
+                    'listed' => $stats['listed'], 'outOfScope' => $stats['outOfScope'],
+                    'done' => $done, 'release' => !$more, 'leaseSeconds' => $lease,
+                ]);
+                if ($n === false) {
+                    // Nothing of this page was written; it is not counted.
+                    $stats['listed'] -= count($pg['rows']);
+                    $stats['outOfScope'] -= (count($pg['rows']) - count($batch));
+                    return $this->notPlanning($pid, $runId, $req, $listedNow - count($pg['rows']), $stats);
+                }
+                $appended += (int) $n;
+                $stats['appended'] = $appended;
+                $stats['pages']++;
+                if ($budget !== null) $budget->observe($mark, max(1, count($pg['rows'])));
+                $cursor = $pg['cursor'];
+                $carry = $pg['emitted'];
+                unset($pg, $batch);
+                if ($done) break;
+                if (!$more) {
+                    return self::slice(true, ScanPhase::PLANNING, $stop, $why, $listedNow, $stats);
+                }
+            }
+        }
+
+        // THE SOURCE SAID DONE, IN A COMMITTED WRITE. freezeManifest() checks
+        // that for itself; a walk that merely returned is not enough.
         $total = $this->store->freezeManifest($runId);
         if ($total === false) {
-            $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
-            return self::no('the record list could not be frozen, so the run was not started');
+            return $this->notPlanning($pid, $runId, $req, $listedNow, $stats);
         }
-        $walk['stats']['total'] = (int) $total;
+        $stats['total'] = (int) $total;
 
         // AN EMPTY MANIFEST IS NOT A CLEAN PROJECT.
         //
@@ -241,101 +496,153 @@ final class ScanPlanner
         // promotion-side fact stays as the backstop for a manifest emptied after
         // it was frozen, which this check cannot see.
         //
-        // Terminal, not abandoned - the same rule the two refusals above obey.
+        // WITH THE RULE PROBLEMS THE RUN RECORDED (review EE-4). finish()
+        // writes rule_problem_count from the outcome, and derive() does not
+        // carry the count - promote() adds it. They are read back from the
+        // store rather than handed over, because the slice that freezes is not
+        // necessarily the request that noted them.
         if ((int) $total === 0) {
-            $this->store->finish($runId, ScanOutcome::derive(['emptyScope' => true]));
-            return ['ok' => false, 'busy' => false, 'run' => null,
-                    // The walk counters travel, unlike self::no()'s empty stats:
-                    // `listed` and `outOfScope` are the two numbers that
-                    // distinguish a genuinely empty group from a scope value
-                    // compared on the wrong axis, and they are the first thing
-                    // anybody asks for when this refusal is reported.
-                    'stats' => $walk['stats'],
-                    // The group wording does NOT assert that the group is empty,
-                    // because this code cannot tell that apart from a scope
-                    // compared on the wrong axis - and a false statement about
-                    // the project, made by the guard that exists to stop false
-                    // statements, would be the worst possible place for one. No
-                    // counts in the sentence either: how many records the project
-                    // holds is not something a group-scoped user is entitled to.
-                    'why' => $dag === null
-                        ? 'this project has no records, so there was nothing to scan'
-                        : 'no records were found in the Data Access Group this scan was scoped '
-                        . 'to, so there was nothing to scan. If you expect records in that '
-                        . 'group, ask an administrator to check the scan scope before treating '
-                        . 'this as an empty group.'];
+            $noted = ScanPromotion::tally($this->store->aggregates($runId))['ruleProblems'];
+            $empty = ScanOutcome::derive(['emptyScope' => true, 'ruleProblems' => $noted]);
+            $empty['ruleProblems'] = (int) $noted;
+            $this->store->finish($runId, $empty);
+            // The group wording does NOT assert that the group is empty,
+            // because this code cannot tell that apart from a scope compared on
+            // the wrong axis - and a false statement about the project, made by
+            // the guard that exists to stop false statements, would be the
+            // worst possible place for one. No counts in the sentence either:
+            // how many records the project holds is not something a
+            // group-scoped user is entitled to. The walk counters travel in
+            // `stats`: `listed` and `outOfScope` distinguish a genuinely empty
+            // group from a scope value compared on the wrong axis.
+            $why = $dag === null
+                ? 'this project has no records, so there was nothing to scan'
+                : 'no records were found in the Data Access Group this scan was scoped '
+                . 'to, so there was nothing to scan. If you expect records in that '
+                . 'group, ask an administrator to check the scan scope before treating '
+                . 'this as an empty group.';
+            $out = self::slice(false, ScanPhase::TERMINAL, 'empty', $why, $listedNow, $stats);
+            $out['frozen'] = true;
+            $out['empty'] = true;
+            $out['total'] = 0;
+            return $out;
         }
-        return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
-                'why' => null, 'stats' => $walk['stats']];
+        $out = self::slice(true, ScanPhase::SCANNING, null, null, $listedNow, $stats);
+        $out['frozen'] = true;
+        $out['total'] = (int) $total;
+        return $out;
+    }
+
+    /** Rows per page when the caller does not say. See the P4 note in step(). */
+    const PAGE_SIZE = 1000;
+
+    /** The planning lease when the caller does not say: ScanService::SLOT_TTL. */
+    const LEASE_SECONDS = 300;
+
+    /** The stored reason of a run whose planning was retired. Under 255 bytes: it is terminal_reason. */
+    const PLAN_GAVE_UP = 'planning could not finish: listing this project\'s records failed on the '
+        . 'same page in every attempt it was given, so the scan was ended without examining a record';
+
+    /** A slice that found another request listing. */
+    const PLAN_HELD = 'another request is listing this project\'s records; this one will continue '
+        . 'shortly';
+
+    /** A slice that could not open the source at all. */
+    const NO_SOURCE = 'this project\'s record list could not be opened, so no records were listed';
+
+    /** A slice whose worker slot was taken. The worker's own sentence for the same event. */
+    const LOST_SLOT = 'this scan lost its place in the server queue to another scan while it was '
+        . 'working; it will continue shortly';
+
+    /** A walk whose run was stopped under it. */
+    const PLAN_STOPPED = 'this scan was stopped while it was listing the project\'s records, so no '
+        . 'record was examined';
+
+    /**
+     * An append, a claim or the freeze was refused: the run is not planning
+     * under this request any more. Say what it is doing instead, truthfully
+     * (review R3U-2).
+     *
+     * STOPPED is finished here, through the one finisher Stop and the worker
+     * use, and reported as stopped. ANOTHER PLANNER that took the lease over
+     * is reported as `held`: the walk is in hands that are moving it. FROZEN by
+     * another request carries on as frozen. Anything else is refused.
+     */
+    private function notPlanning($pid, $runId, array $req, $listedNow, array $stats)
+    {
+        $limits = (isset($req['limits']) && is_array($req['limits'])) ? $req['limits'] : [];
+        $run = $this->store->run($pid, $runId);
+        $phase = ($run !== null && isset($run['phase'])) ? (string) $run['phase'] : '';
+        // A STOP IS NOT A FAILURE: ok is true for it, as the worker answers a
+        // run it finds `cancelling`. plan() refuses on any terminal phase.
+        if ($phase === ScanPhase::CANCELLING) {
+            ScanPromotion::finishCancelled($this->store, $pid, $runId, $limits);
+            return self::slice(true, ScanPhase::TERMINAL, 'cancelled', self::PLAN_STOPPED,
+                               $listedNow, $stats);
+        }
+        if ($phase === ScanPhase::TERMINAL) {
+            $stopped = isset($run['terminal']) && $run['terminal'] === ScanOutcome::CANCELLED;
+            return self::slice($stopped, ScanPhase::TERMINAL, $stopped ? 'cancelled' : 'finished',
+                $stopped ? self::PLAN_STOPPED
+                         : 'this scan ended while it was listing the project\'s records, so it '
+                           . 'took no more work', $listedNow, $stats);
+        }
+        if ($phase === ScanPhase::PLANNING) {
+            return self::slice(true, ScanPhase::PLANNING, 'held', self::PLAN_HELD, $listedNow, $stats);
+        }
+        if ($run !== null && ScanPhase::mayWork($phase)) {
+            // Another request froze the manifest between this one's last page and its freeze.
+            $out = self::slice(true, $phase, null, null, $listedNow, $stats);
+            $out['frozen'] = true;
+            $out['total'] = isset($run['manifest_total']) ? (int) $run['manifest_total'] : null;
+            return $out;
+        }
+        return self::slice(false, $phase === '' ? ScanPhase::TERMINAL : $phase, 'refused',
+            'no scan with that reference is running for this project', $listedNow, $stats);
+    }
+
+    private static function slice($ok, $phase, $stop, $why, $listed, array $stats)
+    {
+        return ['ok' => (bool) $ok, 'phase' => $phase, 'frozen' => false, 'empty' => false,
+                'total' => null, 'listed' => max(0, (int) $listed), 'stop' => $stop, 'why' => $why,
+                'stats' => $stats];
     }
 
     /**
-     * Walk the record source into the manifest, one bounded page at a time.
-     *
-     * Nothing accumulates: a page is read, hashed, written and dropped. That is
-     * the whole difference between this and the legacy path, which built the
-     * entire record set in PHP before examining any of it.
+     * The carry, as the plan row keeps it: the source it belongs to, and the
+     * boundary group's ids hex-encoded, because an id is bytes and the column
+     * is a blob the store does not read. At most TIE_CAP ids of at most 255
+     * bytes, which is why plan_carry is a MEDIUMBLOB.
      */
-    private function stream($runId, RecordManifestSource $src, $pid, $dag, array $req)
+    private static function carryOut($via, array $emitted)
     {
-        $pageSize = isset($req['pageSize']) ? max(1, (int) $req['pageSize']) : 1000;
-        $deadline = isset($req['deadline']) ? $req['deadline'] : null;
-        $memCap   = isset($req['memCap']) ? $req['memCap'] : null;
-        $stats = ['pages' => 0, 'listed' => 0, 'appended' => 0, 'outOfScope' => 0];
+        $hex = [];
+        foreach ($emitted as $id) $hex[] = bin2hex((string) $id);
+        return json_encode(['v' => 1, 'via' => (string) $via, 'carry' => $hex]);
+    }
 
-        $cursor = null;
-        $carry = [];
-        while (true) {
-            // Checked BETWEEN pages, never inside one. Stopping mid-page would
-            // leave a partly written page whose records are indistinguishable
-            // from records that do not exist.
-            if ($deadline !== null && microtime(true) >= $deadline) {
-                return ['ok' => false, 'stats' => $stats,
-                        'why' => 'listing this project\'s records did not finish within the time '
-                               . 'this server allows for one request'];
-            }
-            if ($memCap !== null && memory_get_usage(true) >= $memCap) {
-                return ['ok' => false, 'stats' => $stats,
-                        'why' => 'listing this project\'s records did not finish within the memory '
-                               . 'this server allows for one request'];
-            }
-
-            $pg = $src->page($cursor, $carry, $pageSize);
-            if (!$pg['ok']) {
-                return ['ok' => false, 'stats' => $stats, 'why' => $pg['why']];
-            }
-            $stats['pages']++;
-            $batch = [];
-            foreach ($pg['rows'] as $row) {
-                $stats['listed']++;
-                // BOTH SIDES ARE GROUP IDS. $row['dag'] is
-                // redcap_record_list.dag_id (or the __GROUPID__ value on the
-                // data-table fallback), which REDCap stores as the numeric
-                // group id; $dag is scanScope()['dag'], which is the same. A
-                // friendly name on either side matches nothing, and the failure
-                // is silent in the worst possible direction: every record is
-                // counted out of scope, the manifest freezes at zero, and the
-                // run promotes to a clean certificate over nothing. The
-                // outOfScope counter below does NOT catch it - ScanService::start
-                // discards the whole stats array, and outOfScope === listed is
-                // produced identically by a group that genuinely holds no
-                // records. The gate is the domain test, not the counter.
-                if ($dag !== null && (string) $row['dag'] !== (string) $dag) {
-                    $stats['outOfScope']++;
-                    continue;
-                }
-                $batch[] = ['id_bin' => $row['id'],
-                            'hash' => Hmac::raw(Hmac::P_RECORD, $pid, $row['id'], $this->key),
-                            'dag' => $row['dag']];
-            }
-            if ($batch) {
-                $stats['appended'] += (int) $this->store->appendManifest($runId, $batch);
-            }
-            $cursor = $pg['cursor'];
-            $carry = $pg['emitted'];
-            if ($pg['done']) break;
+    /**
+     * The carry back, or null when the walk must start again: a carry written
+     * over a different source, or one that cannot be read. A walk that has not
+     * begun (no cursor, no carry) is a walk at the start.
+     *
+     * @return string[]|null
+     */
+    private static function carryIn($raw, $via, $cursor)
+    {
+        if ($raw === null || $raw === '') return $cursor === null ? [] : null;
+        $c = json_decode((string) $raw, true);
+        if (!is_array($c) || !isset($c['v']) || (int) $c['v'] !== 1 || !isset($c['via'])
+                || !isset($c['carry']) || !is_array($c['carry'])) {
+            return null;
         }
-        return ['ok' => true, 'stats' => $stats, 'why' => null];
+        if ($via === null || (string) $c['via'] !== (string) $via) return null;
+        $out = [];
+        foreach ($c['carry'] as $h) {
+            if (!is_string($h) || !ctype_xdigit($h) || strlen($h) % 2 !== 0) return null;
+            $out[] = (string) hex2bin($h);
+        }
+        return $out;
     }
 
     private static function no($why)
@@ -566,6 +873,22 @@ final class ScanPlanner
         return $out;
     }
 
+    /**
+     * What the fingerprint says about collection gaps: this, always.
+     *
+     * The fingerprint used to read policy.collectionGaps, which was the literal
+     * 'separate' on every installation - so it contributed a constant, and every
+     * stored fingerprint was computed over that constant. The policy now says
+     * 'unimplemented', because that is true; had the fingerprint followed it,
+     * every run in flight at the moment of the upgrade would have been judged
+     * "the configuration moved" and failed, over a word that decides nothing
+     * about which findings a scan produces. So the wire value stays what it
+     * always was and stops being read from anywhere. If gap handling ever does
+     * change what a scan finds, that is a NEW fingerprint input with its own
+     * key, not a new value for this one.
+     */
+    const GAP_POLICY_WIRE = 'separate';
+
     /** Recompute precisely the semantic inputs used when the run was planned. */
     public static function requestFingerprint(array $req)
     {
@@ -579,11 +902,40 @@ final class ScanPlanner
             'ownership' => isset($req['ownership']) ? $req['ownership'] : [],
             'structure' => isset($req['structure']) ? $req['structure'] : [],
             'choices'   => isset($req['choices']) ? $req['choices'] : [],
-            'gapPolicy' => isset($req['policy']['collectionGaps'])
-                           ? $req['policy']['collectionGaps'] : 'separate',
+            'gapPolicy' => self::GAP_POLICY_WIRE,
             'valueMode' => isset($req['policy']['valueMode'])
                            ? $req['policy']['valueMode'] : 'locations',
         ]);
+    }
+
+    /**
+     * The policy the run row keeps: the request's policy, plus every lookup
+     * into another project the run's rules make (reviews R3U-N1, R4-1, R4-2).
+     *
+     * NOT IN THE FINGERPRINT. A work request compares the fingerprint against
+     * one it builds from the settings policy alone, so a key added to the
+     * fingerprinted policy here would make every run fail its own first pass.
+     * The lookups are covered there already: a rule revision hashes the
+     * project and the fields a lookup searches.
+     *
+     * $req['crossLookups'] is the start plan's list (UniversalValidator::
+     * crossLookupOf() entries). A request without the key (or with null) stores none, and
+     * ScanService::status() refuses a run whose policy does not say, so a
+     * caller that forgets it fails closed; start() always passes it. Entries
+     * are kept as given, sorted and without repeats: status() refuses any it
+     * cannot read.
+     */
+    public static function storedPolicy(array $req)
+    {
+        $policy = (isset($req['policy']) && is_array($req['policy'])) ? $req['policy'] : [];
+        if (array_key_exists('crossLookups', $req) && $req['crossLookups'] !== null) {
+            $l = is_array($req['crossLookups']) ? $req['crossLookups'] : [false];
+            $keyed = [];
+            foreach ($l as $e) $keyed[json_encode($e)] = $e;
+            ksort($keyed, SORT_STRING);
+            $policy['crossLookups'] = array_values($keyed);
+        }
+        return $policy;
     }
 
     // -- fingerprint ---------------------------------------------------------

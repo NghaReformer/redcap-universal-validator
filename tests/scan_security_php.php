@@ -22,10 +22,20 @@ namespace {
     // ScanAuthorization composes the store contract's refusal wording; the
     // sentence itself belongs to the contract, so that has to be loaded too.
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
+    // promotion's facts() is the producer of the outcome table's inputs, and is
+    // pure: a run row and a census in, facts out.
+    require_once __DIR__ . '/../php/Scan/ScanPhase.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';
+    // R2O-1 drives promotion over the real in-memory store, and the rollup's
+    // axis list is what the summary it reads is keyed by.
+    require_once __DIR__ . '/../php/Scan/Schema.php';
+    require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -404,6 +414,13 @@ namespace INSPIRE\UniversalValidator\Scan {
             $m['terminal'] === 'partial' && $m['coverage'] === 'manifest-complete'
             && $m['clean'] === false);
         check('outcome: and says _MANIFEST_ONLY', ScanOutcome::suffix($m) === '_MANIFEST_ONLY');
+        // `manifest-complete` is a claim about the manifest, so an unfinished
+        // manifest cannot earn it - with or without a fence.
+        $nn = ScanOutcome::derive(array_merge($base, ['fenced' => false, 'manifestDone' => false]));
+        check('outcome: neither a finished manifest nor a fence is PARTIAL, not manifest-complete',
+            $nn['coverage'] === 'partial' && $nn['coverage'] !== 'manifest-complete'
+            && strpos($nn['why'], 'was examined') === false
+            && ScanOutcome::suffix($nn) === '_INCOMPLETE');
         $mt = ScanOutcome::derive(array_merge($base, ['fenced' => false, 'truncated' => true]));
         check('outcome: suffixes COMPOSE, because one alone misleads',
             ScanOutcome::suffix($mt) === '_MANIFEST_ONLY_TRUNCATED');
@@ -458,10 +475,177 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('outcome: and its export says _NO_RECORDS rather than nothing at all',
             ScanOutcome::suffix($es) === '_NO_RECORDS');
 
+        // OC-1. EMPTY MEANS NOTHING WAS EXAMINED, and promotion is what decides
+        // that. It asked `manifest_total === 0 && every state summed === 0`,
+        // and the sum counted tombstones: a run whose every record was deleted
+        // before it could be read was not "empty", took the clean row, and was
+        // stored complete, complete-through-fence, clean=1. The manifest total
+        // is written once, at freeze, so a manifest emptied afterwards was not
+        // empty either. Facts below are a finished, fenced run with nothing
+        // found - the most reassuring input there is - so the census is the
+        // only thing that can refuse it.
+        $P = function (array $states, array $run = []) {
+            return ScanPromotion::facts(array_merge(['manifest_total' => 2, 'fence_target' => '500',
+                'detail_rows' => 0], $run), $states,
+                ['uniqueDone' => true, 'rollupDone' => true, 'violations' => 0, 'ruleProblems' => 0]);
+        };
+        $tomb = $P([ScanStore::REC_TOMBSTONE => 2]);
+        $to = ScanOutcome::derive($tomb['facts']);
+        check('outcome: a run whose every record was deleted examined NOTHING, so it is an empty scope',
+            $tomb['ready'] === true && $tomb['facts']['emptyScope'] === true
+            && $to['coverage'] === ScanOutcome::EMPTY_SCOPE);
+        check('outcome: and it is stored neither complete nor clean',
+            $to['terminal'] !== ScanOutcome::COMPLETE && $to['clean'] === false
+            && ScanOutcome::mayClaimClean($to) === false && ScanOutcome::cleanColumn($to) === 0);
+        check('outcome: its reason is true of a run whose records were deleted, and claims no examination',
+            strpos($to['why'], 'deleted') !== false && strpos($to['why'], 'was examined and') === false);
+        $gone = $P([], ['manifest_total' => 5]);
+        check('outcome: a manifest emptied after it froze is an empty scope, not a pass',
+            $gone['facts']['emptyScope'] === true
+            && ScanOutcome::derive($gone['facts'])['clean'] === false);
+        $unread = $P([ScanStore::REC_UNREADABLE => 2]);
+        check('outcome: a run where every record was UNREADABLE is blocked, not empty - the records are there',
+            $unread['facts']['emptyScope'] === false && $unread['facts']['blocked'] === true
+            && ScanOutcome::derive($unread['facts'])['coverage'] === ScanOutcome::COV_PARTIAL);
+        $held = ScanPromotion::facts(['manifest_total' => 2, 'fence_target' => '500'],
+            [ScanStore::REC_TOMBSTONE => 2], ['uniqueDone' => true, 'rollupDone' => true,
+            'violations' => 0, 'ruleProblems' => 0, 'blockingAggregates' => 1]);
+        check('outcome: and anything blocking is reported as blocked, not folded into empty',
+            $held['facts']['emptyScope'] === false && $held['facts']['blocked'] === true);
+        check('outcome: records still waiting are not an empty scope',
+            $P([ScanStore::REC_PENDING => 2])['facts']['emptyScope'] === false);
+        $one = $P([ScanStore::REC_DONE => 1, ScanStore::REC_TOMBSTONE => 1]);
+        check('outcome: one record examined and one deleted is not empty, and may still be clean',
+            $one['facts']['emptyScope'] === false
+            && ScanOutcome::derive($one['facts'])['clean'] === true);
+        check('outcome: a run still planning, with nothing listed yet, is empty as it always was',
+            $P([], ['manifest_total' => 0])['facts']['emptyScope'] === true);
+
+        // EE-4. What the stored column means, row by row: 1 certified, 0
+        // decided and NOT certified - for any reason, not only "found
+        // something" - and NULL no decision at all.
+        check('outcome: the clean column is 1 only for a certified run',
+            ScanOutcome::cleanColumn($r) === 1);
+        foreach (['found something' => $v, 'a rule problem' => $u, 'truncated' => $t,
+                  'manifest only' => $m, 'blocked' => $b, 'empty scope' => $es] as $why => $o) {
+            check("outcome: a run not certified because of $why stores 0, a decision",
+                ScanOutcome::cleanColumn($o) === 0);
+        }
+        foreach (['cancelled' => $c, 'failed' => $f, 'expired' => $e] as $why => $o) {
+            check("outcome: a $why run stores NULL, no decision",
+                ScanOutcome::cleanColumn($o) === null);
+        }
+
+        // OC-7. A COUNT THAT WAS NOT SUPPLIED IS UNKNOWN, NOT ZERO. derive()
+        // read a missing `violations` or `ruleProblems` as 0, so a caller that
+        // forgot either - with every other fact at its most reassuring - got a
+        // clean certificate.
+        $whole = ['fenced' => true, 'manifestDone' => true];
+        $nc = ScanOutcome::derive($whole);
+        check('outcome: a whole, fenced run with NO counts supplied is not clean',
+            $nc['clean'] === false && ScanOutcome::mayClaimClean($nc) === false
+            && ScanOutcome::cleanColumn($nc) === 0);
+        check('outcome: and does not claim there is something to act on, which nobody knows either',
+            strpos($nc['why'], 'not counted') !== false);
+        check('outcome: one count without the other is still not clean',
+            ScanOutcome::derive($whole + ['violations' => 0])['clean'] === false
+            && ScanOutcome::derive($whole + ['ruleProblems' => 0])['clean'] === false);
+        foreach ([null, -1, 'none', '', 0.0, false, []] as $junk) {
+            check('outcome: a count that is not a count is unknown, and refuses clean',
+                ScanOutcome::derive($whole + ['violations' => $junk, 'ruleProblems' => 0])['clean'] === false
+                && ScanOutcome::derive($whole + ['violations' => 0, 'ruleProblems' => $junk])['clean'] === false);
+        }
+        check('outcome: both counted as zero, as integers or as the strings a row carries, is clean',
+            ScanOutcome::derive($whole + ['violations' => 0, 'ruleProblems' => 0])['clean'] === true
+            && ScanOutcome::derive($whole + ['violations' => '0', 'ruleProblems' => '0'])['clean'] === true);
+
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
         check('outcome: an empty fact set is never clean and never complete',
             $empty['clean'] === false && $empty['terminal'] !== 'complete');
+        check('outcome: and claims the WEAKEST coverage, not that a manifest was finished',
+            $empty['coverage'] === 'partial');
+    }
+
+    /* =====================================================================
+     * R2O-1  EVERY RECORD DELETED, CHECKED OR NOT
+     *
+     * Since OC-1 an empty scope means no record is left `done`. Catch-up
+     * tombstones a record deleted after it was EXAMINED, and its findings stay
+     * active - so the commonest way in stored "no record was examined" beside a
+     * findings count that examination produced. Both shapes are driven through
+     * the real store and the real promotion: records examined (with a finding
+     * each) and then deleted, and records deleted before anything read them.
+     * The classification must be the same - never clean, never complete - and
+     * the stored sentence must be true of both.
+     * ===================================================================== */
+    {
+        $shape = function ($examineFirst) {
+            $pid = 801;
+            $h = function ($id) { return hash('sha256', $id, true); };
+            $store = new ArrayScanStore();
+            $runId = (int) $store->startRun($pid, ['created_by' => 'alice', 'fence_open' => '1'])
+                ['run']['run_id'];
+            $gen = (int) $store->run($pid, $runId)['generation_id'];
+            $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null],
+                                           ['id_bin' => 'B', 'hash' => $h('B'), 'dag' => null]]);
+            $epoch = (int) $store->run($pid, $runId)['lease_epoch'];
+            if ($examineFirst) {
+                $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+                foreach ($store->claim($runId, 'w1', $epoch, 2) as $c) {
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                                           'version' => '100', 'claim' => $c['claim']];
+                    $batch['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $pid,
+                        'generation_id' => $gen, 'identity' => $h('f' . $c['id_bin']),
+                        'record_hash' => $h($c['id_bin']), 'record_id_bin' => $c['id_bin'],
+                        'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
+                        'rule_revision' => str_repeat('0', 64), 'rule_ord' => 1,
+                        'check_type' => 'required', 'reason_code' => 'required-blank',
+                        'event_id' => 1, 'instance' => 1, 'dag_key' => null, 'valid_from_seq' => 1];
+                }
+                $store->commitBatch($runId, 'w1', $epoch, $batch);
+            }
+            // The store path CatchUp::step() takes for a record the project no
+            // longer has, whatever state it is in.
+            $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+            $gone = $store->tombstone($runId, $epoch, ['A', 'B']);
+            // What the rollup would have summarised: one active finding per
+            // examined record, on every axis.
+            if ($examineFirst) {
+                foreach (RollupBuilder::KINDS as $k) {
+                    $store->addAggregate($runId, $k, 'x', '', 2);
+                }
+            }
+            $p = ScanPromotion::promote($store, $pid, $runId,
+                ['uniqueDone' => true, 'rollupDone' => true]);
+            $run = $store->run($pid, $runId);
+            return ['p' => $p, 'run' => $run, 'gone' => $gone, 'detail' => (int) $run['detail_rows'],
+                    'found' => ScanPromotion::findingsOf($store, $run)];
+        };
+        foreach (['examined, then deleted' => true, 'deleted before it was read' => false] as $how => $first) {
+            $s = $shape($first);
+            $o = $s['p']['outcome'];
+            check("R2O-1 ($how): every record became a tombstone", $s['gone'] === 2);
+            check("R2O-1 ($how): the run is an empty scope - partial, never complete, never clean",
+                $s['p']['promoted'] === true && $o['terminal'] === ScanOutcome::PARTIAL
+                && $o['coverage'] === ScanOutcome::EMPTY_SCOPE && $o['clean'] === false
+                && ScanOutcome::cleanColumn($o) === 0 && $o['suffix'] === '_NO_RECORDS');
+            check("R2O-1 ($how): the stored reason does not say no record was examined",
+                stripos($s['run']['terminal_reason'], 'no record was examined') === false
+                && stripos($s['run']['terminal_reason'], 'before it could be read') === false);
+            check("R2O-1 ($how): it says no record is left, that they were deleted checked or not, "
+                . 'and that it says nothing about the project',
+                strpos($s['run']['terminal_reason'], 'no record is left') === 0
+                && strpos($s['run']['terminal_reason'], 'whether or not it had been examined') !== false
+                && strpos($s['run']['terminal_reason'], 'says nothing about the project') !== false);
+            check("R2O-1 ($how): and it is stored whole, not cut at the column",
+                $s['run']['terminal_reason'] === $o['why'] && strlen($o['why']) <= 255);
+        }
+        $ex = $shape(true);
+        check('R2O-1: the examined shape really did examine and find - this is the case the sentence lied about',
+            $ex['detail'] === 2 && $ex['found'] === 2);
+        check('R2O-1: and its reason accounts for those findings instead of denying the examination',
+            strpos($ex['run']['terminal_reason'], 'any findings it kept are on deleted records') !== false);
     }
 
     /* =====================================================================
@@ -522,8 +706,15 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('policy: and the documented defaults apply',
             $p['valueDays'] === 30 && $p['runDays'] === 90 && $p['maxProjects'] === 2
             && $p['recordAttempts'] === 3);
-        check('policy: collection gaps are separate, with no off switch',
-            $p['collectionGaps'] === 'separate');
+        // It said 'separate' while nothing detected a gap. A policy that names a
+        // behaviour promises it.
+        check('policy: collection gaps are reported as what they are - not implemented',
+            $p['collectionGaps'] === ScanPolicy::GAPS_UNIMPLEMENTED
+            && $p['collectionGaps'] !== 'separate');
+        check('policy: and no setting, system or project, can say otherwise',
+            ScanPolicy::resolve(['collectionGaps' => 'separate', 'scan-collection-gaps' => 'separate'],
+                                ['collectionGaps' => 'separate', 'scan-collection-gaps' => 'separate'])
+                ['collectionGaps'] === ScanPolicy::GAPS_UNIMPLEMENTED);
 
         check('policy: a project may shorten retention',
             ScanPolicy::resolve([], ['scan-value-retention-days' => '7'])['valueDays'] === 7);
@@ -538,6 +729,45 @@ namespace INSPIRE\UniversalValidator\Scan {
             check('policy: malformed retention falls back to the default, not to forever',
                 $r['valueDays'] === 30);
         }
+        // CL-6. The attempt counter saturates at 254 in both stores, and the
+        // worker ends a record when tries + 1 >= the setting - so a setting of
+        // 256 or more is never reached and a record the read leaves out is
+        // requeued for ever. The policy is where that number is decided.
+        $att = function ($raw) {
+            return ScanPolicy::resolve(['scan-system-record-attempts' => $raw], [])['recordAttempts'];
+        };
+        check('policy: record attempts up to the counter\'s ceiling are taken as given',
+            $att('254') === 254 && $att(254) === 254 && $att('5') === 5 && $att(1) === 1);
+        check('policy: and anything past it is held at the ceiling, where the counter stops',
+            $att('255') === ScanPolicy::MAX_RECORD_ATTEMPTS && $att('300') === 254
+            && $att(300) === 254 && $att('99999999999') === 254);
+        check('policy: the ceiling is the 254 both stores saturate at',
+            ScanPolicy::MAX_RECORD_ATTEMPTS === 254);
+        foreach (['0', 0, '-5', -5, 'abc', '', null, '3.5', []] as $junk) {
+            check('policy: malformed record attempts fall back to the default, never 0 or below',
+                $att($junk) === ScanPolicy::D_RECORD_ATTEMPTS);
+        }
+
+        // R8-4. The concurrent-projects limit is the number of slot rows a
+        // settings save writes, one placeholder each. It had no ceiling: 70000
+        // was a statement the server refused (no slot written, every worker
+        // refused as busy) and a billion was a fatal out-of-memory in range().
+        $proj = function ($raw) {
+            return ScanPolicy::resolve(['scan-system-max-concurrent-projects' => $raw], [])['maxProjects'];
+        };
+        check('policy R8-4: limits up to the ceiling are taken as given',
+            $proj('2') === 2 && $proj('999') === 999 && $proj(ScanPolicy::MAX_PROJECTS) === ScanPolicy::MAX_PROJECTS);
+        check('policy R8-4: and anything past it is held at the ceiling',
+            $proj('1001') === ScanPolicy::MAX_PROJECTS && $proj('70000') === ScanPolicy::MAX_PROJECTS
+            && $proj('1000000000') === ScanPolicy::MAX_PROJECTS && $proj('99999999999999999999') === ScanPolicy::MAX_PROJECTS
+            && $proj(PHP_INT_MAX) === ScanPolicy::MAX_PROJECTS);
+        check('policy R8-4: the ceiling fits the SMALLINT UNSIGNED slot number and one statement\'s placeholders',
+            ScanPolicy::MAX_PROJECTS >= 1 && ScanPolicy::MAX_PROJECTS <= 65535);
+        foreach (['0', '-5', 'abc', '', null, '3.5'] as $junk) {
+            check('policy R8-4: a malformed limit is the default, never 0',
+                $proj($junk) === ScanPolicy::D_MAX_PROJECTS);
+        }
+
         foreach (['', 'wat', null, 'RAW'] as $junk) {
             check('policy: an unrecognised value mode discloses nothing',
                 ScanPolicy::resolve([], ['scan-value-storage' => $junk])['valueMode'] === 'locations');
@@ -715,6 +945,151 @@ namespace INSPIRE\UniversalValidator\Scan {
         // --- and it never returns nothing. An empty message is the one input
         // that used to hand a bare class name to a page.
         check('S-10: an empty message still answers', $D::safe($err('', 1213)) !== '');
+    }
+
+    /* -----------------------------------------------------------------
+     * R8-4  PROVISIONING A LIMIT TYPED INTO A TEXT BOX
+     *
+     * One INSERT with a placeholder a slot: above 65535 placeholders the
+     * statement is refused and no slot is written, and a billion made
+     * range() exhaust memory. provision() writes CHUNK rows a statement and
+     * holds whatever it is handed to the slot_no range. Over a recording
+     * ScanDb, so the statements themselves are seen.
+     * ----------------------------------------------------------------- */
+    {
+        require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+        require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+        require_once __DIR__ . '/../php/Scan/ScanWorker.php';
+        $slotDb = function ($max, array $affected = []) {
+            return new class($max, $affected) implements ScanDb {
+                public $max; public $affectedQueue; public $inserts = []; private $last = 0;
+                public function __construct($max, $q) { $this->max = $max; $this->affectedQueue = $q; }
+                public function select($sql, array $params = []) {
+                    return strpos($sql, 'MAX(slot_no)') !== false ? [[$this->max]] : [];
+                }
+                public function exec($sql, array $params = []) {
+                    $this->inserts[] = [substr_count($sql, '(?, 0)'), $params];
+                    $this->last = $this->affectedQueue ? array_shift($this->affectedQueue) : count($params);
+                    return true;
+                }
+                public function execNoCount($sql, array $params = []) { return true; }
+                public function affected() { return $this->last; }
+                public function begin() {}
+                public function commit() {}
+                public function rollback() {}
+            };
+        };
+        $byChunks = function ($db) {
+            $ok = true; $next = null;
+            foreach ($db->inserts as $ins) {
+                list($marks, $params) = $ins;
+                $ok = $ok && $marks === count($params) && $marks <= WorkerSlots::CHUNK && $marks > 0
+                    && ($next === null || $params[0] === $next);
+                $next = (int) end($params) + 1;
+            }
+            return $ok;
+        };
+        $d = $slotDb(0);
+        $added = (new WorkerSlots($d))->provision(1200);
+        check('R8-4 slots: 1200 slots go in three statements of at most CHUNK rows, in order',
+            $added === 1200 && count($d->inserts) === 3 && $byChunks($d)
+            && $d->inserts[0][1][0] === 1 && end($d->inserts)[1][count(end($d->inserts)[1]) - 1] === 1200);
+        $d = $slotDb(0, [500, 3, 200]);
+        check('R8-4 slots: the answer is every statement\'s affected count added up',
+            (new WorkerSlots($d))->provision(1200) === 703);
+        $d = $slotDb(499);
+        check('R8-4 slots: a gap from 500 to 1000 is two statements, 500 and 1',
+            (new WorkerSlots($d))->provision(1000) === 501 && count($d->inserts) === 2
+            && $d->inserts[0][0] === 500 && $d->inserts[1][1] === [1000]);
+        $d = $slotDb(0);
+        $big = (new WorkerSlots($d))->provision(1000000000);
+        $last = end($d->inserts);
+        check('R8-4 slots: a billion handed straight to provision() stops at the slot_no range',
+            $big === WorkerSlots::MAX_SLOT_NO && $byChunks($d)
+            && $last[1][count($last[1]) - 1] === WorkerSlots::MAX_SLOT_NO
+            && count($d->inserts) === (int) ceil(WorkerSlots::MAX_SLOT_NO / WorkerSlots::CHUNK));
+        check('R8-4 slots: no statement ever carries more placeholders than a server accepts',
+            WorkerSlots::CHUNK <= 65535 && WorkerSlots::MAX_SLOT_NO === 65535);
+        $d = $slotDb(5);
+        check('R8-4 slots: a table already at the limit sends nothing',
+            (new WorkerSlots($d))->provision(5) === 0 && $d->inserts === []);
+
+        // R4-4 / W1-N1: THE LIMIT REACHES acquire(), AND SHRINKING DELETES ONLY
+        // WHAT IS IDLE. A slot table as rows: slot_no => held?. The fake answers
+        // the free-slot read as the server would, so a limit that never reached
+        // the statement shows up as a slot above it being taken.
+        $table = function (array $held, $count) {
+            return new class($held, $count) implements ScanDb {
+                public $rows = []; public $log = []; private $last = 0;
+                public function __construct(array $held, $count) {
+                    for ($i = 1; $i <= $count; $i++) $this->rows[$i] = in_array($i, $held, true);
+                }
+                public function select($sql, array $params = []) {
+                    $this->log[] = [$sql, $params];
+                    $out = [];
+                    if (strpos($sql, 'COUNT(*)') !== false) {
+                        return [[count($this->rows), count(array_filter($this->rows))]];
+                    }
+                    if (strpos($sql, 'slot_no <= ?') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h && $no <= $params[0]) $out[] = [$no, 0];
+                    } elseif (strpos($sql, 'slot_no > ?') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h && $no > $params[0]) $out[] = [$no];
+                    } elseif (strpos($sql, 'SELECT slot_no, epoch') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h) $out[] = [$no, 0];
+                    }
+                    return $out;
+                }
+                public function exec($sql, array $params = []) {
+                    $this->log[] = [$sql, $params];
+                    $this->last = 0;
+                    if (strpos(ltrim($sql), 'UPDATE') === 0 && count($params) === 7) {
+                        // acquire()'s compare-and-set; renew and release are
+                        // answered as no change, which is all this needs.
+                        $no = $params[4];
+                        if (isset($this->rows[$no]) && !$this->rows[$no]) { $this->rows[$no] = true; $this->last = 1; }
+                    } elseif (strpos(ltrim($sql), 'DELETE') === 0) {
+                        $limit = $params[count($params) - 2];
+                        foreach (array_slice($params, 0, count($params) - 2) as $no) {
+                            if (isset($this->rows[$no]) && !$this->rows[$no] && $no > $limit) {
+                                unset($this->rows[$no]);
+                                $this->last++;
+                            }
+                        }
+                    }
+                }
+                public function execNoCount($sql, array $params = []) {}
+                public function affected() { return $this->last; }
+                public function begin() {}
+                public function commit() {}
+                public function rollback() {}
+            };
+        };
+        $t = $table([1, 2], 5);
+        check('R4-4 slots: with the limit at 2 and both places held, a free slot 3 is not taken',
+            (new WorkerSlots($t))->acquire('w', 1, 60, 2) === null);
+        check('R4-4 slots: without a limit the free row would have been taken, which is the defect',
+            (new WorkerSlots($table([1, 2], 5)))->acquire('w', 1, 60)['slot_no'] === 3);
+        $t = $table([4], 6);
+        check('W1-N1 slots: shrinking to 2 removes the free rows above it and keeps the held one',
+            (new WorkerSlots($t))->shrinkTo(2) === 3 && array_keys($t->rows) === [1, 2, 4]);
+        check('W1-N1 slots: and the delete repeats the free test, so a row leased meanwhile stays',
+            strpos($t->log[count($t->log) - 1][0], 'owner IS NULL OR expires_at < ?') !== false);
+
+        // The worker hands the limit over. A ScanWorker built with slotLimit 2
+        // over a table whose two places are held takes nothing, and says the
+        // server is at its limit rather than that it is unprovisioned.
+        $t = $table([1, 2], 5);
+        $store = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $run = $store->startRun(41, ['created_by' => 'x']);
+        $rid = (int) $run['run']['run_id'];
+        $store->writeManifest($rid, [['id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null]]);
+        $w = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, [
+            'slots' => new WorkerSlots($t), 'slotLimit' => 2, 'owner' => 'w1',
+            'read' => function ($ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+            'evaluate' => function ($id, $node) { return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null]; }]);
+        $res = $w->work(41, $rid);
+        check('R4-4 slots: a worker given the limit is held to it',
+            $res['stop'] === 'capacity' && $t->rows[3] === false);
     }
 
     echo "scan_security_php: $n checks, $fail failure(s)\n";

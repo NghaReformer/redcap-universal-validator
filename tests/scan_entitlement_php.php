@@ -100,7 +100,38 @@ namespace {
         public static function getUserRights($pid = null, $u = null) { return []; }
     }
 
+    /**
+     * REDCap's \Project, for the M8 block. It refuses to be built until a case
+     * hands it a design, so every other block sees what it saw before this
+     * stub existed: no project object.
+     */
+    class Project {
+        public static $design = null;
+        public $longitudinal;
+        public $eventsForms;
+        public $project = [];
+        private $repeating;
+        public function __construct($pid) {
+            if (self::$design === null) throw new \RuntimeException('no project in this block');
+            $this->longitudinal = self::$design['longitudinal'];
+            $this->eventsForms = self::$design['eventsForms'];
+            $this->repeating = self::$design['repeating'];
+            $this->project = ['missing_data_codes' => self::$design['missing']];
+            // R5-4: Missing Data Codes whose read fails, the project otherwise read.
+            if (self::$design['missing'] === 'throw') unset($this->project);
+        }
+        public function __isset($name) {
+            if ($name === 'project') throw new \RuntimeException('project settings unavailable');
+            return false;
+        }
+        public function getRepeatingFormsEvents() {
+            if ($this->repeating === 'throw') throw new \RuntimeException('repeating setup unavailable');
+            return $this->repeating;
+        }
+    }
+
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     /** Enough of a result for ModuleDb, which reads through fetch_row(). */
     class UvRes {
@@ -137,6 +168,11 @@ namespace {
             if (strncasecmp(ltrim($sql), 'UPDATE', 6) === 0) return new \UvRes([]);
             if (strpos($sql, 'MAX(version)') !== false) {
                 return new \UvRes([[(string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION]]);
+            }
+            // Schema::health()'s one read (M11) is answered with every name it
+            // asked about; a capability probe still asks COUNT(*) of one table.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                return new \UvRes(array_map(function ($t) { return [$t]; }, $params));
             }
             if (strpos($sql, 'information_schema.tables') !== false) return new \UvRes([['1']]);
             if (strpos($sql, 'SHOW TABLES') !== false)     return new \UvRes([['redcap_record_list']]);
@@ -330,10 +366,43 @@ namespace {
         // THE EXACT SET, both directions. This is the check that catches a
         // future column enricher reading a field it never added to the read set,
         // and equally a derivation that entitles more than the run reads.
+        //
+        // ONE STATED EXCEPTION: the record-id field (EE-2). It is read so that a
+        // record whose every field is blank still comes back from getData, and
+        // it is not entitled because its value is the record's name, which the
+        // run already holds for every record it lists. Entitling it would refuse
+        // the scan to anyone barred from the first instrument for no disclosure.
+        //
+        // AND A SECOND: each gated host instrument's status field (R2O-2), read
+        // so the scan checks a form only where it was started. It is not
+        // entitled as a field because it is not one any rule reads; what it
+        // discloses is about its own instrument, so that instrument must
+        // ALREADY be entitled - which is checked, so the exception cannot widen
+        // what the run may read. This rule reads fb, so its host is not gated
+        // (R3G-1) and no status field is read; the gated case follows.
+        $statusRead = array_values(array_map('strval', $p['ctx']['plan']['formStatusFields']));
         $ownKeys = array_keys($p['ctx']['ownership']);
+        $askedData = array_values(array_diff($p['asked'], array_merge(['record_id'], $statusRead)));
         sort($ownKeys, SORT_STRING);
         check('C5: the entitlement is derived from exactly the fields getData is asked for',
-            $ownKeys === $p['asked']);
+            $ownKeys === $askedData);
+        check('C5: and the record-id field is read alongside them (EE-2)',
+            in_array('record_id', $p['asked'], true));
+        check('C5: a host whose rule reads another form reads no status field (R3G-1)',
+            $statusRead === []
+            && !array_filter($p['asked'], function ($f) { return substr($f, -9) === '_complete'; }));
+        $pg = planOf(['record_id' => fld('fa'),
+                      'a_val' => fld('fa', '@UVASSERT={"assert":"[a_min] < \'5\'"}'),
+                      'a_min' => fld('fa'), 'c_idle' => fld('fc')]);
+        $statusGated = array_values(array_map('strval', $pg['ctx']['plan']['formStatusFields']));
+        $ownGated = array_keys($pg['ctx']['ownership']);
+        sort($ownGated, SORT_STRING);
+        check('C5: a gated host\'s status field is read too (R2O-2), and only that one',
+            $statusGated === ['fa_complete'] && in_array('fa_complete', $pg['asked'], true)
+            && array_values(array_diff($pg['asked'], ['record_id', 'fa_complete'])) === $ownGated);
+        check('C5: each one belongs to an instrument the run is already entitled to',
+            $statusGated && !array_diff(array_map(function ($sf) { return substr($sf, 0, -9); }, $statusGated),
+                                        $pg['forms']));
         // THE UPPER BOUND, and it is the check standing between this fix and a
         // module that refuses every scan on every project.
         check('C5: an instrument no rule reads is NOT in the entitlement set',
@@ -465,14 +534,11 @@ namespace {
         $cm->userReturn = new \ExternalModules\RightsUser(
             ['design' => true, 'data_export_tool' => '1', 'group_id' => null,
              'forms' => ['fa' => '1', 'fb' => '0']]);
-        // run_id, project_id, scope_dag, phase, terminal, coverage, detail,
-        // values_state, policy_revision, fingerprint, manifest_total,
-        // manifest_done, cursor_ordinal, lease_epoch, generation_id, run_seq,
-        // created_by, detail_rows, detail_bytes, fence_open, fence_target,
-        // cancel_requested_at
-        $cm->runRow = ['77', '149', null, 'scanning', null, 'partial', 'complete', 'none',
-                       '1', 'fp', '10', '3', '3', '1', '1', '1', 'tester', '2', '400',
-                       '9', '9', null];
+        $cm->runRow = uv_run_row(['run_id' => '77', 'project_id' => '149',
+            'phase' => 'scanning', 'fingerprint' => 'fp', 'manifest_total' => '10',
+            'manifest_done' => '3', 'cursor_ordinal' => '3', 'lease_epoch' => '1',
+            'detail_rows' => '2', 'detail_bytes' => '400', 'fence_open' => '9',
+            'fence_target' => '9']);
         \REDCap::$dictionary = ['record_id' => fld('fa'),
                                 'a_val' => fld('fa', ASSERT_ANNOT),
                                 'b_secret' => fld('fb')];
@@ -563,6 +629,174 @@ namespace {
         $s2 = $svc2->start(149);
         check('C5 service: a field that cannot be placed refuses through the real loop too',
             $s2['ok'] === false && strpos($s2['why'], 'could not be located') !== false);
+    }
+
+    /* =====================================================================
+     * M12  THE PLAN IS BUILT ONCE PER REQUEST, AND ONLY FOR ITS READER
+     *
+     * A work request rebuilt the whole plan twice. scanPlan() now keeps what it
+     * built in the memo its CALLER hands over (ScanService makes one per
+     * request), keyed on everything that changes the answer. Proved by
+     * marking the stored plan: a call served from the memo hands the mark
+     * back, and one that rebuilt cannot.
+     * ===================================================================== */
+    {
+        if (!class_exists('UvNamedUser', false)) {
+            class UvNamedUser extends \ExternalModules\RightsUser {
+                public $name;
+                public function __construct(array $r, $name) { parent::__construct($r); $this->name = $name; }
+                public function getUsername() { return $this->name; }
+            }
+        }
+        \REDCap::$dictionary = ['record_id' => fld('fa'), 'a_val' => fld('fa', '@UVREQUIRED')];
+        $full = ['design' => true, 'data_export_tool' => '1', 'group_id' => null, 'forms' => ['fa' => '1']];
+        $v = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $v->projectIdReturn = 149;
+        $v->projectSettings = ['log-values' => ''];
+        $v->userReturn = new \UvNamedUser($full, 'alice');
+        $memo = new \ArrayObject();
+        $ask = function (array $over = [], $dag = null) use ($v, $memo) {
+            return $v->durableScanContext(149, array_merge(['generation' => 1, 'runSeq' => 1,
+                'valueCeiling' => 'locations', 'memo' => $memo], $over), $dag);
+        };
+        $first = $ask();
+        check('M12 plan: the first ask builds a plan and keeps it in the memo it was handed',
+            $first['ok'] === true && count($memo) === 1);
+        // Mark what is kept. A rebuilt plan cannot carry this.
+        foreach ($memo as $k => $p) { $p['fatal'] = 'SERVED FROM THE MEMO'; $memo[$k] = $p; }
+        check('M12 plan: a second ask in the same request is served from the memo',
+            $ask()['why'] === 'SERVED FROM THE MEMO');
+        check('M12 plan: whatever generation it binds the evaluator to - the plan does not depend on it',
+            $ask(['generation' => 9, 'runSeq' => 9])['why'] === 'SERVED FROM THE MEMO');
+        $v->userReturn = new \UvNamedUser($full, 'bob');
+        check('M12 plan: another reader gets a plan of their own - crossRefused and the rights are theirs',
+            $ask()['ok'] === true && count($memo) === 2);
+        check('M12 plan: so does another value ceiling',
+            $ask(['valueCeiling' => 'raw'])['ok'] === true && count($memo) === 3);
+        check('M12 plan: and another rights gate',
+            $ask(['enforceFormRights' => true])['ok'] === true && count($memo) === 4);
+        $ask([], '7');
+        check('M12 plan: and another DAG filter', count($memo) === 5);
+        check('M12 plan: with no memo handed over, nothing is kept and every ask builds',
+            $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations'])['ok']
+            === true && count($memo) === 5);
+        // THE CAPABILITY CENSUS a caller already took is the one the plan uses.
+        $given = ['recordEnumeration' => ['state' => 'unavailable', 'via' => null, 'why' => 'GIVEN']];
+        $capped = $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations',
+            'capabilities' => $given]);
+        check('P1 plan: a capability answer the caller already has is used, not probed again',
+            $capped['ok'] === true && $capped['plan']['policy']['mayScan'] === false
+            && strpos(implode(' ', $capped['plan']['policy']['limits']), 'GIVEN') !== false);
+    }
+
+    /* =====================================================================
+     * M8  THE FINGERPRINT GUARD COMPARES THE PROJECT'S DESIGN
+     *
+     * durableScanContext() handed the guard a structure that was [] on every
+     * project without an event/instance rule, and no choice sets at all, so a
+     * work request rebuilt the same two empty arrays whatever had changed.
+     * Each case changes one thing about the project between two contexts and
+     * asks whether the fingerprint ScanService::configurationNow() builds from
+     * them moved: it must for what decides a finding, and must not for
+     * anything else.
+     * ===================================================================== */
+    {
+        $design = ['longitudinal' => true,
+                   'eventsForms' => [41 => ['fa', 'fb'], 42 => ['fa']],
+                   'repeating' => [42 => ['fa' => null]],
+                   'missing' => 'UNK, Unknown'];
+        $radio = function ($choices) {
+            return array_merge(fld('fb', '', 'radio'), ['select_choices_or_calculations' => $choices]);
+        };
+        $dict = ['record_id' => fld('fa'),
+                 'a_val' => fld('fa', '@UVREQUIRED={"when":"[b_pick] = \'1\'"}'),
+                 'b_pick' => $radio('1, Yes | 2, No'),
+                 'c_other' => fld('fc')];
+        $fpOf = function ($d, array $dict) {
+            \Project::$design = $d;
+            $p = planOf($dict);
+            \Project::$design = null;
+            $ctx = $p['ctx'];
+            return ['ctx' => $ctx, 'fp' => \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint([
+                'rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
+                'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],
+                'choices' => isset($ctx['choices']) ? $ctx['choices'] : [],
+                'policy' => [], 'engine' => 'e'])];
+        };
+        $was = $fpOf($design, $dict);
+        $moved = function ($d, array $dict) use ($fpOf, $was) { return $fpOf($d, $dict)['fp'] !== $was['fp']; };
+        $s = $was['ctx']['structure'];
+        $c = $was['ctx']['choices'];
+        check('M8: the context carries the design of the fields the run reads',
+            $was['ctx']['ok'] === true && $s['fields']['a_val'] === ['form' => 'fa', 'type' => 'text', 'validation' => '']
+            && $s['fields']['b_pick']['type'] === 'radio' && !isset($s['fields']['c_other']));
+        check('M8: and the project\'s events, their instruments and what repeats',
+            $s['longitudinal'] === true && $s['events'] === ['41' => ['fa', 'fb'], '42' => ['fa']]
+            && $s['repeating'] === ['42' => ['fa']]);
+        check('M8: and the codes of the choice fields it reads, and the Missing Data Codes',
+            $c === ['fields' => ['b_pick' => ['1', '2']], 'missing' => ['UNK']]);
+        check('M8: an unchanged project builds the same fingerprint', !$moved($design, $dict));
+
+        $d2 = $dict;
+        $d2['a_val']['text_validation_type_or_show_slider_number'] = 'integer';
+        check('M8: a read field given a validation moves it', $moved($design, $d2));
+        $d2 = $dict;
+        $d2['a_val']['field_type'] = 'notes';
+        check('M8: so does a read field changing type', $moved($design, $d2));
+        $d2 = $dict;
+        $d2['b_pick'] = $radio('1, Yes | 2, No | 3, Maybe');
+        check('M8: so does a code added to a choice field the run reads', $moved($design, $d2));
+        check('M8: so does an instrument added to an event',
+            $moved(array_merge($design, ['eventsForms' => [41 => ['fa', 'fb'], 42 => ['fa', 'fb']]]), $dict));
+        check('M8: so does an event made to repeat whole',
+            $moved(array_merge($design, ['repeating' => [42 => 'WHOLE']]), $dict));
+        check('M8: so does an instrument that stops repeating',
+            $moved(array_merge($design, ['repeating' => []]), $dict));
+        check('M8: so does a Missing Data Code added',
+            $moved(array_merge($design, ['missing' => "UNK, Unknown\nNA, Not applicable"]), $dict));
+        check('M8: so does a project that could not be read at one end',
+            $moved(null, $dict) && $fpOf(null, $dict)['fp'] === $fpOf(null, $dict)['fp']);
+        check('M8: and a repeating setup that could not be read is not one where nothing repeats',
+            $fpOf(array_merge($design, ['repeating' => []]), $dict)['fp']
+            !== $fpOf(array_merge($design, ['repeating' => 'throw']), $dict)['fp']);
+
+        $d2 = $dict;
+        $d2['c_other']['text_validation_type_or_show_slider_number'] = 'date_ymd';
+        $d2['d_new'] = fld('fc');
+        check('M8: a field the run never reads can be edited, or added, without moving it',
+            !$moved($design, $d2));
+        $d2 = $dict;
+        $d2['b_pick'] = $radio('2, No | 1, Yes, please');
+        check('M8: nor do a choice field\'s labels, or the order its codes are shown in',
+            !$moved($design, $d2));
+        check('M8: nor the order REDCap lists an event\'s instruments in',
+            !$moved(array_merge($design, ['eventsForms' => [42 => ['fa'], 41 => ['fb', 'fa']]]), $dict));
+
+        // R5-4: THE FINGERPRINT MOVES ON A READ THAT FAILED, SO THE CONTEXT SAYS
+        // WHICH. The two M8 checks above are why: a project that could not be
+        // read, and a repeating setup that could not be read, build fingerprints
+        // of their own, and ScanService would end a run on an unchanged project
+        // for either. Each now comes back named in `unread`, and a project read
+        // in full has none.
+        check('R5-4: a project read in full has no configuration read that failed',
+            $was['ctx']['unread'] === []);
+        $blip = $fpOf(null, $dict);
+        check('R5-4: a project that could not be built is named, design and codes both resting on it',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the project\'s design']);
+        $blip = $fpOf(array_merge($design, ['repeating' => 'throw']), $dict);
+        check('R5-4: a repeating setup that could not be read is named',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the repeating instruments and events']);
+        $blip = $fpOf(array_merge($design, ['missing' => 'throw']), $dict);
+        check('R5-4: Missing Data Codes that could not be read are named, not taken for none',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the missing data codes']);
+        // The event metadata the event/instance rules are checked against.
+        \Project::$design = null;
+        \INSPIRE\UniversalValidator\TemporalMetadata::load(149, $dict, $tmUnread);
+        check('R5-4: event metadata that could not be read says so', $tmUnread === true);
+        \Project::$design = $design;
+        \INSPIRE\UniversalValidator\TemporalMetadata::load(149, $dict, $tmUnread);
+        \Project::$design = null;
+        check('R5-4: and event metadata read in full does not', $tmUnread === false);
     }
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";

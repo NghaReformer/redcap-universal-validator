@@ -137,9 +137,42 @@ namespace {
         /** H-09. Every getData call's params, so a test can prove WHAT was asked for. */
         public static $getDataCalls = [];
 
+        /**
+         * R2O-2. REDCap reports a form nobody opened (gray status) as '0' unless
+         * getData is asked for blanks with returnBlankForGrayFormStatus. A fixture
+         * writes a gray status as '' - the answer WITH the key - and this turns
+         * it into '0' for a read that did not ask. A status the fixture leaves
+         * out stays out, so no older scenario changes.
+         */
+        private static function grayAsAsked(array $src, $blank) {
+            if ($blank) return $src;
+            $fix = function ($row) {
+                if (!is_array($row)) return $row;
+                foreach ($row as $f => $v) {
+                    if ($v === '' && substr((string) $f, -9) === '_complete') $row[$f] = '0';
+                }
+                return $row;
+            };
+            foreach ($src as $rec => $node) {
+                if (!is_array($node)) continue;
+                foreach ($node as $k => $sub) {
+                    if ($k !== 'repeat_instances') { $src[$rec][$k] = $fix($sub); continue; }
+                    foreach ((is_array($sub) ? $sub : []) as $evt => $byKey) {
+                        foreach ((is_array($byKey) ? $byKey : []) as $rk => $byInst) {
+                            foreach ((is_array($byInst) ? $byInst : []) as $i => $row) {
+                                $src[$rec]['repeat_instances'][$evt][$rk][$i] = $fix($row);
+                            }
+                        }
+                    }
+                }
+            }
+            return $src;
+        }
+
         public static function getData($p) {
             self::$getDataCalls[] = ['fields' => isset($p['fields']) ? array_values((array) $p['fields']) : null,
-                                     'records' => isset($p['records']) ? count($p['records']) : 0];
+                                     'records' => isset($p['records']) ? count($p['records']) : 0,
+                                     'blankGray' => !empty($p['returnBlankForGrayFormStatus'])];
             if (self::$sleepPerRead > 0) usleep(self::$sleepPerRead);
             if (self::$getDataMode === 'nonarray') return false;
             if (self::$getDataMode === 'otherrecords') return ['999' => [1 => ['record_id' => '999']]];
@@ -165,6 +198,7 @@ namespace {
                 }
                 $src = $only;
             }
+            $src = self::grayAsAsked($src, !empty($p['returnBlankForGrayFormStatus']));
             if (!self::$filterByFields || empty($p['fields'])) return $src;
             $want = array_flip($p['fields']);
             $strip = function (array $row) use ($want) {
@@ -274,6 +308,16 @@ namespace {
     }
     function viols($m) { return array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved'; })); }
     function unconf($m) { return array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'rule-unconfigurable'; })); }
+    /** A private static of the module, or null on a tree without it (so the check fails, not the run). */
+    function r2o2Private($name) {
+        try {
+            $r = new \ReflectionMethod('\INSPIRE\UniversalValidator\UniversalValidator', $name);
+        } catch (\ReflectionException $e) {
+            return null;
+        }
+        $r->setAccessible(true);
+        return $r;
+    }
     function vcount($res, $type = null) {
         $k = 0;
         foreach ($res['violations'] as $v) if ($type === null || $v['type'] === $type) $k++;
@@ -357,10 +401,13 @@ namespace {
         check('H-02: and the scan still completes', $res['status'] === 'complete');
 
         // The same rule with the instance genuinely blank must STILL fire —
-        // otherwise the fix above is just a disabled check.
+        // otherwise the fix above is just a disabled check. Instance 1 was SAVED
+        // with the field blank, so it carries a status: REDCap has no row for an
+        // instance nobody saved, and the scan checks only started forms (R2O-2).
         $blank = [1 => [
             1 => ['record_id' => '1'],
-            'repeat_instances' => [1 => ['fr' => [1 => ['r_val' => ''], 2 => ['r_val' => 'X']]]],
+            'repeat_instances' => [1 => ['fr' => [1 => ['r_val' => '', 'fr_complete' => '0'],
+                                                 2 => ['r_val' => 'X']]]],
         ]];
         $res = mkMod($D, $blank, [1 => ['fr' => null]])->scanProject(PID);
         check('H-02 contrast: a genuinely blank instance IS reported', vcount($res) === 1);
@@ -526,6 +573,34 @@ namespace {
         check('H-05: and the reason is stated', !empty($res['incomplete']));
     }
     {
+        // EE-2. A record whose every READ field is blank. getData omits a blank
+        // field, so without the record-id field in the request the record comes
+        // back with no node at all: the legacy scan reported it "requested but
+        // not returned", and the durable worker, since H18 asks whether it
+        // still exists, filed it UNREADABLE on every run. It is exactly the
+        // record @UVREQUIRED exists to flag. The form WAS saved, blank, so it
+        // has a status: since R2O-2 the scan checks a form only where it was
+        // started, and this is the case that must still fire.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'fa_complete' => '0']]];
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;              // model REDCap: blanks are omitted
+        $res = $m->scanProject(PID);
+        check('EE-2: the legacy scan examines a record whose every read field is blank',
+            $res['status'] === 'complete' && empty($res['incomplete']));
+        check('EE-2: and reports the blank required field', vcount($res) === 1);
+
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;
+        $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+        $got = (!empty($ctx['ok']) && is_callable($ctx['read'])) ? $ctx['read'](['1']) : null;
+        check('EE-2: the durable read returns a node for that record',
+            is_array($got) && !empty($got['ok']) && isset($got['data'][1]));
+        $ev = isset($got['data'][1]) ? $ctx['evaluate']('1', $got['data'][1]) : null;
+        check('EE-2: and evaluating it files the blank required field',
+            is_array($ev) && $ev['why'] === null && count($ev['findings']) === 1);
+    }
+    {
         // REDCap returned the record, with nothing in it. Zero contexts is not
         // zero violations.
         $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
@@ -553,6 +628,376 @@ namespace {
         $res = mkMod($D, [1 => [1 => ['record_id' => '1', 'a_val' => 'X']]])->scanProject(PID);
         check('H-05 control: a fully readable clean project IS complete',
             $res['status'] === 'complete' && !$res['violations']);
+    }
+
+    /* =====================================================================
+     * R2O-2  a form designated on an event but never opened there
+     *
+     * Both scan reads ask for the record-id field (EE-2), and REDCap stores a
+     * record-id row on every event the record has any data in, so every such
+     * event became a context. An adverse-event form designated on every visit
+     * was then checked on every visit: each visit without an adverse event
+     * was a @UVREQUIRED finding, and the project could never certify clean.
+     *
+     * The scan now checks a host form only where it was STARTED: its status
+     * field, or a field the scan reads from it, holds a value there. Gray
+     * statuses are written '' - what REDCap returns when asked for blanks.
+     * ===================================================================== */
+    {
+        // fa (enrolment) on event 1, fb (visit) on event 2, fc (adverse event)
+        // designated on BOTH. An AE was filed on event 1; on event 2 only the
+        // visit form was saved.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'v_note' => ['fb'],
+                   'ae_req' => ['fc', '@UVREQUIRED']]);
+        $maps = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 1, 'form' => 'fc'],
+                 ['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $visit2 = function (array $ae) {
+            return [1 => [1 => ['record_id' => '1', 'a_val' => 'X', 'fa_complete' => '2',
+                                'ae_req' => 'Y', 'fc_complete' => '2'],
+                          2 => ['record_id' => '1', 'v_note' => 'seen', 'fb_complete' => '2',
+                                'ae_req' => ''] + $ae]];
+        };
+        $notOpened  = $visit2(['fc_complete' => '']);
+        $savedBlank = $visit2(['fc_complete' => '0']);
+        $legacy = function (array $data) use ($D, $maps) {
+            $m = mkMod($D, $data, null, $maps);
+            \REDCap::$filterByFields = true;              // model REDCap: blanks are omitted
+            return $m->scanProject(PID);
+        };
+        $durable = function (array $data) use ($D, $maps) {
+            $m = mkMod($D, $data, null, $maps);
+            \REDCap::$filterByFields = true;
+            $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+            $got = $ctx['read'](['1']);
+            $ev = isset($got['data'][1]) ? $ctx['evaluate']('1', $got['data'][1]) : null;
+            return ['m' => $m, 'ctx' => $ctx, 'node' => isset($got['data'][1]) ? $got['data'][1] : null,
+                    'ev' => $ev];
+        };
+        $where = function (array $rows) {
+            $out = [];
+            foreach ($rows as $v) $out[] = $v['event_id'] . ':' . $v['field'];
+            sort($out);
+            return $out;
+        };
+
+        // (a) never opened on event 2: no finding there, legacy and durable.
+        $res = $legacy($notOpened);
+        check('R2O-2: an AE form never opened on a visited event is not a finding (legacy)',
+            $res['status'] === 'complete' && empty($res['incomplete']) && vcount($res) === 0);
+        $chunk = null;
+        foreach (\REDCap::$getDataCalls as $c) if ($c['records'] > 0) $chunk = $c;
+        check('R2O-2: the chunk read asks for the host status field, as blanks',
+            $chunk !== null && in_array('fc_complete', $chunk['fields'], true) && $chunk['blankGray'] === true);
+        $d = $durable($notOpened);
+        check('R2O-2: nor in the durable scan, which still examined both events',
+            is_array($d['ev']) && $d['ev']['why'] === null && !$d['ev']['findings']
+            && $d['ev']['contexts'] === 2);
+        $last = end(\REDCap::$getDataCalls);
+        check('R2O-2: the durable read asks for it the same way',
+            in_array('fc_complete', $last['fields'], true) && $last['blankGray'] === true);
+
+        // (b) the same AE form SAVED on event 2 with the field blank: a finding.
+        $res = $legacy($savedBlank);
+        check('R2O-2: an AE form saved blank on event 2 IS a finding (legacy)',
+            $where($res['violations']) === ['2:ae_req']);
+        $d = $durable($savedBlank);
+        check('R2O-2: and in the durable scan',
+            is_array($d['ev']) && $where($d['ev']['findings']) === ['2:ae_req']);
+
+        // A field of the host form the scan reads is evidence too: a form with
+        // data and no stored status (an import) counts as started.
+        $DW = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'v_note' => ['fb'],
+                    'ae_req' => ['fc', '@UVREQUIRED={"when":"[ae_grade]<>\'\'"}'], 'ae_grade' => ['fc']]);
+        $m = mkMod($DW, $visit2(['ae_grade' => '3']), null, $maps);
+        \REDCap::$filterByFields = true;
+        check('R2O-2: a read field with a value starts the form without a status',
+            $where($m->scanProject(PID)['violations']) === ['2:ae_req']);
+
+        // A checkbox arrives as code => '0'/'1' on every row: only a TICKED box
+        // is something somebody entered. ae_sx is read through the visit form's
+        // condition, so it is a field the scan reads from fc.
+        $DC = dict(['record_id' => ['fa'], 'a_val' => ['fa'],
+                    'v_note' => ['fb', '@UVREQUIRED={"when":"[ae_sx(1)]=\'1\'"}'],
+                    'ae_req' => ['fc', '@UVREQUIRED'], 'ae_sx' => ['fc']]);
+        $DC['ae_sx']['field_type'] = 'checkbox';
+        $DC['ae_sx']['select_choices_or_calculations'] = '1, Fever | 2, Rash';
+        $m = mkMod($DC, $visit2(['ae_sx' => ['1' => '0', '2' => '1']]), null, $maps);
+        \REDCap::$filterByFields = true;
+        check('R2O-2: a ticked checkbox starts the form',
+            $where($m->scanProject(PID)['violations']) === ['2:ae_req']);
+        $m = mkMod($DC, $visit2(['ae_sx' => ['1' => '0', '2' => '0'], 'fc_complete' => '']), null, $maps);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R2O-2: an all-unticked checkbox does not',
+            $where($res['violations']) === [] && !$res['unconfigurable']);
+
+        // (d) A plan that does not carry the status fields keeps every
+        // designated context: the gate needs the signal, never assumes it.
+        $d = $durable($notOpened);
+        $old = $d['ctx']['plan'];
+        unset($old['formStatusFields']);
+        $ev = $d['m']->durableEvaluateRecord($old, PID, '1', $d['node'], 1, 'r2o2-test-key',
+                                             $old['ruleIds']);
+        check('R2O-2: a plan without status fields behaves as before (finding on event 2)',
+            $ev['why'] === null && $where($ev['findings']) === ['2:ae_req']);
+        $rp = r2o2Private('scanReadParams');
+        $params = $rp ? $rp->invoke(null, $old, PID, ['1'], 'record_id') : null;
+        check('R2O-2: and its read asks for neither status fields nor blanks',
+            is_array($params) && !isset($params['returnBlankForGrayFormStatus'])
+            && !array_filter($params['fields'], function ($f) { return substr($f, -9) === '_complete'; }));
+    }
+    {
+        // (c) and H-05. A classic record created through another form: the
+        // record-id row exists, the host form was never started anywhere. It
+        // was EXAMINED and had nothing to check - not unreadable, not skipped.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED'], 'b_note' => ['fb']]);
+        $data = [1 => [1 => ['record_id' => '1', 'b_note' => 'x', 'fb_complete' => '2', 'fa_complete' => '']]];
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R2O-2/H-05: a record whose host form was never started is examined, not incomplete',
+            $res['status'] === 'complete' && empty($res['incomplete']) && vcount($res) === 0
+            && $res['stats']['contexts'] === 1);
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;
+        $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+        $got = $ctx['read'](['1']);
+        $ev = $ctx['evaluate']('1', $got['data'][1]);
+        check('R2O-2/H-05: and the durable worker files it examined with nothing found',
+            $ev['why'] === null && !$ev['findings'] && $ev['contexts'] === 1);
+        // H-05 keeps its meaning for a node that really holds nothing.
+        $empty = $ctx['evaluate']('1', []);
+        check('R2O-2/H-05: an EMPTY node is still not checked, and says so',
+            is_string($empty['why']) && $empty['why'] !== '');
+        $junk = $ctx['evaluate']('1', [1 => 'not-a-row']);
+        check('R2O-2/H-05: nor is a garbled one',
+            is_string($junk['why']) && $junk['why'] !== '');
+
+        // A rule ON the record-id field is not gated: the record id is stored
+        // wherever the record exists, so it is always entered, even when the
+        // first instrument was never saved.
+        $DI = dict(['record_id' => ['fa', '@UVASSERT={"assert":"[record_id] = \'zzz\'"}'],
+                    'a_val' => ['fa'], 'b_note' => ['fb']]);
+        $m = mkMod($DI, $data);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R2O-2: a rule on the record-id field is checked although its form was never started',
+            count($res['violations']) === 1 && $res['violations'][0]['field'] === 'record_id');
+
+        // Nor is the record id EVIDENCE for its form, even where a rule reads it:
+        // it is stored on every row the record has, whatever was opened.
+        $DR = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED={"when":"[record_id]<>\'\'"}'],
+                    'b_note' => ['fb']]);
+        $m = mkMod($DR, $data);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R2O-2: the record id does not start the first form',
+            $res['status'] === 'complete' && vcount($res) === 0 && !$res['unconfigurable']);
+    }
+    {
+        // (e) A repeating FORM, judged per instance on the instance's own row.
+        // Instance 1 was saved blank; instance 2's form status is gray. The
+        // base row holds another form's data, which says nothing about fr.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'r_val' => ['fr', '@UVREQUIRED']]);
+        $data = [1 => [
+            1 => ['record_id' => '1', 'a_val' => 'X', 'fa_complete' => '2'],
+            'repeat_instances' => [1 => ['fr' => [1 => ['r_val' => '', 'fr_complete' => '0'],
+                                                 2 => ['r_val' => '', 'fr_complete' => '']]]],
+        ]];
+        $res = mkMod($D, $data, [1 => ['fr' => null]])->scanProject(PID);
+        $inst = [];
+        foreach ($res['violations'] as $v) $inst[] = (string) $v['instance'];
+        check('R2O-2: a repeating instance is checked only where it was started',
+            $inst === ['1']);
+
+        // A repeating EVENT folds the base row into every instance's values, so
+        // the base row's status must not pass for an instance's. Instance 2
+        // never opened the AE form; the event's base row holds a saved one.
+        $D = dict(['record_id' => ['fa'], 'v_note' => ['fb'], 'ae_req' => ['fc', '@UVREQUIRED']]);
+        $maps = [['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $data = [1 => [
+            2 => ['record_id' => '1', 'fc_complete' => '2'],
+            'repeat_instances' => [2 => ['' => [
+                1 => ['record_id' => '1', 'ae_req' => 'Y', 'fc_complete' => '2'],
+                2 => ['record_id' => '1', 'v_note' => 'seen', 'fb_complete' => '2', 'fc_complete' => ''],
+            ]]],
+        ]];
+        $res = mkMod($D, $data, null, $maps)->scanProject(PID);
+        check('R2O-2: a repeating event instance is judged on its own row, not the folded base',
+            vcount($res) === 0 && $res['status'] === 'complete');
+    }
+    {
+        // NO RULE CAN READ A STATUS VALUE (review R3G-3), which is why the read
+        // may ask REDCap for blanks without moving any verdict: a gray form's
+        // status comes back '' instead of the '0' the form path sees. Every way
+        // a rule names a field must name a data-dictionary field, and REDCap's
+        // dictionary has no <form>_complete row. Each refusal below is what
+        // makes that true; a rule kind that gets past one reads a different
+        // value in the scan than on save, and the scan has to give the '0'
+        // back before any rule sees the record.
+        $named = function (array $res) {
+            foreach ($res['unconfigurable'] as $u) {
+                if (strpos($u['why'], 'configuration error') === 0 && strpos($u['why'], 'fb_complete') !== false) return true;
+            }
+            return false;
+        };
+        $data = [1 => [1 => ['record_id' => '1', 'b_note' => 'x', 'fb_complete' => '2', 'c_req' => 'y',
+                             'c_date' => '2026-01-02', 'fc_complete' => '2']]];
+        $kinds = [
+            'a "when" condition'      => '@UVREQUIRED={"when":"[fb_complete]=\'2\'"}',
+            'an "assert" expression'  => '@UVASSERT={"assert":"[fb_complete]=\'2\'"}',
+            'a branch "when"'         => '@UVREQUIRED={"when":"[b_note]=\'x\'"} @UVREQUIRED={"when":"[fb_complete]=\'2\'"}',
+            'a @UVUNIQUE "with" field' => '@UVUNIQUE={"with":["fb_complete"]}',
+            'a @UVEXISTS "in" field'  => '@UVEXISTS={"in":"[fb_complete]"}',
+            'a @UVEXISTS "match" field' => '@UVEXISTS={"in":"[b_note]","match":{"b_site":"[fb_complete]"}}',
+        ];
+        foreach ($kinds as $what => $ann) {
+            $res = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'b_site' => ['fb'], 'c_req' => ['fc', $ann]]),
+                         $data)->scanProject(PID);
+            check('R3G-3: ' . $what . ' naming a status field is a configuration error, never evaluated',
+                $named($res) && !$res['violations']);
+        }
+        $DW = dict(['record_id' => ['fa'], 'b_note' => ['fb'],
+                    'c_date' => ['fc', '@UVWINDOW={"from":"[fb_complete]","window":[0,30]}']]);
+        $DW['c_date']['text_validation_type_or_show_slider_number'] = 'date_ymd';
+        $res = mkMod($DW, $data)->scanProject(PID);
+        check('R3G-3: a @UVWINDOW "from" naming a status field is a configuration error, never evaluated',
+            $named($res) && !$res['violations']);
+        $res = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'c_req' => ['fc']]), $data, null, null,
+                     [['fields' => ['c_req'], 'rule-type' => 'required', 'when' => "[fb_complete]='2'"]])->scanProject(PID);
+        check('R3G-3: a settings-dialog "when" naming a status field is a configuration error, never evaluated',
+            $named($res) && !$res['violations']);
+        // Event and instance references, on: a qualified reference and a binding.
+        $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => false,
+            'eventInfo' => [1 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1]],
+            'eventsForms' => [1 => ['fa', 'fb', 'fc']]];
+        foreach ([
+            'a qualified reference'   => '@UVREQUIRED={"when":"[event_1_arm_1][fb_complete]=\'2\'"}',
+            'a reference binding'     => '@UVASSERT={"assert":"{s}=\'2\'","references":{"s":{"field":"fb_complete","event":"event_1_arm_1"}}}',
+        ] as $what => $ann) {
+            $m = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'c_req' => ['fc', $ann]]), $data, []);
+            $m->projectSettings['enable-event-instance-refs'] = true;
+            $res = $m->scanProject(PID);
+            check('R3G-3: ' . $what . ' naming a status field is a configuration error, never evaluated',
+                $named($res) && !$res['violations']);
+        }
+        unset($GLOBALS['Proj']);
+    }
+
+    /* =====================================================================
+     * R3G-1  a rule whose condition lives on ANOTHER form or event
+     *
+     * The started-form gate dropped every rule's unopened contexts alike. A
+     * required field on the adverse-event form "when the visit form says an
+     * AE happened" is exactly the rule whose form was never opened, so the
+     * scan certified the record clean while the save audit - re-checking the
+     * rule when the visit form is saved - logged the violation. The gate now
+     * applies only to a rule whose verdict its host form decides alone; one
+     * that reads another form or event keeps every designated context, and
+     * its own condition decides there, as on save.
+     * ===================================================================== */
+    {
+        $r3gWhere = function (array $rows) {
+            $out = [];
+            foreach ($rows as $v) $out[] = $v['event_id'] . ':' . $v['field'];
+            sort($out);
+            return $out;
+        };
+        $r3gLogged = function ($m) {
+            $out = [];
+            foreach (viols($m) as $c) $out[] = $c[1]['instrument'] . '@' . $c[1]['event_id'] . ':' . $c[1]['field'];
+            sort($out);
+            return $out;
+        };
+        $r3gDurable = function ($m) {
+            $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+            $got = $ctx['read'](['1']);
+            return isset($got['data'][1]) ? $ctx['evaluate']('1', $got['data'][1]) : null;
+        };
+
+        // fb (visit) and fc (adverse event) designated on events 1 and 2. On
+        // event 2 the visit form says an AE happened; fc was opened nowhere.
+        // ae_grade is required on fc unconditionally: the R2O-2 case, still gated.
+        // ae_onset's condition reads fc AND fb: reading the host too does not
+        // make it the host's alone.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'had_ae' => ['fb'],
+                   'ae_term' => ['fc', '@UVREQUIRED={"when":"[had_ae]=\'1\'"}'],
+                   'ae_grade' => ['fc', '@UVREQUIRED'],
+                   'ae_onset' => ['fc', '@UVREQUIRED={"when":"[had_ae]=\'1\' and [ae_grade]=\'\'"}']]);
+        $maps = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 1, 'form' => 'fb'], ['event_id' => 1, 'form' => 'fc'],
+                 ['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => 'X', 'fa_complete' => '2', 'had_ae' => '0',
+                             'fb_complete' => '2', 'ae_term' => '', 'ae_grade' => '', 'fc_complete' => ''],
+                       2 => ['record_id' => '1', 'had_ae' => '1', 'fb_complete' => '2', 'ae_term' => '',
+                             'ae_grade' => '', 'fc_complete' => '']]];
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $m->redcap_save_record(PID, '1', 'fb', 2, null, null, null, 1);
+        check('R3G-1: the save audit logs the cross-form required fields on event 2 (the reference)',
+            $r3gLogged($m) === ['fc@2:ae_onset', 'fc@2:ae_term']);
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R3G-1: the legacy scan finds the same two, and only them',
+            $res['status'] === 'complete' && $r3gWhere($res['violations']) === ['2:ae_onset', '2:ae_term']
+            && !$res['unconfigurable']);
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $ev = $r3gDurable($m);
+        check('R3G-1: and the durable scan',
+            is_array($ev) && $ev['why'] === null && $ev['contexts'] === 2
+            && $r3gWhere($ev['findings']) === ['2:ae_onset', '2:ae_term']);
+
+        // What counts is what the rule reads IN THIS RECORD. A @UVEXISTS "in"
+        // field is read in OTHER records, so it leaves its host gated - and the
+        // gated host's status field is the only one the read asks for.
+        $DP = dict(['record_id' => ['fa'], 'specimen_id' => ['fb'],
+                    'res_id' => ['fc', '@UVEXISTS={"in":"[specimen_id]"}'],
+                    'ae_term' => ['fb', '@UVREQUIRED={"when":"[res_id]<>\'\'"}']]);
+        $plan = mkMod($DP, $data, null, $maps)->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null)['plan'];
+        check('R3G-1: a lookup in other records leaves its host gated; a condition on another form does not',
+            isset($plan['formStatusFields']) && $plan['formStatusFields'] === ['fc' => 'fc_complete']);
+
+        // Cross-EVENT (docs/action_tag_validation_examples.md, "close-out comment
+        // needed once ..."): the baseline form says an AE happened; the close-out
+        // form on the follow-up event was never opened.
+        $DX = dict(['record_id' => ['fa'], 'had_ae' => ['fa'], 'v_note' => ['fb'],
+                    'close_note' => ['fc', '@UVREQUIRED=' . json_encode(['when' => "[baseline_arm_1][had_ae]='1'",
+                                                                         'message' => 'Follow up the baseline AE'])]]);
+        $mapsX = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $dataX = function ($hadAe) {
+            return [1 => [1 => ['record_id' => '1', 'had_ae' => $hadAe, 'fa_complete' => '2'],
+                          2 => ['record_id' => '1', 'v_note' => 'seen', 'fb_complete' => '2', 'close_note' => '',
+                                'fc_complete' => '']]];
+        };
+        $mkX = function ($hadAe) use ($DX, $mapsX, $dataX) {
+            $m = mkMod($DX, $dataX($hadAe), [], $mapsX);
+            $m->projectSettings['enable-event-instance-refs'] = true;
+            \REDCap::$filterByFields = true;
+            $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => true,
+                'eventInfo' => [1 => ['unique_event_name' => 'baseline_arm_1', 'arm_num' => 1],
+                                2 => ['unique_event_name' => 'followup_arm_1', 'arm_num' => 1]],
+                'eventsForms' => [1 => ['fa'], 2 => ['fb', 'fc']]];
+            return $m;
+        };
+        $m = $mkX('1');
+        $m->redcap_save_record(PID, '1', 'fa', 1, null, null, null, 1);
+        check('R3G-1: cross-event: saving the baseline form logs the close-out field (the reference)',
+            $r3gLogged($m) === ['fc@2:close_note'] && !unconf($m));
+        $res = $mkX('1')->scanProject(PID);
+        check('R3G-1: cross-event: the legacy scan finds the same one',
+            $res['status'] === 'complete' && $r3gWhere($res['violations']) === ['2:close_note']
+            && !$res['unconfigurable']);
+        $ev = $r3gDurable($mkX('1'));
+        check('R3G-1: cross-event: and the durable scan',
+            is_array($ev) && $ev['why'] === null && $r3gWhere($ev['findings']) === ['2:close_note']);
+        // The rule's own condition decides in the unopened context: no AE, no finding.
+        $res = $mkX('0')->scanProject(PID);
+        $ev = $r3gDurable($mkX('0'));
+        check('R3G-1: cross-event: with the condition false the unopened form is clean, both scans',
+            $res['status'] === 'complete' && !$res['violations'] && !$res['unconfigurable']
+            && is_array($ev) && $ev['why'] === null && !$ev['findings']);
+        unset($GLOBALS['Proj']);
     }
 
     /* =====================================================================
@@ -787,14 +1232,20 @@ namespace {
         // -- the memory limit, end to end ---------------------------------------
         // Hold a real allocation, then set a limit whose 70% sits below it. The
         // limit stays comfortably above ACTUAL usage, so nothing fatals; only
-        // the guard's threshold is crossed.
+        // the guard's threshold is crossed. The limit is measured, not fixed:
+        // a fixed 30M failed on PHP 8.3/8.4 in CI once the baseline grew past a
+        // 2 MB heap chunk, because PHP refuses a limit below current usage.
         $ballast = str_repeat('x', 20 * 1024 * 1024);
         $oldMem = ini_get('memory_limit');
-        ini_set('memory_limit', '30M');              // cap = 21M, usage > 21M
+        $used = memory_get_usage(true);
+        $limitMb = (int) ceil($used / 1048576) + 4;  // 70% of this is below usage
+        $limitSet = ini_set('memory_limit', $limitMb . 'M') !== false;
         $res3 = mkMod($D, $mkData(4))->scanProject(PID, null, 1);
         ini_set('memory_limit', (string) $oldMem);
         unset($ballast);
 
+        check('H-08: the test memory limit was accepted, with its 70% below usage',
+            $limitSet && $limitMb * 1048576 * 0.70 < $used);
         check('H-08: a scan near the memory limit reports incomplete, never complete',
             $res3['status'] === 'incomplete');
         // X1. The headline count used to be the MANIFEST, set before the loop and
@@ -862,7 +1313,9 @@ namespace {
         // exactly one field and this section passed for the wrong reason.
         $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED'],
                    'b_val' => ['fb', '@UVREQUIRED'], 'c_val' => ['fb', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => '', 'c_val' => '']]];
+        // Both forms saved blank (statuses '0'): the scan checks started forms only (R2O-2).
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => '', 'c_val' => '',
+                             'fa_complete' => '0', 'fb_complete' => '0']]];
 
         // Set the scenario AFTER mkMod, never before: mkMod resets pkAvailable
         // to true, so setting it first is silently undone and the scan runs the
@@ -915,16 +1368,18 @@ namespace {
         $D  = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED'],
                     'b_val' => ['fb', '@UVUNIQUE']]);
         $scenarios = [
+            // fa saved blank (status '0'), so its required field is checked:
+            // the scan looks only at started forms (R2O-2).
             'plain violations' => [$D, [
-                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X']],
-                2 => [1 => ['record_id' => '2', 'a_val' => '', 'b_val' => 'Y']],
+                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X', 'fa_complete' => '0']],
+                2 => [1 => ['record_id' => '2', 'a_val' => '', 'b_val' => 'Y', 'fa_complete' => '0']],
             ]],
             'unique duplicates across records' => [$D, [
                 1 => [1 => ['record_id' => '1', 'a_val' => 'ok', 'b_val' => 'SAME']],
                 2 => [1 => ['record_id' => '2', 'a_val' => 'ok', 'b_val' => 'SAME']],
             ]],
             'a record with no rows' => [$D, [
-                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X']],
+                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X', 'fa_complete' => '0']],
                 2 => [],
             ]],
             'nothing live to scan' => [dict(['record_id' => ['fa'], 'plain' => ['fa']]), [
@@ -1347,7 +1802,10 @@ namespace {
         $DA = dict(['record_id' => ['fa'],
                     'open'   => ['fa', '@UVREQUIRED'],
                     'secret' => ['fb', '@UVREQUIRED']]);
-        $adata = [1 => [1 => ['record_id' => '1', 'open' => '', 'secret' => '']]];
+        // Both instruments saved blank (statuses '0'): a never-started form is
+        // not checked at all since R2O-2, which would pass A1 for the wrong reason.
+        $adata = [1 => [1 => ['record_id' => '1', 'open' => '', 'secret' => '',
+                              'fa_complete' => '0', 'fb_complete' => '0']]];
         $OPT = ['enforceFormRights' => true, 'valueCeiling' => 'raw'];
 
         $m = mkMod($DA, $adata);
@@ -1406,7 +1864,7 @@ namespace {
         $DW = dict(['record_id' => ['fa'],
                     'gate'  => ['fb'],
                     'thing' => ['fa', '@UVREQUIRED={"when":"[gate]=\'1\'"}']]);
-        $wdata = [1 => [1 => ['record_id' => '1', 'gate' => '1', 'thing' => '']]];
+        $wdata = [1 => [1 => ['record_id' => '1', 'gate' => '1', 'thing' => '', 'fa_complete' => '0']]];
         $m5 = mkMod($DW, $wdata);
         \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '0'];
         $res5 = $m5->scanProject(PID, null, 200, null, $OPT);

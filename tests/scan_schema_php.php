@@ -26,6 +26,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
+    require_once __DIR__ . '/../php/Scan/ScanStore.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -59,6 +60,10 @@ namespace {
         public $stubbornRows = false;
         /** SQL fragment of an ALTER that succeeds and changes nothing, or null. */
         public $inertAlter = null;
+        /** What health()'s one table read answers instead, when set (false = a refused read). */
+        public $tableListAnswer = null;
+        /** Answer health()'s table read in upper case, as a case-folding server may. */
+        public $upperNames = false;
 
         /**
          * Model the DDL rather than merely record it.
@@ -121,6 +126,21 @@ namespace {
                 $have = $this->present === null
                       ? \INSPIRE\UniversalValidator\Scan\Schema::tables() : $this->present;
                 return [[in_array($want, $have, true) ? 1 : 0]];
+            }
+            // health()'s one read (M11): every table it names, back as the
+            // rows of the ones that exist - in the case the server stores them,
+            // which a case-folding installation need not keep as written.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                if ($this->tableListAnswer !== null) return $this->tableListAnswer;
+                $have = $this->present === null
+                      ? \INSPIRE\UniversalValidator\Scan\Schema::tables() : $this->present;
+                $out = [];
+                foreach ($params as $want) {
+                    if (in_array($want, $have, true)) {
+                        $out[] = [$this->upperNames ? strtoupper($want) : $want];
+                    }
+                }
+                return $out;
             }
             // Version 2 asks whether a COLUMN or an INDEX is already there, so
             // an interrupted migration can resume rather than fail on a
@@ -197,6 +217,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('ddl: version 2 is ALTERs plus its own three new tables',
             substr_count($v2, 'CREATE TABLE IF NOT EXISTS') === 3
             && substr_count($v2, 'ALTER TABLE ') === count(Schema::statements(2)) - 3);
+        // ScanStore::RUN_COLUMNS is what SqlScanStore::run() selects. A name in
+        // it that no version declares is "Unknown column" on every read of a
+        // run, and no suite without a database would see it.
+        $runTable = Schema::table('scan_run');
+        $runDdl = '';
+        foreach (Schema::statements(1) as $sql) {
+            if (strpos($sql, 'CREATE TABLE IF NOT EXISTS ' . $runTable . ' ') === 0) $runDdl .= $sql;
+        }
+        $created = $runDdl !== '';
+        foreach ($v2sql as $sql) {
+            if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+        }
+        $undeclared = [];
+        foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $c) {
+            $q = preg_quote($c, '/');
+            if (!preg_match('/(^|[\s(,])' . $q . '\s+[A-Z]+/m', $runDdl)) $undeclared[] = $c;
+        }
+        check('ddl: every column the run row is read by is declared by some version'
+            . ($undeclared ? ' - not declared: ' . implode(', ', $undeclared) : ''),
+            $created && $undeclared === []);
+        check('ddl: and that check can fail - a column no version declares is caught',
+            !preg_match('/(^|[\s(,])no_such_column\s+[A-Z]+/m', $runDdl));
+
         // Re-issuing a changed CREATE TABLE IF NOT EXISTS against a populated
         // table succeeds, warns, and changes nothing. That is why v2 is ALTERs
         // and why v1 may never be edited again.
@@ -445,6 +488,71 @@ namespace INSPIRE\UniversalValidator\Scan {
         $h4 = Schema::health($m4);
         check('health: an unreadable version is not ok, and version is null',
             $h4['ok'] === false && $h4['version'] === null);
+
+        // M11: TWO STATEMENTS, on every scan request. It was the version and
+        // then one information_schema read per table - fourteen a request.
+        $m6 = new \FakeModule();
+        $m6->version = Schema::VERSION;
+        $h6 = Schema::health($m6);
+        check('health M11: a healthy schema is established in two statements, not one per table',
+            $h6['ok'] === true && count($m6->sql) === 2);
+        $read = array_values(array_filter($m6->sql, function ($s) {
+            return strpos($s, 'information_schema') !== false;
+        }));
+        check('health M11: one of them asks about every table at once',
+            count($read) === 1 && substr_count($read[0], '?') === count(Schema::tables()));
+        $m6b = new \FakeModule();
+        $m6b->version = Schema::VERSION;
+        $m6b->present = array_slice(Schema::tables(), 1);       // the first one vanished
+        $h6b = Schema::health($m6b);
+        check('health M11: and a missing table is still named, in two statements',
+            $h6b['ok'] === false && $h6b['missing'] === [Schema::tables()[0]]
+            && count($m6b->sql) === 2);
+        // An answer that cannot be read is never a healthy schema. It used to
+        // fall out as every table missing; it is now said as unreadable.
+        $m6c = new \FakeModule();
+        $m6c->version = Schema::VERSION;
+        $m6c->tableListAnswer = false;
+        $h6c = Schema::health($m6c);
+        check('health M11: a refused table read is not ok, and says it could not be read',
+            $h6c['ok'] === false && strpos((string) $h6c['why'], 'could not be read') !== false);
+        $m6d = new \FakeModule();
+        $m6d->version = Schema::VERSION;
+        $m6d->failOn = 'information_schema';
+        $h6d = Schema::health($m6d);
+        check('health M11: a table read that throws is not ok either',
+            $h6d['ok'] === false && strpos((string) $h6d['why'], 'could not be read') !== false);
+        $m6e = new \FakeModule();
+        $m6e->version = Schema::VERSION;
+        $m6e->tableListAnswer = [['uv_unrelated'], ['redcap_data']];
+        check('health M11: rows naming other tables are not ours',
+            Schema::health($m6e)['ok'] === false
+            && count(Schema::health($m6e)['missing']) === count(Schema::tables()));
+        // R8-2: the IN list is matched with the information_schema collation,
+        // which ignores case on MySQL 5.7 and MariaDB. On a server with
+        // lower_case_table_names=0, a table that exists only as UV_FINDING
+        // comes back for uv_finding, and every statement the module sends to
+        // uv_finding fails there. That table is missing, not present.
+        $m6f = new \FakeModule();
+        $m6f->version = Schema::VERSION;
+        $m6f->upperNames = true;
+        $h6f = Schema::health($m6f);
+        check('health R8-2: a table the server holds only in another case is missing, not present',
+            $h6f['ok'] === false && $h6f['missing'] === Schema::tables());
+        $one = Schema::tables();
+        $odd = array_shift($one);
+        $m6g = new \FakeModule();
+        $m6g->version = Schema::VERSION;
+        $m6g->tableListAnswer = array_merge([[strtoupper($odd)]], array_map(function ($t) { return [$t]; }, $one));
+        $h6g = Schema::health($m6g);
+        check('health R8-2: one table in another case is named missing, the rest are present',
+            $h6g['ok'] === false && $h6g['missing'] === [$odd]);
+        // Both spellings on a case-keeping server: ours is there, and is used.
+        $m6h = new \FakeModule();
+        $m6h->version = Schema::VERSION;
+        $m6h->tableListAnswer = array_merge([[strtoupper($odd)], [$odd]], array_map(function ($t) { return [$t]; }, $one));
+        check('health R8-2: a table present as we name it is present beside one in another case',
+            Schema::health($m6h)['ok'] === true);
     }
 
     /* =====================================================================

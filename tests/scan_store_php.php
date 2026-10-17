@@ -21,6 +21,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
     require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -29,15 +30,55 @@ namespace {
     }
 
     require_once __DIR__ . '/scan_store_contract.php';
+    require_once __DIR__ . '/scan_fault_support.php';
 
     \INSPIRE\UniversalValidator\Scan\storeContract(function () {
         return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
-    }, 'array-store');
+    }, 'array-store', function ($store, $runId, $seconds) {
+        // This store keeps a claim's time in claimed_at; see ageClaims().
+        \INSPIRE\UniversalValidator\Scan\ageClaims($store, $runId, $seconds);
+    }, function ($clock) {
+        return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore($clock);
+    }, function ($store, $runId) {
+        // The stand-in for DELETE FROM uv_scan_plan WHERE run_id = ?.
+        $drop = function ($runId) { unset($this->plans[$runId]); };
+        \Closure::bind($drop, $store, \INSPIRE\UniversalValidator\Scan\ArrayScanStore::class)($runId);
+    });
 
-    // Value expiry, in this store's own row shape (SqlScanStore's is asserted in
-    // tests/mysql/cases/store.php): the value, its fingerprint and a growth
-    // finding's z-score go, since each gives the value back; the finding and
-    // its reference stay.
+    // THE STORED ROW, which only this store can show whole. findings() returns
+    // FindingRowMapper's keys and valid_from_seq is not one of them, so the
+    // contract cannot see the default; tests/mysql/cases/store.php compares the
+    // two stores' rows column by column on a real server.
+    {
+        $s = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $r = $s->startRun(760, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $s->writeManifest($rid, [['id_bin' => 'V1', 'hash' => hash('sha256', 'V1', true), 'dag' => null]]);
+        $ep = (int) $s->run(760, $rid)['lease_epoch'];
+        $c = $s->claim($rid, 'w1', $ep, 1);
+        $s->commitBatch($rid, 'w1', $ep, ['bytes' => 0,
+            'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                           'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE,
+                           'claim' => $c[0]['claim']]],
+            'findings' => [['ordinal' => $c[0]['ordinal'], 'project_id' => 760,
+                'generation_id' => (int) $r['run']['generation_id'],
+                'identity' => hash('sha256', 'v', true), 'record_hash' => $c[0]['hash'],
+                'record_id_bin' => 'V1', 'host_form' => 'fa', 'field' => 'x',
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'check_type' => 'required', 'reason_code' => 'required-blank']]]);
+        $row = $s->allFindings()[0];
+        check('array-store: a finding sent with no valid_from_seq opens at the run\'s own sequence',
+            $row['valid_from_seq'] === (int) $s->run(760, $rid)['run_seq'] && $row['valid_from_seq'] > 0);
+        check('array-store: and the stored row has every column the schema has, defaults filled',
+            count($row) === 34 && $row['valid_to_seq'] === null && $row['active_slot'] === 1
+            && $row['arm_id'] === null && $row['severity'] === 0 && $row['status_key'] === null
+            && $row['value_binary'] === 0 && $row['stage_epoch'] === null
+            && $row['as_of'] === null && $row['z_score'] === null && $row['growth_reference'] === null);
+    }
+
+    // A growth finding's z-score, in this store's own row shape: stored with
+    // its reference, and read back only beside its value, since it gives the
+    // value back.
     {
         $s = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
         $st = $s->startRun(700, ['created_by' => 'alice']);
@@ -63,15 +104,33 @@ namespace {
         $f = $s->findings(700, (int) $run['generation_id'], [], 0, 10);
         check('array-store: the z-score reads back beside its value only (got ' . json_encode($f) . ')',
             count($f) === 2 && $f[0]['z_score'] === '-3.40' && $f[1]['z_score'] === null && $f[1]['growth_reference'] === 'who-wfa');
-        check('array-store: an overdue value expires', $s->expireValues('2026-01-01 00:00:00') === 1);
-        $f = $s->findings(700, (int) $run['generation_id'], [], 0, 10);
-        check('array-store: the value, its fingerprint and the z-score go; the finding and its reference stay (got ' . json_encode($f) . ')',
-            count($f) === 2 && $f[0]['value_bin'] === null && $f[0]['value_fingerprint'] === null
-            && $f[0]['z_score'] === null && $f[0]['growth_reference'] === 'who-wfa');
-        // and from the stored row itself, not only from what findings() reads back
-        $kept = array_values(array_filter($s->allFindings(), function ($r) { return $r['field'] === 'wt'; }));
-        check('array-store: expiry clears the stored z-score (got ' . json_encode($kept) . ')',
-            count($kept) === 1 && $kept[0]['z_score'] === null && $kept[0]['value_bin'] === null);
+        $kept = array_values(array_filter($s->allFindings(), function ($r) { return $r['field'] === 'wt2'; }));
+        check('array-store: a z-score with no value beside it is stored, only not read back (got ' . json_encode($kept) . ')',
+            count($kept) === 1 && $kept[0]['z_score'] === '-1.00' && $kept[0]['growth_reference'] === 'who-wfa');
+    }
+
+    // Value expiry. Neither store sweeps values any more: ScanRetention is the
+    // one sweep (wave 8), and the rows it clears are asserted on a real server
+    // in tests/mysql/cases/retention.php and store.php. Here, its statements:
+    // the value, its fingerprint and a growth finding's z-score go together,
+    // since each gives the value back; the finding and its reference stay.
+    {
+        require_once __DIR__ . '/../php/Scan/Schema.php';
+        require_once __DIR__ . '/../php/Scan/ScanRetention.php';
+        $db = new \INSPIRE\UniversalValidator\Scan\ScriptedDb();
+        $db->rows = ['MAX(finding_id)' => [[10]]];
+        (new \INSPIRE\UniversalValidator\Scan\ScanRetention($db))->expireValuesPage(0, 700, '2026-01-01 00:00:00');
+        $sweep = array_values(array_filter($db->log, function ($q) { return strpos($q, 'SET value_bin = NULL') !== false; }));
+        check('retention: the expiry sweep clears the z-score with the value and its fingerprint',
+            count($sweep) === 1 && strpos($sweep[0], 'value_fingerprint = NULL') !== false
+            && strpos($sweep[0], 'z_score = NULL') !== false && strpos($sweep[0], 'growth_reference') === false);
+        // Every statement that clears a value clears its z-score, the revoke
+        // path included (it needs a slice page to reach its UPDATE).
+        $src = file_get_contents(__DIR__ . '/../php/Scan/ScanRetention.php');
+        preg_match_all("/SET (?:f\\.)?value_bin = NULL[^']*/", $src, $m);
+        $bare = array_filter($m[0], function ($q) { return strpos($q, 'z_score = NULL') === false; });
+        check('retention: no statement clears a value and leaves its z-score (' . count($m[0]) . ' found)',
+            count($m[0]) >= 2 && $bare === []);
     }
 
     echo "scan_store_php: $n checks, $fail failure(s)\n";

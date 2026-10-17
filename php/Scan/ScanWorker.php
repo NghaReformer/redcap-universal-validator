@@ -58,6 +58,8 @@ final class ScanWorker
     private $store;
     /** @var array */
     private $deps;
+    /** @var array run id => mark key => true: rule problems this worker has already committed */
+    private $marked = [];
 
     /**
      * @param array $deps {
@@ -69,9 +71,19 @@ final class ScanWorker
      *   budget:         WorkBudget
      *   owner:          string        who this worker is, for the leases
      *   attempts:       int           how many times one record may be retried
+     *   claimStale:     int           seconds before a claim's worker is taken to have
+     *                                 stopped; 900 when absent. See claimStale().
      *   fingerprint:    string        the configuration as it is NOW
      *   policyRevision: int           the privacy policy as it is NOW
      *   slotTtl:        int
+     *   slotLimit:      ?int          scan-system-max-concurrent-projects as resolved
+     *                                 now; no slot numbered above it is taken. Absent
+     *                                 is no limit beyond the rows the table holds.
+     *   planner:        ?callable(int $runId, array $slice): array  lists one slice
+     *                   of a run still planning - ScanPlanner::step() with the
+     *                   source bound. $slice carries budget, owner, epoch,
+     *                   attempts, leaseSeconds, keep and limits. Absent, a
+     *                   planning run is "not in a phase that takes work".
      *   note:           ?callable(string $event, array $context): void
      *                                 where a storage failure is recorded. The
      *                                 worker's own answer never carries what
@@ -87,8 +99,13 @@ final class ScanWorker
     /**
      * Do one request's worth of work.
      *
+     * `listed` counts what the finishing phases walked - change-log rows,
+     * duplicate groups, summarised findings - so a request that moved a phase
+     * along without examining a record still reads as movement (see loop()).
+     * It is absent from the answers given before the loop starts.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int,
-     *               phase:string, done:bool, stop:?string, why:?string}
+     *               listed?:int, phase:string, done:bool, stop:?string, why:?string}
      */
     public function work($pid, $runId, array $opts = [])
     {
@@ -112,19 +129,27 @@ final class ScanWorker
         // later. The live pilot left one there within a minute of pressing Stop.
         //
         // Whoever arrives next finishes it. finish() is idempotent, so two
-        // workers arriving together is not a race.
+        // workers arriving together is not a race. Through the one finisher
+        // Stop and the reap use (review R3U-3): this branch used to write the
+        // run without its counts or its truncation, so the stored row depended
+        // on which request ended the run.
         if ($phase === ScanPhase::CANCELLING) {
-            $this->store->finish($runId, ScanOutcome::derive([
-                'cancelled' => true,
-                'manifestDone' => $this->store->manifestComplete($runId),
-            ]));
+            ScanPromotion::finishCancelled($this->store, $pid, $runId, $this->limits());
             return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'cancelled',
                     'why' => 'this scan was stopped, so the records after that point were never '
                            . 'examined'];
         }
 
-        if (!ScanPhase::mayWork($phase)) {
+        // PLANNING TAKES WORK NOW (B10): a slice of the record list, through the
+        // planner the composition root hands in. It is not a phase a worker
+        // may CLAIM records in - mayWork() still says no, and the manifest is
+        // not frozen - so it is let through here by name, and only when there
+        // is a planner to run it. Without one the old answer stands.
+        $planner = (isset($this->deps['planner']) && is_callable($this->deps['planner']))
+            ? $this->deps['planner'] : null;
+        $planning = ($phase === ScanPhase::PLANNING && $planner !== null);
+        if (!ScanPhase::mayWork($phase) && !$planning) {
             return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => $phase, 'done' => ($phase === ScanPhase::TERMINAL), 'stop' => null,
                     'why' => 'this scan is not in a phase that takes work'];
@@ -150,8 +175,7 @@ final class ScanWorker
         // design; loosening waits for the next run.
         if (isset($this->deps['policyRevision'])
                 && (int) $run['policy_revision'] !== (int) $this->deps['policyRevision']) {
-            $this->store->finish($runId, array_merge(
-                ScanOutcome::derive(['cancelled' => true]),
+            ScanPromotion::finishCancelled($this->store, $pid, $runId, array_merge($this->limits(),
                 ['why' => 'the project\'s privacy settings were tightened while this scan was '
                         . 'running, so it was stopped before writing anything further']));
             return self::stop('this project\'s privacy settings changed during the scan, so it was '
@@ -171,7 +195,11 @@ final class ScanWorker
         try {
             if ($slots instanceof WorkerSlots) {
                 $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
-                $slot = $slots->acquire($this->owner(), $runId, $ttl);
+                // The installation's limit as it is NOW, so a lowered setting
+                // holds from the next request (review R4-4): no slot numbered
+                // above it is taken, whatever rows the table still has.
+                $limit = isset($this->deps['slotLimit']) ? (int) $this->deps['slotLimit'] : null;
+                $slot = $slots->acquire($this->owner(), $runId, $ttl, $limit);
                 if ($slot === null) {
                     // TWO DIFFERENT FAULTS LOOK IDENTICAL HERE, and only one of them
                     // is contention.
@@ -224,8 +252,52 @@ final class ScanWorker
                     return $slots->renew($slot['slot_no'], $this->owner(), $slot['epoch'], $ttl);
                 };
             }
-            return $this->loop($pid, $runId, $phase, $epoch,
-                (int) $run['generation_id'], $opts, $keep);
+            // One budget for the request, whichever phases it spends it on.
+            if (!isset($this->deps['budget']) || !($this->deps['budget'] instanceof WorkBudget)) {
+                $this->deps['budget'] = new WorkBudget();
+            }
+
+            // THE LIST FIRST, A SLICE PER REQUEST (B10), under the slot and the
+            // renewal every other pass has (W1-N2). A slice is budgeted like a
+            // batch, but one slow page can still outlast the slot's TTL, and
+            // the renewal - asked once per page - is what keeps the semaphore
+            // honest through it. The attempt cap is this worker's own
+            // maxAttempts(): a planning slice that keeps dying is retired by the
+            // rule a record is, not by a second one.
+            $listed = 0;
+            if ($planning) {
+                $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
+                $p = $planner($runId, [
+                    'budget' => $this->deps['budget'], 'owner' => $this->owner(), 'epoch' => $epoch,
+                    'attempts' => $this->maxAttempts(), 'leaseSeconds' => max(1, $ttl),
+                    'keep' => $keep, 'limits' => $this->limits()]);
+                if (!is_array($p) || !isset($p['phase'])) {
+                    // An answer this worker cannot read is not a slice that
+                    // listed nothing and is fine.
+                    return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'listed' => 0, 'phase' => $phase, 'done' => false,
+                            'stop' => 'read', 'why' => 'the project\'s record list could not be read'];
+                }
+                $listed = isset($p['listed']) ? max(0, (int) $p['listed']) : 0;
+                if (empty($p['frozen']) || empty($p['ok'])) {
+                    return ['ok' => !empty($p['ok']), 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'listed' => $listed, 'phase' => (string) $p['phase'],
+                            'done' => false, 'stop' => isset($p['stop']) ? $p['stop'] : null,
+                            'why' => isset($p['why']) ? $p['why'] : null];
+                }
+                // Frozen in this request: the same request goes on to examine
+                // records with what is left of its budget.
+                $phase = (string) $p['phase'];
+            }
+
+            // The run_seq is what a duplicate finding is stamped with, so the
+            // finalizer is bound to it below; a row without one binds nothing
+            // and the finalizer then writes nothing (review R8-5).
+            $seq = isset($run['run_seq']) ? (int) $run['run_seq'] : 0;
+            $r = $this->loop($pid, $runId, $phase, $epoch,
+                (int) $run['generation_id'], $seq, $opts, $keep);
+            if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
+            return $r;
         } catch (ScanStoreUnavailable $e) {
             // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
             //
@@ -282,16 +354,40 @@ final class ScanWorker
     }
 
     /** Claim, evaluate and commit until the budget says stop or the phase is empty. */
-    private function loop($pid, $runId, $phase, $epoch, $generationId, array $opts, $keep = null)
+    private function loop($pid, $runId, $phase, $epoch, $generationId, $runSeq, array $opts, $keep = null)
     {
         $budget = isset($this->deps['budget']) ? $this->deps['budget'] : new WorkBudget();
         $worked = 0; $requeued = 0; $blocked = 0; $found = 0; $stop = null; $why = null;
         $done = false;
+        // WHAT THE FINISHING PHASES WALKED (review R2S-2): change-log rows,
+        // duplicate groups and the records a verify page checked, findings
+        // summarised. None of them is a record examined, so none moved worked,
+        // findings or blocked, and a request that summarised a page and stayed
+        // in the same phase looked to the browser like one that did nothing -
+        // js/scan.js progressed() backed off to 30 s between requests. It
+        // already counts `listed` as movement (planning lists records and
+        // examines none), so the movement is reported there.
+        $listed = 0;
 
         while (true) {
-            $stop = $budget->mustStop();
-            if ($stop !== null) {
-                $why = ($stop === 'time') ? WorkBudget::OUT_OF_TIME : WorkBudget::OUT_OF_MEMORY;
+            // admit(), not mustStop() (review BU-2). Asked before the first
+            // claim, mustStop() was a question about the host request: past
+            // the reserve before the scan did anything, every request stopped
+            // here, said "continues in the next one" and claimed nothing, and
+            // the run never moved. admit() lets the first unit through when one
+            // fits under the limit itself, and says plainly when even that
+            // will not fit - ok:false, so the browser stops asking, because the
+            // next request would arrive with the same footprint.
+            $gate = $budget->admit();
+            if ($gate !== null) {
+                if (empty($gate['resumable'])) {
+                    return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => $gate['stop'],
+                            'why' => $gate['why']];
+                }
+                $stop = $gate['stop'];
+                $why = $gate['why'];
                 break;
             }
 
@@ -304,8 +400,8 @@ final class ScanWorker
             // and resumable, which is what `ok:true` says.
             if (is_callable($keep) && !$keep()) {
                 return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                        'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                        'done' => false, 'stop' => 'slot',
+                        'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                        'phase' => $phase, 'done' => false, 'stop' => 'slot',
                         'why' => 'this scan lost its place in the server queue to another '
                                . 'scan while it was working; it will continue shortly'];
             }
@@ -320,16 +416,34 @@ final class ScanWorker
                     // make "we checked and found no duplicates" and "nobody
                     // checked" the same stored fact. Stop instead.
                     return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
-                            'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                            'done' => false, 'stop' => 'unconfigured',
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => 'unconfigured',
                             'why' => 'this scan has no way to decide duplicate values, so it '
                                    . 'stopped rather than reporting that it found none'];
                 }
-                $t0 = microtime(true);
-                $m0 = memory_get_usage(true);
-                $r = $fin->step($generationId, $budget->claim());
+                // THE FINDINGS IT WRITES ARE THIS RUN'S. A finalizer that
+                // writes is bound to the run's sequence here, the one place
+                // that has the run row, so no caller can build one that dates
+                // duplicates to some other run (review R8-5).
+                if ($fin instanceof SequencedFinalizer && $runSeq >= 1) {
+                    $fin = $fin->forRun($runSeq);
+                }
+                // TWO CLAIMS, because a step is one of two different things
+                // and nobody knows which until it has run (review BU-1). A page
+                // of group or candidate rows costs a kilobyte a row; a verify
+                // page re-reads whole records through the scan's own read and
+                // costs what a scanning batch costs. Handing both the one claim
+                // let cheap pages double it to the maximum, and the verify page
+                // after them re-read 500 records and died at memory_limit with
+                // this worker's slot still leased.
+                $mark = $budget->mark('groups');
+                $r = $fin->step($generationId, $budget->claim('groups'), $budget->claim('records'));
                 $found += $r['emitted'];
                 $blocked += $r['collisions'];
+                // Groups discovered, candidates verified, groups published:
+                // movement that is neither a finding nor an exclusion.
+                $listed += max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
                 if ($r['done']) {
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -339,12 +453,16 @@ final class ScanWorker
                     $done = true;
                     break;
                 }
-                $adj = $budget->next([
-                    'records' => max(1, $r['verified'] + $r['emitted'] + $r['groups']),
-                    'seconds' => microtime(true) - $t0,
-                    'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                    'usage' => memory_get_usage(true),
-                ]);
+                // A step that re-read records WAS a batch of records, and is
+                // measured as one, so the next verify page is sized by what
+                // re-reading records actually cost.
+                $units = max(1, $r['verified'] + $r['emitted'] + $r['groups']);
+                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
+                if ($reread > 0) {
+                    $mark['kind'] = 'records';
+                    $units = $reread;
+                }
+                $adj = $budget->observe($mark, $units);
                 if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                 continue;
             }
@@ -356,23 +474,20 @@ final class ScanWorker
             if ($phase === ScanPhase::ROLLUP) {
                 $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
                 if ($roll instanceof RollupBuilder) {
-                    $t0 = microtime(true);
-                    $m0 = memory_get_usage(true);
-                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim());
+                    $mark = $budget->mark('rows');
+                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'));
+                    $listed += max(0, (int) $r['rows']);
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
                             // The lease moved under us. Its page was discarded
                             // rather than counted twice; stopping is the rest of
                             // that decision.
                             return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
-                                    'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                                    'done' => false, 'stop' => 'fenced', 'why' => $r['why']];
+                                    'blocked' => $blocked, 'findings' => $found,
+                                    'listed' => $listed, 'phase' => $phase, 'done' => false,
+                                    'stop' => 'fenced', 'why' => $r['why']];
                         }
-                        $adj = $budget->next([
-                            'records' => max(1, $r['rows']), 'seconds' => microtime(true) - $t0,
-                            'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                            'usage' => memory_get_usage(true),
-                        ]);
+                        $adj = $budget->observe($mark, max(1, $r['rows']));
                         if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                         continue;
                     }
@@ -389,10 +504,37 @@ final class ScanWorker
             // the next page of the window is walked; otherwise the confirming
             // round would find it unchanged and settle over work not yet done.
             if ($phase === ScanPhase::CATCH_UP) {
+                // With the attempt limit, so a row a dead worker left claimed is
+                // charged the attempt it died on and handed out alone (see
+                // SqlScanStore::claimPending()).
+                //
+                // AND WITH WHAT IT RETIRED (review R2S-1). A row out of
+                // attempts is retired inside the claim, never reaches a batch,
+                // and was reported by nobody: the request said blocked=0 while
+                // records became blocking exclusions. They are counted here and
+                // written down where an administrator can read why.
+                $retired = 0;
                 $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
-                                                      $budget->claim());
+                                                      $budget->claim('records'), $this->claimStale(),
+                                                      $this->maxAttempts(), ScanStore::REC_UNREADABLE,
+                                                      $retired);
+                if ((int) $retired > 0) {
+                    $blocked += (int) $retired;
+                    $this->noteRetired($runId, (int) $retired);
+                }
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
-                                                             $found, $phase);
+                                                             $found, $phase, $listed);
+                if (!$claimed && (int) $retired > 0) {
+                    // A CALL THAT ONLY RETIRED SAYS NOTHING ABOUT WHAT IS LEFT
+                    // (review R2S-5). The store walks a bounded number of
+                    // windows of dead rows per call, so [] here can mean it
+                    // stopped looking, not that it found nothing to hand out.
+                    // Reading it as "records are still out with another
+                    // worker" backed the browser off over rows that were free.
+                    // Every such call made rows terminal, so asking again
+                    // always moves, and the budget still decides when to stop.
+                    continue;
+                }
                 if (!$claimed) {
                     // NOT WHILE RECORDS ARE STILL OUT. Catch-up sweeps
                     // stragglers BY STATE, and a row claimed by a worker that
@@ -401,20 +543,19 @@ final class ScanWorker
                     // pilot reached rollup-finalize with 3 of 39 examined and
                     // told the client it was done.
                     if (!$this->store->manifestComplete($runId)) {
-                        return self::waiting($worked, $requeued, $blocked, $found, $phase);
+                        return self::waiting($worked, $requeued, $blocked, $found, $phase,
+                                             $listed);
                     }
                     $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
                     if ($cu instanceof CatchUp) {
-                        $t0 = microtime(true);
-                        $m0 = memory_get_usage(true);
-                        $r = $cu->step($pid, $runId, $epoch, $budget->claim());
+                        $mark = $budget->mark('changes');
+                        $r = $cu->step($pid, $runId, $epoch, $budget->claim('changes'));
+                        // What the reader is shown is the in-scope part of
+                        // the page; the budget is told the whole page, which
+                        // is what it cost (review R5-1).
+                        $listed += max(0, (int) $r['listed']);
                         if (!$r['done']) {
-                            $adj = $budget->next([
-                                'records' => max(1, $r['scanned']),
-                                'seconds' => microtime(true) - $t0,
-                                'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                                'usage' => memory_get_usage(true),
-                            ]);
+                            $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                             continue;
                         }
@@ -428,11 +569,12 @@ final class ScanWorker
                     break;
                 }
             } else {
-                $claimed = $this->store->claim($runId, $this->owner(), $epoch, $budget->claim());
+                $claimed = $this->store->claim($runId, $this->owner(), $epoch,
+                                               $budget->claim('records'));
             }
 
             if ($claimed === false) {
-                return self::refused($worked, $requeued, $blocked, $found, $phase);
+                return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
             }
             if (!$claimed) {
                 // Nothing left to hand out here. Whether the run may move on is
@@ -447,7 +589,7 @@ final class ScanWorker
                 // catch-up sweeps them by state - which is exactly why catch-up
                 // refuses to advance while any remain.
                 if ($phase !== ScanPhase::SCANNING && !$this->store->manifestComplete($runId)) {
-                    return self::waiting($worked, $requeued, $blocked, $found, $phase);
+                    return self::waiting($worked, $requeued, $blocked, $found, $phase, $listed);
                 }
                 $next = ScanPhase::next($phase);
                 if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -461,9 +603,8 @@ final class ScanWorker
                 break;
             }
 
-            $t0 = microtime(true);
-            $m0 = memory_get_usage(true);
-            $r = $this->batch($pid, $runId, $epoch, $claimed);
+            $mark = $budget->mark('records');
+            $r = $this->batch($pid, $runId, $epoch, $claimed, $budget);
             if (!$r['ok']) {
                 // A refused commit means this worker was overtaken, cancelled,
                 // or writing into a database that will not have it; a failed
@@ -483,7 +624,7 @@ final class ScanWorker
                 // the operator as the same sentence.
                 return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
                         'blocked' => $blocked + (int) $r['blocked'], 'findings' => $found,
-                        'phase' => $phase, 'done' => false,
+                        'listed' => $listed, 'phase' => $phase, 'done' => false,
                         'stop' => isset($r['stop']) && $r['stop'] !== null ? $r['stop'] : 'fenced',
                         'why' => $r['why']];
             }
@@ -492,11 +633,26 @@ final class ScanWorker
             $blocked  += $r['blocked'];
             $found    += $r['findings'];
 
-            $adj = $budget->next([
-                'records' => count($claimed), 'seconds' => microtime(true) - $t0,
-                'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                'usage' => memory_get_usage(true),
-            ]);
+            $adj = $budget->observe($mark,
+                max(1, isset($r['examined']) ? (int) $r['examined'] : count($claimed)));
+            // A RECORD DROPPED BESIDE OTHERS IS TRIED AGAIN ALONE, now (review
+            // R2S-3). It went back uncharged and the batch's read data is
+            // gone; the budget takes records one at a time for the rest of the
+            // request and lets the next one through whatever it measures, so
+            // the retry cannot be lost to the stop this batch would otherwise
+            // have earned - see WorkBudget::alone().
+            if (isset($r['cut']) && $r['cut'] === 'retry') {
+                $budget->alone('records');
+                continue;
+            }
+            // A batch memory cut short ends the request: what it examined is
+            // committed and the rest is back in the queue, and this request is
+            // the one that is short of memory.
+            if (!empty($r['cut'])) {
+                $stop = 'memory';
+                $why = $r['why'];
+                break;
+            }
             if ($adj['stop'] !== null) {
                 $stop = $adj['stop'];
                 $why = $adj['why'];
@@ -505,7 +661,7 @@ final class ScanWorker
         }
 
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued, 'blocked' => $blocked,
-                'findings' => $found, 'phase' => $phase, 'done' => $done,
+                'findings' => $found, 'listed' => $listed, 'phase' => $phase, 'done' => $done,
                 'stop' => $stop, 'why' => $why];
     }
 
@@ -517,21 +673,21 @@ final class ScanWorker
      * them means the run is finished, and saying `done` over any of them is how
      * a scan certifies a project it barely looked at.
      */
-    private static function refused($worked, $requeued, $blocked, $found, $phase)
+    private static function refused($worked, $requeued, $blocked, $found, $phase, $listed = 0)
     {
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                'done' => false, 'stop' => 'fenced',
+                'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                'phase' => $phase, 'done' => false, 'stop' => 'fenced',
                 'why' => 'this scan could not take more work just now; it will continue where '
                        . 'it stopped'];
     }
 
     /** Records are still out with another worker. Resumable, and honest about why. */
-    private static function waiting($worked, $requeued, $blocked, $found, $phase)
+    private static function waiting($worked, $requeued, $blocked, $found, $phase, $listed = 0)
     {
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                'done' => false, 'stop' => 'waiting',
+                'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                'phase' => $phase, 'done' => false, 'stop' => 'waiting',
                 'why' => 'some records are still being examined, or were left behind by a worker '
                        . 'that stopped; this scan will pick them up shortly'];
     }
@@ -539,9 +695,14 @@ final class ScanWorker
     /**
      * One claimed batch, read stably and committed as a unit.
      *
+     * $budget is told what is held after the read and after each record
+     * (WorkBudget::sample()). Below PHP 8.2 that is the only in-batch figure:
+     * the peak is request-wide, and a batch that stays under an earlier
+     * high-water mark shows nothing by the time it is observed.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int, why:?string}
      */
-    private function batch($pid, $runId, $epoch, array $claimed)
+    private function batch($pid, $runId, $epoch, array $claimed, WorkBudget $budget = null)
     {
         $ids = [];
         // ordinal => claim token, the shape every write about these rows takes.
@@ -552,7 +713,7 @@ final class ScanWorker
             $claims[(int) $c['ordinal']] = isset($c['claim']) ? (int) $c['claim'] : 0;
         }
 
-        $maxAttempts = isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
+        $maxAttempts = $this->maxAttempts();
 
         $fence = isset($this->deps['fence']) ? $this->deps['fence'] : null;
         $before = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
@@ -580,11 +741,49 @@ final class ScanWorker
                     : 'the records could not be read from the project just now');
         }
         $data = isset($got['data']) && is_array($got['data']) ? $got['data'] : [];
+        if ($budget !== null) $budget->sample(false);
 
         $after = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
-        $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'marks' => []];
         $worked = 0; $requeued = 0; $blocked = 0;
+        // ordinal => which of the three counters its row adds to, so the
+        // counters can be taken again over the rows the commit actually held.
+        $outcome = [];
+
+        $moved = function ($id) use ($fence, $before, $after) {
+            return ($fence instanceof RecordVersions)
+                && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
+                    || $before[$id] !== $after[$id]);
+        };
+        // WHICH OF THE RECORDS THE READ LEFT OUT ARE REALLY GONE. Asked once for
+        // the whole batch, and only about records on their LAST attempt: below
+        // the cap the answer changes nothing, because the record is tried again
+        // either way.
+        $lastChance = [];
+        foreach ($claimed as $c) {
+            $id = $c['id_bin'];
+            if ($moved($id)) continue;
+            if (array_key_exists($id, $data) && is_array($data[$id])) continue;
+            $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
+            if ($tries + 1 >= $maxAttempts) $lastChance[] = $id;
+        }
+        $gone = $this->confirmedGone($lastChance);
+        // Rule problems this batch met and this worker has not yet recorded,
+        // keyed so one broken rule met by every record in the batch is one mark.
+        $marks = [];
+
+        // CUT SHORT BY MEMORY (review EE-1). The batch was sized before it was
+        // claimed, and the first batch of a request has nothing behind it, so
+        // the budget is asked after every record whether the next one still
+        // fits - see WorkBudget::sample(). 'stop' keeps this record and takes
+        // no more; 'drop' lets this record's result go as well, and becomes
+        // 'retry' when other records' read data was held beside it (R2S-3).
+        // Both shapes are ordinal => claim token, as giveBack() and
+        // releaseClaims() take them.
+        $cut = null;
+        $setAside = [];    // evaluated, not kept: an attempt is counted against it
+        $untouched = [];   // never reached: handed straight back, no attempt
 
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
@@ -595,10 +794,12 @@ final class ScanWorker
             // record from killing the batch it travelled in.
             $claim = isset($c['claim']) ? (int) $c['claim'] : 0;
 
-            $moved = ($fence instanceof RecordVersions)
-                && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
-                    || $before[$id] !== $after[$id]);
-            if ($moved) {
+            if ($cut !== null) {
+                $untouched[(int) $c['ordinal']] = $claim;
+                continue;
+            }
+
+            if ($moved($id)) {
                 // One more attempt, unless it has already had them all. A record
                 // that is edited every time we look at it is a real fact about
                 // the project, and reporting it is better than either retrying
@@ -608,35 +809,73 @@ final class ScanWorker
                                            'state' => ScanStore::REC_UNSTABLE, 'version' => null,
                                            'claim' => $claim];
                     $blocked++;
+                    $outcome[(int) $c['ordinal']] = 'blocked';
                 } else {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null,
                                            'claim' => $claim];
                     $requeued++;
+                    $outcome[(int) $c['ordinal']] = 'requeued';
                 }
                 continue;
             }
 
             if (!array_key_exists($id, $data) || !is_array($data[$id])) {
                 // Asked for and not returned. Either it was deleted during the
-                // run - which is a tombstone, a real terminal state, so the run
-                // is not stuck waiting for it - or the read is wrong about it,
-                // which is worth another attempt first.
+                // run, or the read is wrong about it - and the read being wrong
+                // is worth another attempt first.
+                //
+                // OUT OF ATTEMPTS, THE TWO ARE NOT THE SAME STATE. This wrote a
+                // TOMBSTONE for both, on the strength of an absence: an export
+                // that dropped a record three times running - a rights filter, a
+                // truncated response, an id the export normalises differently -
+                // recorded it as deleted. A tombstone does not block coverage,
+                // so the run went on to certify a project with a record in it
+                // that nobody examined. A tombstone is now a CONFIRMED deletion;
+                // anything less is a record that could not be read, which blocks.
                 if ($tries + 1 >= $maxAttempts) {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
-                                           'state' => ScanStore::REC_TOMBSTONE, 'version' => null,
-                                           'claim' => $claim];
+                                           'state' => isset($gone[(string) $id])
+                                               ? ScanStore::REC_TOMBSTONE : ScanStore::REC_UNREADABLE,
+                                           'version' => null, 'claim' => $claim];
                     $blocked++;
+                    $outcome[(int) $c['ordinal']] = 'blocked';
                 } else {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null,
                                            'claim' => $claim];
                     $requeued++;
+                    $outcome[(int) $c['ordinal']] = 'requeued';
                 }
                 continue;
             }
 
             $ev = $this->evaluate($id, $data[$id]);
+            $verdict = ($budget !== null) ? $budget->sample() : null;
+            if ($verdict === 'drop') {
+                // Its findings go first, before anything else asks for memory.
+                // It is not written as examined, so it cannot be certified.
+                $ev = null;
+                if (count($data) > 1) {
+                    // NOT ALONE, SO NOT ITS FAULT ALONE (review R2S-3). The
+                    // arena sample() compared with the limit holds every
+                    // record this batch read, and charging this one for its
+                    // neighbours' data excluded healthy records one request
+                    // at a time: the batch was rebuilt the same way each time
+                    // and the same first record charged. It goes back
+                    // uncharged with the rest, the read data is freed below,
+                    // and the loop retries it alone - see WorkBudget::alone().
+                    $untouched[(int) $c['ordinal']] = $claim;
+                    $cut = 'retry';
+                    continue;
+                }
+                // ALONE, the drop is the record's own: it is counted as
+                // attempted, so it cannot loop. See below.
+                $setAside[(int) $c['ordinal']] = $claim;
+                $cut = 'drop';
+                continue;
+            }
+            if ($verdict === 'stop') $cut = 'stop';
             if (!empty($ev['why'])) {
                 // The record was read and could not be examined. Reported as
                 // unreadable rather than as clean - H-05 in one line.
@@ -644,6 +883,7 @@ final class ScanWorker
                                        'state' => ScanStore::REC_UNREADABLE, 'version' => null,
                                        'claim' => $claim];
                 $blocked++;
+                $outcome[(int) $c['ordinal']] = 'blocked';
                 continue;
             }
             foreach ($ev['findings'] as $f) {
@@ -674,15 +914,50 @@ final class ScanWorker
                     $batch['candidates'][] = $cand;
                 }
             }
+            // WHAT THE EVALUATION COULD NOT EVALUATE. This was returned by every
+            // call and read by nobody: a rule that fails at run time - a
+            // reference that resolves on no event, a budget exhausted - left the
+            // records it met looking examined and the run able to say clean.
+            // Deduped three times over, because the same rule is met by every
+            // record: within the batch here, within this worker by $this->marked,
+            // and across workers by the store, where a mark is a presence.
+            if (isset($ev['problems']) && is_array($ev['problems']) && $ev['problems']) {
+                foreach (ScanPromotion::marksFor($ev['problems']) as $m) {
+                    $k = $m['axis1'] . "\0" . $m['axis2'];
+                    if (isset($this->marked[$runId][$k])) continue;
+                    $marks[$k] = $m;
+                }
+            }
             $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                    'state' => ScanStore::REC_DONE,
                                    'version' => isset($after[$id]) ? $after[$id] : null,
                                    'claim' => $claim];
             $worked++;
+            $outcome[(int) $c['ordinal']] = 'worked';
         }
 
-        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch);
+        // A 'stop' on the last record cut nothing off. The budget still hears
+        // what the batch cost when it is observed; the request is not told a
+        // batch was cut short that was not.
+        if ($cut === 'stop' && !$untouched) $cut = null;
+
+        // THE READ DATA IS NOT NEEDED PAST HERE, and it is the largest thing
+        // this batch holds: let it go before the commit asks for memory, and
+        // before a record the batch dropped is retried alone (R2S-3). $got
+        // holds the same array, so it goes too.
+        $ev = null;
+        $data = null;
+        $got = null;
+        if ($cut === 'retry' && $budget !== null) $budget->reclaim();
+
+        $batch['marks'] = array_values($marks);
+        // null when the store does not say how many records it still held (a
+        // store written before the out-parameter existed); 0 when it held none.
+        // The same for WHICH it held.
+        $held = null;
+        $heldOrd = null;
+        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch, $held, $heldOrd);
         if ($ok !== true) {
             $why = is_string($ok) ? $ok
                  : 'this scan was stopped or taken over while these records were being '
@@ -693,27 +968,135 @@ final class ScanWorker
             // written down - by the time the give-back below has run, the row
             // says it was excluded and nothing says why.
             $this->noteBatchRefused($runId, $why);
-            return $this->giveBack($runId, $epoch, $claims, $maxAttempts,
+            // Records a cut kept the batch from reaching were never attempted,
+            // so they go back without an attempt counted against them.
+            $out = $this->giveBack($runId, $epoch, array_diff_key($claims, $untouched), $maxAttempts,
                 ScanStore::REC_UNSTORED, 'fenced', $why);
+            if ($untouched) $this->store->releaseClaims($runId, $epoch, $this->owner(), $untouched);
+            return $out;
         }
+        // Remembered only once COMMITTED. A refused batch wrote nothing, so the
+        // next one must offer these again.
+        //
+        // AND ONLY WHEN THE COMMIT HELD A RECORD (review ST-4). A batch whose
+        // every claim was taken by another worker commits as `true` and writes
+        // no marks, because the marks travel behind the record fences. Taking
+        // `true` alone as "written" skipped those marks for the rest of the
+        // request; if the other worker's own commit then failed, the problem
+        // was never recorded and the run could claim clean.
+        if ($held !== 0) {
+            foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
+        }
+
+        // WHAT THE COMMIT HELD, NOT WHAT WAS SENT (review R2S-1). A record
+        // taken over while this worker evaluated it - by a second tab's
+        // straggler sweep, say - is committed by its new holder, and this
+        // commit drops it. Counting it here as well reported it twice: the
+        // worker that lost every record of its batch answered worked=4 for a
+        // commit that wrote nothing. So the counters are taken again over the
+        // rows the store says it kept. A store that does not say keeps the old
+        // reading, as $held does above.
+        $findings = count($batch['findings']);
+        $candidates = count($batch['candidates']);
+        if (is_array($heldOrd)) {
+            $keep = array_flip(array_map('intval', $heldOrd));
+            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
+            foreach ($outcome as $o => $k) {
+                if (isset($keep[$o])) $tally[$k]++;
+            }
+            $worked = $tally['worked'];
+            $requeued = $tally['requeued'];
+            $blocked = $tally['blocked'];
+            $findings = 0;
+            foreach ($batch['findings'] as $f) {
+                if (isset($keep[(int) $f['ordinal']])) $findings++;
+            }
+            $candidates = 0;
+            foreach ($batch['candidates'] as $f) {
+                if (isset($keep[(int) $f['ordinal']])) $candidates++;
+            }
+        }
+
+        // WHAT THE CUT LEFT, settled after the commit and outside it. A record
+        // set aside WAS attempted: its attempt is counted in a transaction of
+        // its own (noteAttempts, the same door a failed read or a refused
+        // commit uses, which hands it back in that same write), so a record
+        // whose findings never fit runs out of attempts and ends as one that
+        // could not be examined - reported and blocking - instead of being
+        // handed back for ever. Records never reached are handed back as they
+        // were, with no attempt.
+        if ($setAside) {
+            $note = $this->store->noteAttempts($runId, $epoch, $this->owner(), $setAside,
+                                               $maxAttempts, ScanStore::REC_UNREADABLE);
+            if (is_array($note) && isset($note['retired'])) $blocked += (int) $note['retired'];
+        }
+        if ($untouched) {
+            $this->store->releaseClaims($runId, $epoch, $this->owner(), $untouched);
+        }
+        // 'retry' carries no sentence: the request is not stopping, it is
+        // taking the dropped record again, alone.
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => count($batch['findings']),
-                'candidates' => count($batch['candidates']), 'why' => null];
+                'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
+                'examined' => count($claimed) - count($untouched), 'cut' => $cut,
+                'why' => $cut === 'drop' ? WorkBudget::SET_ASIDE
+                       : ($cut === 'stop' ? WorkBudget::CUT_SHORT : null)];
     }
 
     /**
-     * Nothing was committed. Count the attempt, then hand the records back.
+     * Of these record ids, the ones the project confirms it no longer holds.
      *
-     * THE ORDER IS THE FIX. Counting first means the count is written by a
-     * transaction the failed one cannot roll back - which is the whole of B8:
-     * `attempts` was incremented only inside commitBatch, so it moved only when
-     * the commit had already succeeded. The retry cap was therefore unreachable
-     * by the one path that needed it, and any persistent write error retried
-     * without bound while holding the project's only scan slot.
+     * ONLY AN EXPLICIT `false` CONFIRMS. No resolver, a resolver that throws, an
+     * answer that is not an array, an id the answer leaves out, a truthy value,
+     * a null: every one of those is "cannot tell", and cannot tell is NOT GONE.
+     * The cost of that direction is a record reported as unreadable when it was
+     * in fact deleted, which caps one run's coverage; the other direction drops
+     * a live record out of a report that then says it covered the project.
      *
-     * Releasing second means a record that has just run out of attempts is
-     * already terminal by the time the release looks at it, so it is not handed
-     * back into a loop it can no longer leave.
+     * @param string[] $ids
+     * @return array<string,bool> id => true, for the confirmed ones only
+     */
+    private function confirmedGone(array $ids)
+    {
+        if (!$ids) return [];
+        $probe = isset($this->deps['exists']) ? $this->deps['exists'] : null;
+        if (!is_callable($probe)) return [];
+        try {
+            $answer = $probe($ids);
+        } catch (\Throwable $e) {
+            return [];
+        }
+        if (!is_array($answer)) return [];
+        $gone = [];
+        foreach ($ids as $id) {
+            $k = (string) $id;
+            if (array_key_exists($k, $answer) && $answer[$k] === false) $gone[$k] = true;
+        }
+        return $gone;
+    }
+
+    /** How many attempts a record gets before it is retired as one that could not be examined. */
+    private function maxAttempts()
+    {
+        return isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
+    }
+
+    /**
+     * Nothing was committed. Count the attempt and hand the records back.
+     *
+     * COUNTING IS THE FIX. It is written by a transaction the failed one cannot
+     * roll back - which is the whole of B8: `attempts` was incremented only
+     * inside commitBatch, so it moved only when the commit had already
+     * succeeded. The retry cap was therefore unreachable by the one path that
+     * needed it, and any persistent write error retried without bound while
+     * holding the project's only scan slot.
+     *
+     * AND THE HAND-BACK IS THE SAME WRITE (review R2S-4). A record that has
+     * just run out of attempts is retired, and whatever is left is released so
+     * another worker can take it now rather than in fifteen minutes' time -
+     * both inside noteAttempts(). They were two transactions, and a release
+     * that failed, or a takeover between them, left a counted row still
+     * stamped: the straggler sweep later found it stale and charged the same
+     * failure a second time.
      *
      * BOTH PATHS COME HERE - a whole-batch read failure and a refused commit -
      * because they are the same shape: work was attempted, nothing was stored,
@@ -725,12 +1108,40 @@ final class ScanWorker
         $note = $this->store->noteAttempts($runId, $epoch, $this->owner(), $claims,
                                            $maxAttempts, $exhausted);
         if (is_array($note) && isset($note['retired'])) $retired = (int) $note['retired'];
-        // Whatever is left is handed straight back, so another worker can take
-        // it now rather than in fifteen minutes' time. A row this call just
-        // retired is terminal and is not released - see the method note.
-        $this->store->releaseClaims($runId, $epoch, $this->owner(), $claims);
         return ['ok' => false, 'stop' => $stop, 'worked' => 0, 'requeued' => 0,
                 'blocked' => $retired, 'findings' => 0, 'candidates' => 0, 'why' => $why];
+    }
+
+    /**
+     * How old a claim must be before its worker is taken to have stopped.
+     *
+     * Fifteen minutes unless the composition root says otherwise: long enough
+     * that a live batch is never mistaken for a dead one, short enough that a
+     * crash costs a delay rather than the run. See ScanStore::claimPending().
+     */
+    private function claimStale()
+    {
+        return isset($this->deps['claimStale']) ? max(1, (int) $this->deps['claimStale']) : 900;
+    }
+
+    /**
+     * Where records retired by the straggler sweep are written down.
+     *
+     * The worker that left them died without saying so, and the sweep that
+     * retired them examined nothing - so this line is the only record of why
+     * they became exclusions. Wrapped, as noteBatchRefused() is.
+     */
+    private function noteRetired($runId, $n)
+    {
+        $note = isset($this->deps['note']) ? $this->deps['note'] : null;
+        if (!is_callable($note)) return;
+        try {
+            $note('scan records retired', ['run_id' => (int) $runId,
+                'detail' => $n . ' record(s) left claimed by a worker that stopped had no attempts '
+                          . 'left, so they were reported as not examined rather than tried again']);
+        } catch (\Throwable $ignored) {
+            // A failure while reporting a failure is not worth a second one.
+        }
     }
 
     /** Where a refused batch is written down. Wrapped: the log is a database too. */
@@ -764,6 +1175,17 @@ final class ScanWorker
             return ['findings' => [], 'bytes' => 0, 'contexts' => 0,
                     'why' => 'this record could not be examined (' . get_class($e) . ')'];
         }
+    }
+
+    /**
+     * The detail budget a run this worker ends as cancelled is judged against
+     * (review R3U-3): ScanService hands the numbers it gives promote(), so the
+     * stopped row is truncated or not whichever request ends it. [] when the
+     * caller did not say, which judges the run against no budget.
+     */
+    private function limits()
+    {
+        return (isset($this->deps['limits']) && is_array($this->deps['limits'])) ? $this->deps['limits'] : [];
     }
 
     private function owner()

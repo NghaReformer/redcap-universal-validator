@@ -57,7 +57,7 @@ function makeEl(id) {
 const els = {};
 ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume', 'uv-scan-phase',
  'uv-scan-bar-track', 'uv-scan-bar', 'uv-scan-counts', 'uv-scan-found', 'uv-scan-done',
- 'uv-scan-note', 'uv-scan-announce'].forEach((id) => {
+ 'uv-scan-note', 'uv-scan-announce', 'uv-scan-stalled', 'uv-scan-stored'].forEach((id) => {
   els[id] = makeEl(id);
 });
 
@@ -114,12 +114,31 @@ UV.labels = {
                        + 'the project did not change during the scan.',
     'partial': 'Some records could not be checked. This is not a complete picture of the project.',
     'failed': 'The scan failed, so it describes nothing.',
-    'empty-scope': 'No records were in scope for this scan, so nothing was checked and this '
-                 + 'result says nothing about the project.',
+    'empty-scope': 'This scan has no record left to report on: none was in scope, or every one was '
+                 + 'deleted while it ran, whether or not it had been checked. Any findings it '
+                 + 'counted are on deleted records. This result says nothing about the project.',
   },
   coverageUnknown: 'This scan finished, but this page does not recognise the result it recorded '
                  + '({value}). Treat it as incomplete and run it again.',
   truncated: 'Some findings were not kept, because the scan reached the limit this project allows.',
+  stalled: 'No progress has been recorded on this scan for {minutes} minutes. If it does not move '
+         + 'soon, stop it and start a new one, or ask your REDCap administrator to check the '
+         + 'External Modules log.',
+  paused: 'This scan is paused: nothing has worked on it for {minutes} minutes, which is what '
+        + 'happens when the page that was running it is closed. Nothing has been lost. Press '
+        + 'Continue to carry on from where it stopped.',
+  stopping: 'This scan was asked to stop and has not finished stopping. Press Continue to finish '
+          + 'stopping it.',
+  plain: '{done} of {total} records',
+  checked: '{done} of {total} records checked',
+  excluded: '{n} could not be checked',
+  removed: '{n} deleted during the scan',
+  foundUnknown: 'Findings not counted, because the scan ended before it could total them',
+  stored: 'Stored: {rows}',
+  storedValues: 'Stored: {rows}, with {size} of values',
+  notCertified: 'This result does not certify the project.',
+  ruleProblem: '1 rule could not be evaluated, so this result does not certify the project.',
+  ruleProblems: '{n} rules could not be evaluated, so this result does not certify the project.',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -158,6 +177,9 @@ function reset(s) {
   UV.state.lastPhase = null;
   UV.state.lastPct = null;
   UV.state.lastFindings = null;
+  UV.state.watchChain++;               // a watch from an earlier test dies quietly
+  UV.state.watchWait = 0;
+  UV.state.stopNote = null;
   Object.keys(els).forEach((k) => {
     els[k].textContent = ''; els[k].style = {}; els[k]._attrs = {}; els[k].disabled = false;
   });
@@ -514,11 +536,21 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   reset([{ ok: true, run_id: 7 }, { ok: true, status: finished('empty-scope') }]);
   UV.start(); await ticks(6);
   check('client: an empty-scope run gets its own sentence, not the unknown fallback',
-    els['uv-scan-done'].textContent.indexOf('No records were in scope') === 0
+    els['uv-scan-done'].textContent.indexOf('This scan has no record left to report on') === 0
     && els['uv-scan-done'].textContent.indexOf('does not recognise') === -1);
   check('client: and it never claims a record was checked',
-    els['uv-scan-done'].textContent.indexOf('Every record was checked') === -1
-    && els['uv-scan-done'].textContent.indexOf('nothing was checked') !== -1);
+    els['uv-scan-done'].textContent.indexOf('Every record was checked') === -1);
+  // R2O-1. Nor that NONE was: records checked and then deleted keep their
+  // findings, and the panel counts them. Both lines, as the client renders an
+  // empty-scope run whose records were examined before they were deleted.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('empty-scope'),
+    { terminal: 'partial', done: 0, settled: 2, removed: 2, total: 2, findings: 2, clean: 0 }) }]);
+  UV.start(); await ticks(6);
+  check('client: R2O-1 an empty scope with findings does not say nothing was checked beside them',
+    els['uv-scan-found'].textContent === '2 findings so far'
+    && els['uv-scan-done'].textContent.toLowerCase().indexOf('nothing was checked') === -1
+    && els['uv-scan-done'].textContent.indexOf('whether or not it had been checked') !== -1
+    && els['uv-scan-done'].textContent.indexOf('Any findings it counted are on deleted records') !== -1);
 
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.
@@ -593,6 +625,62 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: cancelling stops the local loop at once', UV.state.running === false);
   check('client: and asks the server to cancel', sent[0].action === 'scan-cancel');
   check('client: sending only the run id', sent[0].payload.run_id === 7);
+  check('client: a stop the server has only asked for says it is stopping',
+    els['uv-scan-note'].textContent === 'Stopping the scan.');
+
+  // R2O-5. A run nobody was working is ENDED by Stop, and the server says so;
+  // "Stopping" over the finished panel would be the one stale word on it.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
+  UV.start();
+  await ticks(6);
+  sent.length = 0;
+  script = [{ ok: true, why: null, stopped: true },
+            Object.assign(finished('partial'), { terminal: 'cancelled' })];
+  UV.cancel();
+  await ticks(6);
+  check('client: R2O-5 a stop the server finished says the scan was stopped',
+    els['uv-scan-note'].textContent === 'The scan was stopped.');
+  // The driver's own queued pass is an orphan of the chain Stop superseded.
+  const askedR5 = sent.length;
+  await drive(3);
+  check('client: R2O-5 and the panel shows it finished, with no stopping sentence and nothing more asked',
+    els['uv-scan-done'].style.display === '' && els['uv-scan-stalled'].style.display === 'none'
+    && els['uv-scan-start'].style.display === '' && sent.length === askedR5);
+
+  // R3U-5. The commonest Stop is pressed while this tab's own work request is
+  // in flight: the server sees the run held, can only ASK, and answers
+  // stopped:false - and that request then ends it. "Stopping the scan." was
+  // written once and stayed under the finished panel for as long as the page
+  // was open. The first terminal status the watch gets replaces it.
+  const stoppingSt = Object.assign(running(1, 10), { phase: 'cancelling', stopping: true, idleSeconds: 2 });
+  const cancelledSt = Object.assign(finished('partial'), { terminal: 'cancelled' });
+  const stopThen = async (ending, meddle) => {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
+    UV.start();
+    await ticks(6);
+    sent.length = 0;
+    script = [{ ok: true, why: null, stopped: false }, stoppingSt, ending];
+    UV.cancel();
+    await ticks(6);
+    const asked = els['uv-scan-note'].textContent;
+    if (meddle) els['uv-scan-note'].textContent = meddle;
+    const delays = await drive(4);
+    return { asked, delays, note: els['uv-scan-note'].textContent };
+  };
+  let r5 = await stopThen(cancelledSt);
+  check('client: R3U-5 a stop the server could only ask for says it is stopping',
+    r5.asked === 'Stopping the scan.');
+  check('client: R3U-5 and once the run is over the note says it was stopped',
+    r5.note === 'The scan was stopped.' && els['uv-scan-done'].style.display === '');
+  check('client: R3U-5 and the watch asked again on its ladder, never at 0 ms',
+    r5.delays.length > 0 && r5.delays.every((ms) => ms > 0)
+    && !sent.some((s) => s.action === 'scan-work'));
+  r5 = await stopThen(finished('complete-through-fence'));
+  check('client: R3U-5 a run that ended some other way says so, not that it was stopped',
+    r5.note === 'The scan ended before it could be stopped.');
+  r5 = await stopThen(cancelledSt, 'A sentence somebody else wrote.');
+  check('client: R3U-5 a note written since the Stop is not Stop\'s to replace',
+    r5.note === 'A sentence somebody else wrote.');
 
   // -- attaching to a run that is already going ---------------------------
   //
@@ -604,6 +692,349 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: attaching asks for status', sent[0].action === 'scan-status');
   check('client: on the run the page named', sent[0].payload.run_id === 42);
   check('client: and does not start working on it uninvited', UV.state.running === false);
+
+  // -- CL-4: a watching tab keeps watching ---------------------------------
+  //
+  // It asked scan-status once and never again, so a stall that began later was
+  // never shown and a stall sentence that stopped being true never came down.
+  // It now asks again on the no-progress ladder while the run is active, and
+  // stops when it is not.
+  reset([running(5, 10)]);                 // the transport repeats this for ever
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: an active run that this tab is only watching is asked about again',
+    pending.length === 1 && pending[0].ms === 1500);
+  let wd = await drive(12);
+  const statusAsks = sent.filter((s) => s.action === 'scan-status').length;
+  check('watch: on the no-progress ladder - 1.5 s doubling to 30 s, never 0 ms',
+    wd.slice(0, 7).join(',') === '1500,3000,6000,12000,24000,30000,30000'
+    && wd.every((ms) => ms > 0));
+  check('watch: one status request per step, and never a scan-work',
+    statusAsks === 13 && !sent.some((s) => s.action === 'scan-work'));
+  check('watch: still only watching', UV.state.running === false && pending.length === 1);
+
+  // A stall the server reports later is shown; one it stops reporting is taken down.
+  reset([running(5, 10), Object.assign(running(5, 10), { stalled: true, idleSeconds: 300 }),
+         running(6, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a run moving when the tab opened shows no stall', els['uv-scan-stalled'].style.display === 'none');
+  await drive(1);
+  check('watch: a stall that began afterwards is shown to the watcher',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('No progress has been recorded') === 0);
+  await drive(1);
+  check('watch: and taken down once the run moves again',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === '');
+
+  // A terminal run ends the watching.
+  reset([running(5, 10), finished('complete-through-fence')]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  await drive(1);
+  check('watch: a run that finishes stops the watching - no timer is left',
+    els['uv-scan-done'].style.display === '' && pending.length === 0);
+  await drive(5);
+  check('watch: and nothing more is asked', sent.length === 2);
+
+  // A refusal the server marks FINAL ends it too: there is no such run, or
+  // this tab may not look, and asking again gets the same answer.
+  reset([{ ok: false, why: 'no scan with that reference is running for this project', final: true }]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a refused status the server calls final is not asked again', pending.length === 0);
+
+  // R2O-4. ANY OTHER REFUSAL IS A MOMENT. The endpoint's catch-all answers a
+  // database blip with ok:false; the watch ended on it, kept the paused
+  // sentence from the answer before, and never learned the run finished.
+  const blip = { ok: false, why: 'the validation scan could not be reached; ask an administrator to '
+                                 + 'check the module log' };
+  reset([Object.assign(running(5, 10), { paused: true, idleSeconds: 600 }), blip,
+         finished('complete-through-fence')]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: R2O-4 the watcher is shown the paused sentence first',
+    els['uv-scan-stalled'].textContent.indexOf('This scan is paused') === 0);
+  await drive(1);
+  check('watch: R2O-4 a refusal that is not final is asked again, on the ladder, never at once',
+    pending.length === 1 && pending[0].ms === 3000);
+  check('watch: R2O-4 and the paused sentence does not outlive the answer that contradicted it',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === ''
+    && els['uv-scan-note'].textContent === blip.why);
+  await drive(1);
+  check('watch: R2O-4 so the tab learns the run finished',
+    els['uv-scan-done'].style.display === '' && els['uv-scan-done'].textContent.indexOf('Every record') === 0
+    && pending.length === 0);
+  check('watch: R2O-4 and the refusal sentence comes down with the answer that ended it',
+    els['uv-scan-note'].textContent === '');
+  // A server that sends no `final` at all - an older build, or the shutdown
+  // handler - is treated the same way: asked again, never at 0 ms.
+  reset([blip]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  const bd = await drive(6);
+  check('watch: R2O-4 a refusal repeated for ever is asked on the climbing ladder, never at 0 ms',
+    bd.slice(0, 5).join(',') === '1500,3000,6000,12000,24000' && bd.every((ms) => ms > 0)
+    && !sent.some((s) => s.action === 'scan-work'));
+  // A note somebody else wrote after the refusal is not the watch's to clear.
+  reset([blip, running(5, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  els['uv-scan-note'].textContent = 'Stopping the scan.';
+  await drive(1);
+  check('watch: R2O-4 it clears only its own sentence',
+    els['uv-scan-note'].textContent === 'Stopping the scan.');
+
+  // A status that did not arrive is retried on the same ladder, never at once.
+  reset([{ reject: true }, running(5, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a lost status is asked again after the ladder, not immediately',
+    pending.length === 1 && pending[0].ms === 1500);
+
+  // Pressing Continue ends the watching: the driver renders every answer itself.
+  reset([running(5, 10), worked(running(6, 10)), worked(running(7, 10))]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  const watchTimer = pending.shift();      // the watcher's queued poll, held back
+  UV.resume();
+  await ticks(6);
+  const before4 = sent.filter((s) => s.action === 'scan-status').length;
+  if (watchTimer) watchTimer.fn();
+  await ticks(6);
+  check('watch: once this tab drives, an old watching timer asks nothing',
+    !!watchTimer && sent.filter((s) => s.action === 'scan-status').length === before4);
+  UV.state.running = false;
+  UV.state.chain++;
+
+  // -- what was examined, and what only LOOKS like progress (L4) -------------
+  //
+  // `done` was every record in a terminal state, so a run in which no result
+  // could be stored read "10 of 10 records (100%)" above an empty report. The
+  // server now reports what was examined and what was not, separately, and the
+  // bar follows `settled` so it still reaches the end.
+  const counted = (over) => Object.assign(running(8, 10), over);
+  // scan-status answers with the status ITSELF, not wrapped in a work reply.
+  const show = async (st) => {
+    reset([st]);
+    UV.attach({ runId: 42, autoResume: false });
+    await ticks(4);
+  };
+  await show(counted({ done: 3, settled: 3, excluded: 0, removed: 0 }));
+  check('counts: with nothing excluded the line is exactly what it always was',
+    els['uv-scan-counts'].textContent === '3 of 10 records  (30%)');
+  await show(counted({ done: 8, settled: 10, excluded: 2, removed: 0 }));
+  check('counts: records that could not be checked are SAID, not folded into the total',
+    els['uv-scan-counts'].textContent === '8 of 10 records checked; 2 could not be checked  (100%)');
+  check('counts: and the bar still reaches the end, because the run did',
+    els['uv-scan-bar'].style.width === '100%'
+    && els['uv-scan-bar-track']._attrs['aria-valuenow'] === '100');
+  check('counts: a screen reader is told the same thing the eye is',
+    els['uv-scan-bar-track']._attrs['aria-valuetext']
+      === '8 of 10 records checked; 2 could not be checked');
+  await show(counted({ done: 7, settled: 10, excluded: 2, removed: 1 }));
+  check('counts: a record deleted during the scan is its own clause',
+    els['uv-scan-counts'].textContent
+      === '7 of 10 records checked; 2 could not be checked; 1 deleted during the scan  (100%)');
+  await show(counted({ done: 0, settled: 10, excluded: 10, removed: 0 }));
+  check('counts: a run that examined NOTHING does not read as one that examined everything',
+    els['uv-scan-counts'].textContent.indexOf('0 of 10 records checked') === 0
+    && els['uv-scan-counts'].textContent.indexOf('10 of 10') === -1);
+  // A server that has not been upgraded sends no `settled`. The old `done` had
+  // that meaning, so the bar reads it and nothing is excluded.
+  await show(running(5, 10));
+  check('counts: a status with no breakdown renders as it used to',
+    els['uv-scan-counts'].textContent === '5 of 10 records  (50%)'
+    && els['uv-scan-bar'].style.width === '50%');
+
+  // -- a stall the WATCHING tab can see (L5) --------------------------------
+  //
+  // The tab driving a scan already knows when a pass made no progress and says
+  // so. The tab that cannot know is the one opened beside it, or an hour later.
+  await show(counted({ stalled: true, idleSeconds: 330 }));
+  check('stalled: a watching tab is told, in the page\'s own sentence',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('for 5 minutes') !== -1
+    && els['uv-scan-stalled'].textContent.indexOf('{') === -1);
+  await show(counted({ stalled: false, idleSeconds: 4 }));
+  check('stalled: a run that is moving shows nothing, and leaves no sentence behind',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === '');
+  await show(Object.assign(finished('partial'), { stalled: true, idleSeconds: 9000 }));
+  check('stalled: a finished run is never stalled, whatever it is sent',
+    els['uv-scan-stalled'].style.display === 'none');
+  // CL-2. A run nobody is working on is PAUSED: the server says so, and the
+  // reader is told to press Continue - not to stop it and start a new one.
+  await show(counted({ paused: true, idleSeconds: 600 }));
+  check('paused: a watching tab is told the run is paused and to press Continue',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('This scan is paused') === 0
+    && els['uv-scan-stalled'].textContent.indexOf('for 10 minutes') !== -1
+    && els['uv-scan-stalled'].textContent.indexOf('start a new one') === -1);
+  await show(Object.assign(counted({ stopping: true, stalled: true, idleSeconds: 9000 }),
+                           { phase: 'cancelling' }));
+  check('stopping: a run that was asked to stop says so, never that it stalled',
+    els['uv-scan-stalled'].textContent === UV.labels.stopping);
+  await show(Object.assign(finished('partial'), { paused: true, stopping: true }));
+  check('paused: a finished run is never paused or stopping, whatever it is sent',
+    els['uv-scan-stalled'].style.display === 'none');
+
+  // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
+  // sentence sending the reader to Stop, with Continue hidden; the list now
+  // resumes from its cursor, so a flag an older server still sends is not
+  // a sentence and does not hide Continue.
+  const planning = (over) => Object.assign(running(0, 0), { phase: 'planning' }, over);
+  await show(planning({ planningStopped: true, idleSeconds: 3 * 3600 }));
+  check('planning: a stale planningStopped flag neither speaks nor hides Continue',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-resume'].style.display === ''
+    && UV.labels.planningStopped === undefined);
+  await show(planning({ idleSeconds: 90 }));
+  check('planning: a run still listing is told nothing, as before',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-resume'].style.display === '');
+  // B10. PLANNING IS A SLICE PER WORK REQUEST NOW, so a planning run nobody is
+  // driving is PAUSED like any other, and Continue resumes the list.
+  await show(planning({ paused: true, idleSeconds: 300 }));
+  check('planning: a planning run nobody is driving reads as paused, with Continue offered',
+    els['uv-scan-stalled'].textContent === UV.labels.paused.replace('{minutes}', '5')
+    && els['uv-scan-resume'].style.display === '');
+  reset([{ ok: true, stop: 'time', worked: 0, requeued: 0, blocked: 0, findings: 0, listed: 1000,
+           phase: 'planning', status: planning({}) },
+         idle('held', 'another request is listing this project\'s records; this one will continue shortly',
+              planning({}))]);
+  UV.resume(7);
+  await ticks(6);
+  check('planning: Continue drives the list, and a slice that listed records is asked again at once',
+    sent.filter((s) => s.action === 'scan-work').length === 1
+    && pending.length === 1 && pending[0].ms === 0);
+  fire(); await ticks(6);
+  check('planning: a slice held off by another planner waits on the ladder, and says why',
+    sent.filter((s) => s.action === 'scan-work').length === 2
+    && pending.length === 1 && pending[0].ms >= 1500
+    && els['uv-scan-note'].textContent.indexOf('another request is listing') === 0);
+  // A tab DRIVING a planning run keeps driving it: there is no planning
+  // state it gives up on, because every slice resumes from the cursor.
+  reset([{ ok: true, stop: 'time', worked: 0, requeued: 0, blocked: 0, findings: 0, listed: 500,
+           phase: 'planning', status: planning({ planningStopped: true, idleSeconds: 3 * 3600 }) },
+         planning({})]);
+  UV.resume(7);
+  await ticks(6);
+  check('planning: a driving tab does not stop on a planningStopped flag, and asks again at once',
+    UV.state.running === true && pending.length === 1 && pending[0].ms === 0);
+
+  // DRIVING. Same status, but this tab is the one doing the work.
+  reset([{ ok: true, run_id: 7 }, worked(counted({ stalled: true, idleSeconds: 330 }))]);
+  UV.start();
+  await ticks(6);
+  check('stalled: the tab DRIVING the scan does not show it - it has its own note for that',
+    UV.state.running === true && els['uv-scan-stalled'].style.display === 'none');
+
+  // -- OC-2: what promotion decided --------------------------------------
+  //
+  // A run refused `clean` because a rule could not be evaluated, with nothing
+  // found, rendered exactly what a certified run rendered. The server now says
+  // what it decided, and every finished run not certified says so.
+  const fencedText = 'Every record was checked, including changes made while it ran.';
+  const decided = (over) => Object.assign(finished('complete-through-fence'), over);
+  await show(decided({ clean: 1, ruleProblems: 0 }));
+  const certText = els['uv-scan-done'].textContent;
+  check('verdict: a certified run says what it checked and nothing more', certText === fencedText);
+  await show(decided({ clean: 0, ruleProblems: 1 }));
+  check('verdict: a run with a rule it could not evaluate does NOT read as the certified one',
+    els['uv-scan-done'].textContent !== certText
+    && els['uv-scan-done'].textContent === fencedText + ' ' + UV.labels.ruleProblem);
+  await show(decided({ clean: 0, ruleProblems: 4 }));
+  check('verdict: and counts the rules when there is more than one',
+    els['uv-scan-done'].textContent.indexOf('4 rules could not be evaluated') !== -1
+    && els['uv-scan-done'].textContent.indexOf('{n}') === -1);
+  await show(decided({ clean: 0, ruleProblems: 0, findings: 3 }));
+  check('verdict: a run not certified for another reason says it is not certified',
+    els['uv-scan-done'].textContent === fencedText + ' ' + UV.labels.notCertified);
+  await show(Object.assign(finished('partial'), { terminal: 'cancelled', clean: null }));
+  check('verdict: so does a run with no decision',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  await show(finished('complete-through-fence'));
+  check('verdict: and a status that never said is not read as certified',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  const keptLabelsForVerdict = UV.labels;
+  UV.labels = {};
+  await show(decided({ clean: 0, ruleProblems: 1 }));
+  check('verdict: with no vocabulary handed over the sentence is still there',
+    els['uv-scan-done'].textContent.indexOf('could not be evaluated') !== -1);
+  UV.labels = keptLabelsForVerdict;
+
+  // -- OC-4: findings that were never counted -----------------------------
+  //
+  // A run that ended before its summary was built answers findings: null. The
+  // line printed "null findings so far"; read as zero it would say "Nothing
+  // found yet" over duplicates the finalizer had already written.
+  const ended = Object.assign(finished('partial'), { terminal: 'cancelled', findings: null });
+  await show(ended);
+  check('found: a count that does not exist is said not to exist',
+    els['uv-scan-found'].textContent === UV.labels.foundUnknown
+    && els['uv-scan-found'].textContent.indexOf('null') === -1);
+  const noCount = Object.assign({}, ended);
+  delete noCount.findings;
+  await show(noCount);
+  check('found: and so is a status with no count at all, never "Nothing found yet"',
+    els['uv-scan-found'].textContent === UV.labels.foundUnknown);
+  await show(Object.assign({}, ended, { findings: 0 }));
+  check('found: a counted zero is still nothing found',
+    els['uv-scan-found'].textContent === 'Nothing found yet');
+  const keptLabels = UV.labels;
+  UV.labels = {};
+  await show(ended);
+  check('found: with no vocabulary handed over it still does not say nothing was found',
+    els['uv-scan-found'].textContent.indexOf('not counted') !== -1);
+  UV.labels = keptLabels;
+
+  // -- P10: what the run has stored ------------------------------------------
+  //
+  // The run row's storage counters, which nothing rendered. The size table is
+  // tests/scan_page_php.php's, string for string: the panel's first paint and
+  // the client's first poll must not disagree by a digit.
+  await show(Object.assign(counted({}), { detailRows: 12345, detailBytes: 3565158 }));
+  check('stored: a run that has stored rows says how many, and how much the values take',
+    els['uv-scan-stored'].textContent === 'Stored: 12,345 finding rows, with 3.4 MB of values'
+    && els['uv-scan-stored'].style.display === '');
+  await show(Object.assign(counted({}), { detailRows: 1, detailBytes: 0 }));
+  check('stored: one row and no values says only the row',
+    els['uv-scan-stored'].textContent === 'Stored: 1 finding row');
+  await show(Object.assign(counted({}), { detailRows: 0, detailBytes: 0 }));
+  check('stored: a run that stored nothing hides the line and empties it',
+    els['uv-scan-stored'].textContent === '' && els['uv-scan-stored'].style.display === 'none');
+  await show(Object.assign(counted({}), { detailRows: '<b>9</b>', detailBytes: 10 }));
+  check('stored: a count that is not a number is not a count, and is never written as markup',
+    els['uv-scan-stored'].textContent === '' && els['uv-scan-stored'].style.display === 'none');
+  const sizes = { 0: '0 bytes', 1: '1 byte', 400: '400 bytes', 1023: '1023 bytes', 1024: '1.0 KB',
+    1075: '1.0 KB', 1076: '1.1 KB', 1048575: '1.0 MB', 3565158: '3.4 MB', 3617587: '3.4 MB',
+    3617588: '3.5 MB', 1073741824: '1.0 GB', 2199023255552: '2.0 TB', 1125899906842624: '1,024.0 TB' };
+  const badSizes = [];
+  for (const b of Object.keys(sizes)) {
+    // Through the line, with one row, so the size is what follows "with ".
+    await show(Object.assign(counted({}), { detailRows: 1, detailBytes: Number(b) }));
+    const got = Number(b) === 0 ? 'Stored: 1 finding row'
+      : 'Stored: 1 finding row, with ' + sizes[b] + ' of values';
+    if (els['uv-scan-stored'].textContent !== got) badSizes.push(b + ' => ' + els['uv-scan-stored'].textContent);
+  }
+  check('stored: every size reads as the page writes it', badSizes.length === 0);
+  const keptStoredLabels = UV.labels;
+  UV.labels = {};
+  await show(Object.assign(counted({}), { detailRows: 2, detailBytes: 400 }));
+  check('stored: with no vocabulary handed over the line is still the wording of the page',
+    els['uv-scan-stored'].textContent === 'Stored: 2 finding rows, with 400 bytes of values');
+  UV.labels = keptStoredLabels;
+
+  // SETTLED IS PROGRESS. A pass that excluded a record moved the run on as much
+  // as one that examined it; read from `done` alone, a run working through a
+  // stretch of unreadable records would look idle and be backed off.
+  reset([{ ok: true, run_id: 7 },
+         idle(null, null, counted({ done: 3, settled: 3 })),
+         idle(null, null, counted({ done: 3, settled: 6, excluded: 3 }))]);
+  UV.start();
+  await ticks(6);
+  const idleBefore = UV.state.idle;
+  await drive(1);
+  check('progress: a pass that only excluded records still counts as the run moving',
+    idleBefore > 0 && UV.state.idle === 0);
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

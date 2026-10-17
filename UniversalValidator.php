@@ -50,6 +50,8 @@ require_once __DIR__ . '/php/Scan/ScanPolicy.php';
 require_once __DIR__ . '/php/Scan/ScanAuthorization.php';
 require_once __DIR__ . '/php/Scan/Hmac.php';
 require_once __DIR__ . '/php/Scan/ReasonCode.php';
+require_once __DIR__ . '/php/Scan/FindingRowMapper.php';
+require_once __DIR__ . '/php/Scan/ScanReport.php';
 require_once __DIR__ . '/php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
@@ -915,22 +917,87 @@ class UniversalValidator extends AbstractExternalModule
      * project). The scan answers every record from one read of that project,
      * so a read confined to a group there is refused too: it would make values
      * of the other groups read as not found.
+     *
+     * $unread is set true when the refusal rests on a read that FAILED rather
+     * than on what was read (review R3U-1): refused all the same - failing
+     * closed - but said as what it is, and marked so that a stored run's
+     * status tells the reader to wait rather than that the answer is final.
      */
-    private function crossScanProblem($pid, array $rule)
+    private function crossScanProblem($pid, array $rule, &$unread = null)
     {
+        $unread = false;
         foreach (self::existsParts($rule) as $p) {
             if (empty($p['existsPid'])) continue;
             $b = (int) $p['existsPid'];
             $c = $this->crossGate($pid, $p);
-            if ($c === null) return 'project ' . $b . ' does not answer this lookup from this project';
-            $why = $this->crossCaller($b, $p, $c, $this->currentUsername() === null, $confine, $callerDag);
-            if ($why !== null) return $why . ' (project ' . $b . ')';
-            if ($confine !== null || $callerDag !== null) {
-                return 'your account is in a Data Access Group of project ' . $b . ', so the one read the scan makes '
-                    . 'there could miss values saved in the other groups';
+            $why = null;
+            if ($c === null) {
+                $why = 'project ' . $b . ' does not answer this lookup from this project';
+            } else {
+                $why = $this->crossCaller($b, $p, $c, $this->currentUsername() === null, $confine, $callerDag);
+                if ($why !== null) {
+                    $why .= ' (project ' . $b . ')';
+                } elseif ($confine !== null || $callerDag !== null) {
+                    $why = 'your account is in a Data Access Group of project ' . $b . ', so the one read the scan '
+                        . 'makes there could miss values saved in the other groups';
+                }
             }
+            if ($why === null) continue;
+            if ($this->crossUnread($b)) {
+                $unread = true;
+                return 'whether project ' . $b . ' answers your lookups could not be read just now';
+            }
+            return $why;
         }
         return null;
+    }
+
+    /**
+     * A lookup into another project as a stored run keeps it: the project and
+     * the fields searched there ('record' for its record IDs), sorted. These
+     * are all crossGate() and crossCaller() read of a rule part, so the
+     * refusal can be asked again later without the rule (crossLookupRefusals()).
+     */
+    private static function crossLookupOf(array $part)
+    {
+        $fields = self::crossFields($part);
+        sort($fields, SORT_STRING);
+        return ['pid' => (int) $part['existsPid'], 'fields' => $fields];
+    }
+
+    /**
+     * For a stored run: which of the lookups it made (crossLookupOf(), kept
+     * from the plan that started it) would the other project refuse the
+     * signed-in reader, asked as the scan asks (crossScanProblem()). One entry
+     * per refused lookup: ['pid', 'why', 'unread'], `unread` when the refusal
+     * rests on a read that failed (review R3U-1). [] when every lookup would
+     * be answered. null when a lookup is not in the stored shape: a list that
+     * cannot be read is not a list that names nothing.
+     *
+     * Asked of the lookups the run made, not of the rules as they stand
+     * (review R4-2): a rule edited to search a form the reader may open does
+     * not open the answers the run took from one they may not.
+     */
+    public function crossLookupRefusals($pid, array $lookups)
+    {
+        $out = [];
+        foreach ($lookups as $l) {
+            if (!is_array($l) || !isset($l['pid'], $l['fields']) || !is_int($l['pid']) || $l['pid'] <= 0
+                    || !is_array($l['fields']) || !$l['fields']) {
+                return null;
+            }
+            $remote = [];
+            $record = false;
+            foreach ($l['fields'] as $f) {
+                if (!is_string($f) || $f === '') return null;
+                if ($f === 'record') { $record = true; continue; }
+                $remote[] = $f;
+            }
+            $part = ['existsPid' => $l['pid'], 'existsIn' => $record ? 'record' : '', 'existsRemoteTargets' => $remote];
+            $why = $this->crossScanProblem((int) $pid, $part, $unread);
+            if ($why !== null) $out[] = ['pid' => $l['pid'], 'why' => $why, 'unread' => (bool) $unread];
+        }
+        return $out;
     }
 
     /** How REDCap stores a field's value, in words, from its validation. */
@@ -1175,7 +1242,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             if ($spec['in'] === 'record') {
                 $pk = $this->recordIdFieldOf($pid);
-                if ($pk === null) return $unknown;
+                if ($pk === '') return $unknown;
                 $self = (isset($opts['self']) && $opts['self'] !== null && $opts['self'] !== '') ? (string) $opts['self'] : null;
                 $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [$value],
                                           'fields' => [$pk], 'exportDataAccessGroups' => true]);
@@ -1312,7 +1379,7 @@ class UniversalValidator extends AbstractExternalModule
         $this->groupVisibilityRead[$pid] = true;
         try {
             $pk = $this->recordIdFieldOf($pid);
-            if ($pk === null) return null;
+            if ($pk === '') return null;
             $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
                                       'exportDataAccessGroups' => true]);
             if (!is_array($data)) return null;
@@ -1413,7 +1480,7 @@ class UniversalValidator extends AbstractExternalModule
         $recordMark = null;
         if ($in === 'record') {
             $pk = $this->recordIdFieldOf($pid);
-            if ($pk !== null) $recordMark = $this->lookupMarks($pid, [$pk])[$pk];
+            if ($pk !== '') $recordMark = $this->lookupMarks($pid, [$pk])[$pk];
         }
         $event = null;
         if (!empty($rule['existsEvent'])) {
@@ -1754,17 +1821,6 @@ class UniversalValidator extends AbstractExternalModule
         return $k;
     }
 
-    /** The record-ID field of a project: REDCap's first dictionary field. */
-    private function recordIdFieldOf($pid)
-    {
-        $dd = $this->dataDictionary($pid);
-        if (is_array($dd) && $dd) {
-            reset($dd);
-            return (string) key($dd);
-        }
-        return null;
-    }
-
     /** The event id of a unique event name in this project, or null. */
     private function eventIdOf($pid, $name)
     {
@@ -1813,12 +1869,42 @@ class UniversalValidator extends AbstractExternalModule
     /** @var array pid => userRightsIn() answer, per request */
     private $rightsIn = [];
 
+    /**
+     * @var array other project id => true for every read about that project
+     * that FAILED this request, and 0 => true when the server switch could not
+     * be read (review R3U-1). See crossUnread().
+     */
+    private $crossReadFailed = [];
+
+    /**
+     * Whether a refusal of project $b may rest on a read that failed rather
+     * than on what was read (review R3U-1).
+     *
+     * Every read on the cross-project path fails closed - rights that cannot
+     * be read are no rights, a module state that cannot be read is "not
+     * enabled", an agreement that cannot be read is no agreement - and that
+     * stays: the lookup is refused either way. What changes is that a refusal
+     * can now say it was a moment and not a decision. ScanService marked every
+     * refusal of a stored run final, so one database blip in the rights read
+     * of the other project ended a watching tab's watch for good, while the
+     * next ask would have shown the run.
+     *
+     * Any failed read about $b this request counts, read or memoized, so a
+     * refusal is called a decision only when nothing about $b failed; a
+     * decision taken beside an unrelated failure is merely asked again.
+     */
+    private function crossUnread($b)
+    {
+        return isset($this->crossReadFailed[0]) || isset($this->crossReadFailed[(int) $b]);
+    }
+
     /** Whether an administrator allowed lookups in other projects on this server. */
     private function crossProjectOn()
     {
         try {
             return in_array($this->getSystemSetting('exists-system-cross-project'), [true, 1, '1', 'true'], true);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[0] = true;
             return false;
         }
     }
@@ -1847,6 +1933,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $rows = $this->getSubSettings('exists-project-aliases', $pid);
         } catch (\Throwable $e) {
+            $this->noteConfigUnread($pid, 'this project\'s lookup aliases');
             return null;
         }
         foreach (is_array($rows) ? $rows : [] as $row) {
@@ -1869,6 +1956,7 @@ class UniversalValidator extends AbstractExternalModule
             if (is_callable([$this, 'getProjectStatus']) && $this->getProjectStatus((int) $pid) === null) return false;
             return $this->projectNotDeleted($pid);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[(int) $pid] = true;
             return false;
         }
     }
@@ -1887,6 +1975,7 @@ class UniversalValidator extends AbstractExternalModule
             return is_array($rows) && count($rows) === 1 && is_array($rows[0])
                 && array_key_exists(0, $rows[0]) && $rows[0][0] === null;
         } catch (\Throwable $e) {
+            $this->crossReadFailed[(int) $pid] = true;
             return false;
         }
     }
@@ -1910,6 +1999,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $rows = $this->getSubSettings('exists-consumers', $b);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[$b] = true;
             return null;
         }
         $found = null;
@@ -2083,7 +2173,10 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            // Still no rights - fail closed - but known to be a read that
+            // failed, not a row that says so (crossUnread()).
             $out = null;
+            $this->crossReadFailed[$pid] = true;
         }
         return $this->rightsIn[$pid] = $out;
     }
@@ -2097,9 +2190,34 @@ class UniversalValidator extends AbstractExternalModule
             try {
                 if ($pid > 0 && class_exists('\Project')) $this->projectObjects[$pid] = new \Project($pid);
             } catch (\Throwable $e) {
+                $this->noteConfigUnread($pid, 'the project\'s design');
             }
         }
         return $this->projectObjects[$pid];
+    }
+
+    /**
+     * @var array pid => [what => true]: reads this request that a fact of the
+     * project's scan configuration rests on, and that FAILED (review R5-4).
+     */
+    private $configUnread = [];
+
+    /**
+     * Record that a fact of $pid's configuration was built from a read that
+     * failed.
+     *
+     * Every one of these reads degrades instead of throwing: a design that
+     * could not be read is "unreadable", Missing Data Codes that could not be
+     * read are none, another project's settings that could not be read refuse
+     * the lookup as a configuration error. That is right for a form save. For
+     * a scan it is not, because those facts are in the fingerprint a work
+     * request compares, and one blip on an unchanged project read as a change
+     * and ended an hours-long run failed. durableScanContext() hands the list
+     * back as `unread`, and ScanService refuses the request as one to retry.
+     */
+    private function noteConfigUnread($pid, $what)
+    {
+        $this->configUnread[(int) $pid][(string) $what] = true;
     }
 
     /** @var array pid => that project's Missing Data Codes, code => true */
@@ -2125,6 +2243,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         } catch (\Throwable $e) {
             $codes = [];
+            $this->noteConfigUnread($pid, 'the missing data codes');
         }
         return $this->missingCodesMemo[$pid] = $codes;
     }
@@ -2176,9 +2295,13 @@ class UniversalValidator extends AbstractExternalModule
             if ($p && is_callable([$p, 'getUniqueGroupNames'])) {
                 $names = $p->getUniqueGroupNames();
                 if (is_array($names) && isset($names[$groupId]) && (string) $names[$groupId] !== '') return (string) $names[$groupId];
+                // A list that was read and lacks the group is what was read.
+                if (is_array($names)) return null;
             }
         } catch (\Throwable $e) {
         }
+        // No list at all: a read that failed (crossUnread()).
+        $this->crossReadFailed[(int) $pid] = true;
         return null;
     }
 
@@ -2200,11 +2323,12 @@ class UniversalValidator extends AbstractExternalModule
     private function crossIdentifierRead($b, array $rule)
     {
         $ids = $this->projectIdentifierFields($b);
+        if ($ids === null) $this->crossReadFailed[(int) $b] = true;
         $touch = [];
         foreach (self::crossFields($rule) as $f) {
             if ($f === 'record') {
                 $pk = $this->recordIdFieldOf($b);
-                if ($pk === null) return 'record';
+                if ($pk === '') return 'record';
                 $f = $pk;
             }
             $touch[] = $f;
@@ -2222,6 +2346,7 @@ class UniversalValidator extends AbstractExternalModule
     private function crossUnreadable($b, array $rule, $forms)
     {
         $dd = $this->dataDictionary($b);
+        if (!is_array($dd) || !$dd) $this->crossReadFailed[(int) $b] = true;
         foreach (array_unique(array_merge(self::crossFields($rule), self::returnSources($rule))) as $f) {
             if ($f === 'record') continue;
             $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
@@ -2502,7 +2627,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         if ($record === null || $record === '') return ['found' => false, 'dag' => null];
         $pk = $this->recordIdFieldOf($pid);
-        if ($pk === null) return false;
+        if ($pk === '') return false;
         try {
             $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [(string) $record],
                                       'fields' => [$pk], 'exportDataAccessGroups' => true]);
@@ -4395,7 +4520,12 @@ class UniversalValidator extends AbstractExternalModule
             if (empty($candidate['configError']) && TemporalRules::extended($candidate)) {
                 $dd = $this->dataDictionary($pid) ?: [];
                 $errors = TemporalRules::validate($candidate);
-                if (!isset($extendedShape)) $extendedShape = TemporalMetadata::load($pid, $dd);
+                if (!isset($extendedShape)) {
+                    $extendedShape = TemporalMetadata::load($pid, $dd, $shapeUnread);
+                    // A rule judged against events that could not be read is
+                    // a configuration error the project does not have (R5-4).
+                    if ($shapeUnread) $this->noteConfigUnread($pid, 'the project\'s events');
+                }
                 $errors = array_merge($errors, TemporalRules::validateProject($candidate, $extendedShape));
                 foreach (TemporalRules::fields($candidate) as $f) {
                     if ($dd && !isset($dd[$f])) $errors[] = 'Unknown referenced field: ' . $f . '.';
@@ -5233,7 +5363,7 @@ class UniversalValidator extends AbstractExternalModule
         // (annotateExistsRemote).
         if (($frag['existsIn'] ?? null) === 'record' && !isset($frag['existsProject'])) {
             $pk = $this->recordIdFieldOf($pid);
-            if ($pk !== null) $touch[] = $pk;
+            if ($pk !== '') $touch[] = $pk;
         }
         $hit = $ids === null ? $name : self::firstIdentifier($ids, $touch);
         if ($hit === null) return $frag;
@@ -5619,7 +5749,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function annotateExistsRemote(array $frag, $name, $types, $pid)
     {
-        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS]; };
+        // A REFUSAL RESTING ON A READ THAT FAILED IS NOTED (review R5-4). It
+        // stays a refusal - the lookup cannot be checked - but it becomes a
+        // configuration error the project does not really have, and the scan
+        // fingerprint carries it.
+        $b = null;
+        $refuse = function ($why) use ($pid, &$b) {
+            if ($this->crossUnread($b === null ? 0 : $b)) {
+                $this->noteConfigUnread($pid, 'another project\'s settings');
+            }
+            return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS];
+        };
         if (!$this->crossProjectOn()) {
             return $refuse('looking in another project ("project") is turned off on this REDCap server — an '
                 . 'administrator can turn it on in the module\'s Control Center settings.');
@@ -6764,9 +6904,12 @@ class UniversalValidator extends AbstractExternalModule
             // provision() had no caller anywhere outside its own tests - the
             // same shape as the migration it now sits beside.
             //
-            // Additive: raising the limit adds rows here on the next save;
-            // lowering it never deletes one, because a row being deleted may be
-            // leased right now.
+            // Raising the limit adds rows here on the next save. LOWERING it
+            // takes effect at once, because acquire() takes no slot numbered
+            // above the limit (review R4-4), and the free rows above it are
+            // removed here; a row still leased is removed by the reap cron once
+            // its holder lets go (W1-N1). A leased row is never deleted under
+            // its worker.
             $limitKey = 'scan-system-max-concurrent-projects';
             // Through ScanPolicy so an unset or malformed setting lands on the
             // documented default rather than on zero, which would provision
@@ -6775,10 +6918,12 @@ class UniversalValidator extends AbstractExternalModule
                 [$limitKey => $this->getSystemSetting($limitKey)], []);
             $slots = new Scan\WorkerSlots(new Scan\ModuleDb($this));
             $added = $slots->provision($policy['maxProjects']);
+            $removed = $slots->shrinkTo($policy['maxProjects']);
             $census = $slots->census();
             $this->log('scan-slots-provision', [
                 'limit' => (int) $policy['maxProjects'],
                 'added' => (int) $added,
+                'removed' => (int) $removed,
                 'total' => (int) $census['total'],
             ]);
         } catch (\Throwable $e) {
@@ -7028,22 +7173,7 @@ class UniversalValidator extends AbstractExternalModule
         $dupes      = $plan['dupes'];
 
         // Record list first (ids only), then chunked full reads.
-        $pk = null;
-        try {
-            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
-        } catch (\Throwable $e) {
-        }
-        if (!is_string($pk) || $pk === '') {
-            // REDCap's FIRST data-dictionary field is the record identifier, so
-            // derive it rather than fall back to what this used to do: ask for
-            // every rule field for every record in ONE unchunked call. On a large
-            // project that is the whole project in memory before a single record
-            // has been examined, which defeats the chunk loop below entirely and
-            // fails as an uncatchable OOM rather than as a reported result.
-            $ddPk = $this->dataDictionary($pid);
-            $ddKeys = is_array($ddPk) ? array_keys($ddPk) : [];
-            $pk = isset($ddKeys[0]) ? (string) $ddKeys[0] : '';
-        }
+        $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') {
             $result['incomplete'][] = 'the record identifier field could not be determined, so the '
                 . 'record list could not be read without exporting the whole project';
@@ -7200,12 +7330,13 @@ class UniversalValidator extends AbstractExternalModule
             // skipping it produced a green "No violations found" for records that
             // were never examined, which is the worst possible failure for a tool
             // whose entire output is an assurance.
+            // The record-id field rides along, as in durableScanContext(): without
+            // it a record whose every read field is blank is omitted by getData
+            // and reported as "requested but not returned" instead of examined.
+            // So do the host forms' status fields, which say where each host was
+            // started (R2O-2); see scanReadParams().
             try {
-                $data = \REDCap::getData([
-                    'project_id' => $pid, 'return_format' => 'array',
-                    'records' => $chunk, 'fields' => array_keys($readSet),
-                    'exportDataAccessGroups' => true,
-                ]);
+                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $chunk, $pk));
             } catch (\Throwable $e) {
                 $result['incomplete'][] = 'reading ' . count($chunk) . ' record(s) failed: '
                     . get_class($e);
@@ -7365,6 +7496,43 @@ class UniversalValidator extends AbstractExternalModule
         return ($h === null || $h === '') ? '[record id unavailable]' : $h;
     }
 
+    /**
+     * The project's record-id field, or '' when it cannot be established.
+     *
+     * ONE ANSWER FOR EVERY CALLER. The scan's record list, both scan reads, the
+     * form path's read (H-06), the report's redaction of the record-id field and
+     * the cross-project @UVEXISTS lookups all need this.
+     *
+     * THE PROJECT'S OWN DICTIONARY FIRST. REDCap's first data-dictionary field is
+     * the record identifier, and the dictionary is read for the project asked
+     * about. \REDCap::getRecordIdField() takes no project and answers for the
+     * project of the request, so it is asked only when the dictionary cannot be
+     * read AND the project asked about is that project; for another project it
+     * would name the wrong field. Without either answer the legacy scan used to
+     * ask for every rule field for every record in ONE unchunked call, which on
+     * a large project is the whole project in memory before a record has been
+     * examined.
+     */
+    private function recordIdFieldOf($pid)
+    {
+        try {
+            $dd = $this->dataDictionary($pid);
+        } catch (\Throwable $e) {
+            $dd = null;
+        }
+        if (is_array($dd) && $dd) {
+            reset($dd);
+            return (string) key($dd);
+        }
+        if (defined('PROJECT_ID') && (int) PROJECT_ID !== (int) $pid) return '';
+        try {
+            $pk = is_callable(['\REDCap', 'getRecordIdField']) ? \REDCap::getRecordIdField() : null;
+        } catch (\Throwable $e) {
+            $pk = null;
+        }
+        return (is_string($pk) && $pk !== '') ? $pk : '';
+    }
+
     /** Longest value the report will carry. A report is not a second copy of the project. */
     const REPORT_VALUE_MAX = 120;
     /** What reportValue() shows in place of an identifier field's value. */
@@ -7414,6 +7582,16 @@ class UniversalValidator extends AbstractExternalModule
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
         if (self::mustRedact($ids, $field, $mode)) return self::REPORT_REDACTED;
+        // THE RECORD ID IS AN IDENTIFIER WHEREVER IT IS HASHED. Under
+        // log-values = none the Record column carries an HMAC because the id
+        // itself identifies the participant, and a finding on the record-id
+        // field put that same id, raw, in the Value cell beside it. Withheld
+        // under every mode, because the hashing is the project's posture and
+        // the reader's ceiling cannot lift it.
+        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
+            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
+            return self::REPORT_REDACTED;
+        }
 
         if (!mb_check_encoding($val, 'UTF-8')) {
             return '[' . strlen($val) . ' bytes, not valid text]';
@@ -7487,6 +7665,38 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The rule problems of a plan or a record, each with the CODE it was filed
+     * under.
+     *
+     * The list is keyed "<rule index>|<code>" while it is built, which is what
+     * keeps one problem from being listed twice, and it used to leave as
+     * array_values() of itself - so the code was thrown away at the door and the
+     * durable scan, which records each problem ONCE PER RUN, had nothing to
+     * recognise one by but its sentence. A sentence that names an event or an
+     * instance is a different sentence on every record, and one fault became a
+     * row per record.
+     *
+     * THE CODE IS THE SECOND SEGMENT, WHEN IT IS A CODE. Two kinds of key carry
+     * more: "<i>|temporal|<context>", where the third segment is the context and
+     * the problem is still `temporal`; and "<i>|<sentence>", filed by the
+     * sentence itself because the rule kind that raised it had no code to give.
+     * A sentence is not a code, and is left for Scan\ScanPromotion::problemKey()
+     * to hash, as it always has been.
+     */
+    private static function problemList(array $unconf)
+    {
+        $out = [];
+        foreach ($unconf as $key => $problem) {
+            $parts = explode('|', (string) $key, 3);
+            if (isset($parts[1]) && preg_match('/^[A-Za-z][A-Za-z0-9-]{0,63}$/', $parts[1])) {
+                $problem['code'] = $parts[1];
+            }
+            $out[] = $problem;
+        }
+        return $out;
+    }
+
+    /**
      * The one seam between this framework adapter and the durable scan.
      *
      * WHY A SINGLE METHOD RATHER THAN PUBLIC ACCESSORS. Everything under
@@ -7503,7 +7713,11 @@ class UniversalValidator extends AbstractExternalModule
      * looks like good news.
      *
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
-     *               read:?callable, rules:array, ownership:array, problems:array}
+     *               read:?callable, rules:array, ownership:array, problems:array,
+     *               verifyFingerprint?:bool, structure?:array, choices?:array,
+     *               unread?:string[]}
+     *         the last four on success only (scanStructureFacts()); `unread`
+     *         names the configuration reads that failed (review R5-4)
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
@@ -7514,7 +7728,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
                     'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
-                    'problems' => array_values($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf'])];
         }
         if (!empty($plan['nothingToScan'])) {
             // The rule problems survive the refusal even though no run can carry
@@ -7526,7 +7740,7 @@ class UniversalValidator extends AbstractExternalModule
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
                     'rules' => [], 'ownership' => [],
-                    'problems' => array_values($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf'])];
         }
 
         $key = $this->hmacKey();
@@ -7586,18 +7800,27 @@ class UniversalValidator extends AbstractExternalModule
         // The read the worker performs. Explicit records, and only the fields
         // the plan actually needs - the same narrowing the chunked legacy path
         // does, for the same reason.
-        $fields = array_keys($plan['readSet']);
-        $read = function (array $recordIds) use ($pid, $fields) {
+        //
+        // PLUS THE RECORD-ID FIELD, for the reason foldRuleConditions() gives
+        // (H-06): getData omits a blank field, so a record whose every field in
+        // the read set is blank comes back with no node at all. Since H18 the
+        // worker asks whether such a record still exists, is told it does, and
+        // files it UNREADABLE on every run - so the record @UVREQUIRED exists to
+        // flag is never evaluated and the project can never finish complete.
+        // The record id is stored for every record and is never blank. It is
+        // added to the READ only: $plan['readSet'] also keys the entitlement,
+        // and the record id is not form data the scan reports on.
+        //
+        // PLUS THE HOST FORMS' STATUS FIELDS (R2O-2), on the same terms and for
+        // the reason scanPlan() gives: they say where each host was started.
+        $pk = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
+        $read = function (array $recordIds) use ($pid, $plan, $pk) {
             try {
                 if (!is_callable(['\REDCap', 'getData'])) {
                     return ['ok' => false, 'data' => [],
                             'why' => 'this installation does not expose a record read'];
                 }
-                $data = \REDCap::getData([
-                    'project_id' => $pid, 'return_format' => 'array',
-                    'records' => array_values($recordIds), 'fields' => $fields,
-                    'exportDataAccessGroups' => true,
-                ]);
+                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $recordIds, $pk));
                 if (!is_array($data)) {
                     return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
                 }
@@ -7618,10 +7841,147 @@ class UniversalValidator extends AbstractExternalModule
         // `ruleProblems` term had nothing to read and `clean` quietly meant "no
         // findings". array_values because the keys are the dedupe (rule|reason),
         // not data anything downstream should depend on.
+        //
+        // THE PROJECT'S DESIGN TRAVELS TOO (review M8): the structure and the
+        // choice sets are two of the fingerprint's inputs, and this return
+        // carried only the temporal digest - [] on a project with no
+        // event/instance rule - and no choices at all. The guard that ends a
+        // run when the project changes underneath it compared two empty
+        // arrays, so a field's validation or a radio's codes could change
+        // between two requests of one run and the run finished against both.
+        $facts = $this->scanStructureFacts($pid, $plan);
+        // WHAT THE CONFIGURATION ABOVE COULD NOT READ (review R5-4): the
+        // structure, the codes and the rules' configuration errors are the
+        // fingerprint's inputs, and a fact built from a failed read is not the
+        // project's. Named, so the refusal can say what; ScanService refuses
+        // to start or advance a run on a configuration with any.
+        $pk = (int) $pid;
+        $unread = isset($this->configUnread[$pk]) ? array_keys($this->configUnread[$pk]) : [];
+        sort($unread, SORT_STRING);
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
-                'verifyFingerprint' => true, 'structure' => $this->temporalScanStructure($pid, $plan['live']),
-                'problems' => array_values($plan['unconf'])];
+                'verifyFingerprint' => true, 'structure' => $facts['structure'],
+                'choices' => $facts['choices'], 'unread' => $unread,
+                'problems' => self::problemList($plan['unconf'])];
+    }
+
+    /**
+     * The project's design as the fingerprint guard compares it (review M8):
+     * the structure and the choice sets a work request rebuilds and
+     * ScanService::configurationNow() checks against the run's stored
+     * fingerprint.
+     *
+     * WHAT DECIDES A FINDING, AND NOTHING ELSE. Per field, only the fields the
+     * run reads: a field it reads cannot move instrument, change type or
+     * change validation, and a choice field it reads cannot change its codes,
+     * without ending the run; a field it never reads can be added or edited
+     * freely. The instrument-event mapping and the repeating setup are the
+     * project's, because they decide which contexts every rule is judged in.
+     * The Missing Data Codes are the project's, because a value that is one is
+     * not entered. Labels are left out; codes are sorted, because their order
+     * on the form decides nothing.
+     *
+     * FROM \Project, NOT FROM THE REDCap STATICS. getInstrumentEventMappings()
+     * and its siblings answer from the request's ambient project, which a cron
+     * request does not have; two requests of one run that read the same design
+     * two ways would end it for nothing.
+     *
+     * UNREADABLE IS A VALUE, never an empty list. A part of the project object
+     * that could not be read is recorded as 'unreadable', so a run started on
+     * a read that failed and worked on one that succeeded ends - the
+     * fail-closed direction - while an empty list stays what a project with
+     * nothing there reads as. The dictionary needs no such marker: scanPlan()
+     * has refused the run already when it cannot be read.
+     *
+     * The temporal digest stays as temporalScanStructure() gives it, at the top
+     * level: it covers the whole dictionary, and only for a project that has an
+     * event/instance rule.
+     *
+     * @return array{structure:array, choices:array}
+     */
+    private function scanStructureFacts($pid, array $plan)
+    {
+        $readSet = (isset($plan['readSet']) && is_array($plan['readSet'])) ? array_keys($plan['readSet']) : [];
+        // The dictionary was read: scanPlan() refuses the run when it cannot
+        // be, and dataDictionary() keeps a successful read for the request.
+        $dd = $this->dataDictionary($pid) ?: [];
+        $fields = [];
+        foreach ($readSet as $f) {
+            $f = (string) $f;
+            // A form's status field (fb_complete) is read and is not in the
+            // dictionary; neither is a field that was deleted.
+            if (!isset($dd[$f]) || !is_array($dd[$f])) {
+                $fields[$f] = 'absent';
+                continue;
+            }
+            $meta = $dd[$f];
+            $fields[$f] = [
+                'form' => isset($meta['form_name']) ? (string) $meta['form_name'] : '',
+                'type' => isset($meta['field_type']) ? (string) $meta['field_type'] : '',
+                'validation' => self::validationOf($meta)];
+        }
+
+        $longitudinal = 'unreadable';
+        $events = 'unreadable';
+        $repeating = 'unreadable';
+        $project = $this->projectObject($pid);
+        if ($project !== null) {
+            if (isset($project->longitudinal)) $longitudinal = (bool) $project->longitudinal;
+            // event id => the instruments designated to it.
+            if (isset($project->eventsForms) && is_array($project->eventsForms)) {
+                $events = [];
+                foreach ($project->eventsForms as $ev => $forms) {
+                    $events[(string) $ev] = self::sortedNames(is_array($forms) ? $forms : []);
+                }
+            }
+            // event id => 'WHOLE' for a repeating event, else its repeating
+            // instruments ([form => custom label] in REDCap's answer).
+            try {
+                if (is_callable([$project, 'getRepeatingFormsEvents'])) {
+                    $map = $project->getRepeatingFormsEvents();
+                    if (is_array($map)) {
+                        $repeating = [];
+                        foreach ($map as $ev => $node) {
+                            if (!is_array($node)) {
+                                $repeating[(string) $ev] = is_scalar($node) ? (string) $node : 'unreadable';
+                                continue;
+                            }
+                            $forms = [];
+                            foreach ($node as $k => $v) $forms[] = is_int($k) ? $v : $k;
+                            $repeating[(string) $ev] = self::sortedNames($forms);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                $repeating = 'unreadable';
+                $this->noteConfigUnread($pid, 'the repeating instruments and events');
+            }
+        }
+
+        $sets = $this->projectFieldChoices($pid) ?: [];
+        $codes = [];
+        foreach ($readSet as $f) {
+            if (isset($sets[$f]) && is_array($sets[$f])) $codes[(string) $f] = self::sortedNames($sets[$f]);
+        }
+        $missing = (isset($plan['missingCodes']) && is_array($plan['missingCodes']))
+                 ? array_keys($plan['missingCodes']) : [];
+
+        return [
+            'structure' => array_merge($this->temporalScanStructure($pid, $plan['live']), [
+                'fields' => $fields, 'longitudinal' => $longitudinal,
+                'events' => $events, 'repeating' => $repeating]),
+            'choices' => ['fields' => $codes, 'missing' => self::sortedNames($missing)],
+        ];
+    }
+
+    /** Scalar names as distinct strings in byte order, so a list's order is no part of a comparison. */
+    private static function sortedNames(array $names)
+    {
+        $out = [];
+        foreach ($names as $n) if (is_scalar($n)) $out[(string) $n] = true;
+        $out = array_map('strval', array_keys($out));
+        sort($out, SORT_STRING);
+        return $out;
     }
 
     /**
@@ -7788,10 +8148,11 @@ class UniversalValidator extends AbstractExternalModule
         // travels as a rule problem rather than as a plausible name nobody
         // questions. It is reported per record, which is where it was noticed;
         // the aggregate that counts rule problems dedupes on the text.
-        $problems = array_values($unconf);
+        $problems = self::problemList($unconf);
         foreach (array_keys($missed) as $ord) {
             $problems[] = [
                 'rule'   => (int) $ord,
+                'code'   => 'no-identity',
                 'fields' => [],
                 'why'    => 'internal: this scan holds no identity for rule ' . (int) $ord
                     . ', so any finding it produced is recorded under a placeholder name',
@@ -7821,15 +8182,52 @@ class UniversalValidator extends AbstractExternalModule
      *               ownership: array<string,?string> field => owning instrument, NULL when it
      *               could not be placed - the fail-closed encoding ScanService reads as
      *               unknown ownership and mayStart() refuses on,
-     *               readSet: array, dupes: array, unconf: array}
+     *               readSet: array, dupes: array, unconf: array,
+     *               gateable: array<int,array<string,true>> rule index => the host forms
+     *               whose contexts the started-form gate may drop for that rule,
+     *               formStatusFields: array<string,string> gateable host form => its status field,
+     *               formStartFields: array<string,string[]> gateable host form => the fields whose
+     *               value says it was started (its status field, then the read fields it owns)}
+     *
+     * ONCE PER REQUEST, WHEN THE CALLER HANDS OVER A MEMO (M12). The durable scan
+     * rebuilt this whole plan - rule discovery, the dictionary, host resolution,
+     * the capability probes, every cross-project rights check - twice in every
+     * work request, once for the work and once for the status it returns.
+     * $opts['memo'] is an \ArrayObject the CALLER owns: ScanService makes one
+     * per instance, and an instance lives for one request. The memo is never
+     * kept on this object, because a cron process runs many projects through
+     * one module instance and a plan from an earlier pass would describe rules
+     * and rights as they were then. The key is every input that changes the
+     * answer: the project, the group scope, the value ceiling, the rights gate,
+     * and the reader - crossRefused, the instrument rights and the disclosure
+     * cap are all about who is asking.
+     *
+     * $opts['capabilities']: ScanCapabilities::all() as the caller already
+     * probed it in this request, so the probes are not sent twice (P1).
      */
     private function scanPlan($pid, array $opts = [], $dagFilter = null)
     {
+        $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
+        if ($memo === null) return $this->buildScanPlan($pid, $opts, $dagFilter);
+        $key = json_encode([(int) $pid, $dagFilter === null ? null : (string) $dagFilter,
+            isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
+            !empty($opts['enforceFormRights']), $this->currentUsername()]);
+        if (!isset($memo[$key])) $memo[$key] = $this->buildScanPlan($pid, $opts, $dagFilter);
+        return $memo[$key];
+    }
+
+    /** @see scanPlan() - the plan itself, built every time it is called. */
+    private function buildScanPlan($pid, array $opts = [], $dagFilter = null)
+    {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+                // Empty means "no started-form gate": every designated context is
+                // kept, which is the behaviour before R2O-2. Filled at the end.
+                'gateable' => [], 'formStatusFields' => [], 'formStartFields' => [],
                 // Present on EVERY return, including the refusals. An entitlement
                 // key that exists only on the success path is one a caller reads as
                 // "no forms" on the path where it should read as "no answer".
                 'ownership' => [],
+                'crossRefused' => [], 'crossUnread' => [], 'crossLookups' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // A value that is a Missing Data Code is no candidate for a
                 // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
@@ -7859,7 +8257,10 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none')];
+                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                // So reportValue() can withhold a finding's value on the field
+                // whose value IS the record id the column above hashes.
+                'recordIdField' => $this->recordIdFieldOf($pid)];
 
         // What this installation can actually support, and therefore what a run
         // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
@@ -7868,7 +8269,8 @@ class UniversalValidator extends AbstractExternalModule
         // call it - which is worse than not having written it, because the suite
         // reported the property as covered.
         try {
-            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid));
+            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid,
+                (isset($opts['capabilities']) && is_array($opts['capabilities'])) ? $opts['capabilities'] : []));
         } catch (\Throwable $e) {
             // A probe layer that fails cannot license a claim. Cap at the
             // weakest coverage rather than assume the strongest.
@@ -8195,8 +8597,13 @@ class UniversalValidator extends AbstractExternalModule
         // are still checked. crossRefused lists the projects that do not answer
         // this person: ScanService refuses them a stored run's results, which
         // may hold answers those projects gave someone else.
+        // crossUnread is the part of crossRefused whose refusal rests on a
+        // read that failed (review R3U-1): refused all the same, but a
+        // moment rather than a decision, so ScanService does not call it
+        // final.
         $crossProjects = [];
         $out['crossRefused'] = [];
+        $out['crossUnread'] = [];
         foreach ($live as $i => $r) {
             if (isset($out['skip'][$i]) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
             $branched = isset($r['branches']) && is_array($r['branches']) && $r['branches'];
@@ -8204,7 +8611,7 @@ class UniversalValidator extends AbstractExternalModule
             $kept = 0;
             foreach (self::existsParts($r) as $bi => $p) {
                 if (empty($p['existsPid'])) { $kept++; continue; }
-                $why = $this->crossScanProblem($pid, $p);
+                $why = $this->crossScanProblem($pid, $p, $unread);
                 if ($why === null) {
                     $crossProjects[(int) $p['existsPid']] = true;
                     $kept++;
@@ -8212,6 +8619,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 $refused[$bi] = $why;
                 $out['crossRefused'][(int) $p['existsPid']] = true;
+                if ($unread) $out['crossUnread'][(int) $p['existsPid']] = true;
             }
             if (!$refused) continue;
             $fields = (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [];
@@ -8232,6 +8640,29 @@ class UniversalValidator extends AbstractExternalModule
             $out['unconf'] = $unconf;
         }
         $out['crossRefused'] = array_keys($out['crossRefused']);
+        $out['crossUnread'] = array_keys($out['crossUnread']);
+        // EVERY lookup into another project that a live rule makes, whoever
+        // asks (reviews R3U-N1, R4-1, R4-2). A started run keeps this list and
+        // status() asks the other project about each entry for the reader.
+        // Not only the lookups this person is answered for: whoever presses
+        // Continue evaluates with their own plan, so a run started by someone
+        // project 300 refuses can still hold 300's answers. The list is the
+        // rules', and every work pass is held to the rules by the fingerprint
+        // (rule revisions cover existsPid and the fields searched), so no pass
+        // can consult a lookup the list does not name. Per lookup, not per
+        // project: under a "rights" agreement the forms a lookup reads decide
+        // who it answers.
+        $lookups = [];
+        foreach ($live as $r) {
+            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
+            foreach (self::existsParts($r) as $p) {
+                if (empty($p['existsPid'])) continue;
+                $l = self::crossLookupOf($p);
+                $lookups[json_encode($l)] = $l;
+            }
+        }
+        ksort($lookups);
+        $out['crossLookups'] = array_values($lookups);
 
         $out['readSet'] = $readSet;
 
@@ -8321,7 +8752,179 @@ class UniversalValidator extends AbstractExternalModule
                     ? (string) $ddOwn[$f]['form_name'] : null;
         }
         $out['ownership'] = $ownership;
+
+        // WHERE EACH HOST INSTRUMENT WAS STARTED (review R2O-2).
+        //
+        // Both scan reads ask for the record-id field (EE-2), and REDCap stores
+        // a record-id row on every event the record has any data in. So every
+        // such event became a context, and hostContextsFor() kept it whenever
+        // the host form was designated there: an adverse-event form designated
+        // on every visit produced a @UVREQUIRED finding on every visit without
+        // an adverse event, and the project could never certify clean.
+        //
+        // The decision: a rule's host instrument counts in a context only where
+        // it was STARTED there - its <form>_complete holds a value, or a field
+        // the scan reads from that form holds one. That is when the form path
+        // enforces the rule (on save) and what REDCap's own missing-value checks
+        // look at. The record-id field is not evidence, because it is stored on
+        // every event whatever was opened.
+        //
+        // ONLY FOR A RULE WHOSE VERDICT ITS HOST FORM DECIDES ALONE (review
+        // R3G-1). The gate dropped every rule's contexts alike, so `ae_term`
+        // required "when [had_ae]='1'", with had_ae on the visit form, was never
+        // checked where the AE form was never opened - which is the one place
+        // that rule exists for. The scan certified the record clean while the
+        // save audit, re-checking the rule as a reverse dependant when the visit
+        // form was saved, logged the violation; auditRule() says the two must
+        // not disagree. The save audit does not gate: a dependant is evaluated
+        // in every designated host context of the saved event, an extended rule
+        // in every one of the record, and the rule's own condition decides. So
+        // the scan keeps every designated context for a (rule, host) pair whose
+        // condition, operand or field list (any branch) reads a field another
+        // form owns, and for every extended rule, which reads other events or
+        // instances by construction (a qualified reference, a binding, or a
+        // record-wide unique scope). Its condition decides there, as it does on
+        // save. A field the dictionary does not place counts as another
+        // form's: a context kept in error is a finding someone can see, one
+        // dropped in error is a finding nobody sees.
+        //
+        // Nor a rule on the record-id field itself: the record id is stored
+        // wherever the record exists, so it is always entered, and gating it
+        // would stop checking the record id of a record whose first instrument
+        // was never saved (an import).
+        //
+        // Computed HERE, once per plan, never per record: the gate runs per
+        // record per context, on projects with hundreds of thousands of
+        // records. scanRecord() only looks the pair up.
+        //
+        // The status fields are added to the READ only, never to $readSet: the
+        // read set keys the entitlement, and every host form is entitled
+        // already through the rule's own fields. They are read only for the
+        // host forms the gate consults, so a project with no gateable rule
+        // reads no status field and does not ask for blanks.
+        //
+        // REDCap reports a never-started form's status as '0' unless getData is
+        // asked for blanks (returnBlankForGrayFormStatus), and the scan must
+        // ask, or every designated form looks started. The blank changes no
+        // verdict, because no rule can read a status VALUE (review R3G-3):
+        // every condition, operand and field list, plain or qualified, must
+        // name a data-dictionary field, and REDCap's dictionary holds no
+        // <form>_complete row, so such a rule is a configuration error. The
+        // status fields a temporal rule puts in the read set are existence
+        // markers, and AddressResolver asks only whether their row or instance
+        // is there. tests/hosting_php.php pins each refusal. A rule kind that
+        // ever reads a status value must be shown the '0' the form path sees,
+        // not the blank this read asks for.
+        $pkOwn = (string) $out['recordIdField'];
+        $gateable = [];
+        $statusFields = [];
+        foreach ($hostFields as $i => $forms) {
+            if (TemporalRules::extended($live[$i])) continue;
+            // The forms owning what the rule's configuration reads. A @UVEXISTS
+            // "in" field is read in OTHER records ('lookup'), so it says nothing
+            // about this record's other forms - the save audit skips it too.
+            $readsFrom = [];
+            foreach (ModeRegistry::refFields($live[$i], ['cond', 'operand', 'fieldList'], ['lookup']) as $f) {
+                $readsFrom[isset($ddOwn[$f]['form_name']) ? (string) $ddOwn[$f]['form_name'] : ''] = true;
+            }
+            foreach ($forms as $form => $own) {
+                $form = (string) $form;
+                if ($readsFrom && (count($readsFrom) > 1 || !isset($readsFrom[$form]))) continue;
+                if ($pkOwn !== '' && in_array($pkOwn, (array) $own, true)) continue;
+                $gateable[$i][$form] = true;
+                $statusFields[$form] = $form . '_complete';
+            }
+        }
+        $startFields = [];
+        foreach ($statusFields as $form => $sf) $startFields[$form] = [$sf];
+        foreach ($ownership as $f => $form) {
+            $f = (string) $f;
+            // An existence marker is owned by its form but is no field of it:
+            // the form's status field already leads the list.
+            if ($form === null || $f === $pkOwn || !isset($ddOwn[$f]) || !isset($startFields[$form])) continue;
+            $startFields[$form][] = $f;
+        }
+        $out['gateable'] = $gateable;
+        $out['formStatusFields'] = $statusFields;
+        $out['formStartFields'] = $startFields;
         return $out;
+    }
+
+    /**
+     * The getData fields of one scan read: the read set, the record-id field
+     * (EE-2) and the host forms' status fields (R2O-2). ONE derivation for both
+     * reads, so the legacy chunk read and the durable read cannot drift.
+     */
+    private static function scanReadFields(array $plan, $pk)
+    {
+        $fields = isset($plan['readSet']) && is_array($plan['readSet']) ? $plan['readSet'] : [];
+        if ((string) $pk !== '') $fields[(string) $pk] = true;
+        foreach (isset($plan['formStatusFields']) ? (array) $plan['formStatusFields'] : [] as $sf) {
+            $fields[(string) $sf] = true;
+        }
+        return array_keys($fields);
+    }
+
+    /**
+     * The getData parameters of one scan read, for both reads.
+     *
+     * returnBlankForGrayFormStatus is what makes the status fields worth
+     * reading: without it REDCap reports a form nobody opened as '0'
+     * (Incomplete), the same as one saved incomplete, and every designated
+     * form looks started. It is asked for only when the plan carries status
+     * fields, and it moves no verdict: no rule can read a status value (see
+     * scanPlan(), R3G-3). A build that ignores the key returns '0' and the
+     * scan keeps every designated context, which flags more rather than less.
+     */
+    private static function scanReadParams(array $plan, $pid, array $records, $pk)
+    {
+        $p = ['project_id' => $pid, 'return_format' => 'array',
+              'records' => array_values($records), 'fields' => self::scanReadFields($plan, $pk),
+              'exportDataAccessGroups' => true];
+        if (!empty($plan['formStatusFields'])) $p['returnBlankForGrayFormStatus'] = true;
+        return $p;
+    }
+
+    /**
+     * Whether $form was STARTED in one context (R2O-2): its status field, or a
+     * field the scan reads from it, holds a value in the context's OWN row.
+     *
+     * $gate is ['fields' => the plan's formStartFields for $form]. The row
+     * comes from the record node as read, never from the context's 'values':
+     * a repeat context's values are the event's base row with the instance
+     * merged over it, so a status or value on the base row would pass for this
+     * instance's own.
+     *
+     * A row that cannot be found keeps the context, because a context dropped
+     * in error is a finding nobody sees. A row that does not carry a signal
+     * field at all reads it as blank, as cleanRow() does: getData leaves a
+     * blank out, and the read asked for every signal field.
+     */
+    private static function formStartedIn(array $ctx, array $gate)
+    {
+        $rec = (isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : [];
+        $evt = $ctx['event_id'];
+        $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
+        if ($rk === null) {
+            $row = isset($rec[$evt]) ? $rec[$evt] : null;
+        } else {
+            $inst = $ctx['instance'];
+            $row = isset($rec['repeat_instances'][$evt][$rk][$inst])
+                 ? $rec['repeat_instances'][$evt][$rk][$inst] : null;
+        }
+        if (!is_array($row)) return true;
+        foreach ($gate['fields'] as $f) {
+            if (!array_key_exists($f, $row)) continue;
+            $v = $row[$f];
+            if (is_array($v)) {
+                // A checkbox arrives as code => '0'/'1' on every row that exists,
+                // ticked or not. Only a ticked box is something somebody entered.
+                foreach ($v as $c) if ((string) $c === '1') return true;
+                continue;
+            }
+            if ($v !== null && trim((string) $v) !== '') return true;
+        }
+        return false;
     }
 
     /**
@@ -8354,7 +8957,7 @@ class UniversalValidator extends AbstractExternalModule
         // happens to be asking. Computing it per rule re-derived the same
         // ownership map contexts x rules times (M-05).
         $resCache = [];
-        $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
+        $hostCache = [];    // host form (+ gated?) => its contexts in THIS record; rules share hosts
         foreach ($plan['live'] as $i => $r) {
             // Reported as not evaluated by scanPlan(); evaluating it anyway would
             // add findings the same report says it cannot vouch for.
@@ -8362,10 +8965,22 @@ class UniversalValidator extends AbstractExternalModule
             $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
-                if (!isset($hostCache[$hostForm])) {
-                    $hostCache[$hostForm] = $this->hostContextsFor($ctxAll, $hostForm, $pid);
+                // Only where the host was STARTED (R2O-2), and only for a pair
+                // scanPlan() named gateable: a rule that reads another form or
+                // event, or one on the record-id field, keeps every designated
+                // context and its own condition decides (R3G-1). A plan that
+                // does not name the pair, or did not ask for the host's status
+                // field, keeps every designated context, as before.
+                $gate = null;
+                if (isset($plan['gateable'][$i][$hostForm], $plan['formStatusFields'][$hostForm],
+                          $plan['formStartFields'][$hostForm])) {
+                    $gate = ['fields' => $plan['formStartFields'][$hostForm]];
                 }
-                foreach ($hostCache[$hostForm] as $ck => $ctx) {
+                $hk = $hostForm . ($gate === null ? '|all' : '|started');
+                if (!isset($hostCache[$hk])) {
+                    $hostCache[$hk] = $this->hostContextsFor($ctxAll, $hostForm, $pid, $gate);
+                }
+                foreach ($hostCache[$hk] as $ck => $ctx) {
                     if (!isset($resCache[$ck])) {
                         $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
                     }
@@ -8597,8 +9212,13 @@ class UniversalValidator extends AbstractExternalModule
      * Three questions, answered from the SAME signals resolveOne() uses so the
      * two can never disagree: is $form designated for this event at all; does
      * the EVENT repeat; does $form itself repeat here.
+     *
+     * A fourth, for the scan only: was $form STARTED here (R2O-2). $gate is
+     * what formStartedIn() takes, and null asks nothing - the save audit
+     * passes none, because a save speaks for the form being saved and its
+     * reverse-dependency read does not carry status fields.
      */
-    private function hostContextsFor(array $contexts, $form, $pid)
+    private function hostContextsFor(array $contexts, $form, $pid, ?array $gate = null)
     {
         $out = [];
         $shape = [];    // event id => ['repeats' => bool|null, 'eventRepeats' => bool, 'mapped' => bool]
@@ -8637,6 +9257,8 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 if ($rk !== null) continue;                    // base row only
             }
+            // Designated is not started. Only the scan asks (see the docblock).
+            if ($gate !== null && !self::formStartedIn($ctx, $gate)) continue;
             $out[$k] = $ctx;
         }
         return $out;
@@ -9357,7 +9979,7 @@ class UniversalValidator extends AbstractExternalModule
                 // Another project's fields are checked there (crossCaller).
                 if (($rule['existsIn'] ?? null) === 'record' && empty($rule['existsPid'])) {
                     $pk = $this->recordIdFieldOf($project_id);
-                    if ($pk === null) return ['error' => 'not enabled on surveys'];
+                    if ($pk === '') return ['error' => 'not enabled on surveys'];
                     $touch[] = $pk;
                 }
                 $ids = $this->projectIdentifierFields($project_id);
@@ -9780,7 +10402,11 @@ class UniversalValidator extends AbstractExternalModule
             // the existing-bucket UPDATE both answer with the number they wrote.
             // The table has no AUTO_INCREMENT, so without it the insert path
             // would report whatever the session last happened to set.
-            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+            //
+            // execNoCount(): what this write answers with is LAST_INSERT_ID(),
+            // read below, and never its row count. exec() fetched ROW_COUNT()
+            // after it on every live uniqueness check of every survey page.
+            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
                 (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $bucket]);
@@ -9802,7 +10428,7 @@ class UniversalValidator extends AbstractExternalModule
             // across a boundary - two windows of RATE_TIERS slots each, because
             // the bucket number interleaves the tiers.
             if ($hits === 1) {
-                $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
+                $db->execNoCount('DELETE FROM ' . Scan\Schema::table('rate_bucket')
                     . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 2 * self::RATE_TIERS]);
             }
             return $hits > $pmax;
@@ -10227,14 +10853,9 @@ class UniversalValidator extends AbstractExternalModule
         // 'ok' where it should be 'ambiguous'.
         // $fields is deliberately NOT widened: it keys $resolution and the value
         // map, and the caller asked about its own fields only.
-        $pk = null;
-        try {
-            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
-        } catch (\Throwable $e) {
-            $pk = null;     // not exposed on this build; the guard below still holds
-        }
+        $pk = $this->recordIdFieldOf($project_id);   // '' when unknown; the guard below still holds
         $readFields = $fields;
-        if (is_string($pk) && $pk !== '' && !in_array($pk, $readFields, true)) $readFields[] = $pk;
+        if ($pk !== '' && !in_array($pk, $readFields, true)) $readFields[] = $pk;
 
         $params = [
             'project_id'    => $project_id,

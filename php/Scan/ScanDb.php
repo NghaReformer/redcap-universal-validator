@@ -3,7 +3,7 @@
 namespace INSPIRE\UniversalValidator\Scan;
 
 /**
- * The four things SqlScanStore needs from a database, and nothing else.
+ * What SqlScanStore needs from a database, and nothing else.
  *
  * WHY NOT USE $module->query() DIRECTLY. Two reasons, and the second is the real
  * one. The framework's query() returns whatever mysqli handed it and exposes no
@@ -23,7 +23,14 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 interface ScanDb
 {
-    /** Rows as a list of positional arrays. Params are always bound, never interpolated. */
+    /**
+     * Rows as a list of positional arrays. Params are always bound, never interpolated.
+     *
+     * @throws ScanStoreUnavailable when the read failed. An empty list means
+     *         "no rows" and nothing else; a read that failed must never be
+     *         delivered as one, because every reader of a count or a verdict
+     *         would take it as zero.
+     */
     public function select($sql, array $params = []);
 
     /**
@@ -36,12 +43,35 @@ interface ScanDb
     public function exec($sql, array $params = []);
 
     /**
+     * Run a statement whose row count NOBODY READS.
+     *
+     * Most writes in this store are decided by whether they threw, not by how
+     * many rows they changed: an audit line, a counter bump, a supersede. Over
+     * the External Modules framework every counted write costs a second round
+     * trip to read ROW_COUNT(), so a write that discards the answer pays for a
+     * question it never asked. This is that write without the question.
+     *
+     * THE CONTRACT IS ABOUT WHAT affected() SAYS AFTERWARDS. It must throw, or
+     * answer -1. It must never answer 0, and never the count of an earlier
+     * exec(): zero means "you were fenced out" everywhere in this design, and a
+     * stale 1 means "you hold it". tests/scan_moduledb_php.php carries a lint
+     * that fails on any affected() read whose nearest preceding write in the
+     * same function is not an exec().
+     *
+     * @throws ScanStoreUnavailable when the statement failed.
+     */
+    public function execNoCount($sql, array $params = []);
+
+    /**
      * Rows changed by the last exec().
      *
      * THE LOAD-BEARING METHOD. Every fenced update in this design is written so
      * that zero here means "someone moved past me, discard everything". An
      * implementation that returns -1, or the matched-rather-than-changed count,
      * silently converts a rollback into a commit.
+     *
+     * After execNoCount() there is no count to give. Implementations throw
+     * \LogicException rather than hand back a number somebody might compare.
      */
     public function affected();
 
@@ -86,21 +116,54 @@ interface ScanDb
  * held has done nothing, and treating it as success would let two workers both
  * believe they advanced the cursor. The store's predicates are written so the
  * new value always differs from the old.
+ *
+ * WHAT execNoCount() SKIPS. The ROW_COUNT() read did a second job besides
+ * counting: it is -1 after a statement that failed, so it also caught a
+ * framework build that reports failure by neither throwing nor returning false.
+ * An uncounted write gives that up. It is used only where the framework's own
+ * throw-or-false is the whole answer the caller wanted, and never for the
+ * findings INSERT, whose silent shortfall would read as a clean project.
  */
 final class ModuleDb implements ScanDb
 {
     private $module;
-    private $affected = 0;
+    // -1, not 0. Nothing has been counted yet, and zero is an ANSWER in this
+    // design ("you were fenced out"). A fresh connection has no answer to give.
+    private $affected = -1;
+    private $uncounted = false;
 
     public function __construct($module)
     {
         $this->module = $module;
     }
 
+    /**
+     * A READ THAT FAILED IS NOT AN EMPTY ONE (review OC-3).
+     *
+     * This used to hand whatever query() returned to rows(), which answered []
+     * for false and for any shape it could not walk. So on a framework build
+     * that reports a failed statement by returning false, one failed read of
+     * scan_aggregate gave promotion zero violations and zero rule problems and
+     * the run was stored clean; recordStates() failed open the same way. P11
+     * closed this for manifestComplete() alone, by changing that one query.
+     * The fix belongs here, under every read: false, and any result this class
+     * cannot walk, throw ScanStoreUnavailable - the same answer exec() gives a
+     * write that returned false, and the one the common framework build already
+     * gives by throwing. Every caller reaches the H12 storage-failure handlers
+     * in ScanWorker::work() and ScanService, or wraps the read itself.
+     */
     public function select($sql, array $params = [])
     {
         $q = $this->module->query($sql, $params);
-        return self::rows($q);
+        if ($q === false) {
+            throw new ScanStoreUnavailable('the database refused a read');
+        }
+        $rows = self::rows($q);
+        if ($rows === null) {
+            throw new ScanStoreUnavailable('the database answered a read with a result this '
+                . 'module cannot walk (' . (is_object($q) ? get_class($q) : gettype($q)) . ')');
+        }
+        return $rows;
     }
 
     public function exec($sql, array $params = [])
@@ -108,6 +171,7 @@ final class ModuleDb implements ScanDb
         // No statement of ours has been counted yet. If anything below throws,
         // affected() must not still be answering for the PREVIOUS write.
         $this->affected = -1;
+        $this->uncounted = false;
 
         $q = $this->module->query($sql, $params);
         if ($q === false) {
@@ -132,8 +196,29 @@ final class ModuleDb implements ScanDb
         $this->affected = $n;
     }
 
+    public function execNoCount($sql, array $params = [])
+    {
+        // Poisoned BEFORE the statement runs, for the same reason exec() does
+        // it: whatever happens next, affected() must not answer for an earlier
+        // write.
+        $this->affected = -1;
+        $this->uncounted = true;
+
+        $q = $this->module->query($sql, $params);
+        if ($q === false) {
+            throw new ScanStoreUnavailable('the database refused the statement');
+        }
+    }
+
     public function affected()
     {
+        if ($this->uncounted) {
+            // A caller comparing this to 1 would fail quietly and one adding it
+            // to a total would corrupt the total. Neither is a storage fault, so
+            // neither gets the operator sentence: this is a programming error.
+            throw new \LogicException('affected() was asked about a write sent with '
+                . 'execNoCount(); send it with exec() if the count matters');
+        }
         return $this->affected;
     }
 
@@ -144,7 +229,16 @@ final class ModuleDb implements ScanDb
     public function commit()   { $this->module->query('COMMIT', []); }
     public function rollback() { $this->module->query('ROLLBACK', []); }
 
-    /** Whatever shape the framework returned, as a list of positional rows. */
+    /**
+     * Whatever shape the framework returned, as a list of positional rows.
+     *
+     * NULL, NOT [], FOR A SHAPE IT CANNOT WALK. An empty list is an answer -
+     * "no such row" - and a result nobody could read is not one. select()
+     * throws on null; exec() reads a null ROW_COUNT() as "no count", which it
+     * already refuses.
+     *
+     * @return array|null
+     */
     private static function rows($q)
     {
         if (is_array($q)) return $q;
@@ -153,6 +247,8 @@ final class ModuleDb implements ScanDb
             while ($row = $q->fetch_row()) $out[] = $row;
         } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
             while ($row = $q->fetch_assoc()) $out[] = array_values($row);
+        } else {
+            return null;
         }
         return $out;
     }

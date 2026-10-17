@@ -22,7 +22,15 @@ require_once __DIR__ . '/../../../php/Scan/ScanPhase.php';
 require_once __DIR__ . '/../../../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../../../php/Scan/ScanDb.php';
 require_once __DIR__ . '/../../../php/Scan/DbError.php';
+// Every storage failure the store raises is one of these. Nothing below loaded
+// it, so on this harness a failed read that the store reports as unavailable
+// died as "class not found" instead - a fatal, not the failure under test.
+require_once __DIR__ . '/../../../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
+// The parity check in cases/store.php commits one batch into each store.
+require_once __DIR__ . '/../../../php/Scan/ArrayScanStore.php';
+// findings() zips its rows with FindingRowMapper::INPUT_KEYS (B5-N1).
+require_once __DIR__ . '/../../../php/Scan/FindingRowMapper.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
 require_once __DIR__ . '/../../../php/Scan/SourceFence.php';
@@ -111,9 +119,42 @@ class Conn {
     public function affected() { return $this->c->affected_rows; }
 }
 
+/**
+ * The framework's query(), over one real connection, with a failure on demand.
+ *
+ * Some framework builds report a failed statement by RETURNING FALSE rather than
+ * throwing, and ModuleDb has to read that as a failure (review OC-3). A real
+ * server cannot be asked for a false, so a SELECT containing $failOn answers
+ * false here and every other statement goes to the server. Shaped like the dag
+ * case's module: a statement with no result set answers true, so ModuleDb's own
+ * ROW_COUNT() read on the same connection is where its counts come from.
+ */
+class UvFlakyModule {
+    private $c;
+    /** @var string|null a SELECT containing this answers false */
+    public $failOn = null;
+    /** @var int how many reads were made to fail */
+    public $failed = 0;
+    public function __construct($c) { $this->c = $c; }
+    public function query($sql, $params = []) {
+        if ($this->failOn !== null && stripos(ltrim($sql), 'SELECT') === 0
+                && strpos($sql, $this->failOn) !== false) {
+            $this->failed++;
+            return false;
+        }
+        if (!$params) return $this->c->query($sql);
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $r = $st->get_result();
+        return $r === false ? true : $r;
+    }
+}
+
 /** ScanDb over the raw mysqli connection. */
 class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
-    private $c; private $aff = 0;
+    // -1 and not 0: nothing has been counted, and zero is an answer here.
+    private $c; private $aff = -1; private $uncounted = false;
     public function __construct($c) { $this->c = $c; }
     public function select($sql, array $params = []) {
         if (!$params) {
@@ -129,6 +170,7 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
         return $out;
     }
     public function exec($sql, array $params = []) {
+        $this->uncounted = false;
         if (!$params) { $this->c->query($sql); $this->aff = $this->c->affected_rows; return; }
         $st = $this->c->prepare($sql);
         bindAll($st, array_values($params));
@@ -136,7 +178,24 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
         $this->aff = $st->affected_rows;
         $st->close();
     }
-    public function affected() { return $this->aff; }
+    // The same statement, and the count deliberately NOT read - so a store
+    // method that asks affected() after one fails here as it would in REDCap,
+    // rather than passing on a real server because mysqli happened to know.
+    public function execNoCount($sql, array $params = []) {
+        $this->aff = -1;
+        $this->uncounted = true;
+        if (!$params) { $this->c->query($sql); return; }
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $st->close();
+    }
+    public function affected() {
+        if ($this->uncounted) {
+            throw new \LogicException('affected() was asked about a write sent with execNoCount()');
+        }
+        return $this->aff;
+    }
     public function begin()    { $this->c->query('START TRANSACTION'); }
     public function commit()   { $this->c->query('COMMIT'); }
     public function rollback() { $this->c->query('ROLLBACK'); }
@@ -163,17 +222,25 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
  * EXPLAIN of the captured statement proves the production one does.
  */
 class UvRecordingDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
-    /** @var array list of [kind, sql, params] */
+    /**
+     * @var array list of [kind, sql, params, counted]. Both write verbs log as
+     *      'exec' so a statement-count assertion does not care which one the
+     *      store chose; `counted` is false for execNoCount(), true otherwise.
+     */
     public $log = [];
     private $inner;
     public function __construct(INSPIRE\UniversalValidator\Scan\ScanDb $inner) { $this->inner = $inner; }
     public function select($sql, array $params = []) {
-        $this->log[] = ['select', $sql, $params];
+        $this->log[] = ['select', $sql, $params, true];
         return $this->inner->select($sql, $params);
     }
     public function exec($sql, array $params = []) {
-        $this->log[] = ['exec', $sql, $params];
+        $this->log[] = ['exec', $sql, $params, true];
         $this->inner->exec($sql, $params);
+    }
+    public function execNoCount($sql, array $params = []) {
+        $this->log[] = ['exec', $sql, $params, false];
+        $this->inner->execNoCount($sql, $params);
     }
     public function affected() { return $this->inner->affected(); }
     public function begin()    { $this->inner->begin(); }
@@ -230,6 +297,62 @@ function uv_explain_key($conn, $sql, array $params) {
     $row = $r->fetch_assoc();
     $r->free();
     return ($row && isset($row['key']) && $row['key'] !== null) ? (string) $row['key'] : '';
+}
+
+/**
+ * EVERY index the server chose for a captured statement, one per EXPLAIN row.
+ *
+ * uv_explain_key() reads the FIRST row, which is right for a plain SELECT and
+ * wrong for a statement wrapped in EXISTS(...): there the first row is the outer
+ * query, "No tables used", with no key at all, and the table that matters is on
+ * a later row. Read by name, for the reason given above.
+ */
+function uv_explain_keys($conn, $sql, array $params) {
+    $r = $conn->query('EXPLAIN ' . uv_inline_params($conn, $sql, $params));
+    if ($r === false) return [];
+    $keys = [];
+    while ($row = $r->fetch_assoc()) {
+        if (isset($row['key']) && $row['key'] !== null) $keys[] = (string) $row['key'];
+    }
+    $r->free();
+    return $keys;
+}
+
+/**
+ * An index's columns, in key order, as the server holds them.
+ *
+ * For a plan assertion that is about the SHAPE of the key rather than its
+ * name. uv_finding has five keys that begin (project_id, generation_id,
+ * active_slot), and the optimiser may pick any of them for a statement that
+ * fixes those three; what bounds the statement is the prefix, so that is what
+ * gets asserted. PRIMARY answers its own column list like any other key.
+ */
+function uv_index_columns($conn, $table, $index) {
+    $r = $conn->query("SELECT COLUMN_NAME FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = '" . $conn->real_escape_string($table)
+        . "' AND index_name = '" . $conn->real_escape_string($index) . "' ORDER BY SEQ_IN_INDEX");
+    $out = [];
+    if ($r === false) return $out;
+    while ($row = $r->fetch_row()) $out[] = strtolower((string) $row[0]);
+    $r->free();
+    return $out;
+}
+
+/**
+ * The plan of one captured statement, for the report and for a failure line:
+ * every EXPLAIN row's table, key and estimated rows.
+ */
+function uv_explain_rows($conn, $sql, array $params) {
+    $r = $conn->query('EXPLAIN ' . uv_inline_params($conn, $sql, $params));
+    if ($r === false) return [];
+    $out = [];
+    while ($row = $r->fetch_assoc()) {
+        $out[] = (isset($row['table']) ? $row['table'] : '?') . ':'
+               . (isset($row['key']) && $row['key'] !== null ? $row['key'] : '-') . ':'
+               . (isset($row['rows']) ? $row['rows'] : '?');
+    }
+    $r->free();
+    return $out;
 }
 
 /** Two INDEPENDENT connections. One cannot see the other's uncommitted work. */
@@ -303,7 +426,7 @@ function uv_resolve_schema($conn, $name) {
  */
 function uv_redcap_tables() {
     return array('redcap_log_event', 'redcap_log_event4', 'redcap_record_list', 'redcap_data', 'redcap_projects',
-                 'uv_readonly_probe');
+                 'redcap_record_counts', 'uv_readonly_probe');
 }
 
 /**

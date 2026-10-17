@@ -138,34 +138,14 @@ class ScanPageView
         . 'record exactly what it covered; until that lands, this page will not start a scan. '
         . 'Live form validation and the post-save audit are unaffected and continue to run.';
 
-    /**
-     * What a scan result may CLAIM, decided once.
-     *
-     * Three axes that are routinely confused: STATUS says whether the sweep
-     * finished, COVERAGE says what finishing is worth on this installation, and
-     * CLEAN is the only one that is a statement about the PROJECT. A run that
-     * finished, found nothing, and could not prove the project stayed still is
-     * complete and not clean.
-     *
-     * It lived inside pages/scan.php as three local variables, so the only way
-     * to test it was to render a page and grep the HTML - and when the page
-     * stopped rendering, the predicate lost its coverage with it. The durable
-     * report (plan Task 7) needs the same answer, so it belongs here.
-     */
-    public static function verdict($result)
-    {
-        $complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
-        $coverage = (is_array($result) && isset($result['coverage'])) ? $result['coverage'] : 'partial';
-        $fenced   = ($coverage === 'complete-through-fence');
-        // A clean bill of health needs all four: the sweep finished, the server
-        // could prove the project did not move under it, nothing was found, and
-        // no rule was left unevaluated. A project whose every rule is broken has
-        // zero violations and is not clean (M-02).
-        $clean = $complete && $fenced
-              && empty($result['violations']) && empty($result['unconfigurable']);
-        return ['complete' => $complete, 'coverage' => $coverage,
-                'fenced' => $fenced, 'clean' => $clean];
-    }
+    // WHETHER A RESULT MAY BE CALLED CLEAN IS NOT DECIDED HERE ANY MORE. This
+    // class held verdict(), a second implementation of that question written
+    // for the withdrawn synchronous page. It had no caller in the shipped tree,
+    // and it did not agree with the one that has: it knew nothing of an empty
+    // scope, of a truncated report, of a cancelled or expired run. Two
+    // predicates for one claim is how the claim drifts, and the one with no
+    // caller is the one nobody notices drifting. Scan\ScanOutcome::derive() and
+    // mayClaimClean() are the answer, for every surface.
 
     /**
      * How a phase reads to somebody who did not design this.
@@ -226,8 +206,20 @@ class ScanPageView
             // and tests/scan_page_php.php checks that the first 40 characters of
             // each sentence appear literally in the HTML. Every existing
             // sentence happens to avoid one; this one avoids it on purpose.
-            Scan\ScanOutcome::EMPTY_SCOPE => 'No records were in scope for this scan, so nothing was '
-                                           . 'checked and this result says nothing about the project.',
+            //
+            // EVERY WAY IN, ONE SENTENCE. It said only that no records were in
+            // scope, which is false of a run whose records were all deleted.
+            // It then opened "Nothing was checked", which is false of the
+            // commonest of those (review R2O-1): records checked and THEN
+            // deleted, whose findings stay counted - so the panel said nothing
+            // was checked above "2 findings so far". No record being left is
+            // true of all three, and the findings line is accounted for in the
+            // sentence that sits beside it.
+            Scan\ScanOutcome::EMPTY_SCOPE => 'This scan has no record left to report on: none was in '
+                                           . 'scope, or every one was deleted while it ran, whether '
+                                           . 'or not it had been checked. Any findings it counted '
+                                           . 'are on deleted records. This result says nothing '
+                                           . 'about the project.',
             Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
                                            . 'picture of the project.',
             Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',
@@ -272,6 +264,111 @@ class ScanPageView
         return $s;
     }
 
+    /**
+     * Said after the coverage sentence of any finished run that is NOT
+     * certified clean - every terminal run whose stored `clean` is not 1.
+     *
+     * The coverage sentence is about what was CHECKED and says nothing about
+     * what was decided, so a run refused `clean` because a rule could not be
+     * evaluated, with nothing found, read exactly as a certified run reads:
+     * "Every record was checked, including changes made while it ran." beside
+     * "Nothing found yet". The rule wording is used whenever the run counted
+     * rule problems, because that is the reason a reader cannot see anywhere
+     * else on the panel; the plain wording covers every other reason, and a
+     * status that carries no decision at all gets it too.
+     *
+     * No apostrophes, for the reason given at STALLED.
+     */
+    const NOT_CERTIFIED = 'This result does not certify the project.';
+    const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
+                        . 'project.';
+    const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
+                        . 'project.';
+
+    /**
+     * The not-certified sentence for this status, or null when none is owed.
+     *
+     * Null only for a run that is still going, and for a finished one whose
+     * stored decision is exactly 1. js/scan.js decides the same way.
+     */
+    public static function verdictText($status)
+    {
+        if (!is_array($status) || empty($status['terminal'])) return null;
+        $c = array_key_exists('clean', $status) ? $status['clean'] : null;
+        if ($c === 1 || $c === '1' || $c === true) return null;
+        $n = isset($status['ruleProblems']) ? (int) $status['ruleProblems'] : 0;
+        if ($n === 1) return self::RULE_PROBLEM;
+        if ($n > 1) return str_replace('{n}', (string) $n, self::RULE_PROBLEMS);
+        return self::NOT_CERTIFIED;
+    }
+
+    /**
+     * Shown to somebody WATCHING a run that has stopped getting anywhere.
+     *
+     * No apostrophe anywhere in it: labels() is printed into a script block
+     * with JSON_HEX_APOS, and a sentence that survives that as \u0027 is a
+     * sentence somebody will one day paste into a place that does not decode it.
+     */
+    const STALLED = 'No progress has been recorded on this scan for {minutes} minutes. If it does '
+                  . 'not move soon, stop it and start a new one, or ask your REDCap administrator '
+                  . 'to check the External Modules log.';
+
+    /**
+     * Shown to somebody watching a run that NOBODY is working on (review CL-2).
+     *
+     * Only an open page drives a scan, and this page says closing it is safe -
+     * so a quiet run with no worker is paused, not broken. It used to get
+     * STALLED, which told the reader to stop it and start a new one, beside
+     * the Continue button that was the right answer.
+     */
+    const PAUSED = 'This scan is paused: nothing has worked on it for {minutes} minutes, which is '
+                 . 'what happens when the page that was running it is closed. Nothing has been '
+                 . 'lost. Press Continue to carry on from where it stopped.';
+
+    /**
+     * Shown while a run sits in `cancelling`. Stop finishes a run nobody holds
+     * at once (review R2O-5); one a worker held is finished by that worker's
+     * next request, or by Continue - and it is never stalled, whatever its
+     * clock says.
+     */
+    const STOPPING = 'This scan was asked to stop and has not finished stopping. Press Continue to '
+                   . 'finish stopping it.';
+
+    /**
+     * The progress line, in the three parts it can have. The first stands alone
+     * whenever nothing was excluded or removed, which is nearly always - and the
+     * line is then exactly what it was before these existed.
+     */
+    const COUNT_PLAIN    = '{done} of {total} records';
+    const COUNT_CHECKED  = '{done} of {total} records checked';
+    const COUNT_EXCLUDED = '{n} could not be checked';
+    const COUNT_REMOVED  = '{n} deleted during the scan';
+
+    /**
+     * Shown in place of a findings count that does not exist.
+     *
+     * A run cancelled, failed or expired before its summary was built cannot
+     * say how many findings it has: the uniqueness finalizer writes duplicates
+     * straight into the findings table, so the stored-row counter can read
+     * zero over active findings. ScanPromotion::findingsOf() answers NULL
+     * there, and NULL must never be printed as "Nothing found".
+     */
+    const FOUND_UNKNOWN = 'Findings not counted, because the scan ended before it could total them';
+
+    /**
+     * What a run has written to the installation's tables (P10).
+     *
+     * One scan of a large project writes hundreds of megabytes into tables
+     * every project shares, and nothing on the page said so. These read the run
+     * row's own counters - finding rows stored and the bytes of the values kept
+     * with them - which are NOT the findings count above: the finalizer's
+     * duplicates are not in them and rows a later pass superseded still are, so
+     * the line says rows, not findings. {rows} is "1 finding row" or
+     * "12,345 finding rows"; {size} is "400 bytes" or "3.4 MB".
+     */
+    const STORED        = 'Stored: {rows}';
+    const STORED_VALUES = 'Stored: {rows}, with {size} of values';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -280,7 +377,148 @@ class ScanPageView
             'coverage'        => self::coverageSentences(),
             'coverageUnknown' => self::COVERAGE_UNKNOWN,
             'truncated'       => self::DETAIL_TRUNCATED,
+            'stalled'         => self::STALLED,
+            'paused'          => self::PAUSED,
+            'stopping'        => self::STOPPING,
+            'plain'           => self::COUNT_PLAIN,
+            'checked'         => self::COUNT_CHECKED,
+            'excluded'        => self::COUNT_EXCLUDED,
+            'removed'         => self::COUNT_REMOVED,
+            'foundUnknown'    => self::FOUND_UNKNOWN,
+            'stored'          => self::STORED,
+            'storedValues'    => self::STORED_VALUES,
+            'notCertified'    => self::NOT_CERTIFIED,
+            'ruleProblem'     => self::RULE_PROBLEM,
+            'ruleProblems'    => self::RULE_PROBLEMS,
         ];
+    }
+
+    /**
+     * "Nothing found yet", "3 findings so far", or that they were not counted.
+     *
+     * A findings value that is not a number is NOT zero. It used to be cast,
+     * so a status that could not count - null, or absent - read "Nothing found
+     * yet", which is the most reassuring thing the line can say.
+     * js/scan.js builds the same string.
+     */
+    public static function foundText($status)
+    {
+        $f = (is_array($status) && array_key_exists('findings', $status)) ? $status['findings'] : null;
+        if (!is_int($f) && !(is_string($f) && ctype_digit($f))) return self::FOUND_UNKNOWN;
+        $f = (int) $f;
+        return $f === 0 ? 'Nothing found yet' : ($f . ' finding' . ($f === 1 ? '' : 's') . ' so far');
+    }
+
+    /**
+     * "Stored: 12,345 finding rows, with 3.4 MB of values", or null when the
+     * run has stored no row.
+     *
+     * A counter that is absent, not a whole number, or not above zero says
+     * nothing - the line is about what IS stored, and a run that wrote nothing
+     * has nothing to report. js/scan.js builds the same string.
+     */
+    public static function storedText($status)
+    {
+        $n = function ($k) use ($status) {
+            if (!is_array($status) || !isset($status[$k])) return 0;
+            $v = $status[$k];
+            return (is_int($v) || (is_string($v) && ctype_digit($v))) ? (int) $v : 0;
+        };
+        $rows = $n('detailRows');
+        if ($rows <= 0) return null;
+        $phrase = number_format($rows) . ' finding row' . ($rows === 1 ? '' : 's');
+        $bytes = $n('detailBytes');
+        return $bytes > 0
+            ? str_replace(['{rows}', '{size}'], [$phrase, self::sizeText($bytes)], self::STORED_VALUES)
+            : str_replace('{rows}', $phrase, self::STORED);
+    }
+
+    /**
+     * A byte count as a person reads it: "400 bytes", "3.4 MB".
+     *
+     * Binary units, one decimal, rounded half up - in WHOLE NUMBERS, so that
+     * js/scan.js, which cannot share PHP's round(), lands on the same digit.
+     * A value that rounds up to 1024 of a unit is said in the next one.
+     */
+    public static function sizeText($bytes)
+    {
+        $bytes = max(0, (int) $bytes);
+        if ($bytes < 1024) return $bytes . ' byte' . ($bytes === 1 ? '' : 's');
+        $units = ['KB', 'MB', 'GB', 'TB'];
+        $i = 0;
+        $div = 1024;
+        $tenths = intdiv($bytes * 10 + intdiv($div, 2), $div);
+        while ($tenths >= 10240 && $i < count($units) - 1) {
+            $i++;
+            $div *= 1024;
+            $tenths = intdiv($bytes * 10 + intdiv($div, 2), $div);
+        }
+        return number_format(intdiv($tenths, 10)) . '.' . ($tenths % 10) . ' ' . $units[$i];
+    }
+
+    /**
+     * "8 of 10 records checked; 2 could not be checked  (100%)".
+     *
+     * THE NUMBER BEFORE "of" IS RECORDS EXAMINED. It was every record that had
+     * reached a terminal state, so a run in which no result could be stored
+     * read "12 of 12 records (100%)" - true of the manifest, and read by every
+     * person who saw it as true of the checking. The percentage is still the
+     * share of the manifest that is SETTLED, because that is what a progress
+     * bar measures and a bar that stopped short of the end would say the run
+     * had not finished.
+     *
+     * js/scan.js builds the same string from the same templates (labels()).
+     */
+    public static function countsText($status)
+    {
+        $i = function ($k, $d = 0) use ($status) {
+            return (is_array($status) && isset($status[$k])) ? (int) $status[$k] : $d;
+        };
+        $total = $i('total');
+        if ($total <= 0) return 'Preparing';
+        $done = $i('done');
+        $excluded = $i('excluded');
+        $removed = $i('removed');
+        $pct = self::pct($i('settled', $done), $total);
+
+        $fill = function ($tpl, array $with) {
+            foreach ($with as $k => $v) $tpl = str_replace('{' . $k . '}', (string) $v, $tpl);
+            return $tpl;
+        };
+        if ($excluded <= 0 && $removed <= 0) {
+            $line = $fill(self::COUNT_PLAIN, ['done' => $done, 'total' => $total]);
+        } else {
+            $parts = [$fill(self::COUNT_CHECKED, ['done' => $done, 'total' => $total])];
+            if ($excluded > 0) $parts[] = $fill(self::COUNT_EXCLUDED, ['n' => $excluded]);
+            if ($removed > 0)  $parts[] = $fill(self::COUNT_REMOVED, ['n' => $removed]);
+            $line = implode('; ', $parts);
+        }
+        return $line . ($pct === null ? '' : '  (' . $pct . '%)');
+    }
+
+    /**
+     * The sentence for somebody watching a run that is not moving, or null.
+     *
+     * Named for the node it fills (uv-scan-stalled). STOPPING, STALLED or
+     * PAUSED, in that order, each only when the server said so: the
+     * decision is ScanService::progressOf()'s, and this only words it.
+     */
+    public static function stalledText($status)
+    {
+        if (!is_array($status) || empty($status['ok'])
+                || empty($status['active']) || !empty($status['terminal'])) {
+            return null;
+        }
+        if (!empty($status['stopping'])) return self::STOPPING;
+        if (!empty($status['stalled'])) {
+            $tpl = self::STALLED;
+        } elseif (!empty($status['paused'])) {
+            $tpl = self::PAUSED;
+        } else {
+            return null;
+        }
+        $idle = isset($status['idleSeconds']) ? (int) $status['idleSeconds'] : 0;
+        return str_replace('{minutes}', (string) max(1, (int) floor($idle / 60)), $tpl);
     }
 
     /**
@@ -313,31 +551,36 @@ class ScanPageView
      *
      * @param  ?array $status a ScanService::status() array, or null when there is
      *                no run or its status could not be read
-     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string, active:bool}
+     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string,
+     *               active:bool, stalled:?string, stored:?string}
      */
     public static function panelPrefill($status)
     {
         if (!is_array($status) || empty($status['ok'])) {
             return ['phase' => '', 'counts' => '', 'found' => '', 'pct' => null,
-                    'done' => null, 'active' => false];
+                    'done' => null, 'active' => false, 'stalled' => null, 'stored' => null];
         }
 
         $total = isset($status['total']) ? (int) $status['total'] : 0;
         $done  = isset($status['done']) ? (int) $status['done'] : 0;
-        $pct   = self::pct($done, $total);
-        $found = isset($status['findings']) ? (int) $status['findings'] : 0;
+        // The BAR follows what is settled, so it reaches the end when the run
+        // does; the TEXT says how much of that was actually examined.
+        $pct   = self::pct(isset($status['settled']) ? (int) $status['settled'] : $done, $total);
 
         return [
             'phase'  => self::phaseLabel(isset($status['phase']) ? $status['phase'] : ''),
-            'counts' => $total > 0
-                ? ($done . ' of ' . $total . ' records' . ($pct === null ? '' : '  (' . $pct . '%)'))
-                : 'Preparing',
-            'found'  => $found === 0 ? 'Nothing found yet'
-                : ($found . ' finding' . ($found === 1 ? '' : 's') . ' so far'),
+            'counts' => self::countsText($status),
+            // Whoever loads this page is WATCHING, by definition: nothing on it
+            // is driving a scan until a button is pressed.
+            'stalled' => self::stalledText($status),
+            'found'  => self::foundText($status),
+            'stored' => self::storedText($status),
             'pct'    => $pct,
+            // ONE STRING, coverage then decision - see verdictText().
             'done'   => empty($status['terminal']) ? null
                 : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
-                                         isset($status['detail']) ? $status['detail'] : null),
+                                         isset($status['detail']) ? $status['detail'] : null)
+                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
             'active' => !empty($status['active']),
         ];
     }
@@ -494,7 +737,13 @@ class ScanPageView
                     'why' => null, 'valueCeiling' => $ceiling,
                     'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
-            return $no('Could not verify your rights — scan not run.');
+            // TRANSIENT, and the only refusal here that is (review R2O-4). Every
+            // other one is a decision about what the rights say; this one is a
+            // read that failed, and a watching page asks again rather than
+            // treating it as the last word.
+            $r = $no('Could not verify your rights — scan not run.');
+            $r['transient'] = true;
+            return $r;
         }
     }
 

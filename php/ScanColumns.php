@@ -35,6 +35,31 @@ require_once __DIR__ . '/ModeRegistry.php';
  */
 final class ScanColumns
 {
+    /**
+     * What the Value cell says when it may not, or cannot, show the value.
+     *
+     * Keyed by the finding's `valueState`, which Scan\FindingRowMapper sets from
+     * a stored row. Every state that is NOT here shows the value itself. They
+     * are separate words because they are separate facts, and a reader acts
+     * differently on each: an empty field is a finding about the data, a value
+     * withheld from THIS reader is there for somebody else, one that was never
+     * kept cannot be recovered by anybody, and one that has expired could have
+     * been read last month.
+     *
+     * A finding with no `valueState` - everything the legacy sink produces -
+     * renders exactly as it did before this map existed.
+     */
+    const VALUE_WORDS = [
+        'blank'      => '',
+        'not-kept'   => '[not kept by this scan]',
+        'expired'    => '[no longer kept]',
+        'withheld'   => '[withheld by policy]',
+        'identifier' => '[identifier withheld]',
+        'not-text'   => '[not valid text]',
+    ];
+    /** Appended to a value the scan could only keep the start of. */
+    const VALUE_CUT = ' … (cut short)';
+
     /** @return array[] descriptors, in display order */
     public static function all(ScanDimensions $d)
     {
@@ -105,6 +130,12 @@ final class ScanColumns
                 'key' => 'value', 'label' => 'Value', 'group' => 'problem',
                 'visible' => function () { return true; },
                 'render' => function (array $f, ScanDimensions $d) {
+                    if (isset($f['valueState'])) {
+                        $state = (string) $f['valueState'];
+                        if (isset(self::VALUE_WORDS[$state])) return self::VALUE_WORDS[$state];
+                        $v = isset($f['value']) ? (string) $f['value'] : '';
+                        return $state === 'truncated' ? $v . self::VALUE_CUT : $v;
+                    }
                     if (isset($f['value']) && $f['value'] !== null) return (string) $f['value'];
                     // An empty cell is what a genuinely blank field renders, so
                     // "we are not allowed to show this" must look different from
@@ -133,21 +164,33 @@ final class ScanColumns
                     $r = isset($f['reason']) ? (string) $f['reason'] : '';
                     // 'assert:<expression>' repeats the whole rule expression on
                     // every finding; the expression belongs to the rule and is
-                    // shown once, from the rule snapshot.
-                    $i = strpos($r, ':');
-                    return $i === false ? $r : substr($r, 0, $i);
+                    // shown once, from the rule snapshot. ReasonCode is the ONE
+                    // place that decides what the code of a reason is - this cut
+                    // the string at the colon itself, which agreed with it until
+                    // the day one of them changed. An empty reason stays an
+                    // empty cell; 'unspecified' is a storage value, not a word
+                    // for a reader.
+                    return $r === '' ? '' : Scan\ReasonCode::code($r);
                 },
             ],
             [
                 'key' => 'rule', 'label' => 'Rule', 'group' => 'problem',
                 'visible' => function () { return true; },
-                'render' => function (array $f) { return (string) $f['rule']; },
+                // The ordinal ruleOf() settled on, which for a finding that
+                // names its rule by source id may not be the one it carries. A
+                // finding no rule can be found for shows NOTHING here: the
+                // duplicate findings the finalizer writes carry ordinal 0, and
+                // "Rule 0" is a rule that does not exist.
+                'render' => function (array $f, ScanDimensions $d) {
+                    $r = $d->ruleOf($f);
+                    return $r['ordinal'] > 0 ? (string) $r['ordinal'] : '';
+                },
             ],
             [
                 'key' => 'rule_label', 'label' => 'Rule name', 'group' => 'problem',
                 'visible' => function () { return true; },
                 'render' => function (array $f, ScanDimensions $d) {
-                    $r = $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null);
+                    $r = $d->ruleOf($f);
                     return $r['label'];
                 },
             ],
@@ -155,7 +198,7 @@ final class ScanColumns
                 'key' => 'problem', 'label' => 'What is wrong', 'group' => 'problem',
                 'visible' => function () { return true; },
                 'render' => function (array $f, ScanDimensions $d) {
-                    $r = $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null);
+                    $r = $d->ruleOf($f);
                     $e = MessageCatalog::explain($f, $r, 'staff');
                     $detail = MessageCatalog::detail($f, $r);
                     return $detail === '' ? $e['text'] : $e['text'] . ' ' . $detail;
@@ -167,7 +210,7 @@ final class ScanColumns
                 // Which tier answered. A designer scanning this column sees at a
                 // glance which rules still have no authored message.
                 'render' => function (array $f, ScanDimensions $d) {
-                    $e = MessageCatalog::explain($f, $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null), 'staff');
+                    $e = MessageCatalog::explain($f, $d->ruleOf($f), 'staff');
                     return $e['source'];
                 },
             ],
@@ -180,15 +223,42 @@ final class ScanColumns
         return $out;
     }
 
-    /** One finding as a flat row of strings, keyed by column key. */
+    /**
+     * One finding as a flat row of strings, keyed by column key.
+     *
+     * EVERY CELL LEAVES AS UTF-8. Only the Value cell was checked, by the
+     * mapper; a field label, rule label or assert expression carrying one
+     * Latin-1 byte reached the row as it was, json_encode() of the page's rows
+     * returned false, and ScanPageView::h() rendered the cell blank. One check
+     * here covers every column, including one added later. A byte that is not
+     * text becomes U+FFFD, so the rest of the label survives and the reader
+     * can see where a byte was lost.
+     */
     public static function row(array $finding, ScanDimensions $d, ?array $cols = null)
     {
         if ($cols === null) $cols = self::all($d);
         $row = [];
         foreach ($cols as $c) {
-            $row[$c['key']] = (string) call_user_func($c['render'], $finding, $d);
+            $s = (string) call_user_func($c['render'], $finding, $d);
+            $row[$c['key']] = mb_check_encoding($s, 'UTF-8') ? $s : self::scrub($s);
         }
         return $row;
+    }
+
+    /**
+     * Invalid UTF-8 sequences replaced by U+FFFD. mb_scrub() substitutes the
+     * process-wide substitute character, '?' by default, which reads as a real
+     * question mark; it is set for this call and put back.
+     */
+    private static function scrub($s)
+    {
+        $was = mb_substitute_character();
+        mb_substitute_character(0xFFFD);
+        try {
+            return (string) mb_scrub($s, 'UTF-8');
+        } finally {
+            mb_substitute_character($was);
+        }
     }
 
     /**

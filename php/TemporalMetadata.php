@@ -5,17 +5,24 @@ require_once __DIR__.'/ProjectShape.php';
 /** REDCap adapter. Each component remains unknown unless its source succeeds. */
 final class TemporalMetadata
 {
-    public static function load($pid,array $dictionary)
+    /**
+     * $unread is set true when any read below threw (review R5-4). A component
+     * left unknown by a failed read digests differently from the same project
+     * read in full, and the scan's fingerprint carries that digest, so a caller
+     * that judges a run by it has to know the answer rests on a failure.
+     */
+    public static function load($pid,array $dictionary,&$unread=null)
     {
+        $unread=false;
         $project=null;
         if(isset($GLOBALS['Proj']) && is_object($GLOBALS['Proj']) && isset($GLOBALS['Proj']->project_id)
             && (string)$GLOBALS['Proj']->project_id===(string)$pid)$project=$GLOBALS['Proj'];
-        if($project===null && class_exists('\\Project')){try{$project=new \Project($pid);}catch(\Throwable $e){}}
+        if($project===null && class_exists('\\Project')){try{$project=new \Project($pid);}catch(\Throwable $e){$unread=true;}}
         $names=null;$mapping=null;$repeats=null;
-        try{if($project && is_callable([$project,'getUniqueEventNames']))$names=$project->getUniqueEventNames();}catch(\Throwable $e){}
-        try{if(is_callable(['\\REDCap','getInstrumentEventMappings']))$mapping=\REDCap::getInstrumentEventMappings($pid);}catch(\Throwable $e){}
+        try{if($project && is_callable([$project,'getUniqueEventNames']))$names=$project->getUniqueEventNames();}catch(\Throwable $e){$unread=true;}
+        try{if(is_callable(['\\REDCap','getInstrumentEventMappings']))$mapping=\REDCap::getInstrumentEventMappings($pid);}catch(\Throwable $e){$unread=true;}
         try{if($project && is_callable([$project,'getRepeatingFormsEvents']))$repeats=$project->getRepeatingFormsEvents();
-            elseif(is_callable(['\\REDCap','getRepeatingFormsEvents']))$repeats=\REDCap::getRepeatingFormsEvents($pid);}catch(\Throwable $e){}
+            elseif(is_callable(['\\REDCap','getRepeatingFormsEvents']))$repeats=\REDCap::getRepeatingFormsEvents($pid);}catch(\Throwable $e){$unread=true;}
         if(!is_array($names))$names=[];
         $info=$project && isset($project->eventInfo)&&is_array($project->eventInfo)?$project->eventInfo:[];
         foreach($info as $id=>$row)if(!isset($names[$id])&&isset($row['unique_event_name']))$names[$id]=$row['unique_event_name'];
@@ -51,7 +58,7 @@ final class TemporalMetadata
                     }
                 }
             }
-            if($project && is_callable([$project,'isRepeatingEvent'])){try{$eventRepeats=(bool)$project->isRepeatingEvent($id);}catch(\Throwable $e){}}
+            if($project && is_callable([$project,'isRepeatingEvent'])){try{$eventRepeats=(bool)$project->isRepeatingEvent($id);}catch(\Throwable $e){$unread=true;}}
             $events[$id]=['name'=>(string)$name,'arm'=>$row['arm_num']??($row['arm_id']??null),
                 // Native eventInfo is ordered by REDCap; names alone prove no ordering.
                 'order'=>$order[$id]??null,

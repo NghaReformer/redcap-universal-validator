@@ -19,8 +19,9 @@ namespace INSPIRE\UniversalValidator\Scan;
  *   `redcap_record_list` is REDCap's own record index. It carries the record and
  *   its group and no data at all, so a page of it is a few kilobytes whatever
  *   the project holds. Preferred whenever it exists AND answers for this
- *   project - a table existing is not the same as a table being populated, and
- *   an empty index would enumerate a full project as empty.
+ *   project AND REDCap reports it complete - a table existing is not the same
+ *   as a table being populated, an empty index would enumerate a full project
+ *   as empty, and a half-built one would enumerate part of it (see open()).
  *
  *   The project's data table, restricted to the record-id field, is the
  *   fallback. Equally bounded, one row per record, and it needs the record-id
@@ -83,9 +84,21 @@ final class RecordManifestSource
     {
         $pk = isset($opts['pk']) && is_string($opts['pk']) && $opts['pk'] !== '' ? $opts['pk'] : null;
 
-        // Preferred: REDCap's record index.
+        // Preferred: REDCap's record index - when REDCap says it is complete.
+        //
+        // IT IS A CACHE (review CL-1). REDCap builds redcap_record_list in the
+        // background and records how far it got in
+        // redcap_record_counts.record_list_status. The probe below only proves
+        // the table holds SOME row for this project, so a list that was half
+        // built, or had gone stale and was being rebuilt, was walked as if it
+        // were the project: a record it did not hold was never put on the
+        // manifest, and the run certified a project it had not seen. Where
+        // REDCap keeps the status, anything but COMPLETE (or FIX_SORT, which is
+        // complete with its sort order still to be repaired) sends the walk to
+        // the data table, which is slower and always whole.
         $cols = self::columnsOf($db, 'redcap_record_list');
-        if ($cols !== null && isset($cols['project_id']) && isset($cols['record'])) {
+        $usable = self::recordListComplete($db, $pid) !== false;
+        if ($cols !== null && isset($cols['project_id']) && isset($cols['record']) && $usable) {
             $s = new self();
             $s->db = $db;
             $s->pid = $pid;
@@ -105,16 +118,21 @@ final class RecordManifestSource
             // Fall through: an index that exists but holds nothing for this
             // project would enumerate a full project as empty.
         }
+        // Said accurately when the index is there and was passed over: "no
+        // record index" sends an administrator looking for a table that exists.
+        $noIndex = ($cols !== null && !$usable)
+            ? 'this project\'s record index is not complete'
+            : 'this project has no record index';
 
         $dt = self::dataTable($db, $pid);
         if ($dt === null) {
             return ['ok' => false, 'source' => null,
-                    'why' => 'this project has no record index and no recognisable data table, so '
+                    'why' => $noIndex . ' and no recognisable data table, so '
                            . 'its records cannot be listed without exporting the whole project'];
         }
         if ($pk === null) {
             return ['ok' => false, 'source' => null,
-                    'why' => 'this project has no record index, and the record-id field could not '
+                    'why' => $noIndex . ', and the record-id field could not '
                            . 'be determined, so its records cannot be listed in bounded memory'];
         }
         $s = new self();
@@ -147,6 +165,16 @@ final class RecordManifestSource
      * record into a reported exclusion. The other direction would erase a record
      * from a report because a query timed out.
      *
+     * ABSENT IS CONFIRMED AGAINST THE DATA (review CL-1). The first question
+     * goes to the source the walk reads, which is usually redcap_record_list -
+     * REDCap's record-list CACHE, which can be part built or stale while the
+     * record itself sits in the data table. Answering "gone" from the cache
+     * alone let catch-up tombstone an edited record and the worker's H18 path
+     * tombstone a live one, and a tombstone does not block a clean verdict. So
+     * every id the first answer leaves out is asked of the project's data
+     * table as well, on any field, and only an id neither holds is reported
+     * gone. That read cannot be made, or fails: "still there".
+     *
      * @param string[] $ids
      * @return array<string,bool>
      */
@@ -168,11 +196,74 @@ final class RecordManifestSource
 
             $seen = [];
             foreach ($this->db->select($sql, $params) as $row) $seen[(string) $row[0]] = true;
-            foreach ($out as $id => $_) $out[$id] = isset($seen[$id]);
+            $absent = [];
+            foreach ($out as $id => $_) {
+                if (!isset($seen[(string) $id])) $absent[] = (string) $id;
+            }
+            if (!$absent) return $out;
+
+            $held = $this->heldInData($absent);
+            if ($held === null) return $out;          // could not confirm: still there
+            foreach ($absent as $id) $out[$id] = isset($held[$id]);
             return $out;
         } catch (\Throwable $e) {
             return array_fill_keys(array_map('strval', $ids), true);
         }
+    }
+
+    /**
+     * Which of these ids hold ANY row in the project's data table, as a set, or
+     * null when that cannot be asked.
+     *
+     * Every field, not the record-id field alone: the point is to find the
+     * record, and a record whose record-id row is missing is still a record.
+     * DISTINCT and `project_id = ? AND record IN (...)` is the leading part of
+     * the data table's own (project_id, record, ...) index.
+     *
+     * @param string[] $ids
+     * @return array<string,true>|null
+     */
+    private function heldInData(array $ids)
+    {
+        if ($this->dataTable === null || !$ids) return null;
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+        try {
+            $rows = $this->db->select('SELECT DISTINCT record FROM ' . $this->dataTable
+                . ' WHERE project_id = ? AND record IN (' . $marks . ')',
+                array_merge([$this->pid], array_map('strval', $ids)));
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $out = [];
+        foreach ($rows as $row) $out[(string) $row[0]] = true;
+        return $out;
+    }
+
+    /**
+     * Does REDCap say this project's record-list cache is complete?
+     *
+     * true for COMPLETE and FIX_SORT; false for any other status, for no row,
+     * and for a read that failed - each of those means the cache may be missing
+     * records. null when this REDCap keeps no status at all (no
+     * redcap_record_counts.record_list_status column), which leaves the index
+     * judged by the probe alone, as it was before the status existed.
+     *
+     * @return bool|null
+     */
+    private static function recordListComplete(ScanDb $db, $pid)
+    {
+        $cols = self::columnsOf($db, 'redcap_record_counts');
+        if ($cols === null || !isset($cols['project_id']) || !isset($cols['record_list_status'])) {
+            return null;
+        }
+        try {
+            $r = $db->select('SELECT record_list_status FROM redcap_record_counts WHERE project_id = ?',
+                [$pid]);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        if (!isset($r[0][0])) return false;
+        return in_array(strtoupper((string) $r[0][0]), ['COMPLETE', 'FIX_SORT'], true);
     }
 
     /** Each record's group, or null. Null both for "no group" and for "cannot tell". */
@@ -326,7 +417,7 @@ final class RecordManifestSource
                       // THE GROUP ID, VERBATIM. dag_id on the record index and
                       // the __GROUPID__ value on the data table are both
                       // REDCap's numeric group id; neither is the friendly
-                      // name. This is the value ScanPlanner::stream() compares
+                      // name. This is the value ScanPlanner::step() compares
                       // scope_dag against and the value written to
                       // uv_scan_record.dag, so anything that normalised it into
                       // a label here would move the whole manifest onto a second
@@ -453,6 +544,13 @@ final class RecordManifestSource
      *
      * One query per page, in the record column's own collation, bounded by one
      * more than the cap so an unusable project is detected rather than paged.
+     *
+     * LOAD-BEARING, AND THE ONE LEVER IF PLANNING EVER NEEDS TO BE FASTER (P4).
+     * It is half the queries a plan makes, and it is what makes the `>=`
+     * keyset walk skip nothing: without it, ids the collation calls equal to
+     * a page's last id are either listed twice or not at all. Do not remove it
+     * without putting the same guarantee somewhere else. Do not shrink the
+     * page to speed planning up either - see ScanPlanner::step().
      */
     private function boundaryGroup($id)
     {

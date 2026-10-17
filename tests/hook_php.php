@@ -2298,7 +2298,9 @@ namespace {
         'good' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '',
                    'field_annotation' => '@UVREQUIRED'],
     ];
-    $m = newModule([], $m5Dict, ['1' => [351 => ['record_id' => '1', 'code' => 'ABC', 'good' => '']]], 149);
+    // Form f was saved (status '0'): the scan checks started forms only (R2O-2),
+    // and 'code' is not read because its rule is not live.
+    $m = newModule([], $m5Dict, ['1' => [351 => ['record_id' => '1', 'code' => 'ABC', 'good' => '', 'f_complete' => '0']]], 149);
     $res = $m->scanProject(149);
     check('M-05: a config-error rule is surfaced in the scan, not silently skipped',
         count(array_filter($res['unconfigurable'], function ($u) {
@@ -2571,6 +2573,18 @@ namespace {
     }
     check('M16: the throttle increments with one statement', $inserts === 1);
     check('M16: and reads nothing from the bucket before writing it', $reads === 0);
+    // P2: the increment answers through LAST_INSERT_ID() and the prune answers
+    // to nobody, so neither row count is ever read - and ModuleDb::exec() bought
+    // one with a second round trip, on every keystroke-debounced survey check.
+    // This request creates the bucket, so it runs BOTH writes.
+    $counts = 0; $prunes = 0; $answers = 0;
+    foreach ($m->rateStatements as $sql) {
+        if (strpos($sql, 'ROW_COUNT()') !== false) $counts++;
+        if (strpos($sql, 'DELETE') === 0 && strpos($sql, 'uv_rate_bucket') !== false) $prunes++;
+        if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) $answers++;
+    }
+    check('P2 (control): the request did prune, and did read its answer', $prunes === 1 && $answers === 1);
+    check('P2: the throttle fetches no row count for either write', $counts === 0);
     // The old array is not consulted any more, so a stale system setting from
     // before the upgrade cannot throttle anybody.
     $m = newModule([], $f5Dict, $f5Data, 149);

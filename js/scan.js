@@ -92,6 +92,135 @@
 
     function labels() { return UV.labels || {}; }
 
+    /** A page template with its {holes} filled. The templates are the page's. */
+    function fill(tpl, withValues) {
+        var out = String(tpl), k;
+        for (k in withValues) {
+            if (Object.prototype.hasOwnProperty.call(withValues, k)) {
+                out = out.split('{' + k + '}').join(String(withValues[k]));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * How much of the manifest is SETTLED - examined, excluded or removed. It is
+     * what the bar measures, so the bar reaches the end when the run does. A
+     * server that does not report it yet reports `done` with the old meaning,
+     * which was this.
+     */
+    function settled(st) {
+        return (typeof st.settled === 'number') ? st.settled : st.done;
+    }
+
+    /**
+     * The progress line. ScanPageView::countsText() builds the same string from
+     * the same templates, so the first paint and the first poll agree. The
+     * number before "of" is records EXAMINED; what was not is said beside it.
+     */
+    function countsText(st, p) {
+        if (!st.total) return 'Preparing';
+        var L = labels(), excluded = st.excluded | 0, removed = st.removed | 0, line;
+        if (excluded <= 0 && removed <= 0) {
+            line = fill(L.plain || '{done} of {total} records', { done: st.done, total: st.total });
+        } else {
+            var parts = [fill(L.checked || '{done} of {total} records checked',
+                              { done: st.done, total: st.total })];
+            if (excluded > 0) parts.push(fill(L.excluded || '{n} could not be checked', { n: excluded }));
+            if (removed > 0) parts.push(fill(L.removed || '{n} deleted during the scan', { n: removed }));
+            line = parts.join('; ');
+        }
+        return line + (p === null ? '' : '  (' + p + '%)');
+    }
+
+    /**
+     * What a finished run that is NOT certified clean must add to its coverage
+     * sentence, or null when it owes nothing.
+     *
+     * The coverage sentence says what was checked, not what was decided, so a
+     * run refused `clean` because a rule could not be evaluated read exactly as
+     * a certified one did. Only a stored `clean` of exactly 1 owes nothing; a
+     * status without the field (an older server) is not certified, because the
+     * missing answer is never the reassuring one. ScanPageView::verdictText()
+     * decides the same way, from the same sentences.
+     */
+    function verdictText(st) {
+        if (!st.terminal || st.clean === 1) return null;
+        var L = labels(), n = st.ruleProblems | 0, tpl;
+        if (n === 1) {
+            return L.ruleProblem
+                || '1 rule could not be evaluated, so this result does not certify the project.';
+        }
+        if (n > 1) {
+            tpl = L.ruleProblems
+                || '{n} rules could not be evaluated, so this result does not certify the project.';
+            return fill(tpl, { n: n });
+        }
+        return L.notCertified || 'This result does not certify the project.';
+    }
+
+    /**
+     * "Nothing found yet", "3 findings so far", or that they were not counted.
+     *
+     * A findings value that is not a number is NOT zero. A run that ended
+     * before its summary was built answers null (ScanPromotion::findingsOf),
+     * and this printed "null findings so far"; read as zero it would have said
+     * "Nothing found yet" over duplicates the finalizer had already written.
+     * ScanPageView::foundText() builds the same string.
+     */
+    function foundText(st) {
+        var f = st.findings, L = labels();
+        if (typeof f !== 'number' || f < 0 || f !== Math.floor(f)) {
+            return L.foundUnknown
+                || 'Findings not counted, because the scan ended before it could total them';
+        }
+        return f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
+    }
+
+    /** "12345" as "12,345", as PHP's number_format() writes it. */
+    function grouped(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    /** A whole, non-negative count from the status, or 0. */
+    function whole(v) {
+        return (typeof v === 'number' && v > 0 && v === Math.floor(v)) ? v : 0;
+    }
+
+    /**
+     * "400 bytes", "3.4 MB". ScanPageView::sizeText() decides the same way, in
+     * whole numbers on both sides so the two land on the same digit: binary
+     * units, one decimal, rounded half up, and a value that rounds up to 1024
+     * of a unit is said in the next one.
+     */
+    function sizeText(bytes) {
+        if (bytes < 1024) return bytes + ' byte' + (bytes === 1 ? '' : 's');
+        var units = ['KB', 'MB', 'GB', 'TB'], i = 0, div = 1024;
+        var tenths = Math.floor((bytes * 10 + div / 2) / div);
+        while (tenths >= 10240 && i < units.length - 1) {
+            i++;
+            div *= 1024;
+            tenths = Math.floor((bytes * 10 + div / 2) / div);
+        }
+        return grouped(Math.floor(tenths / 10)) + '.' + (tenths % 10) + ' ' + units[i];
+    }
+
+    /**
+     * "Stored: 12,345 finding rows, with 3.4 MB of values", or null when the
+     * run has stored no row (P10). These are the run row's storage counters,
+     * not the findings count. ScanPageView::storedText() builds the same string.
+     */
+    function storedText(st) {
+        var rows = whole(st.detailRows), bytes = whole(st.detailBytes), L = labels();
+        if (rows <= 0) return null;
+        var phrase = grouped(rows) + ' finding row' + (rows === 1 ? '' : 's');
+        if (bytes > 0) {
+            return fill(L.storedValues || 'Stored: {rows}, with {size} of values',
+                        { rows: phrase, size: sizeText(bytes) });
+        }
+        return fill(L.stored || 'Stored: {rows}', { rows: phrase });
+    }
+
     /**
      * How a phase reads to somebody who did not design this.
      *
@@ -137,6 +266,10 @@
         stalledMs: 0,           // how long we have been getting nowhere, for the disclosure
         inflight: false,        // one scan-work in flight per tab, always
         chain: 0,               // which driver owns the loop; a stale one dies quietly
+        watchChain: 0,          // the same, for a tab that is only watching
+        watchWait: 0,           // the watching ladder, 0 until the first poll is queued
+        watchNote: null,        // the refusal a watch last wrote into the note, if any
+        stopNote: null,         // the "stopping" sentence Stop wrote, until the run is over
         seen: false,            // has any status arrived on this chain yet
         lastDone: -1, lastPhase: null, lastPct: null, lastFindings: null
     };
@@ -184,13 +317,23 @@
     function render(st) {
         if (!st || st.ok === false) {
             text(el('uv-scan-note'), st && st.why ? st.why : 'The scan could not be reached.');
+            // A REFUSAL SAYS NOTHING ABOUT WHETHER THE RUN IS QUIET (review
+            // R2O-4). This returned before the paused/stalled sentence below
+            // was reconsidered, so a sentence about the last status that DID
+            // arrive stayed under a refusal that contradicted it.
+            var quietNode = el('uv-scan-stalled');
+            if (quietNode) {
+                quietNode.style.display = 'none';
+                text(quietNode, '');
+            }
             return;
         }
         UV.state.runId = st.run_id;
         var phase = phaseLabel(st.phase);
         text(el('uv-scan-phase'), phase);
 
-        var p = pct(st.done, st.total);
+        var p = pct(settled(st), st.total);
+        var counts = countsText(st, p);
         var track = el('uv-scan-bar-track'), bar = el('uv-scan-bar');
         // A bar with no total is INDETERMINATE, never zero and never full: a bar
         // sitting at 0% for the length of a planning phase reads as a scan that
@@ -203,21 +346,24 @@
         // cannot diverge.
         if (track) {
             attr(track, 'aria-valuenow', p === null ? null : p);
-            attr(track, 'aria-valuetext', p === null
-                ? 'not known yet' : (st.done + ' of ' + st.total + ' records'));
+            attr(track, 'aria-valuetext', p === null ? 'not known yet' : countsText(st, null));
         }
         if (bar) {
             bar.style.width = (p === null ? '' : p + '%');
             bar.className = (p === null ? 'uv-bar uv-bar-indeterminate' : 'uv-bar');
         }
 
-        var counts = st.total
-            ? (st.done + ' of ' + st.total + ' records' + (p === null ? '' : '  (' + p + '%)'))
-            : 'Preparing';
-        var found = st.findings === 0 ? 'Nothing found yet'
-            : (st.findings + ' finding' + (st.findings === 1 ? '' : 's') + ' so far');
+        var found = foundText(st);
         text(el('uv-scan-counts'), counts);
         text(el('uv-scan-found'), found);
+
+        // What the run has stored, shown once it has stored something. Server
+        // numbers reach the node through textContent only, as everything here.
+        var storedNode = el('uv-scan-stored'), stored = storedText(st);
+        if (storedNode) {
+            storedNode.style.display = stored === null ? 'none' : '';
+            text(storedNode, stored === null ? '' : stored);
+        }
 
         var done = el('uv-scan-done');
         if (st.terminal) {
@@ -226,6 +372,8 @@
             // and a reader given only one of the two draws the wrong conclusion
             // from it.
             var sentence = coverageSentence(st.coverage, st.detail);
+            var verdict = verdictText(st);
+            if (verdict) sentence += ' ' + verdict;
             // Revealed BEFORE it is written. A live region that is display:none
             // when its text changes announces nothing in most assistive
             // technology, so the old order made the completion sentence the one
@@ -248,6 +396,42 @@
         }
         UV.state.lastPct = p;
         UV.state.lastFindings = st.findings;
+
+        // STALLED IS FOR A TAB THAT IS WATCHING. The one driving the scan learns
+        // that a pass made no progress from the pass itself and says so in the
+        // note; showing both would be two sentences about one fact. Revealed
+        // before it is written, for the reason the completion sentence is.
+        //
+        // THREE SENTENCES, AND ONLY ONE IS THE ALARM (review CL-2). The server
+        // decides which: `stopping` for a run Stop was pressed on, `stalled`
+        // for a run a worker holds while nothing finishes, `paused` for a run
+        // nobody is working. Paused used to arrive as stalled, so a run left by
+        // a closed tab - the ordinary way to leave one - told the next reader
+        // to stop it and start again, beside the Continue button that was the
+        // right answer. ScanPageView::stalledText() picks in the same order.
+        //
+        // Planning is a slice per request since B10, driven by this pump like
+        // any phase, so a quiet planning run is paused or stalled by the same
+        // rule as a scanning one, and Continue resumes the list from where it
+        // stopped. The fourth sentence R2O-3 added, which sent the reader to
+        // Stop and hid Continue, threw that list away and is gone.
+        var stalledNode = el('uv-scan-stalled');
+        if (stalledNode) {
+            var L2 = labels(), quiet = null;
+            if (!st.terminal && st.active && !UV.state.running) {
+                if (st.stopping) quiet = L2.stopping || '';
+                else if (st.stalled) quiet = L2.stalled || '';
+                else if (st.paused) quiet = L2.paused || '';
+            }
+            if (quiet) {
+                var mins = Math.max(1, Math.floor((st.idleSeconds | 0) / 60));
+                stalledNode.style.display = '';
+                text(stalledNode, fill(quiet, { minutes: mins }));
+            } else {
+                stalledNode.style.display = 'none';
+                text(stalledNode, '');
+            }
+        }
 
         var panel = el('uv-scan-panel');
         attr(panel, 'aria-busy', st.active ? 'true' : 'false');
@@ -301,11 +485,13 @@
                     + (r.blocked | 0) + (r.findings | 0)) > 0);
         if (st) {
             if (!moved && UV.state.seen) {
-                if (typeof st.done === 'number' && st.done > UV.state.lastDone) moved = true;
+                // SETTLED, not examined: a pass that excluded a record moved the
+                // run on exactly as much as one that examined it.
+                if (typeof settled(st) === 'number' && settled(st) > UV.state.lastDone) moved = true;
                 if (st.phase && st.phase !== UV.state.lastPhase) moved = true;
             }
             UV.state.seen = true;
-            if (typeof st.done === 'number') UV.state.lastDone = st.done;
+            if (typeof settled(st) === 'number') UV.state.lastDone = settled(st);
             if (st.phase) UV.state.lastPhase = st.phase;
         }
         return moved;
@@ -428,15 +614,110 @@
         refresh();
     }
 
+    /**
+     * Read the run once, and keep reading it while this tab only WATCHES it.
+     *
+     * A WATCHING TAB ASKED ONCE (review CL-4). The page attaches without
+     * resuming, so a tab opened beside a running scan - or after it was left -
+     * asked scan-status a single time and never again: a run that stalled
+     * later was never shown as stalled, and a stall sentence that had stopped
+     * being true was never taken down. While the run is active and this tab is
+     * not driving it, the status is asked again on the no-progress ladder
+     * (IDLE_MIN doubling to IDLE_MAX), never at 0 ms, and the asking stops when
+     * the run is terminal, when the server refuses FOR GOOD, or when this tab
+     * starts driving - pump() renders every answer itself from then on.
+     *
+     * NOT EVERY REFUSAL IS FOR GOOD (review R2O-4). The endpoint answers a
+     * database blip with ok:false too - its catch-all "could not be reached" -
+     * and the watch used to end on it, so the tab never learned that the run
+     * finished. The server marks the refusals that will not change (no such
+     * run, not yours to read) with `final`; any other refusal is asked again
+     * on the same ladder, and its sentence is taken down when an answer
+     * arrives.
+     *
+     * ONE WATCH PER TAB, by the same device as the driver: every refresh() is a
+     * new chain, and a timer from an older one dies when it fires.
+     */
     function refresh() {
         if (!UV.state.runId) return;
-        call('scan-status', { run_id: UV.state.runId }).then(render)['catch'](function () {});
+        UV.state.watchWait = 0;
+        poll(++UV.state.watchChain);
+    }
+
+    function poll(mine) {
+        call('scan-status', { run_id: UV.state.runId }).then(function (st) {
+            if (mine !== UV.state.watchChain) return;
+            var note = el('uv-scan-note');
+            try {
+                render(st);
+            } catch (e) {
+                // As before: a bug in rendering is not a reason to stop
+                // watching a scan that is still on the server.
+            }
+            // The refusal sentence this watch wrote, and only that one: a note
+            // something else has written since is not this watch's to clear.
+            if (!st || st.ok === false) {
+                UV.state.watchNote = note ? note.textContent : null;
+            } else {
+                if (note && UV.state.watchNote !== null && note.textContent === UV.state.watchNote) {
+                    text(note, '');
+                }
+                UV.state.watchNote = null;
+                if (st.terminal) settleStopNote(st);
+            }
+            keepWatching(st, mine);
+        }, function (e) {
+            if (mine !== UV.state.watchChain) return;
+            // A transport that does not exist is not a lost connection, and
+            // asking it again can never succeed - see pump().
+            if (e && e.uvFatal) return;
+            // The status did not arrive. The run did not therefore finish:
+            // ask again, on the same ladder, and never at once.
+            keepWatching(null, mine);
+        });
+    }
+
+    /**
+     * Take "Stopping the scan." down once the run is over (review R3U-5).
+     *
+     * Stop answers stopped:false when it could only ASK - commonly because
+     * this tab's own work request was in flight and held the run - and that
+     * request then ends it. The note was written once and never revisited, so
+     * the finished panel sat under "Stopping the scan." for as long as the
+     * page was open. The first terminal status replaces it with what happened.
+     * Only Stop's own sentence: a note something else has written since is not
+     * this one's to change.
+     */
+    function settleStopNote(st) {
+        var note = el('uv-scan-note');
+        if (UV.state.stopNote !== null && note && note.textContent === UV.state.stopNote) {
+            text(note, st.terminal === 'cancelled' ? 'The scan was stopped.'
+                : 'The scan ended before it could be stopped.');
+        }
+        UV.state.stopNote = null;
+    }
+
+    function keepWatching(st, mine) {
+        if (UV.state.running || UV.state.starting) return;
+        var over = st ? (st.ok === false ? st.final === true : (st.terminal || !st.active)) : false;
+        if (over) {
+            UV.state.watchWait = 0;
+            return;
+        }
+        var w = UV.state.watchWait = UV.state.watchWait
+            ? Math.min(IDLE_MAX, UV.state.watchWait * 2) : IDLE_MIN;
+        setTimeout(function () {
+            if (mine !== UV.state.watchChain || UV.state.running || UV.state.starting) return;
+            poll(mine);
+        }, w);
     }
 
     UV.start = function () {
         if (UV.state.running || UV.state.starting) return;
         UV.state.starting = true;
         UV.state.chain++;
+        UV.state.watchChain++;               // a tab that drives is no longer watching
+        UV.state.stopNote = null;
         text(el('uv-scan-note'), '');
         busy(true);
         // .then(onOk, onErr), NOT .then(onOk)['catch'](onErr). With the catch
@@ -487,6 +768,8 @@
         if (!UV.state.runId) return;
         if (UV.state.running) return;        // a second Continue is not a second driver
         UV.state.chain++;
+        UV.state.watchChain++;               // a tab that drives is no longer watching
+        UV.state.stopNote = null;            // a driver writes its own notes
         UV.state.running = true;
         UV.state.wait = NET_MIN;
         UV.state.idle = 0;
@@ -502,7 +785,15 @@
         UV.state.running = false;
         UV.state.chain++;
         call('scan-cancel', { run_id: UV.state.runId }).then(function (r) {
-            text(el('uv-scan-note'), (r && r.why) ? r.why : 'Stopping the scan.');
+            // `stopped` is the server saying the run has ENDED, which it now
+            // does at once for a run nobody was working (review R2O-5).
+            // "Stopping" over a finished run would be the one stale word, so
+            // when that is what has to be said, the watch below replaces it
+            // once a status comes back terminal (settleStopNote, R3U-5).
+            var asked = !(r && r.why) && !(r && r.stopped);
+            text(el('uv-scan-note'), (r && r.why) ? r.why
+                : ((r && r.stopped) ? 'The scan was stopped.' : 'Stopping the scan.'));
+            UV.state.stopNote = asked ? 'Stopping the scan.' : null;
             refresh();
         }, function () {
             text(el('uv-scan-note'), 'The scan could not be stopped; try again.');

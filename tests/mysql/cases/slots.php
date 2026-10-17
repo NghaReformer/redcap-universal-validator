@@ -42,8 +42,96 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('slots: LOWERING the limit deletes nothing', $slotsA->provision(2) === 0);
     $c = $slotsA->census();
     check('slots: the census reports what exists', $c['total'] === 5 && $c['held'] === 0);
+
+    // TWO SAVES AT ONCE (W6-N3). Another administrator's save inserts slot 6
+    // between this one's MAX read and its INSERT IGNORE. The ignored row was
+    // counted as added: the count was of statements sent, not rows the server
+    // kept. Connection B writes the row from inside A's read.
+    $racing = new class($A, $B) extends MysqliDb {
+        private $other; public $raced = false;
+        public function __construct($conn, $other) { parent::__construct($conn); $this->other = $other; }
+        public function select($sql, array $params = []) {
+            $out = parent::select($sql, $params);
+            if (!$this->raced && strpos($sql, 'MAX(slot_no)') !== false) {
+                $this->raced = true;
+                $this->other->query('INSERT INTO ' . Schema::table('scan_worker_slot')
+                    . ' (slot_no, epoch) VALUES (6, 0)');
+            }
+            return $out;
+        }
+    };
+    $raced = (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($racing))->provision(7);
+    check('slots: a slot another save wrote first is not counted as added',
+        $racing->raced === true && $raced === 1 && $slotsA->census()['total'] === 7);
+    // Seven slots by now: the racing save above provisioned up to 7.
     check('slots: and names which are idle above a reduced limit',
-        $slotsA->idleAbove(2) === [3, 4, 5]);
+        $slotsA->idleAbove(2) === [3, 4, 5, 6, 7]);
+
+    // A LIMIT TYPED INTO A TEXT BOX (R8-4). The setting had no ceiling, and
+    // provisioning sent one placeholder a slot in one statement: 70000 was
+    // refused by the server ("Prepared statement contains too many
+    // placeholders") and no slot was written. The policy now holds it at
+    // MAX_PROJECTS and the rows go in WorkerSlots::CHUNK at a time, so the
+    // gap here takes more than one statement and every row is counted.
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $cap = \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve(
+        ['scan-system-max-concurrent-projects' => '70000'], [])['maxProjects'];
+    check('slots R8-4: a limit of 70000 is held at the ceiling',
+        $cap === \INSPIRE\UniversalValidator\Scan\ScanPolicy::MAX_PROJECTS
+        && $cap > \INSPIRE\UniversalValidator\Scan\WorkerSlots::CHUNK);
+    check('slots R8-4: and provisions exactly that many rows, counted across statements',
+        $slotsA->provision($cap) === $cap && $slotsA->census()['total'] === $cap);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot') . ' WHERE slot_no > 250');
+    check('slots R8-4: a gap that crosses a statement boundary is filled and counted',
+        $slotsA->provision($cap) === $cap - 250 && $slotsA->census()['total'] === $cap);
+    // Handed straight to provision(), past the policy: the column's range,
+    // never a refused statement or a fatal error.
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot') . ' WHERE slot_no > 10');
+    $big = $slotsA->provision(1000000000);
+    $top = $A->query('SELECT COUNT(*), MAX(slot_no) FROM ' . Schema::table('scan_worker_slot'))->fetch_row();
+    check('slots R8-4: a billion handed to provision() stops at the slot_no range',
+        $big === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO - 10
+        && (int) $top[0] === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO
+        && (int) $top[1] === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+
+    // R4-4 / W1-N1: A LOWERED LIMIT IS THE MOST WORKERS THERE CAN BE. An
+    // installation that provisioned 1200 slots before the R8-4 clamp kept
+    // them: provision() only adds and acquire() took any free row, so 1200
+    // concurrent workers were admitted with the setting text promising 1000
+    // (measured on MySQL 8.0 before this fix). Here the 1200 rows exist, the
+    // policy resolves the setting to 1000, and 1201 workers ask in turn.
+    $slotsA->provision(1200);
+    $limit = \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve(
+        ['scan-system-max-concurrent-projects' => '70000'], [])['maxProjects'];
+    $got = 0; $over = 0; $refusedAt = null;
+    for ($i = 1; $i <= 1201; $i++) {
+        $s = (($i % 2) ? $slotsA : $slotsB)->acquire('w' . $i, $i, 60, $limit);
+        if ($s === null) { if ($refusedAt === null) $refusedAt = $i; continue; }
+        $got++;
+        if ($s['slot_no'] > $limit) $over++;
+    }
+    check('slots R4-4: with 1200 rows and the limit at 1000, exactly 1000 workers are admitted',
+        $limit === 1000 && $got === 1000 && $over === 0 && $refusedAt === 1001);
+    // The limit is read at each acquire, so lowering it holds at once: with
+    // every place up to 1000 taken, a limit of 999 admits nobody, and once
+    // slot 3 is let go a limit of 2 still admits nobody.
+    $A->query('UPDATE ' . Schema::table('scan_worker_slot') . ' SET owner = NULL, expires_at = NULL WHERE slot_no = 3');
+    check('slots W1-N1: a free slot above a lowered limit is not taken',
+        $slotsA->acquire('late', 1, 60, 2) === null && $slotsA->acquire('late', 1, 60, 3) !== null);
+    // The rows above the limit go as they fall idle. Slots 1001-1200 are free;
+    // slot 1000 is held, so lowering to 999 removes the free 200 and keeps it.
+    $A->query('UPDATE ' . Schema::table('scan_worker_slot') . ' SET owner = NULL, expires_at = NULL WHERE slot_no > 1000');
+    $removed = $slotsA->shrinkTo(999);
+    $rows = $A->query('SELECT COUNT(*), MAX(slot_no) FROM ' . Schema::table('scan_worker_slot'))->fetch_row();
+    check('slots W1-N1: shrinking removes the free rows above the limit and keeps a held one',
+        $removed === 200 && (int) $rows[0] === 1000 && (int) $rows[1] === 1000);
+    $A->query('UPDATE ' . Schema::table('scan_worker_slot') . ' SET owner = NULL, expires_at = NULL WHERE slot_no = 1000');
+    check('slots W1-N1: and removes that one once its holder has let it go',
+        $slotsA->shrinkTo(999) === 1 && $slotsA->census()['total'] === 999);
+    check('slots W1-N1: shrinking a table already at the limit removes nothing',
+        $slotsA->shrinkTo(999) === 0);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
 
     // BROWSER AND CRON COMPETE FOR THE SAME POOL. That is the point of an
     // installation-wide semaphore: a cron that ignored browser leases would let

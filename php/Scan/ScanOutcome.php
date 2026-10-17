@@ -36,6 +36,8 @@ final class ScanOutcome
     const CANCELLED = 'cancelled';
     const FAILED    = 'failed';
     const EXPIRED   = 'expired';
+    /** Terminals that ended before "was it clean" could be asked at all. */
+    const NO_VERDICT = [self::FAILED, self::CANCELLED, self::EXPIRED];
 
     // Coverage.
     const FENCED   = 'complete-through-fence';
@@ -43,8 +45,12 @@ final class ScanOutcome
     const COV_PARTIAL = 'partial';
     const COV_FAILED  = 'failed';
     /**
-     * The scope held no records, so nothing was examined and nothing may be
-     * claimed about the project.
+     * No record is left to report on, so nothing may be claimed about the
+     * project: the scope held no records, or every record in it was deleted
+     * while the run went on - before it was read, or after (review R2O-1). The
+     * three are one value because they support the same claim - none - and
+     * ScanPromotion::facts() cannot tell them apart without a manifest count
+     * it has learned not to trust.
      *
      * ITS OWN VALUE RATHER THAN `failed` OR `manifest-complete`, and both of
      * those were tried on paper first. `failed` is what the two neighbouring
@@ -79,10 +85,10 @@ final class ScanOutcome
      *   cancelled:     bool  cancellation was requested and honoured
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
- *   emptyScope:    bool  the scope held no records at all; nothing was examined
+     *   emptyScope:    bool  no record is left: none in scope, or all deleted, checked or not
      *   lookupsMoved:  bool  @UVEXISTS verdicts may have moved with a change in the window
-     *   violations:    int
-     *   ruleProblems:  int
+     *   violations:    int   ABSENT IS UNKNOWN, and unknown is never clean
+     *   ruleProblems:  int   ABSENT IS UNKNOWN, and unknown is never clean
      *   gaps:          int   collection gaps; never a violation, never blocking
      *   labelDegraded: bool  reporting-label degradation only; non-blocking
      * }
@@ -93,6 +99,18 @@ final class ScanOutcome
     {
         $b = function ($k) use ($f) { return !empty($f[$k]); };
         $i = function ($k) use ($f) { return isset($f[$k]) ? (int) $f[$k] : 0; };
+        // A COUNT THAT WAS NOT SUPPLIED IS NOT ZERO (review OC-7). `violations`
+        // and `ruleProblems` were read through $i(), so a caller that omitted
+        // either got 0 - the CLEAN direction - against the rule this docblock
+        // states. Absent, null, negative or not a number is UNKNOWN, and an
+        // unknown count refuses clean. Gaps keep $i(): they never decide it.
+        $count = function ($k) use ($f) {
+            if (!array_key_exists($k, $f)) return null;
+            $v = $f[$k];
+            if (is_int($v)) return $v >= 0 ? $v : null;
+            if (is_string($v) && ctype_digit($v)) return (int) $v;
+            return null;
+        };
 
         $detail = $b('truncated') ? self::DETAIL_TRUNCATED : self::DETAIL_COMPLETE;
         $gaps   = $i('gaps');
@@ -137,10 +155,21 @@ final class ScanOutcome
         // whose rule is that a forgotten field yields the weaker claim. It is
         // not: a false emptyScope falls through to weaker rows, while a true one
         // ASSERTS that the scope was empty. Asserting is never the safe default.
+        // THE SENTENCE COVERS EVERY WAY IN, and it has been wrong twice. It
+        // said "no records were in scope", which is false of a run whose every
+        // record was deleted while it ran. It then said "no record was
+        // examined", which is false of the commonest of those runs (review
+        // R2O-1): catch-up tombstones a record it had already examined, its
+        // findings stay active, and the run was stored as having examined
+        // nothing beside a count of what that examination found. What is true
+        // of all of them is that no record is LEFT: none was listed, or every
+        // one listed was deleted, checked or not - and whatever it found is
+        // about records the project no longer has.
         if ($b('emptyScope')) {
             return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
-                'no records were in scope for this run, so nothing was examined and it '
-                . 'says nothing about the project');
+                'no record is left for it to report on - none was in scope, or every one was '
+                . 'deleted while it ran, whether or not it had been examined, and any findings it '
+                . 'kept are on deleted records - so it says nothing about the project');
         }
 
         // A record that could not be read, or a degradation that blocks
@@ -153,6 +182,18 @@ final class ScanOutcome
                 . 'was not covered');
         }
 
+        // THE MANIFEST BEFORE THE FENCE. These two were the other way round, and
+        // the cell where BOTH are false answered from the fence row: a run that
+        // had neither finished its list nor proved a window was stored as
+        // `manifest-complete`, with the sentence "every record on the opening
+        // list was examined". `manifest-complete` is a claim about the manifest,
+        // so whether the manifest was finished is asked first; the fence can
+        // only weaken a claim the manifest has already earned.
+        if (!$b('manifestDone')) {
+            return self::out(self::PARTIAL, self::COV_PARTIAL, $detail, false, $gaps,
+                'the run did not reach every record on its manifest');
+        }
+
         // Every manifest row terminal, but no proved fence: the run covered the
         // list it opened with and cannot know the project did not move.
         if (!$b('fenced')) {
@@ -162,11 +203,6 @@ final class ScanOutcome
                       . 'and @UVEXISTS answers depend on other records, so they were not re-checked'
                     : 'every record on the opening list was examined, but this server cannot prove the '
                       . 'project did not change during the run');
-        }
-
-        if (!$b('manifestDone')) {
-            return self::out(self::PARTIAL, self::COV_PARTIAL, $detail, false, $gaps,
-                'the run did not reach every record on its manifest');
         }
 
         // Fenced and whole. Detail truncation does not reduce COVERAGE - every
@@ -183,22 +219,31 @@ final class ScanOutcome
         // report, not a worse scan, and refusing to certify over it would make
         // the tick unreachable on any installation with a metadata gap.
         // BOTH TERMS MUST HAVE A PRODUCER, and for the whole of this file's life
-        // one of them did not. `ruleProblems` reaches here from
-        // ScanService::aggregateTotal(..., 'rule-problem'), and nothing in the
+        // one of them did not. `ruleProblems` reaches here as the sum of the
+        // 'rule-problem' aggregates (ScanPromotion::tally()), and nothing in the
         // shipped tree ever wrote an aggregate of that kind: every addAggregate
         // call site wrote a reconciled-*, reconcile-unsettled, fence-unprovable
         // or rollup-* kind instead. So `clean` reduced to `violations === 0`,
         // and a project whose rules enforce nothing was certified clean - the
-        // case ScanPageView::verdict names as M-02 and the legacy path already
+        // case the audit names M-02 and the legacy path already
         // refuses to imply. ScanPromotion::noteRuleProblems() is the producer
         // now; do not remove either term without checking it still has one.
-        $clean = ($i('violations') === 0 && $i('ruleProblems') === 0);
-        $why = $clean
-            ? ($b('labelDegraded')
+        $violations = $count('violations');
+        $ruleProblems = $count('ruleProblems');
+        $counted = ($violations !== null && $ruleProblems !== null);
+        $clean = ($counted && $violations === 0 && $ruleProblems === 0);
+        if ($clean) {
+            $why = $b('labelDegraded')
                 ? 'every record was examined and nothing was found; some labels could not be read, '
                   . 'so parts of the report show raw identifiers'
-                : 'every record was examined and nothing was found')
-            : 'every record was examined, and there is something to act on';
+                : 'every record was examined and nothing was found';
+        } elseif (!$counted) {
+            // Not "there is something to act on": nobody knows that either.
+            $why = 'every record was examined, but what was found was not counted, so the project '
+                 . 'cannot be called clean';
+        } else {
+            $why = 'every record was examined, and there is something to act on';
+        }
         return self::out(self::COMPLETE, self::FENCED, $detail, $clean, $gaps, $why);
     }
 
@@ -243,6 +288,37 @@ final class ScanOutcome
     public static function mayClaimClean(array $outcome)
     {
         return $outcome['terminal'] === self::COMPLETE && $outcome['clean'] === true;
+    }
+
+    /**
+     * What scan_run.clean holds for this outcome: 1, 0, or NULL.
+     *
+     * THREE values, because "was it clean" has three answers:
+     *
+     *   1     CERTIFIED. Complete, fenced, every count zero - mayClaimClean().
+     *   0     DECIDED, AND NOT CERTIFIED. The run reached the question and the
+     *         answer was no, for ANY reason: something was found, a rule could
+     *         not be evaluated, a record could not be read, the detail budget
+     *         ran out, the window was not proved, or nothing was examined. It
+     *         does NOT mean "checked, and found something", and this note used
+     *         to say it did (review EE-4) while partial and empty-scope runs
+     *         were written 0 beside it. A reader wanting "found something"
+     *         asks the counts; the counts mean something only where this
+     *         column is not NULL (W7-N10).
+     *   NULL  NO DECISION. A run that failed, was cancelled or expired never
+     *         reached the question. NULL is also what Schema::upgradeDataV2 and
+     *         the reaper write for those runs, and what every run finished
+     *         before this column was written carries.
+     *
+     * Partial runs stay 0 rather than NULL on purpose: they did reach the
+     * question, and their counts are the explanation a reader is owed.
+     *
+     * @return int|null
+     */
+    public static function cleanColumn(array $outcome)
+    {
+        if (in_array($outcome['terminal'], self::NO_VERDICT, true)) return null;
+        return self::mayClaimClean($outcome) ? 1 : 0;
     }
 
     private static function out($terminal, $coverage, $detail, $clean, $gaps, $why)

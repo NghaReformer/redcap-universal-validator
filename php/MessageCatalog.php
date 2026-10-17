@@ -61,6 +61,18 @@ final class MessageCatalog
      */
     public static function explain(array $finding, array $rule, $audience = 'staff')
     {
+        // THE NUMBER A SENTENCE NAMES IS THE ONE THE RULE COLUMN SHOWS. A stored
+        // finding names its rule by source id, and ScanDimensions::ruleOf()
+        // may settle on another ordinal than the one the row carries; the
+        // sentence quoted the row's, so one row named two rules. A rule shape
+        // that carries a resolved `ordinal` wins. Below 1 there is no rule,
+        // and the sentence says '?' - the word template() already uses for a
+        // finding with no number - never "Rule 0". A rule shape without
+        // `ordinal` (the legacy sink's) keeps the finding's own number.
+        if (array_key_exists('ordinal', $rule)) {
+            $ord = (int) $rule['ordinal'];
+            $finding['rule'] = $ord > 0 ? $ord : '?';
+        }
         $t = self::template($finding, $rule, $audience);
         // An AUTHORED message is returned verbatim, exactly as before the
         // template split: {braces} an author typed are their own text, and
@@ -145,9 +157,28 @@ final class MessageCatalog
     /**
      * The second sentence, when the rule carries detail worth showing. Staff only.
      *
-     * Besides the assert expression, a catalog entry may carry a "detail"
-     * template filled from the rule snapshot's 'detail' map (the keys its mode
-     * lists under scan.detailKeys in php/modes.json). A template with any
+     * THREE KINDS OF DETAIL.
+     *
+     * An assertion. The engine emits `assert:<expression>`; a STORED finding
+     * holds the code `assert` alone, because the expression belongs to the rule
+     * and Scan\ReasonCode strips it before it becomes a column. Both forms get
+     * the expression from the rule snapshot. The bare form used to get nothing,
+     * so a stored finding said "does not satisfy this rule's condition" and
+     * never said what the condition was.
+     *
+     * A pooled field with several problems. The engine joins them with `;`
+     * (`check-character;junk`) - there is no `pooled:` prefix, whatever the
+     * comment on ReasonCode once said - so no single catalogue key matches and
+     * explain() answers with the `pooled/*` line: "one or more IDs are not
+     * valid". That is true and tells nobody what to fix. Each part has wording
+     * of its own, and they are given here, one sentence per part. A part with
+     * no wording is NAMED rather than dropped: an unknown problem is still a
+     * problem.
+     *
+     * A detail template. Besides the assert expression, a catalog entry may
+     * carry a "detail" template filled from the rule snapshot's 'detail' map
+     * (the keys its mode lists under scan.detailKeys in php/modes.json). A
+     * template with any
      * placeholder the rule does not set is left out whole: half a sentence
      * about a window bound that does not exist would be wrong, not short.
      * "detail" may also be a list of templates, for rules of one kind that set
@@ -164,11 +195,13 @@ final class MessageCatalog
     public static function detail(array $finding, array $rule)
     {
         $reason = isset($finding['reason']) ? (string) $finding['reason'] : '';
-        if (strpos($reason, 'assert:') === 0) {
-            $expr = isset($rule['assert']) && $rule['assert'] !== ''
-                  ? $rule['assert'] : substr($reason, 7);
-            return 'The rule requires: ' . $expr;
+        if ($reason === 'assert' || strpos($reason, 'assert:') === 0) {
+            $expr = (isset($rule['assert']) && $rule['assert'] !== '')
+                  ? (string) $rule['assert'] : (string) substr($reason, 7);
+            return $expr === '' ? '' : 'The rule requires: ' . $expr;
         }
+        if (strpos($reason, ';') !== false) return self::pooledDetail($reason, $finding);
+
         $type = isset($finding['type']) ? (string) $finding['type'] : '';
         $code = $reason;
         $colon = strpos($reason, ':');
@@ -221,6 +254,30 @@ final class MessageCatalog
             return (string) $vals[$m[1]];
         }, $text);
         return $missing ? null : $out;
+    }
+
+    /** One sentence per part of a `;`-joined pooled reason; parts with no wording are named. */
+    private static function pooledDetail($reason, array $finding)
+    {
+        $type = isset($finding['type']) ? (string) $finding['type'] : '';
+        $cat = self::catalog();
+        $said = [];
+        $unnamed = [];
+        foreach (explode(';', $reason) as $part) {
+            $part = trim($part);
+            if ($part === '') continue;
+            $k = $type . '/' . $part;
+            if (isset($cat[$k]['staff']) && is_string($cat[$k]['staff']) && $cat[$k]['staff'] !== '') {
+                $said[$k] = self::fill($cat[$k]['staff'], $finding);
+            } else {
+                $unnamed[$part] = $part;
+            }
+        }
+        $out = implode(' ', $said);
+        if ($unnamed) {
+            $out .= ($out === '' ? '' : ' ') . 'Also reported: ' . implode(', ', $unnamed) . '.';
+        }
+        return $out;
     }
 
     /** Substitute {placeholders}; anything with no value becomes empty, never raw. */

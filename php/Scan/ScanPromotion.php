@@ -44,7 +44,10 @@ namespace INSPIRE\UniversalValidator\Scan;
  * cannot be read and will never be read, so requiring it to reach `done` holds
  * the run open forever - C3's mirror case. It reaches a terminal state of its
  * own and is counted, so a reader can see the project changed underneath the
- * scan without the run being unable to end.
+ * scan without the run being unable to end. It is not an examination either: a
+ * run whose records are ALL tombstones has nothing left to vouch for - whether
+ * or not some were read before they went - and is an empty scope, never a
+ * pass. See `emptyScope` in facts().
  *
  * PHP 7.4.
  */
@@ -54,13 +57,19 @@ final class ScanPromotion
     const GAP_KINDS = 'collection-gap';
     /** Aggregate kinds that are rule problems: they forbid clean but do not cap coverage. */
     const RULE_KINDS = 'rule-problem';
+    /**
+     * Records the change log listed inside the run's window. CatchUp::K_WINDOW
+     * writes it; tests/scan_service_php.php holds the two names equal, because
+     * this file must load without CatchUp (the database harness does).
+     */
+    const WINDOW_KINDS = 'window-changes';
 
     /**
      * Record that this run knows of rules it cannot evaluate.
      *
-     * THE CONSTANT ABOVE HAD NO WRITER. It was declared, it was read by
-     * ScanService::aggregateTotal() into ScanOutcome::derive()'s `ruleProblems`
-     * term, and nothing in the shipped tree ever produced an aggregate of that
+     * THE CONSTANT ABOVE HAD NO WRITER. It was declared, it was summed into
+     * ScanOutcome::derive()'s `ruleProblems` term (by tally(), today), and
+     * nothing in the shipped tree ever produced an aggregate of that
      * kind - every addAggregate() call site wrote a reconciled-*,
      * reconcile-unsettled, fence-unprovable or rollup-* kind instead. So `clean`
      * was really `violations === 0`, and a project whose rules enforce nothing
@@ -71,15 +80,18 @@ final class ScanPromotion
      * unwires this the suite says so, instead of the term quietly returning to
      * zero the way it has been for the whole of this file's life.
      *
-     * PLAN-TIME PROBLEMS ONLY, which is the whole of what it can honestly carry
-     * today. scanPlan() knows before the first record is read which rules have a
-     * configuration error, cannot be located on an instrument, sit on an
-     * instrument designated to no event, or cannot be evaluated under a group
-     * scope. That set is deduped by construction and bounded by the RULE list
-     * rather than by the data, so one row per run is exact, and it is known even
-     * on a run whose scope turns out to be empty. The per-record problems
-     * durableEvaluateRecord() returns need a dedupe and a presence-not-count
-     * store verb, and they stay in the wave that owns those.
+     * ONE ROW PER PROBLEM, AND EACH ROW IS A PRESENCE. This used to be a single
+     * addAggregate() row whose count was the number of problems, which made the
+     * planner the only caller that could use it: addAggregate ADDS, so a plan
+     * that ran twice (a retried request today, resumable planning tomorrow)
+     * reported twice the problems, and the per-record problems
+     * durableEvaluateRecord() returns could not come here at all - the same
+     * broken rule is met by every record, and its count would have measured the
+     * size of the project. markAggregate() is the verb that was missing; the
+     * worker now sends its problems through marksFor() and commitBatch().
+     *
+     * Plan-time problems are still noted here, before the first record is read,
+     * so they are known even on a run whose scope turns out to be empty.
      *
      * BLOCKS IS 0, and that is correctness rather than a default. A rule problem
      * FORBIDS CLEAN BUT DOES NOT CAP COVERAGE. Passing 1 would put it into
@@ -92,16 +104,174 @@ final class ScanPromotion
      */
     public static function noteRuleProblems(ScanStore $store, $runId, array $problems)
     {
-        if (!$problems) return 0;
-        $why = [];
-        foreach ($problems as $p) {
-            if (isset($p['why']) && is_string($p['why'])) $why[] = $p['why'];
+        $marks = self::marksFor($problems);
+        foreach ($marks as $m) {
+            $store->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
+                                  $m['blocks'], $m['samples']);
         }
-        // Bounded exactly as CatchUp::unfenced() bounds its sample, for the same
-        // reason: `samples` is a TEXT column and a rule list is unbounded.
-        $store->addAggregate($runId, self::RULE_KINDS, '', '', count($problems), 0,
-                             substr(implode(' | ', $why), 0, 500));
-        return count($problems);
+        return count($marks);
+    }
+
+    /** Longest explanation kept beside a mark. `samples` is TEXT and a sentence is unbounded. */
+    const SAMPLE_BYTES = 500;
+
+    /**
+     * A sentence cut to SAMPLE_BYTES that is still valid UTF-8.
+     *
+     * `samples` is a utf8mb4 column, and a strict server refuses a string that
+     * ends inside a character (error 1366). A rule-problem sentence quotes the
+     * designer's own expressions, so a multi-byte character can straddle the
+     * cut. Since B4b the mark is written inside commitBatch(), so one refused
+     * mark rolled back the whole batch, every retry carried the same mark, and
+     * the batch's records ended UNSTORED with the problem never recorded.
+     *
+     * Scrubbed first, because the sentence can carry project bytes that were
+     * never valid; then cut on a character boundary.
+     *
+     * @return string|null
+     */
+    public static function sample($why)
+    {
+        if (!is_string($why)) return null;
+        $why = mb_scrub($why, 'UTF-8');
+        return strlen($why) <= self::SAMPLE_BYTES
+            ? $why : mb_strcut($why, 0, self::SAMPLE_BYTES, 'UTF-8');
+    }
+
+    /**
+     * What makes two reports of a rule problem THE SAME problem.
+     *
+     * The rule, and what is wrong with it. UniversalValidator keys its own list
+     * "<rule index>|<code>" and then hands over array_values() of it, so the
+     * code does not survive the trip; until it does (`code` on each problem),
+     * the sentence stands in for it, hashed because an axis is 255 characters
+     * and a sentence is not. Two sentences for one fault would then be two rows,
+     * which overstates - the direction that cannot certify.
+     *
+     * @return array{0:string, 1:string} axis1 (the rule's ordinal), axis2 (the code)
+     */
+    public static function problemKey(array $problem)
+    {
+        $rule = isset($problem['rule']) ? (string) (int) $problem['rule'] : '0';
+        if (isset($problem['code']) && is_string($problem['code']) && $problem['code'] !== '') {
+            return [$rule, substr($problem['code'], 0, 255)];
+        }
+        $why = (isset($problem['why']) && is_string($problem['why'])) ? $problem['why'] : '';
+        return [$rule, 'w:' . substr(sha1($why), 0, 16)];
+    }
+
+    /**
+     * Rule problems as presence marks, one per DISTINCT problem.
+     *
+     * The shape commitBatch() takes in `marks` and noteRuleProblems() writes
+     * directly - one function, so the planner and the worker cannot come to key
+     * the same problem differently and record it twice.
+     *
+     * BLOCKS IS 0, for the reason on noteRuleProblems(): a rule problem forbids
+     * clean and does not cap coverage.
+     *
+     * @param array $problems each {rule:int, fields:array, why:string, code?:string}
+     * @return array<int, array{kind:string, axis1:string, axis2:string, blocks:int, samples:?string}>
+     */
+    public static function marksFor(array $problems)
+    {
+        $out = [];
+        foreach ($problems as $p) {
+            if (!is_array($p)) continue;
+            list($a1, $a2) = self::problemKey($p);
+            $k = $a1 . "\0" . $a2;
+            if (isset($out[$k])) continue;
+            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2, 'blocks' => 0,
+                        'samples' => self::sample(isset($p['why']) ? $p['why'] : null)];
+        }
+        return array_values($out);
+    }
+
+    /**
+     * What a run's aggregates say was found: active findings, rule problems, gaps.
+     *
+     * VIOLATIONS ARE ACTIVE FINDINGS, and the rollup is the only count of those.
+     * The term used to be the run row's `detail_rows`, which counts what
+     * commitBatch() stored and nothing else. UniqueFinalizer writes its
+     * duplicate findings straight into the findings table, so a project whose
+     * ONLY problem was duplicated values had `detail_rows = 0`, and a run that
+     * had found thousands of duplicates was certified clean. It errs the other
+     * way too: a finding superseded during catch-up stays in `detail_rows`
+     * after the record was corrected.
+     *
+     * THE LARGEST AXIS, not the first. Every active finding is counted once on
+     * each of RollupBuilder::KINDS, so the four sums are equal on a healthy run.
+     * If they ever disagree - an axis added later, a page lost on one - the
+     * larger number is the one that cannot certify a project it should not.
+     *
+     * @param array $aggregates rows of {kind, cnt, ...} as ScanStore::aggregates() returns them
+     * @return array{violations:int, ruleProblems:int, gaps:int}
+     */
+    public static function tally(array $aggregates)
+    {
+        $byKind = [];
+        foreach ($aggregates as $a) {
+            if (!isset($a['kind'])) continue;
+            $k = (string) $a['kind'];
+            $byKind[$k] = (isset($byKind[$k]) ? $byKind[$k] : 0)
+                        + (isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0);
+        }
+        $of = function ($kind) use ($byKind) { return isset($byKind[$kind]) ? $byKind[$kind] : 0; };
+        $violations = 0;
+        foreach (RollupBuilder::KINDS as $kind) $violations = max($violations, $of($kind));
+        return ['violations' => $violations, 'ruleProblems' => $of(self::RULE_KINDS),
+                'gaps' => $of(self::GAP_KINDS)];
+    }
+
+    /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
+    private static function kindTotal(array $aggregates, $kind)
+    {
+        $n = 0;
+        foreach ($aggregates as $a) {
+            if (isset($a['kind']) && (string) $a['kind'] === $kind) {
+                $n += isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0;
+            }
+        }
+        return $n;
+    }
+
+    /**
+     * How many findings this run has to show.
+     *
+     * A RUN THAT REACHED A VERDICT ANSWERS FROM ITS SUMMARY, because that is
+     * what the verdict was decided on: `detail_rows` misses every duplicate the
+     * finalizer wrote and keeps every finding catch-up superseded, so a page
+     * reading it could say "0 findings" beside a run refused `clean` for having
+     * some. A run still working has no summary yet and the counter is the only
+     * number there is.
+     *
+     * A RUN THAT ENDED WITHOUT A VERDICT GETS A FLOOR, OR NOTHING. Cancelled,
+     * failed and expired runs - ScanOutcome::NO_VERDICT - answered from
+     * `detail_rows` too, so a run cancelled during unique-finalize said
+     * "Nothing found yet" over the duplicates the finalizer had already
+     * written as active findings. Such a run may have a summary, part of one or
+     * none, and nothing on the row says which. So it answers with the floor
+     * promote() uses - the larger of the counter and whatever summary exists -
+     * and when that floor is zero it answers NULL: not counted. Zero there is
+     * indistinguishable from duplicates written and never summarised, and a
+     * zero that might be false is the one number this must not print.
+     *
+     * Here rather than in ScanService so it can be asked of a store without a
+     * module, a user and an entitlement around it.
+     *
+     * @return int|null null when the run ended before its findings could be counted
+     */
+    public static function findingsOf(ScanStore $store, array $run)
+    {
+        $terminal = isset($run['terminal']) ? $run['terminal'] : null;
+        $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
+        if ($terminal === null) return $rows;
+        $summary = self::tally($store->aggregates((int) $run['run_id']))['violations'];
+        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
+            $floor = max($rows, $summary);
+            return $floor > 0 ? $floor : null;
+        }
+        return $summary;
     }
 
     /**
@@ -121,6 +291,7 @@ final class ScanPromotion
  *   (emptyScope is NOT an input. It is derived below from the run row and the
  *    census, because a caller that can be asked for it is a caller that can
  *    forget it, and forgetting it is what this cost the first time.)
+     *   labelDegraded:      bool  some report labels could not be read; wording only
      *   uniqueDone:         bool
      *   uniqueBlocking:     int
      *   rollupDone:         bool
@@ -131,7 +302,7 @@ final class ScanPromotion
      *   crossRecordLookups: bool  a rule's verdict depends on OTHER records (@UVEXISTS)
      *   windowChanges:      int   records the change log listed inside the window
      * }
-     * @return array{ready:bool, facts:array, why:?string}
+     * @return array{ready:bool, facts:array, why:?string, notExamined:int}
      */
     public static function facts(array $run, array $states, array $in = [])
     {
@@ -148,8 +319,12 @@ final class ScanPromotion
         // newest of the three and the easiest to forget: it is written by the
         // give-back path rather than by a commit, so nothing else in this file
         // would ever have mentioned it.
-        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE)
-                 + $n(ScanStore::REC_UNSTORED);
+        //
+        // The list is ScanStore::NOT_EXAMINED so that the number promote()
+        // persists as `not_examined` and the number that blocks `clean` here are
+        // one sum over one list.
+        $unread = 0;
+        foreach (ScanStore::NOT_EXAMINED as $state) $unread += $n($state);
 
         $cancelled = !empty($run['cancel_requested_at'])
                      || (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING);
@@ -164,22 +339,43 @@ final class ScanPromotion
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
 
-        // AN EMPTY SCOPE, ASKED OF TWO INDEPENDENT SOURCES, because neither one
-        // alone is the question. `manifest_total` is 0 for the whole of planning
-        // and rows are appended before they are frozen, so a run mid-plan with
-        // records already queued would read as empty on that alone. The census
-        // is empty whenever a store read comes back with no rows. Both saying
-        // empty is the only reading that means nothing was listed AND nothing
-        // exists.
+        // NO RECORD IS LEFT DONE: none is `done`, none is still waiting, and
+        // nothing is blocked. That is the question `emptyScope` answers, and it
+        // is asked of the census alone.
+        //
+        // NOT "NOTHING WAS EXAMINED", which is what this note and the stored
+        // sentence used to say (review R2O-1). CatchUp::step() tombstones a
+        // record that was deleted after it was examined, so `done` drops to
+        // zero while the findings that examination produced stay active. The
+        // classification is right - no record remains for the run to vouch
+        // for, so it must never be clean - but the census cannot say whether a
+        // tombstone was read first, and ScanOutcome's sentence now claims only
+        // what is true either way.
+        //
+        // It used to be `manifest_total === 0 && every state summed === 0`, and
+        // both halves were the wrong question. The sum counted TOMBSTONES, so a
+        // run whose every record was deleted before it could be read had a
+        // census of N, was not "empty", fell through to the clean row and was
+        // stored `complete, complete-through-fence, clean=1` - "every record was
+        // examined and nothing was found" over a run that examined none. And
+        // `manifest_total` is written once, at freeze, so a manifest emptied
+        // after it froze (total 5, no rows) was not empty either: the guard
+        // could not fire on the one case it was written for.
+        //
+        // NOT BLOCKED, ON PURPOSE. A run where every record was unreadable also
+        // examined nothing, but `blocked` already says the truer thing about it
+        // - the records are there and could not be read - and that is what the
+        // reader has to act on. Empty scope is for a run with nothing left to
+        // say about any record.
         //
         // ScanPlanner::plan() already refuses to start a run over an empty
-        // scope, so in normal operation this never fires. It is here because the
-        // real cost was never the empty project - it was that ANY bug which
-        // empties a manifest became a clean certificate rather than an error,
-        // and the planner cannot see a manifest emptied after it froze one.
-        $manifestTotal = isset($run['manifest_total']) ? (int) $run['manifest_total'] : 0;
-        $examined = 0;
-        foreach ($states as $c) $examined += (int) $c;
+        // scope, so in normal operation this fires only when every record was
+        // deleted mid-run. It is here because the real cost was never the empty
+        // project - it was that ANY bug which empties a manifest became a clean
+        // certificate rather than an error.
+        $examined = $n(ScanStore::REC_DONE);
+        $blocked = ($unread > 0 || (int) $g('blockingAggregates', 0) > 0
+                    || (int) $g('uniqueBlocking', 0) > 0);
 
         $rows  = isset($run['detail_rows']) ? (int) $run['detail_rows'] : 0;
         $bytes = isset($run['detail_bytes']) ? (int) $run['detail_bytes'] : 0;
@@ -202,22 +398,34 @@ final class ScanPromotion
             'fenced' => !empty($run['fence_target']) && !$lookupsMoved,
             'lookupsMoved' => $lookupsMoved,
             'manifestDone' => ($pending === 0),
-            // Beside manifestDone deliberately: `pending === 0` over an empty
-            // census is exactly what made manifestDone true, and the reader
-            // needs to see the correction next to the thing it corrects.
-            'emptyScope' => ($manifestTotal === 0 && $examined === 0),
+            // Beside manifestDone deliberately: `pending === 0` over a census
+            // with nothing examined in it is exactly what made manifestDone
+            // true, and the reader needs to see the correction next to the
+            // thing it corrects.
+            'emptyScope' => ($examined === 0 && $pending === 0 && !$blocked),
             // Unread and unstable records, undecidable duplicate groups, and
             // anything an aggregate marked blocking. A TOMBSTONE IS ABSENT FROM
             // THIS LIST on purpose - see the class note.
-            'blocked' => ($unread > 0 || (int) $g('blockingAggregates', 0) > 0
-                          || (int) $g('uniqueBlocking', 0) > 0),
+            'blocked' => $blocked,
             'truncated' => $truncated,
             'cancelled' => $cancelled,
             'failed' => ($fpBad || $polBad),
-            'violations' => $rows,
+            // Active findings when the caller counted them - see tally(). With no
+            // count, or with a summary that never finished (a cancelled or failed
+            // run ends whatever is outstanding), the stored-row counter is the
+            // floor: a partial summary undercounts, and an undercount is the
+            // direction that certifies.
+            'violations' => ($g('violations') !== null && $g('rollupDone', false))
+                ? max(0, (int) $g('violations'))
+                : max($rows, (int) $g('violations', 0)),
             'ruleProblems' => (int) $g('ruleProblems', 0),
             'gaps' => (int) $g('gapCount', 0),
-            'labelDegraded' => !empty($run['labelDegraded']),
+            // FROM THE CALLER, because no run row carries it: this read
+            // $run['labelDegraded'], a key ScanStore::RUN_COLUMNS does not have
+            // and never had, so it was false on every run and the sentence it
+            // selects could not be reached. It changes wording only - label
+            // degradation never blocks clean.
+            'labelDegraded' => !empty($g('labelDegraded', false)),
         ];
 
         // READY is a different question from WHAT IT MAY CLAIM. A run with work
@@ -243,7 +451,10 @@ final class ScanPromotion
             $why = null;
         }
 
-        return ['ready' => $ready, 'facts' => $facts, 'why' => $why];
+        return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
+                'notExamined' => $unread,
+                // Which configuration moved, for the stored reason (conclude()).
+                'configChanged' => $fpBad ? 'rules' : ($polBad ? 'privacy' : null)];
     }
 
     /**
@@ -253,7 +464,16 @@ final class ScanPromotion
      * holds its project slot, so a retried finaliser cannot reopen or rewrite a
      * run that a report has already been exported against.
      *
-     * @return array{promoted:bool, outcome:?array, why:?string}
+     * WHAT IT READ GOES BACK WITH THE ANSWER (P11). The caller's next step is
+     * nearly always status(), which needs the same run row and the same census;
+     * reading them twice was a second O(manifest) count on every work request.
+     * `run` and `census` are the reads this call made - null when it made none -
+     * and `wrote` says whether it sent finish() after reading them. A caller may
+     * stand them in for its own reads only when `wrote` is false: a census taken
+     * before a write must never describe the run after it.
+     *
+     * @return array{promoted:bool, outcome:?array, why:?string, run:?array,
+     *               census:?array, wrote:bool}
      */
     public static function promote(ScanStore $store, $pid, $runId, array $in = [])
     {
@@ -263,22 +483,118 @@ final class ScanPromotion
             // "not here" from "not yours" is an oracle for anyone holding a
             // project link.
             return ['promoted' => false, 'outcome' => null,
-                    'why' => 'no scan with that reference is running for this project'];
+                    'why' => 'no scan with that reference is running for this project',
+                    'run' => null, 'census' => null, 'wrote' => false];
         }
         if (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL) {
             return ['promoted' => false, 'outcome' => null,
-                    'why' => 'this scan has already finished'];
+                    'why' => 'this scan has already finished',
+                    'run' => $run, 'census' => null, 'wrote' => false];
         }
 
-        $f = self::facts($run, $store->recordStates($runId), $in);
+        $states = $store->recordStates($runId);
+        $f = self::facts($run, $states, $in);
         if (!$f['ready']) {
-            return ['promoted' => false, 'outcome' => null, 'why' => $f['why']];
+            return ['promoted' => false, 'outcome' => null, 'why' => $f['why'],
+                    'run' => $run, 'census' => $states, 'wrote' => false];
         }
 
-        $outcome = ScanOutcome::derive($f['facts']);
-        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        $outcome = self::conclude($store, $runId, $run, $states, $in, false);
         $ok = $store->finish($runId, $outcome);
         return ['promoted' => $ok, 'outcome' => $outcome,
-                'why' => $ok ? null : 'another worker finished this scan first'];
+                'why' => $ok ? null : 'another worker finished this scan first',
+                // A refused finish is still a write somebody made: the run
+                // ended under another worker, after these reads.
+                'run' => $run, 'census' => $states, 'wrote' => true];
+    }
+
+    /**
+     * End a run that was asked to stop, with what it found counted (review
+     * R3U-3).
+     *
+     * ONE FINISHER FOR EVERY WRITER OF A STOPPED RUN. Stop on a run nobody
+     * drives, the reap a Start does first, and the worker that arrives to find
+     * a run `cancelling` each wrote derive(['cancelled' => true, ...]): an
+     * outcome with no counts. So the row said `detail = complete` and
+     * rule_problem_count = not_examined = gap_count = 0 whatever the run had
+     * met, while promote() wrote the SAME stopped run with its tally and its
+     * truncation - one run, two rows, depending on which request ended it. The
+     * panel lost "1 rule could not be evaluated", and the export was named
+     * _CANCELLED where promote() would have named it _CANCELLED_TRUNCATED.
+     *
+     * IT IS promote()'s conclusion, with the cancellation asserted. The tally,
+     * the census and the rows kept against $in's budget are read and judged
+     * exactly as promote() judges them; the caller is the one deciding the run
+     * ends, as derive(['cancelled' => true]) always let it. A run already
+     * terminal is not touched, and finish() itself changes nothing on a run
+     * that has left its slot.
+     *
+     * @param array $in maxFindings and maxBytes, the run's policy - the budget
+     *                  `truncated` is decided against, as promote() is asked -
+     *                  and `why`, a sentence that replaces the outcome's own
+     * @return bool whether this call ended it
+     */
+    public static function finishCancelled(ScanStore $store, $pid, $runId, array $in = [])
+    {
+        $run = $store->run($pid, $runId);
+        if ($run === null || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return false;
+        }
+        $budget = [];
+        foreach (['maxFindings', 'maxBytes'] as $k) {
+            if (isset($in[$k])) $budget[$k] = $in[$k];
+        }
+        $outcome = self::conclude($store, $runId, $run, $store->recordStates($runId), $budget, true);
+        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') $outcome['why'] = $in['why'];
+        return $store->finish($runId, $outcome);
+    }
+
+    /**
+     * What a finishable run may claim, as finish() takes it.
+     *
+     * THE STORE IS ASKED HERE, NOT BY THE CALLER. What was found used to
+     * arrive in $in, so the verdict was as good as whichever caller built the
+     * array, and the one production caller fed `violations` from a counter the
+     * finalizer never touches. A number a caller supplies for any of these five
+     * is overridden: what was found, the rule problems, the gaps, what blocks
+     * coverage, and the window's changes.
+     *
+     * ONLY ONCE THE RUN CAN END, because promotion is attempted on every pass
+     * and readiness needs none of it: a run with work left costs no read here.
+     * What blocks coverage and the window's changes were the CALLER's reads,
+     * sent on every pass although neither decides readiness; asked here they
+     * are sent once, by the pass that can end the run. The window is counted
+     * from the rows tally() already has.
+     *
+     * $cancel asserts the cancellation (finishCancelled()); otherwise it is
+     * whatever the row says.
+     */
+    private static function conclude(ScanStore $store, $runId, array $run, array $states, array $in, $cancel)
+    {
+        $aggregates = $store->aggregates($runId);
+        $t = self::tally($aggregates);
+        $f = self::facts($run, $states, array_merge($in, [
+            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
+            'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
+            'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
+        if ($cancel) $f['facts']['cancelled'] = true;
+
+        $outcome = ScanOutcome::derive($f['facts']);
+        // A RUN THE CONFIGURATION MOVED UNDER SAYS SO (W7-N11). derive()'s
+        // sentence for `failed` is the store's - "failed unrecoverably, so it
+        // describes nothing" - and a project redesigned under a running scan
+        // read as a broken installation.
+        if ($outcome['terminal'] === ScanOutcome::FAILED && $f['configChanged'] !== null) {
+            $outcome['why'] = $f['configChanged'] === 'rules'
+                ? 'the project\'s validation rules or design changed while this scan was running, so its '
+                  . 'results would describe two different configurations; run it again'
+                : 'the project\'s privacy settings were tightened while this scan was running, so it was '
+                  . 'ended rather than finished under the settings it started with; run it again';
+        }
+        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        // What finish() persists beside the terminal. `gaps` is already there.
+        $outcome['ruleProblems'] = (int) $f['facts']['ruleProblems'];
+        $outcome['notExamined'] = (int) $f['notExamined'];
+        return $outcome;
     }
 }

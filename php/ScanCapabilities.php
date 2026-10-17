@@ -214,13 +214,34 @@ final class ScanCapabilities
         return self::no('getGroupNames is not exposed; groups can only be identified by id');
     }
 
-    /** Every probe, in one call. */
-    public static function all($module, $pid)
+    /**
+     * Every probe, in one call.
+     *
+     * $known: answers already probed IN THIS REQUEST, by probe name, used
+     * instead of asking again (P1). ScanService::available() probes record
+     * enumeration before anything plans, and the plan asked it a second time
+     * one call later. Only an answer in the shape a probe returns is taken; a
+     * malformed one is probed afresh rather than trusted. Never hand over an
+     * answer from an earlier request: these describe the installation now.
+     *
+     * @param array $known probe name => that probe's answer
+     */
+    public static function all($module, $pid, array $known = [])
     {
+        $ask = function ($name, callable $probe) use ($known) {
+            return (isset($known[$name]['state']) && is_array($known[$name])
+                    && array_key_exists('why', $known[$name])) ? $known[$name] : $probe();
+        };
         return [
-            'recordEnumeration' => self::recordEnumeration($module, $pid),
-            'sourceFence'       => self::sourceFence($module, $pid),
-            'schemaPrivilege'   => self::schemaPrivilege($module),
+            'recordEnumeration' => $ask('recordEnumeration', function () use ($module, $pid) {
+                return self::recordEnumeration($module, $pid);
+            }),
+            'sourceFence'       => $ask('sourceFence', function () use ($module, $pid) {
+                return self::sourceFence($module, $pid);
+            }),
+            'schemaPrivilege'   => $ask('schemaPrivilege', function () use ($module) {
+                return self::schemaPrivilege($module);
+            }),
             'repeatMetadata'    => self::repeatMetadata(),
             'eventNames'        => self::eventNames(),
             'dagNames'          => self::dagNames(),
@@ -311,7 +332,12 @@ final class ScanCapabilities
                 WHERE table_schema = DATABASE() AND table_name = ?', [$name]);
             if (!$q) return self::no($name . ' not found');
             $row = self::fetchRow($q);
-            return $row ? self::yes($name) : self::no($name . ' not found');
+            // THE COUNT, NOT THE ROW (W8-N2). COUNT(*) always returns a row,
+            // so asking whether one came back answered yes for a table that
+            // does not exist - [0] is a row. Only a count above zero is the
+            // table; a row this cannot read as a number is not.
+            $count = (is_array($row) && isset($row[0]) && is_numeric($row[0])) ? (int) $row[0] : 0;
+            return $count > 0 ? self::yes($name) : self::no($name . ' not found');
         } catch (\Throwable $e) {
             return self::no($name . ' could not be checked: ' . get_class($e));
         }

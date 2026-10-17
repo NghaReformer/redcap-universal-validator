@@ -37,6 +37,12 @@ final class RollupBuilder
     const K_REASON = 'rollup-reason';
     const K_DAG    = 'rollup-group';
     const K_TYPE   = 'rollup-check';
+    /**
+     * Every axis, as a list. Each active finding is counted ONCE ON EACH, so
+     * the sum over any one kind is the number of active findings - which is
+     * what ScanPromotion::tally() reads. A new axis goes here and in axes().
+     */
+    const KINDS = [self::K_FORM, self::K_REASON, self::K_DAG, self::K_TYPE];
 
     /** @var ScanDb */
     private $db;
@@ -59,8 +65,7 @@ final class RollupBuilder
         $limit = max(1, min(10000, (int) $limit));
         $st = $this->store->progressState($runId);
         if ($st === null) {
-            return ['done' => true, 'rows' => 0,
-                    'why' => 'this run could not be read, so no summary was built'];
+            return ['done' => true, 'rows' => 0, 'why' => ScanStore::ROLLUP_NO_RUN];
         }
         $after = (int) $st['rollupCursor'];
 
@@ -92,6 +97,25 @@ final class RollupBuilder
         // describes, and nothing downstream can detect that.
         $this->db->begin();
         try {
+            // HELD FIRST, AND THE CURSOR READ AGAIN UNDER THE HOLD. The epoch
+            // alone fenced nothing between two workers of one run: they share
+            // it, both read the cursor above, both read the same page, and
+            // both added it. Now the second waits on the run row, then finds
+            // the cursor the first moved and drops its copy of the page. The
+            // run row is also taken before the aggregate rows, the order
+            // commitBatch() takes them in.
+            $held = $this->store->holdRollupCursor($runId, $epoch);
+            if (!is_int($held)) {
+                // The lease moved, or the run ended while this page was read.
+                $this->db->rollback();
+                return ['done' => false, 'rows' => 0, 'why' => (string) $held];
+            }
+            if ($held !== $after) {
+                // Another worker of this run counted the page first. Not a
+                // reason to stop: the next step reads from where it got to.
+                $this->db->rollback();
+                return ['done' => false, 'rows' => 0, 'why' => null];
+            }
             foreach ($tally as $t) {
                 $this->store->addAggregate($runId, $t['kind'], $t['axis'], null, $t['n']);
             }
@@ -100,9 +124,7 @@ final class RollupBuilder
                 // The lease moved: this worker no longer owns the run, and the
                 // counts it just added would be added again by whoever does.
                 $this->db->rollback();
-                return ['done' => false, 'rows' => 0,
-                        'why' => 'another worker took over this scan, so the summary page was '
-                               . 'discarded rather than counted twice'];
+                return ['done' => false, 'rows' => 0, 'why' => ScanStore::ROLLUP_TAKEN_OVER];
             }
             $this->db->commit();
         } catch (\Throwable $e) {

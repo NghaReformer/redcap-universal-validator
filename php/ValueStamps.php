@@ -77,10 +77,19 @@ final class ValueStamps
         $this->clockZone = $clockZone;
     }
 
-    /** A reader for this project's log, or null when the log table cannot be resolved. */
+    /**
+     * A reader for this project's log, or null when the log table cannot be
+     * resolved. resolveTable() throws on a read that failed (H11), which the
+     * scan's fence needs to tell apart from "no usable log"; for a value's
+     * saved day both are the same gap in the history, so both answer null.
+     */
     public static function forProject(ScanDb $db, $pid, \DateTimeZone $logZone, \DateTimeZone $clockZone)
     {
-        $table = SourceFence::resolveTable($db, $pid);
+        try {
+            $table = SourceFence::resolveTable($db, $pid);
+        } catch (\Throwable $e) {
+            return null;
+        }
         return $table === null ? null : new self($db, $pid, $table, $logZone, $clockZone);
     }
 

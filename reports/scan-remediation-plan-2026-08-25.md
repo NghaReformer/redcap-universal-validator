@@ -927,3 +927,305 @@ What is NOT verified for this wave, and must be before the wave is called done:
 
 The uniqueness case's new block is written against the real harness and has never executed; treat it
 as unproven until it has.
+
+### W6-N1 — P11 as specified fails open, and "three calls per loop turn" is at most one
+
+The plan asked for `SELECT 1 ... LIMIT 1` with "no row" read as complete. No row is also what an
+unreadable answer looks like: `ModuleDb::rows()` returns `[]` for any result shape it does not
+recognise, so a broken read would have certified an unfinished run. The statement is
+`SELECT EXISTS(...)` instead, which always returns one row, and the existing guard
+`isset($r[0][0]) && (int) $r[0][0] === 0` keeps "no row" meaning "not complete".
+`tests/scan_sqlstore_fault_php.php` holds the fail-closed check.
+
+The hint is measured. With `FORCE INDEX (ix_run_state)` removed and 1,200 terminal rows, MySQL 5.7,
+MySQL 8.0 and MariaDB 10.11 chose `PRIMARY` and walked the manifest; only MariaDB 10.5 chose the
+state index. `tests/mysql/cases/store.php` asserts the plan on the statement the store sent, through
+the new `uv_explain_keys()` (an `EXISTS` puts the table on the second EXPLAIN row, so the existing
+first-row helper reads "No tables used").
+
+`ScanWorker::loop` reaches `manifestComplete()` at most once per turn, not three times: the
+catch-up call always leaves the turn, and the other two sit in a block only the scanning phase
+reaches, where the first is short-circuited. Call frequency was left alone. The saving is at the two
+cancel paths, where a count walked every pending row of an early-cancelled run.
+
+One divergence is pinned and deliberately not fixed: for a run id that does not exist the SQL store
+answers true and `ArrayScanStore` answers false. No production caller reaches it. **Schedule:** wave
+8, with the rest of store parity (M13).
+
+### W6-N2 — P5: `memory_limit` is enforced on the arena, and a raw peak delta spirals below PHP 8.2
+
+The plan said to stop measuring the arena. That is right for what a unit of work costs and wrong for
+how much room is left: PHP refuses an allocation when it would grow the arena past the limit, so
+headroom is an arena question. `mustStop()`, the `$room` arithmetic in `next()` and the 40% reserve
+are unchanged. Only the per-unit cost moved to `memory_get_usage(false)`.
+
+The plan also asked for a "peak delta". `memory_reset_peak_usage()` exists from PHP 8.2 and the
+floor is 7.4, where the peak is a request-wide high-water mark. `peak_after - used_before` is then a
+constant gap, and dividing a constant by a shrinking batch raises the cost per record, which shrinks
+the batch again, down to one record at a time with the message "the records in this project are
+large enough that they are being examined one at a time". `WorkBudget::observe()` believes the peak
+only when the batch moved it, keeps the last figure measured that way as a floor for the request,
+and drops that floor when the kind of unit changes (records, groups, rows, changes). On 8.2+ the
+default probe restarts the peak per batch and the figure is exact.
+
+### W6-N3 — P2 converts 27 of the 39 uncounted writes, and the findings INSERT stays counted
+
+Converted: 15 in `SqlScanStore`, 12 in `UniqueFinalizer`. One more, `insertFinding`, was replaced by
+M9 and is deliberately COUNTED: it is the write whose silent shortfall reads as a cleaner project,
+so `insertFindings()` refuses the batch unless `affected()` equals the rows it sent. That costs one
+extra round trip per 500 findings.
+
+Left for their owners:
+
+| site | why | owner |
+|---|---|---|
+| 8 statements in `ScanRetention.php` | paging them needs the count to know whether more remains | wave 8 (P6) |
+| `WorkerSlots.php` provisioning INSERT | its `$added++` counts attempts, not rows; the fix reads the count | wave 8 |
+| 2 statements in `UniversalValidator::surveyRateLimited` | the file was under edit by another session during this wave | done on this branch after the rebase; `tests/hook_php.php` asserts no `ROW_COUNT()` is fetched |
+
+After `execNoCount()` the three real `ScanDb` implementations throw `\LogicException` from
+`affected()` instead of returning -1, because a `=== 1` fence would fail quietly on -1 and a `+=`
+site would corrupt its total. `SqlScanStore::insertRecords()` now returns its own count so that every
+`affected()` read sits in the function that issued the `exec()`, and an order lint in
+`tests/scan_moduledb_php.php` fails the build otherwise.
+
+`insertCandidate` is still one statement per candidate. Batching it is safe (it already uses
+`ON DUPLICATE KEY UPDATE`, the same shape as `discover()`), and it is a follow-up, not part of M9.
+
+### W6-N4 — the item's file list was short, and one key name was stale
+
+Adding a method to `ScanDb` touches every implementer, none of which the plan listed:
+`tests/mysql/support/bootstrap.php` (`MysqliDb`, `UvRecordingDb`), `tests/scan_fault_support.php`
+(`ScriptedDb`), `tests/scan_service_php.php` (`FakeSourceDb`) and the three `tools/temporal_*.php`
+probes. The work also touched `php/Scan/UniqueFinalizer.php`, `tests/scan_moduledb_php.php` and
+`tests/scan_sqlstore_fault_php.php`. `ArrayScanStore.php` and `DbError.php` were listed and needed no
+code change. The unique key the plan calls `uq_active_identity` is `uq_active_identity_v2` since the
+version-2 migration.
+
+### W7-N1 — the decision table's order was wrong for one cell
+
+The item fixes the order as `blocked > !fenced > !manifestDone`, and that is the order the code already had. In the cell where both are false it answers from the fence row: a run that had neither finished its list nor proved a window was stored as `manifest-complete`, with the sentence "every record on the opening list was examined". `manifest-complete` is a claim about the manifest, so `ScanOutcome::derive()` now asks `!manifestDone` first. Both pinned tables (`tests/scan_worker_php.php`, `tests/scan_security_php.php`) gained the row. No production path reaches the cell today, because promotion is not ready while records are pending; it was reachable by any caller that forgot both facts, including `derive([])`.
+
+### W7-N2 — the item's file list, against what was touched
+
+Touched and not listed: `php/Scan/RollupBuilder.php` (`KINDS`), `php/Scan/ScanPlanner.php` (`GAP_POLICY_WIRE`), `pages/scan.php` (the stalled node), `tests/scan_run_row.php` (new), `tests/scan_entitlement_php.php`, `tests/scan_sqlstore_fault_php.php`, `tests/scan_schema_php.php`, `tests/scan_fault_support.php`, `tests/scan_wiring_php.php`, `tests/mysql/cases/store.php`, `tests/mysql/cases/worker.php`.
+
+Listed and not touched: `php/Scan/UniqueFinalizer.php` (B4a is fixed by reading the summary, which already counts what the finalizer writes) and `php/Scan/RecordManifestSource.php` (its `exist()` is used as it stands). `UniversalValidator.php` is listed and is one hunk, landed after the rebase; see W7-N7.
+
+### W7-N3 — the `'separate'` literal was a fingerprint input
+
+`ScanPlanner::requestFingerprint()` read `policy.collectionGaps`. Changing the policy word alone would have changed every fingerprint, and every run in flight across the upgrade would have been failed as "the configuration moved". `ScanPlanner::GAP_POLICY_WIRE = 'separate'` is emitted unconditionally and no longer read from the policy. A test builds the old fingerprint by hand and holds today's to it.
+
+### W7-N4 — the H18 pin asserted nothing, and catch-up still tombstones on one answer
+
+`tests/scan_worker_php.php` had a block named for a record deleted mid-run. It checked that the manifest completed and that one record was counted as blocking. It never read the record's state, so it passed while the worker wrote `REC_TOMBSTONE` for an absence and it passed unchanged after the fix. It now asserts the state under nine resolver behaviours.
+
+`CatchUp` has the weaker rule still: a record is `gone` when `empty($exists[$id])`, so an id the resolver leaves out of its answer is tombstoned. The production resolver always answers for every id and fails toward "still there", so this is not reachable today. **Schedule:** wave 8, with store parity, by giving catch-up the worker's rule (`=== false` only).
+
+### W7-N5 — a defect only the database matrix could show
+
+`SqlScanStore::commitBatch()` already had a local named `$marks`: the placeholder string for the supersede. The new list of presence marks took the same name, so any batch that closed a record's previous findings overwrote the list with `"?,?"` and wrote no mark. `ArrayScanStore` builds no placeholders and passed every check; MySQL 5.7, MySQL 8.0, MariaDB 10.5 and MariaDB 10.11 all failed the same two. The list is `$presence` in both stores, and `tests/scan_sqlstore_fault_php.php` now asserts, without a server, that a superseding batch sends the aggregate statement. The mutation that restores the collision turns three checks red.
+
+### W7-N6 — `temporal-budget` is a coverage hole reported as a rule problem (decided: no change)
+
+When the extended-evaluation budget runs out, `UniversalValidator` records the problem `temporal-budget` with the sentence "this record was not fully checked". With B4b that reaches the run as a rule problem, which forbids `clean` and does not cap coverage. The record was in fact only partly examined, so the accurate state would be a blocking one. The decision for this wave was to leave behaviour alone and record it: the run cannot claim clean, which is the safe half. **Schedule:** wave 10, with the rest of the evaluation-budget work; the change is a `blocks = 1` mark for that code, or a record state.
+
+### W7-N7 — rule problems are keyed by a hashed sentence until `UniversalValidator` hands over the code
+
+`UniversalValidator` keys its problem list `"<rule index>|<code>"` and returns `array_values()` of it, so the code is lost. `ScanPromotion::problemKey()` uses `code` when present and otherwise `'w:' . substr(sha1(why), 0, 16)`. Two sentences for one fault would be two rows, which overstates; that is the direction that cannot certify. `UniversalValidator::problemList()` now attaches `code`, taken from the second segment of the key when that segment is a code. Two key shapes carry more: `"<i>|temporal|<context>"`, where the context is dropped so one fault is one row for the run instead of one per event and instance, and `"<i>|<sentence>"`, filed by its sentence because the rule kind had no code, which still falls back to the hash.
+
+### W7-N8 — `violations` has two sources, and the counter still decides `truncated`
+
+`promote()` takes violations from the summary once the rollup has finished. When it has not (a cancelled or failed run ends whatever is outstanding), the value is `max(summary, detail_rows)`, because half a summary undercounts. `truncated` still compares `detail_rows` with the policy maximum. That is right for what it measures (rows stored against a storage budget) and it does not count finalizer-written duplicates against the budget. **Schedule:** wave 10.
+
+### W7-N9 — the finalizer phases have no progress clock of their own
+
+`progress_at` is written by `commitBatch()` and `freezeManifest()` only. `ScanService::progressOf()` therefore reads `updated_at` in catch-up, unique-finalize and rollup-finalize. `UniqueFinalizer::step()` writes nothing to the run row, so during a long unique-finalize both clocks stand still and a watcher is told the run has stalled after two minutes while it is working. The reaper reads the same columns and has the same blind spot. **Schedule:** wave 8 or 10, whichever first gives the finalizer a fenced write to the run row.
+
+### W7-N10 — runs finished by the reaper, and runs finished before this release, carry no counts
+
+`ScanRetention::expireAbandoned()` and `Schema::upgradeDataV2()` write `clean = NULL` and leave `gap_count`, `rule_problem_count` and `not_examined` at 0. For an expired run NULL is the right answer to "was it clean". The zero counts are not measurements. A reader must treat the three counts as meaningful only where `clean IS NOT NULL`. Runs that finished before this release have `clean = NULL` for the same reason: the decision was made and not stored. **Owed by wave 11:** the findings page reads `clean IS NULL` as "not certified", never as "not clean".
+
+### W7-N11 — two inputs of the outcome have no production supplier
+
+`fingerprintNow` and `policyRevisionNow` make `facts()` answer `failed`. `ScanService::work()` compares the fingerprint itself before it builds a worker and refuses the request; it does not pass either value to `promote()`. So a run whose configuration moved is refused work and then sits until the reaper expires it, and the `failed` terminal is unreachable from production. `labelDegraded` is in the same position after B9: it is read from the caller, and no caller supplies it. **Schedule:** wave 9 for the first two (with resumable planning, which re-reads the fingerprint anyway); wave 11 for `labelDegraded`, which belongs to the report's dimension labels.
+
+### W7-N12 — `status().findings` reads the summary on every poll of a finished run
+
+`ScanPromotion::findingsOf()` reads `aggregates()` for a run that reached a verdict. The row count is bounded by the number of instruments, reasons, groups and check types, and a finished run is polled once or twice. It is still a read that `rule_problem_count`-style persistence would remove. **Schedule:** wave 8, if store parity adds a finding count to the run row; otherwise leave.
+
+### W7-N13 — two timestamps are written in the server's zone
+
+`Schema::upgradeDataV2()` and the schema-version insert use `date()`; every store write uses `gmdate()`. `progressOf()` reads all run timestamps as UTC. On a server east or west of Greenwich, a run retired by the version-2 migration has an `updated_at` that is hours off. Those runs are terminal, so `stalled` never reads them. **Schedule:** wave 12 (documentation and tidy-up), as a one-word change with a test.
+
+### W7-R1 — the `pooled:` prefix never existed, so `reason_bits` has always been 0
+
+`ReasonCode::split()` turns `pooled:a;b;c` into the code `pooled` and a bitmask. `CheckCharacter::validatePooledField()` emits `no-id`, `check-character`, `junk`, `duplicate` and `count`, joined with `;`, with no prefix. So the mask branch has never run, every stored row has `reason_bits = 0`, and `reason_code` holds the joined names (cut at 64 bytes). Four of the five names in the mask's closed set were never emitted by anything. The engine's names are appended to the set, because bit positions are the wire format and an append cannot change a stored row. `FindingRowMapper` reads `bits = 0` as "not recorded" and a non-zero mask under the code `pooled` as its joined names. `MessageCatalog::detail()` gives each joined part its catalogue sentence, and names a part it has no sentence for. **Owed by wave 11:** a producer for the mask from the joined form, so `GROUP BY reason_code` stops producing one bucket per combination.
+
+### W7-R2 — the report's record hash must be the audit log's, and that formula is private
+
+Under `log-values = none` the legacy report shows `hash_hmac('sha256', $id, $key . '|' . $pid)`, from the private `UniversalValidator::hashedIdentifier()`. The durable scan's own `record_hash` is `Hmac::raw(Hmac::P_RECORD, ...)`, a different formula; a report hashed with it would name every record something the module log has never contained. `FindingRowMapper` therefore takes the hasher as a constructor option and refuses to build in hashed mode without one. The test takes the legacy report's own cell as the expected value. **Owed by wave 11:** a public seam on `UniversalValidator` that hands the page this closure, and the `hashRecordIds` posture read from the same place the legacy report reads it.
+
+### W7-R3 — under `locations`, an empty field and a withheld value are the same row
+
+`durableEvaluateRecord()` stores `value_len = NULL` both when the field was blank and when the value was withheld, and under `locations` every value is withheld. The mapper says `blank` only on a run that kept values, and `not-kept` on a locations run, where "blank" would be a claim about data nobody recorded. A required-field finding on a locations run therefore shows "[not kept by this scan]" in its Value cell; the Issue column still says "Missing value". Distinguishing the two needs a stored length for withheld values, which is a store change. **Schedule:** wave 8, if store parity touches the finding row; otherwise leave.
+
+### W7-R4 — the finalizer's duplicate findings carry rule ordinal 0, no group and the reason `duplicate`
+
+`UniqueFinalizer` writes `rule_ord = 0`, `dag_key = NULL` and `reason_code = 'duplicate'`. The legacy path writes the real ordinal, the record's group and `duplicate-value`. The renderer printed "0" in the Rule column and found no name. `ScanDimensions::ruleOf()` resolves a finding by `rule_source_id` first and treats an ordinal below 1 as no rule, which renders an empty cell. The catalogue gained `unique/duplicate`. The group cell shows a dash for these rows. **Owed by wave 8 or 10:** the finalizer knows the rule's source id and could look up the ordinal and the record's group when it writes the finding.
+
+### W7-R5 — `value_bin` is cut at the byte, and `mb_strcut()` does not repair it
+
+The store keeps the first 255 bytes of the value, which can end inside a multi-byte character. The design called for `mb_strcut()` to back off to a whole character. Measured on PHP 8.3, `mb_strcut($s, 0, strlen($s))` returns the whole string, half character included: it moves a cut point that falls inside the string and does nothing for a string that already ends mid-character. The mapper reads the tail directly instead (at most three continuation bytes back to the lead byte). A second consequence of the two limits: the scan shortens a value to 120 characters and appends "… (truncated)" before storing it, so a value of 120 multi-byte characters is shortened twice and its cell carries both markers.
+
+### W7-R6 — `ScanPolicy::valueExpiry()` writes local time, and a kept value with no expiry is shown
+
+`valueExpiry()` uses `date()`; the purge compares against `ScanRetention::now()`. The mapper takes `now` as a string from its caller and compares as the purge does, so it inherits whatever the caller's clock is. A row with `value_bin` set and `value_expires_at` NULL is shown: nothing writes that combination since the expiry was wired at write time, and calling it expired would be false. **Schedule:** wave 12, with W7-N13, as one change to `gmdate()` across both.
+
+### W7-R7 — four `uv_finding` columns have no producer and no owner
+
+`arm_id`, `value_binary`, `severity` and `status_key` are in the table and nothing writes them. They are left out of `FindingRowMapper::INPUT_KEYS` on purpose, so the report does not branch on a column default. No wave claims them. **Decision needed at wave 8:** give each a producer or record that it is reserved.
+
+### W7-R8 — nothing holds the browser's wording to the catalogue
+
+`php/messages/catalog.json` said in its header that `tests/messages_fixture.json` froze the rendering across the two runtimes. The fixture was never written and `js/engine.js` does not read the catalogue. The header now says so. `tests/scan_report_php.php` holds the PHP side. **Owed by wave 11:** a parity fixture, when the report first shows these sentences next to the ones the form shows.
+
+### W7-R9 — the Identifier flag is parsed in two places
+
+`UniversalValidator::projectIdentifierFields()` decides what the scan redacts when it stores; `ScanDimensions::build()` now reads the same flag for the report. Both accept `y`, `yes`, `1` and `true`, and both answer null only when there is no dictionary. A test calls the private method by reflection and compares the two results over one dictionary. One parser used by both would be better, and it belongs with the snapshot work: wave 11 stores the flags in `uv_scan_dim`, at which point the report stops reading the live dictionary at all.
+
+### W7-R10 — the wiring test cannot see through an inert caller
+
+`tests/scan_wiring_php.php` accepts a public method when its name appears in a call anywhere in the shipped tree. `FindingRowMapper::toFinding()` and `ScanDimensions::ruleOf()` pass because `ScanReport` and `ScanColumns` call them, yet `ScanReport` itself is inert until wave 11. The allow-list names the five `ScanReport` methods, which is where the inertness starts. Eight older allow-list lines were deleted because those methods now have a caller (`ScanColumns::row/headers/keyLegend`, `ScanPageView::csvRow`, `ScanDimensions::isDegraded/degradedSummary`, `ReasonCode::pooledNames`, `ScanPolicy::floor`); they are reachable only through `ScanReport`, so they are wired in name and live in wave 11.
+
+### W7-R11 — what `uv_scan_dim` has to hold for a report to be labelled as the run saw the project
+
+`ScanDimensions::build()` reads the project as it is now. A report on a stored run has to use the labels of the day the run was planned. The public state a snapshot must fill: `rules` by ordinal, `rulesBySource` (source id to ordinal), `fieldLabels`, `fieldForms`, the form and event name maps, `hasDags`, `singleEventProved`, `identifiers`, and `degraded`. There is no `fromSnapshot()` reader yet, because there is no snapshot format to read; a test fills the object by hand and holds its rendering to `build()`'s.
+
+### Owed to later waves by the report layer
+
+- **Wave 8:** a findings read on both stores that returns `array_combine(FindingRowMapper::INPUT_KEYS, ...)`. Until then the test suite projects the evaluator's output onto those keys itself.
+- **Wave 8:** the `manifestComplete` answer for an unknown run differs between the two stores (W6-N1).
+- **Wave 11:** the `reason_bits` producer (R1), the record-hash seam (R2), the `uv_scan_dim` producer and reader with rules keyed by `rule_source_id` (R11), the message parity fixture (R8), and reading `clean IS NULL` as "not certified" (W7-N10). `ScanReport::runFacts()` already does the last of these.
+
+## Findings from the adversarial review of waves 6 and 7 (2026-10-01)
+
+Waves 6 and 7 were rebased onto `b3411b6` and reviewed by six red-team agents, each on its own copy of the tree: store I/O, work budget, outcome, tombstones and the client, the report layer, and an end-to-end run on MariaDB. They found 7 High, 10 Medium and 17 Low findings (two of them found twice). Every one was fixed before the merge, pre-existing ones included, each with a test that fails when its fix is reverted. The fixes are the commits whose messages end in "(review …)". A second round reviewed the fixes themselves; its findings are listed under R2 below.
+
+The ids are the reviewers' own: ST store, BU budget, OC outcome, CL client and tombstones, RP report, EE end to end.
+
+### High
+
+- **ST-1, a regression from B4b.** `marksFor()` cut a rule-problem sentence at byte 500 with `substr()`. The `samples` column is utf8mb4, so a multi-byte character across the cut is error 1366 on a strict server, and since B4b the mark is written inside `commitBatch()`: the whole batch was refused on every retry, its records ended UNSTORED, and the problem was never recorded. `ScanPromotion::sample()` scrubs and cuts with `mb_strcut()`; CatchUp's no-fence sample uses it too.
+- **EE-1, a regression from M9.** `insertFindings()` built a row for every finding before it chunked, so a batch held two copies of its findings: 25 records of 4,000 findings added 138.8 MB and died at 256M before `noteAttempts()`, leaving its claims held for the next worker to die on. The store now builds one 500-row chunk at a time. The worker samples memory after each record and cuts a batch short when the next record would not fit, committing what it examined and handing back the rest; a record that cannot fit alone is set aside with an attempt counted outside the failed work.
+- **EE-1, the death the store cannot see.** A request killed inside the read or the evaluation runs nothing after the fatal, so it counts no attempt and leaves its claims, and a record that kills PHP every time was retried for ever. Every way a live worker lets go of a row clears its claim token, so a free row that still carries one was left by a worker that died. `claimPending()` takes an attempt limit: such a row is charged the missing attempt, retired as UNREADABLE at the limit, and otherwise handed out alone, so it charges only itself.
+- **OC-1.** `facts()` called a scope empty only when the census of ALL states was 0, and tombstones are in the census. A run whose every record was deleted before it was read, or whose manifest emptied after it froze, was stored complete and clean. An empty scope now means no record reached DONE, none is pending and nothing blocks.
+- **OC-2.** No production surface read the stored decision, so a finished run with rule problems and no findings looked exactly like a clean one. `status()` returns `clean`, `ruleProblems` and `notExamined`, and the panel and the client add a sentence whenever a finished run is not certified.
+- **CL-1.** `exist()` answered from `redcap_record_list`, REDCap's record-list cache, whenever it held any row for the project, and `open()` walked it on the same test. A partly built or stale cache missing a live record made catch-up tombstone an edited record, and H18 tombstone a live one. `exist()` now confirms an absence against the data table, and `open()` uses the cache only when `redcap_record_counts.record_list_status` is COMPLETE or FIX_SORT. Any failure reads as "still there".
+- **BU-1, pre-existing.** The budget kept one claim per request and a memory floor per kind of unit. Cheap group pages doubled the claim to 500 and the verify page after them re-read 500 whole records and died. Each kind now has its own claim and floor, and the finalizer takes a separate read limit for verify pages (`DuplicateFinalizer::step($gen, $limit, $readLimit)`), reported back so the worker measures them as records.
+- **BU-2, pre-existing.** The memory check before the first claim gave zero work to any request that started past the 60% reserve, on every pass, for ever. `admit()` lets one unit through when it fits under the limit with a tenth of it to spare, and otherwise stops with a reason that names `memory_limit`.
+
+### Medium
+
+- **EE-2.** Both scan reads asked getData for the read set only, and getData omits a blank field, so a record whose every read field was blank came back with no node. The legacy scan called it "requested but not returned"; since H18 the durable worker filed it UNREADABLE on every run. Both reads now ask for the record-id field as well (the H-06 fix the form path already had). It is added to the read and not to the entitlement, which the entitlement test now states.
+- **OC-3.** `ModuleDb::select()` turned a framework `false`, or a result it could not walk, into `[]`, so one failed read of the summary stored a clean decision. Those now raise `ScanStoreUnavailable`.
+- **OC-4.** A run with no verdict reported `detail_rows`, which misses the finalizer's duplicates. It reports the larger of that and the summary, or "not counted" when both are 0.
+- **OC-5.** A rollup page was fenced on the lease epoch alone, which every worker of a run shares, so two tabs counted the same page. `holdRollupCursor()` locks the run row in the page transaction and re-checks the cursor and the terminal state. The run row is now locked before the aggregate rows, the order `commitBatch()` uses.
+- **CL-2.** Any quiet run read "stalled… stop it and start a new one", including one whose tab was simply closed and one already stopping. Stalled now needs the scanning phase, a live lease and no recent update; otherwise the run reads paused or stopping.
+- **CL-6.** The attempt counter stops at 254, so a `recordAttempts` setting above it meant a record was never retired and the client re-issued requests at 0 ms. The policy clamps the setting to 1–254.
+- **BU-3.** Below PHP 8.2 a batch under an earlier high-water mark measured nothing and the claim kept doubling until a batch died. A claim now grows only as far as the gap to the mark proves, and the in-batch samples cap it.
+- **RP-1, RP-2, RP-3** (report layer, inert until wave 11). A stored duplicate rendered as an empty field, because the finalizer stores no value and the mapper read that as blank; it reads "not kept". `recordIds` defaulted to raw, the one disclosure input that failed open; it is required. The cache of hashed record ids grew with every record (85 MiB at 500,000); it keeps the last one.
+
+### Low
+
+- **ST-2.** A multi-row INSERT under a lenient `sql_mode` stores a column default for a NULL in a NOT NULL column. Both stores refuse a finding missing any `ScanStore::FINDING_REQUIRED` key, and a MySQL check keeps that list equal to the schema.
+- **ST-3.** The write-order lint missed a count read after a helper call or across a branch. It tracks both.
+- **ST-4.** `commitBatch()` returned true for a batch that held none of its records and wrote no marks, and the worker remembered the marks as written. The stores report the held count through `&$heldCount`; the worker remembers marks only when it is not 0.
+- **OC-7.** `derive()` read a missing count as 0. A missing or malformed count now refuses clean.
+- **EE-4.** The empty-scope finish dropped the rule-problem count; it is stored. `clean = 0` is documented as "not certified".
+- **CL-3, CL-4, CL-5.** Planning is never reported stalled. A tab watching a run it is not driving keeps polling on the idle back-off until the run ends. The service's existence-probe wiring is a method with a test.
+- **BU-4, BU-5, BU-6.** One outlier record no longer pins the batch size for a PHP 7.4 request. The PHP 8.2 peak reset and the per-kind marks have tests. `memory_limit` written with `0x`, `0o`, `0b`, a leading zero or `+` is read as PHP reads it.
+- **RP-4 to RP-9 and the tail-byte note** (report layer). `ScanReport` refuses another project's run row or a values-state mismatch. With hashed ids the record-id field's value is withheld, in the mapper and in the legacy report's `reportValue()`. The fallback sentence names the rule the Rule column shows. Every cell leaves as UTF-8. An identifiers list is refused and an unknown mask bit is named `bit-N`. Five surviving mutants have checks. A cut ending in a byte no character starts with is labelled not-text.
+- **W7-N4 residue.** Catch-up tombstoned a record on any empty answer (`null`, `0`, `''`, `'0'`) and a probe that threw escaped `step()`. It now uses the worker's rule, `=== false` only, and a throw means "still there". This closes the catch-up half of W7-N4 that was scheduled for wave 8.
+
+### Shared helpers this review introduced
+
+- `UniversalValidator::recordIdFieldOf()` is the one answer to "which field is the record id", with the data-dictionary fallback. The legacy record list, the form path's read (H-06) and `scanPlan()` use it; `durableScanContext()` reads it from the plan.
+- `ScanPromotion::sample()` is the one UTF-8-safe cut for aggregate samples.
+- `ScanWorker::maxAttempts()` is the one reading of the attempt limit.
+
+### Left as it is, on purpose
+
+- A stored duplicate's value is not shown, where the legacy report shows it. Showing it needs a value column on `uv_unique_candidate` and the finalizer to write it; that is a schema change and belongs with the findings page in wave 11. The fixture check in `tests/scan_report_php.php` reads the finalizer's INSERT and names itself when that changes.
+- BU-1's suggested cap on clock growth across kinds was not added: with a claim per kind it holds by construction, and a cross-kind cap would throttle cheap group pages to the record size for nothing.
+
+### R2: the second round, which reviewed the fixes above (2026-10-02)
+
+Four reviewers attacked the round-1 fixes. They found 3 High, 3 Medium and 4 Low findings; the three High ones were regressions introduced by round-1 fixes. All ten were fixed on 2026-10-10, each with a test that fails when its fix is reverted.
+
+- **R2S-1, High, a regression from the dead-worker takeover.** `claimPending()` called a row abandoned when it was free and still carried a claim token, and scanning-phase claims stamp a token on rows they leave PENDING. A second tab that reached catch-up charged a live worker's healthy records an attempt, and at `recordAttempts = 1` retired them as unreadable. A row is now abandoned only when its claim is older than the stale threshold (`updated_at` in SQL, `claimed_at` in the in-memory store, 900 s by default); a fresh claim is taken over uncharged. Rows the sweep retires are counted in `blocked` and logged with a reason, and a worker reports worked, requeued, blocked and findings from the ordinals its commit actually held (`&$heldOrdinals`).
+- **R2S-2, High, a regression from BU-2.** A request that started past the memory reserve let one unit of every kind through, so rollup, catch-up and uniqueness moved one row per request, reported no movement, and fell back to the 30-second idle poll. The one-unit let-through now applies only to kinds that read records; rows, changes and groups take their normal size. The finishing phases report the rows they walked as `listed`, which `js/scan.js` already counts as progress.
+- **R2S-3, High, a regression from the in-batch cut.** The cut charged the record being evaluated whenever the arena was full, although the arena held every record of the batch, so a healthy record was charged on every request. A drop is charged only when the record was the only one whose data the batch held; otherwise it goes back uncharged, the batch frees its read data, and the record is retried alone (`WorkBudget::alone()`).
+- **R2S-4, Low.** Counting a failed attempt and releasing the claims were two transactions, so a crash between them charged one failure twice. `noteAttempts()` now counts, retires at the cap and hands the rest back in one transaction.
+- **R2S-5, Low.** When a whole window of dead rows was retired, the SQL sweep returned nothing and the worker waited while pending rows remained. It now looks at the next window, up to `ScanStore::SWEEP_WINDOWS`, in both stores.
+- **R2O-1, Medium.** Catch-up tombstones a record that was already examined when it is deleted, so a run whose records were all examined and then deleted was labelled "nothing was checked" beside its findings. The classification is unchanged (partial, never clean); the stored reason and the panel now say that no record is left, whether or not it had been checked, and that any findings shown are on deleted records.
+- **R2O-2, Medium, a regression from EE-2.** Reading the record-id field made every event with any data a context, so `@UVREQUIRED` fired on designated forms that were never opened. The user decided that a scan checks a rule's form only where it was started: its status field, or a field the scan reads from it, holds a value. Both reads ask getData for `returnBlankForGrayFormStatus`; where that signal is missing the context is kept. Round 3 narrowed this (R3G-1).
+- **R2O-3, Medium.** A planning request that died left the run in PLANNING, holding the project slot until the 24-hour reaper, with no sentence. Planning is exempt from "stalled" only for `ScanPolicy::planningSeconds()` (15 minutes by default, never shorter than `max_execution_time`, system setting `scan-system-planning-minutes`); past it the panel says listing stopped and names Stop. Round 3 found the window can catch a live planner (R3U-2), which wave 9 closes.
+- **R2O-4, Low.** A watching tab treated every refusal as final. Refusals that cannot change carry `final: true`; others are retried on the idle ladder, and a refusal hides the paused or stalled sentence.
+- **R2O-5, Low.** Stop on a run nobody was driving left it cancelling and holding the slot. `cancel()` now finishes such a run at once through `finishCancelled()`, after bumping the lease epoch so a worker that returns cannot write into it.
+
+### The merge with main (2026-10-10)
+
+main moved 29 commits during the review (@UVWINDOW, @UVEXISTS with cross-project lookups, @UVRANGE, the mode registry, branch-aware wording, 2.1.0-rc.2). It was merged into this branch once (`10c1b16`) rather than rebased under it, as waves 1 to 5 were. Two things from that merge are worth keeping:
+
+- Both sides had added `UniversalValidator::recordIdFieldOf()`. The merged helper reads the dictionary of the project asked about first and asks `\REDCap::getRecordIdField()` only for the request's own project, because that method takes no project id and would name the wrong field for a cross-project @UVEXISTS lookup.
+- An auto-merged hunk left `ScanService::advanceRun()` calling `aggregateTotal()`, a method this branch had deleted. Every work request that reached promotion threw an Error from `10c1b16` until wave 8's per-request work replaced the call (W8-N7). The PHP suites, the JS suites and the four-engine matrix were all green across that range; only wave 8's statement-count case drove a work request through promotion. Round 3 adds an end-to-end service test and a call-resolution lint so the next one is caught.
+
+### R3: the third round, which reviewed the R2 fixes and the merge (2026-10-10)
+
+Three reviewers attacked the R2 fixes and the merge with main (`17b09e1`); a fourth reviewed wave 8 (R8, below). They found 1 High, 5 Medium and 8 Low findings. The fix work found one more Medium (R3U-N1) and the notes R3S-N1, R3S-N2 and R3S-N4. R3U-2 and R3G-2 are scheduled into waves 9 and 11, where the code they need is built. Every other finding is fixed, each with a test that fails when its fix is reverted.
+
+- **R3G-1, High.** The started-form gate from R2O-2 dropped a rule's contexts wherever its host form was never opened, including a conditional rule whose condition reads another form. `ae_term` required "when [had_ae]='1'", with `had_ae` on the visit form, is the case the rule exists for, and the scan certified that record clean while the save audit logged the violation. The coordinator decided, following the user's reason for R2O-2 (a form nobody started has nothing to check), to gate only rules whose verdict the host form decides alone. A rule whose condition, operand or field list reads a field another form owns, and every extended rule, keeps its designated contexts and its condition decides (`gateable` in the plan). The save audit is the reference, and the legacy and durable scans now agree with it on both the cross-form and the cross-event fixture.
+- **R3G-2, Medium, latent.** A durable finding does not carry the branch that judged it, so `ScanDimensions::ruleOf()` is branch-aware only on the legacy path. Wave 11 stores the branch in `reason_bits` for reasons that are not pooled; the finding identity does not change.
+- **R3G-3, Low.** `grayStatusAsZero()` and the plan key `statusRefs` restored `'0'` on status fields a rule reads. No rule kind can read a `<form>_complete` value, so the code was dead and is removed; a test now pins the premise across every kind of field reference.
+- **R3G-4, Low.** The fingerprint's engine input was `'engine-1'` on every release because `UV_ENGINE_VERSION` is never defined, so a run that spanned a verdict-changing upgrade was continued. `ScanService::ENGINE_REVISION` (now `'engine-2'`) is that input, to be bumped whenever a verdict can change.
+- **R3U-1, Medium.** A cross-project refusal was always final, but a failed read of the other project's rights, module state or agreement also produced one, so one database blip ended a watching tab's watch. Each failing read on that path is now recorded; the plan lists those projects in `crossUnread`, and the refusal is final only when every refused project was read and said no.
+- **R3U-2, Medium.** `planningStopped` is measured from `created_at`, nothing marks a planner alive, and planning has no deadline of its own, so a live planner can be told it stopped and then be ended by Stop. Wave 9 makes planning resumable and progress-clocked, which is where this is fixed.
+- **R3U-3, Medium.** Stop, the reap that Start runs, and the worker that finds a run `cancelling` each wrote the stopped run without its counts or its truncation, so the stored row and the export name depended on which request ended the run. `ScanPromotion::finishCancelled()` is now the one finisher, built from the same conclusion `promote()` uses.
+- **R3U-4, Low.** A planning setting above `PHP_INT_MAX / 60` minutes collapsed the planning window to one second. The minutes are capped at a year.
+- **R3U-5, Low.** Two tabs pressing Stop together left one told the run had not stopped, and the page kept "Stopping the scan." beside a finished panel. Stop re-reads a run its finish did not change, and the page replaces its own note when the run turns out terminal.
+- **R3U-6, Low.** The catch that keeps a Stop standing when `finish()` throws had no test. It has one.
+- **R3U-N1, Medium, found while fixing R3U-1.** A cross-project rule whose agreement was revoked is a configuration error at annotation time, so it never reached `crossRefused`, and revoking an agreement showed that project's earlier answers to readers it would not answer. A started run now keeps the projects it consulted (`crossProjects` in `policy_json`, outside the fingerprinted policy), and `status()` refuses a run any of whose projects the reader's plan does not list in `crossAnswered`.
+- **W8-N8, Low (wave 8b's W8-N2 in its commit).** `ScanCapabilities::tableExists()` read any `COUNT(*)` row as "present". It now reads the number.
+- **Merge guards.** `tests/call_resolution_php.php` fails when a `$this->`, `self::`, `static::` or `parent::` call names a method that does not exist, and `tests/scan_service_php.php` drives start, work and status to a finished run over `ArrayScanStore`. Either would have caught the `aggregateTotal()` call the merge left behind.
+- **R3S-1, Medium.** After the first window, a straggler sweep re-read the finished prefix of the record table on PRIMARY for every window, inside the run-row lock: 13 s per call at 500,000 records. Each window now starts after the last ordinal the previous one read, through `ix_run_state`, and a call stops after `ScanStore::SWEEP_SECONDS` (1 s). At 100,000 rows one call fell from 2,556 to 558 ms on MySQL 8.0 and from 1,107 to 445 ms on MariaDB 10.11; rows read per window fell from 98,499 to 499.
+- **R3S-2, R3S-3, R3S-4, Low.** The review found three round-2 behaviours with no test: a retried record leaves the request one record at a time (`WorkBudget::alone()`), its batch's read data is freed before `reclaim()` runs, and a squeezed unique-finalize request reports its groups as `listed`. Each is pinned, and removing it fails a named check.
+- **R3S-N1, found while fixing R3S-1.** The MySQL harness's store case never loaded `ArrayScanStore`, so the cross-store contract had stopped running against a real server. It loads it again.
+- **R3S-N2.** On MySQL 8.0, a plain `FORCE INDEX (ix_run_state)` removes PRIMARY from the usable keys and turns `ORDER BY ordinal` into a filesort over every row of that state; `FORCE INDEX FOR ORDER BY` keeps the ordered scan. MariaDB re-plans `ORDER BY ... LIMIT` at execution, so its EXPLAIN can name PRIMARY while execution reads `ix_run_state`; a MariaDB-only `/*M! ... */` hint pins it. The store case measures rows read (`Handler_read_next`) as well as the plan.
+- **R3S-N4, Low, pre-existing.** `ScanWorker` ignores a finalizer step's `why`, so a step that makes no progress and is not done is retried until the request's budget ends. Wave 10 owns the finalizer phases and fixes it there.
+
+### R8: the review of wave 8 (2026-10-10)
+
+- **R8-1, High, latent.** `supersedePrevious()` ignored the run's scope, so a scan of one data access group closed every other group's current findings. A group-scoped run now supersedes nothing (`ScanStore::SUPERSEDE_SCOPED`); the next whole-project run closes the older generations. Superseding only the group's share was rejected: `scope_dag` is a group id and `dag_key` a unique group name, records move between groups, and a generation cursor cannot hold a position inside an older generation's manifest.
+- **R8-2, Medium.** `Schema::health()` matched table names through the case-insensitive information_schema collation, so on a server with `lower_case_table_names=0` a table present only as `UV_FINDING` read as present. A returned name now counts only when it is byte for byte one of the module's names.
+- **R8-3, Low.** A revoke cursor was not tied to its project, so another project's cursor resumed this project's sweep part way through. The cursor carries the project id and a digest of the generation set, and any other cursor restarts at the first slice.
+- **R8-4, Low.** `scan-system-max-concurrent-projects` had no upper bound: above 65,535 the slot INSERT exceeded the placeholder limit and every worker was refused, and near 1e9 `range()` exhausted memory. The setting is clamped at 1,000, `provision()` clamps to the slot column's range, and slots are written 500 rows a statement.
+- **R8-5, Low.** The uniqueness finalizer stamped duplicate findings with the group's candidate epoch, a per-group counter, where every other writer uses the run's `run_seq`. A finalizer is now bound to the run sequence by the worker (`SequencedFinalizer::forRun()`), and an unbound one writes nothing.
+
+### Wave 8: retention, store parity and request cost (2026-10-10)
+
+Built in two parts. 8a (`ae4a56e`, `7dd746c`): retention works a bounded page per statement (`ScanRetention::PAGE` = 5,000; value expiry by primary-key windows, revoke by keyset through `ix_page_v2` with a cursor, purge children before parents with a LIMIT on every DELETE), `supersedePrevious()` closes older generations a page at a time under the run-row lock with a compare-and-set on `supersede_cursor`, and both stores return findings rows keyed by `FindingRowMapper::INPUT_KEYS` under one contract. 8b (`4a92c48`, `1824cb5`, `f21410b`): a request builds its plan, entitlement and capability census once, `Schema::health()` is two statements, the panel shows what a run stored (P10), and `tests/mysql/cases/perf.php` counts the statements each request sends (start 49 to 35, a work request 107 to 76, measured on MySQL 5.7 and MariaDB 10.5). `8e5edd9` and `bf96e58` pin the findings, revoke and supersede pages to `ix_page_v2`, where MySQL 8.0 and MariaDB had chosen `uq_active_identity_v2` and sorted. The paged retention methods and `supersedePrevious()` have no production caller yet; wave 10's cron is that caller.
+
+Notes from wave 8 (8a used W8-N1 to W8-N6; 8b's own numbers 1 to 5 are W8-N7 to W8-N11 here):
+
+- **W8-N1.** The store's `expireValues` duplicated `ScanRetention`'s, unpaged and with no caller. It is deleted (M15).
+- **W8-N2.** The in-memory store wrote staged rows active, so `findings()` returned them, and it did not hold the staged key against rows already stored. Both are fixed and pinned.
+- **W8-N3.** The SQL store wrote `valid_from_seq` 0 by default where the in-memory store wrote the run's sequence. Both use the run's sequence.
+- **W8-N4.** When a newer run finishes the supersede of generations older than an earlier run's, those rows get the newer run's sequence as `valid_to_seq`, one run late for history. Acceptable while only the cursor is read; wave 11's as-of reads must not assume otherwise.
+- **W8-N5.** Under REPEATABLE READ the supersede's LIMIT UPDATE takes next-key locks on `ix_page_v2`, so a concurrent commit into the same project can deadlock; it surfaces as `ScanStoreUnavailable` (retryable). Wave 10 measures it when the cron calls supersede beside live workers.
+- **W8-N6.** The in-memory store does not model column widths, so an over-long value passes the fast suite and fails on MySQL. A comment in `tests/mysql/support/fixture.php` saying `SqlScanStore::run()` omits `run_seq` is stale; wave 12 corrects it.
+- **W8-N7.** The merge left `advanceRun()` calling the deleted `aggregateTotal()` (see "The merge with main"). Promotion now reads the window and blocking aggregates itself, once the run is ready.
+- **W8-N8.** `ScanCapabilities::tableExists()` read any `COUNT(*)` row as present. Fixed in round 3.
+- **W8-N9.** On a loaded host the browser's 3-second budget ran out before the first claim, so a work request moved nothing. The fixed cost per request decides whether a busy server makes progress at all, which is why wave 8 measured it.
+- **W8-N10.** `UniversalValidator`'s instance memos (rulesMemo, ddCache, mappedFormsCache, missingCodesMemo, existsIndexes) would outlive a request in a cron process that runs several projects. Wave 10 resets or keys them by project.
+- **W8-N11.** Fixed cost left: a status poll runs the 5-statement capability census, every plan build sends `SELECT MAX(log_event_id), COUNT(*)` on the log, and `Schema::missingTables()` probes one table at a time. Wave 10 trims what is cheap.

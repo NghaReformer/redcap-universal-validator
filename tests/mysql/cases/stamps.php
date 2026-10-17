@@ -113,12 +113,17 @@ $rows = $ca->query('SELECT field, as_of, z_score, growth_reference FROM ' . Sche
 check('stamps: as_of, z_score and growth_reference are written, and NULL where there is none (got ' . json_encode($rows) . ')',
     $rows === [['v_end', null, null, null], ['w_past', '2026-10-02', null, null], ['x_wt', null, '-3.40', 'who-wfa'],
                ['y_wt', null, '-1.00', 'who-wfa']]);
-// read back by the report's page query, with both columns
+// read back by the report's page query, each row keyed by FindingRowMapper::INPUT_KEYS
 $page = $store->findings($PID, $gen, [], 0, 10);
-// in the select's column order: field is 6th, z_score 14th, growth_reference 15th
-$px = array_values(array_filter(array_map('array_values', $page), function ($r) { return $r[5] === 'x_wt'; }));
+$byField = function ($f) use ($page) {
+    return array_values(array_filter($page, function ($r) use ($f) { return $r['field'] === $f; }));
+};
+$px = $byField('x_wt');
 check('stamps: the report reads z_score and growth_reference back (got ' . json_encode($px) . ')',
-    count($px) === 1 && $px[0][13] === '-3.40' && $px[0][14] === 'who-wfa');
-$py = array_values(array_filter(array_map('array_values', $page), function ($r) { return $r[5] === 'y_wt'; }));
+    count($px) === 1 && $px[0]['z_score'] === '-3.40' && $px[0]['growth_reference'] === 'who-wfa');
+$py = $byField('y_wt');
 check('stamps: ... and no z-score where there is no value preview (got ' . json_encode($py) . ')',
-    count($py) === 1 && $py[0][13] === null && $py[0][14] === 'who-wfa');
+    count($py) === 1 && $py[0]['z_score'] === null && $py[0]['growth_reference'] === 'who-wfa');
+$pw = $byField('w_past');
+check('stamps: ... and the day a @UVWINDOW value was judged against (got ' . json_encode($pw) . ')',
+    count($pw) === 1 && $pw[0]['as_of'] === '2026-10-02');

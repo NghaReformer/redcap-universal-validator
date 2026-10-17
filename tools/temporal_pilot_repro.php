@@ -87,6 +87,7 @@ class Db implements INSPIRE\UniversalValidator\Scan\ScanDb {
         $st = $this->c->prepare($sql); bindAll($st, array_values($params)); $st->execute();
         $this->aff = $st->affected_rows; $st->close();
     }
+    public function execNoCount($sql, array $params = []) { $this->exec($sql, $params); }
     public function affected() { return $this->aff; }
     public function begin() { $this->c->query('START TRANSACTION'); }
     public function commit() { $this->c->query('COMMIT'); }

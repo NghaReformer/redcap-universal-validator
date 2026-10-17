@@ -31,6 +31,7 @@ use INSPIRE\UniversalValidator\Scan\ScanStore;
 use INSPIRE\UniversalValidator\Scan\ScanOutcome;
 use INSPIRE\UniversalValidator\Scan\ScanPhase;
 use INSPIRE\UniversalValidator\Scan\Hmac;
+use INSPIRE\UniversalValidator\Scan\ScanPromotion;
 
 $PID = 700;
 $NEIGHBOUR = uv_neighbour($PID);
@@ -203,10 +204,13 @@ check('store: the slot is released, so the next scan may start',
 // than repaired, so these went with them; the live pair is asserted in
 // cases/slots.php, which is where it always should have been.
 
-// RETENTION: a value expires without the finding disappearing.
+// RETENTION: a value expires without the finding disappearing. Through
+// ScanRetention, which is the only value sweep now: the store's own unpaged
+// copy of it had no production caller and was deleted (wave 8).
 $A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'secret', z_score = '-3.40',
     value_expires_at = '2000-01-01 00:00:00' WHERE record_id_bin = 'REC-1'");
-check('store: an expired value is cleared', $storeA->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
+check('store: an expired value is cleared',
+    (new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA))->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
 $v = $ca->query('SELECT value_bin, z_score FROM ' . Schema::table('finding')
     . " WHERE record_id_bin = 'REC-1'", []);
 check('store: the value is gone, and a z-score with it', $v[0][0] === null && $v[0][1] === null);
@@ -545,6 +549,746 @@ $UNOWNED = 770;
 
 // -- the SHARED contract, against SqlScanStore --------------------------------
 //
+// WHAT A BATCH OF FINDINGS COSTS (M9).
+//
+// commitBatch holds the run row FOR UPDATE while it writes, and it used to
+// write one INSERT per finding: measured here, a record with 4,000 findings held
+// that lock for 15.9 seconds. The number that matters is the statement count,
+// and it is read off the statements the store actually sent.
+$COST = 780;
+{
+    $rec = new UvRecordingDb($dbA);
+    $s = new SqlScanStore($rec);
+    $r = $s->startRun($COST, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $recs = [];
+    for ($i = 1; $i <= 2; $i++) {
+        $recs[] = ['id_bin' => 'M-' . $i, 'hash' => hash('sha256', 'M-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    $ep = (int) $s->run($COST, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w', $ep, 2);
+    $N = SqlScanStore::FINDING_CHUNK + 1;
+    $fs = [];
+    for ($i = 0; $i < $N; $i++) {
+        $which = $i % 2;
+        $f = ['ordinal' => $c[$which]['ordinal'],
+              'project_id' => $COST, 'generation_id' => $gen,
+              'identity' => hash('sha256', 'cost-' . $i, true),
+              'valid_from_seq' => $seq, 'record_hash' => $recs[$which]['hash'],
+              'record_id_bin' => $recs[$which]['id_bin'], 'instance' => 1, 'host_form' => 'fa',
+              'field' => 'x' . $i, 'rule_source_id' => 'r1',
+              'rule_revision' => str_repeat('c', 64),
+              'check_type' => 'required', 'reason_code' => 'required-blank'];
+        // ONE STAGED ROW among the ordinary ones. active_slot and stage_epoch
+        // are per-row values in a multi-row statement, and a writer that
+        // hoisted either into the statement would publish this row early.
+        if ($i === 7) { $f['stage_epoch'] = 3; $f['group_hmac'] = hash('sha256', 'g', true); }
+        $fs[] = $f;
+    }
+    $rec->log = [];
+    $ok = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs,
+        'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
+                      ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]]]);
+    check('cost: a batch one finding larger than a chunk commits', $ok === true);
+    $ins = $rec->matching('exec', ['INSERT INTO ' . Schema::table('finding')]);
+    check('cost: written in one statement per chunk, not one per finding',
+        count($ins) === (int) ceil($N / SqlScanStore::FINDING_CHUNK) && count($ins) < $N / 100);
+    $soft = false; $most = 0; $counted = true;
+    foreach ($ins as $row) {
+        if (stripos($row[1], 'DUPLICATE') !== false || stripos($row[1], 'IGNORE') !== false) $soft = true;
+        $most = max($most, count($row[2]));
+        if ($row[3] !== true) $counted = false;
+    }
+    check('cost: as plain INSERTs, so a collision is still refused rather than absorbed',
+        $soft === false);
+    check('cost: inside the placeholder limit', $most > 0 && $most <= 65535);
+    check('cost: and counted, because a short write here reads as a cleaner project',
+        $counted === true);
+    $stored = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', [$COST]);
+    check('cost: every finding is there', (int) $stored[0][0] === $N
+        && (int) $s->run($COST, $rid)['detail_rows'] === $N);
+    $staged = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot IS NULL AND stage_epoch = 3', [$COST]);
+    $active = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1 AND stage_epoch IS NULL', [$COST]);
+    check('cost: the one staged row stayed staged and its neighbours went active',
+        (int) $staged[0][0] === 1 && (int) $active[0][0] === $N - 1);
+    // THE LOCK COMES FIRST AND THE INSERTS LAST. Moving the FOR UPDATE after
+    // the inserts would shorten the lock and reopen the race the class docblock
+    // describes; this is the order, read from the wire.
+    $pos = ['lock' => null, 'close' => null, 'insert' => null];
+    foreach ($rec->log as $i => $row) {
+        if ($pos['lock'] === null && strpos($row[1], 'FOR UPDATE') !== false) $pos['lock'] = $i;
+        if ($pos['close'] === null && strpos($row[1], 'SET active_slot = NULL') !== false) $pos['close'] = $i;
+        if ($pos['insert'] === null && strpos($row[1], 'INSERT INTO ' . Schema::table('finding')) !== false) $pos['insert'] = $i;
+    }
+    check('cost: the run is locked, then old evidence closed, then new evidence written',
+        $pos['lock'] !== null && $pos['close'] !== null && $pos['insert'] !== null
+        && $pos['lock'] < $pos['close'] && $pos['close'] < $pos['insert']);
+}
+
+// AND THE REFUSAL SURVIVES THE CHUNKING. Two statements now, so by the time the
+// second collides the first has succeeded - "refused entire" is held by the
+// transaction, and this is where that is proved against a real one.
+$WIDE = 781;
+{
+    $s = new SqlScanStore($dbA);
+    $r = $s->startRun($WIDE, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $one = ['id_bin' => 'W-1', 'hash' => hash('sha256', 'W-1', true), 'dag' => null];
+    $s->writeManifest($rid, [$one]);
+    $ep = (int) $s->run($WIDE, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w', $ep, 1);
+    $N = SqlScanStore::FINDING_CHUNK + 1;
+    $fs = [];
+    for ($i = 0; $i < $N; $i++) {
+        $fs[] = ['ordinal' => $c[0]['ordinal'], 'project_id' => $WIDE, 'generation_id' => $gen,
+                 // the LAST repeats the FIRST, a whole chunk later
+                 'identity' => hash('sha256', 'wide-' . ($i === $N - 1 ? 0 : $i), true),
+                 'valid_from_seq' => $seq, 'record_hash' => $one['hash'],
+                 'record_id_bin' => 'W-1', 'instance' => 1, 'host_form' => 'fa',
+                 'field' => 'x' . $i, 'rule_source_id' => 'r1',
+                 'rule_revision' => str_repeat('c', 64),
+                 'check_type' => 'required', 'reason_code' => 'required-blank'];
+    }
+    $refused = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs,
+        'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]]]);
+    check('cost: a repeat in the SECOND chunk refuses the batch',
+        is_string($refused) && strpos($refused, 'database refused') !== false);
+    $left = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', [$WIDE]);
+    $done = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? AND state >= ?', [$rid, ScanStore::REC_DONE]);
+    check('cost: and takes the first chunk back out with it',
+        (int) $left[0][0] === 0 && (int) $done[0][0] === 0);
+}
+
+// "IS THE MANIFEST COMPLETE", AND WHAT IT COSTS TO ASK (P11).
+//
+// The state it is asked in most is the one where the answer is yes - that is
+// how a worker learns it has finished - and there a COUNT(*) has nothing to
+// count while the wrong index still walks every row to find that out. The plan
+// is asserted on the statement the store sent, with every row terminal, which
+// is exactly where PRIMARY and ix_run_state part company.
+$ASKED = 782;
+{
+    $rec = new UvRecordingDb($dbA);
+    $s = new SqlScanStore($rec);
+    $r = $s->startRun($ASKED, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 1200; $i++) {
+        $recs[] = ['id_bin' => 'Q-' . $i, 'hash' => hash('sha256', 'Q-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    check('asked: a manifest nobody has started is not complete', $s->manifestComplete($rid) === false);
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid);
+    $rec->log = [];
+    check('asked: with every row terminal it is', $s->manifestComplete($rid) === true);
+    $q = $rec->matching('select', [Schema::table('scan_record'), 'state <']);
+    check('asked: and that cost one statement', count($q) === 1);
+    if ($q) {
+        $keys = uv_explain_keys($A, $q[0][1], $q[0][2]);
+        check('asked: answered from the state index rather than by walking the manifest',
+            in_array('ix_run_state', $keys, true));
+        if (!in_array('ix_run_state', $keys, true)) {
+            fwrite(STDERR, '  the optimiser chose: ' . ($keys ? implode(', ', $keys) : '(no index)') . "\n");
+        }
+    }
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . (int) ScanStore::REC_PENDING
+        . ' WHERE run_id = ' . $rid . ' AND ordinal = 600');
+    check('asked: one row put back makes it incomplete again', $s->manifestComplete($rid) === false);
+    // THE DIVERGENCE THAT WAS PINNED HERE IS CHOSEN NOW (W6-N1). The SQL store
+    // answered true for a run id that does not exist - nothing unfinished -
+    // where ArrayScanStore answered false. Both fail closed, and the run is
+    // looked up by its primary key inside the same statement.
+    check('asked: a run that does not exist is not complete',
+        $s->manifestComplete(999999999) === false);
+    $rec->log = [];
+    $s->manifestComplete($rid);
+    $q = $rec->matching('select', [Schema::table('scan_record'), 'state <']);
+    $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
+    check('asked: and the run lookup costs a primary-key probe beside the state index',
+        count($q) === 1 && in_array('ix_run_state', $keys, true) && in_array('PRIMARY', $keys, true));
+}
+
+// THE STRAGGLER SWEEP READS ITS WINDOW, NOT THE FINISHED ROWS IN FRONT OF IT
+// (review R3S-1).
+//
+// claimPending() looks at free rows a window at a time, and every window used
+// to be the same statement run from the start of the run: the server served
+// its ORDER BY from PRIMARY and tested every row on the way, so in catch-up -
+// where nearly every row is finished - each window walked the finished prefix
+// with the run row locked FOR UPDATE. Measured at 98,499 rows a window on
+// 100,000 records. Here 2,950 finished rows stand in front of 30 rows a dead
+// worker left at the attempt limit and 20 free ones; windows of ten retire the
+// dead rows three at a time and the fourth hands out ten free rows.
+//
+// What is asserted is what the server did with the statements the store sent,
+// at the moment it sent them: the plan, EXPLAINed inside the store's
+// transaction just before the window runs; the rows each window actually read
+// (Handler_read_next, taken on the store's own connection around each window -
+// a FLUSH STATUS there would commit the transaction); and where each window
+// started. The rows read are the stronger of the two. Without its own hint
+// MariaDB re-planned this ORDER BY ... LIMIT at execution - at 100,000 rows its
+// EXPLAIN named PRIMARY with a sort while the window read 499 rows of
+// ix_run_state - and a later window may properly take PRIMARY from where it
+// starts, because the range behind that point is short.
+//
+// Not 788: the supersede case below plants its neighbour project there.
+$SWEPT = 795;
+{
+    $probe = new class($dbA, $A) extends UvRecordingDb {
+        /** @var int[] rows read by each window statement, in the order sent */
+        public $reads = [];
+        /** @var string[][] per window, the key of each EXPLAIN row on the record table */
+        public $plans = [];
+        private $conn;
+        private $table;
+        public function __construct($inner, $conn) {
+            parent::__construct($inner);
+            $this->conn = $conn;
+            $this->table = Schema::table('scan_record');
+        }
+        private function readNext() {
+            $r = $this->conn->query("SHOW SESSION STATUS LIKE 'Handler_read_next'");
+            $row = $r->fetch_row();
+            $r->free();
+            return (int) $row[1];
+        }
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'UNION ALL') === false) return parent::select($sql, $params);
+            $keys = [];
+            $e = $this->conn->query('EXPLAIN ' . uv_inline_params($this->conn, $sql, $params));
+            while ($row = $e->fetch_assoc()) {
+                if ((string) $row['table'] === $this->table) $keys[] = (string) $row['key'];
+            }
+            $e->free();
+            $this->plans[] = $keys;
+            $before = $this->readNext();
+            $out = parent::select($sql, $params);
+            $this->reads[] = $this->readNext() - $before;
+            return $out;
+        }
+    };
+    // A still clock: these count windows and rows read, and a loaded server
+    // must not end a call on SWEEP_SECONDS first.
+    $s = new SqlScanStore($probe, function () { return 0.0; });
+    $rid = (int) $s->startRun($SWEPT, ['created_by' => 'alice'])['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 3000; $i++) {
+        $recs[] = ['id_bin' => 'W-' . $i, 'hash' => hash('sha256', 'W-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    $t = Schema::table('scan_record');
+    $A->query('UPDATE ' . $t . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid . ' AND ordinal <= 2950');
+    $A->query('UPDATE ' . $t . " SET claim_owner = 'dead', claim_seq = 7,"
+        . ' updated_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)'
+        . ' WHERE run_id = ' . $rid . ' AND ordinal BETWEEN 2951 AND 2980');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . ScanPhase::CATCH_UP
+        . "' WHERE run_id = " . $rid);
+    // Statistics as a table that has been written for a while would have them.
+    $A->query('ANALYZE TABLE ' . $t)->free();
+    $ep = (int) $s->run($SWEPT, $rid)['lease_epoch'];
+    $probe->log = [];
+    $probe->reads = [];
+    $ret = -1;
+    $got = $s->claimPending($rid, 'w2', $ep, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret);
+    $ords = [];
+    foreach ((array) $got as $g) $ords[] = (int) $g['ordinal'];
+    check('sweep plan: the dead rows are retired and the first free rows handed out',
+        $ret === 30 && $ords === range(2981, 2990));
+    $windows = $probe->matching('select', ['UNION ALL', $t]);
+    $starts = [];
+    foreach ($windows as $w) $starts[] = (int) $w[2][3] . '/' . (int) $w[2][7];
+    check('sweep plan: each window starts after the last row of the one before',
+        $starts === ['0/0', '2960/2960', '2970/2970', '2980/2980']);
+    $plans = [];
+    foreach ($probe->plans as $p) $plans[] = implode('+', $p);
+    echo '  sweep window starts: ' . implode(' ', $starts) . ' | rows read per window: '
+        . implode(',', $probe->reads) . ' | plans: ' . implode(' ', $plans) . "\n";
+    // Each window reads at most the free rows behind where it starts - fifty
+    // here, ten of them when the server walks the range in order and stops,
+    // all of them when it chooses to sort so few - and never the finished
+    // rows in front. (At this size the old statement sorted the fifty too; the
+    // walk of the finished rows is pinned by the 2,000-row case below, where
+    // it read 1,009 for a window of ten.)
+    check('sweep plan: and each reads the free rows behind it, not the 2,950 finished rows in front',
+        count($probe->reads) === 4 && max($probe->reads) <= 50 + 4);
+    // THE FIRST WINDOW, the one that starts at the beginning of the run, is
+    // planned through the state index in both branches. MySQL 8.0 may name it
+    // beside PRIMARY (an intersection that uses the primary key only to
+    // filter), never PRIMARY alone - which is the walk of the finished prefix.
+    $first = isset($probe->plans[0]) ? $probe->plans[0] : [];
+    $viaState = count($first) === 2;
+    foreach ($first as $k) {
+        if (!in_array('ix_run_state', explode(',', $k), true)) $viaState = false;
+    }
+    check('sweep plan: the first window reads both free states through ix_run_state', $viaState);
+
+    // AND STOPS AT THE WINDOW WHEN MANY ROWS ARE FREE. 2,000 free rows behind
+    // 1,000 finished ones, a window of ten. The old statement walked PRIMARY
+    // from the start of the run: 1,009 rows. A plain FORCE INDEX
+    // (ix_run_state) reads the state index, and on MySQL then sorts every row
+    // of the state to find the first ten: 2,000 here, and 100,000 a window
+    // with 100,000 pending.
+    $rid2 = (int) $s->startRun($SWEPT + 1, ['created_by' => 'alice'])['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 3000; $i++) {
+        $recs[] = ['id_bin' => 'X-' . $i, 'hash' => hash('sha256', 'X-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid2, $recs);
+    $A->query('UPDATE ' . $t . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid2 . ' AND ordinal <= 1000');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . ScanPhase::CATCH_UP
+        . "' WHERE run_id = " . $rid2);
+    $A->query('ANALYZE TABLE ' . $t)->free();
+    $ep2 = (int) $s->run($SWEPT + 1, $rid2)['lease_epoch'];
+    $probe->reads = [];
+    $probe->plans = [];
+    $got2 = $s->claimPending($rid2, 'w2', $ep2, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret);
+    echo '  sweep with 2,000 free: rows read ' . implode(',', $probe->reads) . "\n";
+    check('sweep plan: with 2,000 rows free, the window reads about ten of them, not all of them',
+        is_array($got2) && count($got2) === 10 && (int) $got2[0]['ordinal'] === 1001
+        && count($probe->reads) === 1 && $probe->reads[0] <= 2 * 10 + 4);
+}
+
+// THE DECISION IS ON THE ROW (H15), read back RAW.
+//
+// The contract below reads these through run(), and run() goes through a
+// driver that hands every value back as a string or null. "NULL, not 0" is a
+// statement about the column, so it is asked of the column: `clean IS NULL` is
+// a question only the server can answer, and a store that bound 0 where it
+// meant NULL would pass any check written against PHP's loose reading of it.
+$DECIDED = 783;
+{
+    $s = new SqlScanStore($dbA);
+    $raw = function ($rid) use ($A) {
+        $q = $A->query('SELECT clean IS NULL, clean, gap_count, rule_problem_count, not_examined,
+            terminal_reason, active_slot IS NULL FROM ' . Schema::table('scan_run')
+            . ' WHERE run_id = ' . (int) $rid);
+        return $q->fetch_row();
+    };
+    $rid = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+    $row = $raw($rid);
+    check('decided: a live run has no verdict yet', (int) $row[0] === 1);
+    $o = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'blocked' => true, 'gaps' => 7]);
+    $o['ruleProblems'] = 2;
+    $o['notExamined'] = 5;
+    check('decided: finishing takes', $s->finish($rid, $o) === true);
+    $row = $raw($rid);
+    check('decided: a partial run is a stored 0, not an absent value',
+        (int) $row[0] === 0 && (int) $row[1] === 0);
+    check('decided: with its three counts beside it',
+        (int) $row[2] === 7 && (int) $row[3] === 2 && (int) $row[4] === 5);
+    check('decided: the reason it ended, and the slot given back',
+        $row[5] === $o['why'] && (int) $row[6] === 1);
+    $clean = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+                                  'violations' => 0, 'ruleProblems' => 0]);
+    check('decided: a second finaliser with a better story is refused',
+        $s->finish($rid, $clean) === false);
+    $again = $raw($rid);
+    check('decided: and rewrote nothing', $again === $row);
+
+    $rid2 = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+    $s->finish($rid2, $clean);
+    $row = $raw($rid2);
+    check('decided: a complete run that found nothing is a stored 1',
+        (int) $row[0] === 0 && (int) $row[1] === 1);
+
+    foreach (['cancelled', 'failed', 'expired'] as $how) {
+        $rid3 = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+        $s->finish($rid3, ScanOutcome::derive([$how => true, 'fenced' => true, 'manifestDone' => true]));
+        $row = $raw($rid3);
+        check("decided: a $how run stores NULL, which is not the same as not clean",
+            (int) $row[0] === 1 && $row[1] === null);
+    }
+}
+
+// A PRESENCE IS RECORDED ONCE (B4b), and what makes that true is a unique key
+// on a real server - so it is asked of one, from two connections, with one of
+// them inside an open transaction when the other speaks.
+$MARKED = 784;
+{
+    $sa = new SqlScanStore($dbA);
+    $sb = new SqlScanStore($dbB);
+    $rid = (int) $sa->startRun($MARKED, ['created_by' => 'alice'])['run']['run_id'];
+    $agg = function () use ($A, $rid) {
+        $q = $A->query('SELECT axis1, axis2, cnt, blocks_coverage, samples FROM '
+            . Schema::table('scan_aggregate') . ' WHERE run_id = ' . (int) $rid
+            . " AND kind = 'rule-problem' ORDER BY axis1, axis2");
+        $out = [];
+        while ($row = $q->fetch_row()) $out[] = $row;
+        return $out;
+    };
+    $sa->markAggregate($rid, 'rule-problem', '4', 'unlocatable', 0, 'first said');
+    $sb->markAggregate($rid, 'rule-problem', '4', 'unlocatable', 0, 'said again');
+    $sa->markAggregate($rid, 'rule-problem', '4', 'unlocatable');
+    $rows = $agg();
+    check('marked: one fact from two connections is one row with a count of one',
+        count($rows) === 1 && (int) $rows[0][2] === 1);
+    check('marked: keeping the explanation it was first given', $rows[0][4] === 'first said');
+    // A row counted up by the ADDING verb - which is what every installation
+    // that ran the previous build holds - comes back to a presence.
+    $sa->addAggregate($rid, 'rule-problem', '9', 'legacy', 5);
+    $sb->markAggregate($rid, 'rule-problem', '9', 'legacy');
+    $rows = $agg();
+    check('marked: a row an earlier build counted up is reset to one',
+        count($rows) === 2 && (int) $rows[1][2] === 1);
+    check('marked: and the statement was uncounted - nothing reads what it changed',
+        (function () use ($dbA, $rid) {
+            $rec = new UvRecordingDb($dbA);
+            (new SqlScanStore($rec))->markAggregate($rid, 'rule-problem', '4', 'unlocatable');
+            $w = $rec->matching('exec', [Schema::table('scan_aggregate')]);
+            return count($w) === 1 && $w[0][3] === false;
+        })());
+
+    // IN A BATCH, BEHIND THE BATCH'S FENCES.
+    $sa->writeManifest($rid, [['id_bin' => 'MK-1', 'hash' => hash('sha256', 'MK-1', true), 'dag' => null],
+                              ['id_bin' => 'MK-2', 'hash' => hash('sha256', 'MK-2', true), 'dag' => null]]);
+    $ep = (int) $sa->run($MARKED, $rid)['lease_epoch'];
+    $c = $sa->claim($rid, 'w1', $ep, 1);
+    $mark = ['kind' => 'rule-problem', 'axis1' => '12', 'axis2' => 'in-batch', 'samples' => 'met while examining'];
+    $one = ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+            'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']];
+    $has12 = function () use ($agg) {
+        foreach ($agg() as $r) if ($r[0] === '12') return true;
+        return false;
+    };
+    check('marked: a batch at a stale epoch is refused',
+        $sa->commitBatch($rid, 'w1', $ep - 1, ['bytes' => 0, 'findings' => [], 'records' => [$one],
+            'marks' => [$mark]]) !== true);
+    check('marked: and its mark was rolled back with it', $has12() === false);
+    check('marked: a batch that holds its row commits',
+        $sa->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [], 'records' => [$one],
+            'marks' => [$mark, $mark]]) === true);
+    $rows = array_values(array_filter($agg(), function ($r) { return $r[0] === '12'; }));
+    check('marked: and its mark is there, once',
+        count($rows) === 1 && (int) $rows[0][2] === 1 && $rows[0][4] === 'met while examining');
+
+    // A SENTENCE CUT INSIDE A CHARACTER. samples is utf8mb4 and the server is
+    // strict, so a byte cut through the two-byte 'ô' is error 1366 - and the
+    // mark is inside the batch, so the batch went with it, on every retry.
+    $c2 = $sa->claim($rid, 'w1', $ep, 1);
+    $two = ['ordinal' => $c2[0]['ordinal'], 'record_hash' => $c2[0]['hash'],
+            'state' => ScanStore::REC_DONE, 'claim' => $c2[0]['claim']];
+    $cut = ScanPromotion::marksFor([['rule' => 13, 'code' => 'branch-conflict',
+        'why' => str_repeat('w', ScanPromotion::SAMPLE_BYTES - 2) . "C\xC3\xB4te d'Ivoire"]]);
+    check('marked: a batch whose mark was cut at a character boundary commits on a strict server',
+        $sa->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [], 'records' => [$two],
+            'marks' => $cut]) === true);
+    $rows = array_values(array_filter($agg(), function ($r) { return $r[0] === '13'; }));
+    check('marked: and its sample is the sentence up to the character it could not split',
+        count($rows) === 1 && substr($rows[0][4], -1) === 'C'
+        && strlen($rows[0][4]) === ScanPromotion::SAMPLE_BYTES - 1);
+}
+
+// A LENIENT SERVER DOES NOT GET TO INVENT A VALUE (review ST-2). Findings go to
+// the server 500 to a statement, and under a non-strict sql_mode a MULTI-row
+// INSERT answers a NULL in a NOT NULL column by storing the type's implicit
+// default - '' for host_form - and counting the row as written. A single-row
+// INSERT refused the same NULL with 1048, so batching quietly turned a refused
+// batch into a finding with no instrument. Asked of the server itself, with the
+// session made lenient for the one commit.
+$LENIENT = 785;
+{
+    $s = new SqlScanStore($dbA);
+    $rid = (int) $s->startRun($LENIENT, ['created_by' => 'alice'])['run']['run_id'];
+    $gen = (int) $s->run($LENIENT, $rid)['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $s->writeManifest($rid, [['id_bin' => 'LN-1', 'hash' => hash('sha256', 'LN-1', true), 'dag' => null]]);
+    $ep = (int) $s->run($LENIENT, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w1', $ep, 1);
+    $f = function ($i) use ($LENIENT, $gen, $seq, $c) {
+        return ['ordinal' => $c[0]['ordinal'], 'project_id' => $LENIENT, 'generation_id' => $gen,
+                'identity' => hash('sha256', 'lenient-' . $i, true), 'valid_from_seq' => $seq,
+                'record_hash' => $c[0]['hash'], 'record_id_bin' => 'LN-1', 'host_form' => 'visit',
+                'field' => 'f' . $i, 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'check_type' => 'required', 'reason_code' => 'required-blank'];
+    };
+    $broken = $f(2);
+    $broken['host_form'] = null;
+    $mode = $A->query('SELECT @@SESSION.sql_mode')->fetch_row();
+    $A->query("SET SESSION sql_mode = ''");
+    try {
+        $got = $s->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [$f(1), $broken],
+            'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                           'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]]]);
+    } finally {
+        $A->query("SET SESSION sql_mode = '" . $A->real_escape_string((string) $mode[0]) . "'");
+    }
+    check('lenient: a finding with no instrument is refused under a non-strict sql_mode',
+        is_string($got) && strpos($got, 'no host_form;') !== false);
+    $kept = $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ' . $LENIENT)->fetch_row();
+    check('lenient: and nothing was stored, rather than a row with an empty instrument',
+        (int) $kept[0] === 0);
+
+    // THE LIST AND THE TABLE AGREE. Every NOT NULL column the server cannot
+    // default must be one the store refuses a NULL for, or one it fills itself
+    // when the key is absent. A column added to uv_finding without a line in
+    // ScanStore::FINDING_REQUIRED fails here rather than on a lenient server.
+    $q = $A->query("SELECT COLUMN_NAME FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = '" . Schema::table('finding') . "'
+          AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT IS NULL AND EXTRA NOT LIKE '%auto_increment%'");
+    $server = [];
+    while ($row = $q->fetch_row()) $server[] = strtolower((string) $row[0]);
+    sort($server);
+    $byStore = ['valid_from_seq', 'rule_ord'];     // filled by findingRow() when absent
+    foreach (ScanStore::FINDING_REQUIRED as $k) $byStore[] = ($k === 'identity') ? 'finding_identity' : $k;
+    sort($byStore);
+    check('lenient: every NOT NULL column without a default is refused when NULL or filled by the store',
+        $server === $byStore);
+    if ($server !== $byStore) {
+        fwrite(STDERR, '  server: ' . implode(',', $server) . "\n  store:  " . implode(',', $byStore) . "\n");
+    }
+}
+
+// ONE ROW SHAPE, ASKED OF BOTH STORES AT ONCE (B5-N1, M13).
+//
+// The contract below judges each store against FindingRowMapper::INPUT_KEYS
+// separately. This puts the same batch through the in-memory store and this
+// one and compares what they answer, value by value, so a column one of them
+// defaults differently fails here by name.
+$PARITY = 786;
+{
+    $build = function ($store, $pid) {
+        $r = $store->startRun($pid, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $store->writeManifest($rid, [['id_bin' => 'PA-1', 'hash' => hash('sha256', 'PA-1', true), 'dag' => 'north'],
+                                     ['id_bin' => 'PA-2', 'hash' => hash('sha256', 'PA-2', true), 'dag' => null]]);
+        $ep = (int) $store->run($pid, $rid)['lease_epoch'];
+        $c = $store->claim($rid, 'w', $ep, 2);
+        $base = function ($row, $i) use ($pid, $gen) {
+            // No valid_from_seq anywhere: the run's own sequence is the default
+            // both stores must agree on.
+            return ['ordinal' => $row['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
+                    'identity' => hash('sha256', 'parity-' . $i, true),
+                    'record_hash' => $row['hash'], 'record_id_bin' => $row['id_bin'],
+                    'host_form' => 'visit', 'field' => 'f' . $i, 'rule_source_id' => 'src-' . $i,
+                    'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+                    'reason_code' => 'required-blank'];
+        };
+        $fs = [
+            $base($c[0], 1) + ['event_id' => 12, 'instance' => 3, 'rule_ord' => 4, 'reason_bits' => 5,
+                               'dag_key' => 'north', 'value_bin' => "b\xC3\xA9", 'value_len' => 3,
+                               'value_truncated' => 1, 'value_expires_at' => '2031-02-03 04:05:06'],
+            $base($c[0], 2),
+            $base($c[1], 3) + ['stage_epoch' => 2, 'group_hmac' => hash('sha256', 'pg', true)],
+            $base($c[1], 4) + ['value_bin' => '', 'value_len' => 0],
+        ];
+        $ok = $store->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs, 'records' => [
+            ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
+            ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]]]);
+        return ['run' => $rid, 'gen' => $gen, 'ok' => $ok,
+                'rows' => $store->findings($pid, $gen, [], 0, 100)];
+    };
+    $flat = function (array $rows) {
+        $out = [];
+        foreach ($rows as $row) {
+            $f = [];
+            foreach ($row as $k => $v) {
+                if ($k === 'finding_id') continue;      // an id each store numbers its own way
+                $f[$k] = $v === null ? null : (string) $v;
+            }
+            $out[] = $f;
+        }
+        return $out;
+    };
+    $mem = $build(new \INSPIRE\UniversalValidator\Scan\ArrayScanStore(), $PARITY);
+    $sql = $build(new SqlScanStore($dbA), $PARITY);
+    check('parity: the same batch commits in both stores', $mem['ok'] === true && $sql['ok'] === true);
+    check('parity: and both answer FindingRowMapper::INPUT_KEYS, in that order, on every row',
+        count($sql['rows']) === 3 && count($mem['rows']) === 3
+        && array_keys($sql['rows'][0]) === \INSPIRE\UniversalValidator\Scan\FindingRowMapper::INPUT_KEYS
+        && array_keys($mem['rows'][2]) === array_keys($sql['rows'][2]));
+    $a = $flat($mem['rows']);
+    $b = $flat($sql['rows']);
+    check('parity: with the same values, defaults included, row for row', $a === $b);
+    if ($a !== $b) {
+        foreach ($a as $i => $row) {
+            foreach ($row as $k => $v) {
+                $w = isset($b[$i]) && array_key_exists($k, $b[$i]) ? $b[$i][$k] : '(absent)';
+                if ($v !== $w) fwrite(STDERR, "  row $i $k: memory=" . var_export($v, true)
+                    . ' server=' . var_export($w, true) . "\n");
+            }
+        }
+    }
+    $from = $dbA->select('SELECT COUNT(*), MIN(valid_from_seq), MAX(valid_from_seq) FROM '
+        . Schema::table('finding') . ' WHERE project_id = ? AND generation_id = ?', [$PARITY, $sql['gen']]);
+    $seq = uv_run_seq($dbA, $sql['run']);
+    check('parity: a finding that names no interval opens at its run\'s sequence, not at 0',
+        (int) $from[0][0] === 4 && (int) $from[0][1] === $seq && (int) $from[0][2] === $seq && $seq > 0);
+    $staged = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot IS NULL AND stage_epoch = 2', [$PARITY]);
+    check('parity: the staged row is stored staged, which is why neither store returns it',
+        (int) $staged[0][0] === 1);
+    // THE READ IS THE KEY IT WAS BUILT FOR. Asserted on the statement sent.
+    $rec = new UvRecordingDb($dbA);
+    (new SqlScanStore($rec))->findings($PARITY, $sql['gen'], [], 0, 100);
+    $q = $rec->matching('select', ['FROM ' . Schema::table('finding')]);
+    $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
+    check('parity: a page of findings is read through ix_page_v2',
+        count($q) === 1 && $keys === ['ix_page_v2']);
+    if ($keys !== ['ix_page_v2']) fwrite(STDERR, '  findings plan: ' . implode(' ', uv_explain_rows($A, $q[0][1], $q[0][2])) . "\n");
+}
+
+// THE PREVIOUS GENERATION, CLOSED A PAGE AT A TIME WHEN A RUN COMPLETES (W4-D1).
+//
+// The contract asserts what is closed. This asserts what it costs and what the
+// rows say afterwards: the page is the three-column prefix of the active-page
+// key, the closed rows carry the closing run's sequence, the run row carries
+// the finished cursor, and a request that cannot hold the run row closes
+// nothing at all.
+$SUPER = 787;
+{
+    $sa = new SqlScanStore($dbA);
+    $nbS = uv_plant_neighbour($dbA, $SUPER);
+    $done = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'violations' => 1]);
+    $runWith = function ($n) use ($sa, $SUPER, $done) {
+        $r = $sa->startRun($SUPER, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $sa->writeManifest($rid, [['id_bin' => 'SP-' . $gen, 'hash' => hash('sha256', 'SP-' . $gen, true), 'dag' => null]]);
+        $ep = (int) $sa->run($SUPER, $rid)['lease_epoch'];
+        $c = $sa->claim($rid, 'w', $ep, 1);
+        $fs = [];
+        for ($i = 0; $i < $n; $i++) {
+            $fs[] = ['ordinal' => $c[0]['ordinal'], 'project_id' => $SUPER, 'generation_id' => $gen,
+                     'identity' => hash('sha256', 'sp-' . $gen . '-' . $i, true),
+                     'record_hash' => $c[0]['hash'], 'record_id_bin' => $c[0]['id_bin'],
+                     'host_form' => 'fa', 'field' => 'x' . $i, 'rule_source_id' => 'r1',
+                     'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+                     'reason_code' => 'required-blank'];
+        }
+        $sa->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs, 'records' => [
+            ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE,
+             'claim' => $c[0]['claim']]]]);
+        $sa->finish($rid, $done);
+        return ['run' => $rid, 'gen' => $gen];
+    };
+    $old = $runWith(5);
+    $new = $runWith(2);
+    check('supersede: the neighbour shares the older run\'s generation, as two projects do',
+        is_array($nbS) && (int) $nbS['generation_id'] === $old['gen']);
+
+    // A REQUEST THAT CANNOT HOLD THE RUN ROW CLOSES NOTHING. Connection A holds
+    // it; B's page waits, gives up, and reports the storage unavailable.
+    $B->query('SET SESSION innodb_lock_wait_timeout = 1');
+    $A->query('START TRANSACTION');
+    $A->query('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . $new['run'] . ' FOR UPDATE');
+    $blocked = null;
+    try {
+        (new SqlScanStore($dbB))->supersedePrevious($SUPER, $new['run'], 10);
+        $blocked = 'returned';
+    } catch (\INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable $e) {
+        $blocked = 'unavailable';
+    }
+    $A->query('ROLLBACK');
+    $B->query('SET SESSION innodb_lock_wait_timeout = 50');
+    $activeOld = function () use ($dbA, $SUPER, $old) {
+        $r = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+            . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1', [$SUPER, $old['gen']]);
+        return (int) $r[0][0];
+    };
+    check('supersede: a second request waits on the run row, and closes nothing when it cannot have it',
+        $blocked === 'unavailable' && $activeOld() === 5);
+
+    $rec = new UvRecordingDb($dbA);
+    $sr = new SqlScanStore($rec);
+    $pages = [];
+    do {
+        $rec->log = [];
+        $p = $sr->supersedePrevious($SUPER, $new['run'], 2);
+        $pages[] = $p['rows'];
+    } while (!$p['done'] && count($pages) < 10);
+    check('supersede: pages of 2 close 5 rows as 2, 2, 1, and the short page finishes',
+        $pages === [2, 2, 1] && $p['done'] === true && $p['cursor'] === $new['gen']);
+    $rec->log = [];
+    $sr->supersedePrevious($SUPER, $new['run'], 2);
+    check('supersede: a finished supersede sends no write at all',
+        $rec->matching('exec', ['UPDATE']) === []);
+    $rows = $dbA->select('SELECT COUNT(*), MIN(valid_to_seq), MAX(valid_to_seq) FROM '
+        . Schema::table('finding') . ' WHERE project_id = ? AND generation_id = ? AND active_slot IS NULL',
+        [$SUPER, $old['gen']]);
+    $seqNew = uv_run_seq($dbA, $new['run']);
+    check('supersede: every older row is closed at the closing run\'s sequence',
+        $activeOld() === 0 && (int) $rows[0][0] === 5
+        && (int) $rows[0][1] === $seqNew && (int) $rows[0][2] === $seqNew);
+    $cur = $dbA->select('SELECT supersede_cursor FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
+        [$new['run']]);
+    check('supersede: and the run row carries the finished cursor, readable without calling',
+        (int) $cur[0][0] === $new['gen']);
+    check('supersede: the closing run\'s own rows and the neighbour\'s are untouched',
+        count($sa->findings($SUPER, $new['gen'], [], 0, 100)) === 2
+        && uv_neighbour_findings($dbA, $SUPER) === 2);
+
+    // THE PLAN. One more older run to close, recorded, and the page EXPLAINed.
+    $third = $runWith(3);
+    $rec->log = [];
+    $sr->supersedePrevious($SUPER, $third['run'], 2);
+    $u = $rec->matching('exec', ['UPDATE ' . Schema::table('finding'), 'active_slot = NULL']);
+    $plan = $u ? uv_explain_rows($A, $u[0][1], $u[0][2]) : [];
+    $key = $u ? uv_explain_key($A, $u[0][1], $u[0][2]) : '';
+    check('supersede: the page is read through a key that begins (project_id, generation_id, active_slot)',
+        count($u) === 1 && $key !== ''
+        && array_slice(uv_index_columns($A, Schema::table('finding'), $key), 0, 3)
+            === ['project_id', 'generation_id', 'active_slot']);
+    $m = $rec->matching('select', ['MIN(generation_id)']);
+    $mkey = $m ? uv_explain_key($A, $m[0][1], $m[0][2]) : '';
+    check('supersede: and the older generations are found through a project-leading run key',
+        $mkey !== '' && array_slice(uv_index_columns($A, Schema::table('scan_run'), $mkey), 0, 1) === ['project_id']);
+    echo '  plan supersede page: ' . implode(' ', $plan) . ' | older: ' . $mkey . "\n";
+
+    // ONE GROUP'S SCAN CLOSES NOTHING, AND SENDS NOTHING THAT COULD (review
+    // R8-1). Older generations with active rows are still here - the third
+    // run's supersede has done one page - and a run scoped to group 42
+    // completes over one record. Its call reads its own run row and stops:
+    // no older generation is looked up, no finding is written, its cursor
+    // does not move, and no row anywhere carries its sequence as an end.
+    $activeBefore = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1', [$SUPER]);
+    $gr = $sa->startRun($SUPER, ['created_by' => 'alice', 'scope_dag' => '42']);
+    $grid = (int) $gr['run']['run_id'];
+    $sa->writeManifest($grid, [['id_bin' => 'SP-G', 'hash' => hash('sha256', 'SP-G', true), 'dag' => '42']]);
+    $gep = (int) $sa->run($SUPER, $grid)['lease_epoch'];
+    $gc = $sa->claim($grid, 'w', $gep, 1);
+    $sa->commitBatch($grid, 'w', $gep, ['bytes' => 0, 'findings' => [], 'records' => [
+        ['ordinal' => $gc[0]['ordinal'], 'record_hash' => $gc[0]['hash'], 'state' => ScanStore::REC_DONE,
+         'claim' => $gc[0]['claim']]]]);
+    $sa->finish($grid, $done);
+    $rec->log = [];
+    $gp = $sr->supersedePrevious($SUPER, $grid, 100);
+    $gseq = uv_run_seq($dbA, $grid);
+    $activeAfter = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1', [$SUPER]);
+    $endedBy = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND valid_to_seq = ?', [$SUPER, $gseq]);
+    $gcur = $dbA->select('SELECT supersede_cursor, terminal FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$grid]);
+    check('supersede: a completed scan of one group closes nothing and says why',
+        $gp['done'] === true && $gp['rows'] === 0 && $gp['why'] === ScanStore::SUPERSEDE_SCOPED
+        && (string) $gcur[0][1] === ScanOutcome::COMPLETE);
+    check('supersede: every active finding of the project is still active, none ended at its sequence',
+        (int) $activeBefore[0][0] > 0 && (int) $activeAfter[0][0] === (int) $activeBefore[0][0]
+        && (int) $endedBy[0][0] === 0 && (int) $gcur[0][0] === 0);
+    check('supersede: and the call read its run row and nothing else',
+        count($rec->log) === 1 && $rec->log[0][0] === 'select'
+        && strpos($rec->log[0][1], 'FOR UPDATE') !== false);
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug
@@ -565,4 +1309,20 @@ $fresh = function () use ($A, $storeA) {
     }
     return $storeA;
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store');
+// This store keeps a claim's time in updated_at, which the claim writes.
+$age = function ($store, $runId, $seconds) use ($A) {
+    $A->query('UPDATE ' . Schema::table('scan_record')
+        . ' SET updated_at = DATE_SUB(updated_at, INTERVAL ' . (int) $seconds . ' SECOND)'
+        . ' WHERE run_id = ' . (int) $runId . ' AND claim_seq <> 0');
+};
+// The same tables, cleared the same way, behind a store that reads elapsed
+// time from the contract's clock.
+$clocked = function ($clock) use ($fresh, $dbA) {
+    $fresh();
+    return new SqlScanStore($dbA, $clock);
+};
+// What nothing in the module does while a run plans: its plan row deleted.
+$dropPlan = function ($store, $runId) use ($A) {
+    $A->query('DELETE FROM ' . Schema::table('scan_plan') . ' WHERE run_id = ' . (int) $runId);
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan);

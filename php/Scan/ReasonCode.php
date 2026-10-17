@@ -15,9 +15,11 @@ namespace INSPIRE\UniversalValidator\Scan;
  *
  * SO THE CODE IS THE KIND, AND THE DETAIL LIVES WHERE IT BELONGS. `assert:x > 3`
  * becomes the code `assert`; the expression is stored once against the rule.
- * `pooled:a;b;c` becomes the code `pooled` plus a BITMASK over a closed
- * five-element set, because that set is fixed by php/CheckCharacter.php and a
- * string of joined problems is five booleans wearing a comma.
+ * `pooled:a;b;c` becomes the code `pooled` plus a BITMASK over a closed set,
+ * because that set is fixed by php/CheckCharacter.php and a string of joined
+ * problems is a row of booleans wearing a comma. NOTHING EMITS THAT PREFIX: see
+ * $pooled below for what the engine sends instead, and what that means for a
+ * reader of reason_bits.
  *
  * ONE FUNCTION AND ONE `if`, DELIBERATELY. An earlier draft of the plan proposed
  * a registry of codecs with a resolution chain; there is exactly one reason
@@ -36,12 +38,31 @@ final class ReasonCode
     const MAX = 64;
 
     /**
-     * The closed set behind `pooled:`, in bit order.
-     *
-     * From php/CheckCharacter.php's pooled reporting. Order is the wire format:
-     * appending is safe, reordering rewrites the meaning of every stored row.
+     * What the column holds for a finding the engine gave no reason. A STORAGE
+     * value: the column is NOT NULL and an empty code would group with nothing.
+     * Scan\FindingRowMapper turns it back into no reason on the way out.
      */
-    private static $pooled = ['length', 'charset', 'checkdigit', 'prefix', 'duplicate'];
+    const UNSPECIFIED = 'unspecified';
+
+    /**
+     * The closed set behind a pooled reason's bitmask, in bit order.
+     *
+     * Order is the wire format: appending is safe, reordering rewrites the
+     * meaning of every stored row.
+     *
+     * THE FIRST FIVE WERE WRITTEN FROM A DESCRIPTION, NOT FROM THE ENGINE, and
+     * four of them are names CheckCharacter::validatePooledField() has never
+     * emitted. What it emits is `no-id`, `check-character`, `junk`, `duplicate`
+     * and `count`, joined with `;` and with no `pooled:` prefix - so split()
+     * below has never produced a non-zero mask, and every stored row has
+     * reason_bits = 0 with the joined names in reason_code. The real vocabulary
+     * is APPENDED rather than substituted, because bit positions are the wire
+     * format and an append cannot change the meaning of a row. A producer for
+     * the mask from the joined form is owed to wave 11; until then a reader
+     * must take bits = 0 as "not recorded", never as "no problems".
+     */
+    private static $pooled = ['length', 'charset', 'checkdigit', 'prefix', 'duplicate',
+                              'no-id', 'check-character', 'junk', 'count'];
 
     /**
      * Split a raw engine reason into what a column can hold.
@@ -52,7 +73,7 @@ final class ReasonCode
     {
         $reason = (string) $reason;
         if ($reason === '') {
-            return ['code' => 'unspecified', 'bits' => 0, 'detail' => null];
+            return ['code' => self::UNSPECIFIED, 'bits' => 0, 'detail' => null];
         }
         $colon = strpos($reason, ':');
         if ($colon === false) {
@@ -86,12 +107,23 @@ final class ReasonCode
         return $r['code'];
     }
 
-    /** Which pooled problems a stored mask names. For the report, later. */
+    /**
+     * Which pooled problems a stored mask names. For the report, later.
+     *
+     * A BIT WITH NO NAME IS NAMED BY ITS POSITION, as `bit-N`. It was dropped,
+     * so a mask written by a later release read as fewer problems than it
+     * held; MessageCatalog::detail() names a part it has no sentence for, and
+     * now has a part to name.
+     */
     public static function pooledNames($bits)
     {
+        $bits = (int) $bits;
         $out = [];
         foreach (self::$pooled as $i => $name) {
-            if (((int) $bits) & (1 << $i)) $out[] = $name;
+            if ($bits & (1 << $i)) $out[] = $name;
+        }
+        for ($i = count(self::$pooled); $i < PHP_INT_SIZE * 8; $i++) {
+            if ($bits & (1 << $i)) $out[] = 'bit-' . $i;
         }
         return $out;
     }
@@ -106,7 +138,7 @@ final class ReasonCode
     private static function fit($code)
     {
         $code = trim($code);
-        if ($code === '') return 'unspecified';
+        if ($code === '') return self::UNSPECIFIED;
         if (strlen($code) <= self::MAX) return $code;
         return substr($code, 0, self::MAX - 1) . '~';
     }

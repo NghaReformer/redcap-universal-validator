@@ -260,6 +260,12 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
     <span id="uv-scan-counts"><?php echo ScanPageView::h($prefill['counts']); ?></span> &nbsp;
     <span id="uv-scan-found"><?php echo ScanPageView::h($prefill['found']); ?></span>
   </div>
+  <?php // P10: what the run has written to the installation's shared tables, for
+        // whoever has to watch them grow. Not a live region, for the reason the
+        // spans above are not: it changes on every poll. Hidden until the run has
+        // stored a row - "Stored: 0" is nothing to report. ?>
+  <div id="uv-scan-stored" style="<?php echo $prefill['stored'] === null ? 'display:none;' : ''; ?>margin-top:4px;font-size:12px;color:#666"><?php
+     echo $prefill['stored'] === null ? '' : ScanPageView::h($prefill['stored']); ?></div>
   <?php // One atomic live region for the whole panel, written on a change rather
         // than on every poll. The visible spans above are deliberately NOT live:
         // a poll lands every few seconds, and announcing each one makes the page
@@ -270,6 +276,19 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
   <p id="uv-scan-done" role="status" aria-live="polite" aria-atomic="true"
      style="<?php echo $prefill['done'] === null ? 'display:none;' : ''; ?>margin-top:10px;font-size:13px"><?php
      echo $prefill['done'] === null ? '' : ScanPageView::h($prefill['done']); ?></p>
+  <?php // For somebody WATCHING a run that is not moving - the tab opened later,
+        // which has no way to know. It says one of four things, and the server
+        // decides which: stopping (Stop was pressed and nothing has finished
+        // it), planning stopped (the request listing the records died - press
+        // Stop and start again), stalled (a worker holds the run and nothing
+        // finishes), or paused (nobody is working it, which is what closing the
+        // driving tab leaves - press Continue). Only stalled is the alarm. The
+        // tab that is driving the scan already says when a pass makes no
+        // progress, in the note below, and js/scan.js hides this one while it
+        // is driving. ?>
+  <p id="uv-scan-stalled" role="status" aria-live="polite" aria-atomic="true"
+     style="<?php echo $prefill['stalled'] === null ? 'display:none;' : ''; ?>margin-top:8px;font-size:13px;color:#a30"><?php
+     echo $prefill['stalled'] === null ? '' : ScanPageView::h($prefill['stalled']); ?></p>
   <p id="uv-scan-note" role="status" aria-live="polite" aria-atomic="true"
      style="margin-top:8px;font-size:13px;color:#a30"></p>
 

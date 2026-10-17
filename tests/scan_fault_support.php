@@ -44,6 +44,8 @@ require_once __DIR__ . '/../php/Scan/DbError.php';
 require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+// findings() keys its rows by FindingRowMapper::INPUT_KEYS (B5-N1).
+require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
 /**
  * A ScanDb the test controls completely.
@@ -72,6 +74,10 @@ class ScriptedDb implements ScanDb
 
     private $faults = [];      // list of [substring, occurrence, throwable]
     private $seen = [];        // substring => how many statements have matched it
+    /** @var bool the last write was sent with execNoCount() */
+    private $uncounted = false;
+    /** @var string the last write, for a subclass whose count depends on it */
+    protected $lastWrite = '';
 
     /**
      * Break the $nth statement containing $needle.
@@ -107,11 +113,28 @@ class ScriptedDb implements ScanDb
 
     public function exec($sql, array $params = [])
     {
+        $this->uncounted = false;
+        $this->lastWrite = $sql;
+        $this->fire($sql);
+    }
+
+    /**
+     * Through fire(), like exec(): a fault armed on a statement must still go
+     * off when the store stops counting that statement, or converting a call
+     * site would quietly disarm the test written for it.
+     */
+    public function execNoCount($sql, array $params = [])
+    {
+        $this->uncounted = true;
+        $this->lastWrite = $sql;
         $this->fire($sql);
     }
 
     public function affected()
     {
+        if ($this->uncounted) {
+            throw new \LogicException('affected() was asked about a write sent with execNoCount()');
+        }
         return $this->affectedNext;
     }
 
@@ -185,8 +208,17 @@ class FaultyStore implements ScanStore
     public function writeManifest($runId, array $records)
     { $this->gate('writeManifest'); return $this->inner->writeManifest($runId, $records); }
 
-    public function appendManifest($runId, array $records)
-    { $this->gate('appendManifest'); return $this->inner->appendManifest($runId, $records); }
+    public function appendManifest($runId, array $records, ?array $plan = null)
+    { $this->gate('appendManifest'); return $this->inner->appendManifest($runId, $records, $plan); }
+
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts)
+    {
+        $this->gate('claimPlan');
+        return $this->inner->claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts);
+    }
+
+    public function releasePlan($runId, $owner)
+    { $this->gate('releasePlan'); return $this->inner->releasePlan($runId, $owner); }
 
     public function freezeManifest($runId)
     { $this->gate('freezeManifest'); return $this->inner->freezeManifest($runId); }
@@ -194,16 +226,21 @@ class FaultyStore implements ScanStore
     public function claim($runId, $owner, $epoch, $limit)
     { $this->gate('claim'); return $this->inner->claim($runId, $owner, $epoch, $limit); }
 
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = ScanStore::REC_UNREADABLE,
+                                 &$retired = null)
     {
         $this->gate('claimPending');
-        return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds);
+        return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds,
+                                          $maxAttempts, $exhausted, $retired);
     }
 
-    public function commitBatch($runId, $owner, $epoch, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                &$heldOrdinals = null)
     {
         $this->gate('commitBatch');
-        return $this->inner->commitBatch($runId, $owner, $epoch, $batch);
+        return $this->inner->commitBatch($runId, $owner, $epoch, $batch, $heldCount,
+                                         $heldOrdinals);
     }
 
     public function releaseClaims($runId, $epoch, $owner, array $claims)
@@ -243,9 +280,8 @@ class FaultyStore implements ScanStore
     public function aggregates($runId)
     { $this->gate('aggregates'); return $this->inner->aggregates($runId); }
 
-    public function expireValues($now)
-    { $this->gate('expireValues'); return $this->inner->expireValues($now); }
-
+    public function supersedePrevious($pid, $runId, $limit)
+    { $this->gate('supersedePrevious'); return $this->inner->supersedePrevious($pid, $runId, $limit); }
 
     public function audit($pid, $runId, $event, $actor, $detail)
     { $this->gate('audit'); return $this->inner->audit($pid, $runId, $event, $actor, $detail); }
@@ -271,6 +307,12 @@ class FaultyStore implements ScanStore
     public function setProgressState($runId, $epoch, array $state)
     { $this->gate('setProgressState'); return $this->inner->setProgressState($runId, $epoch, $state); }
 
+    public function holdRollupCursor($runId, $epoch)
+    { $this->gate('holdRollupCursor'); return $this->inner->holdRollupCursor($runId, $epoch); }
+
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
+    { $this->gate('markAggregate'); return $this->inner->markAggregate($runId, $kind, $axis1, $axis2, $blocks, $samples); }
+
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
         $this->gate('addAggregate');
@@ -279,6 +321,27 @@ class FaultyStore implements ScanStore
 
     public function blockingAggregates($runId)
     { $this->gate('blockingAggregates'); return $this->inner->blockingAggregates($runId); }
+}
+
+/**
+ * Make every claim on an in-memory run look $seconds older.
+ *
+ * A dead worker is a claim that has aged (review R2S-1), and the fast suite
+ * cannot wait fifteen minutes to show one. The database matrix moves
+ * updated_at for the same purpose. Bound into the store rather than added to
+ * it, because a public method there would be one more method with no
+ * production caller - tests/scan_wiring_php.php counts those.
+ */
+function ageClaims(ArrayScanStore $store, $runId, $seconds)
+{
+    $age = function ($runId, $seconds) {
+        if (!isset($this->records[$runId])) return;
+        foreach ($this->records[$runId] as $o => $rec) {
+            if ($rec['claimed_at'] === null) continue;
+            $this->records[$runId][$o]['claimed_at'] = (int) $rec['claimed_at'] - (int) $seconds;
+        }
+    };
+    \Closure::bind($age, $store, ArrayScanStore::class)($runId, $seconds);
 }
 
 /**
@@ -299,6 +362,16 @@ class RecordingFramework
     public $chatty = false;
     /** @var bool a failed write returns false instead of throwing */
     public $writeReturnsFalse = false;
+    /**
+     * @var bool when true, every SELECT except ROW_COUNT() answers $selectAnswer -
+     *      false for a build that reports a failed read that way, or a shape
+     *      ModuleDb cannot walk
+     */
+    public $overrideSelect = false;
+    /** @var mixed what an overridden SELECT answers */
+    public $selectAnswer = false;
+    /** @var string|null when set, only a SELECT containing this is overridden */
+    public $overrideOnly = null;
     /** @var string[] statements, in order */
     public $queries = [];
     /** @var array list of [event, context] */
@@ -316,6 +389,10 @@ class RecordingFramework
         }
         if ($this->writeReturnsFalse && preg_match('/^\s*(INSERT|UPDATE|DELETE)/i', $sql)) {
             return false;
+        }
+        if ($this->overrideSelect && preg_match('/^\s*SELECT/i', $sql)
+                && ($this->overrideOnly === null || strpos($sql, $this->overrideOnly) !== false)) {
+            return $this->selectAnswer;
         }
         foreach ($this->canned as $needle => $rows) {
             if (strpos($sql, $needle) !== false) return $rows;

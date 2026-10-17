@@ -34,8 +34,17 @@ namespace ExternalModules {
         public function query($sql, $params = []) {
             $this->sql[] = $sql;
             if ($this->queryThrows) throw new \RuntimeException('simulated database failure');
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') !== false) {
+                // health() names every table in one statement (M11): answer
+                // with the ones present, one row each.
+                $rows = [];
+                foreach ($params as $p) {
+                    if (in_array((string) $p, $this->tables, true)) $rows[] = [(string) $p];
+                }
+                return $rows;
+            }
             if (strpos($sql, 'information_schema') !== false) {
-                // health() asks COUNT(*) per table name, bound as the parameter.
+                // The per-table COUNT(*) migrate() asks, bound as the parameter.
                 $want = isset($params[0]) ? (string) $params[0] : '';
                 return [[in_array($want, $this->tables, true) ? 1 : 0]];
             }

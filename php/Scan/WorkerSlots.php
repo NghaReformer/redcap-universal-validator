@@ -30,6 +30,12 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 final class WorkerSlots
 {
+    /** Rows one provisioning statement writes at most (review R8-4). */
+    const CHUNK = 500;
+
+    /** The largest slot number scan_worker_slot.slot_no (SMALLINT UNSIGNED) holds. */
+    const MAX_SLOT_NO = 65535;
+
     /** @var ScanDb */
     private $db;
 
@@ -42,24 +48,44 @@ final class WorkerSlots
      * Make the slot table match the configured limit.
      *
      * ADDITIVE ONLY, and deliberately so. Raising the limit adds rows; LOWERING
-     * it does not delete them, because a row being deleted may be leased right
-     * now and its worker would keep running with no record that it holds
-     * anything. Shrinking takes effect as slots fall idle - see idleAbove().
+     * it does not delete them here, because a row being deleted may be leased
+     * right now and its worker would keep running with no record that it holds
+     * anything. A lowered limit takes effect in acquire(), which takes no slot
+     * above it, and the rows above it are removed as they fall idle - see
+     * shrinkTo().
+     *
+     * ROWS ADDED, AS THE SERVER COUNTS THEM (W6-N3). This counted one per
+     * INSERT IGNORE it SENT, and an ignored insert - a row another save had
+     * just written between the MAX read and the insert - was reported as added.
+     * The rows now go in as few statements as the gap needs and the answer is
+     * the sum of their affected counts, which for INSERT IGNORE is the rows
+     * actually inserted.
+     *
+     * BOUNDED (wave 8 review R8-4). The limit comes from free text.
+     * ScanPolicy clamps the setting to MAX_PROJECTS; this clamps whatever it
+     * is handed to the slot_no column's range too, because a gap of a billion
+     * made range() exhaust memory - a fatal error, not an exception. The rows
+     * go in CHUNK at a time, because one statement with a placeholder a row
+     * fails above 65535 placeholders and wrote no slot at all.
      *
      * @return int rows added
      */
     public function provision($limit)
     {
-        $limit = max(1, (int) $limit);
+        $limit = min(self::MAX_SLOT_NO, max(1, (int) $limit));
         $t = Schema::table('scan_worker_slot');
         $have = $this->db->select('SELECT COALESCE(MAX(slot_no), 0) FROM ' . $t);
         $max = isset($have[0][0]) ? (int) $have[0][0] : 0;
+        if ($max >= $limit) return 0;
+        // The candidate list is the gap between the table and the limit; one
+        // placeholder a row.
         $added = 0;
-        for ($n = $max + 1; $n <= $limit; $n++) {
+        foreach (array_chunk(range($max + 1, $limit), self::CHUNK) as $nos) {
             // INSERT IGNORE, not INSERT: two administrators saving settings at
             // the same moment must not turn provisioning into an error.
-            $this->db->exec('INSERT IGNORE INTO ' . $t . ' (slot_no, epoch) VALUES (?, 0)', [$n]);
-            $added++;
+            $this->db->exec('INSERT IGNORE INTO ' . $t . ' (slot_no, epoch) VALUES '
+                . implode(',', array_fill(0, count($nos), '(?, 0)')), $nos);
+            $added += (int) $this->db->affected();
         }
         return $added;
     }
@@ -68,8 +94,7 @@ final class WorkerSlots
      * Slots above the configured limit that are currently free.
      *
      * The safe half of shrinking: these can be removed without stranding a
-     * worker. Reported rather than acted on, because deleting rows is the kind
-     * of thing an operator should choose.
+     * worker. shrinkTo() removes them.
      */
     public function idleAbove($limit)
     {
@@ -79,6 +104,43 @@ final class WorkerSlots
         $out = [];
         foreach ($rows as $r) $out[] = (int) $r[0];
         return $out;
+    }
+
+    /**
+     * Remove the free slots above a lowered limit (W1-N1, review R4-4).
+     *
+     * LOWERING THE LIMIT DID NOTHING. provision() only adds rows and acquire()
+     * took any free row, so the rows above a lowered limit stayed in the pool
+     * and kept being leased: measured on MySQL 8.0, 1200 slots provisioned
+     * before the R8-4 clamp admitted 1200 concurrent workers with the setting
+     * text promising 1000. acquire() now takes no slot above the limit it is
+     * given, which is what makes a lower limit take effect at once; this
+     * removes the rows above it, so the table says what the limit is.
+     *
+     * ONLY ROWS NOBODY HOLDS. A leased row above the limit is left until its
+     * holder releases it or its lease runs out, and the next call removes it.
+     * Deleting it under its holder would let that worker run on with no row
+     * saying it holds anything. The free test is repeated in the DELETE, so a
+     * row leased between the read and the delete stays: InnoDB serialises the
+     * two on the row.
+     *
+     * Called by the settings save and by every pass of the reap cron, so a
+     * lowered limit is reflected in the table within one cron interval.
+     *
+     * @return int rows removed
+     */
+    public function shrinkTo($limit)
+    {
+        $limit = min(self::MAX_SLOT_NO, max(1, (int) $limit));
+        $removed = 0;
+        foreach (array_chunk($this->idleAbove($limit), self::CHUNK) as $nos) {
+            $this->db->exec('DELETE FROM ' . Schema::table('scan_worker_slot')
+                . ' WHERE slot_no IN (' . implode(',', array_fill(0, count($nos), '?')) . ')'
+                . ' AND slot_no > ? AND (owner IS NULL OR expires_at < ?)',
+                array_merge($nos, [$limit, self::now()]));
+            $removed += (int) $this->db->affected();
+        }
+        return $removed;
     }
 
     /**
@@ -115,12 +177,25 @@ final class WorkerSlots
      * The candidate list is not paged. It is bounded by the slot table, whose
      * row count IS the configured concurrency limit — tens of rows, provisioned
      * by an administrator.
+     *
+     * AND BY $limit, WHEN ONE IS GIVEN (review R4-4). The count of rows is the
+     * limit only until the limit is lowered: the rows above it stay until they
+     * are idle and shrinkTo() removes them, and a free one used to be taken
+     * like any other. A slot numbered above the limit is never taken now, so
+     * the setting's number is the most workers there can be. Null is no limit,
+     * for a caller that has none to give (tests, and nothing in production).
      */
-    public function acquire($owner, $runId, $ttlSeconds)
+    public function acquire($owner, $runId, $ttlSeconds, $limit = null)
     {
         $t = Schema::table('scan_worker_slot');
-        $free = $this->db->select('SELECT slot_no, epoch FROM ' . $t
-            . ' WHERE owner IS NULL OR expires_at < ? ORDER BY slot_no', [self::now()]);
+        if ($limit !== null) {
+            $free = $this->db->select('SELECT slot_no, epoch FROM ' . $t
+                . ' WHERE slot_no <= ? AND (owner IS NULL OR expires_at < ?) ORDER BY slot_no',
+                [min(self::MAX_SLOT_NO, max(1, (int) $limit)), self::now()]);
+        } else {
+            $free = $this->db->select('SELECT slot_no, epoch FROM ' . $t
+                . ' WHERE owner IS NULL OR expires_at < ? ORDER BY slot_no', [self::now()]);
+        }
         foreach ($free as $row) {
             $no = (int) $row[0];
             $next = (int) $row[1] + 1;

@@ -105,14 +105,21 @@ final class CatchUp
     /**
      * One bounded page of reconciliation.
      *
+     * `scanned` is every change-log row the page walked, which is what the
+     * page cost and what the budget is told. `listed` is the part of it
+     * inside the run's scope, and it is the only count a reader is shown
+     * (review R5-1): for a group-scoped run the log holds every group's
+     * activity, and `scanned` reported to the page told one group's reader
+     * how busy the others had been.
+     *
      * @return array{done:bool, fenced:bool, added:int, requeued:int, gone:int,
-     *               scanned:int, why:?string}
+     *               scanned:int, listed:int, why:?string}
      */
     public function step($pid, $runId, $epoch, $limit = 500)
     {
         $limit = max(1, min(5000, (int) $limit));
         $out = ['done' => false, 'fenced' => false, 'added' => 0, 'requeued' => 0,
-                'gone' => 0, 'scanned' => 0, 'why' => null];
+                'gone' => 0, 'scanned' => 0, 'listed' => 0, 'why' => null];
 
         $st = $this->store->progressState($runId);
         if ($st === null) {
@@ -132,6 +139,14 @@ final class CatchUp
         }
 
         // -- capture the target fence, once -----------------------------------
+        //
+        // A LOG THAT COULD NOT BE READ IS LEFT TO THROW (H11). retained() and
+        // now() answered a failed read as "the log does not reach back" and
+        // "the log is empty", and both of those end here in unfenced(): the
+        // run gave up its fence for good, recorded fence-unprovable, and a
+        // database blip read as a fact about the project. A failure now leaves
+        // this step having written nothing, the worker stops on it as on any
+        // storage failure, and the next request captures the target.
         if ($st['fenceTarget'] === null || $st['fenceTarget'] === '') {
             $keeps = $fence->retained($st['fenceOpen']);
             if (empty($keeps['ok'])) {
@@ -140,8 +155,8 @@ final class CatchUp
             $target = $fence->now();
             if ($target === null) {
                 return $this->unfenced($runId, $out,
-                    'the change log could not be read at the end of the scan, so changes during '
-                    . 'the run cannot be enumerated');
+                    'the change log holds no entries for this project at the end of the scan, so '
+                    . 'changes during the run cannot be enumerated');
             }
             $this->store->setProgressState($runId, $epoch,
                 ['fenceTarget' => $target, 'catchupCursor' => null,
@@ -172,16 +187,31 @@ final class CatchUp
         }
 
         $known  = $this->store->scannedVersions($runId, $ids);
-        $exists = $this->ask('exists', $ids, true);
+        // A PROBE THAT THROWS ANSWERS "STILL THERE" FOR THE WHOLE PAGE. It used
+        // to escape step() and fail the request, which is the loud direction
+        // but not the one RecordManifestSource::exist() commits to: a read
+        // that cannot be made is "still there", the record is requeued, and
+        // the attempt limit turns a record that really cannot be read into a
+        // reported exclusion.
+        $exists = $this->ask('exists', $ids, true, true);
         $scope  = $this->ask('scope', $ids, true);
         $dags   = $this->ask('dag', $ids, null);
 
         $add = [];
         $requeue = [];
         $gone = [];
+        $listed = 0;
         foreach ($ids as $id) {
             $onManifest = isset($known[$id]);
-            $stillThere = !empty($exists[$id]);
+            // In scope: on the run's own list, or a record the scope admits.
+            if ($onManifest || !empty($scope[$id])) $listed++;
+            // GONE ONLY ON AN EXPLICIT false FOR THIS ID - the rule
+            // ScanWorker::confirmedGone() already applies (W7-N4). This was
+            // empty(), so a resolver answering null, 0, '' or '0' for a record
+            // it could not place tombstoned a live one, and a tombstone does
+            // not stop a run finishing clean. Anything but false is "cannot
+            // tell", and cannot tell is not gone.
+            $stillThere = !(array_key_exists($id, $exists) && $exists[$id] === false);
 
             if (!$onManifest) {
                 // Created (or moved into scope) after the manifest was frozen.
@@ -226,6 +256,7 @@ final class CatchUp
         $this->store->setProgressState($runId, $epoch,
             ['catchupCursor' => $last, 'catchupDirty' => $dirty]);
         $out['scanned'] = count($page);
+        $out['listed'] = $listed;
         return $out;
     }
 
@@ -270,21 +301,37 @@ final class CatchUp
     private function unfenced($runId, array $out, $why)
     {
         $this->store->addAggregate($runId, self::K_NOFENCE, null, null, 1, 0,
-            substr((string) $why, 0, 500));
+            ScanPromotion::sample((string) $why));
         $out['done'] = true;
         $out['fenced'] = false;
         $out['why'] = $why;
         return $out;
     }
 
-    /** Ask a configured resolver about a page of ids, or assume the default. */
-    private function ask($which, array $ids, $default)
+    /**
+     * Ask a configured resolver about a page of ids, or assume the default.
+     *
+     * $survive: a resolver that throws answers $default for every id instead
+     * of ending the step. Only for a question whose default is the safe side -
+     * "still there" for existence. Scope is not asked this way: its default
+     * admits a record, and a scope probe that failed must not widen a
+     * group-scoped run.
+     */
+    private function ask($which, array $ids, $default, $survive = false)
     {
         $fn = isset($this->deps[$which]) ? $this->deps[$which] : null;
         if (!is_callable($fn)) {
             return array_fill_keys($ids, $default);
         }
-        $got = $fn($ids);
+        if ($survive) {
+            try {
+                $got = $fn($ids);
+            } catch (\Throwable $e) {
+                return array_fill_keys($ids, $default);
+            }
+        } else {
+            $got = $fn($ids);
+        }
         if (!is_array($got)) return array_fill_keys($ids, $default);
         $out = [];
         foreach ($ids as $id) {

@@ -87,23 +87,23 @@ namespace {
         // moved: wave 2 deleted the methods. This check is what noticed - an
         // allow-list that outlives its subject is how a list of known-inert
         // code turns back into a list nobody reads.
-        'ScanPageView::verdict'        => 'wave 7 deletes it: a second clean predicate with no caller that does not agree with ScanOutcome::mayClaimClean(), which is the drift ScanOutcome\'s docblock exists to prevent',
 
         // -- wave 7, the honest outcome.
-        'ScanOutcome::mayClaimClean' => 'wave 7 (B4/H15) asks it: nothing currently asks whether "clean" may be said, so it is said',
 
         // -- wave 10, the safeguards. Each is dangerous before its dependency
         //    lands, which is why they are last and not first.
         //    expireAbandoned and expireValues graduated when this line of work
         //    was merged with 1.11.0, whose uvScanReapCron and
-        //    uvScanExpireValuesCron call them. expireValues is still the
-        //    unpaged UPDATE that wave 8 pages.
+        //    uvScanExpireValuesCron call them. Wave 8 paged expireValues into
+        //    primary-key windows (expireValuesPage); the cron still runs the
+        //    whole sweep in one request until wave 10 gives it a cursor.
         'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
+        'ScanStore::supersedePrevious'      => 'wave 10 (W4-D1) wires the cron: until then a finished run leaves the previous generation\'s rows active',
+        'SqlScanStore::supersedePrevious'   => 'wave 10 (W4-D1), with the contract',
+        'ArrayScanStore::supersedePrevious' => 'wave 10 (W4-D1), with the contract',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
-        'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
-        'ScanPolicy::floor'              => 'wave 10, transitively: tightened() is its only intended caller',
         'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
 
         // -- wave 11, the report. It could not have been built earlier:
@@ -113,12 +113,11 @@ namespace {
         'ArrayScanStore::findings'               => 'wave 11 (B5), with the contract',
         'SqlScanStore::findings'                 => 'wave 11 (B5), with the contract',
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
-        'ScanColumns::row'                       => 'wave 11 (B5): the findings table and CSV',
-        'ScanColumns::headers'                   => 'wave 11 (B5): the findings table and CSV',
-        'ScanColumns::keyLegend'                 => 'wave 11 (B5): the findings table and CSV',
-        'ScanPageView::csvRow'                   => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanDimensions::isDegraded'             => 'wave 11 (M5): uv_scan_dim has no producer, so nothing can be degraded yet',
-        'ScanDimensions::degradedSummary'        => 'wave 11 (M5), with isDegraded',
+        'ScanReport::present'                    => 'wave 11 (B5): the findings table; the stores have no findings read until wave 8',
+        'ScanReport::csvHeaderLine'              => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
+        'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
+        'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
+        'ScanReport::runFacts'                   => 'wave 11 (B5): the heading of the findings page and of the export',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's
@@ -138,13 +137,10 @@ namespace {
         'ScanStore::writeManifest'      => 'no scheduled caller: production streams appendManifest() then freezeManifest(), so this is a test convenience living on the production contract',
         'ArrayScanStore::writeManifest' => 'no scheduled caller, with the contract',
         'SqlScanStore::writeManifest'   => 'no scheduled caller, with the contract',
-        'WorkerSlots::idleAbove'        => 'no scheduled caller: a lowered concurrency limit therefore never takes effect',
         'ScanPhase::consistent'         => 'no scheduled caller: the phase/state agreement it checks is never checked',
         'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
         'Hmac::hex'                     => 'no scheduled caller: a hex rendering nothing renders',
-        'ReasonCode::pooledNames'       => 'no scheduled caller: a diagnostic nothing asks for',
-        'RecordManifestSource::via'     => 'no scheduled caller: the run never records which source it walked, so a report cannot say',
     ];
 
     /* =====================================================================

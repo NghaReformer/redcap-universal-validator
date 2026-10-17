@@ -13,24 +13,76 @@
  * because a generation is per project now, so the first run of each of them is
  * generation 1, exactly as on a real installation.
  *
- * That arrangement is what makes the last assertion in this file the most
- * important one in the suite. purgeRuns takes a project id and then deletes
- * findings by generation; while the generation was the literal 1 everywhere and
- * uv_finding carried no project column, purging ONE finished run of ONE project
- * deleted every project's findings on the whole installation. It was reproduced
- * against a real server exactly this way - two projects, one purge, zero
- * findings left anywhere - and this case is where that stays reproduced.
+ * That arrangement is what makes the purge assertions the most important ones
+ * in the suite. purgeRuns takes a project id and then deletes findings by
+ * generation; while the generation was the literal 1 everywhere and uv_finding
+ * carried no project column, purging ONE finished run of ONE project deleted
+ * every project's findings on the whole installation. It was reproduced against
+ * a real server exactly this way - two projects, one purge, zero findings left
+ * anywhere - and this case is where that stays reproduced.
+ *
+ * AND EVERY CLOCK IS PAGED (wave 8, P6). The sections after the first drive each
+ * paged statement with a page far smaller than ScanRetention::PAGE, so a sweep
+ * takes several calls on a handful of rows, and EXPLAIN the statement the code
+ * actually sent: the bound on each page is a key, and the key is asserted.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
+use INSPIRE\UniversalValidator\Scan\ScanRetention;
+use INSPIRE\UniversalValidator\Scan\SqlScanStore;
+use INSPIRE\UniversalValidator\Scan\ScanStore;
+use INSPIRE\UniversalValidator\Scan\ScanOutcome;
 
 $PID = 800;
 $NEIGHBOUR = uv_neighbour($PID);
 
+/**
+ * A finished (or, with $finish false, live) run of $pid holding $n findings on
+ * one record, each with a stored value expiring at $expires (null for none).
+ */
+$plantRun = function ($db, $pid, $n, $expires, $finish = true, array $runOpts = []) {
+    $store = new SqlScanStore($db);
+    $r = $store->startRun($pid, $runOpts + ['created_by' => 'alice']);
+    if ($r['ok'] !== true) return null;
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $id = 'P' . $pid . '-' . $rid;
+    $store->writeManifest($rid, [['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null]]);
+    $ep = (int) $store->run($pid, $rid)['lease_epoch'];
+    $c = $store->claim($rid, 'w', $ep, 1);
+    $fs = [];
+    for ($i = 0; $i < $n; $i++) {
+        $fs[] = ['ordinal' => $c[0]['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
+                 'identity' => hash('sha256', $id . '-' . $i, true),
+                 'record_hash' => $c[0]['hash'], 'record_id_bin' => $id,
+                 'host_form' => 'fa', 'field' => 'x' . $i, 'rule_source_id' => 'r1',
+                 'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+                 'reason_code' => 'required-blank',
+                 'value_bin' => $expires === null ? null : 'SECRET-' . $i,
+                 'value_fingerprint' => $expires === null ? null : hash('sha256', 'v' . $i, true),
+                 'value_expires_at' => $expires];
+    }
+    $ok = $store->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs, 'records' => [
+        ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE,
+         'claim' => $c[0]['claim']]]]);
+    if ($ok !== true) return null;
+    if ($finish) {
+        $store->finish($rid, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'violations' => 1]));
+    }
+    return ['run' => $rid, 'gen' => $gen];
+};
+$count = function ($db, $where, array $params) {
+    $r = $db->select('SELECT COUNT(*) FROM ' . Schema::table('finding') . ' WHERE ' . $where, $params);
+    return (int) $r[0][0];
+};
+$prefix = function ($key, $table, $n) use ($A) {
+    return $key === '' ? [] : array_slice(uv_index_columns($A, Schema::table($table), $key), 0, $n);
+};
+
 // -- ScanRetention: three clocks, and nothing silently loses a finding --------
 {
-    $ret = new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA);
-    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $ret = new ScanRetention($dbA);
+    $store = new SqlScanStore($dbA);
     foreach (array('scan_record', 'finding', 'scan_run', 'scan_audit') as $t) {
         $A->query('DELETE FROM ' . Schema::table($t));
     }
@@ -60,7 +112,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         'bytes' => 10,
         'records' => array(array('ordinal' => 1, 'claim' => $claimed[0]['claim'],
                                  'record_hash' => hash('sha256', 'R1', true),
-            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
+            'state' => ScanStore::REC_DONE)),
         'findings' => array(array(
             // commitBatch refuses a finding with no ordinal: it is what
             // attributes the evidence to a record this worker proved it
@@ -78,6 +130,8 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     check('retention: nothing expires before its time',
         $ret->expireValues('1999-01-01 00:00:00') === 0);
+    check('retention: the preview counts what the scoped sweep will clear',
+        $ret->preview($PID, [])['values_to_clear'] === 1);
     check('retention: an overdue value is cleared', $ret->expireValues() === 1);
     $v = $ca->query('SELECT value_bin, value_expires_at, z_score, growth_reference FROM ' . Schema::table('finding')
         . " WHERE record_id_bin = 'R1'", array());
@@ -109,7 +163,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET updated_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
     check('retention: an ACTIVE run is never purged, whatever its age',
-        $ret->purgeRuns($PID, 1) === 0);
+        $ret->purgeRuns($PID, 1) === ['done' => true, 'rows' => 0, 'runs' => 0, 'cursor' => null]);
 
     // Abandonment: the lease lapsed and nothing has moved.
     //
@@ -132,8 +186,8 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('retention: an abandoned run is expired', $ret->expireAbandoned(1) === 1);
     $ex = $store->run(800, $rid);
     check('retention: as a real terminal state, never as complete',
-        $ex['terminal'] === \INSPIRE\UniversalValidator\Scan\ScanOutcome::EXPIRED
-        && $ex['coverage'] === \INSPIRE\UniversalValidator\Scan\ScanOutcome::COV_PARTIAL);
+        $ex['terminal'] === ScanOutcome::EXPIRED
+        && $ex['coverage'] === ScanOutcome::COV_PARTIAL);
     check('retention: releasing the project slot for the next scan',
         $store->startRun($PID, array('created_by' => 'bob'))['ok'] === true);
     check('retention: and expiring it again does nothing', $ret->expireAbandoned(1) === 0);
@@ -141,7 +195,9 @@ $NEIGHBOUR = uv_neighbour($PID);
     // Purge cascades to every child table.
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET updated_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
-    check('retention: a finished, aged run purges', $ret->purgeRuns($PID, 1) === 1);
+    $p = $ret->purgeRuns($PID, 1);
+    check('retention: a finished, aged run purges, and that was the last one due',
+        $p['runs'] === 1 && $p['done'] === true && $p['cursor'] === $rid);
     $left = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ' . $rid, array());
     check('retention: taking its manifest rows with it', (int) $left[0][0] === 0);
@@ -169,4 +225,258 @@ $NEIGHBOUR = uv_neighbour($PID);
         . ' WHERE project_id = ?', array($NEIGHBOUR));
     check('retention: and its run, which nothing about this purge concerns',
         (int) $nbRun[0][0] === 1);
+}
+
+// -- THE VALUE SWEEP, A WINDOW OF IDS AT A TIME -------------------------------
+//
+// A primary-key range rather than a LIMIT, because value_expires_at has no
+// index: a LIMIT page re-reads everything an earlier page cleared. Windows of
+// 4 ids over 13 overdue previews here, 9 of this project's and 4 of the
+// neighbour's, so a scoped sweep and an installation-wide one can be told apart.
+$EXP = 810;
+{
+    $ret = new ScanRetention($dbA);
+    $mine = $plantRun($dbA, $EXP, 9, '2000-01-01 00:00:00');
+    $theirs = $plantRun($dbA, uv_neighbour($EXP), 4, '2000-01-01 00:00:00');
+    $future = $plantRun($dbA, $EXP, 2, '2999-01-01 00:00:00');
+    check('expire: the fixture holds 9 + 4 overdue previews and 2 that are not due',
+        is_array($mine) && is_array($theirs) && is_array($future)
+        && $count($dbA, 'value_bin IS NOT NULL AND value_expires_at <= ?', ['2001-01-01 00:00:00']) === 13);
+    check('expire: the preview of one project counts that project\'s share only',
+        $ret->preview($EXP, [])['values_to_clear'] === 9);
+
+    $rec = new UvRecordingDb($dbA);
+    $paged = new ScanRetention($rec);
+    $cursor = 0; $perPage = []; $calls = 0;
+    do {
+        $p = $paged->expireValuesPage($cursor, $EXP, null, 4);
+        $perPage[] = $p['rows'];
+        $cursor = $p['cursor'];
+        $calls++;
+    } while (!$p['done'] && $calls < 1000);
+    check('expire: a scoped sweep is finished, a window at a time',
+        $p['done'] === true && $cursor >= $p['top'] && array_sum($perPage) === 9 && max($perPage) <= 4);
+    check('expire: and cleared this project\'s overdue previews and no one else\'s',
+        $count($dbA, 'project_id = ? AND value_bin IS NOT NULL AND value_expires_at <= ?', [$EXP, '2001-01-01'])
+            === 0
+        && $count($dbA, 'project_id = ? AND value_bin IS NOT NULL', [uv_neighbour($EXP)]) === 4
+        && $count($dbA, 'project_id = ? AND value_bin IS NOT NULL', [$EXP]) === 2);
+    $u = $rec->matching('exec', ['UPDATE ' . Schema::table('finding'), 'finding_id > ?']);
+    $plan = $u ? uv_explain_rows($A, $u[0][1], $u[0][2]) : [];
+    $key = $u ? uv_explain_key($A, $u[0][1], $u[0][2]) : '';
+    echo '  plan expire (scoped): ' . implode(' ', $plan) . "\n";
+    check('expire: each scoped window is bounded by a key: the id range, or this project\'s rows',
+        $key === 'PRIMARY' || $prefix($key, 'finding', 1) === ['project_id']);
+
+    $rec->log = [];
+    $all = $paged->expireValues();
+    $u = $rec->matching('exec', ['UPDATE ' . Schema::table('finding'), 'finding_id > ?']);
+    $plan = $u ? uv_explain_rows($A, $u[0][1], $u[0][2]) : [];
+    echo '  plan expire (installation): ' . implode(' ', $plan) . ' windows=' . count($u) . "\n";
+    check('expire: the installation-wide sweep clears the rest, and only what is due',
+        $all === 4 && $count($dbA, 'value_bin IS NOT NULL', []) === 2);
+    check('expire: through the primary key, one PAGE window per statement',
+        count($u) >= 1 && uv_explain_key($A, $u[0][1], $u[0][2]) === 'PRIMARY'
+        && $u[0][2][1] - $u[0][2][0] === ScanRetention::PAGE);
+    check('expire: the rows stay, only the values go',
+        $count($dbA, 'project_id IN (?, ?)', [$EXP, uv_neighbour($EXP)]) === 15);
+}
+
+// -- REVOCATION: THE BUMP AT ONCE, THE CLEAR A PAGE AT A TIME -----------------
+//
+// Project 820 has two generations of previews - the newer one with a row the
+// previous run's supersede closed, so the closed slice is walked too - and the
+// neighbour holds previews in a generation of the same number. Pages of 2.
+$REV = 820;
+{
+    $old = $plantRun($dbA, $REV, 3, '2999-01-01 00:00:00');
+    $new = $plantRun($dbA, $REV, 4, '2999-01-01 00:00:00');
+    $nbr = $plantRun($dbA, uv_neighbour($REV), 3, '2999-01-01 00:00:00');
+    check('revoke: the neighbour\'s previews sit in a generation of the same number',
+        is_array($nbr) && is_array($old) && $nbr['gen'] === $old['gen']);
+    // One of the newer generation's rows closed, so it is in the NULL slice.
+    $A->query('UPDATE ' . Schema::table('finding') . ' SET active_slot = NULL, valid_to_seq = 99
+        WHERE project_id = ' . $REV . ' AND generation_id = ' . (int) $new['gen'] . ' ORDER BY finding_id LIMIT 1');
+
+    $rec = new UvRecordingDb($dbA);
+    $ret = new ScanRetention($rec);
+    $first = $ret->revokePreviews($REV, 7, null, 2);
+    check('revoke: the first call marks every run of the project revoked at once',
+        $first['runs'] === 2 && $first['rows'] === 2 && $first['done'] === false);
+    $states = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+        . " WHERE project_id = ? AND values_state = 'expired' AND policy_revision = 7", [$REV]);
+    check('revoke: so nothing is served from them while the clearing goes on',
+        (int) $states[0][0] === 2);
+    $calls = 1; $rows = [$first['rows']]; $cur = $first['cursor']; $runsAfter = 0;
+    do {
+        $p = $ret->revokePreviews($REV, 7, $cur, 2);
+        $rows[] = $p['rows'];
+        $runsAfter += $p['runs'];
+        $cur = $p['cursor'];
+        $calls++;
+    } while (!$p['done'] && $calls < 20);
+    check('revoke: a later call finds the bump made and carries on clearing, two rows at most',
+        $p['done'] === true && $runsAfter === 0 && max($rows) <= 2 && array_sum($rows) === 7);
+    echo '  revoke rows per call: ' . implode(',', $rows) . "\n";
+    check('revoke: every preview of the project is gone, closed rows included',
+        $count($dbA, 'project_id = ? AND (value_bin IS NOT NULL OR value_fingerprint IS NOT NULL'
+            . ' OR value_expires_at IS NOT NULL)', [$REV]) === 0
+        && $count($dbA, 'project_id = ?', [$REV]) === 7);
+    check('revoke: and the neighbour\'s, in the same generation number, are untouched',
+        $count($dbA, 'project_id = ? AND value_bin IS NOT NULL', [uv_neighbour($REV)]) === 3);
+
+    $rec->log = [];
+    $ret->revokePreviews($REV, 8, null, 2);
+    $read = $rec->matching('select', ['SELECT COUNT(*), MAX(finding_id) FROM (SELECT finding_id']);
+    $keys = $read ? uv_explain_keys($A, $read[0][1], $read[0][2]) : [];
+    echo '  plan revoke page bound: ' . ($read ? implode(' ', uv_explain_rows($A, $read[0][1], $read[0][2])) : '-') . "\n";
+    check('revoke: the page bound is read through ix_page_v2, in finding_id order',
+        in_array('ix_page_v2', $keys, true));
+    $u = $rec->matching('exec', ['UPDATE ' . Schema::table('finding'), 'finding_id <= ?']);
+    $key = $u ? uv_explain_key($A, $u[0][1], $u[0][2]) : '';
+    echo '  plan revoke clear: ' . ($u ? implode(' ', uv_explain_rows($A, $u[0][1], $u[0][2])) : '-') . "\n";
+    check('revoke: and the clear through the same three-column prefix, or the id range',
+        $key === 'PRIMARY' || $prefix($key, 'finding', 3) === ['project_id', 'generation_id', 'active_slot']);
+    $bump = $rec->matching('exec', ['UPDATE ' . Schema::table('scan_run'), 'policy_revision < ?']);
+    $bkey = $bump ? uv_explain_key($A, $bump[0][1], $bump[0][2]) : '';
+    check('revoke: and the bump touches this project\'s runs through a project-leading key',
+        $bkey !== '' && $prefix($bkey, 'scan_run', 1) === ['project_id']);
+}
+
+// -- A REVOKE CURSOR IS GOOD ONLY FOR THE PROJECT IT WAS ISSUED FOR (R8-3) ----
+//
+// Project 824's previews are planted first, so every one of its finding ids
+// sits below project 826's, in a generation of the same number. A cursor
+// issued by 826's first page, handed to 824's sweep, must not let that sweep
+// skip 824's rows at or below the cursor's position: it starts 824 over.
+{
+    $Q = 824; $P = 826;
+    $q = $plantRun($dbA, $Q, 4, '2999-01-01 00:00:00');
+    $p = $plantRun($dbA, $P, 4, '2999-01-01 00:00:00');
+    check('revoke cursor: the two projects\' previews share a generation number',
+        is_array($q) && is_array($p) && $q['gen'] === $p['gen']);
+    $ret = new ScanRetention($dbA);
+    $first = $ret->revokePreviews($P, 3, null, 2);
+    check('revoke cursor: the other project\'s first page stops inside its slice',
+        $first['done'] === false && is_array($first['cursor']) && (int) $first['cursor']['after'] > 0);
+    $cur = $first['cursor'];
+    $calls = 0;
+    do {
+        $r = $ret->revokePreviews($Q, 3, $cur, 2);
+        $cur = $r['cursor'];
+        $calls++;
+    } while (!$r['done'] && $calls < 20);
+    check('revoke cursor: a cursor issued for another project starts this one over, so every preview goes',
+        $r['done'] === true
+        && $count($dbA, 'project_id = ? AND (value_bin IS NOT NULL OR value_fingerprint IS NOT NULL'
+            . ' OR value_expires_at IS NOT NULL)', [$Q]) === 0);
+    check('revoke cursor: and the project that issued it keeps the previews its sweep has not reached',
+        $count($dbA, 'project_id = ? AND value_bin IS NOT NULL', [$P]) === 2);
+}
+
+// -- PURGE: CHILDREN FIRST, A PAGE AT A TIME, THE RUN ROW LAST ----------------
+$PUR = 830;
+{
+    $aged = $plantRun($dbA, $PUR, 5, null);
+    $keep = $plantRun($dbA, $PUR, 2, null);            // finished, but not old
+    $nbp = $plantRun($dbA, uv_neighbour($PUR), 3, null);
+    check('purge: the neighbour shares the aged run\'s generation number',
+        is_array($aged) && is_array($nbp) && $aged['gen'] === $nbp['gen']);
+    // Children of every kind the cascade names, so each DELETE has rows.
+    foreach ([['collection-gap', 'a'], ['collection-gap', 'b'], ['not-checked', 'c']] as $ag) {
+        (new SqlScanStore($dbA))->addAggregate($aged['run'], $ag[0], $ag[1], '', 1);
+    }
+    // writeManifest() leaves a plan row since wave 9 (plan_done is the
+    // freeze's gate); the statement still makes sure there is one.
+    $A->query('INSERT INTO ' . Schema::table('scan_plan') . ' (run_id, updated_at) VALUES ('
+        . (int) $aged['run'] . ", UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE run_id = run_id");
+    foreach (['unique_candidate', 'unique_group', 'scan_dim'] as $t) {
+        $cols = ['unique_candidate' => '(project_id, generation_id, rule_source_id, rule_revision, group_hmac,
+                     scope_key, record_hash, record_id_bin, event_id, instance, host_form, field)',
+                 'unique_group' => '(project_id, generation_id, group_hmac, phase)',
+                 'scan_dim' => '(project_id, generation_id, kind, dim_key)'][$t];
+        foreach ([$PUR, uv_neighbour($PUR)] as $p) {
+            for ($i = 0; $i < 3; $i++) {
+                $vals = ['unique_candidate' => "($p, {$aged['gen']}, 'r', REPEAT('c', 64), UNHEX(SHA2('g$i', 256)),
+                             'project', UNHEX(SHA2('r$i', 256)), 'R$i', 0, 1, 'fa', 'x')",
+                         'unique_group' => "($p, {$aged['gen']}, UNHEX(SHA2('g$i', 256)), 'published')",
+                         'scan_dim' => "($p, {$aged['gen']}, 'form', 'k$i')"][$t];
+                $A->query('INSERT INTO ' . Schema::table($t) . ' ' . $cols . ' VALUES ' . $vals);
+            }
+        }
+    }
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '2000-01-01 00:00:00'"
+        . ' WHERE run_id = ' . (int) $aged['run']);
+    $runLeft = function () use ($dbA, $aged) {
+        $r = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', [$aged['run']]);
+        return (int) $r[0][0];
+    };
+
+    $rec = new UvRecordingDb($dbA);
+    $ret = new ScanRetention($rec);
+    $calls = []; $runRowStayed = true;
+    do {
+        $p = $ret->purgeRuns($PUR, 30, 2);
+        $calls[] = $p['rows'] . '/' . $p['runs'];
+        if (!$p['done'] && $p['runs'] === 0 && $runLeft() !== 1) $runRowStayed = false;
+    } while (!$p['done'] && count($calls) < 50);
+    echo '  purge rows/runs per call: ' . implode(',', $calls) . "\n";
+    check('purge: resumable across calls, and finished', $p['done'] === true && count($calls) > 3);
+    check('purge: the run row stays until the call in which every child answered short',
+        $runRowStayed && $runLeft() === 0 && $p['runs'] === 1);
+    $deletes = $rec->matching('exec', ['DELETE FROM']);
+    $over = false;
+    foreach ($deletes as $d) if (strpos($d[1], ' LIMIT 2') === false && strpos($d[1], Schema::table('scan_run')) === false) $over = true;
+    check('purge: every child DELETE was bounded by the page', $over === false && count($deletes) > 8);
+    check('purge: the aged run\'s children are gone, table by table',
+        $count($dbA, 'project_id = ? AND generation_id = ?', [$PUR, $aged['gen']]) === 0
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ?', [$aged['run']])[0][0] === 0
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_plan') . ' WHERE run_id = ?', [$aged['run']])[0][0] === 0
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate') . ' WHERE project_id = ?', [$PUR])[0][0] === 0
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_group') . ' WHERE project_id = ?', [$PUR])[0][0] === 0
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_dim') . ' WHERE project_id = ?', [$PUR])[0][0] === 0);
+    check('purge: the run that is not old yet keeps everything',
+        $count($dbA, 'project_id = ? AND generation_id = ?', [$PUR, $keep['gen']]) === 2);
+    check('purge: and the neighbour, in the same generation number, loses nothing',
+        $count($dbA, 'project_id = ?', [uv_neighbour($PUR)]) === 3
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate') . ' WHERE project_id = ?', [uv_neighbour($PUR)])[0][0] === 3
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_dim') . ' WHERE project_id = ?', [uv_neighbour($PUR)])[0][0] === 3);
+
+    // THE PLANS: each DELETE through a key that leads with what it filters on.
+    $want = ['scan_record' => ['run_id'], 'scan_aggregate' => ['run_id'], 'scan_plan' => ['run_id'],
+             'finding' => ['project_id', 'generation_id'], 'unique_candidate' => ['project_id', 'generation_id'],
+             'unique_group' => ['project_id', 'generation_id'], 'scan_dim' => ['project_id', 'generation_id']];
+    foreach ($want as $t => $lead) {
+        // STATISTICS AS THEY ARE NOW, not as InnoDB's background thread last
+        // sampled them. These tables held a handful of rows a moment ago and
+        // hold none now, and on so few rows MySQL 5.7 picks a table scan or
+        // the key by when that thread happened to run: in wave 9 the
+        // scan_aggregate DELETE showed no key on three runs in a row, and the
+        // key on the same tree with two reads added in front of the EXPLAIN.
+        // Base 5b693e0 showed the key. Analyzed first, it shows the key on
+        // every server.
+        $an = $A->query('ANALYZE TABLE ' . Schema::table($t));
+        if ($an instanceof \mysqli_result) $an->free();
+        $d = $rec->matching('exec', ['DELETE FROM ' . Schema::table($t) . ' WHERE']);
+        $key = $d ? uv_explain_key($A, $d[0][1], $d[0][2]) : '';
+        echo '  plan purge ' . $t . ': ' . ($d ? implode(' ', uv_explain_rows($A, $d[0][1], $d[0][2])) : '-') . "\n";
+        check('purge: ' . $t . ' is deleted through a key leading with ' . implode(', ', $lead),
+            $key !== '' && $prefix($key, $t, count($lead)) === $lead);
+    }
+
+    // A GENERATION ANOTHER RUN STILL NAMES. An incremental run reports into its
+    // baseline's generation, so purging the baseline run must leave the rows
+    // the incremental run still reports.
+    $base = $plantRun($dbA, 840, 3, null);
+    $inc = $plantRun($dbA, 840, 0, null, true, ['run_kind' => 'incremental',
+                                                 'baseline_generation' => $base['gen']]);
+    check('purge: the incremental fixture really shares its baseline\'s generation',
+        is_array($inc) && $inc['gen'] === $base['gen']);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '2000-01-01 00:00:00'"
+        . ' WHERE run_id = ' . (int) $base['run']);
+    $calls = 0;
+    do { $p = $ret->purgeRuns(840, 30, 2); $calls++; } while (!$p['done'] && $calls < 50);
+    check('purge: a generation another run still names keeps its findings',
+        $count($dbA, 'project_id = ? AND generation_id = ?', [840, $base['gen']]) === 3
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE project_id = ?', [840])[0][0] === 1);
 }

@@ -84,6 +84,7 @@ namespace {
             return array_values(array_filter($page, function ($r) use ($after) { return $r[0] > $after; }));
         }
         public function exec($sql, array $params = []) { $this->writes[] = [$sql, $params]; }
+        public function execNoCount($sql, array $params = []) { $this->writes[] = [$sql, $params]; }
         public function affected() { return 1; }
         public function begin() {}
         public function commit() {}
@@ -113,7 +114,7 @@ namespace {
     $rev = str_repeat('a', 64);
     $db = new AlsoRecordingDb();
     $db->emit = [[11, str_repeat("\1", 32), '9', 351, 1, 'reg', 'typed_id', 'annotation:typed', $rev]];
-    $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key]);
+    $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key, 'seq' => 1]);
     $g = ['group_id' => 5, 'group_hmac' => str_repeat("\3", 32), 'candidate_epoch' => 2, 'emit_cursor' => 0];
     $r = $fin->emit(1, $g, 100);
     $emitSql = '';
@@ -125,7 +126,7 @@ namespace {
     $cursor = array_values(array_filter($db->writes, function ($w) { return strpos($w[0], 'SET emit_cursor') !== false; }));
     check('emit: the cursor moves to the last finding', $cursor && $cursor[0][1][0] === 11);
     $db = new AlsoRecordingDb();
-    $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key]);
+    $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key, 'seq' => 1]);
     $r = $fin->emit(1, $g, 100);
     check('emit: no checked value left publishes the group', $r['emitted'] === 0 && $r['published'] === true);
 

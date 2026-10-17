@@ -149,7 +149,7 @@ $NEIGHBOUR = uv_neighbour($PID);
             . 'defaulted', $refused === true);
     }
 
-    $fin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $reader));
+    $fin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $reader));
 
     check('unique: nothing is settled before anything has run',
         $fin->status($GEN)['done'] === true && $fin->status($GEN)['groups'] === 0);
@@ -206,6 +206,76 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('unique: re-emitting a group writes the same rows rather than a second set',
         (int) $f2[0][0] === 5);
 
+    // -- DUPLICATES ARE DATED TO THE RUN THAT WROTE THEM (R8-5) ---------------
+    //
+    // Every other finding opens at its run's run_seq and closes at the run_seq
+    // of the run that closed it. These were stamped with the group's
+    // candidate_epoch instead, a per-group counter starting at 1.
+    $seqs = function ($col, $where) use ($dbA, $PID, $GEN) {
+        $out = array();
+        foreach ($dbA->select('SELECT ' . $col . ', COUNT(*) FROM ' . Schema::table('finding')
+                . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ? AND ' . $where
+                . ' GROUP BY ' . $col . ' ORDER BY ' . $col, array($PID, $GEN, 'duplicate')) as $r) {
+            $out[(string) $r[0]] = (int) $r[1];
+        }
+        return $out;
+    };
+    check('unique: a duplicate opens at the run_seq of the run that wrote it, not at its group\'s epoch',
+        $seqs('valid_from_seq', 'active_slot = 1') === array('41' => 5));
+
+    // The candidates of the larger group moved: a new epoch, emitted and
+    // published again by a later run, run_seq 57.
+    $big = $dbA->select('SELECT group_id, candidate_epoch FROM ' . Schema::table('unique_group')
+        . " WHERE project_id = ? AND generation_id = ? AND phase = 'published'"
+        . ' ORDER BY group_id', array($PID, $GEN));
+    $sizes = array();
+    foreach ($big as $g) {
+        $n = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding') . ' f JOIN '
+            . Schema::table('unique_group') . ' g ON g.project_id = f.project_id'
+            . ' AND g.generation_id = f.generation_id AND g.group_hmac = f.group_hmac'
+            . ' WHERE g.group_id = ? AND f.active_slot = 1', array((int) $g[0]));
+        $sizes[(int) $g[0]] = (int) $n[0][0];
+    }
+    arsort($sizes);
+    $gid = key($sizes);
+    $A->query('UPDATE ' . Schema::table('unique_group')
+        . " SET candidate_epoch = candidate_epoch + 1, phase = 'emitting', emit_cursor = 0"
+        . ' WHERE group_id = ' . (int) $gid);
+    $later = $fin->forRun(57);
+    $k = 0;
+    while ($k++ < 50) {
+        if ($later->step($GEN, 2)['done']) break;
+    }
+    check('unique: a republished group closes its earlier rows at the republishing run\'s run_seq',
+        $seqs('valid_to_seq', 'active_slot IS NULL AND valid_to_seq IS NOT NULL')
+            === array('57' => $sizes[$gid]));
+    check('unique: and opens the rows that replace them there too',
+        $seqs('valid_from_seq', 'active_slot = 1') === array('41' => 5 - $sizes[$gid], '57' => $sizes[$gid]));
+
+    // NO RUN, NO WRITE. A finalizer nobody bound to a run reaches the group
+    // and stops there, writing nothing, rather than guessing a sequence.
+    $A->query('UPDATE ' . Schema::table('unique_group')
+        . " SET candidate_epoch = candidate_epoch + 1, phase = 'emitting', emit_cursor = 0"
+        . ' WHERE group_id = ' . (int) $gid);
+    $unbound = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA,
+        array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $reader));
+    $before = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', array($PID));
+    $r = $unbound->step($GEN, 2);
+    $after = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', array($PID));
+    check('unique: a finalizer bound to no run writes no duplicate and says why',
+        $r['done'] === false && $r['emitted'] === 0
+        && $r['why'] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::NO_SEQ
+        && (int) $before[0][0] === (int) $after[0][0]);
+    $k = 0;
+    while ($k++ < 50) {
+        if ($fin->forRun(58)->step($GEN, 2)['done']) break;
+    }
+    check('unique: and the next bound step finishes the group it stopped at',
+        $fin->status($GEN)['done'] === true
+        && $seqs('valid_from_seq', 'active_slot = 1') === array('41' => 5 - $sizes[$gid], '58' => $sizes[$gid]));
+
     // -- two different values under one hash ---------------------------------
     //
     // Not producible by data entry, and checked anyway: the alternative to
@@ -233,7 +303,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         }
         return array('ok' => true, 'values' => $out, 'why' => null);
     };
-    $fin2 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $liar));
+    $fin2 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $liar));
     $n2 = 0;
     while ($n2++ < 50) {
         $r = $fin2->step($GEN2, 10);
@@ -266,7 +336,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $broken = function ($locs) {
         return array('ok' => false, 'values' => array(), 'why' => 'the export timed out');
     };
-    $fin3 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $broken));
+    $fin3 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $broken));
     $n3 = 0;
     while ($n3++ < 50) {
         $r = $fin3->step($GEN3, 10);
@@ -294,7 +364,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $put4('M', 'Z2', '100');
     $moving = new MovingVersions();
     $moving->v = array('Z1' => '100', 'Z2' => '999');   // Z2 changed since it was scanned
-    $fin4 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY,
+    $fin4 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY,
         'read' => $reader, 'versions' => $moving));
     $fin4->discover($GEN4, 10);
     $before = $dbA->select('SELECT candidate_epoch FROM ' . Schema::table('unique_group')
@@ -358,12 +428,12 @@ $NEIGHBOUR = uv_neighbour($PID);
     $bulk($SMALL, 50);
     $bulk($BIG, 20000);
 
-    $finS = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $same));
+    $finS = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $same));
     $m0 = memory_get_usage(true);
     $k = 0; while ($k++ < 200) { if ($finS->step($SMALL, 500)['done']) break; }
     $smallPeak = memory_get_usage(true) - $m0;
 
-    $finB = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $same));
+    $finB = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => $same));
     $m1 = memory_get_usage(true);
     $k = 0; while ($k++ < 2000) { if ($finB->step($BIG, 500)['done']) break; }
     $bigPeak = memory_get_usage(true) - $m1;
@@ -494,7 +564,7 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     $rec = new UvRecordingDb($dbA);
     $finC = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($rec,
-        array('pid' => $PID, 'hmacKey' => $KEY, 'read' => function () {
+        array('pid' => $PID, 'seq' => 41, 'hmacKey' => $KEY, 'read' => function () {
             return array('ok' => true, 'values' => array(), 'why' => null);
         }));
     $made = $finC->discover($GEN, $N);

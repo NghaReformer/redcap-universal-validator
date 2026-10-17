@@ -112,8 +112,17 @@ namespace ExternalModules {
         public $projectGroups = [];
         public $runRow = null;
         public $recordStates = [];
+        /**
+         * When the run's worker lease runs out. Not a run column, so status()
+         * asks for it on its own - and a quiet run is only STALLED while a
+         * worker holds it (review CL-2). Null is no lease: a paused run.
+         */
+        public $leaseExpires = null;
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
+            if (strpos($sql, 'SELECT lease_expires_at FROM') !== false) {
+                return new \ExternalModules\FakeRes($this->runRow === null ? [] : [[$this->leaseExpires]]);
+            }
             if (strpos($sql, 'uv_scan_run') !== false) {
                 if (strpos($sql, 'active_slot = 1') !== false) {
                     return new \ExternalModules\FakeRes($this->activeRunId === null
@@ -143,6 +152,14 @@ namespace ExternalModules {
             if (strpos($sql, 'MAX(version)') !== false) {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled
                     ? (string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION : null]]);
+            }
+            // Schema::health() asks for every table in one read (M11) and is
+            // answered with the names that exist; a capability probe still
+            // asks COUNT(*) of one.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                $rows = [];
+                if ($this->tablesInstalled) foreach ($params as $t) $rows[] = [$t];
+                return new \ExternalModules\FakeRes($rows);
             }
             if (strpos($sql, 'information_schema.tables') !== false) {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : '0']]);
@@ -326,6 +343,7 @@ namespace {
         public static function isRepeatingForm($e = null, $f = null) { return null; }
     }
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     const PID  = 700;
     const PAGE = __DIR__ . '/../pages/scan.php';
@@ -381,6 +399,7 @@ namespace {
         $m->projectGroups = isset($opts['groups']) ? $opts['groups'] : [];
         $m->runRow = isset($opts['runRow']) ? $opts['runRow'] : null;
         $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
+        $m->leaseExpires = isset($opts['lease']) ? $opts['lease'] : null;
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -505,17 +524,17 @@ namespace {
         if ($caseArg === 'chrome') {
             // S-04. REDCap has already emitted its page into an output buffer by
             // the time this file runs. A real CSV must contain none of it.
-            $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+            $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             ob_start(); echo CHROME;
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
         } elseif ($caseArg === 'formula') {
             // The formula-injection defusing must survive the rewrite to streaming.
-            $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '']]];
+            $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '', 'fa_complete' => '0']]];
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
         } elseif ($caseArg === 'export') {
             // TASK 1. pages/export.php must refuse without reading anything. It
             // runs in a child because it sets headers and its own status code.
-            $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+            $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             $m = new \INSPIRE\UniversalValidator\UniversalValidator();
             $m->projectIdReturn = PID;
             $m->projectSettings = ['log-values' => ''];
@@ -538,8 +557,8 @@ namespace {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
         // Two records in two different DAGs; only 'north' belongs to the user.
         $data = [
-            1 => [1 => ['record_id' => '1', 'val' => '', 'redcap_data_access_group' => 'north']],
-            2 => [1 => ['record_id' => '2', 'val' => '', 'redcap_data_access_group' => 'south']],
+            1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'north']],
+            2 => [1 => ['record_id' => '2', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'south']],
         ];
         \REDCap::$groupNames = [7 => 'north'];
 
@@ -607,7 +626,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
 
         list($html, $m) = render(new \ExternalModules\PlainUser(false, null), $D, $data, ['run' => '1']);
         check('no design rights: the page refuses', strpos($html, W_NO_DESIGN) !== false);
@@ -628,7 +647,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'redcap_data_access_group' => 'north']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'north']]];
         \REDCap::$groupNames = [];          // group 7 resolves to nothing
 
         list($html, $m) = render(new \ExternalModules\PlainUser(true, 7), $D, $data, ['run' => '1']);
@@ -690,7 +709,24 @@ namespace {
 
     /* =====================================================================
      * the four verdict branches
+     *
+     * ONE PREDICATE, the production one. These called ScanPageView::verdict(),
+     * a second implementation of "may this be called clean" that nothing in the
+     * shipped tree used and that did not agree with Scan\ScanOutcome. It is
+     * gone; what is asked here is what a legacy scanProject() result earns from
+     * the predicate every other surface uses.
      * ===================================================================== */
+    /** A scanProject() result, as the facts ScanOutcome::derive() decides on. */
+    $cleanOf = function ($res) {
+        $has = function ($k) use ($res) { return is_array($res) && isset($res[$k]); };
+        $O = '\\INSPIRE\\UniversalValidator\\Scan\\ScanOutcome';
+        return $O::mayClaimClean($O::derive([
+            'fenced'       => $has('coverage') && $res['coverage'] === $O::FENCED,
+            'manifestDone' => $has('status') && $res['status'] === 'complete',
+            'violations'   => $has('violations') ? count($res['violations']) : 0,
+            'ruleProblems' => $has('unconfigurable') ? count($res['unconfigurable']) : 0,
+        ]));
+    };
     {
         $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
@@ -699,27 +735,29 @@ namespace {
 
         // Clean: a populated required field, no rule problems.
         list(, $rC) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => 'X']]]);
-        check('verdict: a clean project is clean', $V::verdict($rC)['clean'] === true);
+        check('verdict: a clean project is clean', $cleanOf($rC) === true);
         check('verdict: with nothing to list', !$rC['violations']);
 
         // A violation: not clean, and the finding is carried.
-        list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '']]]);
+        list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]]);
         check('verdict: a violation is listed', count($rV['violations']) === 1);
-        check('verdict: and the project is not clean', $V::verdict($rV)['clean'] === false);
+        check('verdict: and the project is not clean', $cleanOf($rV) === false);
 
         // A rule that cannot be evaluated: zero violations, still not clean.
         $DB = dict(['record_id' => ['fa'], 'orphan' => ['fz', '@UVREQUIRED']]);
         list(, $rU) = scanOf($U(), $DB, [1 => [1 => ['record_id' => '1']]],
             ['mappings' => [['event_id' => 1, 'form' => 'fa']]]);
         check('verdict: a project can be violation-free and still not clean',
-            !$rU['violations'] ? $V::verdict($rU)['clean'] === false : true);
+            !$rU['violations'] ? $cleanOf($rU) === false : true);
 
         // An incomplete sweep: never clean, whatever it found.
         list(, $rI) = scanOf($U(), $D, [
             1 => [1 => ['record_id' => '1', 'val' => 'X']],
             2 => [1 => ['record_id' => '2', 'val' => 'X']],
         ], ['dropFromChunk' => 2]);
-        check('verdict: an incomplete sweep is never clean', $V::verdict($rI)['clean'] === false);
+        check('verdict: an incomplete sweep is never clean', $cleanOf($rI) === false);
+        check('verdict: and the page class no longer carries a predicate of its own',
+            !method_exists($V, 'verdict'));
     }
 
     /* =====================================================================
@@ -732,7 +770,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
         \REDCap::$groupNames = [];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
 
@@ -811,8 +849,8 @@ namespace {
     /* =====================================================================
      * M-02  an incomplete scan may not read as a clean one
      *
-     * The predicate moved from three local variables inside pages/scan.php to
-     * ScanPageView::verdict(), so it survives the page being withdrawn and the
+     * The predicate began as three local variables inside pages/scan.php, moved
+     * to ScanPageView::verdict(), and is now Scan\ScanOutcome alone - so the
      * durable report gets the same answer rather than a second implementation.
      * ===================================================================== */
     {
@@ -828,27 +866,24 @@ namespace {
 
         list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data,
             ['dropFromChunk' => 2]);
-        $v = $V::verdict($res);
-        check('M-02: an unreadable record makes the scan incomplete', !$v['complete']);
+        check('M-02: an unreadable record makes the scan incomplete', $res['status'] !== 'complete');
         check('M-02: a scan with zero violations but incomplete coverage is NOT clean',
-            !$res['violations'] && !$v['clean']);
+            !$res['violations'] && $cleanOf($res) === false);
         check('M-02: and the reason is recorded, not merely the verdict',
             (bool) $res['incomplete']);
 
         // CONTRAST: the same project, nothing dropped, IS clean. Without this the
         // three checks above pass on a predicate that never certifies anything.
         list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data);
-        check('M-02 contrast: a complete clean scan is clean',
-            $V::verdict($res2)['clean'] === true);
+        check('M-02 contrast: a complete clean scan is clean', $cleanOf($res2) === true);
 
-        // A project whose every rule is broken has zero violations and is not
-        // clean: the green tick belonged to the violation count alone, which is
-        // the narrower claim.
-        $broken = array_merge($res2, ['unconfigurable' => [['rule' => 1, 'fields' => [], 'why' => 'x']]]);
-        check('M-02: rule problems block clean even with no violations',
-            $V::verdict($broken)['clean'] === false);
-        check('M-02: a missing coverage key is read as partial, not as proof',
-            $V::verdict(['status' => 'complete', 'violations' => [], 'unconfigurable' => []])['clean'] === false);
+        // Two checks used to follow, on hand-built results: that rule problems
+        // block clean with no violations, and that a missing coverage key reads
+        // as the weaker claim. Both are properties of ScanOutcome::derive() and
+        // are asserted on it directly in tests/scan_security_php.php ("a rule
+        // problem forbids clean", "a caller that forgets a field gets the WEAKER
+        // claim"). Asking them again here, through this file's own adapter,
+        // would test the adapter.
     }
 
     /* =====================================================================
@@ -1066,16 +1101,15 @@ namespace {
         // A server that CAN prove a fence: clean is reachable.
         list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData);
         check('fence: with a proved change fence a clean project is clean',
-            $V::verdict($res)['clean'] === true);
+            $cleanOf($res) === true);
         check('fence: and the coverage says so in its own words',
             $res['coverage'] === 'complete-through-fence');
 
         // The same clean project on a server that cannot prove one.
         list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData,
             ['unfenced' => true]);
-        $v2 = $V::verdict($res2);
-        check('fence: without one, the SAME clean project is NOT clean', $v2['clean'] === false);
-        check('fence: while the sweep itself still reports complete', $v2['complete'] === true);
+        check('fence: without one, the SAME clean project is NOT clean', $cleanOf($res2) === false);
+        check('fence: while the sweep itself still reports complete', $res2['status'] === 'complete');
         // Named, not pinned to one literal: the vocabulary of weaker coverages
         // grows as capability probes are added, and a test that pins today's
         // spelling fails on a MORE honest answer.
@@ -1094,7 +1128,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [7 => ['record_id' => '1', 'val' => '',
+        $data = [1 => [7 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0',
                              'redcap_data_access_group' => 'north']]];
         $RAW = ['settings' => ['scan-value-storage' => 'raw']];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
@@ -1277,7 +1311,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
         \REDCap::$groupNames = [];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
         $on = function ($extra = []) {
@@ -1459,20 +1493,16 @@ namespace {
         check('PANEL: with no run the page says so, and says it plainly',
             strpos($html, 'Nothing has been run') !== false);
 
-        // POSITIONAL, against SqlScanStore::run()'s projection. Twenty-two
-        // values in that column order - a row of any other length makes
-        // array_combine() refuse it, run() answer false, and every check below
-        // fail at once with nothing saying why. It has drifted once already:
-        // run_seq was added to the projection and not to this row.
-        //
-        // run_id, project_id, scope_dag, phase, terminal, coverage, detail,
-        // values_state, policy_revision, fingerprint, manifest_total,
-        // manifest_done, cursor_ordinal, lease_epoch, generation_id, run_seq,
-        // created_by, detail_rows, detail_bytes, fence_open, fence_target,
-        // cancel_requested_at
-        $ROW = ['55', (string) PID, null, 'scanning', null, 'partial', 'complete', 'none',
-                '1', 'fp', '10', '3', '3', '1', '1', '1', 'tester', '2', '400',
-                '918273', '918273', null];
+        // BY NAME, through uv_run_row(). This row used to be a bare list in
+        // the projection's column order, and it drifted: run_seq went into
+        // SqlScanStore::run() and not into here, and every check below failed
+        // at once with nothing saying why.
+        $LIVE = ['run_id' => '55', 'project_id' => (string) PID, 'phase' => 'scanning',
+                 'fingerprint' => 'fp', 'manifest_total' => '10', 'manifest_done' => '3',
+                 'cursor_ordinal' => '3', 'lease_epoch' => '1', 'detail_rows' => '2',
+                 'detail_bytes' => '400', 'fence_open' => '918273', 'fence_target' => '918273',
+                 'progress_at' => gmdate('Y-m-d H:i:s')];
+        $ROW = uv_run_row($LIVE);
         list($live, ) = render($U(), $D, $data, [], $on([
             'activeRun' => 55, 'runRow' => $ROW, 'recordStates' => [['100', '3'], ['0', '7']]]));
         check('PANEL: a run in progress is NOT described as nothing having been run',
@@ -1493,10 +1523,72 @@ namespace {
         check('PANEL: and the panel says it is busy',
             strpos($live, 'aria-busy="true"') !== false);
 
+        // P10, through the real page and the real status(): the run row's own
+        // storage counters reach the panel before any script runs.
+        check('PANEL P10: a run that has stored rows says how many, and how much they hold',
+            preg_match('/<div id="uv-scan-stored" style="margin-top[^"]*">Stored: 2 finding rows, '
+                     . 'with 400 bytes of values<\/div>/', $live) === 1);
+        check('PANEL P10: with no run the line is there for the client, hidden and empty',
+            preg_match('/<div id="uv-scan-stored" style="display:none;[^"]*"><\/div>/', $html) === 1);
+        list($none, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => uv_run_row(['detail_rows' => '0', 'detail_bytes' => '0'] + $LIVE),
+            'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL P10: and a run that has stored nothing says nothing about storage',
+            preg_match('/<div id="uv-scan-stored" style="display:none;[^"]*"><\/div>/', $none) === 1);
+
+        // L5, through the real page and the real status(): the run row's own
+        // progress clock decides whether the watcher is told anything.
+        check('PANEL: a run that is moving carries the stalled node hidden and empty',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="display:none;[^"]*"><\/p>/', $live) === 1);
+        // A worker holds it - claim() took the lease a second ago and moved
+        // updated_at - and nothing has finished for fifteen minutes: the wedge.
+        $STALE = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+                             'updated_at' => gmdate('Y-m-d H:i:s', time() - 1)] + $LIVE);
+        list($stale, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $STALE, 'recordStates' => [['100', '3'], ['0', '7']],
+            'lease' => gmdate('Y-m-d H:i:s', time() + 299)]));
+        check('PANEL: a run a worker holds that has finished nothing for fifteen minutes says so',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="margin-top[^"]*">No progress has been '
+                     . 'recorded on this scan for 1[45] minutes\./', $stale) === 1);
+        // CL-2. The same quiet run with nobody working on it - the tab that
+        // drove it was closed, which this page tells people is safe - is
+        // PAUSED, and is told to press Continue rather than to start again.
+        $LEFT = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+                            'updated_at' => gmdate('Y-m-d H:i:s', time() - 900)] + $LIVE);
+        list($left, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $LEFT, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a run nobody is working on is paused, and is told to press Continue',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="margin-top[^"]*">This scan is paused: '
+                     . 'nothing has worked on it for 1[45] minutes/', $left) === 1
+            && strpos($left, 'Press Continue to carry on') !== false);
+        // The node only: the page also prints every label into its script block.
+        $stalledP = function ($html) {
+            return preg_match('/<p id="uv-scan-stalled"[^>]*>([^<]*)<\/p>/', $html, $m) === 1
+                ? html_entity_decode($m[1], ENT_QUOTES) : null;
+        };
+        check('PANEL: and is NOT told to stop it and start a new one',
+            is_string($stalledP($left)) && strpos($stalledP($left), 'start a new one') === false);
+        // A RUN THAT WAS STOPPED sits in `cancelling` until a later request
+        // finishes it. It was called stalled too.
+        $STOPPED = uv_run_row(['phase' => 'cancelling',
+            'progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+            'cancel_requested_at' => gmdate('Y-m-d H:i:s', time() - 600)] + $LIVE);
+        list($stopped, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $STOPPED, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a stopped run says it is stopping and how to finish, never that it stalled',
+            $stalledP($stopped) === \INSPIRE\UniversalValidator\ScanPageView::STOPPING);
+        // And what it examined is not what merely settled: three done, two that
+        // could not be stored, five still waiting.
+        list($mixed, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $ROW,
+            'recordStates' => [['100', '3'], ['104', '2'], ['0', '5']]]));
+        check('PANEL: records that could not be checked are said on the page, not counted as checked',
+            strpos($mixed, '3 of 10 records checked; 2 could not be checked') !== false
+            && strpos($mixed, 'aria-valuenow="50"') !== false);
+
         // A run whose total is not known yet is INDETERMINATE server-side too:
         // no aria-valuenow at all, rather than a zero that announces a stall.
-        $PLANNING = $ROW;
-        $PLANNING[3] = 'planning'; $PLANNING[10] = '0';
+        $PLANNING = uv_run_row(['phase' => 'planning', 'manifest_total' => '0'] + $LIVE);
         list($planning, ) = render($U(), $D, $data, [], $on([
             'activeRun' => 55, 'runRow' => $PLANNING, 'recordStates' => []]));
         check('PANEL: a run with no total yet reports no position at all',
@@ -1515,6 +1607,30 @@ namespace {
             strpos($opaque, '3 of 10 records') === false);
         check('PANEL: but the page still says a scan is running',
             strpos($opaque, 'on the server right now') !== false);
+
+        // OC-2, through the real status() and the real page. Two finished runs
+        // that differ ONLY in what promotion decided: one certified, one refused
+        // `clean` for a rule it could not evaluate. They rendered identically.
+        $END = ['phase' => 'terminal', 'terminal' => 'complete', 'coverage' => 'complete-through-fence',
+                'manifest_total' => '1', 'manifest_done' => '1', 'fence_target' => '918273'] + $LIVE;
+        list($certHtml, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => uv_run_row(['clean' => '1'] + $END),
+            'recordStates' => [['100', '1']]]));
+        list($ruleHtml, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55,
+            'runRow' => uv_run_row(['clean' => '0', 'rule_problem_count' => '1'] + $END),
+            'recordStates' => [['100', '1']]]));
+        $doneP = function ($html) {
+            return preg_match('/<p id="uv-scan-done"[^>]*>([^<]*)<\/p>/', $html, $m) === 1
+                ? html_entity_decode($m[1], ENT_QUOTES) : null;
+        };
+        check('PANEL: a certified run states what it checked, and no verdict sentence',
+            $doneP($certHtml) === \INSPIRE\UniversalValidator\ScanPageView::coverageSentence(
+                'complete-through-fence'));
+        check('PANEL: the run refused clean for a rule problem says so before any script runs',
+            strpos((string) $doneP($ruleHtml),
+                   \INSPIRE\UniversalValidator\ScanPageView::RULE_PROBLEM) !== false
+            && $doneP($ruleHtml) !== $doneP($certHtml));
 
         // Rights still decide. The panel is not a way around them.
         list($noRights, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, [], $on());
@@ -1675,8 +1791,39 @@ namespace {
         $esSentence = $V::coverageSentence(
             \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE);
         check('LABELS: the empty-scope sentence never claims a record was checked',
-            stripos($esSentence, 'Every record was checked') === false
-            && stripos($esSentence, 'nothing was checked') !== false);
+            stripos($esSentence, 'Every record was checked') === false);
+        // R2O-1. NOR THAT NONE WAS. It opened "Nothing was checked", which is
+        // false of a run whose records were checked and then deleted - the
+        // commonest way in, and the one whose panel also counts findings.
+        // What it may say is what is true of every way in: no record is left,
+        // deleted checked or not, and the findings are on deleted records.
+        check('LABELS: R2O-1 the empty-scope sentence does not say nothing was checked',
+            stripos($esSentence, 'nothing was checked') === false
+            && stripos($esSentence, 'before it could be checked') === false);
+        check('LABELS: R2O-1 it says no record is left, deleted whether or not it had been checked',
+            strpos($esSentence, 'no record left') !== false
+            && strpos($esSentence, 'whether or not it had been checked') !== false);
+        check('LABELS: R2O-1 it accounts for any findings, and still says nothing about the project',
+            strpos($esSentence, 'Any findings it counted are on deleted records') !== false
+            && strpos($esSentence, 'says nothing about the project') !== false);
+        // Both shapes, as the panel renders them: findings counted by an
+        // examination that came before the deletions, and none at all.
+        $esStatus = function ($findings) {
+            return ['ok' => true, 'phase' => 'terminal', 'terminal' => 'partial',
+                'coverage' => \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE,
+                'detail' => 'complete', 'total' => 2, 'done' => 0, 'settled' => 2, 'removed' => 2,
+                'excluded' => 0, 'findings' => $findings, 'clean' => 0, 'ruleProblems' => 0,
+                'active' => false];
+        };
+        $esChecked = $V::panelPrefill($esStatus(2));
+        $esNever = $V::panelPrefill($esStatus(0));
+        check('PREFILL: R2O-1 records checked then deleted keep their count, beside a sentence that allows it',
+            $esChecked['found'] === '2 findings so far'
+            && stripos($esChecked['done'], 'nothing was checked') === false
+            && strpos($esChecked['done'], $esSentence) === 0
+            && substr($esChecked['done'], -strlen($V::NOT_CERTIFIED)) === $V::NOT_CERTIFIED);
+        check('PREFILL: R2O-1 and records deleted before any check read the same, true sentence',
+            $esNever['found'] === 'Nothing found yet' && $esNever['done'] === $esChecked['done']);
         check('LABELS: and it survives json_encode into the page unaltered',
             strpos(json_encode($esSentence,
                 JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), '\\u') === false);
@@ -1714,6 +1861,176 @@ namespace {
         check('PREFILL: a finished run carries the sentence its coverage earns',
             strpos($end['done'], 'cannot prove') !== false);
 
+        // L4. `done` was every record in a terminal state, so a run in which no
+        // result could be stored read "12 of 12 records (100%)" over an empty
+        // report. The number before "of" is records EXAMINED; the bar follows
+        // what is settled, so it still reaches the end.
+        $status = function (array $over) {
+            return array_merge(['ok' => true, 'phase' => 'scanning', 'terminal' => null,
+                'coverage' => 'partial', 'detail' => 'complete', 'total' => 10, 'done' => 3,
+                'findings' => 0, 'active' => true], $over);
+        };
+        check('PREFILL: with nothing excluded the line is byte for byte what it always was',
+            $V::panelPrefill($status(['settled' => 3, 'excluded' => 0, 'removed' => 0]))['counts']
+                === '3 of 10 records  (30%)'
+            && $V::panelPrefill($status([]))['counts'] === '3 of 10 records  (30%)');
+        $ex = $V::panelPrefill($status(['done' => 8, 'settled' => 10, 'excluded' => 2, 'removed' => 0]));
+        check('PREFILL: records that could not be checked are said, not folded into the total',
+            $ex['counts'] === '8 of 10 records checked; 2 could not be checked  (100%)');
+        check('PREFILL: and the bar still reaches the end, because the run did', $ex['pct'] === 100);
+        check('PREFILL: a record deleted during the scan is its own clause',
+            $V::panelPrefill($status(['done' => 7, 'settled' => 10, 'excluded' => 2, 'removed' => 1]))
+                ['counts'] === '7 of 10 records checked; 2 could not be checked; '
+                             . '1 deleted during the scan  (100%)');
+        $nothing = $V::panelPrefill($status(['done' => 0, 'settled' => 10, 'excluded' => 10]));
+        check('PREFILL: a run that examined NOTHING does not read as one that examined everything',
+            strpos($nothing['counts'], '0 of 10 records checked') === 0
+            && strpos($nothing['counts'], '10 of 10') === false);
+
+        // L5. Whoever LOADS the page is watching; nothing on it drives a scan
+        // until a button is pressed.
+        $st = $V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 330]));
+        check('PREFILL: a run that has stopped getting anywhere says so before any script runs',
+            is_string($st['stalled']) && strpos($st['stalled'], 'for 5 minutes') !== false
+            && strpos($st['stalled'], '{') === false);
+        check('PREFILL: a run that is moving says nothing of the kind',
+            $V::panelPrefill($status(['stalled' => false, 'idleSeconds' => 3]))['stalled'] === null
+            && $V::panelPrefill($status([]))['stalled'] === null);
+        check('PREFILL: and a finished run is never stalled, whatever the status says',
+            $V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 9000, 'active' => false,
+                'phase' => 'terminal', 'terminal' => 'partial']))['stalled'] === null);
+        check('PREFILL: under two minutes still reads as a minute, never as zero',
+            strpos($V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 5]))['stalled'],
+                   'for 1 minutes') !== false);
+        // CL-2. Paused and stopping are the server's words for a quiet run that
+        // is NOT the alarm, and each gets its own sentence.
+        $pz = $V::panelPrefill($status(['paused' => true, 'idleSeconds' => 600]))['stalled'];
+        check('PREFILL: a paused run is said to be paused, for how long, and to press Continue',
+            is_string($pz) && strpos($pz, 'This scan is paused') === 0
+            && strpos($pz, 'for 10 minutes') !== false && strpos($pz, 'Press Continue') !== false
+            && strpos($pz, 'start a new one') === false);
+        check('PREFILL: a run being stopped says so, whatever else it was sent',
+            $V::panelPrefill($status(['stopping' => true, 'stalled' => true, 'paused' => true,
+                'phase' => 'cancelling', 'idleSeconds' => 9000]))['stalled'] === $V::STOPPING);
+        check('PREFILL: a stall outranks a pause when both arrive, because the server chose it',
+            strpos($V::panelPrefill($status(['stalled' => true, 'paused' => true,
+                'idleSeconds' => 300]))['stalled'], 'No progress has been recorded') === 0);
+        check('PREFILL: and a finished run is never paused or stopping either',
+            $V::panelPrefill($status(['paused' => true, 'stopping' => true, 'active' => false,
+                'phase' => 'terminal', 'terminal' => 'cancelled']))['stalled'] === null);
+        // R2O-3, RETIRED BY B10. A planning run that has gone quiet is paused
+        // like any other: the list resumes from its cursor, so the panel names
+        // Continue, and a stale flag from an older server is not a sentence.
+        $ps = $V::panelPrefill($status(['paused' => true, 'phase' => 'planning',
+            'total' => 0, 'idleSeconds' => 3 * 3600]))['stalled'];
+        check('PREFILL: B10 a quiet planning run is paused, for how long, and told to press Continue',
+            is_string($ps) && strpos($ps, 'for 180 minutes') !== false && strpos($ps, 'Press Continue') !== false);
+        check('PREFILL: B10 the planning-stopped sentence is gone',
+            !defined($V . '::PLANNING_STOPPED')
+            && $V::panelPrefill($status(['planningStopped' => true, 'phase' => 'planning',
+                'idleSeconds' => 3600]))['stalled'] === null);
+
+        // OC-2. THE STORED DECISION IS SAID. A run refused `clean` because a
+        // rule could not be evaluated, with nothing found, rendered byte for
+        // byte what a certified run rendered: status() never reported the
+        // decision, and the coverage sentence is about checking, not deciding.
+        $fin = function (array $over) use ($status) {
+            return $status(array_merge(['phase' => 'terminal', 'terminal' => 'complete',
+                'coverage' => 'complete-through-fence', 'total' => 1, 'done' => 1, 'settled' => 1,
+                'findings' => 0, 'active' => false], $over));
+        };
+        $certified = $V::panelPrefill($fin(['clean' => 1, 'ruleProblems' => 0]));
+        $oneRule = $V::panelPrefill($fin(['clean' => 0, 'ruleProblems' => 1]));
+        check('PREFILL: a certified run says what it checked and nothing more',
+            $certified['done'] === $V::coverageSentence('complete-through-fence'));
+        check('PREFILL: a run with a rule that could not be evaluated does NOT read as the certified one',
+            $oneRule['done'] !== $certified['done']
+            && $oneRule['done'] === $V::coverageSentence('complete-through-fence') . ' '
+                                    . $V::RULE_PROBLEM);
+        check('PREFILL: and says it in one plain sentence, counting the rules',
+            strpos($V::panelPrefill($fin(['clean' => 0, 'ruleProblems' => 3]))['done'],
+                   '3 rules could not be evaluated, so this result does not certify the project.')
+                !== false);
+        check('PREFILL: a run not certified for any other reason says it is not certified',
+            substr($V::panelPrefill($fin(['clean' => 0, 'findings' => 2]))['done'],
+                   -strlen($V::NOT_CERTIFIED)) === $V::NOT_CERTIFIED);
+        check('PREFILL: so does a run with no decision at all, and a status that never said',
+            strpos($V::panelPrefill($fin(['terminal' => 'cancelled', 'clean' => null,
+                       'coverage' => 'partial']))['done'], $V::NOT_CERTIFIED) !== false
+            && strpos($V::panelPrefill($fin([]))['done'], $V::NOT_CERTIFIED) !== false);
+        check('PREFILL: and a run still going owes no verdict yet',
+            $V::verdictText($status(['clean' => 0, 'ruleProblems' => 2])) === null);
+
+        // OC-4. A run that ended before its findings could be counted reports
+        // NULL, and the line must say so rather than cast it to "Nothing found".
+        $ended = $status(['phase' => 'terminal', 'terminal' => 'cancelled', 'active' => false]);
+        check('PREFILL: findings that were not counted are said to be not counted, never nothing found',
+            $V::panelPrefill(array_merge($ended, ['findings' => null]))['found'] === $V::FOUND_UNKNOWN
+            && strpos($V::FOUND_UNKNOWN, 'not counted') !== false);
+        $noKey = $ended;
+        unset($noKey['findings']);
+        check('PREFILL: and so is a status that carries no count at all',
+            $V::panelPrefill($noKey)['found'] === $V::FOUND_UNKNOWN);
+        check('PREFILL: a counted zero is still nothing found, and a count is still a count',
+            $V::panelPrefill(array_merge($ended, ['findings' => 0]))['found'] === 'Nothing found yet'
+            && $V::panelPrefill(array_merge($ended, ['findings' => 2]))['found'] === '2 findings so far');
+
+        // P10: WHAT THE RUN HAS STORED. tests/scan_client_js.cjs asks the
+        // client the same table and expects the same strings, digit for digit.
+        $sizes = [0 => '0 bytes', 1 => '1 byte', 400 => '400 bytes', 1023 => '1023 bytes',
+                  1024 => '1.0 KB', 1075 => '1.0 KB', 1076 => '1.1 KB', 1048575 => '1.0 MB',
+                  3565158 => '3.4 MB', 3617587 => '3.4 MB', 3617588 => '3.5 MB', 1073741824 => '1.0 GB',
+                  2199023255552 => '2.0 TB', 1125899906842624 => '1,024.0 TB'];
+        $badSize = [];
+        foreach ($sizes as $b => $want) {
+            if ($V::sizeText($b) !== $want) $badSize[] = $b . ' => ' . $V::sizeText($b);
+        }
+        check('PREFILL P10: sizes read as a person reads them, rounded the way the client rounds',
+            $badSize === []);
+        $stored = function ($rows, $bytes) use ($V) {
+            return $V::panelPrefill(['ok' => true, 'phase' => 'scanning', 'terminal' => null,
+                'total' => 10, 'done' => 3, 'findings' => 1, 'active' => true,
+                'detailRows' => $rows, 'detailBytes' => $bytes])['stored'];
+        };
+        check('PREFILL P10: rows and the size of the values kept with them',
+            $stored(12345, 3565158) === 'Stored: 12,345 finding rows, with 3.4 MB of values');
+        check('PREFILL P10: one row, and no values kept, says only the row',
+            $stored(1, 0) === 'Stored: 1 finding row');
+        check('PREFILL P10: a run that stored nothing says nothing about storage',
+            $stored(0, 0) === null && $stored(null, 500) === null && $stored(-3, 10) === null
+            && $stored('12abc', 10) === null);
+        check('PREFILL P10: a count that arrives as digits is still a count',
+            $stored('7', '2048') === 'Stored: 7 finding rows, with 2.0 KB of values');
+        check('PREFILL P10: and an unreadable status says nothing at all',
+            $V::panelPrefill(null)['stored'] === null);
+
+        // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
+        // the two: js/scan.js holds a fallback for each and no other copy.
+        $L = $V::labels();
+        $sentences = ['stalled', 'paused', 'stopping',
+                      'plain', 'checked', 'excluded', 'removed',
+                      'foundUnknown', 'stored', 'storedValues',
+                      'notCertified', 'ruleProblem', 'ruleProblems'];
+        $all = '';
+        foreach ($sentences as $k) {
+            check("LABELS: the client is handed the '$k' sentence",
+                isset($L[$k]) && is_string($L[$k]) && $L[$k] !== '');
+            $all .= isset($L[$k]) ? $L[$k] : '';
+        }
+        check('LABELS: none of them carries an apostrophe into the script block',
+            strpos($all, "'") === false);
+        $js = file_get_contents(__DIR__ . '/../js/scan.js');
+        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues'] as $k) {
+            check("LABELS: and the client's fallback for '$k' is the page's own wording",
+                strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
+        }
+        // Wrapped onto a second line in the client, so the literal is looked for
+        // on its own: still the page's wording, still the only other copy.
+        foreach (['foundUnknown', 'ruleProblem', 'ruleProblems'] as $k) {
+            check("LABELS: and the client's fallback for '$k' is the page's own wording",
+                preg_match('/L\.' . $k . '\s+\|\| \'' . preg_quote($L[$k], '/') . '\'/', $js) === 1);
+        }
+
         // Nothing to describe must produce nothing, never a claim. A refused or
         // unreadable status is exactly the case where inventing a reassuring
         // default is how a page ends up certifying a scan it never saw.
@@ -1721,7 +2038,8 @@ namespace {
             $none = $V::panelPrefill($bad);
             check('PREFILL: an unreadable status describes nothing rather than something',
                 $none['phase'] === '' && $none['counts'] === '' && $none['found'] === ''
-                && $none['pct'] === null && $none['done'] === null && $none['active'] === false);
+                && $none['pct'] === null && $none['done'] === null && $none['active'] === false
+                && $none['stalled'] === null);
         }
 
         // L2. The transport name crosses into a <script> block, so it is proved

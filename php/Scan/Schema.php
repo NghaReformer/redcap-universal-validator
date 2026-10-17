@@ -933,6 +933,14 @@ final class Schema
      * durable scan is usable when a table is missing, because that claim is the
      * input to enabling the feature.
      *
+     * ON EVERY SCAN REQUEST, SO TWO STATEMENTS (M11). ScanService::available()
+     * asks this before every work request, deliberately - a migration nobody
+     * chose is worse than a slow check - and it used to send one
+     * information_schema read per table plus the version: fourteen statements
+     * a request, for an answer that is one question. It is now the version
+     * and one read naming every table at once. The verdicts are the ones it
+     * always gave, and an answer it cannot read is still never a healthy one.
+     *
      * @return array{ok: bool, version: ?int, expected: int, missing: string[], why: ?string}
      */
     public static function health($module)
@@ -942,30 +950,21 @@ final class Schema
             return ['ok' => false, 'version' => null, 'expected' => self::VERSION, 'missing' => [],
                     'why' => 'the schema version could not be read'];
         }
-        // information_schema, NOT `SHOW TABLES LIKE ?`.
-        //
-        // The database matrix caught this on its first run, on MySQL 5.7 and 8.0
-        // alike: SHOW is not preparable in the client protocol, so a bound
-        // parameter makes the statement fail rather than match. health() then
-        // caught its own exception and reported a complete schema as broken -
-        // the safe direction, but wrong, and it would have disabled the durable
-        // scan on every installation.
-        //
-        // This form is preparable everywhere, scopes to the current database
-        // explicitly rather than implicitly, and - unlike LIKE - treats the
-        // underscores in our table names as literal characters instead of
-        // single-character wildcards.
+        try {
+            $present = self::presentTables($module);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'version' => $v, 'expected' => self::VERSION, 'missing' => [],
+                    'why' => 'the table list could not be read: ' . get_class($e)];
+        }
+        if ($present === null) {
+            // No answer is not "nothing is missing". It used to fall out as
+            // every table missing; it is said as what it is.
+            return ['ok' => false, 'version' => $v, 'expected' => self::VERSION, 'missing' => [],
+                    'why' => 'the table list could not be read'];
+        }
         $missing = [];
         foreach (self::tables() as $t) {
-            try {
-                $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
-                    WHERE table_schema = DATABASE() AND table_name = ?', [$t]);
-                $row = $q ? self::firstRow($q) : null;
-                if ($row === null || (int) (isset($row[0]) ? $row[0] : 0) < 1) $missing[] = $t;
-            } catch (\Throwable $e) {
-                return ['ok' => false, 'version' => $v, 'expected' => self::VERSION, 'missing' => [],
-                        'why' => 'the table list could not be read: ' . get_class($e)];
-            }
+            if (!isset($present[$t])) $missing[] = $t;
         }
         if ($missing) {
             return ['ok' => false, 'version' => $v, 'expected' => self::VERSION, 'missing' => $missing,
@@ -977,6 +976,63 @@ final class Schema
                            . self::VERSION];
         }
         return ['ok' => true, 'version' => $v, 'expected' => self::VERSION, 'missing' => [], 'why' => null];
+    }
+
+    /**
+     * Which of our tables exist, as a set of their names, in ONE statement; or
+     * null when the answer cannot be read. A failed statement throws.
+     *
+     * information_schema, NOT `SHOW TABLES LIKE ?`. The database matrix caught
+     * that on its first run, on MySQL 5.7 and 8.0 alike: SHOW is not
+     * preparable in the client protocol, so a bound parameter makes the
+     * statement fail rather than match, and health() reported a complete
+     * schema as broken. This form is preparable everywhere, scopes to the
+     * current database explicitly, and - unlike LIKE - reads the underscores in
+     * our names as underscores rather than as wildcards. The names are our own
+     * allowlist (tables()), bound, never interpolated.
+     *
+     * NAMES ARE COMPARED BYTE FOR BYTE (wave 8 review R8-2). The IN list is
+     * matched with the information_schema collation, which ignores case on
+     * MySQL 5.7 and MariaDB, so on a server with lower_case_table_names=0 a
+     * table that exists only as UV_FINDING comes back for uv_finding - and
+     * every statement the module sends names uv_finding and fails there with
+     * "doesn't exist". This read used to fold case and called that table
+     * present, so health() answered ok over a schema the scan cannot use; the
+     * per-table read it replaced did not. A row counts only when it is the
+     * name we use. A server that folds case (lower_case_table_names=1) stores
+     * our names lowercased, which is how tables() spells them, and one that
+     * keeps case (=2) stores them as we created them.
+     *
+     * @return array<string,bool>|null
+     */
+    private static function presentTables($module)
+    {
+        $names = self::tables();
+        $q = $module->query('SELECT table_name FROM information_schema.tables
+            WHERE table_schema = DATABASE() AND table_name IN ('
+            . implode(', ', array_fill(0, count($names), '?')) . ')', $names);
+        if ($q === false || $q === null) return null;
+        $rows = [];
+        if (is_array($q)) {
+            $rows = $q;
+        } elseif (is_object($q) && (is_callable([$q, 'fetch_row']) || is_callable([$q, 'fetch_assoc']))) {
+            // Bounded: no more rows than there are names to match, twice over.
+            $byRow = is_callable([$q, 'fetch_row']);
+            for ($i = 0; $i < 2 * count($names); $i++) {
+                $r = $byRow ? $q->fetch_row() : $q->fetch_assoc();
+                if ($r === null || $r === false) break;
+                $rows[] = $byRow ? $r : array_values($r);
+            }
+        } else {
+            return null;
+        }
+        $ours = array_fill_keys($names, true);
+        $present = [];
+        foreach ($rows as $r) {
+            $n = (is_array($r) && isset($r[0])) ? (string) $r[0] : '';
+            if (isset($ours[$n])) $present[$n] = true;
+        }
+        return $present;
     }
 
     /**

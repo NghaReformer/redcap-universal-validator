@@ -97,7 +97,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         strpos($refused, str_repeat('z', 20)) === false);
     // AND THE ANSWER IS BOUNDED WHATEVER ARRIVES. The framework puts the failing
     // statement in the message, and a findings batch is one multi-row INSERT
-    // with tens of thousands of placeholders - so the input here can be
+    // with up to 14,500 placeholders - so the input here can be
     // megabytes. Running a backtracking pattern over that is how 1.9.9 turned a
     // reported error into an empty 200 with no body: PCRE gives up, preg_replace
     // returns null, and the null travels on inside a catch already handling a
@@ -133,4 +133,71 @@ $NEIGHBOUR = uv_neighbour($PID);
     $A->query('UNLOCK TABLES');
     $A->query('DROP TABLE IF EXISTS uv_readonly_probe');
     check('fault: a refused write returns rather than escaping as a fatal', $ok === true);
+}
+
+// -- OC-3: a read the framework answers with false is a failure --------------
+//
+// Some framework builds report a failed statement by returning false rather than
+// throwing. ModuleDb::select() turned that false into "no rows", so one failed
+// read of scan_aggregate gave promotion zero violations and zero rule problems
+// and the run was stored clean over three findings and a rule problem. Here the
+// production ModuleDb runs over the case's own connection and only that one
+// read is made to fail.
+$OC3 = 902;
+{
+    $flaky = new UvFlakyModule($A);
+    $mdb = new \INSPIRE\UniversalValidator\Scan\ModuleDb($flaky);
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($mdb);
+    $r = $store->startRun($OC3, array('created_by' => 'alice', 'fence_open' => '10'));
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $store->writeManifest($rid, array(array('id_bin' => 'F1', 'hash' => hash('sha256', 'F1', true),
+                                            'dag' => null)));
+    $ep = (int) $store->run($OC3, $rid)['lease_epoch'];
+    $cl = $store->claim($rid, 'w', $ep, 5);
+    $fs = array();
+    for ($i = 0; $i < 3; $i++) {
+        $fs[] = array('ordinal' => $cl[0]['ordinal'], 'project_id' => $OC3, 'generation_id' => $gen,
+            'identity' => hash('sha256', 'F1-' . $i, true), 'valid_from_seq' => uv_run_seq($dbA, $rid),
+            'record_hash' => $cl[0]['hash'], 'record_id_bin' => 'F1', 'host_form' => 'f',
+            'field' => 'x' . $i, 'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
+            'check_type' => 'required', 'reason_code' => 'required-blank');
+    }
+    $store->commitBatch($rid, 'w', $ep, array('bytes' => 0, 'findings' => $fs,
+        'marks' => \INSPIRE\UniversalValidator\Scan\ScanPromotion::marksFor(
+            array(array('rule' => 2, 'code' => 'temporal', 'why' => 'unresolved'))),
+        'records' => array(array('ordinal' => $cl[0]['ordinal'], 'claim' => $cl[0]['claim'],
+            'version' => '500', 'record_hash' => $cl[0]['hash'],
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE))));
+    foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
+        $store->advancePhase($rid, $ep, $ph);
+    }
+    $store->setProgressState($rid, $ep, array('fenceTarget' => '500'));
+    $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($mdb, $store);
+    for ($guard = 0; $guard < 20; $guard++) {
+        if ($roll->step($OC3, $rid, $ep, $gen, 1000)['done'] !== false) break;
+    }
+    $truth = \INSPIRE\UniversalValidator\Scan\ScanPromotion::tally($store->aggregates($rid));
+    check('fault oc3: the healthy summary holds the findings and the rule problem',
+        $truth['violations'] === 3 && $truth['ruleProblems'] === 1);
+
+    $flaky->failOn = Schema::table('scan_aggregate');
+    $what = 'returned';
+    try {
+        \INSPIRE\UniversalValidator\Scan\ScanPromotion::promote($store, $OC3, $rid,
+            array('uniqueDone' => true, 'rollupDone' => true));
+    } catch (\INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable $e) {
+        $what = 'unavailable';
+    } catch (\Throwable $e) {
+        $what = get_class($e);
+    }
+    $flaky->failOn = null;
+    check('fault oc3: promotion over a failed summary read reports a storage failure',
+        $what === 'unavailable' && $flaky->failed > 0);
+    $row = $A->query('SELECT terminal, clean FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ' . $rid)->fetch_row();
+    check('fault oc3: and the run is neither finished nor certified clean',
+        $row[0] === null && $row[1] === null);
 }

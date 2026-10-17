@@ -16,10 +16,47 @@ interface DuplicateFinalizer
     /**
      * One bounded unit of work.
      *
+     * TWO LIMITS, because a step is one of two very different things (review
+     * BU-1). $limit bounds a page of group or candidate ROWS - discovery and
+     * emission, a kilobyte a row. $readLimit bounds a verify page, which
+     * re-reads whole RECORDS through the scan's own read and costs what a
+     * scanning batch costs. With one limit for both, cheap pages grew it to
+     * the maximum and the verify page after them re-read 500 records in one
+     * go. Null means $limit, for callers that size nothing.
+     *
+     * `read` in the answer is how many records the step re-read, so the caller
+     * can measure that step as a batch of records rather than of groups.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, why:?string}
+     *               collisions:int, read:int, why:?string}
      */
-    public function step($generationId, $limit = 500);
+    public function step($generationId, $limit = 500, $readLimit = null);
+}
+
+/**
+ * A finalizer that writes findings, and so has to be told which run it writes for.
+ *
+ * Every other writer stamps a finding valid_from_seq = the run's run_seq, and a
+ * closing one valid_to_seq = the run_seq of the run that closed it: that is the
+ * axis the report's "as of" questions are asked on. The duplicate finalizer
+ * stamped both with the group's candidate_epoch, a per-group counter that
+ * starts at 1 - so a duplicate looked opened by run 1 whatever run wrote it,
+ * and a republished one closed "at" 1 or 2 while its replacement opened
+ * there too (review R8-5).
+ *
+ * A second interface rather than a parameter on DuplicateFinalizer::step(),
+ * because the worker's test doubles write nothing and need no run; the worker
+ * binds any finalizer that implements this one before it steps it.
+ */
+interface SequencedFinalizer
+{
+    /**
+     * A copy of this finalizer that writes as the run with this run_seq.
+     *
+     * @param int $runSeq 1 or more
+     * @return DuplicateFinalizer
+     */
+    public function forRun($runSeq);
 }
 
 /**
@@ -66,8 +103,12 @@ interface DuplicateFinalizer
  *
  * PHP 7.4.
  */
-final class UniqueFinalizer implements DuplicateFinalizer
+final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
 {
+    /** Why emit() wrote nothing: nobody said which run the findings belong to. */
+    const NO_SEQ = 'the duplicate check was not told which scan it is writing for, so it '
+                 . 'wrote no duplicate findings rather than date them to the wrong scan';
+
     /** Group phases. Ordered: a group moves forward through these and never back. */
     const G_NEW       = 'new';
     const G_VERIFYING = 'verifying';
@@ -107,10 +148,19 @@ final class UniqueFinalizer implements DuplicateFinalizer
     private $pid;
     /** @var array */
     private $deps;
+    /**
+     * The run_seq of the run these findings are written for: valid_from_seq of
+     * every duplicate emit() stages and valid_to_seq of every one publish()
+     * closes. Null until given, and emit() writes nothing while it is null.
+     *
+     * @var int|null
+     */
+    private $seq = null;
 
     /**
      * @param array $deps {
      *   pid:      int|string  REQUIRED; a project id of 1 or more
+     *   seq:      ?int  the writing run's run_seq; or bind one with forRun()
      *   read:     callable(array $locations): array{ok:bool, values:array, why:?string}
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
@@ -142,6 +192,26 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 . 'project; every query it makes would then span the whole installation');
         }
         $this->pid = (int) $pid;
+        if (isset($deps['seq'])) $this->seq = self::runSeq($deps['seq']);
+    }
+
+    /** {@inheritdoc} */
+    public function forRun($runSeq)
+    {
+        $c = clone $this;
+        $c->seq = self::runSeq($runSeq);
+        return $c;
+    }
+
+    /** A run_seq as the schema allocates them, or a refusal: never a guessed one. */
+    private static function runSeq($v)
+    {
+        $ok = is_int($v) ? $v >= 1 : (is_string($v) && ctype_digit($v) && (int) $v >= 1);
+        if (!$ok) {
+            throw new \InvalidArgumentException('a duplicate finalizer was given a run sequence '
+                . 'that is not a positive whole number');
+        }
+        return (int) $v;
     }
 
     /**
@@ -151,14 +221,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
      * budget decides how much of a request this phase may take - the same
      * arrangement the scanning phase has, for the same reason.
      *
+     * The two limits, and `read`, are DuplicateFinalizer::step()'s.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, why:?string}
+     *               collisions:int, read:int, why:?string}
      */
-    public function step($generationId, $limit = 500)
+    public function step($generationId, $limit = 500, $readLimit = null)
     {
         $limit = max(1, min(5000, (int) $limit));
+        $readLimit = $readLimit === null ? $limit : max(1, min(5000, (int) $readLimit));
         $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                'published' => 0, 'collisions' => 0, 'why' => null];
+                'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
@@ -174,8 +247,10 @@ final class UniqueFinalizer implements DuplicateFinalizer
         }
 
         if ($g['phase'] === self::G_NEW || $g['phase'] === self::G_VERIFYING) {
-            $r = $this->verify($generationId, $g, $limit);
+            // A verify page re-reads records, so the RECORDS limit bounds it.
+            $r = $this->verify($generationId, $g, $readLimit);
             $out['verified'] += $r['checked'];
+            $out['read'] += $r['read'];
             $out['collisions'] += $r['collision'] ? 1 : 0;
             $out['why'] = $r['why'];
             return $out;
@@ -242,9 +317,9 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // INSERT per discovered group, and the cost is not theoretical: measured
         // against MySQL 8.0.46, 100,000 groups took 811 seconds through this
         // method - the review that found it estimated 262. Through the External
-        // Modules wrapper, which runs a second statement per write to read
-        // ROW_COUNT(), it is worse again. Batched, the same work is 200
-        // statements.
+        // Modules wrapper, which then ran a second statement per write to read
+        // ROW_COUNT(), it was worse again. Batched, the same work is 200
+        // statements - and sent uncounted, because nothing here reads a count.
         //
         // FIVE PLACEHOLDERS PER ROW, and the chunk is sized from that. MySQL's
         // limit is 65,535 placeholders per statement, so 500 rows is 2,500 -
@@ -273,7 +348,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $flat[] = $phase;
                 $flat[] = $records;
             }
-            $this->db->exec('INSERT INTO ' . Schema::table('unique_group') . '
+            $this->db->execNoCount('INSERT INTO ' . Schema::table('unique_group') . '
                 (project_id, generation_id, group_hmac, candidate_epoch, verify_cursor,
                  emit_cursor, phase, distinct_records, collision_state)
                 VALUES ' . implode(',', $marks) . '
@@ -353,7 +428,11 @@ final class UniqueFinalizer implements DuplicateFinalizer
      * - so a comparison delegated to the server would merge tuples this module
      * considers distinct, and it would do it silently.
      *
-     * @return array{checked:int, collision:bool, why:?string}
+     * `read` is how many distinct records the page handed the reader, which is
+     * what the page costs: the reader re-reads whole records, and two fields
+     * of one record under one rule are one record read, not two.
+     *
+     * @return array{checked:int, collision:bool, read:int, why:?string}
      */
     public function verify($generationId, array $g, $limit)
     {
@@ -366,14 +445,15 @@ final class UniqueFinalizer implements DuplicateFinalizer
         if (!$rows) {
             // Every candidate matched the representative. The group is real and
             // may now be emitted.
-            $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+            $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
                 SET phase = ?, emit_cursor = 0
                 WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
                 [self::G_EMITTING, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-            return ['checked' => 0, 'collision' => false, 'why' => null];
+            return ['checked' => 0, 'collision' => false, 'read' => 0, 'why' => null];
         }
 
         $locs = [];
+        $records = [];
         foreach ($rows as $r) {
             // 'form': the instrument the value is stored on, which says
             // whether instance 1 is a base row or a repeat instance.
@@ -381,6 +461,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                        'instance' => (int) $r[3], 'field' => $r[4],
                        'candidate_id' => (int) $r[0], 'version' => $r[5],
                        'form' => isset($r[6]) ? (string) $r[6] : null];
+            $records[(string) $r[1]] = true;
         }
 
         $read = isset($this->deps['read']) ? $this->deps['read'] : null;
@@ -390,13 +471,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
             // module will emit.
             $this->block($g, 'the values behind this duplicate group could not be re-read, so it '
                 . 'was not decided');
-            return ['checked' => 0, 'collision' => true, 'why' => 'no reader was configured'];
+            return ['checked' => 0, 'collision' => true, 'read' => 0,
+                    'why' => 'no reader was configured'];
         }
+        // From here on the records WERE read, whatever happens next, and the
+        // memory that cost is what the caller has to measure.
+        $n = count($records);
         $got = $read($locs);
         if (empty($got['ok'])) {
             $this->block($g, 'the values behind this duplicate group could not be re-read, so it '
                 . 'was not decided');
-            return ['checked' => 0, 'collision' => true,
+            return ['checked' => 0, 'collision' => true, 'read' => $n,
                     'why' => isset($got['why']) ? $got['why'] : 'the values could not be re-read'];
         }
         $values = isset($got['values']) && is_array($got['values']) ? $got['values'] : [];
@@ -415,7 +500,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $is  = isset($now[$l['record']]) ? $now[$l['record']] : null;
                 if ($was !== $is) {
                     $this->restart($g);
-                    return ['checked' => 0, 'collision' => false,
+                    return ['checked' => 0, 'collision' => false, 'read' => $n,
                             'why' => 'a record in this duplicate group changed while it was being '
                                    . 'checked, so the group is being checked again'];
                 }
@@ -434,12 +519,12 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 // singleton with nothing said.
                 $this->block($g, 'part of this duplicate group could not be re-read, so it was '
                     . 'not decided');
-                return ['checked' => $checked, 'collision' => true, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
             }
             $tuple = self::canonicalTuple($values[$key]);
             if ($rep === null) {
                 $rep = $tuple;
-                $this->db->exec('UPDATE ' . Schema::table('unique_group')
+                $this->db->execNoCount('UPDATE ' . Schema::table('unique_group')
                     . ' SET representative = ?
                        WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
                     [$rep, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -449,17 +534,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 // coverage and says so.
                 $this->block($g, 'two different values in this project share a hash, so this '
                     . 'group\'s duplicates could not be decided');
-                return ['checked' => $checked, 'collision' => true, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
             }
             $cursor = $l['candidate_id'];
             $checked++;
         }
 
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, verify_cursor = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_VERIFYING, $cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return ['checked' => $checked, 'collision' => false, 'why' => null];
+        return ['checked' => $checked, 'collision' => false, 'read' => $n, 'why' => null];
     }
 
     /**
@@ -475,6 +560,14 @@ final class UniqueFinalizer implements DuplicateFinalizer
      */
     public function emit($generationId, array $g, $limit)
     {
+        // NO RUN, NO WRITE. Both writers below stamp the run's sequence, and
+        // there is no sequence to fall back to that would be true: the group's
+        // candidate_epoch was that fallback, and it dated every duplicate to
+        // run 1 (review R8-5). The group stays in `emitting`, so the step after
+        // a bound one picks it up where this one stopped.
+        if ($this->seq === null) {
+            return ['emitted' => 0, 'published' => false, 'why' => self::NO_SEQ];
+        }
         $rows = $this->db->select('SELECT candidate_id, record_hash, record_id_bin, event_id,
             instance, host_form, field, rule_source_id, rule_revision
             FROM ' . Schema::table('unique_candidate') . '
@@ -506,7 +599,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                     'reason_code' => 'duplicate'];
             $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,0,?,?,0,0,?,?)';
             foreach ([$this->pid, $generationId, Hmac::findingIdentity($this->pid, $loc, $key),
-                      $g['candidate_epoch'], $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
+                      $this->seq, $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
                       $r[7], $r[8], 'unique', 'duplicate', $g['group_hmac'],
                       $g['candidate_epoch']] as $v) {
                 $flat[] = $v;
@@ -524,7 +617,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // no active slot, and every NULL in a unique index counts as distinct,
         // so a retried page would insert a second copy of every row it had
         // already written.
-        $this->db->exec('INSERT INTO ' . Schema::table('finding') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
             (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
              record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
@@ -532,7 +625,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
             VALUES ' . implode(',', $marks) . '
             ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
         $emitted = count($marks);
-        $this->db->exec('UPDATE ' . Schema::table('unique_group')
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group')
             . ' SET emit_cursor = ?
                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -557,16 +650,16 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // project_id leading ix_group_stage_v2 is what makes them read one
         // project's rows instead of the generation's.
         $t = Schema::table('finding');
-        $this->db->exec('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
               AND stage_epoch <> ?',
-            [$g['candidate_epoch'], $this->pid, $generationId, $g['group_hmac'],
+            [$this->seq, $this->pid, $generationId, $g['group_hmac'],
              $g['candidate_epoch']]);
-        $this->db->exec('UPDATE ' . $t . ' SET active_slot = 1
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
               AND active_slot IS NULL',
             [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, published_epoch = ?, staged_epoch = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
@@ -577,7 +670,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
     /** The group could not be decided. Terminal, and it blocks the run's coverage. */
     private function block(array $g, $why)
     {
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, collision_state = ? WHERE project_id = ? AND group_id = ?',
             [self::G_COLLISION, self::COLLISION_BLOCKING, $this->pid, $g['group_id']]);
         return $why;
@@ -593,7 +686,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
      */
     private function restart(array $g)
     {
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
                 representative = NULL, phase = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
@@ -634,7 +727,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // belt and braces - and it is the cheap kind: this is a DELETE, and a
         // DELETE that trusts an id list is one refactor away from deleting
         // another project's evidence.
-        $this->db->exec('DELETE FROM ' . Schema::table('finding')
+        $this->db->execNoCount('DELETE FROM ' . Schema::table('finding')
             . ' WHERE project_id = ? AND finding_id IN (' . $marks . ')',
             array_merge([$this->pid], $ids));
         return count($ids);

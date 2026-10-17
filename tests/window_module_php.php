@@ -101,6 +101,7 @@ namespace {
             return array_slice($out, 0, (int) $m[1]);
         }
         public function exec($sql, array $params = []) {}
+        public function execNoCount($sql, array $params = []) {}
         public function affected() { return 0; }
         public function begin() {}
         public function commit() {}

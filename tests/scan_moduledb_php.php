@@ -53,6 +53,13 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/scan_fault_support.php';
+    // The store and the verdict, for the OC-3 leg: a failed read must reach
+    // promotion as a failure rather than as an empty project.
+    require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
+    require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -144,6 +151,388 @@ namespace INSPIRE\UniversalValidator\Scan {
         $sdb->select('SELECT * FROM plain', []) === [[1, 'a']]);
     check('moduledb: and an empty result is an empty list, never a null',
         $sdb->select('SELECT * FROM nothing', []) === []);
+
+    // =====================================================================
+    // OC-3 - A READ THAT FAILED IS NOT AN EMPTY ONE
+    // =====================================================================
+    //
+    // select() handed a false straight to rows(), which answered [] - so on a
+    // build that reports a failed statement by returning false, one failed
+    // read of the aggregates gave promotion zero violations and zero rule
+    // problems, and the run was stored clean. The same build is the one the
+    // write-side checks above already model; it is a real case, not a
+    // hypothetical one.
+    $readFalse = new RecordingFramework();
+    $readFalse->overrideSelect = true;
+    $readFalse->selectAnswer = false;
+    $rdb = new ModuleDb($readFalse);
+    check('moduledb: a read that returned false is a failure, not an empty result',
+        threw(function () use ($rdb) { $rdb->select('SELECT * FROM t', []); }) === 'unavailable');
+    foreach (['true' => true, 'null' => null, 'a string' => 'rows', 'an integer' => 0,
+              'an object with nothing to fetch' => new \stdClass()] as $what => $answer) {
+        $odd = new RecordingFramework();
+        $odd->overrideSelect = true;
+        $odd->selectAnswer = $answer;
+        $odb = new ModuleDb($odd);
+        check('moduledb: a read answered with ' . $what . ' is a failure, not an empty result',
+            threw(function () use ($odb) { $odb->select('SELECT * FROM t', []); }) === 'unavailable');
+    }
+    // THE CONTROL. A result that can be walked and holds nothing is still the
+    // empty answer it always was.
+    $walkable = new RecordingFramework();
+    $walkable->overrideSelect = true;
+    $walkable->selectAnswer = new class {
+        public function fetch_row() { return null; }
+    };
+    check('moduledb: a walkable result with no rows is still an empty list',
+        (new ModuleDb($walkable))->select('SELECT * FROM t', []) === []);
+    // And the write side is unchanged by it: exec() still reads a count that
+    // never arrived as a failure, through the same rows().
+    $noCount = new RecordingFramework();
+    $noCount->rowCount = null;
+    check('moduledb: a write whose count could not be read still fails as before',
+        threw(function () use ($noCount) { (new ModuleDb($noCount))->exec('UPDATE t SET a = 1', []); })
+            === 'unavailable');
+
+    // THROUGH THE STORE AND THE VERDICT, the path the finding was about. The
+    // run row and the record states read normally; only the aggregates read
+    // fails, and promotion must not finish the run on the strength of it.
+    $flaky = new RecordingFramework();
+    $flaky->canned = [
+        'FROM ' . Schema::table('scan_run') => [uv_run_row(['run_id' => 5, 'project_id' => 970,
+            'phase' => ScanPhase::ROLLUP, 'manifest_total' => '1', 'manifest_done' => '1',
+            'fence_target' => '500', 'detail_rows' => '3'])],
+        'GROUP BY state' => [[ScanStore::REC_DONE, 1]],
+    ];
+    $flaky->overrideSelect = true;
+    $flaky->overrideOnly = Schema::table('scan_aggregate');
+    $flaky->selectAnswer = false;
+    $fstore = new SqlScanStore(new ModuleDb($flaky));
+    check('moduledb: the store reports a failed aggregates read as a storage failure',
+        threw(function () use ($fstore) { $fstore->aggregates(5); }) === 'unavailable');
+    check('moduledb: and promotion does not certify a run over it',
+        threw(function () use ($fstore) {
+            ScanPromotion::promote($fstore, 970, 5, ['uniqueDone' => true, 'rollupDone' => true]);
+        }) === 'unavailable');
+    $finished = false;
+    foreach ($flaky->queries as $q) {
+        if (strpos($q, 'UPDATE ' . Schema::table('scan_run')) !== false
+                && strpos($q, 'terminal = ?') !== false) $finished = true;
+    }
+    check('moduledb: so the run was never written terminal', $finished === false);
+    $states = new RecordingFramework();
+    $states->overrideSelect = true;
+    $states->overrideOnly = 'GROUP BY state';
+    $states->selectAnswer = false;
+    $sstore = new SqlScanStore(new ModuleDb($states));
+    check('moduledb: a failed record-state census is a storage failure, not an empty census',
+        threw(function () use ($sstore) { $sstore->recordStates(5); }) === 'unavailable');
+
+    // =====================================================================
+    // THE UNCOUNTED WRITE (P2)
+    // =====================================================================
+    //
+    // Most writes in the store discard their count, and over the framework each
+    // one still paid a second round trip to read it. execNoCount() is that write
+    // without the question. What matters is what affected() says AFTERWARDS: it
+    // must never be a number a fence could compare.
+
+    $fresh = new ModuleDb(new RecordingFramework());
+    check('uncounted: a connection that has counted nothing answers -1, not zero',
+        $fresh->affected() === -1);
+
+    $fw6 = new RecordingFramework();
+    $fw6->rowCount = 3;
+    $db6 = new ModuleDb($fw6);
+    $db6->exec('UPDATE t SET a = 1', []);
+    $db6->execNoCount('INSERT INTO audit (x) VALUES (1)', []);
+    $asked6 = 0;
+    foreach ($fw6->queries as $q) {
+        if (strpos($q, 'ROW_COUNT') !== false) $asked6++;
+    }
+    check('uncounted: the write is sent and the row count is not asked for',
+        in_array('INSERT INTO audit (x) VALUES (1)', $fw6->queries, true) && $asked6 === 1);
+    check('uncounted: affected() afterwards refuses, rather than answering for the earlier write',
+        threw(function () use ($db6) { $db6->affected(); }) === 'LogicException');
+    $db6->exec('UPDATE t SET a = 2', []);
+    check('uncounted: and the next counted write restores the count',
+        $db6->affected() === 3);
+
+    // A chatty framework build breaks ROW_COUNT() for every counted write. An
+    // uncounted one never asks, so it is the one kind of write that survives it.
+    $chatty6 = new RecordingFramework();
+    $chatty6->chatty = true;
+    $db7 = new ModuleDb($chatty6);
+    check('uncounted: a build that spoils ROW_COUNT does not spoil a write that never reads it',
+        threw(function () use ($db7) { $db7->execNoCount('UPDATE t SET a = 1', []); }) === 'returned');
+
+    $falsey6 = new RecordingFramework();
+    $falsey6->writeReturnsFalse = true;
+    $db8 = new ModuleDb($falsey6);
+    check('uncounted: a write that returned false is still a failure',
+        threw(function () use ($db8) { $db8->execNoCount('UPDATE t SET a = 1', []); }) === 'unavailable');
+
+    // The test doubles answer the same way, so a store method that reads
+    // affected() after an uncounted write is red in the fast suite and on the
+    // matrix - not only in REDCap, where nobody is watching.
+    $sdb6 = new ScriptedDb();
+    $sdb6->execNoCount('UPDATE t SET a = 1', []);
+    check('uncounted: the scripted double refuses the same question',
+        threw(function () use ($sdb6) { $sdb6->affected(); }) === 'LogicException');
+    $sdb6->failAt('INSERT INTO armed', 1);
+    check('uncounted: and a fault armed on a statement still fires when it is sent uncounted',
+        threw(function () use ($sdb6) { $sdb6->execNoCount('INSERT INTO armed (a) VALUES (1)', []); })
+            === 'RuntimeException');
+
+    // ---------------------------------------------------------------------
+    // THE ORDER LINT. The throw above only fires on a path a test happens to
+    // run. This reads the source instead: inside each function body, the write
+    // nearest above every ->affected( must be ->exec(, never ->execNoCount( and
+    // never nothing at all. It is LINEAR and FUNCTION-LOCAL on purpose - a read
+    // that depends on a write in some other function is the shape insertRecords()
+    // used to have, and the fix was to make it return its own count.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Calls on an object that cannot move what affected() answers: reads and
+     * transaction control. Any OTHER method called between a write and the read
+     * of its count is "unknown" - it may itself write (review ST-3).
+     */
+    const ORDER_LINT_SAFE = ['select', 'begin', 'commit', 'rollback'];
+
+    /** @return array list of "function:line problem" for one PHP source text */
+    function writeOrderFaults($source)
+    {
+        $toks = token_get_all($source);
+        $faults = [];
+        $fn = null; $fnDepth = null; $depth = 0; $pendingFn = null; $last = null;
+        // TWO MORE THINGS THE LINEAR WALK COULD NOT SEE (review ST-3).
+        //
+        // A HELPER BETWEEN THE WRITE AND THE READ. `$this->audit()` sends an
+        // uncounted INSERT, so `exec(); $this->audit(); affected()` reads a
+        // count the helper has already spoiled - and the walk, which only knew
+        // the db's own verbs, saw exec() then affected() and passed it. Any
+        // method called after the write (outside the write's own argument list)
+        // and before the read now makes the count unknown, unless it is one of
+        // ORDER_LINT_SAFE.
+        //
+        // A WRITE ON EACH SIDE OF A BRANCH. `if (..) execNoCount(); else exec();
+        // affected()` is linear token order execNoCount, exec, read - so the
+        // walk saw exec() last and passed a read that is wrong on one path. An
+        // uncounted write since the previous read, then a branch (else,
+        // elseif, case, default, or a ternary's ? or :), then the counted
+        // write, is now a fault. That also catches some code which would be
+        // correct - an uncounted write followed by an if/else that writes
+        // counted on both arms - and the cure is the one insertFindingChunk()
+        // takes: give the counted write and its read a function of their own.
+        $writeEnd = -1; $taint = null;
+        $lastReadAt = -1; $lastExecAt = -1; $noCountAt = []; $branchAt = [];
+        $count = count($toks);
+        for ($i = 0; $i < $count; $i++) {
+            $t = $toks[$i];
+            if (!is_array($t)) {
+                if ($t === '{') {
+                    $depth++;
+                    if ($pendingFn !== null && $fn === null) {
+                        $fn = $pendingFn; $fnDepth = $depth; $last = null;
+                        $taint = null; $writeEnd = -1;
+                        $lastReadAt = $lastExecAt = -1; $noCountAt = []; $branchAt = [];
+                    }
+                    $pendingFn = null;
+                } elseif ($t === '}') {
+                    if ($fn !== null && $depth === $fnDepth) { $fn = null; $fnDepth = null; }
+                    $depth--;
+                } elseif ($t === ';') {
+                    $pendingFn = null;          // an interface or abstract declaration
+                } elseif (($t === '?' || $t === ':') && $i > $writeEnd) {
+                    // A ternary's two arms are branches. Not inside a write's
+                    // own arguments, which run before the write whatever they
+                    // choose.
+                    $branchAt[] = $i;
+                }
+                continue;
+            }
+            if (in_array($t[0], [T_ELSE, T_ELSEIF, T_CASE, T_DEFAULT], true)) {
+                $branchAt[] = $i;
+                continue;
+            }
+            if ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES) { $depth++; continue; }
+            if ($t[0] === T_FUNCTION) {
+                // A NAMED function only. A closure stays part of the body that
+                // holds it, so its reads are judged against that body's writes.
+                for ($j = $i + 1; $j < $count; $j++) {
+                    if (is_array($toks[$j]) && $toks[$j][0] === T_WHITESPACE) continue;
+                    if ($toks[$j] === '&') continue;
+                    if (is_array($toks[$j]) && $toks[$j][0] === T_STRING && $fn === null) {
+                        $pendingFn = $toks[$j][1];
+                    }
+                    break;
+                }
+                continue;
+            }
+            if ($t[0] !== T_OBJECT_OPERATOR) continue;
+            $name = null;
+            for ($j = $i + 1; $j < $count; $j++) {
+                if (is_array($toks[$j]) && $toks[$j][0] === T_WHITESPACE) continue;
+                if (is_array($toks[$j]) && $toks[$j][0] === T_STRING) $name = $toks[$j];
+                break;
+            }
+            if ($name === null) continue;
+            $open = false;
+            for ($k = $j + 1; $k < $count; $k++) {
+                if (is_array($toks[$k]) && $toks[$k][0] === T_WHITESPACE) continue;
+                $open = ($toks[$k] === '(');
+                break;
+            }
+            if (!$open) continue;
+            $where = ($fn === null ? '(file scope)' : $fn) . ':' . $name[2] . ' ';
+            if ($name[1] === 'exec' || $name[1] === 'execNoCount') {
+                $last = $name[1];
+                $taint = null;
+                if ($name[1] === 'exec') $lastExecAt = $i; else $noCountAt[] = $i;
+                // The write's own argument list is evaluated BEFORE the write,
+                // so a call inside it cannot spoil the count; skip to its end.
+                $paren = 0;
+                for ($p = $k; $p < $count; $p++) {
+                    if ($toks[$p] === '(') $paren++;
+                    elseif ($toks[$p] === ')' && --$paren === 0) break;
+                }
+                $writeEnd = $p;
+            } elseif ($name[1] === 'affected') {
+                if ($last !== 'exec') {
+                    $faults[] = $where
+                        . ($last === null ? 'reads a count with no write above it'
+                                          : 'reads a count after execNoCount()');
+                } elseif ($taint !== null) {
+                    $faults[] = $where . 'reads a count after ' . $taint
+                        . '(), which may have written since the counted one';
+                } else {
+                    // An uncounted write since the previous read, then a
+                    // branch, then the counted write this read follows.
+                    $split = false;
+                    foreach ($noCountAt as $nc) {
+                        if ($nc <= $lastReadAt) continue;
+                        foreach ($branchAt as $b) {
+                            if ($b > $nc && $b < $lastExecAt) { $split = true; break 2; }
+                        }
+                    }
+                    if ($split) {
+                        $faults[] = $where . 'reads a count that an execNoCount() on another '
+                            . 'branch may have replaced';
+                    }
+                }
+                $lastReadAt = $i;
+            } elseif ($last !== null && $i > $writeEnd
+                      && !in_array($name[1], ORDER_LINT_SAFE, true)) {
+                $taint = $name[1];
+            }
+        }
+        return $faults;
+    }
+
+    $wrap = function ($body) {
+        return "<?php\nclass T { private \$db; function f() {\n" . $body . "\n} }\n";
+    };
+    check('order lint: a counted write and then the question is clean',
+        writeOrderFaults($wrap('$this->db->exec("U"); return $this->db->affected();')) === []);
+    check('order lint: the question after an uncounted write is caught',
+        count(writeOrderFaults($wrap('$this->db->execNoCount("U"); return $this->db->affected();'))) === 1);
+    check('order lint: and so is an uncounted write slipped between the two',
+        count(writeOrderFaults($wrap(
+            '$this->db->exec("U"); $this->db->execNoCount("A"); return $this->db->affected();'))) === 1);
+    check('order lint: a question with no write above it in its own function is caught',
+        count(writeOrderFaults($wrap('return $this->db->affected();'))) === 1);
+    check('order lint: a write in ANOTHER function does not excuse it',
+        count(writeOrderFaults("<?php\nclass T { function w() { \$this->db->exec('U'); }\n"
+            . "function r() { return \$this->db->affected(); } }\n")) === 1);
+    check('order lint: the word in a comment or a string is not a read',
+        writeOrderFaults($wrap("// \$this->db->affected()\n\$s = '\$this->db->affected()';"
+            . ' $this->db->execNoCount("U");')) === []);
+    // ST-3: a helper between the write and the read.
+    check('order lint: a helper called between the write and the read is caught',
+        count(writeOrderFaults($wrap(
+            '$this->db->exec("U"); $this->audit(1); return $this->db->affected();'))) === 1);
+    check('order lint: but a call inside the write\'s own arguments is not',
+        writeOrderFaults($wrap(
+            '$this->db->exec("U", [$this->now()]); return $this->db->affected();')) === []);
+    check('order lint: nor is a read of the database between them',
+        writeOrderFaults($wrap(
+            '$this->db->exec("U"); $this->db->select("S"); return $this->db->affected();')) === []);
+    // ST-3: a write on each side of a branch.
+    check('order lint: an uncounted write on the other branch of an if is caught',
+        count(writeOrderFaults($wrap('if ($a) $this->db->execNoCount("A"); else $this->db->exec("U");'
+            . ' return $this->db->affected();'))) === 1);
+    check('order lint: and of a switch',
+        count(writeOrderFaults($wrap('switch ($a) { case 1: $this->db->execNoCount("A"); break;'
+            . ' default: $this->db->exec("U"); } return $this->db->affected();'))) === 1);
+    check('order lint: and of a ternary',
+        count(writeOrderFaults($wrap('$a ? $this->db->execNoCount("A") : $this->db->exec("U");'
+            . ' return $this->db->affected();'))) === 1);
+    check('order lint: while an uncounted write before the previous read is not',
+        writeOrderFaults($wrap('$this->db->execNoCount("A"); $this->db->exec("U");'
+            . ' $x = $this->db->affected(); if ($x) { $this->db->exec("V"); }'
+            . ' else { $this->db->exec("W"); } return $this->db->affected();')) === []);
+    check('order lint: nor a ternary inside an uncounted write\'s own arguments',
+        writeOrderFaults($wrap('$this->db->execNoCount("A", [$a ? 1 : 2]); $this->db->exec("U");'
+            . ' return $this->db->affected();')) === []);
+
+    // THE REVIEW'S MUTATIONS OF THE REAL STORE, made in memory. Each anchor is
+    // asserted present first, so a refactor that moves one fails here rather
+    // than quietly turning the check into a test of nothing.
+    $storeSrc = file_get_contents(__DIR__ . '/../php/Scan/SqlScanStore.php');
+    $mutations = [
+        'M1 cancel() reads its count after audit(), which sends an uncounted write' => [
+            "        \$ok = \$this->db->affected() === 1;\n"
+            . "        if (\$ok) \$this->audit(\$pid, \$runId, 'cancel', \$actor, null);",
+            "        \$this->audit(\$pid, \$runId, 'cancel', \$actor, null);\n"
+            . "        \$ok = \$this->db->affected() === 1;"],
+        'M2 the claim fence is exec() on one branch and execNoCount() on the other' => [
+            "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)",
+            "                if (\$rec['state'] === 99) \$this->db->execNoCount('UPDATE x', []); else\n"
+            . "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)"],
+        'M3 the claim fence itself sent uncounted' => [
+            "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)",
+            "                \$this->db->execNoCount('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)"],
+        'M4 finish() sent uncounted' => [
+            "        \$this->db->exec('UPDATE ' . Schema::table('scan_run') . '\n"
+            . "            SET phase = ?, terminal = ?",
+            "        \$this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '\n"
+            . "            SET phase = ?, terminal = ?"],
+    ];
+    check('order lint: the store as shipped has no fault to find', writeOrderFaults($storeSrc) === []);
+    foreach ($mutations as $what => $m) {
+        check('order lint: mutation anchor present - ' . $what, strpos($storeSrc, $m[0]) !== false);
+        check('order lint: and caught - ' . $what,
+            count(writeOrderFaults(str_replace($m[0], $m[1], $storeSrc))) >= 1);
+    }
+
+    $lintFiles = glob(__DIR__ . '/../php/Scan/*.php');
+    $lintFiles[] = __DIR__ . '/../UniversalValidator.php';
+    $lintFaults = [];
+    $lintReads = 0;
+    $lintUncounted = 0;
+    foreach ($lintFiles as $f) {
+        $src = file_get_contents($f);
+        foreach (writeOrderFaults($src) as $x) $lintFaults[] = basename($f) . ' ' . $x;
+        $code = '';
+        foreach (token_get_all($src) as $tok) {
+            if (is_array($tok) && in_array($tok[0], [T_COMMENT, T_DOC_COMMENT,
+                T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) continue;
+            $code .= is_array($tok) ? $tok[1] : $tok;
+        }
+        $lintReads += preg_match_all('/->\s*affected\s*\(/', $code);
+        $lintUncounted += preg_match_all('/->\s*execNoCount\s*\(/', $code);
+    }
+    foreach ($lintFaults as $x) fwrite(STDERR, "  order lint: $x\n");
+    check('order lint: every affected() read in the shipped tree follows an exec() in its own function',
+        $lintFaults === []);
+    // NOT INERT. A lint that found nothing to judge would pass the line above.
+    check('order lint: and it was judging real reads and real uncounted writes',
+        $lintReads >= 15 && $lintUncounted >= 15);
 
     // =====================================================================
     // LEG TWO — the same class against a real server
