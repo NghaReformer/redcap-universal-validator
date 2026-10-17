@@ -631,7 +631,7 @@ the specimen ID on the collection form.
   a field of this record, `{"target":"[field of this record]"}`, up to 5 pairs;
   the target values must sit in the same entry as the searched value (one event
   row, or one repeat instance with its event row). Optional `when`, `message`,
-  `blockSave`, `surveys`.
+  `blockSave`, `surveys`, `return` and `where` (below).
 - **Comparison of stored values.** Trimmed, with A-Z letter case ignored
   (`sp-1` finds `SP-1`) unless the rule sets `"caseSensitive":true`. When the
   searched field holds numbers (an integer or number Text field, a calc or a
@@ -659,13 +659,13 @@ the specimen ID on the collection form.
 - **Branches.** With several `when` branches, the page sends the values its
   conditions read, so the server answers from the branch the page is enforcing,
   also on a record not saved yet.
-- **The page config never says where the rule looks.** `in`, `event`, `scope`
-  and `match` stay on the server, which reads them from the stored rule. On a
+- **The page config never says where the rule looks.** `in`, `event`, `scope`,
+  `match` and `where` stay on the server, which reads them from the stored rule. On a
   survey a misconfigured rule shows only a general notice, and the "no access"
   reason staff see does not name a form or field.
 - **Who gets an answer.** Signed-in users are answered only when they may open
-  every form the lookup reads (the searched field and the `match` fields; a
-  record-ID lookup needs no extra form), and at most 60 lookups a minute per
+  every form the lookup reads (the searched field, the `match` fields and the
+  `where` fields; a record-ID lookup without `where` needs no extra form), and at most 60 lookups a minute per
   session, shared with `@UVUNIQUE`. A user in a Data Access Group is answered
   only on records of their own group. Staff in no group see the record the value
   was found in; staff in a group see it only when it is in their group. A
@@ -678,12 +678,14 @@ the specimen ID on the collection form.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
   check on surveys, answered as found / not found only, under the survey
   throttle. It is refused when any field the lookup touches is an Identifier
-  (the field, the `match` fields, the searched field, or the record-ID field for
-  a record-ID lookup), and when the Identifier flags cannot be read. A *not
+  (the field, the `match` fields, the searched field, the `where` fields, or the
+  record-ID field for a record-ID lookup), and when the Identifier flags cannot
+  be read. A *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
   check*, which a survey shows as nothing.
-- **Audited.** The post-save audit logs `type: exists`, reason `not-found`.
+- **Audited.** The post-save audit logs `type: exists`, reason `not-found`
+  (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The
   Validation scan reads the searched field once per rule per scan request and
   checks every record against it. A lookup that cannot be completed is reported
@@ -698,7 +700,7 @@ the specimen ID on the collection form.
   project's fields and events. Three parties must agree. An administrator turns
   on "@UVEXISTS in other projects". The searched project enables the module and
   lists this project under "Projects that may look up values here", with the
-  fields it may search and who gets an answer (only users with rights to those
+  fields it may search or filter on and who gets an answer (only users with rights to those
   fields there, confined to their group there; or any signed-in user of this
   project, found / not found only, with no Identifier searched). Surveys are
   answered only when that project also allows it. Until its agreement
@@ -732,6 +734,19 @@ the specimen ID on the collection form.
   the fields it lets others copy, under "Only users who have rights"; its
   probe log then names the fields the rule copies and, when values were
   handed over, the record they came from.
+- **Only entries that meet conditions (`where`).**
+  `"where":"[consent]='1' and ([status]<>'3' or [withdraw_date]>[coll_date])"`
+  accepts the value only when the entry that holds it meets the condition. The
+  condition takes the language of `when` (`and`, `or`, `not`, parentheses) and
+  tests up to 10 fields of the entry found, against fixed values or each other;
+  `match` stays the way to compare with this record. A value saved only in
+  entries that fail it gets its own answer for staff (`whereMessage`, or "The
+  value is saved, but not in an entry that meets this rule's conditions."),
+  enforced as *not found*; a survey shows the plain *not found*. The audit
+  reason is `filtered`. The `where` fields are fields the lookup reads, for
+  rights, survey Identifier checks and another project's agreement, and must be
+  on the form searched or a form that does not repeat. The condition stays on
+  the server.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.
@@ -1026,6 +1041,11 @@ check-character primitive, but the full runtime path the module actually uses:
   `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur
   only, never blocks on *could not check*, the cache and stale replies, and
   Save asking again after a cached *not found*.
+  `tests/exists_where_php.php` and `tests/exists_where_dom_js.cjs` cover
+  `where`: the grammar, the dictionary checks, the test of each entry (AND,
+  OR, letter case, blanks, checkboxes, dates, decimal commas), the read that
+  confirms a narrowed one, the fourth answer on the server and on the page,
+  surveys, rights, `return`, the audit and the scan.
 - `tests/lookup_php.php` / `tests/lookup_js.cjs` — how `@UVEXISTS` and
   `@UVUNIQUE` compare values (trim, letter case, numbers by value) in both
   runtimes from one fixture, `tests/lookup_fixture.json`.
@@ -1119,6 +1139,8 @@ php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rig
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
 php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, endpoint values, save write, rights
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
+php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
+node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json

@@ -1040,6 +1040,26 @@ users who have rights". The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
 change to the entry found reaches this record when it is saved again.
 
+**Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
+Yes. Add `where`, a condition on the entry found:
+`@UVEXISTS={"in":"[specimen_id]","project":"lab","where":"[consent]='1' and ([status]<>'3' or [withdraw_date]>[coll_date])"}`.
+It takes the language of `when`. A condition is one comparison, or several joined
+with `and`, `or` and `not`, with parentheses, keywords in any letter case. Its fields are
+fields of the entry found, compared with fixed values or with each other; to
+compare with a field of this record, use `match`. A checkbox box is tested as
+`[field(code)]`. Dates are written Y-M-D (`'2026-03-01'`) and numbers with a
+decimal point. A blank side of `<`, `>`, `<=` or `>=` fails the comparison.
+When the value is saved but no entry holding it meets `where`, staff see the
+rule's `whereMessage`, or "This value is saved, but not in an entry that meets
+this rule's conditions.", and the save is held as for "not found". A survey
+respondent sees the plain "not found". `where` tests at most 10 fields, each on
+the form searched or on a form that does not repeat. With `"in":"record"`, a
+longitudinal project names the event the record's entry is read from with
+`event`. The `where` fields count as fields the lookup reads, for user rights,
+for Identifier checks on surveys and, in another project, for the list of
+fields that project lets this one search or filter on. The audit logs the case
+with reason `filtered`.
+
 **Can a lab value get a gentle warning when unusual and a block when impossible?**
 Yes. The `@UVRANGE` tag takes two ranges.
 `@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}` shows an amber note

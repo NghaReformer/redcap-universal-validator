@@ -48,6 +48,18 @@
  * made-up ones in data/references/examples, read as a folder of extra
  * references is ($examples below).
  *
+ * An expect block may also follow a @UVEXISTS tag with "where". Each line
+ * gives the value and the entry it is saved in, as "with <field>=<value>,
+ * ..." (a checkbox box as <field>(<code>)=1; a field left out is blank), and
+ * the result says whether that entry meets "where":
+ *
+ *     found                            the entry meets "where"
+ *     filtered                         saved, but the entry does not
+ *
+ * These lines run through AnnotationRules::existsWhereHolds, the test the
+ * lookup applies to each entry it reads. They are not written to the
+ * fixture: the browser never sees a "where".
+ *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which
  * tests/docs_examples_js.cjs replays through the browser engine, so the two
@@ -210,12 +222,13 @@ foreach ($docs as $doc) {
             }
         }
     }
-    $previous = null;   // [kind, last parsed @UVALIDATE fragment or null, its line]
+    $previous = null;   // [kind, last parsed @UVALIDATE / @UVRANGE / @UVEXISTS-with-where fragment or null, its line]
     foreach ($blocks as $block) {
         list($kind, $start, $body) = $block;
         if ($kind === 'expect') {
             if (!$previous || $previous[0] !== 'plain' || !$previous[1]) {
-                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE or @UVRANGE tag";
+                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE, @UVRANGE "
+                    . 'or @UVEXISTS-with-"where" tag';
                 $previous = null;
                 continue;
             }
@@ -228,6 +241,27 @@ foreach ($docs as $doc) {
                 if ($cut === false) { $failures[] = "$doc:$lineNo expect line has no \"=>\": $t"; continue; }
                 $input = str_replace('\n', "\n", trim(substr($t, 0, $cut)));
                 $want = $norm(substr($t, $cut + 2));
+                if (($frag['type'] ?? null) === 'exists') {
+                    $entry = [];
+                    $w = stripos(' ' . $input, ' with ');
+                    if ($w !== false) {
+                        foreach (explode(',', substr($input, $w + 5)) as $pair) {
+                            if (!preg_match('/^\s*([a-z][a-z0-9_]*)(?:\(([^()]+)\))?\s*=(.*)$/', $pair, $pm)) {
+                                $failures[] = "$doc:$lineNo expect input \"$pair\" is not <field>=<value> or <field>(<code>)=<value>";
+                                continue 2;
+                            }
+                            if ($pm[2] !== '') $entry[$pm[1]][$pm[2]] = trim($pm[3]);
+                            else $entry[$pm[1]] = trim($pm[3]);
+                        }
+                    }
+                    $p = Logic::parse((string) $frag['existsWhere']);
+                    $got = AnnotationRules::existsWhereHolds($p['ast'], $entry, !empty($frag['caseSensitive'])) ? 'found' : 'filtered';
+                    $checks++;
+                    if ($got !== $want) {
+                        $failures[] = "$doc:$lineNo " . json_encode($entry) . " expected \"$want\" but got \"$got\"";
+                    }
+                    continue;
+                }
                 if (($frag['type'] ?? null) === 'range' && isset($frag['rangeReference'])) {
                     $with = [];
                     $w = stripos($input, ' with ');
@@ -290,7 +324,8 @@ foreach ($docs as $doc) {
                 continue;
             }
             if ($errors) { $failures[] = "$doc:$lineNo " . implode(' | ', $errors) . ' :: ' . substr($tagText, 0, 90); continue; }
-            if (count($frags) === 1 && (strncmp($tagText, '@UVALIDATE', 10) === 0 || strncmp($tagText, '@UVRANGE', 8) === 0)) {
+            if (count($frags) === 1 && (strncmp($tagText, '@UVALIDATE', 10) === 0 || strncmp($tagText, '@UVRANGE', 8) === 0
+                    || (strncmp($tagText, '@UVEXISTS', 9) === 0 && isset($frags[0]['existsWhere'])))) {
                 $last = $frags[0];
                 $lastLine = $lineNo;
             }

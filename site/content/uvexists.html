@@ -28,6 +28,10 @@ a value of another field such as the specimen ID on the collection form.</p>
     this record, e.g. <code>{"site_code":"[site]"}</code>; up to 5 pairs</td></tr>
 <tr><td><code>return</code></td><td>Copy fields of the entry found into fields of this form,
     e.g. <code>{"lab_site":"[result_site]"}</code>; up to 10 pairs (see below)</td></tr>
+<tr><td><code>where</code></td><td>A condition the entry found must meet, e.g.
+    <code>"[consent]='1' and [status]&lt;&gt;'3'"</code>; up to 10 fields (see below)</td></tr>
+<tr><td><code>whereMessage</code></td><td>The message staff see when the value is saved, but
+    not in an entry that meets <code>where</code></td></tr>
 <tr><td><code>surveys</code></td><td><code>true</code> to check on surveys too (off by default)</td></tr>
 <tr><td><code>project</code></td><td>Look in another project on the same server, by project id or by an
     alias set in this project's module settings; that project must agree (see below)</td></tr>
@@ -73,7 +77,8 @@ same decimal mark.</p>
 <li>A blank value checks nothing, and so does a blank <code>match</code> field on the
     same page. A <code>match</code> field on another form that is still blank shows
     "could not check" to staff.</li>
-<li>Signed-in users are answered only when they may open the forms the lookup reads, and
+<li>Signed-in users are answered only when they may open the forms the lookup reads (the
+    searched field's, the <code>match</code> fields' and the <code>where</code> fields'), and
     at most 60 times a minute. A user in a Data Access Group is answered only on records
     of their own group. Staff in no group see the record the value was found in; staff in
     a group see it only when it is in their group. A record-ID lookup never names a
@@ -82,7 +87,7 @@ same decimal mark.</p>
     that looks across groups is kept only when the module sees other groups' records in
     the same request; otherwise it is "could not check".</li>
 <li>The page config never carries where the rule looks (<code>in</code>,
-    <code>event</code>, <code>scope</code>, <code>match</code>). On a survey a
+    <code>event</code>, <code>scope</code>, <code>match</code>, <code>where</code>). On a survey a
     misconfigured rule shows a general notice, and the "no access" reason staff see
     names no form or field.</li>
 <li>On a <strong>survey</strong> the check runs only when the rule says
@@ -99,8 +104,9 @@ same decimal mark.</p>
 <li>An administrator turns on <strong>@UVEXISTS in other projects</strong> in the Control
     Center. It is off by default.</li>
 <li>The searched project enables the module and lists the asking project under
-    <strong>Projects that may look up values here</strong>, with the fields it may search
-    (<code>record</code> for its record ID) and who gets an answer: only users with rights to
+    <strong>Projects that may look up values here</strong>, with the fields it may search or
+    filter on (<code>record</code> for its record ID; <code>where</code> fields count as
+    searched) and who gets an answer: only users with rights to
     those fields there (the default; a user in a Data Access Group there is answered from
     their group only), or any signed-in user of the asking project, with found or not found
     only and no Identifier searched. Survey respondents are answered only under the second
@@ -281,10 +287,66 @@ without naming the code. The page and the save check the user's rights in both p
 here the forms of this field and of each <code>match</code> field here, there the forms of
 the fields searched and copied.</p>
 
+<h2>Only entries that meet conditions</h2>
+
+<p>With <code>where</code> the value must be saved in an entry that meets a condition on
+that entry. The condition takes the language of <code>when</code>: one comparison, or several
+joined with <code>and</code>, <code>or</code> and <code>not</code>, with parentheses and
+keywords in any letter case.</p>
+
+<pre><code>@UVEXISTS={"in":"[specimen_id]","project":"lab",
+           "where":"[consent]='1' and ([status]&lt;&gt;'3' or [withdraw_date]&gt;[coll_date])",
+           "whereMessage":"This specimen is registered, but not consented or withdrawn."}
+
+@UVEXISTS={"in":"[kit_number]","where":"[kit_check(2)]='1' and not([kit_check(4)]='1')"}
+
+@UVEXISTS={"in":"record","project":"screening","event":"screening_arm_1","where":"[eligible]='1'"}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Asks</th><th>Its fields are</th></tr></thead>
+<tbody>
+<tr><td><code>when</code></td><td>Does the rule apply to this record at all?</td><td>fields of this record</td></tr>
+<tr><td><code>match</code></td><td>Does the entry found hold the same value as a field of this record?</td>
+    <td>a field there, paired with a field here</td></tr>
+<tr><td><code>where</code></td><td>Does the entry found meet fixed conditions?</td><td>fields of the entry found</td></tr>
+</tbody>
+</table>
+</div>
+
+<ul>
+<li><strong>The answer.</strong> A value saved only in entries that fail <code>where</code>
+    shows staff the rule's <code>whereMessage</code>, or "This value is saved, but not in an
+    entry that meets this rule's conditions." It is enforced as "not found", and empties
+    the fields a <code>return</code> fills. A survey respondent sees the plain "not found".
+    A value saved nowhere is "not found", as before.</li>
+<li><strong>One entry.</strong> <code>where</code> reads the entry where <code>in</code> and
+    every <code>match</code> matched: one event row, or one repeat instance with its event
+    row. One entry that passes is enough.</li>
+<li><strong>How values compare.</strong> Text compares with the rule's letter case, and two
+    numbers by value. A blank side of <code>&lt;</code>, <code>&gt;</code>,
+    <code>&lt;=</code> or <code>&gt;=</code> fails the comparison, but a blank status is not
+    <code>'3'</code>, so <code>[status]&lt;&gt;'3'</code> passes it. Missing Data Codes are
+    plain values. Dates are written Y-M-D, times as <code>'08:30'</code>, and numbers with a
+    decimal point; a decimal-comma field is read by value. A checkbox box is tested as
+    <code>[field(code)]</code>.</li>
+<li><strong>What it can test.</strong> Up to 10 fields of the entry found, each on the form
+    searched or on a form that does not repeat, and in a longitudinal project in every event
+    the entry can be found in. No event or instance references and no <code>[record]</code>.
+    With <code>"in":"record"</code>, every field is on a form that does not repeat, and a
+    longitudinal project names the event with <code>event</code>.</li>
+<li><strong>Rights and agreements.</strong> The <code>where</code> fields are fields the
+    lookup reads: a user needs their forms, <code>"surveys":true</code> is refused when one
+    is an Identifier, and another project must list them among the fields this project may
+    search or filter on. A refusal that would describe that project gives one message,
+    "project N cannot apply this "where" condition to the entry the lookup finds".</li>
+</ul>
+
 <h2>Audit</h2>
 
 <p>The post-save audit logs a violation as <code>type: exists</code> with reason
-<code>not-found</code>, and the Validation scan reports it. Saving the form that holds a
+<code>not-found</code>, or <code>filtered</code> for a value saved only in entries that fail
+<code>where</code>, and the Validation scan reports it. Saving the form that holds a
 <code>match</code> field checks the lookup again. The scan reads the searched field once per
 rule per scan request and checks every record against it. A lookup that could not be
 completed is reported as a rule problem, never as a pass. A scan confined to one Data Access
