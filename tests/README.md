@@ -37,16 +37,17 @@ node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown ch
 node tests/mlm_messages_dom_js.cjs  # rule messages in the MLM language on screen; string messages unchanged, a switch asks nothing
 php  tests/message_i18n_php.php  # "message" as a language map: grammar, refusals, string messages unchanged, branches, page shape
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
-node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, 5,000-point parity hash
-php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder, limits
+node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
+php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
+php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
-node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, bounds and range written into fields on the page
+node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, percentile, bounds and reference values written into fields on the page
 php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
-node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
+node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
@@ -379,6 +380,45 @@ for each entry on a shared file), and the z-score limits a reference can never
 pass (`limitProblem`: the floor or ceiling of each row, checked against
 `zRaw` at extreme measurements and between the rows of the linear tables).
 
+The percentile and the measurement at a z-score or percentile rest on the
+normal distribution function and its inverse, ported from R's `pnorm`
+(Cody, ACM TOMS 715) and `qnorm` (Wichura, AS241) into both runtimes with
+the same constants, cut-offs and branches.
+
+- `growth_normal_golden.json` holds 4,825 `pnorm` and 4,033 `qnorm` points
+  from R 4.6.1, made by `tools/normal_golden.R`. Both ports must match them
+  to 1e-15 relative (the worst is about 5.5e-16). Below x = -37.5193 R 4.6
+  returns subnormal numbers and the ports return 0, so results under 1e-300
+  are compared by absolute difference. A constant mistyped in its last
+  digits can stay inside that tolerance, so `growth_php.php` also checks
+  that the two ports carry the same numbers, literal for literal, the
+  cut-offs and branch limits included.
+- `growth_outputs_golden.json` holds 720 output points, 240 each of the
+  percentile, `valueAtZ` and `valueAtPercentile`, on rows of the 12 bundled
+  WHO references, worked out at 50 digits with mpmath by
+  `tools/growth_outputs_golden.py`. Points within 1e-9 of a rounding tie are
+  left out; the fixture holds the ties.
+- The fixture's `percentile`, `percentileText`, `valueAtText`, `output` and
+  `outputOf` sections pin the rounding on 15 significant digits (decimal
+  ties such as a median of 9.165 round up), the clamp one unit inside 0 and
+  100, a value that rounds to 0 or passes 10^15 units, the measured field's
+  scale, rows read between two rows, an L that interpolates to almost 0, a
+  measurement no z-score holds, and the key grammar. `growth_php.php` and
+  `growth_js.cjs` also pin `roundedUnits` on ties (exact binary ties round
+  up, not to even), check that every output in `COMPUTED` gives a value,
+  and that a probability that is not a number gives no percentile.
+  `parityOutputs` pins the SHA-256 of 3,000 random points. For the same
+  double both runtimes write the same text; their `exp`, `log` and `pow` can
+  still differ in the last bit, which can move a value lying on a rounding
+  edge by one unit, and the hash would show that among those 3,000 points.
+- `growth_outputs_php.php` checks the catalog `php/growth_outputs.json`: its
+  outputs, the wording of the refused keys, the engine's generated copy and
+  its hand-written twins of `GrowthReference::COMPUTED` and the decimals
+  limits, the refusals of a malformed file (an output no code computes
+  among them), `problem()` reporting one without throwing, and that a
+  catalog with fewer outputs or other parameter ranges changes what
+  `GrowthOutputs::parse` accepts with no code change.
+
 - `growth_dom_js.cjs` boots the browser rule: the note names the z-score and
   the reference, an input's change re-checks, grey notes say why a check did
   not run (staff only), saved inputs never block, withheld inputs are not
@@ -388,8 +428,9 @@ pass (`limitProblem`: the floor or ceiling of each row, checked against
   of reach), the page
   (folded inputs, tables in use, the cap), the audit and the scan.
 - `growth_return_dom_js.cjs` and `growth_return_module_php.php` cover what a
-  rule with `"return"` writes into fields. The values themselves are pinned by
-  the `outputs`, `valueAt`, `bound` and `unitsText` sections of
+  rule with `"return"` writes into fields, the percentile and the values at
+  a z-score or percentile included. The values themselves are pinned by
+  the `outputs`, `output`, `valueAt`, `bound` and `unitsText` sections of
   `growth_fixture.json`, through both twins; `growth_php.php` and
   `growth_js.cjs` also check on random rows that each bound is the edge the
   verdict draws (the bound passes, one unit beyond it does not). The DOM suite
@@ -408,7 +449,13 @@ pass (`limitProblem`: the floor or ceiling of each row, checked against
   the fields a branch or a reference owns on the event/instance path, the
   project setting that turns the write off, the scan reading only, repeating
   forms, a form saved for an input on another form, an input in another event,
-  `measureScale` and `unit`, an integer bound field, the dictionary hook's
+  `measureScale` and `unit`, an integer bound field, a rule that returns only
+  values needing no limit, `percentileDecimals` and the places each target
+  field must take (a place count the key cannot reach is not offered), one
+  value under two spellings, a key that shapes nothing returned, 16 values
+  and not 17, the documented WHO values, a catalog that cannot be read (the
+  rule is refused, the page opens, the save runs and the form's other rules
+  are still audited), the dictionary hook's
   refusals (chains and two references sharing a field included), and the live
   fixture `docs/testbed/uvrange_return_test_fields.csv` loaded as the data
   dictionary.

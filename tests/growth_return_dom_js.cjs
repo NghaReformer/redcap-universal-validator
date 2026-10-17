@@ -605,5 +605,77 @@ function radioGroup(name, codes) {
   check('writer: calculate and doBranching hear every write', env.win._calc.includes('site') && env.win._branch.includes('arm'));
 }
 
+// ---- the percentile and the values at a z-score or percentile (php/growth_outputs.json) ------------
+{
+  /* For the boy of the table, z is (y/10 - 1)/0.1: 11 kg is z 1 (percentile 84.1), the measurement at
+     z -2 is 8.0, at percentile 97 (z 1.8808) 11.88, at percentile 50 10.0. For the girl, M is 8. */
+  const NEW = { percentile: 'wfa_pct', 'valueAtZ:-2': 'wfa_m2', 'valueAtPercentile:97': 'wfa_p97', 'valueAtPercentile:50': 'wfa_p50' };
+  const NO_LIMITS = { rangeSoftLo: undefined, rangeSoftHi: undefined, rangeHardLo: undefined, rangeHardHi: undefined };
+  const read = (els) => { const o = {}; for (const f of Object.values(NEW)) o[f] = by(els, f).value; return o; };
+  const els = form('1', '11', Object.values(NEW));
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({ rangeReturn: NEW, rangePercentileDecimals: 1 }, NO_LIMITS))] });
+  check('outputs: a rule that returns only the percentile and reference values needs no limits', !shown(cfgErr(env, 'weight')));
+  check('outputs: filled as the page opens (got ' + asText(read(els)) + ')',
+    same(read(els), { wfa_pct: '84.1', wfa_m2: '8.0', wfa_p97: '11.9', wfa_p50: '10.0' }));
+  check('outputs: the opening fill announces nothing', Object.values(NEW).every((f) => by(els, f)._events.length === 0));
+  const w = by(els, 'weight');
+  w.value = '8'; w.fire('change');
+  check('outputs: 8 kg moves the percentile to 2.3, the reference values stay (got ' + asText(read(els)) + ')',
+    same(read(els), { wfa_pct: '2.3', wfa_m2: '8.0', wfa_p97: '11.9', wfa_p50: '10.0' }));
+  check('outputs: the percentile hears an input and a change, the unchanged values nothing',
+    same(by(els, 'wfa_pct')._events, ['input', 'change']) && by(els, 'wfa_m2')._events.length === 0);
+  w.value = ''; w.fire('change');
+  check('outputs: no measurement empties the percentile and keeps the reference values (got ' + asText(read(els)) + ')',
+    same(read(els), { wfa_pct: '', wfa_m2: '8.0', wfa_p97: '11.9', wfa_p50: '10.0' }));
+  const sex = by(els, 'sex');
+  w.value = '11'; w.fire('change');
+  sex.value = '2'; sex.fire('change');
+  check('outputs: a girl of 11 kg (z 3.75) is kept at 99.9, and her reference values follow (got ' + asText(read(els)) + ')',
+    same(read(els), { wfa_pct: '99.9', wfa_m2: '6.4', wfa_p97: '9.5', wfa_p50: '8.0' }));
+  sex.value = ''; sex.fire('change');
+  check('outputs: no sex empties every field', Object.values(read(els)).every((x) => x === ''));
+  /* a form opened before anything is measured shows the reference values */
+  const blank = form('1', '', Object.values(NEW));
+  boot(blank, { growth: GROWTH, rules: [rule(Object.assign({ rangeReturn: NEW, rangePercentileDecimals: 1 }, NO_LIMITS))] });
+  check('outputs: opened with the weight blank, the reference values are filled and the percentile is empty (got '
+    + asText(read(blank)) + ')', same(read(blank), { wfa_pct: '', wfa_m2: '8.0', wfa_p97: '11.9', wfa_p50: '10.0' }));
+}
+{
+  const NEW = { percentile: 'wfa_pct', 'valueAtPercentile:97': 'wfa_p97' };
+  const read = (els) => [by(els, 'wfa_pct').value, by(els, 'wfa_p97').value].join(' ');
+  let els = form('1', '11', Object.values(NEW));
+  boot(els, { growth: GROWTH, rules: [rule({ rangeReturn: NEW, rangePercentileDecimals: 3, rangeDecimals: 2 })] });
+  check('outputs: percentileDecimals 3 and decimals 2 (got ' + read(els) + ')', read(els) === '84.134 11.88');
+  els = form('1', '11', Object.values(NEW));
+  boot(els, { growth: GROWTH, rules: [rule({ rangeReturn: NEW, rangePercentileDecimals: 0, rangeDecimals: 0 })] });
+  check('outputs: no decimals (got ' + read(els) + ')', read(els) === '84 12');
+  els = form('1', '11', Object.values(NEW));
+  boot(els, { growth: GROWTH, rules: [rule({ rangeReturn: NEW, rangePercentileDecimals: 1,
+    rangeReturnComma: { percentile: true, 'valueAtPercentile:97': true } })] });
+  check('outputs: each field gets its own decimal mark (got ' + read(els) + ')', read(els) === '84,1 11,9');
+  els = form('1', '11', Object.values(NEW));
+  boot(els, { growth: GROWTH, rules: [rule({ rangeReturn: NEW })] });
+  check('outputs: a percentile without percentileDecimals is written with one decimal', read(els) === '84.1 11.9');
+}
+{
+  const bad = [
+    [{ 'valueAtZ:9': 'x' }, {}, 'a z-score out of range'],
+    [{ 'percentile:5': 'x' }, {}, 'a parameter on an output that takes none'],
+    [{ 'valueAtZ': 'x' }, {}, 'an output without its parameter'],
+    [{ percentile: 'x' }, { rangePercentileDecimals: 4 }, 'percentileDecimals out of range'],
+    [{ percentile: 'x' }, { rangePercentileDecimals: '1' }, 'percentileDecimals as text'],
+  ];
+  for (const [ret, extra, label] of bad) {
+    const els = form('1', '11', ['x']);
+    const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({ rangeReturn: ret }, extra))] });
+    check('outputs: a configuration error, ' + label, shown(cfgErr(env, 'weight')) && by(els, 'x').value === '');
+  }
+  const els = form('1', '11', ['x']);
+  const env = boot(els, { growth: GROWTH, rules: [rule({ rangeReturn: { lower: 'x', percentile: 'y' }, rangeSoftLo: undefined,
+    rangeSoftHi: undefined, rangeHardLo: undefined, rangeHardHi: undefined })] });
+  check('outputs: a bound with a percentile still needs a limit', shown(cfgErr(env, 'weight'))
+    && /no limits to check/.test(cfgErr(env, 'weight').innerHTML));
+}
+
 console.log('growth_return_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

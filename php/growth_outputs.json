@@ -1,0 +1,49 @@
+{
+  "format": "uv-growth-outputs-1",
+  "_comment": [
+    "What an @UVRANGE growth rule can work out and write: the one list both runtimes use.",
+    "php/GrowthOutputs.php reads this file; tests/gen_mode_registry.cjs writes the engine's copy into js/engine.js",
+    "(the @generated growth-outputs block) and CI fails when that copy is stale.",
+    "A key is an output id, or an id, a colon and a parameter when the entry has \"param\": valueAtZ:-2, valueAtPercentile:97.",
+    "written: number or text. places: the decimals a number, or the numbers in a text, are written with: z (always 2), decimals (the rule's",
+    "\"decimals\"), percentileDecimals (the rule's \"percentileDecimals\"). integer: a number written with 0 decimals may go",
+    "into an integer field. needs: what the value is made from besides the sex and the age or length: measurement",
+    "(the typed value), limit-low, limit-high, limit-any (the rule's limits on that side), or none.",
+    "param: the parameter's meaning, its range (both ends included) and the most decimals it may have.",
+    "shapes: where the output may appear; value is one field of \"return\".",
+    "example: a field name the parser suggests; {param} stands for the parameter, - written m and . written _.",
+    "label: the English name of the output. Every id must be one GrowthReference::COMPUTED and QRID_GROWTH_COMPUTED list."
+  ],
+  "outputs": {
+    "z": {
+      "written": "number", "places": "z", "integer": false, "needs": "measurement",
+      "shapes": ["value"], "example": "wfa_z", "label": "z-score"
+    },
+    "lower": {
+      "written": "number", "places": "decimals", "integer": true, "needs": "limit-low",
+      "shapes": ["value"], "example": "wfa_lower", "label": "lowest usual value"
+    },
+    "upper": {
+      "written": "number", "places": "decimals", "integer": true, "needs": "limit-high",
+      "shapes": ["value"], "example": "wfa_upper", "label": "highest usual value"
+    },
+    "range": {
+      "written": "text", "places": "decimals", "needs": "limit-any",
+      "shapes": ["value"], "example": "wfa_range", "label": "usual range"
+    },
+    "percentile": {
+      "written": "number", "places": "percentileDecimals", "integer": true, "needs": "measurement",
+      "shapes": ["value"], "example": "wfa_pct", "label": "percentile"
+    },
+    "valueAtZ": {
+      "written": "number", "places": "decimals", "integer": true, "needs": "none",
+      "param": {"what": "z-score", "min": "-6", "max": "6", "decimals": 2},
+      "shapes": ["value"], "example": "wfa_sd{param}", "label": "value at z-score {param}"
+    },
+    "valueAtPercentile": {
+      "written": "number", "places": "decimals", "integer": true, "needs": "none",
+      "param": {"what": "percentile", "min": "0.1", "max": "99.9", "decimals": 2},
+      "shapes": ["value"], "example": "wfa_p{param}", "label": "value at percentile {param}"
+    }
+  }
+}

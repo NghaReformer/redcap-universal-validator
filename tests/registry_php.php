@@ -92,7 +92,7 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // @UVRANGE "plausible" and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
     // @UVRANGE return values (written to fields, with the bounds' limits and decimals)
-    'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangeReturnComma',
+    'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangePercentileDecimals', 'rangeReturnComma',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -127,7 +127,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // "plausible" (its text in the reference's unit) and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
     // @UVRANGE return values travel as the field names and the numbers to write them with
-    'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangeReturnComma',
+    'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangePercentileDecimals', 'rangeReturnComma',
     'deferredOnSave', 'extendedAdvisory',
     // a branch settled false that the page has no table for; a branch group
     // whose selector the server could not resolve

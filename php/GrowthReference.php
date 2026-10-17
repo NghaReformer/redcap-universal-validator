@@ -42,7 +42,21 @@ final class GrowthReference
     const BOUND_LIMIT = 21;
     /** The most decimals a returned bound may be written with. */
     const MAX_DECIMALS = 6;
-    /** A bound counted in more units than this is not written (both runtimes hold it exactly far below 2^53). */
+    /** The most decimals, and the default, a returned percentile is written with ("percentileDecimals"). */
+    const MAX_PERCENTILE_DECIMALS = 3;
+    const DEFAULT_PERCENTILE_DECIMALS = 1;
+    /**
+     * The outputs this class computes: outputs() makes the first four,
+     * output() the rest. GrowthOutputs refuses a catalog entry
+     * (php/growth_outputs.json) that is not here, so a value is never declared
+     * without the code that makes it. Twin: QRID_GROWTH_COMPUTED.
+     */
+    const COMPUTED = ['z', 'lower', 'upper', 'range', 'percentile', 'valueAtZ', 'valueAtPercentile'];
+    /**
+     * A bound, or a value at a z-score or percentile, counted in more units
+     * than this is not written: both runtimes hold such a count exactly, far
+     * below 2^53, and roundedUnits() keeps 15 significant digits.
+     */
     const MAX_BOUND_UNITS = 1e15;
     /**
      * How far from its limit, in z, a bound is looked for. A two-decimal
@@ -594,12 +608,18 @@ final class GrowthReference
         return [$lo[0] + $diff * ($hi[0] - $lo[0]), $lo[1] + $diff * ($hi[1] - $lo[1]), $lo[2] + $diff * ($hi[2] - $lo[2])];
     }
 
-    /** The unrounded z-score of $y, or null when it cannot be computed. */
+    /**
+     * The unrounded z-score of $y, or null when it cannot be computed. An L
+     * nearer 0 than MIN_L takes the L = 0 formula: a table row cannot hold
+     * one, but a row read between two of opposite sign can, and there
+     * pow($y / $m, $l) is 1 for every measurement. The formulas then differ
+     * by about L(Sz)^2/2. Twin: QRID_growthZRaw.
+     */
     public static function zRaw($y, array $lms, $restricted)
     {
         list($l, $m, $s) = $lms;
         $y = (float) $y;
-        if ($l == 0) {
+        if (abs($l) < self::MIN_L) {
             $z = log($y / $m) / $s;
             $sd = function ($k) use ($m, $s) { return $m * exp($s * $k); };
         } else {
@@ -748,7 +768,7 @@ final class GrowthReference
     {
         list($l, $m, $s) = $lms;
         $z = (float) $z;
-        if ($l == 0) {
+        if (abs($l) < self::MIN_L) {
             $sd = function ($k) use ($m, $s) { return $m * exp($s * $k); };
         } else {
             $sd = function ($k) use ($l, $m, $s) {
@@ -899,5 +919,232 @@ final class GrowthReference
     public static function markText($text, $comma)
     {
         return $comma ? str_replace('.', ',', (string) $text) : (string) $text;
+    }
+
+    /**
+     * One value other than the four outputs() makes, from the catalog
+     * (php/growth_outputs.json, GrowthOutputs), as text with a decimal point,
+     * or null when there is nothing to write:
+     *   percentile         the percentile of measurement $y (null without one);
+     *   valueAtZ           the measurement at z-score $param;
+     *   valueAtPercentile  the measurement at percentile $param.
+     * $places is the decimals the value is written with. $y is in the
+     * reference's unit; a measurement written out is in the measured field's
+     * (divided by $scale). Twin: QRID_growthOutput.
+     */
+    public static function output(array $entry, array $table, $sex, $x, $y, $of, $param, $places, $scale = null)
+    {
+        if ($of === 'percentile') return $y === null ? null : self::percentile($entry, $table, $sex, $x, $y, $places);
+        if ($of === 'valueAtZ') return self::valueAtText($entry, $table, $sex, $x, (float) $param, $places, $scale);
+        if ($of === 'valueAtPercentile') {
+            $z = self::normalQuantile((float) $param / 100);
+            return is_finite($z) ? self::valueAtText($entry, $table, $sex, $x, $z, $places, $scale) : null;
+        }
+        return null;
+    }
+
+    /**
+     * The percentile of measurement $y, 100 times the normal distribution
+     * function of its unrounded z-score (the WHO restriction beyond +-3 SD
+     * included), as text with $places decimals; null when the table has no
+     * row at $x. A measurement too large or too small for the formula sits at
+     * the end of its side. Twin: QRID_growthPercentile.
+     */
+    public static function percentile(array $entry, array $table, $sex, $x, $y, $places)
+    {
+        $lms = self::lms($entry, $table, $sex, $x);
+        if ($lms === null) return null;
+        $z = self::zRaw($y, $lms, $entry['adjust'] === 'who-restricted');
+        $cum = $z === null ? ((float) $y > $lms[1] ? 1.0 : 0.0) : self::normalCdf($z);
+        return self::percentileText($cum, $places);
+    }
+
+    /**
+     * Probability $cum as a percentile with $places decimals, rounded half
+     * away from zero and kept inside the scale: at one decimal 0.1 to 99.9,
+     * because a number field cannot say "below 0.1". Twin: QRID_growthPercentileText.
+     */
+    public static function percentileText($cum, $places)
+    {
+        if (!is_finite((float) $cum)) return null;
+        $d = (int) $places;
+        $top = (int) pow(10, $d + 2);
+        $n = self::roundedUnits(max(0.0, min(1.0, (float) $cum)) * 100, $d);
+        return self::unitsText(max(1, min($top - 1, (int) $n)), $d);
+    }
+
+    /**
+     * $v (a finite number, 0 or more) as a count of units of 10^-$d, or null
+     * when it is not such a number. The value is first rounded to 15
+     * significant digits, the most a double holds for every decimal, so a
+     * decimal tie stays a tie (a median of 9.165, held as 9.16499999999999915,
+     * reads 9.165), and that is rounded half away from zero to $d decimals
+     * (9.17). Both roundings are done here on the value's first 40 decimal
+     * digits (sprintf("%.39e"); toExponential(39) gives the same digits), so
+     * neither depends on how a library breaks a tie, and the two runtimes
+     * write the same text for the same double. Twin: QRID_growthRoundedUnits.
+     */
+    public static function roundedUnits($v, $d)
+    {
+        $v = (float) $v;
+        $d = (int) $d;
+        if (!is_finite($v) || $v < 0) return null;
+        if ($v == 0) return 0;
+        $s = sprintf('%.39e', $v);                      // "9.164999999999999147...e+0"
+        $exp = (int) substr($s, strpos($s, 'e') + 1);
+        // 15 significant digits, half up on the sixteenth (s[1] is the point)
+        $n15 = (int) ($s[0] . substr($s, 2, 14)) + ((int) $s[16] >= 5 ? 1 : 0);
+        if ($n15 >= 1000000000000000) {
+            $n15 = 100000000000000;
+            $exp++;
+        }
+        $digits = (string) $n15;
+        $shift = $exp - 14 + $d;                        // units = n15 * 10^shift
+        if ($shift >= 0) return $shift > 3 ? null : $n15 * (int) pow(10, $shift);
+        $keep = 15 + $shift;                            // digits before the one that rounds
+        if ($keep < 0) return 0;
+        $n = $keep === 0 ? 0 : (int) substr($digits, 0, $keep);
+        return (int) $digits[$keep] >= 5 ? $n + 1 : $n;
+    }
+
+    /**
+     * The measurement that scores z-score $z at $x, in the measured field's
+     * unit (the reference's divided by $scale), rounded half away from zero to
+     * $places decimals (roundedUnits); null when the table has no row at $x,
+     * no measurement above 0 scores $z, it rounds to 0 (a measurement must be
+     * above 0, as bound() keeps it), or it would take more than
+     * MAX_BOUND_UNITS units, as a bound would. Twin: QRID_growthValueAtText.
+     */
+    public static function valueAtText(array $entry, array $table, $sex, $x, $z, $places, $scale = null)
+    {
+        $lms = self::lms($entry, $table, $sex, $x);
+        if ($lms === null) return null;
+        $v = self::valueAt($z, $lms, $entry['adjust'] === 'who-restricted');
+        if ($v === null) return null;
+        $d = (int) $places;
+        $f = $scale === null ? 1.0 : (float) $scale;
+        $n = self::roundedUnits($v / $f, $d);
+        if ($n === null || $n < 1 || $n > self::MAX_BOUND_UNITS) return null;
+        return self::unitsText($n, $d);
+    }
+
+    /**
+     * The standard normal distribution function, lower tail. W. J. Cody's
+     * rational Chebyshev approximation (ACM TOMS Algorithm 715) as R computes
+     * pnorm(), step for step, with the same constants and cut-offs. Results
+     * agree with R 4.6.1 to 1e-15 relative, a few units in the last place,
+     * because exp() and the order of rounding differ between builds; below
+     * x = -37.5193, where R 4.6 returns subnormal numbers, this returns 0.
+     * Twin: QRID_growthNormalCdf; tests/growth_normal_golden.json pins both.
+     */
+    public static function normalCdf($x)
+    {
+        $x = (float) $x;
+        if (is_nan($x)) return NAN;
+        static $a = [2.2352520354606839287, 161.02823106855587881, 1067.6894854603709582, 18154.981253343561249,
+                     0.065682337918207449113];
+        static $b = [47.20258190468824187, 976.09855173777669322, 10260.932208618978205, 45507.789335026729956];
+        static $c = [0.39894151208813466764, 8.8831497943883759412, 93.506656132177855979, 597.27027639480026226,
+                     2494.5375852903726711, 6848.1904505362823326, 11602.651437647350124, 9842.7148383839780218,
+                     1.0765576773720192317e-8];
+        static $d = [22.266688044328115691, 235.38790178262499861, 1519.377599407554805, 6485.558298266760755,
+                     18615.571640885098091, 34900.952721145977266, 38912.003286093271411, 19685.429676859990727];
+        static $p = [0.21589853405795699, 0.1274011611602473639, 0.022235277870649807, 0.001421619193227893466,
+                     2.9112874951168792e-5, 0.02307344176494017303];
+        static $q = [1.28426009614491121, 0.468238212480865118, 0.0659881378689285515, 0.00378239633202758244,
+                     7.29751555083966205e-5];
+        $y = abs($x);
+        if ($y <= 0.67448975) {
+            // |x| up to qnorm(3/4)
+            $xnum = 0.0;
+            $xden = 0.0;
+            if ($y > 1.1102230246251565e-16) {
+                $xsq = $x * $x;
+                $xnum = $a[4] * $xsq;
+                $xden = $xsq;
+                for ($i = 0; $i < 3; $i++) {
+                    $xnum = ($xnum + $a[$i]) * $xsq;
+                    $xden = ($xden + $b[$i]) * $xsq;
+                }
+            }
+            return 0.5 + $x * ($xnum + $a[3]) / ($xden + $b[3]);
+        }
+        if ($y <= 5.656854249492380195206754896838) {
+            // up to sqrt(32)
+            $xnum = $c[8] * $y;
+            $xden = $y;
+            for ($i = 0; $i < 7; $i++) {
+                $xnum = ($xnum + $c[$i]) * $y;
+                $xden = ($xden + $d[$i]) * $y;
+            }
+            $temp = ($xnum + $c[7]) / ($xden + $d[7]);
+            $xsq = floor($y * 16) / 16;
+            $del = ($y - $xsq) * ($y + $xsq);
+            $cum = exp(-$xsq * $xsq * 0.5) * exp(-$del * 0.5) * $temp;
+            return $x > 0 ? 1.0 - $cum : $cum;
+        }
+        if (-37.5193 < $x && $x < 8.2924) {
+            $xsq = 1.0 / ($x * $x);
+            $xnum = $p[5] * $xsq;
+            $xden = $xsq;
+            for ($i = 0; $i < 4; $i++) {
+                $xnum = ($xnum + $p[$i]) * $xsq;
+                $xden = ($xden + $q[$i]) * $xsq;
+            }
+            $temp = $xsq * ($xnum + $p[4]) / ($xden + $q[4]);
+            $temp = (0.398942280401432677939946059934 - $temp) / $y;
+            // trunc(x * 16) / 16, rounded toward zero as R's trunc() does
+            $xsq = ($x < 0 ? -floor(-$x * 16) : floor($x * 16)) / 16;
+            $del = ($x - $xsq) * ($x + $xsq);
+            $cum = exp(-$xsq * $xsq * 0.5) * exp(-$del * 0.5) * $temp;
+            return $x > 0 ? 1.0 - $cum : $cum;
+        }
+        return $x > 0 ? 1.0 : 0.0;
+    }
+
+    /**
+     * The quantile of the standard normal distribution: the z-score below
+     * which a share $p of children lie. Wichura's AS241 (PPND16) as R computes
+     * qnorm(), with the same constants and branches, agreeing with R 4.6.1 to
+     * 1e-15 relative (R 4.3 and later add an asymptotic branch for tails far
+     * beyond the 0.1 to 99.9 percentiles a rule names); -INF at 0, INF at 1,
+     * NAN outside 0 to 1. Twin: QRID_growthNormalQuantile;
+     * tests/growth_normal_golden.json pins both.
+     */
+    public static function normalQuantile($p)
+    {
+        $p = (float) $p;
+        if (is_nan($p) || $p < 0 || $p > 1) return NAN;
+        if ($p == 0) return -INF;
+        if ($p == 1) return INF;
+        $q = $p - 0.5;
+        if (abs($q) <= 0.425) {
+            $r = 0.180625 - $q * $q;
+            return $q * ((((((($r * 2509.0809287301226727 + 33430.575583588128105) * $r + 67265.770927008700853) * $r
+                        + 45921.953931549871457) * $r + 13731.693765509461125) * $r + 1971.5909503065514427) * $r
+                        + 133.14166789178437745) * $r + 3.387132872796366608)
+                / ((((((($r * 5226.495278852545925 + 28729.085735721942674) * $r + 39307.89580009271061) * $r
+                        + 21213.794301586595867) * $r + 5394.1960214247511077) * $r + 687.1870074920579083) * $r
+                        + 42.313330701600911252) * $r + 1.0);
+        }
+        $r = sqrt(-log($q < 0 ? $p : 1 - $p));
+        if ($r <= 5) {
+            $r -= 1.6;
+            $val = ((((((($r * 7.7454501427834140764e-4 + 0.0227238449892691845833) * $r + 0.24178072517745061177) * $r
+                        + 1.27045825245236838258) * $r + 3.64784832476320460504) * $r + 5.7694972214606914055) * $r
+                        + 4.6303378461565452959) * $r + 1.42343711074968357734)
+                / ((((((($r * 1.05075007164441684324e-9 + 5.475938084995344946e-4) * $r + 0.0151986665636164571966) * $r
+                        + 0.14810397642748007459) * $r + 0.68976733498510000455) * $r + 1.6763848301838038494) * $r
+                        + 2.05319162663775882187) * $r + 1.0);
+        } else {
+            $r -= 5.0;
+            $val = ((((((($r * 2.01033439929228813265e-7 + 2.71155556874348757815e-5) * $r + 0.0012426609473880784386) * $r
+                        + 0.026532189526576123093) * $r + 0.29656057182850489123) * $r + 1.7848265399172913358) * $r
+                        + 5.4637849111641143699) * $r + 6.6579046435011037772)
+                / ((((((($r * 2.04426310338993978564e-15 + 1.4215117583164458887e-7) * $r + 1.8463183175100546818e-5) * $r
+                        + 7.868691311456132591e-4) * $r + 0.0148753612908506148525) * $r + 0.13692988092273580531) * $r
+                        + 0.59983220655588793769) * $r + 1.0);
+        }
+        return $q < 0 ? -$val : $val;
     }
 }

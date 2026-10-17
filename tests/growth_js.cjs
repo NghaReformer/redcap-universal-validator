@@ -106,6 +106,80 @@ check('markText: a comma only when asked', G.markText('7.7', true) === '7,7' && 
   check('valueAt: zRaw(valueAt(z)) is z, 4,000 random rows (worst relative error ' + worst + ')', worst < 1e-8);
 }
 
+// ---- 1b. the percentile and the values at a z-score or percentile (php/growth_outputs.json) ----
+// Every expected value in these sections was worked out with mpmath; tests/growth_php.php runs the same.
+check('fixture: output sections load', fx.percentileText.length > 10 && fx.percentile.length > 10
+  && fx.valueAtText.length > 8 && fx.output.length > 5 && fx.outputOf.length > 30);
+for (const [cum, d, want] of fx.percentileText) {
+  const got = G.percentileText(cum, d);
+  check('percentileText(' + cum + ', ' + d + ') => ' + want + ' (got ' + got + ')', got === want);
+}
+for (const c of fx.percentile) {
+  const got = G.percentile(R[c.ref], c.sex, c.x, c.y, c.places);
+  check('percentile: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+}
+for (const c of fx.valueAtText) {
+  const got = G.valueAtText(R[c.ref], c.sex, c.x, c.z, c.places, c.scale);
+  check('valueAtText: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+}
+for (const c of fx.output) {
+  const got = G.output(R[c.ref], c.sex, c.x, c.y, c.of, c.param, c.places, c.scale);
+  check('output: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+}
+for (const [key, want] of fx.outputOf) {
+  const p = G.outputOf(key);
+  const got = p === null ? null : { of: p.of, param: p.param };
+  check('outputOf ' + JSON.stringify(key) + ' (got ' + JSON.stringify(got) + ')', JSON.stringify(got) === JSON.stringify(want));
+}
+{
+  /* R's pnorm() and qnorm(), which normalCdf and normalQuantile port step for step */
+  const ng = JSON.parse(fs.readFileSync(path.join(__dirname, 'growth_normal_golden.json'), 'utf8'));
+  check('normal golden: thousands of points from R', ng.pnorm.length > 4000 && ng.qnorm.length > 4000);
+  let wp = 0, wq = 0;
+  for (const [x, v] of ng.pnorm) {
+    const got = G.normalCdf(x);
+    /* R 4.6 keeps subnormal values below x = -37.52 where the port gives 0 */
+    if (Math.abs(v) < 1e-300) { wp = Math.max(wp, Math.abs(got - v) < 1e-300 ? 0 : 1); continue; }
+    wp = Math.max(wp, Math.abs(got - v) / Math.abs(v));
+  }
+  for (const [p, v] of ng.qnorm) {
+    const got = G.normalQuantile(p);
+    if (typeof v === 'string') { wq = Math.max(wq, got === (v === 'Infinity' ? Infinity : -Infinity) ? 0 : 1); continue; }
+    wq = Math.max(wq, v === 0 ? Math.abs(got) : Math.abs(got - v) / Math.abs(v));
+  }
+  check('normalCdf: R pnorm() to 1e-15 relative (worst ' + wp + ')', wp < 1e-15);
+  check('normalQuantile: R qnorm() to 1e-15 relative (worst ' + wq + ')', wq < 1e-15);
+  check('normalQuantile: the ends and outside', G.normalQuantile(0) === -Infinity && G.normalQuantile(1) === Infinity
+    && isNaN(G.normalQuantile(-0.1)) && isNaN(G.normalQuantile(1.1)) && G.normalQuantile(0.5) === 0);
+  check('normalCdf: symmetric about 0 and exact at 0', G.normalCdf(0) === 0.5 && Math.abs(G.normalCdf(1.3) + G.normalCdf(-1.3) - 1) < 1e-15);
+}
+{
+  /* the engine's copy of the catalog is what php/growth_outputs.json declares */
+  const cat = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'php', 'growth_outputs.json'), 'utf8')).outputs;
+  check('catalog: the engine knows every output, in the file\'s order',
+    JSON.stringify(Object.keys(G.catalog)) === JSON.stringify(Object.keys(cat)));
+  check('catalog: needs, written and places as the file says',
+    Object.keys(cat).every((id) => G.catalog[id].needs === cat[id].needs && G.catalog[id].written === cat[id].written
+      && G.catalog[id].places === cat[id].places));
+  /* every output the engine lists as computed gives a value on a plain row */
+  const plain = G.outputs(R['t-days'], 'male', 2, 11, { lo: '-2', hi: '2' }, 1, false);
+  for (const id of G.computed) {
+    const got = Object.prototype.hasOwnProperty.call(plain, id) ? plain[id]
+      : G.output(R['t-days'], 'male', 2, 11, id, cat[id] && cat[id].param ? cat[id].param.max : null, 1);
+    check('computed: ' + id + ' gives a value (got ' + JSON.stringify(got) + ')', typeof got === 'string' && got !== '');
+  }
+  check('percentileText: no probability, no text', G.percentileText(NaN, 1) === null && G.percentileText(Infinity, 1) === null
+    && G.percentileText(-Infinity, 1) === null);
+  check('roundedUnits: what is not a number at 0 or above gives nothing', G.roundedUnits(NaN, 1) === null
+    && G.roundedUnits(Infinity, 1) === null && G.roundedUnits(-0.5, 1) === null && G.roundedUnits(-0, 2) === 0);
+  check('roundedUnits: decimal ties round half away from zero', G.roundedUnits(9.165, 2) === 917 && G.roundedUnits(1.005, 2) === 101
+    && G.roundedUnits(2.675, 2) === 268 && G.roundedUnits(0.5, 0) === 1 && G.roundedUnits(9.995, 2) === 1000);
+  check('roundedUnits: an exact binary tie rounds up, not to even', G.roundedUnits(617283945060.5, 0) === 617283945061
+    && G.roundedUnits(1234567.890625, 5) === 123456789063 && G.roundedUnits(2.5, 0) === 3);
+  check('roundedUnits: 15 significant digits, then the decimals', G.roundedUnits(1.23456789012345678, 14) === 123456789012346
+    && G.roundedUnits(999999999999999.5, 0) === 1000000000000000 && G.roundedUnits(1e-20, 6) === 0);
+}
+
 // ---- 2. the bundled WHO references: WHO's own z-scores ---------------------------
 const dir = path.join(__dirname, '..', 'data', 'references');
 const idx = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));
@@ -199,6 +273,61 @@ for (let i = 0; i < fx.parity.points; i++) {
 }
 const hash = crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 check('parity: 5,000 points hash to the pinned SHA-256 (got ' + hash + ')', hash === fx.parity.sha256);
+
+// ---- 3b. the outputs on the bundled tables: mpmath, then the hash growth_php.php also checks ----
+{
+  const og = JSON.parse(fs.readFileSync(path.join(__dirname, 'growth_outputs_golden.json'), 'utf8')).points;
+  check('outputs golden: 720 points', og.length === 720);
+  let bad = 0, ex = '';
+  for (const p of og) {
+    const ref = refs[p.ref];
+    const got = p.kind === 'percentile' ? G.percentile(ref, p.sex, p.x, parseFloat(p.arg), p.places)
+      : G.output(ref, p.sex, p.x, null, p.kind, p.arg, p.places);
+    if (got !== p.want) { bad++; if (!ex) ex = ': ' + JSON.stringify(p) + ' got ' + JSON.stringify(got); }
+  }
+  check('outputs golden: every point equals mpmath at 50 digits (' + bad + ' mismatches' + ex + ')', bad === 0);
+  /* the values the documentation prints for a child of 365 days on who-wfa
+     (docs/action_tag_validation_examples.md Level 6, README.md, USER_GUIDE.md,
+     CHANGELOG.md); tests/growth_return_module_php.php pins the same in PHP */
+  const wfa = refs['who-wfa'], at = G.axis(wfa, { days: '365' }).x;
+  const doc = [['male', 'percentile', null, 9.6, '48.3'], ['male', 'valueAtZ', '-2', null, '7.7'],
+    ['male', 'valueAtPercentile', '50', null, '9.6'], ['male', 'valueAtPercentile', '97', null, '11.8'],
+    ['female', 'percentile', null, 9.6, '71.6'], ['female', 'valueAtZ', '-2', null, '7.0'],
+    ['female', 'valueAtPercentile', '50', null, '8.9'], ['female', 'valueAtPercentile', '97', null, '11.3'],
+    ['male', 'percentile', null, 6.6, '0.1']];
+  for (const [sex, of, param, y, want] of doc) {
+    const got = G.output(wfa, sex, at, y, of, param, 1);
+    check('documented: ' + sex + ' ' + of + (param === null ? '' : ':' + param) + ' is ' + want + ' (got ' + got + ')', got === want);
+  }
+  s = fx.parityOutputs.seed;
+  const oLines = [];
+  for (let i = 0; i < fx.parityOutputs.points; i++) {
+    const id = ids[minstd() % ids.length], ref = refs[id];
+    const sex = minstd() % 2 ? 'female' : 'male';
+    const lo = hund(ref.valid.min), hi = ref.valid.max !== undefined ? hund(ref.valid.max) + 1 : hund(ref.valid.below);
+    const xt = hundText(lo + minstd() % (hi - lo));
+    const input = {};
+    if (ref.axis === 'age') input[ref.axisUnit] = xt; else input.by = xt;
+    const a = G.axis(ref, input);
+    let k = a.state === 'ok' ? Math.floor(a.x * ref.scale) - ref.first : 0;
+    k = Math.max(0, Math.min(ref[sex].length - 1, k));
+    const yt = hundText(Math.floor(ref[sex][k][1] * (50 + minstd() % 120)));
+    const pz = ['-3.5', '-2', '-1', '0', '1', '2', '3', '4.25'][minstd() % 8];
+    const pp = ['0.1', '3', '15', '50', '85', '97', '99.9', '2.28'][minstd() % 8];
+    const d = minstd() % 4;
+    let out = [a.state];
+    if (a.state === 'ok') {
+      const m = G.measure(yt, false);
+      const y = m.state === 'ok' ? m.y : null;
+      out = [G.output(ref, sex, a.x, y, 'percentile', null, 1), G.output(ref, sex, a.x, y, 'percentile', null, 3),
+        G.output(ref, sex, a.x, null, 'valueAtZ', pz, d), G.output(ref, sex, a.x, null, 'valueAtPercentile', pp, d)];
+    }
+    oLines.push([id, sex, xt, yt, pz, pp, d].concat(out.map((v) => v === null ? '-' : v)).join('|'));
+  }
+  const oHash = crypto.createHash('sha256').update(oLines.join('\n')).digest('hex');
+  check('parity: ' + fx.parityOutputs.points + ' output points hash to the pinned SHA-256 (got ' + oHash + ')',
+    oHash === fx.parityOutputs.sha256);
+}
 
 console.log('growth_js: ' + n + ' checks, ' + fails + ' failure(s)');
 process.exit(fails ? 1 : 0);

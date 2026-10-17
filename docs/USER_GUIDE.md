@@ -1099,6 +1099,7 @@ values, all on the same form as the measurement:
 `z` is the z-score, `lower` and `upper` are the smallest and largest
 measurements that pass the low and high `soft` limit (`"returnLimits":"hard"`
 uses the hard ones), and `range` is the two as text, such as `7.8 to 11.9 kg`.
+`return` also takes the percentile and reference values (next question).
 The bounds have the decimals of the measured field unless `decimals` says
 otherwise, and each is the last value the check accepts: one unit of the last
 decimal beyond it is flagged. With `"measureScale":0.001` (grams typed into a
@@ -1109,14 +1110,38 @@ save writes these values before it checks the other rules, so a rule on
 `wfa_z` checks the new value. When there is nothing to report (the sex is
 blank, the age is outside the reference) the fields are emptied, so make them
 `@READONLY`, since a value typed there is replaced. A `range` field takes no
-validation; `z`, `lower` and `upper` take none or number validation with room
-for the decimals (two for `z`), and a bound with `"decimals":0` may go into an
-integer field. Two references on one field each fill their own fields, and
+validation. `z`, `lower` and `upper` take none, number validation without a
+place count, or exactly the places they are written with (two for `z`), and a
+bound written with no decimals may go into an integer field. Two references on one field each fill their own fields, and
 cannot share one. A rule that returns values cannot read a returned field,
 its own or another rule's. When the date of birth or another input sits in
 another event, saving that event refills the fields in every visit that reads
 it. The project setting "@UVRANGE returned values" keeps the page fill and
 turns off the write on save.
+
+**Can a rule write the percentile, or the weight at -2 SD or at the median?**
+Yes. `return` also takes `percentile`, `valueAtZ:<z-score>` and
+`valueAtPercentile:<percentile>`:
+`"return":{"percentile":"[wfa_pct]","valueAtZ:-2":"[wfa_sd_m2]","valueAtPercentile:50":"[wfa_p50]"}`.
+For a boy of one year weighing 9.6 kg they read `48.3`, `7.7` and `9.6`. The
+percentile comes from the unrounded z-score and has one decimal unless
+`percentileDecimals` (0 to 3) says otherwise. It stays one unit of its last
+decimal inside 0 and 100, so at one decimal `0.1` stands for every
+percentile below 0.15 and `99.9` for every one from 99.85 up. The z-score
+after `valueAtZ:` lies from -6 to 6
+and the percentile after `valueAtPercentile:` from 0.1 to 99.9, each with at
+most two decimals. The values at a z-score or percentile use `decimals` and
+are rounded to the nearest unit of their last decimal (7.74 kg is written
+`7.7`), so `valueAtZ:-2` (`7.7`) can differ from `lower` with a `soft` limit
+of -2 (`7.8`, the lightest weight the check accepts). A target field takes no
+validation, number validation without a place count, or exactly the places
+the value is written with (`percentileDecimals` for the percentile,
+`decimals` for the others); a value written with no decimals may go into an
+integer field. A rule that returns only these and `z` needs no `soft` or
+`hard`. One rule returns at most 16 values, each key once (`valueAtZ:2` and
+`valueAtZ:2.0` are one key written two ways), and `decimals`, `returnLimits` or
+`percentileDecimals` on a rule that returns nothing they shape is a
+configuration error.
 
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"

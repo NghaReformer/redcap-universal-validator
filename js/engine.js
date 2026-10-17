@@ -2317,8 +2317,20 @@ function QRID_rangeVerdict(spec, value){
 var QRID_GROWTH_DAYS_PER_MONTH = 30.4375, QRID_GROWTH_MAX_Z_TEXT = 999.99;
 /* The inputs a growth rule reads, as the suffix of its "range<Input>Op" keys. */
 var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"];
-/* What a growth rule can return to fields ("return"; AnnotationRules::RETURN_VALUES). */
-var QRID_RETURN_VALUES = ["z", "lower", "upper", "range"];
+/* What a growth rule can return to fields ("return"): php/growth_outputs.json,
+   read on the server by GrowthOutputs. */
+/* @generated growth-outputs BEGIN — written from php/growth_outputs.json by tests/gen_mode_registry.cjs.
+   Edit php/growth_outputs.json and re-run that script; never edit this block. */
+var QRID_GROWTH_OUTPUTS = {
+  "z": {"written":"number","needs":"measurement","places":"z","integer":false},
+  "lower": {"written":"number","needs":"limit-low","places":"decimals","integer":true},
+  "upper": {"written":"number","needs":"limit-high","places":"decimals","integer":true},
+  "range": {"written":"text","needs":"limit-any","places":"decimals"},
+  "percentile": {"written":"number","needs":"measurement","places":"percentileDecimals","integer":true},
+  "valueAtZ": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"-6","max":"6","decimals":2}},
+  "valueAtPercentile": {"written":"number","needs":"none","places":"decimals","integer":true,"param":{"min":"0.1","max":"99.9","decimals":2}}
+};
+/* @generated growth-outputs END */
 /* Where on the reference's axis a measurement sits. `input` holds what the
    rule supplied: days or months (a number as text), dobDays and atDays (whole
    days since 1970-01-01, null for a blank date), or by (cm, as text); comma
@@ -2377,10 +2389,13 @@ function QRID_growthLms(ref, sex, x){
   if(hi === null) return null;
   return [lo[0] + diff * (hi[0] - lo[0]), lo[1] + diff * (hi[1] - lo[1]), lo[2] + diff * (hi[2] - lo[2])];
 }
-/* The unrounded z-score, or null. */
+/* The unrounded z-score, or null. An L nearer 0 than QRID_GROWTH_MIN_L (a
+   row read between two of opposite sign) takes the L = 0 formula, where
+   Math.pow(y / m, l) would be 1 for every y. Twin of GrowthReference::zRaw. */
+var QRID_GROWTH_MIN_L = 0.000001;
 function QRID_growthZRaw(y, lms, restricted){
   var l = lms[0], m = lms[1], s = lms[2], z, sd;
-  if(l === 0){
+  if(Math.abs(l) < QRID_GROWTH_MIN_L){
     z = Math.log(y / m) / s;
     sd = function(k){ return m * Math.exp(s * k); };
   } else {
@@ -2436,7 +2451,7 @@ function QRID_growthZScore(ref, sex, x, y){
    Twin of GrowthReference::valueAt. */
 function QRID_growthValueAt(z, lms, restricted){
   var l = lms[0], m = lms[1], s = lms[2], y, sd, a;
-  if(l === 0){
+  if(Math.abs(l) < QRID_GROWTH_MIN_L){
     sd = function(k){ return m * Math.exp(s * k); };
   } else {
     sd = function(k){ var b = 1 + l * s * k; return b > 0 ? m * Math.pow(b, 1 / l) : NaN; };
@@ -2508,6 +2523,180 @@ function QRID_growthUnitsText(units, decimals){
 }
 /* A number as text with the decimal mark of the field it is written to. */
 function QRID_growthMarkText(text, comma){ return comma ? String(text).replace(/\./g, ",") : String(text); }
+/* The outputs this engine computes: QRID_growthOutputs makes the first four,
+   QRID_growthOutput the rest. Twin of GrowthReference::COMPUTED;
+   tests/gen_mode_registry.cjs fails when the catalog names another. The
+   decimals a rule may ask for are the server's too (GrowthReference
+   MAX_DECIMALS, MAX_PERCENTILE_DECIMALS, DEFAULT_PERCENTILE_DECIMALS;
+   tests/growth_outputs_php.php compares them). */
+var QRID_GROWTH_COMPUTED = ["z", "lower", "upper", "range", "percentile", "valueAtZ", "valueAtPercentile"];
+var QRID_GROWTH_MAX_DECIMALS = 6, QRID_GROWTH_MAX_PERCENTILE_DECIMALS = 3, QRID_GROWTH_DEFAULT_PERCENTILE_DECIMALS = 1;
+/* A "return" key read against the catalog (QRID_GROWTH_OUTPUTS): { of, param,
+   spec }, or null when it names no output, one this engine does not compute,
+   or its parameter is out of range. Twin of GrowthOutputs::parse, which says
+   why a key is refused. */
+function QRID_growthOutputOf(key){
+  if(typeof key !== "string") return null;
+  var colon = key.indexOf(":");
+  var id = colon < 0 ? key : key.slice(0, colon), param = colon < 0 ? null : key.slice(colon + 1);
+  if(!Object.prototype.hasOwnProperty.call(QRID_GROWTH_OUTPUTS, id) || QRID_GROWTH_COMPUTED.indexOf(id) < 0) return null;
+  var spec = QRID_GROWTH_OUTPUTS[id];
+  if(!spec.param) return param === null ? { of: id, param: null, spec: spec } : null;
+  var d = spec.param.decimals;
+  var re = new RegExp("^-?(?:0|[1-9][0-9]*)" + (d > 0 ? "(?:\\.[0-9]{1," + d + "})?" : "") + "$");
+  if(param === null || !re.test(param) || QRID_whenDecCmp(param, spec.param.min) < 0
+      || QRID_whenDecCmp(param, spec.param.max) > 0) return null;
+  return { of: id, param: param, spec: spec };
+}
+/* One value other than the four QRID_growthOutputs makes: percentile (null
+   without a measurement), valueAtZ or valueAtPercentile, as text with a
+   decimal point, or null. places is the decimals it is written with. Twin of
+   GrowthReference::output. */
+function QRID_growthOutput(ref, sex, x, y, of, param, places, scale){
+  if(scale === undefined) scale = null;
+  if(of === "percentile") return (y === null || y === undefined) ? null : QRID_growthPercentile(ref, sex, x, y, places);
+  if(of === "valueAtZ") return QRID_growthValueAtText(ref, sex, x, parseFloat(param), places, scale);
+  if(of === "valueAtPercentile"){
+    var z = QRID_growthNormalQuantile(parseFloat(param) / 100);
+    return isFinite(z) ? QRID_growthValueAtText(ref, sex, x, z, places, scale) : null;
+  }
+  return null;
+}
+/* The percentile of y: 100 times the normal distribution function of its
+   unrounded z-score. Twin of GrowthReference::percentile. */
+function QRID_growthPercentile(ref, sex, x, y, places){
+  var lms = QRID_growthLms(ref, sex, x);
+  if(lms === null) return null;
+  var z = QRID_growthZRaw(y, lms, ref.adjust === "who-restricted");
+  return QRID_growthPercentileText(z === null ? (y > lms[1] ? 1 : 0) : QRID_growthNormalCdf(z), places);
+}
+/* A probability as a percentile with places decimals, half away from zero,
+   kept one unit inside 0 and 100 (0.1 to 99.9 at one decimal). Twin of
+   GrowthReference::percentileText. */
+function QRID_growthPercentileText(cum, places){
+  if(typeof cum !== "number" || !isFinite(cum)) return null;
+  var top = Math.pow(10, places + 2);
+  var n = QRID_growthRoundedUnits(Math.max(0, Math.min(1, cum)) * 100, places);
+  return QRID_growthUnitsText(Math.max(1, Math.min(top - 1, n)), places);
+}
+/* v (finite, 0 or more) as a count of units of 10^-d, or null: rounded to 15
+   significant digits (a decimal tie such as a median of 9.165 stays a tie),
+   then half away from zero to d decimals, both done here on the first 40
+   digits of toExponential(39), which PHP's sprintf("%.39e") gives the same.
+   Twin of GrowthReference::roundedUnits. */
+function QRID_growthRoundedUnits(v, d){
+  if(typeof v !== "number" || !isFinite(v) || v < 0) return null;
+  if(v === 0) return 0;
+  var s = v.toExponential(39), exp = parseInt(s.substring(s.indexOf("e") + 1), 10);
+  var n15 = parseInt(s.charAt(0) + s.substring(2, 16), 10) + (s.charCodeAt(16) - 48 >= 5 ? 1 : 0);
+  if(n15 >= 1e15){ n15 = 1e14; exp++; }
+  var digits = String(n15), shift = exp - 14 + d;
+  if(shift >= 0) return shift > 3 ? null : n15 * Math.pow(10, shift);
+  var keep = 15 + shift;
+  if(keep < 0) return 0;
+  var n = keep === 0 ? 0 : parseInt(digits.substring(0, keep), 10);
+  return digits.charCodeAt(keep) - 48 >= 5 ? n + 1 : n;
+}
+/* The measurement that scores z at x, in the measured field's unit, to places
+   decimals, or null (also when it rounds to 0, or past
+   QRID_GROWTH_MAX_BOUND_UNITS units, as a bound would). Twin of
+   GrowthReference::valueAtText. */
+function QRID_growthValueAtText(ref, sex, x, z, places, scale){
+  var lms = QRID_growthLms(ref, sex, x);
+  if(lms === null) return null;
+  var v = QRID_growthValueAt(z, lms, ref.adjust === "who-restricted");
+  if(v === null) return null;
+  var f = (scale === null || scale === undefined) ? 1 : parseFloat(scale);
+  var n = QRID_growthRoundedUnits(v / f, places);
+  if(n === null || n < 1 || n > QRID_GROWTH_MAX_BOUND_UNITS) return null;
+  return QRID_growthUnitsText(n, places);
+}
+/* The standard normal distribution function, lower tail: Cody's algorithm 715
+   as R's pnorm() computes it, with the same constants and cut-offs; agrees
+   with R 4.6.1 to 1e-15 relative, and gives 0 below x = -37.5193. Twin of
+   GrowthReference::normalCdf; tests/growth_normal_golden.json pins both. */
+var QRID_NORM_A = [2.2352520354606839287, 161.02823106855587881, 1067.6894854603709582, 18154.981253343561249,
+                   0.065682337918207449113];
+var QRID_NORM_B = [47.20258190468824187, 976.09855173777669322, 10260.932208618978205, 45507.789335026729956];
+var QRID_NORM_C = [0.39894151208813466764, 8.8831497943883759412, 93.506656132177855979, 597.27027639480026226,
+                   2494.5375852903726711, 6848.1904505362823326, 11602.651437647350124, 9842.7148383839780218,
+                   1.0765576773720192317e-8];
+var QRID_NORM_D = [22.266688044328115691, 235.38790178262499861, 1519.377599407554805, 6485.558298266760755,
+                   18615.571640885098091, 34900.952721145977266, 38912.003286093271411, 19685.429676859990727];
+var QRID_NORM_P = [0.21589853405795699, 0.1274011611602473639, 0.022235277870649807, 0.001421619193227893466,
+                   2.9112874951168792e-5, 0.02307344176494017303];
+var QRID_NORM_Q = [1.28426009614491121, 0.468238212480865118, 0.0659881378689285515, 0.00378239633202758244,
+                   7.29751555083966205e-5];
+function QRID_growthNormalCdf(x){
+  if(x !== x) return NaN;
+  var y = Math.abs(x), xnum, xden, xsq, del, temp, cum, i;
+  if(y <= 0.67448975){
+    xnum = 0; xden = 0;
+    if(y > 1.1102230246251565e-16){
+      xsq = x * x; xnum = QRID_NORM_A[4] * xsq; xden = xsq;
+      for(i = 0; i < 3; i++){ xnum = (xnum + QRID_NORM_A[i]) * xsq; xden = (xden + QRID_NORM_B[i]) * xsq; }
+    }
+    return 0.5 + x * (xnum + QRID_NORM_A[3]) / (xden + QRID_NORM_B[3]);
+  }
+  if(y <= 5.656854249492380195206754896838){
+    xnum = QRID_NORM_C[8] * y; xden = y;
+    for(i = 0; i < 7; i++){ xnum = (xnum + QRID_NORM_C[i]) * y; xden = (xden + QRID_NORM_D[i]) * y; }
+    temp = (xnum + QRID_NORM_C[7]) / (xden + QRID_NORM_D[7]);
+    xsq = Math.floor(y * 16) / 16;
+    del = (y - xsq) * (y + xsq);
+    cum = Math.exp(-xsq * xsq * 0.5) * Math.exp(-del * 0.5) * temp;
+    return x > 0 ? 1 - cum : cum;
+  }
+  if(-37.5193 < x && x < 8.2924){
+    xsq = 1 / (x * x); xnum = QRID_NORM_P[5] * xsq; xden = xsq;
+    for(i = 0; i < 4; i++){ xnum = (xnum + QRID_NORM_P[i]) * xsq; xden = (xden + QRID_NORM_Q[i]) * xsq; }
+    temp = xsq * (xnum + QRID_NORM_P[4]) / (xden + QRID_NORM_Q[4]);
+    temp = (0.398942280401432677939946059934 - temp) / y;
+    xsq = (x < 0 ? -Math.floor(-x * 16) : Math.floor(x * 16)) / 16;
+    del = (x - xsq) * (x + xsq);
+    cum = Math.exp(-xsq * xsq * 0.5) * Math.exp(-del * 0.5) * temp;
+    return x > 0 ? 1 - cum : cum;
+  }
+  return x > 0 ? 1 : 0;
+}
+/* The quantile of the standard normal distribution: Wichura's AS241 as R's
+   qnorm() computes it, with the same constants and branches, agreeing with
+   R 4.6.1 to 1e-15 relative; -Infinity at 0, Infinity at 1, NaN outside.
+   Twin of GrowthReference::normalQuantile. */
+function QRID_growthNormalQuantile(p){
+  if(p !== p || p < 0 || p > 1) return NaN;
+  if(p === 0) return -Infinity;
+  if(p === 1) return Infinity;
+  var q = p - 0.5, r, val;
+  if(Math.abs(q) <= 0.425){
+    r = 0.180625 - q * q;
+    return q * (((((((r * 2509.0809287301226727 + 33430.575583588128105) * r + 67265.770927008700853) * r
+              + 45921.953931549871457) * r + 13731.693765509461125) * r + 1971.5909503065514427) * r
+              + 133.14166789178437745) * r + 3.387132872796366608)
+      / (((((((r * 5226.495278852545925 + 28729.085735721942674) * r + 39307.89580009271061) * r
+              + 21213.794301586595867) * r + 5394.1960214247511077) * r + 687.1870074920579083) * r
+              + 42.313330701600911252) * r + 1);
+  }
+  r = Math.sqrt(-Math.log(q < 0 ? p : 1 - p));
+  if(r <= 5){
+    r -= 1.6;
+    val = (((((((r * 7.7454501427834140764e-4 + 0.0227238449892691845833) * r + 0.24178072517745061177) * r
+              + 1.27045825245236838258) * r + 3.64784832476320460504) * r + 5.7694972214606914055) * r
+              + 4.6303378461565452959) * r + 1.42343711074968357734)
+      / (((((((r * 1.05075007164441684324e-9 + 5.475938084995344946e-4) * r + 0.0151986665636164571966) * r
+              + 0.14810397642748007459) * r + 0.68976733498510000455) * r + 1.6763848301838038494) * r
+              + 2.05319162663775882187) * r + 1);
+  } else {
+    r -= 5;
+    val = (((((((r * 2.01033439929228813265e-7 + 2.71155556874348757815e-5) * r + 0.0012426609473880784386) * r
+              + 0.026532189526576123093) * r + 0.29656057182850489123) * r + 1.7848265399172913358) * r
+              + 5.4637849111641143699) * r + 6.6579046435011037772)
+      / (((((((r * 2.04426310338993978564e-15 + 1.4215117583164458887e-7) * r + 1.8463183175100546818e-5) * r
+              + 7.868691311456132591e-4) * r + 0.0148753612908506148525) * r + 0.13692988092273580531) * r
+              + 0.59983220655588793769) * r + 1);
+  }
+  return q < 0 ? -val : val;
+}
 /* What a rule that returns values writes for one child: { z, lower, upper,
    range }, each text or null (nothing to write). y is in the reference's
    unit; the bounds are in the measured field's (divided by scale). limits is
@@ -4525,19 +4714,29 @@ function QRIDRangeInit(QRID_CONFIG){
     /* Values the rule writes to other fields of the form ("return"): value name
        -> field name, which the server checked against the data dictionary
        (UniversalValidator::returnTargetsProblem). A shape that is not
-       understood is a configuration error here, never a guess. A rule that
-       returns only the z-score judges no limits, so it needs none. */
-    var returns = null, retLimits = "soft", retDecimals = 1, retComma = {};
+       understood is a configuration error here, never a guess. A key names an
+       output of the catalog (QRID_growthOutputOf); a rule whose values are
+       none of them made from a limit judges none, so it needs none. */
+    var returns = null, retOf = {}, retLimits = "soft", retDecimals = 1,
+        retPctDecimals = QRID_GROWTH_DEFAULT_PERCENTILE_DECIMALS, retComma = {};
     if(cfg.rangeReturn !== undefined && cfg.rangeReturn !== null){
       var rr = cfg.rangeReturn, rkeys = (typeof rr === "object" && !rr.length) ? Object.keys(rr) : [];
       returns = {};
       for(var ri = 0; ri < rkeys.length; ri++){
-        var rv = rkeys[ri], rt = rr[rv];
-        if(QRID_RETURN_VALUES.indexOf(rv) < 0 || typeof rt !== "string" || rt === ""){
+        var rv = rkeys[ri], rt = rr[rv], rof = QRID_growthOutputOf(rv);
+        if(rof === null || typeof rt !== "string" || rt === ""){
           if(!configError) configError = '@UVRANGE "return" is not understood.';
           continue;
         }
         returns[rv] = rt;
+        retOf[rv] = rof;
+      }
+      if(cfg.rangePercentileDecimals !== undefined){
+        if(typeof cfg.rangePercentileDecimals !== "number" || cfg.rangePercentileDecimals % 1 !== 0
+            || cfg.rangePercentileDecimals < 0 || cfg.rangePercentileDecimals > QRID_GROWTH_MAX_PERCENTILE_DECIMALS){
+          if(!configError) configError = '@UVRANGE "percentileDecimals" must be a whole number from 0 to '
+            + QRID_GROWTH_MAX_PERCENTILE_DECIMALS + '.';
+        } else retPctDecimals = cfg.rangePercentileDecimals;
       }
       if(!rkeys.length && !configError) configError = '@UVRANGE "return" names no field.';
       if(typeof cfg.rangeReference !== "string" || cfg.rangeReference === ""){
@@ -4547,8 +4746,9 @@ function QRIDRangeInit(QRID_CONFIG){
         if(!configError) configError = '@UVRANGE "returnLimits" must be "soft" or "hard".';
       } else if(cfg.rangeReturnLimits === "hard") retLimits = "hard";
       if(cfg.rangeDecimals !== undefined){
-        if(typeof cfg.rangeDecimals !== "number" || cfg.rangeDecimals % 1 !== 0 || cfg.rangeDecimals < 0 || cfg.rangeDecimals > 6){
-          if(!configError) configError = '@UVRANGE "decimals" must be a whole number from 0 to 6.';
+        if(typeof cfg.rangeDecimals !== "number" || cfg.rangeDecimals % 1 !== 0 || cfg.rangeDecimals < 0
+            || cfg.rangeDecimals > QRID_GROWTH_MAX_DECIMALS){
+          if(!configError) configError = '@UVRANGE "decimals" must be a whole number from 0 to ' + QRID_GROWTH_MAX_DECIMALS + '.';
         } else retDecimals = cfg.rangeDecimals;
       }
       if(cfg.rangeReturnComma && typeof cfg.rangeReturnComma === "object"){
@@ -4557,7 +4757,10 @@ function QRIDRangeInit(QRID_CONFIG){
         }
       }
     }
-    var onlyZ = returns !== null && Object.keys(returns).length === 1 && returns.z !== undefined;
+    var onlyZ = returns !== null && Object.keys(retOf).length > 0;
+    for(var rok in retOf){
+      if(Object.prototype.hasOwnProperty.call(retOf, rok) && retOf[rok].spec.needs.indexOf("limit-") === 0) onlyZ = false;
+    }
     /* A deferred stub (the page could not be given this rule) carries no limits:
        it reports its deferral, not a configuration error. */
     if(!configError && !cfg.deferred && !any && !onlyZ) configError = "@UVRANGE has no limits to check.";
@@ -4630,7 +4833,8 @@ function QRIDRangeInit(QRID_CONFIG){
     var MEASURE_BLOCK = (cfg.rangeComputed === true || cfg.extendedAdvisory === true || cfg.snapshotGate === true
       || (DEFERRED && !ON_SAVE)) ? "off" : HARD;
     return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
-             returns: configError ? null : returns, returnLimits: retLimits, decimals: retDecimals, returnComma: retComma,
+             returns: configError ? null : returns, returnOf: retOf, returnLimits: retLimits, decimals: retDecimals,
+             percentileDecimals: retPctDecimals, returnComma: retComma,
              /* the unit "range" is written in: "unit" (allowed with a reference
                 only beside "measureScale"), else the reference's own when the
                 field holds that unit, else none (GrowthReference::outputs) */
@@ -4815,20 +5019,27 @@ function QRIDRangeInit(QRID_CONFIG){
     if(!V.growth || !V.growth.ref) return null;
     var p = growthPoint(V);
     if(p.state === "withheld") return null;
-    var o = null;
+    var o = null, y = null;
     if(p.state === "ok"){
       var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
       var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
-      o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, m.state === "ok" ? m.y : null,
+      y = m.state === "ok" ? m.y : null;
+      o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, y,
         { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
         V.decimals, V.returnComma.range === true, V.scale, V.returnUnit);
     }
     var out = {};
     for(var k in V.returns){
       if(!Object.prototype.hasOwnProperty.call(V.returns, k)) continue;
-      var t = (o !== null && o[k] !== null) ? o[k] : "";
-      /* range was made in its field's decimal mark; a number is marked here */
-      out[V.returns[k]] = (k === "range" || t === "") ? t : QRID_growthMarkText(t, V.returnComma[k] === true);
+      var of = V.returnOf[k], t = null;
+      if(o !== null && Object.prototype.hasOwnProperty.call(o, of.of)) t = o[of.of];
+      else if(o !== null){
+        var places = of.spec.places === "z" ? 2 : (of.spec.places === "percentileDecimals" ? V.percentileDecimals : V.decimals);
+        t = QRID_growthOutput(V.growth.ref, p.sex, p.x, y, of.of, of.param, places, V.scale);
+      }
+      if(t === null || t === undefined) t = "";
+      /* a text (range) was made in its field's decimal mark; a number is marked here */
+      out[V.returns[k]] = (of.spec.written !== "number" || t === "") ? t : QRID_growthMarkText(t, V.returnComma[k] === true);
     }
     return out;
   }
@@ -6999,8 +7210,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeByOp", "rangeDobType", "rangeDobFormat", "rangeAtType",
                       "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo", "rangePlausibleHi",
                       "rangePlausibleText", "rangeMeasureScale", "rangeReturn",
-                      "rangeReturnLimits", "rangeDecimals", "rangeReturnComma",
-                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked"];
+                      "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals",
+                      "rangeReturnComma", "deferredOnSave", "extendedAdvisory", "growthIdle",
+                      "selectorBlocked"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -7206,7 +7418,11 @@ window.INSPIREUniversalValidator = {
     axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,
     measure: QRID_growthMeasure, zScore: QRID_growthZScore, plausible: QRID_growthPlausible,
     valueAt: QRID_growthValueAt, bound: QRID_growthBound, unitsText: QRID_growthUnitsText,
-    markText: QRID_growthMarkText, outputs: QRID_growthOutputs
+    markText: QRID_growthMarkText, outputs: QRID_growthOutputs,
+    output: QRID_growthOutput, outputOf: QRID_growthOutputOf, catalog: QRID_GROWTH_OUTPUTS,
+    percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
+    normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
+    roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,

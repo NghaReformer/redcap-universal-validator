@@ -19,8 +19,10 @@
 
 require_once __DIR__ . '/../php/Logic.php';
 require_once __DIR__ . '/../php/GrowthReference.php';
+require_once __DIR__ . '/../php/GrowthOutputs.php';
 
 use INSPIRE\UniversalValidator\GrowthReference as G;
+use INSPIRE\UniversalValidator\GrowthOutputs;
 
 $n = 0;
 $fails = 0;
@@ -131,6 +133,88 @@ function roundTripWorst()
 $worst = roundTripWorst();
 check('valueAt: zRaw(valueAt(z)) is z, 4,000 random rows (worst relative error ' . $worst . ')', $worst < 1e-8);
 
+// ---- 1b. the percentile and the values at a z-score or percentile (php/growth_outputs.json) ----
+// Every expected value in these sections was worked out with mpmath, not with this code.
+check('fixture: output sections load', count($fx['percentileText']) > 10 && count($fx['percentile']) > 10
+    && count($fx['valueAtText']) > 8 && count($fx['output']) > 5 && count($fx['outputOf']) > 30);
+foreach ($fx['percentileText'] as $c) {
+    $got = G::percentileText($c[0], $c[1]);
+    check('percentileText(' . json_encode($c[0]) . ', ' . $c[1] . ') => ' . $c[2] . ' (got ' . $got . ')', $got === $c[2]);
+}
+foreach ($fx['percentile'] as $c) {
+    $got = G::percentile($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y'], $c['places']);
+    check('percentile: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+}
+foreach ($fx['valueAtText'] as $c) {
+    $got = G::valueAtText($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['z'], $c['places'], $c['scale']);
+    check('valueAtText: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+}
+foreach ($fx['output'] as $c) {
+    $got = G::output($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y'], $c['of'], $c['param'], $c['places'], $c['scale']);
+    check('output: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+}
+foreach ($fx['outputOf'] as $c) {
+    $p = GrowthOutputs::parse($c[0]);
+    $got = isset($p['of']) ? ['of' => $p['of'], 'param' => $p['param']] : null;
+    check('outputOf ' . json_encode($c[0]) . ' (got ' . json_encode($got) . ')', $got === $c[1]
+        && ($got !== null || (isset($p['error']) && $p['error'] !== '')));
+}
+// R's pnorm() and qnorm(), which normalCdf and normalQuantile port step for step
+$ng = json_decode(file_get_contents(__DIR__ . '/growth_normal_golden.json'), true);
+check('normal golden: thousands of points from R', count($ng['pnorm']) > 4000 && count($ng['qnorm']) > 4000);
+$worstP = 0.0; $worstQ = 0.0;
+foreach ($ng['pnorm'] as $c) {
+    $got = G::normalCdf($c[0]);
+    // R 4.6 keeps subnormal values below x = -37.52 where the port gives 0
+    if (abs($c[1]) < 1e-300) { $worstP = max($worstP, abs($got - $c[1]) < 1e-300 ? 0.0 : 1.0); continue; }
+    $worstP = max($worstP, abs($got - $c[1]) / abs($c[1]));
+}
+foreach ($ng['qnorm'] as $c) {
+    $got = G::normalQuantile($c[0]);
+    if (is_string($c[1])) { $worstQ = max($worstQ, ($c[1] === 'Infinity' ? $got === INF : $got === -INF) ? 0.0 : 1.0); continue; }
+    $worstQ = max($worstQ, $c[1] == 0 ? abs($got) : abs($got - $c[1]) / abs($c[1]));
+}
+check('normalCdf: R pnorm() to 1e-15 relative (worst ' . $worstP . ')', $worstP < 1e-15);
+check('normalQuantile: R qnorm() to 1e-15 relative (worst ' . $worstQ . ')', $worstQ < 1e-15);
+// A constant mistyped in its last digits can stay inside that tolerance, so the
+// two ports must carry the same numbers, literal for literal: every number in
+// their code, comments left out, the cut-offs and branch limits included.
+$literals = function ($code) {
+    $code = preg_replace(['#/\*.*?\*/#s', '#//[^\n]*#'], '', $code);
+    preg_match_all('/(?<![\w.$])\d+(?:\.\d+)?(?:e[-+]?\d+)?(?![\w.])/i', $code, $m);
+    $out = array_map('floatval', $m[0]);
+    sort($out);
+    return $out;
+};
+$phpSrc = file_get_contents(__DIR__ . '/../php/GrowthReference.php');
+$jsSrc = file_get_contents(__DIR__ . '/../js/engine.js');
+$phpPorts = $literals(substr($phpSrc, strpos($phpSrc, 'public static function normalCdf')));
+$jsAt = strpos($jsSrc, 'var QRID_NORM_A');
+$jsPorts = $literals(substr($jsSrc, $jsAt, strpos($jsSrc, 'function QRID_growthOutputs(') - $jsAt));
+check('normalCdf, normalQuantile: the two ports carry the same ' . count($phpPorts) . ' numbers', count($phpPorts) > 120 && $phpPorts === $jsPorts);
+check('normalQuantile: the ends and outside', G::normalQuantile(0) === -INF && G::normalQuantile(1) === INF
+    && is_nan(G::normalQuantile(-0.1)) && is_nan(G::normalQuantile(1.1)) && G::normalQuantile(0.5) == 0);
+check('normalCdf: symmetric about 0 and exact at 0', G::normalCdf(0) === 0.5 && abs(G::normalCdf(1.3) + G::normalCdf(-1.3) - 1) < 1e-15);
+// every output the code lists as computed gives a value on a plain row, so
+// COMPUTED cannot name an output nothing makes (the save would empty its field)
+$plain = G::outputs($R['t-days'], $R['t-days'], 'male', 2, 11.0, ['lo' => '-2', 'hi' => '2'], 1, false);
+foreach (G::COMPUTED as $id) {
+    $spec = GrowthOutputs::spec($id);
+    $got = array_key_exists($id, $plain) ? $plain[$id]
+        : G::output($R['t-days'], $R['t-days'], 'male', 2, 11.0, $id, isset($spec['param']) ? $spec['param']['max'] : null, 1);
+    check('computed: ' . $id . ' gives a value (got ' . json_encode($got) . ')', is_string($got) && $got !== '');
+}
+check('percentileText: no probability, no text', G::percentileText(NAN, 1) === null && G::percentileText(INF, 1) === null
+    && G::percentileText(-INF, 1) === null);
+check('roundedUnits: what is not a number at 0 or above gives nothing', G::roundedUnits(NAN, 1) === null
+    && G::roundedUnits(INF, 1) === null && G::roundedUnits(-0.5, 1) === null && G::roundedUnits(-0.0, 2) === 0);
+check('roundedUnits: decimal ties round half away from zero', G::roundedUnits(9.165, 2) === 917 && G::roundedUnits(1.005, 2) === 101
+    && G::roundedUnits(2.675, 2) === 268 && G::roundedUnits(0.5, 0) === 1 && G::roundedUnits(9.995, 2) === 1000);
+check('roundedUnits: an exact binary tie rounds up, not to even', G::roundedUnits(617283945060.5, 0) === 617283945061
+    && G::roundedUnits(1234567.890625, 5) === 123456789063 && G::roundedUnits(2.5, 0) === 3);
+check('roundedUnits: 15 significant digits, then the decimals', G::roundedUnits(1.23456789012345678, 14) === 123456789012346
+    && G::roundedUnits(999999999999999.5, 0) === 1000000000000000 && G::roundedUnits(1e-20, 6) === 0);
+
 // ---- 2. the bundled WHO references ------------------------------------------------
 
 G::reset();
@@ -198,7 +282,7 @@ check('golden: every bundled reference is covered', count($seen) === 12);
         $c = \INSPIRE\UniversalValidator\Logic::numCompare($z['z'], $lim);
         return $low ? $c >= 0 : $c <= 0;
     };
-    $n = 0;
+    $rows = 0;   // not $n: a top-level block shares the check counter's scope
     $badEdge = 0;
     $ex = '';
     foreach ($cat['references'] as $id => $e) {
@@ -216,7 +300,7 @@ check('golden: every bundled reference is covered', count($seen) === 12);
             $low = minstd($seed) % 2 === 1;
             $k = G::bound($e, $t, $sex, $x, $lim, $d, $low, $scale);
             if ($k === null) continue;
-            $n++;
+            $rows++;
             $beyond = $low ? $k - 1 : $k + 1;
             if (!$pass($e, $t, $sex, $x, $k, $d, $lim, $low, $scale) || $pass($e, $t, $sex, $x, $beyond, $d, $lim, $low, $scale)) {
                 $badEdge++;
@@ -224,8 +308,8 @@ check('golden: every bundled reference is covered', count($seen) === 12);
             }
         }
     }
-    check('bound: the verdict passes the bound and not one unit beyond, ' . $n . ' random rows (' . $badEdge . ' wrong' . $ex . ')',
-        $n > 500 && $badEdge === 0);
+    check('bound: the verdict passes the bound and not one unit beyond, ' . $rows . ' random rows (' . $badEdge . ' wrong' . $ex . ')',
+        $rows > 500 && $badEdge === 0);
 }
 
 // ---- 3. 5,000 random points --------------------------------------------------------
@@ -266,6 +350,59 @@ $hash = hash('sha256', implode("\n", $lines));
 check('parity: 5,000 points hash to the pinned SHA-256 (got ' . $hash . ')', $hash === $fx['parity']['sha256']);
 check('parity: every point has a z-score', array_keys($states) === ['z']);
 if (in_array('--print-parity', $argv, true)) echo $hash, "\n";
+
+// ---- 3b. the outputs on the bundled tables: mpmath, then a hash both runtimes give --------
+$og = json_decode(file_get_contents(__DIR__ . '/growth_outputs_golden.json'), true);
+check('outputs golden: 720 points', count($og['points']) === 720);
+$bad = 0; $ex = '';
+foreach ($og['points'] as $p) {
+    $e = G::entry($p['ref']);
+    $t = G::table($e);
+    $got = $p['kind'] === 'percentile'
+        ? G::percentile($e, $t, $p['sex'], $p['x'], (float) $p['arg'], $p['places'])
+        : G::output($e, $t, $p['sex'], $p['x'], null, $p['kind'], $p['arg'], $p['places']);
+    if ($got !== $p['want']) { $bad++; if ($ex === '') $ex = ': ' . json_encode($p) . ' got ' . json_encode($got); }
+}
+check('outputs golden: every point equals mpmath at 50 digits (' . $bad . ' mismatches' . $ex . ')', $bad === 0);
+/** The parity lines of the outputs (tests/growth_js.cjs builds the same). */
+function outputLines(array $fx, array $ids)
+{
+    $s = $fx['parityOutputs']['seed'];
+    $lines = [];
+    for ($i = 0; $i < $fx['parityOutputs']['points']; $i++) {
+        $id = $ids[minstd($s) % count($ids)];
+        $e = G::entry($id);
+        $t = G::table($e);
+        $sex = minstd($s) % 2 ? 'female' : 'male';
+        $lo = hund($e['valid']['min']);
+        $hi = isset($e['valid']['max']) ? hund($e['valid']['max']) + 1 : hund($e['valid']['below']);
+        $xt = hundText($lo + minstd($s) % ($hi - $lo));
+        $a = G::axisValue($e, $e['axis'] === 'age' ? [$e['axisUnit'] => $xt] : ['by' => $xt]);
+        $k = $a['state'] === 'ok' ? (int) floor($a['x'] * $t['scale']) - $t['first'] : 0;
+        $k = max(0, min(count($t[$sex]) - 1, $k));
+        $yt = hundText((int) floor($t[$sex][$k][1] * (50 + minstd($s) % 120)));
+        $pz = ['-3.5', '-2', '-1', '0', '1', '2', '3', '4.25'][minstd($s) % 8];
+        $pp = ['0.1', '3', '15', '50', '85', '97', '99.9', '2.28'][minstd($s) % 8];
+        $d = minstd($s) % 4;
+        $out = [$a['state']];
+        if ($a['state'] === 'ok') {
+            $m = G::measure($yt);
+            $y = $m['state'] === 'ok' ? $m['y'] : null;
+            $out = [G::output($e, $t, $sex, $a['x'], $y, 'percentile', null, 1),
+                    G::output($e, $t, $sex, $a['x'], $y, 'percentile', null, 3),
+                    G::output($e, $t, $sex, $a['x'], null, 'valueAtZ', $pz, $d),
+                    G::output($e, $t, $sex, $a['x'], null, 'valueAtPercentile', $pp, $d)];
+        }
+        $lines[] = implode('|', array_merge([$id, $sex, $xt, $yt, $pz, $pp, $d], array_map(function ($v) { return $v === null ? '-' : $v; }, $out)));
+    }
+    return $lines;
+}
+$oLines = outputLines($fx, $ids);
+$oHash = hash('sha256', implode("\n", $oLines));
+check('parity: ' . $fx['parityOutputs']['points'] . ' output points hash to the pinned SHA-256 (got ' . $oHash . ')',
+    $oHash === $fx['parityOutputs']['sha256']);
+check('parity: the output points have values', count(array_filter($oLines, function ($l) { return !preg_match('/\|-(\||$)/', $l); })) > 2500);
+if (in_array('--print-parity', $argv, true)) echo $oHash, "\n";
 
 // ---- 4. a folder of extra references ------------------------------------------------
 

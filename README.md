@@ -804,7 +804,7 @@ slip:
   S 0.13 gives none above 3.85) is a configuration error that says which value
   to use. The inputs may sit on another form,
   or in another event with event and instance references on.
-- **Returning the z-score, the bounds or the range.** A growth rule can write
+- **Returning the z-score, the percentile, the bounds or a reference value.** A growth rule can write
   what it worked out into Text fields of the same form, so the result is on
   the record and in exports:
 
@@ -819,8 +819,14 @@ slip:
   (`"returnLimits":"hard"` takes the hard limits), and `range` the two as text
   with the reference's unit. With `"measureScale":0.001` (grams typed into a
   table in kg) the bounds are in grams, and `"unit":"g"` names the unit in
-  `range`. Give any of the four, each its own field. A rule that returns only
-  `z` needs no limits. The page fills the fields as it opens and after each
+  `range`. `percentile` writes the percentile of the measurement (one
+  decimal, `percentileDecimals` 0 to 3 changes it), `valueAtZ:-2` the
+  measurement at a z-score of -2 and `valueAtPercentile:97` the one at the
+  97th percentile; for the same boy `48.3`, `7.7` and `11.8`. Give up to 16,
+  each its own field and each key once. A rule that returns only `z`,
+  `percentile` and values at a z-score or percentile needs no limits, and
+  `decimals`, `returnLimits` or `percentileDecimals` on a rule that returns
+  nothing they shape is refused. The page fills the fields as it opens and after each
   change; the save fills them again, also for an API or import save, writes
   only the fields that differ, and judges every other rule after that write.
   A field with nothing to report (sex blank, age outside the reference) is
@@ -1038,8 +1044,16 @@ check-character primitive, but the full runtime path the module actually uses:
   2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
   `tools/who_golden.R` in the source repository; `tools/` is not in the
   release package), and 5,000 random points that must hash the same in
-  both. `growth_php.php` also covers a folder of extra references and every
-  refusal of a broken index or table. `tests/growth_dom_js.cjs` drives the
+  both. The normal distribution function and its inverse behind the
+  percentile are held to R's `pnorm` and `qnorm`
+  (`tests/growth_normal_golden.json`, from `tools/normal_golden.R`); the
+  percentile and the values at a z-score or percentile are held to 720
+  points worked out at 50 digits (`tests/growth_outputs_golden.json`, from
+  `tools/growth_outputs_golden.py`) and to a second hash of 3,000 random
+  points. `growth_php.php` also covers
+  a folder of extra references and every refusal of a broken index or table.
+  `tests/growth_outputs_php.php` covers the catalog of values a rule can
+  return (`php/growth_outputs.json`). `tests/growth_dom_js.cjs` drives the
   browser rule (live inputs, the notes that say why nothing was checked,
   withheld inputs, never blocking on saved or cross-event inputs) and
   `tests/growth_module_php.php` the server side: the grammar, the dictionary
@@ -1084,7 +1098,7 @@ php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cas
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 php  tests/registry_php.php    # mode registry (php/modes.json): frozen maps, coverage, bad file
-node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js after editing php/modes.json
+node tests/gen_mode_registry.cjs # rewrite the generated blocks in js/engine.js after editing php/modes.json or php/growth_outputs.json
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
@@ -1106,8 +1120,9 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
-node tests/growth_js.cjs         # growth references: z-scores vs growth_fixture.json, WHO golden, parity hash
+node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
+php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file
 node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes, withheld, no block)
 php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": values written into fields on the page

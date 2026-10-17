@@ -61,6 +61,10 @@ trait ReturnedValues
             break;
         }
         if ($field === null) return null;
+        // the parser refuses "return" while the catalog cannot be read; a rule
+        // that reached here anyway keeps its fields
+        $catalog = GrowthOutputs::problem();
+        if ($catalog !== null) return ['values' => null, 'problem' => '"return" cannot be checked: ' . $catalog . '.', 'field' => $field];
         $codes = (isset($meta['missingCodes']) && is_array($meta['missingCodes'])) ? $meta['missingCodes'] : [];
         $raw = (isset($values[$field]) && !is_array($values[$field])) ? (string) $values[$field] : '';
         if ($codes && self::isMissingCode($raw, $codes)) $raw = '';
@@ -77,15 +81,31 @@ trait ReturnedValues
             'hi' => isset($rule['range' . $tier . 'Hi']) ? (string) $rule['range' . $tier . 'Hi'] : null,
         ];
         $decimals = isset($rule['rangeDecimals']) ? (int) $rule['rangeDecimals'] : 1;
+        $pctDecimals = isset($rule['rangePercentileDecimals']) ? (int) $rule['rangePercentileDecimals']
+            : GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
         $marks = (isset($rule['rangeReturnComma']) && is_array($rule['rangeReturnComma'])) ? $rule['rangeReturnComma'] : [];
-        $o = GrowthReference::outputs($g['entry'], $g['table'], $g['sex'], $g['x'], $m['state'] === 'ok' ? $m['y'] : null,
+        $y = $m['state'] === 'ok' ? $m['y'] : null;
+        $o = GrowthReference::outputs($g['entry'], $g['table'], $g['sex'], $g['x'], $y,
             $limits, $decimals, !empty($marks['range']), $scale,
             (isset($rule['rangeUnit']) && is_string($rule['rangeUnit']) && $rule['rangeUnit'] !== '') ? $rule['rangeUnit'] : null);
         $out = [];
         foreach ($targets as $k => $t) {
-            $text = (isset($o[$k]) && $o[$k] !== null) ? (string) $o[$k] : '';
-            // "range" was made in its field's decimal mark; a number is marked here
-            if ($k !== 'range' && $text !== '') $text = GrowthReference::markText($text, !empty($marks[$k]));
+            $k = (string) $k;
+            // what the key names, from php/growth_outputs.json, whose every
+            // entry GrowthReference computes; the parser refused any other key,
+            // and one that is not understood would empty its field
+            $known = GrowthOutputs::parse($k);
+            $spec = isset($known['of']) ? GrowthOutputs::spec($known['of']) : null;
+            $text = null;
+            if ($spec !== null && array_key_exists($known['of'], $o)) {
+                $text = $o[$known['of']];
+            } elseif ($spec !== null) {
+                $places = $spec['places'] === 'z' ? 2 : ($spec['places'] === 'percentileDecimals' ? $pctDecimals : $decimals);
+                $text = GrowthReference::output($g['entry'], $g['table'], $g['sex'], $g['x'], $y, $known['of'], $known['param'], $places, $scale);
+            }
+            $text = $text === null ? '' : (string) $text;
+            // a text ("range") was made in its field's decimal mark; a number is marked here
+            if ($spec !== null && $spec['written'] === 'number' && $text !== '') $text = GrowthReference::markText($text, !empty($marks[$k]));
             $out[$t] = $text;
         }
         return ['values' => $out, 'problem' => null, 'field' => $field];

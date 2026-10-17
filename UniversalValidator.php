@@ -25,6 +25,7 @@ require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/ModeRegistry.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/GrowthReference.php';
+require_once __DIR__ . '/php/GrowthOutputs.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ValueStamps.php';
@@ -5891,6 +5892,15 @@ class UniversalValidator extends AbstractExternalModule
             elseif ($v === 'int' || $v === 'integer') $frag['rangeDecimals'] = 0;
             else $frag['rangeDecimals'] = 1;
         }
+        // A returned percentile is not in the field's unit: one decimal unless
+        // "percentileDecimals" says otherwise, set only when a value written
+        // with it is returned (the catalog's "places").
+        if (isset($frag['rangeReturn']) && is_array($frag['rangeReturn']) && !array_key_exists('rangePercentileDecimals', $frag)
+                && GrowthOutputs::problem() === null
+                && GrowthOutputs::anyWhere(array_keys($frag['rangeReturn']),
+                    function ($e) { return isset($e['places']) && $e['places'] === 'percentileDecimals'; })) {
+            $frag['rangePercentileDecimals'] = GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
+        }
         $unit = isset($frag['rangeUnit']) ? $frag['rangeUnit'] : '';
         $comma = !empty($frag['decimalComma']);
         // With a growth reference the limits are z-scores: plain numbers,
@@ -6043,18 +6053,29 @@ class UniversalValidator extends AbstractExternalModule
      * A value is written into the page being edited, so each field must be a
      * Text field of the measured field's own form (and so of its event and
      * instance), and not the measured field, an input of the rule or the record
-     * ID. "range" is text ("7.7 to 12.0 kg") and needs a field without
-     * validation; the numbers (z, lower, upper) need none or number validation
-     * that takes the decimals they are written with (number_Ndp: exactly N):
-     * two for z, "decimals" for a bound. A bound written with "decimals":0 may also go into an
-     * integer field. A number goes in the field's own decimal mark; a field
-     * without validation takes the measured field's.
+     * ID. What each value is comes from php/growth_outputs.json
+     * (GrowthOutputs): a text ("range", "7.7 to 12.0 kg") needs a field without
+     * validation; a number needs none or number validation that takes the
+     * decimals it is written with (number_Ndp: exactly N): two for z,
+     * "decimals" for a bound or a value at a z-score or percentile,
+     * "percentileDecimals" for the percentile. A number written with 0
+     * decimals may also go into an integer field, when the catalog allows it
+     * (not z). A number goes in the field's own decimal mark; a field without
+     * validation takes the measured field's.
      */
     private function returnTargetsProblem(array $frag, $name, array $dd, array $inputs, array &$marks)
     {
+        $catalog = GrowthOutputs::problem();
+        if ($catalog !== null) return '"return" cannot be checked: ' . $catalog . '.';
         $own = !empty($frag['decimalComma']);
         $decimals = isset($frag['rangeDecimals']) ? (int) $frag['rangeDecimals'] : 1;
+        $pctDecimals = isset($frag['rangePercentileDecimals']) ? (int) $frag['rangePercentileDecimals']
+            : GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
         foreach ($frag['rangeReturn'] as $k => $t) {
+            $k = (string) $k;
+            $known = GrowthOutputs::parse($k);
+            if (isset($known['error'])) return $known['error'];
+            $spec = GrowthOutputs::spec($known['of']);
             $label = '"return" "' . $k . '" field "' . $t . '"';
             $why = self::returnTargetBasics($t, '"return" "' . $k . '"', $label, $name, 'the measured field', $dd, $inputs,
                 function (array $m) use ($label) {
@@ -6064,7 +6085,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($why !== null) return $why;
             $m = $dd[$t];
             $v = strtolower(self::validationOf($m));
-            if ($k === 'range') {
+            if ($spec['written'] === 'text') {
                 if ($v !== '') {
                     return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.7 to 12.0 kg" — remove the validation.';
                 }
@@ -6075,11 +6096,15 @@ class UniversalValidator extends AbstractExternalModule
                 $marks[$k] = $own;
                 continue;
             }
-            // A bound written without decimals ("decimals":0) is a whole number.
-            if (($v === 'int' || $v === 'integer') && $k !== 'z') {
-                if ($decimals > 0) {
-                    return $label . ' has "' . $v . '" validation and this value is written with ' . $decimals . ' decimal place'
-                        . ($decimals === 1 ? '' : 's') . ' — set "decimals" to 0, or give it number validation.';
+            // The decimals the value is written with, and the key that sets them.
+            $need = $spec['places'] === 'z' ? 2 : ($spec['places'] === 'percentileDecimals' ? $pctDecimals : $decimals);
+            $placesKey = $spec['places'] === 'percentileDecimals' ? 'percentileDecimals' : 'decimals';
+            $placesMax = $spec['places'] === 'percentileDecimals' ? GrowthReference::MAX_PERCENTILE_DECIMALS : GrowthReference::MAX_DECIMALS;
+            // A value written without decimals ("decimals":0) is a whole number.
+            if (($v === 'int' || $v === 'integer') && $spec['integer']) {
+                if ($need > 0) {
+                    return $label . ' has "' . $v . '" validation and this value is written with ' . $need . ' decimal place'
+                        . ($need === 1 ? '' : 's') . ' — set "' . $placesKey . '" to 0, or give it number validation.';
                 }
                 $marks[$k] = false;
                 continue;
@@ -6090,11 +6115,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             // REDCap's number_Ndp takes exactly N decimal places, and a value
             // is written with exactly $need.
-            $need = $k === 'z' ? 2 : $decimals;
             $room = (isset($mm[1]) && $mm[1] !== '') ? (int) $mm[1] : null;
             if ($room !== null && $need !== $room) {
                 return $label . ' takes exactly ' . $room . ' decimal place' . ($room === 1 ? '' : 's') . ' and this value is written with ' . $need
-                    . ' — give it number validation without a place count' . ($k === 'z' ? ', or number_2dp' : ', or set "decimals" to ' . $room) . '.';
+                    . ' — give it number validation without a place count'
+                    . ($spec['places'] === 'z' ? ', or number_2dp'
+                        : ($room <= $placesMax ? ', or set "' . $placesKey . '" to ' . $room : '')) . '.';
             }
             $marks[$k] = !empty($mm[2]);
         }
