@@ -26,6 +26,8 @@ a value of another field such as the specimen ID on the collection form.</p>
     Data Access Group) or <code>event</code> (the event of the entry being checked)</td></tr>
 <tr><td><code>match</code></td><td>Look only at saved entries whose target field equals a field of
     this record, e.g. <code>{"site_code":"[site]"}</code>; up to 5 pairs</td></tr>
+<tr><td><code>return</code></td><td>Copy fields of the entry found into fields of this form,
+    e.g. <code>{"lab_site":"[result_site]"}</code>; up to 10 pairs (see below)</td></tr>
 <tr><td><code>surveys</code></td><td><code>true</code> to check on surveys too (off by default)</td></tr>
 <tr><td><code>project</code></td><td>Look in another project on the same server, by project id or by an
     alias set in this project's module settings; that project must agree (see below)</td></tr>
@@ -123,6 +125,161 @@ same decimal mark.</p>
     reported as not evaluated. A stored scan that looked up values in a project the reader
     would not be answered by is not shown to that reader.</li>
 </ul>
+
+<h2>Copying fields of the entry found</h2>
+
+<p>With <code>return</code> the lookup works like a spreadsheet VLOOKUP and copies fields of
+the entry it finds into fields of this form. Each key is a field of the entry found and each
+value a field here, the same way round as <code>match</code>. <code>record</code> copies the
+record ID of the entry found. A rule takes up to 10 pairs.</p>
+
+<pre><code>@UVEXISTS={"in":"[specimen_id]",
+           "return":{"lab_site":"[result_site]","coll_date":"[result_coll_date]"}}
+
+@UVEXISTS={"in":"[specimen_id]",
+           "return":{"record":"[source_record]","coll_date":"[result_coll_date]"}}
+
+@UVEXISTS={"in":"record","event":"enrolment_arm_1","return":{"enrol_date":"[mother_enrol_date]"}}
+
+@UVEXISTS={"in":"[specimen_id]","project":"lab","return":{"site_code":"[result_site]"}}</code></pre>
+
+<p>The first rule, on <code>result_specimen_id</code>, fills the site and collection date
+of the registered specimen. The second also copies the record the specimen was registered
+in. The third, on <code>mother_record_id</code>, reads the mother's enrolment date from the
+enrolment event, and the fourth copies from the lab project when its agreement lets this
+project copy <code>site_code</code>. For <code>SP-1</code>, registered in record 12 with
+<code>lab_site</code> 2 and <code>coll_date</code> 2026-03-01, the first rule writes
+<code>2</code> into <code>result_site</code> and, for a <code>result_coll_date</code> shown
+as D-M-Y, <code>01-03-2026</code>.</p>
+
+<h3>Which values are copied</h3>
+
+<ul>
+<li><strong>The rule owns its fields.</strong> A found value fills them. "Not found", a blank
+    value, a Missing Data Code, a <code>when</code> that is false and a value no branch
+    applies to empty them. "Could not check" leaves them as they are. A branched rule owns
+    the fields of every branch, so the branch that applies fills its own and empties the
+    others'. Mark the fields <code>@READONLY</code>, since a value typed there is
+    overwritten at the next check.</li>
+<li><strong>Where the values come from.</strong> The entry where <code>in</code> and every
+    <code>match</code> matched, in the same record, event and repeat instance. A copied
+    field must be on the form of <code>in</code> or on a form that does not repeat. In a
+    longitudinal project its form must also be in every event the entry can be found in
+    (the <code>event</code> named, or else every event that holds the form of
+    <code>in</code>, and with <code>"scope":"event"</code> only those that also hold this
+    field's form), or the rule is refused. With <code>"in":"record"</code> every copied
+    field must be on a form that does not repeat, and a longitudinal project names the
+    event the values are read from with <code>event</code>, which must not be a repeating
+    event.</li>
+<li><strong>Several entries.</strong> When more than one saved entry holds the value, the
+    values are copied only when every entry holds the same ones. Otherwise nothing is
+    copied, an amber line under the green "Found" says how many saved entries hold the
+    value with different values to copy, and the post-save audit logs a rule problem.
+    Narrow the lookup with <code>match</code>. Copying <code>record</code> from two records
+    is a disagreement too.</li>
+<li><strong>Data Access Groups.</strong> A user in a group gets values only from entries of
+    their own group. A value found only in another group is still found, nothing is copied
+    and the amber line says so. When REDCap confines the user's reads to their group, such
+    a value reads as "could not check".</li>
+<li><strong>A copy kept until the next save.</strong> The values are copied when this record
+    is judged. A later change to the entry found shows on the page when this form is
+    opened, and reaches the saved record when this record is saved again.</li>
+</ul>
+
+<h3>What a field here can take</h3>
+
+<p>The value is copied as REDCap stores it, so the field here must be able to hold every
+value the field there can.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Field there</th><th>Field here</th></tr></thead>
+<tbody>
+<tr><td>Any value</td><td>A Text field without validation, or a Notes field</td></tr>
+<tr><td>Dropdown, radio, yes/no, true/false</td><td>A choice field that has each of its
+    codes, or a Text field without validation (it gets the code)</td></tr>
+<tr><td>A date, datetime or time</td><td>A Text field with the same kind of date or time;
+    the order it shows the date in may differ</td></tr>
+<tr><td>A number</td><td>A Text field with number validation and the same decimal mark.
+    When the field here fixes its decimal places (integer, <code>number_1dp</code>,
+    <code>number_2dp</code> and so on), the field there must fix the same number of them,
+    because <code>number_2dp</code> takes exactly two places and <code>7.5</code> would
+    fail it</td></tr>
+<tr><td>Any other validation</td><td>A Text field with the same validation</td></tr>
+</tbody>
+</table>
+</div>
+
+<ul>
+<li>The field here must be on this form. It cannot be this field, a field the lookup reads,
+    the record ID, a calc, slider, SQL, checkbox, file or descriptive field, a field filled
+    by <code>@CALCTEXT</code>, <code>@CALCDATE</code> or <code>@SETVALUE</code>, or one that
+    shows <code>@RICHTEXT</code> or a BioPortal ontology search.</li>
+<li>A field flagged Identifier there may go only into a field flagged Identifier here, so a
+    de-identified export does not carry it.</li>
+<li><strong>One writer per field.</strong> A rule that copies two values into one field is
+    refused. Two rules that write one field are both refused, whether both are
+    <code>@UVEXISTS</code> rules or one is an <code>@UVRANGE</code> rule with
+    <code>return</code>.</li>
+<li><strong>No chains.</strong> A rule that copies values cannot read a field that a rule
+    copies or returns to, as its own field or in <code>in</code>, <code>match</code> or
+    <code>when</code>. The save works out every value before it writes any, so a chain
+    would lag one save behind. The rule that reads is refused and names the rule that
+    writes.</li>
+</ul>
+
+<h3>Rights, surveys and when the values are written</h3>
+
+<ul>
+<li><strong>Rights.</strong> A copied value shows data from the entry found, so the page
+    fills the fields only for a user who may open every form the lookup reads (the form of
+    the searched field, of each <code>match</code> field and of each copied field). Anyone
+    else gets "could not check". The save checks the person who saved the same way; without
+    those rights the fields keep their values and the audit logs a rule problem.</li>
+<li><strong>Surveys and saves without a user.</strong> A rule with <code>return</code>
+    cannot use <code>"surveys":true</code>. A survey respondent's save neither fills nor
+    empties the fields, even when the form is also a survey. A save REDCap runs without a
+    signed-in user, such as a scheduled job, copies nothing. In both cases a blank value, a
+    Missing Data Code, a <code>when</code> that is false, a value no branch applies to or a
+    branch without <code>return</code> still empties the fields, and any other value leaves
+    them as they are.</li>
+<li><strong>On the page.</strong> The page fills the fields as it opens and after each
+    answer. The first fill does not mark the form as changed, though calculations and
+    branching logic that read the fields still run; later fills raise an input and a change
+    event, as typing does. Save waits for a lookup on its way, even with
+    <code>"blockSave":"off"</code> and on a <code>@READONLY</code> field. A "found" answer
+    is asked again when the field is judged 30 seconds or more after it.</li>
+<li><strong>On save.</strong> The post-save audit asks again as the person who saved and
+    writes the values that differ, together with any <code>@UVRANGE</code> returned values,
+    in one save per event and instance of this record. A number field holding the same
+    number spelled another way (<code>7.80</code> for <code>7.8</code>) is not rewritten;
+    any other field is written exactly, so <code>007</code> replaces <code>7</code>.</li>
+<li><strong>A choice the page does not offer.</strong> When <code>@HIDECHOICE</code> or
+    <code>@UVCHOICES</code> took the option off the page, the page empties the dropdown or
+    radio field and an amber line names the field. The save writes the code all the same,
+    since the field's choice list holds it.</li>
+<li><strong>The cost.</strong> A lookup that copies values reads every saved value of the
+    searched field and of the copied fields, as a "not found" does for any other rule,
+    because a narrowed read can miss an entry spelled another way. The read is kept for the
+    rest of the request and the signed-in user, so an import of many records by one user
+    reads the searched project once.</li>
+<li>The project setting "@UVEXISTS returned values" (<code>exists-return-no-save</code>)
+    keeps the page fill and writes nothing when a record is saved. The Validation scan
+    never writes.</li>
+</ul>
+
+<h3>Copying from another project</h3>
+
+<p>The searched project lists the fields others may copy apart from the fields they may
+search, under "Fields of this project whose values it may copy" (<code>record</code> for its
+record ID), and only for the choice "Only users who have rights". A rule that copies a field
+not on that list gets the same setup error as any other refusal there. A refusal that would
+describe how that project is built (a copied field on a repeating form or missing from an
+event, an event that repeats) gives one message instead, "project N cannot give the values
+"return" asks for". A choice field here that lacks a code of the field there is refused
+without naming the code. The page and the save check the user's rights in both projects:
+here the forms of this field and of each <code>match</code> field here, there the forms of
+the fields searched and copied.</p>
 
 <h2>Audit</h2>
 
