@@ -201,6 +201,24 @@ function r17chk(field, code) {
   check('choices, caseSensitive:true: "NO" does not match (all options kept)', run({ caseSensitive: true }) === ',1,2,9');
 }
 
+// ---- 1c) AND, OR, NOT and parentheses in one "when" -------------------------
+{
+  const method = makeEl('select'); method.name = 'method';
+  ['', '1', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  method.value = '';
+  const a = makeEl('input'); a.name = 'a'; a.value = '0';
+  const b = makeEl('input'); b.name = 'b'; b.value = '0';
+  const c = makeEl('input'); c.name = 'c'; c.value = '0';
+  boot([method, a, b, c], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'], choicesAll: ['1', '2', '9'],
+              when: "([a]='1' OR [b]='1') AND NOT [c]='1'", blockSave: 'hard' }] });
+  check('compound when: neither side of the OR -> all options kept', selectValues(method).join(',') === ',1,2,9');
+  b.value = '1'; b.fire('change');
+  check('compound when: one side of the OR -> option hidden', selectValues(method).join(',') === ',1,2');
+  c.value = '1'; c.fire('change');
+  check('compound when: AND NOT fails -> option back', selectValues(method).join(',') === ',1,2,9');
+}
+
 // ---- 2) radio cascade: branches switch the visible set live -----------------
 {
   const country = makeEl('select'); country.name = 'country'; country.value = '';

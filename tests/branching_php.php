@@ -15,6 +15,7 @@ require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\Branching;
 use INSPIRE\UniversalValidator\AnnotationRules;
+use INSPIRE\UniversalValidator\Logic;
 use INSPIRE\UniversalValidator\ModeRegistry;
 
 $n = 0;
@@ -109,6 +110,44 @@ check('identical-when detected', isset($c['sid']) && $c['sid']['kind'] === 'iden
 $out = Branching::resolve($rules);
 check('identical-when wording names the condition',
     strpos($out[0]['configError'], "identical condition \"[stype]='2'\"") !== false);
+
+// ---- illegal: the same condition in other words (Logic::canonicalKey) ----
+$same = [
+    'keyword case'      => ["[a]='1' and [b]='2'", "[a]='1' AND [b]='2'"],
+    'member order'      => ["[a]='1' and [b]='2'", "[b]='2' and [a]='1'"],
+    'parentheses'       => ["[a]='1' or [b]='2'", "(([a]='1') or [b]='2')"],
+    'nested and'        => ["[a]='1' and [b]='2' and [c]='3'", "[a]='1' and ([b]='2' and [c]='3')"],
+    'quote style'       => ["[a]='1'", '[a]="1"'],
+    'not-equal spelling' => ["[a]<>'1'", "[a]!='1'"],
+    'spacing'           => ["[a]='1'and [b]='2'", "  [a] = '1' and [b]='2' "],
+    'operand side'      => ["[n]>5", "5<[n]"],
+    'letter case in a literal, both rules ignoring case' => ["[a]='Yes'", "[a]='yes'"],
+];
+foreach ($same as $why => $pair) {
+    $c = Branching::fieldConflicts([rule(['sid'], ['when' => $pair[0]]), rule(['sid'], ['algorithm' => 'damm', 'when' => $pair[1]])]);
+    check('identical-when despite ' . $why, isset($c['sid']) && $c['sid']['kind'] === 'identical-when');
+}
+$differ = [
+    'another literal'   => ["[a]='1'", "[a]='2'"],
+    'and vs or'         => ["[a]='1' and [b]='2'", "[a]='1' or [b]='2'"],
+    'negated'           => ["[a]='1'", "not [a]='1'"],
+    'other operator'    => ["[n]>5", "[n]>=5"],
+];
+foreach ($differ as $why => $pair) {
+    $c = Branching::fieldConflicts([rule(['sid'], ['when' => $pair[0]]), rule(['sid'], ['algorithm' => 'damm', 'when' => $pair[1]])]);
+    check('different conditions stay legal: ' . $why, !isset($c['sid']));
+}
+foreach ([[true, false], [false, true], [true, true]] as $cs) {
+    $c = Branching::fieldConflicts([rule(['sid'], ['when' => "[a]='Yes'", 'caseSensitive' => $cs[0]]),
+                                    rule(['sid'], ['algorithm' => 'damm', 'when' => "[a]='yes'", 'caseSensitive' => $cs[1]])]);
+    check('letter case in a literal tells branches apart when a rule compares case ('
+        . json_encode($cs) . ')', !isset($c['sid']));
+}
+$c = Branching::fieldConflicts([rule(['sid'], ['when' => "[a]='Yes'", 'caseSensitive' => true]),
+                                rule(['sid'], ['algorithm' => 'damm', 'when' => "[A]='Yes'", 'caseSensitive' => true])]);
+check('the same text is identical whatever the case setting', isset($c['sid']) && $c['sid']['kind'] === 'identical-when');
+check('canonicalKey: an unreadable condition keys as its trimmed text',
+    Logic::canonicalKey(' [a] ') === 'text:[a]' && Logic::canonicalKey('[a]=') !== Logic::canonicalKey('[b]='));
 
 // ---- illegal: mixed single/pooled types ----
 $rules = [

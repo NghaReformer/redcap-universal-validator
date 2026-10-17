@@ -210,6 +210,19 @@ class AnnotationRules
      */
     public static function extractTagsFor($annotation, $tag)
     {
+        return array_column(self::extractTagsDetailed($annotation, $tag), 'value');
+    }
+
+    /**
+     * extractTagsFor with each value's reading problem: a list of
+     * ['value' => string, 'error' => string|null]. $bare says how an unquoted,
+     * non-JSON value ends: 'token' (at the first space, the default) or
+     * 'condition' (the whole condition, for the tags whose bare value IS one —
+     * see Logic::parsePrefix). A condition that goes on past the point where it
+     * can be read gets an error instead of being cut short.
+     */
+    public static function extractTagsDetailed($annotation, $tag, $bare = 'token')
+    {
         $ann = (string) $annotation;
         $len = strlen($ann);
         $out = [];
@@ -227,27 +240,34 @@ class AnnotationRules
             if ($pos === false) break;
             $after = $pos + strlen($tag);
             if ($after >= $len || $ann[$after] !== '=') {
-                $out[] = '';
+                $out[] = ['value' => '', 'error' => null];
                 $offset = $after;
                 continue;
             }
-            $val = self::readValue(substr($ann, $after + 1));
-            $out[] = $val;
+            $read = self::readValue(substr($ann, $after + 1), $bare);
+            $out[] = ['value' => $read['value'], 'error' => $read['continues']
+                ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
+                    . $tag . '="[a]=\'1\' and [b]=\'2\'".'
+                : null];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
-            $consumed = strlen($val);
-            $first = $after + 1 < $len ? $ann[$after + 1] : '';
-            if ($first === '"' || $first === "'") $consumed += 2;
-            $offset = $after + 1 + $consumed;
+            $offset = $after + 1 + $read['length'];
         }
         return $out;
     }
 
-    /** Read one tag value: {json} (brace-balanced), quoted token, or bare token. */
-    private static function readValue($rest)
+    /**
+     * Read one tag value: {json} (brace-balanced), quoted text, or a bare
+     * value — one token, or with $bare 'condition' the longest condition.
+     * Returns ['value', 'length' => bytes consumed, 'continues' => bool].
+     */
+    private static function readValue($rest, $bare = 'token')
     {
-        if ($rest === '') return '';
+        $plain = function ($v, $length = null) {
+            return ['value' => $v, 'length' => $length === null ? strlen($v) : $length, 'continues' => false];
+        };
+        if ($rest === '') return $plain('');
         $c = $rest[0];
         if ($c === '{') {
             $depth = 0; $inStr = false; $esc = false;
@@ -264,17 +284,26 @@ class AnnotationRules
                 if ($ch === '{') { $depth++; }
                 elseif ($ch === '}') {
                     $depth--;
-                    if ($depth === 0) return substr($rest, 0, $i + 1);
+                    if ($depth === 0) return $plain(substr($rest, 0, $i + 1));
                 }
             }
-            return $rest; // unbalanced — parseField reports it as bad JSON
+            return $plain($rest); // unbalanced — parseField reports it as bad JSON
         }
         if ($c === '"' || $c === "'") {
             $end = strpos($rest, $c, 1);
-            return $end === false ? substr($rest, 1) : substr($rest, 1, $end - 1);
+            return $end === false ? $plain(substr($rest, 1), strlen($rest))
+                : $plain(substr($rest, 1, $end - 1), $end + 1);
+        }
+        if ($bare === 'condition') {
+            $p = Logic::parsePrefix($rest);
+            if ($p['length'] > 0) {
+                return ['value' => substr($rest, 0, $p['length']), 'length' => $p['length'], 'continues' => $p['continues']];
+            }
+            // nothing parses: keep the first token, so the parser reports the
+            // condition's own error, as before
         }
         preg_match('/^\S+/', $rest, $m);
-        return $m ? $m[0] : '';
+        return $plain($m ? $m[0] : '');
     }
 
     /**
@@ -317,9 +346,9 @@ class AnnotationRules
         $out = [];
         foreach (ModeRegistry::tagMap() as $tag => $mode) {
             $parser = ModeRegistry::mode($mode)['parser'];
-            foreach (self::extractTagsFor($annotation, $tag) as $val) {
+            foreach (self::extractTagsDetailed($annotation, $tag, ModeRegistry::bareValue($mode)) as $read) {
                 $any = true;
-                $frag = self::$parser($val, $opts);
+                $frag = $read['error'] !== null ? ['error' => $tag . ' ' . $read['error']] : self::$parser($read['value'], $opts);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
