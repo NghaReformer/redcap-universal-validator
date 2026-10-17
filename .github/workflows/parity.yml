@@ -65,6 +65,8 @@ jobs:
         run: node tests/exists_dom_js.cjs
       - name: JS @UVEXISTS "return" DOM contract (fills on found, empties on not-found, leaves on unknown, quiet page-open fill)
         run: node tests/exists_return_dom_js.cjs
+      - name: JS @UVEXISTS "where" DOM contract (filtered line, whereMessage and its languages, surveys, save held)
+        run: node tests/exists_where_dom_js.cjs
       - name: JS lookup comparison (@UVEXISTS/@UVUNIQUE letter case and numbers) vs fixture
         run: node tests/lookup_js.cjs
       - name: JS range (@UVRANGE) verdict vs fixture, and its DOM contract (tiers, comma decimals, calc never blocks)
@@ -220,6 +222,8 @@ jobs:
         run: php tests/exists_cross_php.php
       - name: PHP @UVEXISTS "return" (grammar, setup checks, endpoint values, save write, rights, another project)
         run: php tests/exists_return_php.php
+      - name: PHP @UVEXISTS "where" (grammar, setup checks, evaluation, confirming read, filtered outcome, audit, scan)
+        run: php tests/exists_where_php.php
       - name: PHP lookup comparison (@UVEXISTS/@UVUNIQUE letter case and numbers) vs fixture
         run: php tests/lookup_php.php
       - name: PHP @UVRANGE verdict vs fixture, grammar, field hook, branches, audit and scan

@@ -6231,6 +6231,7 @@ function QRIDExistsInit(QRID_CONFIG){
              deferred: !configError && !!cfg.deferred,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             whereMessage: (typeof cfg.whereMessage === "string" && cfg.whereMessage !== "") ? cfg.whereMessage : "",
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
              returns: (cfg.existsReturnFields && cfg.existsReturnFields.length) ? cfg.existsReturnFields.slice() : [],
@@ -6378,8 +6379,15 @@ function QRIDExistsInit(QRID_CONFIG){
         styleMsg(msg, "bad");
         QRID_setModeState(input, "x", "bad");
         setGuard(true, V.blockSave);
-        msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
-          : "This value is not saved where it should be. Check it, or record it there first.");
+        /* filtered: saved, but in no entry that meets the rule's "where".
+           The server says so to staff only; a survey gets the plain answer. */
+        if(resp.filtered === true && !QRID_IS_SURVEY){
+          msg.innerHTML = "&#10007; " + (V.whereMessage ? QRID_ruleHtml(V, "whereMessage")
+            : "This value is saved, but not in an entry that meets this rule's conditions.");
+        } else {
+          msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
+            : "This value is not saved where it should be. Check it, or record it there first.");
+        }
         emptyOwned(quiet);
       } else {
         unknown(V, resp.why);
@@ -7208,17 +7216,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi",
                       "windowWeekStart", "windowNotPast", "snapshotGate", "windowNotFutureOff",
                       "existsLocal", "existsSurveys", "existsReturnFields",
-                      "existsReturnNumbers", "rangeSoftLo", "rangeSoftHi", "rangeHardLo",
-                      "rangeHardHi", "rangeSoftBlock", "rangeHardBlock", "rangeUnit",
-                      "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
-                      "rangeReference", "rangeSexOp", "rangeMale", "rangeFemale",
-                      "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp", "rangeAgeMonthsOp",
-                      "rangeByOp", "rangeDobType", "rangeDobFormat", "rangeAtType",
-                      "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo", "rangePlausibleHi",
-                      "rangePlausibleText", "rangeMeasureScale", "rangeReturn",
-                      "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals",
-                      "rangeReturnComma", "deferredOnSave", "extendedAdvisory", "growthIdle",
-                      "selectorBlocked"];
+                      "existsReturnNumbers", "whereMessage", "rangeSoftLo", "rangeSoftHi",
+                      "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
+                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",
+                      "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
+                      "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
+                      "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
+                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
+                      "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
+                      "rangeReturn", "rangeReturnLimits", "rangeDecimals",
+                      "rangePercentileDecimals", "rangeReturnComma", "deferredOnSave",
+                      "extendedAdvisory", "growthIdle", "selectorBlocked"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

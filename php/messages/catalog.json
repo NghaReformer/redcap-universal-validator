@@ -73,6 +73,10 @@
     "staff":  "The value is not saved where this rule looks for it.",
     "survey": "This value was not found."
   },
+  "exists/filtered": {
+    "staff":  "The value is saved, but not in an entry that meets this rule's conditions.",
+    "survey": "This value was not found."
+  },
   "exists/*": {
     "staff":  "The value is not saved where this rule looks for it.",
     "survey": "This value was not found."

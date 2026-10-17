@@ -73,6 +73,9 @@ class AnnotationRules
     /** Cap on @UVEXISTS "return" pairs: the fields one lookup writes into this form. */
     const MAX_EXISTS_RETURN = 10;
 
+    /** Cap on the distinct fields an @UVEXISTS "where" condition tests in the entry found. */
+    const MAX_EXISTS_WHERE = 10;
+
     /**
      * An @UVEXISTS "project": a project id, or an alias the project's own
      * settings map to one (so a data dictionary moves between servers unchanged).
@@ -726,6 +729,15 @@ class AnnotationRules
      * It becomes existsReturn (the map, kept on the server: the page never
      * learns where the values come from) and existsReturnFields (the fields
      * here, which the page fills).
+     * "where" is a condition on fields of the entry found (of the other
+     * project with "project"): only an entry where it holds counts as found.
+     *   "where":"[consent]='1' and ([status]<>'3' or [status]='')"
+     * It becomes existsWhere (the text) and existsWhereFields (the fields it
+     * tests), both kept on the server; the fields join the searched fields
+     * (existsTargets, or existsRemoteTargets with "project"), so rights,
+     * Identifier checks, another project's agreement and the scan's read set
+     * cover them as they cover "in". "whereMessage" is what staff see when
+     * the value is saved but no entry holding it meets "where".
      */
     private static function parseExistsValue($val, array $opts = [])
     {
@@ -751,7 +763,8 @@ class AnnotationRules
             return ['error' => self::TAG_EXISTS . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'return'];
+        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'return',
+                    'where', 'whereMessage'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_EXISTS . ' option(s): ' . implode(', ', $unknown)
@@ -831,8 +844,15 @@ class AnnotationRules
             if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
             if ($cfg['surveys']) $out['existsSurveys'] = true;
         }
+        if (array_key_exists('where', $cfg)) {
+            if (!is_string($cfg['where'])) {
+                return ['error' => '"where" must be a condition on fields of the entry found, such as "[consent]=\'1\'".'];
+            }
+            $out['existsWhere'] = trim($cfg['where']);
+            $out['existsWhereFields'] = self::existsWhereFieldsOf($out['existsWhere']);
+        }
         if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
-        foreach (['when', 'message', 'blockSave'] as $k) {
+        foreach (['when', 'message', 'blockSave', 'whereMessage'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
                 $out[$k] = $cfg[$k];
@@ -840,10 +860,12 @@ class AnnotationRules
         }
         self::takeCaseSensitive($cfg, $out);
         // What the rule reads, as field lists: the fields of THIS record the
-        // lookup is narrowed by, and the fields it searches in other entries.
+        // lookup is narrowed by, and the fields it searches in other entries
+        // (the searched field, the "match" targets and the "where" fields).
         if (isset($out['existsMatch'])) $out['existsLocal'] = array_values(array_unique(array_values($out['existsMatch'])));
         $targets = $in === 'record' ? [] : [$in];
         foreach (array_keys(isset($out['existsMatch']) ? $out['existsMatch'] : []) as $t) $targets[] = (string) $t;
+        foreach (isset($out['existsWhereFields']) ? $out['existsWhereFields'] : [] as $t) $targets[] = (string) $t;
         if ($targets) $out[isset($out['existsProject']) ? 'existsRemoteTargets' : 'existsTargets'] = array_values(array_unique($targets));
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
@@ -2090,6 +2112,7 @@ class AnnotationRules
      * "scope":"event" or "match" on a record-ID lookup). Whether the fields and
      * the event exist is checked in the channel glue with the dictionary in hand.
      * Event and instance references in "when" are not supported here yet.
+     * "where" and "whereMessage": existsWhereErrors.
      */
     public static function checkExists(array $frag, array $opts = [])
     {
@@ -2112,9 +2135,9 @@ class AnnotationRules
                 . '"scope":"event" means the event of the entry being checked.';
         }
         if ($in === 'record') {
-            // With "return", "event" names the event whose values are copied
-            // from the record found; the record ID is still looked up as a whole.
-            if (isset($frag['existsEvent']) && !isset($frag['existsReturn'])) {
+            // With "return" or "where", "event" names the event whose values
+            // are copied or tested; the record ID is still looked up as a whole.
+            if (isset($frag['existsEvent']) && !isset($frag['existsReturn']) && !isset($frag['existsWhere'])) {
                 $errors[] = '"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
             }
             if ($scope === 'event') $errors[] = '"scope":"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
@@ -2165,6 +2188,9 @@ class AnnotationRules
         if (isset($frag['existsReturn'])) {
             $errors = array_merge($errors, self::existsReturnErrors($frag, $in));
         }
+        if (array_key_exists('existsWhere', $frag) || array_key_exists('whereMessage', $frag)) {
+            $errors = array_merge($errors, self::existsWhereErrors($frag, $opts));
+        }
         // The lookup reads saved values of one project through one read; an
         // event/instance reference in "when" would need the extended pipeline,
         // which this tag does not run yet.
@@ -2174,6 +2200,71 @@ class AnnotationRules
                 . 'fields of this entry.';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * The fields an exists "where" condition tests, in the order it names
+     * them, each once; [] when the text does not parse (existsWhereErrors
+     * says why). Parsed without options: "where" reads one entry of the place
+     * searched, so it takes no event or instance references.
+     */
+    public static function existsWhereFieldsOf($where)
+    {
+        $p = is_string($where) ? Logic::parse($where) : ['ok' => false];
+        if (empty($p['ok'])) return [];
+        $out = [];
+        foreach (Logic::referencedFields($p['ast']) as $ref) $out[$ref[0]] = true;
+        return array_keys($out);
+    }
+
+    /**
+     * The "where" part of an exists rule: a condition that parses without
+     * event or instance references, tests at least one field and at most
+     * MAX_EXISTS_WHERE, and never "record" (the record ID is what
+     * "in":"record" looks up). "whereMessage" needs a "where". Whether the
+     * fields exist where the lookup searches, can be read from the entry
+     * found, and are compared with values of their kind is checked with the
+     * dictionary in hand (UniversalValidator::existsWhereProblem).
+     */
+    private static function existsWhereErrors(array $frag, array $opts)
+    {
+        $errors = [];
+        if (array_key_exists('whereMessage', $frag) && !array_key_exists('existsWhere', $frag)) {
+            $errors[] = '"whereMessage" needs "where": it is the message shown when the value is saved but the entry '
+                . 'holding it does not meet the "where" condition.';
+        }
+        if (array_key_exists('whereMessage', $frag) && (!is_string($frag['whereMessage']) || trim($frag['whereMessage']) === '')) {
+            $errors[] = '"whereMessage" must be a non-empty string.';
+        }
+        if (!array_key_exists('existsWhere', $frag)) return $errors;
+        $w = $frag['existsWhere'];
+        $eg = ' — e.g. "where":"[consent]=\'1\' and [status]<>\'3\'".';
+        if (!is_string($w) || trim($w) === '') return array_merge($errors, ['"where" must be a condition on fields of the entry found' . $eg]);
+        $p = Logic::parse($w);
+        if (empty($p['ok'])) {
+            if (!empty(Logic::parse($w, ['qualified' => true] + $opts)['ok'])) {
+                $errors[] = '"where" tests fields of the entry the lookup finds, so it takes no event or instance '
+                    . 'references — write [field]. Use "event" to choose the event searched.';
+            } else {
+                $errors[] = 'the "where" condition ' . $p['error'];
+            }
+            return $errors;
+        }
+        $fields = self::existsWhereFieldsOf($w);
+        if (!$fields) return array_merge($errors, ['"where" must test at least one field of the entry found' . $eg]);
+        if (in_array('record', $fields, true)) {
+            $errors[] = '"where" cannot test [record]: a field named "record" stands for the record ID, which "in":"record" '
+                . 'looks up. Test fields of the entry found.';
+        }
+        if (count($fields) > self::MAX_EXISTS_WHERE) {
+            $errors[] = '"where" may test at most ' . self::MAX_EXISTS_WHERE . ' fields — it names ' . count($fields) . '.';
+        }
+        // The fields come from the parser; a stored rule edited by hand must
+        // not search fewer (or other) fields than its condition tests.
+        if (!isset($frag['existsWhereFields']) || $frag['existsWhereFields'] !== $fields) {
+            $errors[] = 'the fields of "where" do not match its condition — save the rule again.';
+        }
+        return $errors;
     }
 
     /**
@@ -2195,6 +2286,11 @@ class AnnotationRules
         foreach ((isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [] as $t => $l) {
             $local[(string) $l] = true;
             if (!isset($frag['existsProject'])) $local[(string) $t] = true;
+        }
+        if (!isset($frag['existsProject'])) {
+            foreach ((isset($frag['existsWhereFields']) && is_array($frag['existsWhereFields'])) ? $frag['existsWhereFields'] : [] as $t) {
+                $local[(string) $t] = true;
+            }
         }
         $seen = [];
         foreach ($ret as $s => $t) {

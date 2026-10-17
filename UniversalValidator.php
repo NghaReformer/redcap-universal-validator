@@ -800,7 +800,9 @@ class UniversalValidator extends AbstractExternalModule
             $r = $this->existsLookup($project_id, $this->existsAskedOnSave($project_id, $rule, $field, $meta),
                 Logic::lookupTrim($value), $lv, $event_id, $record, $meta);
             if ($r['state'] === 'not-found') {
-                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'exists', 'type' => 'exists', 'reason' => 'not-found'];
+                // "filtered": the value is saved, but no entry holding it meets "where".
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'exists', 'type' => 'exists',
+                                     'reason' => !empty($r['filtered']) ? 'filtered' : 'not-found'];
             } elseif ($r['state'] !== 'found') {
                 $out['unconfigurable'][] = ['fields' => [$field],
                     'why' => 'the lookup in ' . self::existsSourceName($rule) . ' could not be completed (lookup-unavailable'
@@ -1160,6 +1162,10 @@ class UniversalValidator extends AbstractExternalModule
         foreach (['existsIn', 'existsPid', 'existsEvent', 'existsScope', 'existsMatch', 'existsReturn', 'caseSensitive'] as $f) {
             $k[$f] = isset($rule[$f]) ? $rule[$f] : null;
         }
+        // Two branches whose "where" differ ask different questions; two that
+        // write one condition two ways ask the same one.
+        $k['existsWhere'] = isset($rule['existsWhere'])
+            ? Logic::canonicalKey((string) $rule['existsWhere'], empty($rule['caseSensitive'])) : null;
         return $k;
     }
 
@@ -1252,7 +1258,14 @@ class UniversalValidator extends AbstractExternalModule
                     if (is_array($node)) $ids[(string) $rec] = self::dagOfRecordNode($node);
                 }
                 $mark = $spec['recordMark'];
-                $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
+                $filtered = false;
+                if ($spec['where'] === null) {
+                    $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
+                } else {
+                    $hit = $this->recordWhereHit($pid, $spec, self::recordIdMatches($ids, $value, $spec['fold'], $scope, $dag, $self, $mark),
+                                                 $filtered);
+                    if ($hit === false) return $unknown + ['why' => 'the saved values could not be read just now'];
+                }
                 if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 // REDCap finds a record by its exact name only, so a value that
                 // differs from a record ID in letter case, or a number written
@@ -1261,12 +1274,20 @@ class UniversalValidator extends AbstractExternalModule
                         || ($mark !== null && Logic::numberKey($value, $mark) !== null)) {
                     $all = $this->recordIdsOf($pid, $this->fullReadGate($pid, $opts));
                     if ($all === null) return $unknown + ['why' => 'the record IDs could not be read just now'];
-                    $hit = self::recordIdMatch($all, $value, $spec['fold'], $scope, $dag, $self, $mark);
+                    if ($spec['where'] === null) {
+                        $hit = self::recordIdMatch($all, $value, $spec['fold'], $scope, $dag, $self, $mark);
+                    } else {
+                        // The records the exact read already judged are not read again.
+                        $more = array_diff_key(self::recordIdMatches($all, $value, $spec['fold'], $scope, $dag, $self, $mark), $ids);
+                        $hit = $this->recordWhereHit($pid, $spec, $more, $filtered);
+                        if ($hit === false) return $unknown + ['why' => 'the saved values could not be read just now'];
+                    }
                     if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 }
-                return $this->existsMiss($pid, $scope, $opts, $dag);
+                return self::existsFilteredMiss($this->existsMiss($pid, $scope, $opts, $dag), $filtered);
             }
             $fields = array_keys($spec['target']);
+            foreach ($spec['where'] !== null ? $spec['where']['fields'] : [] as $f) $fields[] = $f;
             foreach ($spec['returns'] as $f) if ($f !== 'record') $fields[] = $f;
             $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => array_values(array_unique($fields)),
                        'exportDataAccessGroups' => true];
@@ -1279,6 +1300,13 @@ class UniversalValidator extends AbstractExternalModule
                 if ($fl !== null) {
                     try {
                         $n = \REDCap::getData($params + ['filterLogic' => $fl]);
+                        if (is_array($n) && $spec['where'] !== null && $n) {
+                            // A filtered read may leave out the rows "where" needs
+                            // (the event row beside a matching repeat instance), so
+                            // it only names the candidate records: they are read
+                            // again whole, and that read decides.
+                            $n = \REDCap::getData($params + ['records' => array_map('strval', array_keys($n))]);
+                        }
                         $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag, $prefer) : null;
                         if ($hit !== null) return ['state' => 'found'] + $hit;
                     } catch (\Throwable $e) {
@@ -1291,24 +1319,71 @@ class UniversalValidator extends AbstractExternalModule
             }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
+            $filtered = false;
             if ($spec['returns']) {
-                $hits = self::existsHitsIn($data, $spec, $scope, $dag);
+                $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
                 if ($hits) {
                     $best = self::bestExistsHit($hits, $prefer);
                     return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
                         + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
                 }
             } else {
-                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer);
+                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
                 if ($hit !== null) return ['state' => 'found'] + $hit;
             }
             // The read just made is the evidence of what this request can see
             // there; it spares existsMiss a second read of that project.
             if (!empty($opts['foreign'])) $this->noteGroupsSeen($pid, $data, false);
-            return $this->existsMiss($pid, $scope, $opts, $dag);
+            return self::existsFilteredMiss($this->existsMiss($pid, $scope, $opts, $dag), $filtered);
         } catch (\Throwable $e) {
             return $unknown;
         }
+    }
+
+    /**
+     * A miss ($miss, from existsMiss) where the value IS saved, in entries
+     * that all fail the rule's "where" ($filtered): "not found", marked
+     * 'filtered' so staff can be told the value is saved but not where the
+     * conditions hold. It enforces as "not found" does. A miss that could not
+     * be trusted stays unknown: an entry that passes may be one this request
+     * cannot see.
+     */
+    private static function existsFilteredMiss(array $miss, $filtered)
+    {
+        if ($filtered && $miss['state'] === 'not-found') $miss['filtered'] = true;
+        return $miss;
+    }
+
+    /**
+     * For a record-ID lookup with "where": the first of $cands (record ID =>
+     * DAG, in the order to prefer) whose entry meets the condition, as
+     * ['record','dag']; null when none does (with $filtered set when any was
+     * judged); false when the values could not be read. A record's entries
+     * are its event rows ("event" alone when the rule names one, which a
+     * longitudinal project needs: existsEntryShape), never a repeat instance,
+     * since "where" tests forms that do not repeat; a record with no row
+     * there has no entry, so it fails. The candidates' values are read in
+     * one call.
+     */
+    private function recordWhereHit($pid, array $spec, array $cands, &$filtered)
+    {
+        if (!$cands) return null;
+        $p = ['project_id' => $pid, 'return_format' => 'array', 'records' => array_map('strval', array_keys($cands)),
+              'fields' => array_values(array_unique(array_merge([$this->recordIdFieldOf($pid)], $spec['where']['fields'])))];
+        if ($spec['event'] !== null) $p['events'] = [$spec['event']];
+        $d = \REDCap::getData($p);
+        if (!is_array($d)) return false;
+        foreach ($cands as $rec => $rdag) {
+            $rec = (string) $rec;
+            $filtered = true;
+            $node = (isset($d[$rec]) && is_array($d[$rec])) ? $d[$rec] : [];
+            foreach (self::recordContexts($node) as $ctx) {
+                if ($ctx['repeatKey'] !== null) continue;
+                if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                if (self::existsWherePasses($ctx, $spec)) return ['record' => $rec, 'dag' => $rdag];
+            }
+        }
+        return null;
     }
 
     /**
@@ -1436,6 +1511,26 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Every entry of $ids (record ID => DAG) whose ID matches $value, as
+     * record ID => DAG, the exact spelling first: what recordIdMatch chooses
+     * from, for a lookup that must judge each match ("where").
+     */
+    private static function recordIdMatches(array $ids, $value, $fold, $scope, $dag, $self, $mark = null)
+    {
+        $want = Logic::lookupKey($value, $fold, $mark);
+        $exact = [];
+        $other = [];
+        foreach ($ids as $rec => $rdag) {
+            $rec = (string) $rec;
+            if ($self !== null && $rec === $self) continue;
+            if ($scope === 'dag' && $rdag !== $dag) continue;
+            if ($rec === $value) $exact[$rec] = $rdag;
+            elseif (($fold || $mark !== null) && Logic::lookupKey($rec, $fold, $mark) === $want) $other[$rec] = $rdag;
+        }
+        return $exact + $other;
+    }
+
+    /**
      * Remember the Data Access Groups (null = none) of the records one read of
      * project $pid returned. $all: the read was every record ID, so readShows
      * has nothing more to read.
@@ -1496,20 +1591,34 @@ class UniversalValidator extends AbstractExternalModule
         foreach ((isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [] as $s => $_) {
             $returns[] = (string) $s;
         }
+        $where = null;
+        if (isset($rule['existsWhere'])) {
+            // Checked when the rule was saved; a stored rule that no longer
+            // parses answers unknown, never "found".
+            $p = Logic::parse((string) $rule['existsWhere']);
+            if (empty($p['ok'])) return null;
+            $wf = AnnotationRules::existsWhereFieldsOf((string) $rule['existsWhere']);
+            $where = ['ast' => $p['ast'], 'fields' => $wf, 'marks' => $this->lookupMarks($pid, $wf)];
+        }
         // A saved Missing Data Code is no value: "NA" saved there is not found
         // by "na" typed here, letter case ignored or not.
         return ['in' => $in, 'target' => $target, 'keys' => $keys, 'fold' => $fold, 'marks' => $marks,
                 'recordMark' => $recordMark, 'codes' => $this->missingDataCodes($pid), 'event' => $event,
-                'returns' => $returns];
+                'returns' => $returns, 'where' => $where];
     }
 
     /**
-     * Whether one row of an exported data set holds every target value (by
-     * existsSpec's keys): null when it does not, else whether it holds each
-     * spelled exactly as looked up. A saved Missing Data Code matches nothing.
+     * Whether one entry of an exported data set (a recordContexts context)
+     * holds every target value (by existsSpec's keys): null when it does not,
+     * else whether it holds each spelled exactly as looked up. A saved
+     * Missing Data Code matches nothing. An entry that holds the values but
+     * fails the rule's "where" condition is no match either, and sets
+     * $filtered, so the caller can tell "saved, but not where the conditions
+     * hold" from "not saved".
      */
-    private static function existsRowMatch(array $row, array $spec)
+    private static function existsRowMatch(array $ctx, array $spec, &$filtered = null)
     {
+        $row = $ctx['values'];
         $exact = true;
         foreach ($spec['target'] as $f => $tv) {
             $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
@@ -1518,7 +1627,49 @@ class UniversalValidator extends AbstractExternalModule
             $exact = false;
             if (Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) return null;
         }
+        if (!self::existsWherePasses($ctx, $spec)) {
+            $filtered = true;
+            return null;
+        }
         return $exact;
+    }
+
+    /**
+     * Whether one entry (a recordContexts context) meets the rule's "where"
+     * condition; true for a rule without one. The condition reads the entry
+     * as REDCap stores it, with the rule's letter case (existsSpec 'fold'),
+     * and a blank side of < > <= >= gives no answer, so the comparison fails
+     * (Logic::BLANK_INERT). Missing Data Codes are plain values, as in
+     * "when". A field that holds numbers with a decimal comma is read by
+     * value ("3,5" is 3.5). A repeat instance carries its event row's values
+     * (recordContexts), except a checkbox: REDCap gives every row of an
+     * export the checkbox's codes, all "0" where the form is not that row's,
+     * which would hide the event row's ticks. A checkbox with no box ticked
+     * in the instance therefore reads the event row's boxes.
+     */
+    private static function existsWherePasses(array $ctx, array $spec)
+    {
+        if (empty($spec['where'])) return true;
+        $vals = $ctx['values'];
+        $base = null;
+        if (isset($ctx['repeatKey']) && $ctx['repeatKey'] !== null && isset($ctx['node'][$ctx['event_id']])
+                && is_array($ctx['node'][$ctx['event_id']])) {
+            $base = $ctx['node'][$ctx['event_id']];
+        }
+        foreach ($spec['where']['fields'] as $f) {
+            if (!isset($vals[$f])) continue;
+            if (is_array($vals[$f])) {
+                if ($base !== null && isset($base[$f]) && is_array($base[$f]) && !in_array('1', array_map('strval', $vals[$f]), true)) {
+                    $vals[$f] = $base[$f];
+                }
+                continue;
+            }
+            if (isset($spec['where']['marks'][$f]) && $spec['where']['marks'][$f] === 'comma') {
+                $n = Logic::normalizeNumber($vals[$f], true);
+                if ($n !== null && $n !== '') $vals[$f] = $n;
+            }
+        }
+        return Logic::evaluate($spec['where']['ast'], $vals, Logic::BLANK_INERT, !$spec['fold']);
     }
 
     /**
@@ -1526,9 +1677,10 @@ class UniversalValidator extends AbstractExternalModule
      * existsSpec's keys), as ['record','dag'], or null. Of several, the first
      * in Data Access Group $prefer (the caller's, so staff can be shown it),
      * then the first spelled exactly as looked up. A saved Missing Data Code
-     * matches nothing.
+     * matches nothing. An entry that fails "where" is skipped and sets
+     * $filtered (existsRowMatch).
      */
-    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null)
+    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null, &$filtered = null)
     {
         $best = null;
         $bestScore = -1;
@@ -1539,7 +1691,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
-                $exact = self::existsRowMatch($ctx['values'], $spec);
+                $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
                 if ($score > $bestScore) {
@@ -1559,9 +1711,11 @@ class UniversalValidator extends AbstractExternalModule
      * the record ID). A row of a repeating instance carries the values of its
      * event's row too (recordContexts), so a value copied from a form that
      * does not repeat is the same in each. A saved Missing Data Code is no
-     * value to copy: it is copied as "".
+     * value to copy: it is copied as "". Only entries that meet "where" are
+     * hits, so values are copied only from them; one that fails it sets
+     * $filtered.
      */
-    private static function existsHitsIn(array $data, array $spec, $scope, $dag)
+    private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null)
     {
         $hits = [];
         foreach ($data as $rec => $node) {
@@ -1570,7 +1724,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
-                $exact = self::existsRowMatch($ctx['values'], $spec);
+                $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $hits[] = ['record' => (string) $rec, 'dag' => $rdag, 'exact' => $exact,
                            'values' => self::copiedValues($ctx['values'], (string) $rec, $spec)];
@@ -1688,8 +1842,13 @@ class UniversalValidator extends AbstractExternalModule
         $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
         if ($scope === 'dag' && $dag === false) return $unknown;
         $fields = array_keys($spec['target']);
+        $where = $spec['where'];
+        // Rules that search the same fields but test a different "where"
+        // need their own index: whether an entry passes is kept in it.
         $key = json_encode([(int) $pid, $spec['in'], $fields, isset($rule['existsEvent']) ? $rule['existsEvent'] : null,
-                            $spec['fold'], $spec['marks'], $spec['recordMark']]);
+                            $spec['fold'], $spec['marks'], $spec['recordMark'],
+                            $where !== null ? [Logic::canonicalKey((string) $rule['existsWhere'], $spec['fold']), $where['marks']] : null]);
+        $read = array_values(array_unique(array_merge($fields, $where !== null ? $where['fields'] : [])));
         $foreign = !empty($rule['existsPid']);
         if (!array_key_exists($key, $this->existsIndexes)) {
             // Another project's index costs one read there per request: it is
@@ -1698,12 +1857,12 @@ class UniversalValidator extends AbstractExternalModule
             $over = $foreign ? $this->crossRateLimited($pid, 'scan') : null;
             if ($over !== null) {
                 $this->existsIndexes[$key] = false;
-                if ($over === 'log') $this->logCrossIndexRead($pid, $fields, 'throttled');
+                if ($over === 'log') $this->logCrossIndexRead($pid, $read, 'throttled');
             } else {
                 $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
                     !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks'],
-                    $spec['recordMark'], $spec['codes']);
-                if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
+                    $spec['recordMark'], $spec['codes'], $where);
+                if ($foreign) $this->logCrossIndexRead($pid, $read, $this->existsIndexes[$key] === false ? 'failed' : 'read');
             }
         }
         $idx = $this->existsIndexes[$key];
@@ -1711,10 +1870,15 @@ class UniversalValidator extends AbstractExternalModule
         $k = self::existsIndexKey(array_values($spec['keys']));
         if ($spec['in'] === 'record') $k = Logic::lookupKey($value, $spec['fold'], $spec['recordMark']);
         $self = ($self !== null && $self !== '') ? (string) $self : null;
+        $filtered = false;
         foreach (isset($idx[$k]) ? $idx[$k] : [] as $hit) {
             if ($spec['in'] === 'record' && $hit[0] === $self) continue;
             if ($scope === 'dag' && $hit[1] !== $dag) continue;
             if ($scope === 'event' && (string) $hit[2] !== (string) $spec['event']) continue;
+            if (empty($hit[3])) {
+                $filtered = true;
+                continue;
+            }
             return ['state' => 'found', 'record' => $hit[0], 'dag' => $hit[1]];
         }
         // The index read is the evidence (buildExistsIndex noted what it
@@ -1722,19 +1886,23 @@ class UniversalValidator extends AbstractExternalModule
         if ($foreign && !$this->readShows($pid, function ($g) { return true; }, function () { return false; })) {
             return $unknown + ['why' => 'the other project showed no records to this scan'];
         }
-        return ['state' => 'not-found', 'record' => null, 'dag' => null];
+        return self::existsFilteredMiss(['state' => 'not-found', 'record' => null, 'dag' => null], $filtered);
     }
 
     /**
-     * key => [[record, dag, event_id], ...] for one searched field set, or false.
-     * The key is existsIndexKey of the values' Logic::lookupKey ($fold,
-     * $marks) in rule order; a record-ID index is keyed by the record ID's
-     * lookupKey ($fold, $recordMark), so IDs that differ only in letter case
-     * share a key. An entry holding a Missing Data Code ($codes) holds nothing
-     * to find.
+     * key => [[record, dag, event_id, passes], ...] for one searched field set,
+     * or false. The key is existsIndexKey of the values' Logic::lookupKey
+     * ($fold, $marks) in rule order; a record-ID index is keyed by the record
+     * ID's lookupKey ($fold, $recordMark), so IDs that differ only in letter
+     * case share a key. An entry holding a Missing Data Code ($codes) holds
+     * nothing to find. passes: whether the entry meets the rule's "where"
+     * ($where, existsSpec's; always true without one), so a lookup can tell
+     * "saved, but not where the conditions hold" from "not saved" from this
+     * one index.
      * One hit is kept per (DAG, event) under a key - all a lookup ever asks -
      * so a value repeated in many records costs one entry, not a list that
-     * every later record has to be compared against.
+     * every later record has to be compared against. An entry that passes
+     * takes the place of one that does not.
      * $foreign: the project is another one; what the read showed is noted for
      * readShows, the evidence that a "not found" there is real.
      *
@@ -1742,44 +1910,72 @@ class UniversalValidator extends AbstractExternalModule
      * chunks of records. After each chunk the memory the index has grown by is
      * projected over the records still to read, and the build stops (false)
      * as soon as that projection passes the cap: well before the read that
-     * would have run the request out of memory, not after it.
+     * would have run the request out of memory, not after it. A record-ID
+     * index with "where" reads the "where" fields the same way, and judges
+     * each record's event rows as recordWhereHit does. Each field "where"
+     * reads makes the chunks smaller, so a chunk's read stays about the size
+     * it is without one.
      */
     private function buildExistsIndex($pid, $in, array $fields, $event, $foreign = false, $fold = true, array $marks = [],
-                                      $recordMark = null, array $codes = [])
+                                      $recordMark = null, array $codes = [], ?array $where = null)
     {
         try {
             $ids = $this->recordIdsOf($pid);
             if ($ids === null) return false;
             $idx = [];
-            if ($in === 'record') {
-                foreach ($ids as $rec => $rdag) $idx[Logic::lookupKey((string) $rec, $fold, $recordMark)][] = [(string) $rec, $rdag, null];
+            if ($in === 'record' && $where === null) {
+                foreach ($ids as $rec => $rdag) $idx[Logic::lookupKey((string) $rec, $fold, $recordMark)][] = [(string) $rec, $rdag, null, true];
                 return $idx;
             }
+            $judge = ['where' => $where, 'fold' => $fold];
+            if ($in === 'record' && $this->recordIdFieldOf($pid) === '') return false;
+            $read = $in === 'record' ? array_merge([$this->recordIdFieldOf($pid)], $where['fields'])
+                                     : array_merge($fields, $where !== null ? $where['fields'] : []);
+            $read = array_values(array_unique($read));
+            $base = $in === 'record' ? 1 : max(1, count($fields));
+            $chunkSize = max(1, (int) floor(self::$existsIndexChunk * $base / max($base, count($read))));
             $cap = $this->existsIndexCap !== null ? (int) $this->existsIndexCap : (int) (self::memoryLimitBytes() * 0.6);
-            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => $fields, 'exportDataAccessGroups' => true];
+            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => $read, 'exportDataAccessGroups' => true];
             if ($event !== null) $params['events'] = [$event];
             $total = count($ids);
             $done = 0;
             $start = memory_get_usage();
-            foreach (array_chunk(array_map('strval', array_keys($ids)), max(1, (int) self::$existsIndexChunk)) as $chunk) {
+            foreach (array_chunk(array_map('strval', array_keys($ids)), $chunkSize) as $chunk) {
                 $data = \REDCap::getData($params + ['records' => $chunk]);
                 if (!is_array($data)) return false;
                 if ($foreign) $this->noteGroupsSeen($pid, $data, false);
-                foreach ($data as $rec => $node) {
-                    if (!is_array($node)) continue;
-                    $rdag = self::dagOfRecordNode($node);
-                    foreach (self::recordContexts($node) as $ctx) {
-                        if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
-                        $parts = [];
-                        foreach ($fields as $f) {
-                            $v = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? Logic::lookupTrim($ctx['values'][$f]) : '';
-                            if ($v === '') continue 2;   // an entry with a blank searched field holds nothing to find
-                            if ($codes && self::isMissingCode($v, $codes)) continue 2;
-                            $parts[] = Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null);
+                if ($in === 'record') {
+                    // Every record ID is in the index; a record whose rows all
+                    // fail (or that has no row in "event") is kept as failing.
+                    foreach ($chunk as $rec) {
+                        $node = (isset($data[$rec]) && is_array($data[$rec])) ? $data[$rec] : [];
+                        $pass = false;
+                        foreach (self::recordContexts($node) as $ctx) {
+                            if ($ctx['repeatKey'] !== null) continue;
+                            if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
+                            if (self::existsWherePasses($ctx, $judge)) { $pass = true; break; }
                         }
-                        $k = self::existsIndexKey($parts);
-                        $slot = ($rdag === null ? '' : 'g' . $rdag) . "\x1e" . (string) $ctx['event_id'];
-                        if (!isset($idx[$k][$slot])) $idx[$k][$slot] = [(string) $rec, $rdag, (string) $ctx['event_id']];
+                        $idx[Logic::lookupKey($rec, $fold, $recordMark)][] = [$rec, $ids[$rec], null, $pass];
+                    }
+                } else {
+                    foreach ($data as $rec => $node) {
+                        if (!is_array($node)) continue;
+                        $rdag = self::dagOfRecordNode($node);
+                        foreach (self::recordContexts($node) as $ctx) {
+                            if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
+                            $parts = [];
+                            foreach ($fields as $f) {
+                                $v = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? Logic::lookupTrim($ctx['values'][$f]) : '';
+                                if ($v === '') continue 2;   // an entry with a blank searched field holds nothing to find
+                                if ($codes && self::isMissingCode($v, $codes)) continue 2;
+                                $parts[] = Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null);
+                            }
+                            $k = self::existsIndexKey($parts);
+                            $slot = ($rdag === null ? '' : 'g' . $rdag) . "\x1e" . (string) $ctx['event_id'];
+                            if (isset($idx[$k][$slot]) && $idx[$k][$slot][3]) continue;
+                            $pass = self::existsWherePasses($ctx, $judge);
+                            if (!isset($idx[$k][$slot]) || $pass) $idx[$k][$slot] = [(string) $rec, $rdag, (string) $ctx['event_id'], $pass];
+                        }
                     }
                 }
                 unset($data);
@@ -1849,8 +2045,20 @@ class UniversalValidator extends AbstractExternalModule
      * designer here cannot use the error to learn anything about that project.
      */
     const CROSS_UNAVAILABLE = 'project %d cannot be searched from this project. It must have this module enabled and '
-        . 'list this project, with every field this lookup searches, under "Projects that may look up values here" '
-        . 'in its module settings, and an "event" must be one of its unique event names.';
+        . 'list this project, with every field this lookup searches or filters on, under "Projects that may look up '
+        . 'values here" in its module settings, and an "event" must be one of its unique event names.';
+
+    /**
+     * The one refusal of a "where" whose reason would describe another
+     * project's fields: their types, choice codes, forms or events
+     * (existsWhereProblem). That project's team can say which applies.
+     */
+    const CROSS_FILTER_UNAVAILABLE = 'project %d cannot apply this "where" condition to the entry the lookup finds. '
+        . 'Each field it tests must be a field there with one value (a checkbox is tested as [field(code)] with one '
+        . 'of its codes), compared with a value of its kind (a date written as Y-M-D, a number with a decimal point), '
+        . 'and be on the form searched or on a form that does not repeat, in every event the value can be found in; '
+        . 'with "in":"record" every field must be on a form that does not repeat and, in a longitudinal project, '
+        . '"event" must name an event that holds those forms and does not repeat.';
 
     /**
      * The one refusal of a "return" whose reason would describe how another
@@ -2445,8 +2653,12 @@ class UniversalValidator extends AbstractExternalModule
      * project they came from ($copiedFrom): as a keyed hash when that project
      * logs no values ("none"), not at all when its log is "off". The values
      * themselves are never logged.
+     *
+     * "field" lists every field the lookup reads there, the "where" fields
+     * included; a "not-found" whose value is saved in entries that all fail
+     * "where" ($filtered) adds "filtered".
      */
-    private function logCrossProbe($b, $a, $channel, array $rule, $value, $result, $copiedFrom = null)
+    private function logCrossProbe($b, $a, $channel, array $rule, $value, $result, $copiedFrom = null, $filtered = false)
     {
         $extra = !empty($this->crossExtraRead[(int) $b]);
         unset($this->crossExtraRead[(int) $b]);
@@ -2462,6 +2674,7 @@ class UniversalValidator extends AbstractExternalModule
                 'result'         => (string) $result,
             ];
             if ($extra) $entry['extra_read'] = 'record ids';
+            if ($filtered) $entry['filtered'] = 'true';
             $copies = self::returnSources($rule);
             if ($copies) $entry['returned'] = implode(',', $copies);
             if ($copiedFrom !== null && $copiedFrom !== '' && $mode !== 'off') {
@@ -2612,7 +2825,7 @@ class UniversalValidator extends AbstractExternalModule
             $r = $this->findExisting($b, $ruleB, $value, $locals, null, $dag, true,
                 ['foreign' => true, 'callerDag' => $callerDag] + $opts);
             $this->logCrossProbe($b, $pid, $channel, $rule, $value, $r['state'],
-                isset($r['returned']) ? $r['record'] : null);
+                isset($r['returned']) ? $r['record'] : null, !empty($r['filtered']));
         }
         $r['record'] = null;
         $r['dag'] = null;
@@ -5382,7 +5595,8 @@ class UniversalValidator extends AbstractExternalModule
      * field itself, a pair of fields compared with each other must hold the
      * same kind of date (or both no date: REDCap stores dates as Y-M-D and
      * dates compare as stored) and, when both hold numbers, use the same
-     * decimal mark, and "event" must name an event of the project.
+     * decimal mark, and "event" must name an event of the project. "where"
+     * must work against the entry found (existsWhereProblem).
      */
     private function annotateExistsDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -5433,6 +5647,10 @@ class UniversalValidator extends AbstractExternalModule
                 return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
             }
         }
+        if (isset($frag['existsWhere'])) {
+            $why = $this->existsWhereProblem($frag, $name, $dd, $dd, $pid, '');
+            if ($why !== null) return $refuse($why);
+        }
         if (isset($frag['existsReturn'])) {
             $why = $this->existsReturnProblem($frag, $name, $dd, $dd, $pid, $pid, '', $this->projectIdentifierFields($pid));
             if ($why !== null) return $refuse($why);
@@ -5469,29 +5687,84 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function existsReturnProblem(array &$frag, $name, array $ddThere, array $ddHere, $pidThere, $pidHere, $there, $idsThere)
     {
-        $in = isset($frag['existsIn']) ? (string) $frag['existsIn'] : '';
         $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
-        $inForm = ($in !== 'record' && isset($ddThere[$in]['form_name'])) ? (string) $ddThere[$in]['form_name'] : null;
         $hide = function ($why) use ($there, $pidThere) {
             return $there === '' ? $why : sprintf(self::CROSS_RETURN_UNAVAILABLE, (int) $pidThere);
         };
+        $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"return"', 'copied');
+        if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
+        $idsHere = $this->projectIdentifierFields($pidHere);
+        $inputs = [];
+        foreach ((isset($frag['existsLocal']) && is_array($frag['existsLocal'])) ? $frag['existsLocal'] : [] as $l) $inputs[(string) $l] = true;
+        if ($there === '') {
+            foreach ((isset($frag['existsTargets']) && is_array($frag['existsTargets'])) ? $frag['existsTargets'] : [] as $t) $inputs[(string) $t] = true;
+        }
+        $numbers = [];
+        foreach ($frag['existsReturn'] as $s => $t) {
+            $s = (string) $s;
+            $src = $s === 'record' ? $pkThere : $s;
+            $short = '"return" "' . $s . '"';
+            if ($src === null || !isset($ddThere[$src])) return $short . ' is not a field' . ($there === '' ? ' in this project' : $there) . ' — check the spelling.';
+            $ms = $ddThere[$src];
+            $ts = isset($ms['field_type']) ? (string) $ms['field_type'] : '';
+            if (!in_array($ts, self::EXISTS_SCALAR_TYPES, true)) {
+                return $short . $there . ' is a ' . $ts . ' field — "return" copies one value per field.';
+            }
+            // The record ID is in every event of the record, by either name.
+            $why = self::existsEntryPlacement($shape, $frag, $ms, $short . $there, 'Copy', 'copy', $src !== $pkThere);
+            if ($why !== null) return $hide($why);
+            $label = $short . ' field "' . $t . '"';
+            $why = self::returnTargetBasics((string) $t, $short, $label, $name, 'this field', $ddHere, $inputs,
+                function (array $mt) use ($ms, $label, $s, $there) {
+                    return self::existsReturnPairProblem($ms, $mt, $label, $s, $there);
+                });
+            if ($why !== null) return $why;
+            $idThere = $idsThere === null || self::isIdentifier($idsThere, $src);
+            if ($idThere && ($idsHere === null || !self::isIdentifier($idsHere, (string) $t))) {
+                return $short . $there . ' is an Identifier' . ($idsThere === null ? ' (the Identifier flags could not be read)' : '')
+                    . ', so "[' . $t . ']" must be flagged Identifier too — otherwise a de-identified export would carry it.';
+            }
+            if (self::numberMarkOf($ddHere[(string) $t]) !== null) $numbers[] = (string) $t;
+        }
+        $frag['existsReturnNumbers'] = $numbers;
+        return null;
+    }
+
+    /**
+     * Where an entry an exists rule finds can be, in project $pidThere, for a
+     * part of the rule that reads fields out of it ($key: '"return"' or
+     * '"where"'; $done: what is done with those values, for a message):
+     * ['in', 'inForm' (the form of "in"; null with "in":"record"),
+     * 'repeating' (form => true for the forms that repeat), 'events' (the
+     * event ids the entry can be in: "event", or each event that holds the
+     * form of "in", and with "scope":"event" this field's form too; null in a
+     * classic project), 'byEvent' (event id => form => true)]. Or
+     * ['problem' => why, 'hide' => whether the reason describes how the
+     * project searched is built, which another project's refusal must not
+     * show]. With "in":"record" a longitudinal project needs "event", an
+     * event that does not repeat: the record's entry is its row there.
+     */
+    private function existsEntryShape(array $frag, $name, array $ddThere, array $ddHere, $pidThere, $there, $key, $done)
+    {
+        $in = isset($frag['existsIn']) ? (string) $frag['existsIn'] : '';
+        $inForm = ($in !== 'record' && isset($ddThere[$in]['form_name'])) ? (string) $ddThere[$in]['form_name'] : null;
         $layout = $this->repeatingLayout($pidThere);
         if ($layout === null) {
-            return 'which forms repeat in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
-                . ' could not be read, so "return" cannot be checked.';
+            return ['problem' => 'which forms repeat in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
+                . ' could not be read, so ' . $key . ' cannot be checked.', 'hide' => false];
         }
-        $repeating = $layout['forms'];
         $long = $this->projectLongitudinal($pidThere);
         if ($in === 'record' && !isset($frag['existsEvent']) && $long !== false) {
-            return $hide('"return" with "in":"record" needs "event" in a longitudinal project: the event whose values are copied.');
+            return ['problem' => $key . ' with "in":"record" needs "event" in a longitudinal project: the event whose values are '
+                . $done . '.', 'hide' => true];
         }
-        // The events the entry found can be in, when the project has events.
         $events = null;
+        $byEvent = [];
         if ($long !== false) {
             $byEvent = $this->eventForms($pidThere);
             if ($byEvent === null) {
-                return 'which forms each event holds in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
-                    . ' could not be read, so "return" cannot be checked.';
+                return ['problem' => 'which forms each event holds in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
+                    . ' could not be read, so ' . $key . ' cannot be checked.', 'hide' => false];
             }
             if (isset($frag['existsEvent'])) {
                 $ev = $there === '' ? $this->eventIdOf($pidThere, $frag['existsEvent']) : $this->eventIdIn($pidThere, $frag['existsEvent']);
@@ -5510,59 +5783,139 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
-        if ($in === 'record' && $events) {
-            if (isset($layout['events'][$events[0]])) {
-                return $hide('"return" with "in":"record" reads one entry of "event" "' . $frag['existsEvent'] . '"' . $there
-                    . ', and that event repeats — name an event that does not repeat.');
+        if ($in === 'record' && $events && isset($layout['events'][$events[0]])) {
+            return ['problem' => $key . ' with "in":"record" reads one entry of "event" "' . $frag['existsEvent'] . '"' . $there
+                . ', and that event repeats — name an event that does not repeat.', 'hide' => true];
+        }
+        return ['in' => $in, 'inForm' => $inForm, 'repeating' => $layout['forms'], 'events' => $events, 'byEvent' => $byEvent];
+    }
+
+    /**
+     * Why a field of the project searched ($meta, its dictionary row) cannot
+     * be read from the one entry an exists rule finds (existsEntryShape
+     * $shape), or null: it is on another form that repeats, or (when
+     * $checkEvents: the record ID is in every event) on a form missing from
+     * an event the entry can be in. $label starts the message; $Verb/$verb
+     * say what the rule does with such fields ("Copy", "Test").
+     */
+    private static function existsEntryPlacement(array $shape, array $frag, array $meta, $label, $Verb, $verb, $checkEvents = true)
+    {
+        $form = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
+        $in = $shape['in'];
+        // inForm is null with "in":"record": no repeating form is allowed
+        if (isset($shape['repeating'][$form]) && $form !== $shape['inForm']) {
+            return $label . ' is on the repeating form "' . $form . '"'
+                . ($in === 'record' ? '' : ', not on "' . (string) $shape['inForm'] . '" with "' . $in . '"')
+                . ' — the lookup finds one entry, and that form holds many. ' . $Verb
+                . ' fields of the form the lookup searches, or of a form that does not repeat.';
+        }
+        if ($checkEvents && $shape['events'] !== null && $form !== $shape['inForm']) {
+            foreach ($shape['events'] as $e) {
+                if (isset($shape['byEvent'][$e][$form])) continue;
+                return $label . ' is on the form "' . $form . '", which is not in every event '
+                    . (isset($frag['existsEvent']) ? '"' . $frag['existsEvent'] . '" names' : 'that holds "' . (string) $shape['inForm'] . '"')
+                    . ' — the entry found there has no value for it. Name an "event" that holds both forms, or ' . $verb
+                    . ' fields of a form every such event holds.';
             }
         }
-        $idsHere = $this->projectIdentifierFields($pidHere);
-        $inputs = [];
-        foreach ((isset($frag['existsLocal']) && is_array($frag['existsLocal'])) ? $frag['existsLocal'] : [] as $l) $inputs[(string) $l] = true;
-        if ($there === '') {
-            foreach ((isset($frag['existsTargets']) && is_array($frag['existsTargets'])) ? $frag['existsTargets'] : [] as $t) $inputs[(string) $t] = true;
+        return null;
+    }
+
+    /**
+     * Why the "where" of an exists rule on $name cannot work against project
+     * $pidThere (dictionary $ddThere; $there names it in a message, '' for
+     * this one), or null:
+     *   - each field it tests is a field there, a checkbox tested as
+     *     [field(code)] with one of its codes (Logic::checkRefs);
+     *   - a field compared with a field holds the same kind of date, time or
+     *     neither, and numbers with the same decimal mark;
+     *   - a date, datetime or time field is compared with a literal written
+     *     as REDCap stores it (Y-M-D, H:M), a number field with no comma in
+     *     its literal ("3,5" would be read as text: write "3.5");
+     *   - each field can be read from the entry found (existsEntryShape,
+     *     existsEntryPlacement): a field the entry has no value for would read
+     *     blank, and a blank passes "<>".
+     * Another project's refusal is CROSS_FILTER_UNAVAILABLE whenever the
+     * reason would describe its fields, codes, forms or events.
+     */
+    private function existsWhereProblem(array $frag, $name, array $ddThere, array $ddHere, $pidThere, $there)
+    {
+        $hide = function ($why) use ($there, $pidThere) {
+            return $there === '' ? $why : sprintf(self::CROSS_FILTER_UNAVAILABLE, (int) $pidThere);
+        };
+        $p = Logic::parse((string) $frag['existsWhere']);
+        if (empty($p['ok'])) return 'the "where" condition ' . $p['error'];
+        $types = [];
+        $choices = [];
+        foreach ($ddThere as $f => $m) {
+            $types[$f] = isset($m['field_type']) ? (string) $m['field_type'] : '';
+            if ($types[$f] === 'checkbox') {
+                $choices[$f] = Logic::parseChoiceCodes(isset($m['select_choices_or_calculations']) ? $m['select_choices_or_calculations'] : '');
+            }
         }
-        $numbers = [];
-        foreach ($frag['existsReturn'] as $s => $t) {
-            $s = (string) $s;
-            $src = $s === 'record' ? $pkThere : $s;
-            $short = '"return" "' . $s . '"';
-            if ($src === null || !isset($ddThere[$src])) return $short . ' is not a field' . ($there === '' ? ' in this project' : $there) . ' — check the spelling.';
-            $ms = $ddThere[$src];
-            $ts = isset($ms['field_type']) ? (string) $ms['field_type'] : '';
-            if (!in_array($ts, self::EXISTS_SCALAR_TYPES, true)) {
-                return $short . $there . ' is a ' . $ts . ' field — "return" copies one value per field.';
-            }
-            $form = isset($ms['form_name']) ? (string) $ms['form_name'] : '';
-            // $inForm is null with "in":"record": no repeating form is allowed
-            if (isset($repeating[$form]) && $form !== $inForm) {
-                return $hide($short . $there . ' is on the repeating form "' . $form . '"'
-                    . ($in === 'record' ? '' : ', not on "' . (string) $inForm . '" with "' . $in . '"')
-                    . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.');
-            }
-            // The record ID is in every event of the record, by either name.
-            if ($src !== $pkThere && $events !== null && $form !== $inForm) {
-                foreach ($events as $e) {
-                    if (isset($byEvent[$e][$form])) continue;
-                    return $hide($short . $there . ' is on the form "' . $form . '", which is not in every event '
-                        . (isset($frag['existsEvent']) ? '"' . $frag['existsEvent'] . '" names' : 'that holds "' . (string) $inForm . '"')
-                        . ' — the entry found there has no value for it. Name an "event" that holds both forms, or copy fields of a form every such event holds.');
-                }
-            }
-            $label = $short . ' field "' . $t . '"';
-            $why = self::returnTargetBasics((string) $t, $short, $label, $name, 'this field', $ddHere, $inputs,
-                function (array $mt) use ($ms, $label, $s, $there) {
-                    return self::existsReturnPairProblem($ms, $mt, $label, $s, $there);
-                });
-            if ($why !== null) return $why;
-            $idThere = $idsThere === null || self::isIdentifier($idsThere, $src);
-            if ($idThere && ($idsHere === null || !self::isIdentifier($idsHere, (string) $t))) {
-                return $short . $there . ' is an Identifier' . ($idsThere === null ? ' (the Identifier flags could not be read)' : '')
-                    . ', so "[' . $t . ']" must be flagged Identifier too — otherwise a de-identified export would carry it.';
-            }
-            if (self::numberMarkOf($ddHere[(string) $t]) !== null) $numbers[] = (string) $t;
+        $errs = Logic::checkRefs($p['ast'], $types, $choices, 'where');
+        if ($errs) return $hide(implode(' ', $errs));
+        $why = self::existsWhereKindProblem($p['ast'], $ddThere);
+        if ($why !== null) return $hide($why);
+        $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"where"', 'tested');
+        if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
+        $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
+        foreach (AnnotationRules::existsWhereFieldsOf((string) $frag['existsWhere']) as $f) {
+            $why = self::existsEntryPlacement($shape, $frag, $ddThere[$f], '"where" field "[' . $f . ']"' . $there, 'Test', 'test',
+                $f !== $pkThere);
+            if ($why !== null) return $hide($why);
         }
-        $frag['existsReturnNumbers'] = $numbers;
+        return null;
+    }
+
+    /**
+     * The first comparison of a parsed "where" that cannot answer as meant
+     * against the fields of $dd (existsWhereProblem), or null.
+     */
+    private static function existsWhereKindProblem(array $n, array $dd)
+    {
+        if ($n[0] === 'and' || $n[0] === 'or') {
+            foreach ($n[1] as $c) {
+                $why = self::existsWhereKindProblem($c, $dd);
+                if ($why !== null) return $why;
+            }
+            return null;
+        }
+        if ($n[0] === 'not') return self::existsWhereKindProblem($n[1], $dd);
+        if ($n[0] !== 'cmp') return null;
+        // A checkbox box ([cb(code)]) reads "1" or "0": no kind to compare.
+        $field = function ($op) { return ($op[0] === 'ref' && $op[2] === null) ? $op[1] : null; };
+        $kind = function ($f) use ($dd) { return self::storedKindOf(isset($dd[$f]) ? self::validationOf($dd[$f]) : ''); };
+        $mark = function ($f) use ($dd) { return self::numberMarkOf(isset($dd[$f]) ? $dd[$f] : null); };
+        $a = $field($n[2]);
+        $b = $field($n[3]);
+        if ($a !== null && $b !== null) {
+            if ($kind($a) !== $kind($b)) {
+                return '"where" compares "[' . $a . ']", which holds ' . $kind($a) . ', with "[' . $b . ']", which holds '
+                    . $kind($b) . ' — values are compared as REDCap stores them, so both must be the same kind.';
+            }
+            return self::markMismatch($a, $mark($a), $b, $mark($b), '');
+        }
+        $f = $a !== null ? $a : $b;
+        $lit = $n[2][0] === 'lit' ? $n[2] : ($n[3][0] === 'lit' ? $n[3] : null);
+        if ($f === null || $lit === null || $lit[1] === '') return null;
+        $k = $kind($f);
+        $v = (string) $lit[1];
+        $shown = '"[' . $f . ']"';
+        if (strpos($k, 'dates') === 0 && !preg_match(AnnotationRules::WINDOW_LITERAL_RE, $v)) {
+            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
+                . 'stores them, so write it as Y-M-D, such as \'2026-03-01\'' . ($k === 'dates' ? '' : ' or \'2026-03-01 08:30\'') . '.';
+        }
+        if (strpos($k, 'times') === 0 && !preg_match('/^\d{2}:\d{2}(?::\d{2})?$/D', $v)) {
+            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
+        }
+        if ($k === 'minutes and seconds' && !preg_match('/^\d{2}:\d{2}$/D', $v)) {
+            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write it as REDCap stores it, such as \'02:30\'.';
+        }
+        if ($mark($f) !== null && strpos($v, ',') !== false) {
+            return '"where" compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in "where" with a '
+                . 'decimal point, such as \'' . str_replace(',', '.', $v) . '\'.';
+        }
         return null;
     }
 
@@ -5744,8 +6097,11 @@ class UniversalValidator extends AbstractExternalModule
      * then that project's dictionary: its searched fields exist and hold one
      * value, each compared pair holds the same kind of date, "event" is one of
      * its events, "surveys" is allowed there, and under the "answer" agreement
-     * no searched field is an Identifier there. The resolved project id is
-     * kept on the rule as existsPid.
+     * no searched field is an Identifier there. The "where" fields are
+     * searched fields here: the agreement must list them, and "answer" refuses
+     * an Identifier among them. "where" must work against that project's
+     * entries (existsWhereProblem, one refusal that names nothing there). The
+     * resolved project id is kept on the rule as existsPid.
      */
     private function annotateExistsRemote(array $frag, $name, $types, $pid)
     {
@@ -5831,6 +6187,12 @@ class UniversalValidator extends AbstractExternalModule
                     . 'signed-in user of this project, so its identifying fields cannot be searched; it can answer only '
                     . 'users with rights there instead ("Who gets an answer").');
             }
+        }
+        // crossGate already required every "where" field to be on the
+        // agreement's list of fields it may search.
+        if (isset($frag['existsWhere'])) {
+            $why = $this->existsWhereProblem($frag, $name, $ddB, $ddA, $b, ' of project ' . $b);
+            if ($why !== null) return $refuse($why);
         }
         // crossGate already required every copied field to be on the agreement's
         // "return" list, which the "answer" mode never has.
@@ -9938,7 +10300,9 @@ class UniversalValidator extends AbstractExternalModule
      *   6. the reply is found / not-found / unknown. A survey never gets a reason
      *      or a record; staff in a DAG get the record only when it is in their
      *      own group, staff in none get it always. A record of another project
-     *      is never returned.
+     *      is never returned. A "not found" whose value is saved, but only in
+     *      entries that fail the rule's "where", carries filtered: true for
+     *      staff; a survey gets the plain "not found".
      * The branch of a branched rule is the one the page is enforcing: chosen
      * from the values the page sent for its "when" fields ("cond"), and from
      * saved values for every other field (activeRuleFor).
@@ -10080,6 +10444,9 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             $resp = ['state' => $r['state'], 'record' => $recOut];
+            // Saved, but in no entry that meets "where": staff are told, a
+            // survey respondent gets the plain "not found".
+            if ($r['state'] === 'not-found' && !empty($r['filtered']) && $isAuthenticated && !$isSurvey) $resp['filtered'] = true;
             // "return": the values for the fields here, as the page shows them
             // (a survey never gets them; the rule refuses "surveys" anyway).
             // Keyed by the field here: the page never learns which fields

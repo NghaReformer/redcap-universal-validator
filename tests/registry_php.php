@@ -82,6 +82,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'existsProject', 'existsPid', 'existsRemoteTargets',
     // @UVEXISTS "return": the map, the fields it writes, the ones that hold numbers
     'existsReturn', 'existsReturnFields', 'existsReturnNumbers',
+    // @UVEXISTS "where": the condition, the fields it tests, the message when it fails
+    'existsWhere', 'existsWhereFields', 'whereMessage',
     // 2.5.0 @UVRANGE
     'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
@@ -116,6 +118,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'existsLocal', 'existsSurveys',
     // @UVEXISTS "return": the page learns the fields it fills, never where the values come from
     'existsReturnFields', 'existsReturnNumbers',
+    // @UVEXISTS "where": the page gets only the message, never the condition
+    'whereMessage',
     // 2.5.0 @UVRANGE
     'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
@@ -229,9 +233,20 @@ check('serverKeys holds uniqueAlso', in_array('uniqueAlso', ModeRegistry::server
 check('uniqueAlso is not a client key', !in_array('uniqueAlso', ModeRegistry::clientKeys(), true));
 // Every mode whose page shows a rule message takes that message as a language
 // map; the ID check has no message of its own.
-foreach (['constraint', 'required', 'unique', 'choices', 'window', 'exists', 'range'] as $m) {
+foreach (['constraint', 'required', 'unique', 'choices', 'window', 'range'] as $m) {
     check($m . ' takes "message" as a language map', ModeRegistry::textKeys($m) === ['message']);
 }
+check('exists takes "message" and "whereMessage" as language maps', ModeRegistry::textKeys('exists') === ['message', 'whereMessage']);
+// The "where" condition and its fields say where the lookup reads: server only.
+foreach (['existsWhere', 'existsWhereFields'] as $k) {
+    check($k . ' is a server key', in_array($k, ModeRegistry::serverKeys(), true));
+    check($k . ' is not a client key', !in_array($k, ModeRegistry::clientKeys(), true));
+}
+$shapedWhere = ModeRegistry::clientShape(['type' => 'exists', 'existsIn' => 'sid', 'existsWhere' => "[c]='1'",
+    'existsWhereFields' => ['c'], 'whereMessage' => 'not eligible', 'existsTargets' => ['sid', 'c']]);
+check('clientShape keeps whereMessage and drops the condition and its fields',
+    $shapedWhere['whereMessage'] === 'not eligible' && !isset($shapedWhere['existsWhere'])
+    && !isset($shapedWhere['existsWhereFields']) && !isset($shapedWhere['existsTargets']));
 check('the ID check has no text keys', ModeRegistry::textKeys('check') === []);
 $shaped = ModeRegistry::clientShape($ua);
 check('clientShape removes "also" from every branch', !isset($shaped['branches'][0]['uniqueAlso'])
