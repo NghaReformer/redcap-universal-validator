@@ -897,6 +897,10 @@ generic message. ISO dates and numbers compare correctly.
 A bare `@UVASSERT` with no condition is a configuration error — there is nothing to
 assert.
 
+The quotes are optional. An unquoted condition is read whole, up to the end of the line
+or the next action tag, as for [`@UVREQUIRED`](#level-4--compound-conditions):
+`@UVASSERT=[end_date]>=[start_date] or [end_date]=''` checks both halves.
+
 ### Level 2 — confirm-a-value
 
 ```text
@@ -1016,6 +1020,29 @@ immediately, including a save block if configured.
 
 ```text
 @UVREQUIRED={"when":"[consent]='1' and [site]<>'9' and not [withdrawn(1)]='1'","message":"Required for active consented participants at study sites","blockSave":"hard"}
+@UVREQUIRED="[consent]='1' and ([site]='3' or [site]='4')"
+```
+
+`and`, `or`, `not` and parentheses mix freely; see
+[the `when` condition language](#the-when-condition-language) for precedence.
+
+A bare condition may be written without quotes. The module reads it whole, up to the end
+of the line or the next action tag, so the two lines below require the field on the same
+records:
+
+```text
+@UVREQUIRED="[consent]='1' and [site]<>'9'"
+@UVREQUIRED=[consent]='1' and [site]<>'9'
+```
+
+Earlier releases stopped the unquoted form at the first space and checked only
+`[consent]='1'`. Text after a complete condition is still ignored as a note. Text that
+goes on with `and`, `or` or a comparison but does not finish the condition is refused,
+since the module cannot tell where the condition ends:
+
+```text invalid
+# refused: put the whole condition in quotes
+@UVREQUIRED=[consent]='1' and see protocol section 4
 ```
 
 ### Semantics worth knowing
@@ -3695,11 +3722,31 @@ A three-way branch:
 The same dialect powers `when` on every tag and `assert` on `@UVASSERT`. It is a
 **REDCap-style subset — not byte-for-byte REDCap logic**.
 
-| Supported                                                                                        | Rejected when the rule is saved                      |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `[field]` and `[checkbox(code)]` references                                                  | Arbitrary functions (`datediff(...)`, etc.)        |
-| Text/number literals, comparisons and`and` / `or` / `not`                                  | Arithmetic and piping                                |
-| With extended references enabled:`[event][field]`, instance selectors and `{alias}` bindings | Unsupported smart variables such as`[record-name]` |
+| Supported                                                                                     | Rejected when the rule is saved                         |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `[field]` and `[checkbox(code)]` references                                                   | Arbitrary functions (`datediff(...)`, etc.)             |
+| Text/number literals and the comparisons `=` `<>` `!=` `>` `<` `>=` `<=`                      | Arithmetic and piping                                   |
+| `and` / `or` / `not` in any letter case, and parentheses                                      | `&&`, `\|\|` and `!`: write `and`, `or`, `not`          |
+| With extended references enabled: `[event][field]`, instance selectors and `{alias}` bindings | Unsupported smart variables such as `[record-name]`     |
+
+One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`, then `or`,
+as in REDCap: `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`.
+Add parentheses when you mean the other grouping. Parentheses nest up to 10 deep, and a
+condition holds at most 500 characters and 20 field references.
+
+```text
+@UVASSERT="([visit_type]='1' or [visit_type]='2') and [visit_date]>=[enrol_date]"
+@UVALIDATE={"algorithm":"verhoeff","when":"[site]='3' AND NOT ([consent]='0' Or [withdrawn(1)]='1')"}
+```
+
+```text invalid
+# REDCap logic writes "and", not "&&".
+# refused: write "and" instead
+@UVASSERT="[visit_date]>=[enrol_date] && [visit_date]<>''"
+
+# refused: write "or" instead
+@UVREQUIRED="[site]='3' || [site]='4'"
+```
 
 The semantics below describe **plain legacy references**. For opt-in qualified
 references and bindings, use [the event/repeat examples](#validation-across-events-and-repeating-instruments).

@@ -575,6 +575,8 @@ only while it is true.
   `[specimen_type]='2'`.
 
 Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
+One condition may mix `and`, `or` and `not` with parentheses:
+`"when":"[consent(1)]='1' and ([site]='3' or [site]='4')"`.
 
 **The condition language** is a REDCap-style *subset* — not full REDCap logic:
 
@@ -582,8 +584,21 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
 |---|---|
 | `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
 | `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
-| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` cross-event prefixes |
-| `and` / `or` / `not`, parentheses | arithmetic and piping |
+| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` and instance selectors, unless extended references are on for the project |
+| `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (the error says which word to write) |
+| | arithmetic and piping |
+
+`not` binds tightest, then `and`, then `or`, as in REDCap:
+`[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
+parentheses for the other grouping. Every tag that takes a condition (`when` on all
+tags, the `@UVASSERT` test, the `@UVREQUIRED` condition) reads the same language.
+
+The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
+`@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
+or the next action tag. Text after a complete condition is ignored as a note. If that
+text goes on with `and`, `or` or a comparison and does not finish the condition, the
+rule is refused with "put the whole condition in quotes". Earlier releases stopped
+an unquoted condition at the first space.
 
 **Behavior worth knowing.**
 

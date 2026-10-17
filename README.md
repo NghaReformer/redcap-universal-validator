@@ -209,8 +209,13 @@ logic**:
 |---|---|
 | `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
 | `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
-| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes (cross-event) |
-| `and` / `or` / `not`, parentheses | arithmetic and piping |
+| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes, unless extended references are on |
+| `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (write `and`, `or`, `not`) |
+| | arithmetic and piping |
+
+One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`,
+then `or`, as in REDCap; parentheses change the grouping. An unquoted
+`@UVASSERT` or `@UVREQUIRED` condition is read whole, up to the end of the line or the next action tag.
 
 Semantics worth knowing before relying on it:
 
