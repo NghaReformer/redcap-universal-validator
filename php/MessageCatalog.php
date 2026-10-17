@@ -114,7 +114,14 @@ final class MessageCatalog
         $colon = strpos($reason, ':');
         if ($colon !== false) $code = substr($reason, 0, $colon);
 
-        $msg = isset($rule['message']) ? trim((string) $rule['message']) : '';
+        // A reason with wording of its own (scan.reasonMessages of the mode,
+        // which ScanDimensions copies into the snapshot as 'messages') speaks
+        // with that text, or else the catalog's, never the rule's "message":
+        // an @UVEXISTS value saved only in entries that fail "where" is
+        // explained by "whereMessage", as the page explains it.
+        $msg = (isset($rule['messages']) && is_array($rule['messages']) && array_key_exists($code, $rule['messages']))
+            ? trim((string) $rule['messages'][$code])
+            : (isset($rule['message']) ? trim((string) $rule['message']) : '');
 
         // The key carries the FULL reason and the rule ordinal, not just the
         // code, because the last-resort branch below quotes both verbatim. Key

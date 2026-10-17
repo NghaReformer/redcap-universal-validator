@@ -208,7 +208,7 @@
         },
         {
           "key": "exists-consumer-targets",
-          "name": "Fields of this project it may search, separated by commas (\"record\" for the record ID)",
+          "name": "Fields of this project it may search or filter on, separated by commas (\"record\" for the record ID; @UVEXISTS \"where\" fields count as searched)",
           "type": "text"
         },
         {

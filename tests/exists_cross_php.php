@@ -191,6 +191,8 @@ namespace {
         public static function getEventNames($unique = false, $assoc = false, $id = null) { return [351 => 'enrolment_arm_1']; }
         public static function getGroupNames($unique = false, $g = null) { return [7 => 'north', 8 => 'south'][$g] ?? ''; }
         public static function getRecordIdField() { return 'record_id'; }
+        // No build-wide map: nothing repeats in either project.
+        public static function getRepeatingFormsEvents($pid = null) { return null; }
         /** THE TRAP: rights in the project of the request, whatever was meant. */
         public static function getUserRights($u = null) {
             $all = [];
@@ -204,7 +206,13 @@ namespace {
         public static $events = [300 => [901 => 'lab_arm_1', 902 => 'followup_arm_1']];
         public static $groups = [300 => [51 => 'lab_north', 52 => 'lab_south']];
         private $pid;
-        public function __construct($pid) { $this->pid = (int) $pid; }
+        public $longitudinal;
+        public $eventsForms;
+        public static $design = [];   // pid => [property => value], set by the "where" section only
+        public function __construct($pid) {
+            $this->pid = (int) $pid;
+            foreach (self::$design[$this->pid] ?? [] as $k => $v) $this->$k = $v;
+        }
         public function getUniqueEventNames() { return self::$events[$this->pid] ?? []; }
         public static $groupsThrow = false;   // true: the group list cannot be read just now
         public function getUniqueGroupNames() {
@@ -1166,6 +1174,96 @@ namespace {
     check('R5-4 cross: a rule refused on what was read is a decision, and is not noted',
         $unreadAfterRules(function ($m) { $m->enabledIn = [149, 302]; }) === []
         && $unreadAfterRules(function ($m) { $m->subSettingsBy[300] = ['exists-consumers' => []]; }) === []);
+
+    // ---- @UVEXISTS "where" in another project ----------------------------------------
+    // The "where" fields are searched fields there: the agreement must list
+    // them, the "answer" mode refuses an Identifier among them, the rights
+    // mode needs their form, and a refusal never names a field or code there.
+    $DICT_A_BEFORE = $DICT_A; $DICT_B_BEFORE = $DICT_B; $DATA_B_BEFORE = $DATA_B;
+    Project::$design = [300 => ['longitudinal' => true, 'eventsForms' => [901 => ['lab', 'lab2'], 902 => ['lab', 'lab2']]]];
+    $DICT_B += [
+        'lab_ok'   => f('lab'),
+        'lab_tick' => f('lab', '', '', 'checkbox'),
+        'lab_q'    => f('lab2'),
+    ];
+    $DATA_B['L1'][901]['lab_ok'] = '1';
+    $DATA_B['L2'][901]['lab_ok'] = '0';
+    $DICT_A += [
+        'x_where'  => f('result', ux('{"in":"[specimen_id]","project":300,"where":"[lab_ok]=\'1\'","whereMessage":"Not released"}')),
+        'x_wtick'  => f('result', ux('{"in":"[specimen_id]","project":300,"where":"[lab_tick]=\'1\'"}')),
+        'x_wq'     => f('result', ux('{"in":"[specimen_id]","project":300,"where":"[lab_q]=\'1\'"}')),
+        'x_wdonor' => f('result', ux('{"in":"[specimen_id]","project":300,"where":"[donor_name]<>\'\'"}')),
+        'x_wrec'   => f('result', ux('{"in":"record","project":300,"where":"[lab_ok]=\'1\'"}')),
+    ];
+    $WHERE_OK = 'specimen_id, record, lab_ok, lab_tick, lab_q, donor_name';
+    $m = mod('nurse', [consent('rights')]);
+    $cfg = page($m);
+    check('where there: a "where" field missing from the agreement gets the one refusal',
+        strpos(errOf($cfg, 'x_where'), $UNAVAILABLE(300)) !== false && strpos(errOf($cfg, 'x_where'), 'searches or filters on') !== false);
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $cfg = page($m);
+    check('where there: a listed "where" field is accepted', ruleFor($cfg, 'x_where') !== null && errOf($cfg, 'x_where') === '');
+    check('where there: the page never carries the condition', strpos(json_encode(ruleFor($cfg, 'x_where')), 'lab_ok') === false
+        && (ruleFor($cfg, 'x_where')['whereMessage'] ?? null) === 'Not released');
+    $e = errOf($cfg, 'x_wtick');
+    check('where there: a refusal that would describe that project names nothing there',
+        strpos($e, 'cannot apply this "where" condition') !== false && strpos($e, 'lab_tick') === false);
+    check('where there: "in":"record" in a longitudinal project needs "event", said without naming its events',
+        strpos(errOf($cfg, 'x_wrec'), 'cannot apply this "where" condition') !== false);
+    $m = mod('nurse', [consent('answer', $WHERE_OK)]);
+    $cfg = page($m);
+    check('where there: "answer" refuses an Identifier "where" field', strpos(errOf($cfg, 'x_wdonor'), 'is an Identifier there') !== false);
+
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_where', ['x_where' => 'SP-1']);
+    check('where there: an entry that passes is found', ($r['state'] ?? null) === 'found' && $r['record'] === null);
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_where', ['x_where' => 'SP-2']);
+    check('where there: an entry that fails is filtered for staff', ($r['state'] ?? null) === 'not-found' && !empty($r['filtered']));
+    $probe = logsOf($m, 'uv-exists-probe');
+    $last = end($probe);
+    check('where there: the probe log names the "where" field and says filtered', $last && $last['field'] === 'specimen_id,lab_ok'
+        && $last['result'] === 'not-found' && ($last['filtered'] ?? null) === 'true');
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_where', ['x_where' => 'SP-404']);
+    $probe = logsOf($m, 'uv-exists-probe');
+    $last = end($probe);
+    check('where there: a value saved nowhere is not filtered', ($r['state'] ?? null) === 'not-found' && empty($r['filtered'])
+        && $last && !isset($last['filtered']));
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wq', ['x_wq' => 'SP-1']);
+    check('where there: rights mode needs the form of every "where" field', ($r['state'] ?? null) === 'unknown'
+        && strpos((string) ($r['why'] ?? ''), 'every form this lookup reads in the other project') !== false);
+
+    // The scan: one read there per request, of the searched and "where" fields.
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    \REDCap::$data[149]['1'][351]['x_where'] = 'SP-2';
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $hit = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'x_where'; }));
+    check('where there: the scan reports the filtered value', count($hit) === 1 && ($hit[0]['reason'] ?? null) === 'filtered');
+    $idx = logsOf($m, 'uv-exists-index-read');
+    check('where there: the scan\'s read there names the "where" field',
+        (bool) array_filter($idx, function ($l) { return $l['field'] === 'specimen_id,lab_ok' && $l['result'] === 'read'; }));
+
+    // "in":"record" in a classic project there: the record's one row is its entry.
+    Project::$design = [300 => ['longitudinal' => false]];
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $cfg = page($m);
+    check('where there: "in":"record" in a classic project needs no "event"', ruleFor($cfg, 'x_wrec') !== null && errOf($cfg, 'x_wrec') === '');
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'L1']);
+    check('where there: a record whose row passes is found', ($r['state'] ?? null) === 'found' && $r['record'] === null);
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'l2']);
+    $probe = logsOf($m, 'uv-exists-probe');
+    $last = end($probe);
+    check('where there: a record whose row fails is filtered, found in another letter case',
+        ($r['state'] ?? null) === 'not-found' && !empty($r['filtered']) && $last && ($last['filtered'] ?? null) === 'true');
+    $m = mod('nurse', [consent('rights', $WHERE_OK)]);
+    $r = ask($m, 'x_wrec', ['x_wrec' => 'L9']);
+    check('where there: a record that does not exist is plain not found', ($r['state'] ?? null) === 'not-found' && empty($r['filtered']));
+    $DICT_A = $DICT_A_BEFORE; $DICT_B = $DICT_B_BEFORE; $DATA_B = $DATA_B_BEFORE;
+    Project::$design = [];
 
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

@@ -262,6 +262,40 @@ uses the account of C3 (no access to `xr_specimen`); give it access to
 | K16 | [only if the project has DAGs] Put XE-1 in one group and XE-2 and a test account in another. As that account open XE-2, `uxr_spec` = S-001 | Green "Found" with the amber line "It is saved outside your Data Access Group", and nothing copied; or, if this REDCap confines the user's reads to their group, the H10 answer. Record which. Take the records and the account out of the groups after |
 | K17 | Run the Validation scan | No field of `uv_exists_return` changes; the scan writes nothing |
 
+## Section L: only entries that meet conditions (`"where"`)
+
+Fixture: [`uvexists_where_fields.csv`](uvexists_where_fields.csv), 16 rows on
+one new instrument `uv_exists_where`: 4 rule fields in this project, 7
+`uxw_bad_*` fields with a refused `where`, and 5 `uxw_lab*` rows that look in
+the source project of section I. Every expectation below was run offline
+through the module, from XE-4, against the seed data in `event_instance/`
+(the `uxw_lab*` rows through `tests/exists_cross_php.php`). Append the rows,
+designate `uv_exists_where` on `event_1_arm_1`, and open it on XE-4. Run this
+section after section I and before its cleanup, with the source project's row
+for 149 as I3 left it ("Only users who have rights", fields `lab_spec, lab_site,
+lab_date, record, lab_donor, lab_ghost`).
+
+| # | Action | Expect |
+|---|---|---|
+| L1 | Read the config rules | `uxw_or`, `uxw_base`, `uxw_rec`, `uxw_code`, `uxw_lab`, `uxw_lab_rec` and `uxw_lab_donor` set up; those with a `whereMessage` carry it. No rule carries `existsWhere` or `existsWhereFields`, and no sound rule names `xs_type`, `xv_status`, `xe_ae`, `xe_weight`, `lab_site` or `lab_date` |
+| L2 | The `uxw_bad_*` fields | `uxw_bad_rep`: ""where" field "[xr_value]" is on the repeating form "xr_result"". `uxw_bad_event`: "is on the form "xe_enrol", which is not in every event that holds "xr_specimen"". `uxw_bad_date`: "write it as Y-M-D". `uxw_bad_cb`: "reference one option as [xe_consent(code)]". `uxw_bad_noevent`: "needs "event" in a longitudinal project". `uxw_bad_and`: "write "and" instead". `uxw_bad_kind`: "both must be the same kind". `uxw_bad_lab_secret`: "project SRC cannot be searched from this project", word for word as in I2. `uxw_bad_lab_date`: "project SRC cannot apply this "where" condition", naming no field of SRC |
+| L3 | `uxw_or` = S-003, then S-101, then S-100 | Green "Found (record XE-1).", "Found (record XE-2).", "Found (record XE-2).": S-100 has a Sputum and a Blood entry, and one entry that passes is enough |
+| L4 | `uxw_or` = S-001, leave the field, press Save | Red "This specimen is registered, but it is not blood or urine." (S-001 is Sputum); the save is blocked (hard) |
+| L5 | `uxw_or` = S-999 | Red "Register this specimen first.": a value saved nowhere keeps the rule's `message` |
+| L6 | `uxw_base` = S-001, then S-003 | Found (record XE-1) both times. The condition tests `xv_status` of the visit form beside the repeating `xr_specimen` entry, with an upper-case `AND` and a date literal |
+| L7 | `uxw_base` = S-303, then S-301 | Red "This value is saved, but not in an entry that meets this rule's conditions." both times: S-303 was collected on 10 January; XE-3 has no Baseline visit status. The rule is advisory, so Save goes through |
+| L8 | `uxw_rec` = XE-1, xe-3, XE-2, XE-9, XE-4 | Found, found (another letter case), red "This participant had an adverse event at enrolment or did not consent to specimens.", red "This value is not saved where it should be. Check it, or record it there first.", and the same for XE-4 (the record being edited does not find itself) |
+| L9 | `uxw_code` = PX-0004, then PX-0001 | Found (record XE-4): its arm 2 enrolment weighs 78 kg, though its arm 1 enrolment weighs 70. Then red "This participant weighed 75 kg or less at enrolment." |
+| L10 | Enable `uv_exists_where` as a survey and open it; `uxw_code` = PX-0004, then PX-0001 | Found, no record named; then the plain survey wording "This value was not found.", not the `whereMessage`. Disable the survey after |
+| L11 | [optional] Flag `xe_weight` as an Identifier, reload the data entry form | `uxw_code` shows "field "xe_weight" is an Identifier, so the survey lookup ("surveys") cannot be enabled". Unflag after |
+| L12 | In User Rights set `xe_visit` to No Access for the test account; `uxw_base` = S-001, `uxw_or` = S-003 | `uxw_base`: amber "Could not check this value just now (you do not have access to every form this lookup reads)."; `uxw_or`: found, since it reads no `xe_visit` field. Then set `xe_enrol` to No Access too: `uxw_rec` = XE-1 gives the same amber answer. Give both forms back |
+| L13 | Save XE-4 with `uxw_base` = S-301 | Module log: `invalid-id-saved`, `type: exists`, reason `filtered`, field `uxw_base`. Saving again with S-001 adds no line |
+| L14 | [only if the durable scan is enabled] Run the Validation scan with L13's S-301 saved | The panel counts the `uxw_base` finding. The Issue label "Saved, but not where its conditions hold" is pinned offline by `tests/registry_php.php` |
+| L15 | `uxw_lab` = LS-001, then LS-002 | Found, no record named; then red "Registered in the lab project, but not at North and not after 5 February." (LS-002 is South, 3 February) |
+| L16 | Source project module log | The LS-002 line of L15 has `field` `lab_spec,lab_site,lab_date`, result `not-found` and `filtered` `true`; the LS-001 line has no `filtered` |
+| L17 | `uxw_lab_rec` = L-2, then l-1 | Found; then red "This value is saved, but not in an entry that meets this rule's conditions.": L-1 is North |
+| L18 | Source project: switch the row for 149 to "Any signed-in user of the asking project", save, reload | `uxw_lab_donor` shows "field "lab_donor" of project SRC is an Identifier there". Switch the row back to "Only users who have rights" |
+
 ## Sign-off
 
 | # | Gate | Result |
@@ -276,6 +310,7 @@ uses the account of C3 (no access to `xr_specimen`); give it access to
 | 8 | Section I: another project. Agreement, rights there, probe log, surveys, audit, scan. This is also the pilot gate for `getProjectSetting`/`getSubSettings` with another project id, `log()` with `project_id`, the `project-id` setting type, `isModuleEnabled`, `getProjectStatus`, `\Project` event and group names, and `User::getRights` for another project | ☐ |
 | 9 | Section J: `caseSensitive`, record IDs in another case, the record itself, numbers by value, `@UVUNIQUE` the same way, Save asking again | ☐ |
 | 10 | Section K and I20 to I25: `"return"` fills, empties and leaves fields as documented, on the page and at save; dropdown, radio and D-M-Y targets; rights over every form the lookup reads, on the page and at save; the agreement's copy list, the probe log, the kill switch; the page-open fill does not mark the form as changed | ☐ |
+| 11 | Section L: `"where"` with OR, upper-case AND, a date literal, a checkbox box and a number; the event row beside a repeat instance; `"in":"record"`; the filtered line with and without `whereMessage`; the plain survey wording; setup refusals; rights to the `where` forms; the audit reason `filtered`; the lab project's agreement, probe log and one refusal | ☐ |
 
 ## Cleanup
 
@@ -288,4 +323,9 @@ row, delete the source project, and turn "@UVEXISTS in other projects" off
 again unless it stays in use. After section K, delete the `uv_exists_return`
 instrument, make sure "@UVEXISTS returned values" is off, that S-003 is Blood
 again (K11), that the C3 account has `xe_enrol` back (K14), and that no record
-or account is left in a group K16 used.
+or account is left in a group K16 used. After section L, delete the
+`uv_exists_where` instrument (before section I's cleanup deletes the source
+project), make sure `uv_exists_where` is no longer a survey (L10), that
+`xe_weight` is not an Identifier (L11), that the test account has `xe_visit` and
+`xe_enrol` back (L12), and that the source project's row for 149 is back on
+"Only users who have rights" (L18).

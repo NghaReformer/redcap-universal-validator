@@ -575,6 +575,8 @@ only while it is true.
   `[specimen_type]='2'`.
 
 Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
+One condition may mix `and`, `or` and `not` with parentheses:
+`"when":"[consent(1)]='1' and ([site]='3' or [site]='4')"`.
 
 **The condition language** is a REDCap-style *subset* — not full REDCap logic:
 
@@ -582,8 +584,21 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
 |---|---|
 | `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
 | `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
-| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` cross-event prefixes |
-| `and` / `or` / `not`, parentheses | arithmetic and piping |
+| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` and instance selectors, unless extended references are on for the project |
+| `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (the error says which word to write) |
+| | arithmetic and piping |
+
+`not` binds tightest, then `and`, then `or`, as in REDCap:
+`[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
+parentheses for the other grouping. Every tag that takes a condition (`when` on all
+tags, the `@UVASSERT` test, the `@UVREQUIRED` condition) reads the same language.
+
+The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
+`@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
+or the next action tag. Text after a complete condition is ignored as a note. If that
+text goes on with `and`, `or` or a comparison and does not finish the condition, the
+rule is refused with "put the whole condition in quotes". Earlier releases stopped
+an unquoted condition at the first space.
 
 **Behavior worth knowing.**
 
@@ -1024,6 +1039,26 @@ lab project must also list the fields it lets this project copy, under "Only
 users who have rights". The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
 change to the entry found reaches this record when it is saved again.
+
+**Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
+Yes. Add `where`, a condition on the entry found:
+`@UVEXISTS={"in":"[specimen_id]","project":"lab","where":"[consent]='1' and ([status]<>'3' or [withdraw_date]>[coll_date])"}`.
+It takes the language of `when`. A condition is one comparison, or several joined
+with `and`, `or` and `not`, with parentheses, keywords in any letter case. Its fields are
+fields of the entry found, compared with fixed values or with each other; to
+compare with a field of this record, use `match`. A checkbox box is tested as
+`[field(code)]`. Dates are written Y-M-D (`'2026-03-01'`) and numbers with a
+decimal point. A blank side of `<`, `>`, `<=` or `>=` fails the comparison.
+When the value is saved but no entry holding it meets `where`, staff see the
+rule's `whereMessage`, or "This value is saved, but not in an entry that meets
+this rule's conditions.", and the save is held as for "not found". A survey
+respondent sees the plain "not found". `where` tests at most 10 fields, each on
+the form searched or on a form that does not repeat. With `"in":"record"`, a
+longitudinal project names the event the record's entry is read from with
+`event`. The `where` fields count as fields the lookup reads, for user rights,
+for Identifier checks on surveys and, in another project, for the list of
+fields that project lets this one search or filter on. The audit logs the case
+with reason `filtered`.
 
 **Can a lab value get a gentle warning when unusual and a block when impossible?**
 Yes. The `@UVRANGE` tag takes two ranges.

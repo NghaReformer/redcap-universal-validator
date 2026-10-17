@@ -25,6 +25,8 @@ php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rig
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
 php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, endpoint values, save write, rights
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
+php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
+node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/unique_dom_js.cjs      # @UVUNIQUE browser rule (transport, fail-open, cache, "also" message)
@@ -334,6 +336,39 @@ fields, branches, the save held while a lookup is on its way (on a
 nothing), late and stale answers, a choice the page does not offer, and
 found answers asked again after 30 seconds.
 
+`exists_where_php.php` covers `"where"`, the condition the entry found must
+meet. Its `REDCap::getData` mock projects the fields asked for, honours
+records, events and a row-level `filterLogic`, and gives every row of a
+record the codes of each checkbox, as a REDCap export does. Project 149 is
+longitudinal with a repeating form, so an entry can be an event row or a
+repeat instance beside its event row. It covers the grammar (AND, OR, NOT,
+parentheses, keywords in any case, event references, `[record]`, the field
+cap, a stored field list that does not match its condition, `whereMessage`
+and its languages), the dictionary checks (field kinds, date and time
+literals, comma literals, checkbox codes, fields on another repeating form or
+missing from an event, `"in":"record"` without `"event"`), the page config
+(`whereMessage` only, never the condition), each entry's test (letter case,
+blanks against `<` and `<>`, Missing Data Codes, `007` and `7`, dates,
+decimal commas, a checkbox on the event row read from a repeat instance), the
+read that confirms a narrowed one, `"in":"record"` with IDs in another
+letter case, `return` from a passing entry only, the fourth answer for staff
+and its plain *not found* on a survey, rights to the `where` forms, the audit
+reason `filtered`, and the scan index keyed by the condition.
+`exists_cross_php.php` adds the same in another project: a `where` field the
+agreement leaves out, an Identifier `where` field in the "answer" mode, rights
+to a `where` form there, one refusal that names nothing there, the probe log
+and the scan read.
+`exists_where_dom_js.cjs` drives the page: the filtered line with
+`whereMessage` (escaped) or the module's own line, never `message`; the save
+held per `blockSave`; the cached answer; languages under Multi-Language
+Management; the plain wording on a survey; and `return` fields emptied.
+
+`docs_examples_php.php` also tests the `@UVEXISTS` expect blocks of the
+examples doc. Each line gives an entry (`with consent=1, status=3`) and says
+`found` or `filtered`; the line runs through `AnnotationRules::existsWhereHolds`,
+the test the lookup applies to each entry. These lines are PHP only and stay
+out of `docs_expect_fixture.json`, since the browser never sees a `where`.
+
 ## `range_*` — the plausibility contract
 
 `range_fixture.json` holds number cases that `range_php.php` runs through
@@ -529,10 +564,10 @@ end-to-end checks for the server engine and run in CI on every push.
 
 Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, blank typed dates, Boolean unknowns and live members. `php tests/temporal_adversarial_php.php` is differential: it resolves every reference and binding shape from every host context of 60 seeded random records through both the shared (once-per-record) and the unshared resolver and requires identical results, then checks exact-decimal addition against the digit-string path on 20,000 pairs. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
 
-`php tests/docs_examples_php.php` parses every action tag printed in `docs/action_tag_validation_examples.md`, `docs/EVENT-INSTANCE-REFERENCES.md` and `docs/region-site-choices-example.txt` with the real annotation parser. Tags in a block fenced as `text invalid` must be refused; every other tag must parse without a configuration error. A `# refused: <text>` comment before a refused tag requires its error to contain that text. A block fenced as `text expect` lists `input => result` lines for the last `@UVALIDATE` tag of the block before it; each line runs through the server verdict and must produce the printed result. The same lines are written to `tests/docs_expect_fixture.json` (regenerate with `--write`; a stale fixture fails the test), and `node tests/docs_examples_js.cjs` replays them through the browser engine, which must accept or refuse each one-ID value and split each pooled value exactly as the server did.
+`php tests/docs_examples_php.php` parses every action tag printed in `docs/action_tag_validation_examples.md`, `docs/EVENT-INSTANCE-REFERENCES.md` and `docs/region-site-choices-example.txt` with the real annotation parser. Tags in a block fenced as `text invalid` must be refused; every other tag must parse without a configuration error. A `# refused: <text>` comment before a refused tag requires its error to contain that text. A block fenced as `text expect` lists `input => result` lines for the last `@UVALIDATE`, `@UVRANGE` or `@UVEXISTS`-with-`where` tag of the block before it; each line runs through the server verdict and must produce the printed result. An `@UVEXISTS` line gives the entry that holds the value (`SP-1 with consent=1, status=3 => filtered`) and is not written to the fixture. The same lines are written to `tests/docs_expect_fixture.json` (regenerate with `--write`; a stale fixture fails the test), and `node tests/docs_examples_js.cjs` replays them through the browser engine, which must accept or refuse each one-ID value and split each pooled value exactly as the server did.
 
 Run the existing complete CI matrix and `tests/mysql/run.php` against its disposable private schemas. Local mocks do not establish REDCap metadata shapes or import/deletion hook behavior; follow the deployment acceptance section in `docs/EVENT-INSTANCE-REFERENCES.md` for the real-project pilot.
 
-`PHP_BIN=php python3 tests/temporal_mutations.py` runs four defects against disposable copies, verifies they remain syntactically valid, and requires each to fail its regression suite. It never mutates the checkout. `tests/temporal_golden.json` fixes synthetic read parameters, payloads, audit/scan results and rule identities; update deliberately with `php tests/temporal_integration_php.php --update-golden` and review the diff. The mock HMAC key is fixed synthetic test data.
+`PHP_BIN=php python3 tests/temporal_mutations.py` runs four defects against disposable copies, verifies they remain syntactically valid, and requires each to fail its regression suite. It never mutates the checkout. `python3 tests/exists_where_mutations.py` does the same for `@UVEXISTS` `where` and for reading a condition whole: 21 defects, such as no confirming read, the condition left out of the lookup memo or the scan index key, a blank side of `<` passing, the condition sent to the page, a survey told the value is filtered, the report explaining a filtered finding with `message`, a token mode read as a condition, and branch conditions compared as text. Each must fail the suite named beside it. `tests/temporal_golden.json` fixes synthetic read parameters, payloads, audit/scan results and rule identities; update deliberately with `php tests/temporal_integration_php.php --update-golden` and review the diff. The mock HMAC key is fixed synthetic test data.
 
 `choices_dom_js.cjs` also consumes `choices_region_fixture.json`, covering the six-region alphanumeric site lists, grouped native options, hidden mirrors, jQuery-only changes and cached autocomplete responses. Real-browser verification uses a local jQuery UI fixture; it does not certify a live REDCap deployment.

@@ -441,6 +441,14 @@ $d = AnnotationRules::extractTagsDetailed("@UVREQUIRED=[a]='1' and [b]='2' @UVRE
 check('extractTagsDetailed: two condition values, offsets right',
     array_column($d, 'value') === ["[a]='1' and [b]='2'", "[c]='3'"] && $d[0]['error'] === null && $d[1]['error'] === null);
 check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false]);
+// Only a mode flagged "bareValue":"condition" reads a condition whole; any
+// other mode keeps one word, even when the words make a condition.
+check('extractTagsDetailed: a token mode reads one word of a condition-shaped value',
+    AnnotationRules::extractTagsDetailed("@UVEXISTS=[specimen_id]='SP-1' and [site]='2'", '@UVEXISTS', 'token')
+    === [['value' => "[specimen_id]='SP-1'", 'error' => null]]);
+$f = AnnotationRules::parseAllTags("@UVEXISTS=[specimen_id]='SP-1' and [site]='2'", ['qualified' => true]);
+check('a token mode (@UVEXISTS) is refused on its first word, not read as a condition',
+    strpos((string) ($f[0]['error'] ?? ''), "@UVEXISTS=[specimen_id]='SP-1' is not a place to look") !== false);
 
 // three modes on one field -> three frags, three distinct modes
 $f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]" @UVREQUIRED');
