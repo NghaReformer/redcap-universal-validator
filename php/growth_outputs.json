@@ -1,49 +1,63 @@
 {
   "format": "uv-growth-outputs-1",
   "_comment": [
-    "What an @UVRANGE growth rule can work out and write: the one list both runtimes use.",
+    "What an @UVRANGE growth rule can work out, write and show: the one list both runtimes use.",
     "php/GrowthOutputs.php reads this file; tests/gen_mode_registry.cjs writes the engine's copy into js/engine.js",
     "(the @generated growth-outputs block) and CI fails when that copy is stale.",
     "A key is an output id, or an id, a colon and a parameter when the entry has \"param\": valueAtZ:-2, valueAtPercentile:97.",
     "written: number or text. places: the decimals a number, or the numbers in a text, are written with: z (always 2), decimals (the rule's",
-    "\"decimals\"), percentileDecimals (the rule's \"percentileDecimals\"). integer: a number written with 0 decimals may go",
+    "\"decimals\"), percentileDecimals (the rule's \"percentileDecimals\"), axis (the axis value, to at most two decimals, with no",
+    "trailing zeros) or typed (the measurement as it was typed). integer: a number written with 0 decimals may go",
     "into an integer field. needs: what the value is made from besides the sex and the age or length: measurement",
     "(the typed value), limit-low, limit-high, limit-any (the rule's limits on that side), or none.",
     "param: the parameter's meaning, its range (both ends included) and the most decimals it may have.",
-    "shapes: where the output may appear; value is one field of \"return\".",
+    "shapes: where the output may appear: value is one field of \"return\", column a column of the page table (\"show\" \"table\"",
+    "\"columns\"), line a curve of the growth chart (\"show\" \"chart\" \"lines\"). line: for an output with the line shape, the key",
+    "\"lines\" names it by, such as {\"z\":[-2,0,2]}. unit: the unit a column's header names: measure (the measured field's),",
+    "axis (the reference's axis unit), or none when the key is left out.",
     "example: a field name the parser suggests; {param} stands for the parameter, - written m and . written _.",
-    "label: the English name of the output. Every id must be one GrowthReference::COMPUTED and QRID_GROWTH_COMPUTED list."
+    "label: the English name of the output, the default table header: {param} stands for the parameter, {measure} for what the",
+    "reference measures (weight) and {axis} for its axis (age, length or height). Every id must be one GrowthReference::COMPUTED",
+    "and QRID_GROWTH_COMPUTED list."
   ],
   "outputs": {
     "z": {
       "written": "number", "places": "z", "integer": false, "needs": "measurement",
-      "shapes": ["value"], "example": "wfa_z", "label": "z-score"
+      "shapes": ["value", "column"], "example": "wfa_z", "label": "z-score"
     },
     "lower": {
-      "written": "number", "places": "decimals", "integer": true, "needs": "limit-low",
-      "shapes": ["value"], "example": "wfa_lower", "label": "lowest usual value"
+      "written": "number", "places": "decimals", "integer": true, "needs": "limit-low", "unit": "measure",
+      "shapes": ["value", "column"], "example": "wfa_lower", "label": "lowest usual value"
     },
     "upper": {
-      "written": "number", "places": "decimals", "integer": true, "needs": "limit-high",
-      "shapes": ["value"], "example": "wfa_upper", "label": "highest usual value"
+      "written": "number", "places": "decimals", "integer": true, "needs": "limit-high", "unit": "measure",
+      "shapes": ["value", "column"], "example": "wfa_upper", "label": "highest usual value"
     },
     "range": {
       "written": "text", "places": "decimals", "needs": "limit-any",
-      "shapes": ["value"], "example": "wfa_range", "label": "usual range"
+      "shapes": ["value", "column"], "example": "wfa_range", "label": "usual range"
     },
     "percentile": {
       "written": "number", "places": "percentileDecimals", "integer": true, "needs": "measurement",
-      "shapes": ["value"], "example": "wfa_pct", "label": "percentile"
+      "shapes": ["value", "column"], "example": "wfa_pct", "label": "percentile"
     },
     "valueAtZ": {
-      "written": "number", "places": "decimals", "integer": true, "needs": "none",
+      "written": "number", "places": "decimals", "integer": true, "needs": "none", "unit": "measure",
       "param": {"what": "z-score", "min": "-6", "max": "6", "decimals": 2},
-      "shapes": ["value"], "example": "wfa_sd{param}", "label": "value at z-score {param}"
+      "shapes": ["value", "column", "line"], "line": "z", "example": "wfa_sd{param}", "label": "value at z-score {param}"
     },
     "valueAtPercentile": {
-      "written": "number", "places": "decimals", "integer": true, "needs": "none",
+      "written": "number", "places": "decimals", "integer": true, "needs": "none", "unit": "measure",
       "param": {"what": "percentile", "min": "0.1", "max": "99.9", "decimals": 2},
-      "shapes": ["value"], "example": "wfa_p{param}", "label": "value at percentile {param}"
+      "shapes": ["value", "column", "line"], "line": "percentiles", "example": "wfa_p{param}", "label": "value at percentile {param}"
+    },
+    "age": {
+      "written": "number", "places": "axis", "integer": false, "needs": "none", "unit": "axis",
+      "shapes": ["column"], "example": "wfa_age", "label": "{axis}"
+    },
+    "value": {
+      "written": "number", "places": "typed", "integer": false, "needs": "measurement", "unit": "measure",
+      "shapes": ["column"], "example": "wfa_value", "label": "{measure}"
     }
   }
 }

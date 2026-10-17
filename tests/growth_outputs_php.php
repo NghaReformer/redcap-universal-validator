@@ -35,7 +35,24 @@ function check($label, $ok)
 }
 
 // ---- 1. the bundled catalog ---------------------------------------------------------
-check('the outputs, in order', O::ids() === ['z', 'lower', 'upper', 'range', 'percentile', 'valueAtZ', 'valueAtPercentile']);
+check('the outputs, in order', O::ids() === ['z', 'lower', 'upper', 'range', 'percentile', 'valueAtZ', 'valueAtPercentile', 'age', 'value']);
+check('the page table also offers the age and the typed value (got ' . O::validText('column') . ')',
+    O::validText('column') === 'z, lower, upper, range, percentile, valueAtZ:<z-score>, valueAtPercentile:<percentile>, age, value');
+check('a chart curve is a value at a z-score or a percentile', O::validText('line') === 'valueAtZ:<z-score>, valueAtPercentile:<percentile>'
+    && O::lineKinds() === ['z' => 'valueAtZ', 'percentiles' => 'valueAtPercentile']);
+check('age and value are columns only: a field cannot take them', isset(O::parse('age')['error']) && isset(O::parse('value')['error'])
+    && O::parse('age', '"show" "table" "columns"', 'column', 'column') === ['of' => 'age', 'param' => null]
+    && O::parse('value', '"columns"', 'column') === ['of' => 'value', 'param' => null]);
+check('the refusal names the place and the noun', strpos(O::parse('nope', '"columns"', 'column', 'column')['error'],
+    'unknown "columns" column "nope" — valid: z, lower') === 0);
+check('canonicalKey and anyWhere read a column key', O::canonicalKey('age', 'column') === 'age' && O::canonicalKey('age') === null
+    && O::anyWhere(['age'], function ($e) { return $e['unit'] === 'axis'; }, 'column')
+    && !O::anyWhere(['age'], function ($e) { return true; }));
+check('paramText and paramOk', O::paramText('valueAtZ') === 'a number from -6 to 6 with at most 2 decimals'
+    && O::paramOk('valueAtZ', '-2.5') && !O::paramOk('valueAtZ', '7') && !O::paramOk('valueAtZ', '1.234') && !O::paramOk('z', '1')
+    && !O::paramOk('valueAtZ', 2));
+check('the age is written on the axis, the value as typed', O::spec('age')['places'] === 'axis' && O::spec('age')['unit'] === 'axis'
+    && O::spec('value')['places'] === 'typed' && O::spec('value')['needs'] === 'measurement' && O::spec('value')['label'] === '{measure}');
 check('the "valid:" list names the parameter of an output that takes one (got ' . O::validText() . ')',
     O::validText() === 'z, lower, upper, range, percentile, valueAtZ:<z-score>, valueAtPercentile:<percentile>');
 check('z is a number with two decimals, never in an integer field, made from the measurement',
@@ -132,6 +149,19 @@ $cases = [
     'param min as a number'    => [['valueAtZ' => ['param' => ['what' => 'z', 'min' => -6, 'max' => '6', 'decimals' => 2]] + $good['outputs']['valueAtZ']], '"min" must be a number written as text'],
     'param min above max'      => [['valueAtZ' => ['param' => ['what' => 'z', 'min' => '6', 'max' => '-6', 'decimals' => 2]] + $good['outputs']['valueAtZ']], '"min" is above its "max"'],
     'label without {param}'    => [['valueAtZ' => ['label' => 'value at z'] + $good['outputs']['valueAtZ']], 'must name {param}'],
+    'shapes twice'             => [['z' => ['shapes' => ['value', 'value']] + $good['outputs']['z']], 'each once'],
+    'shapes as a map'          => [['z' => ['shapes' => ['a' => 'value']] + $good['outputs']['z']], 'each once'],
+    'a cell place as a value'  => [['age' => ['shapes' => ['value', 'column']] + $good['outputs']['age']], 'describes a table cell'],
+    'a line without param'     => [['z' => ['shapes' => ['value', 'line'], 'line' => 'zz'] + $good['outputs']['z']], 'the line shape is for an output with a parameter'],
+    'a line that needs a limit' => [['valueAtZ' => ['needs' => 'limit-low'] + $good['outputs']['valueAtZ']], 'the line shape is for an output with a parameter'],
+    'a line name, no line'     => [['z' => ['line' => 'zz'] + $good['outputs']['z']], '"line" names an output with the line shape'],
+    'a line shape, no name'    => [['valueAtZ' => array_diff_key($good['outputs']['valueAtZ'], ['line' => 1])], '"line" names an output with the line shape'],
+    'a bad line name'          => [['valueAtZ' => ['line' => 'Z-scores'] + $good['outputs']['valueAtZ']], '"line" must be 1 to 20 lower-case letters'],
+    'a line name twice'        => [['valueAtZ' => $good['outputs']['valueAtZ'], 'valueAtPercentile' => ['line' => 'z'] + $good['outputs']['valueAtPercentile']], 'its "line" name "z" is also "valueAtZ"\'s'],
+    'unit'                     => [['lower' => ['unit' => 'kg'] + $good['outputs']['lower']], '"unit" must be one of measure, axis'],
+    'a brace in the label'     => [['z' => ['label' => 'z {score}'] + $good['outputs']['z']], 'the label may hold only {param}, {measure}, {axis} in braces'],
+    'a slot twice'             => [['value' => ['label' => '{measure} {measure}'] + $good['outputs']['value']], 'the label names {measure} more than once'],
+    '{param} without param'    => [['z' => ['label' => 'z {param}'] + $good['outputs']['z']], 'the label names {param}, but the output has no parameter'],
 ];
 foreach ($cases as $name => $c) {
     $file = $dir . DIRECTORY_SEPARATOR . md5($name) . '.json';

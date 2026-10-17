@@ -5391,6 +5391,46 @@
             "plausibleHi": null,
             "sex": null,
             "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:3658",
+            "tagLine": 3654,
+            "kind": "growth",
+            "outcome": "ok, z -0.23",
+            "reference": "who-wfa",
+            "input": "6.4",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-2",
+                "softHi": "2",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "100"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:3659",
+            "tagLine": 3654,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.83",
+            "reference": "who-wfa",
+            "input": "4.1",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-2",
+                "softHi": "2",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "100"
         }
     ]
 }

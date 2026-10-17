@@ -123,6 +123,7 @@ one built from a mean and an SD per week of gestation. The numbers in
 | `measure`, `unit` | What is measured, for the notes |
 | `axis` | `age`, `length` or `height` |
 | `axisUnit` | `days` or `months` for age, `cm` for length and height |
+| `chartUnit` | Optional, age references only: `days`, `weeks`, `months`, `years` or `auto` (the default), the unit a growth chart of `@UVRANGE` `show` counts the age axis in. `auto` counts months up to two years and years beyond. The check is the same |
 | `lookup` | How a position on the axis finds its row: `round` to the nearest row (WHO 0 to 5 years, by day), `floor` to the row at or below (CDC half months, after the offset), `linear` between the two rows around it (WHO weight-for-length and weight-for-height, WHO 5 to 19 years) |
 | `valid` | `min`, and `max` (inclusive) or `below` (exclusive), in the axis unit, as text, within -1000000 to 1000000. Outside it nothing is checked |
 | `adjust` | `who-restricted` measures a z beyond ±3 in units of the distance between 2 and 3 SD, as WHO does for weight-based indicators; `none` uses the LMS formula throughout |
@@ -131,7 +132,9 @@ An age given in days and a reference by months (or the other way round) are
 converted with 30.4375 days to the month, as WHO does.
 
 `pageTables` at the top of an index.json (0 to 50, default 4) sets how many
-tables one page may carry. A table sent whole counts 1. When the sex is a
+tables one page may carry. A value outside that range is reported to staff as
+a problem of the folder, the default applies, and the folder's references stay
+in use; the same holds for `pageCharts`. A table sent whole counts 1. When the sex is a
 value saved on another form, only that sex's rows travel, and the table
 counts 0.5. When the age or length is a saved value, only the few rows
 around it travel, and the table counts nothing. A rule whose `when` saved
@@ -143,6 +146,14 @@ page. A rule whose sex, date or axis field is on a form the viewer cannot see
 (or a survey does not show) gets no table and does not count: the page cannot
 work out its z-score, so it only checks that the measurement is a number
 above 0.
+
+`pageCharts` (0 to 50, default 4) caps the growth charts of `@UVRANGE`
+`show` on one page: each set of reference curves the page draws, and each
+table of reference values, counts 1. Charts that draw the same curves share
+one set, as do fields with the same table of reference values, and a chart of
+z-scores or a table of the visit counts nothing. A chart past the cap is not
+shown, staff see why, and the check is the same. A set of 7 curves for both
+sexes is a few kilobytes; one chart sends at most 5,000 points.
 
 Some rows cap the z-score a measurement can get. With `adjust` `none`, a row
 whose L is below 0 never scores above 1/(|L| × S), and one whose L is above 0

@@ -33,6 +33,7 @@
       "unit": "kg",
       "axis": "age",
       "axisUnit": "days",
+      "chartUnit": "weeks",
       "lookup": "floor",
       "valid": {"min": "259", "below": "301"},
       "adjust": "none"

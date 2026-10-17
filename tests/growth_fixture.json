@@ -357,9 +357,9 @@
     "sha256": "b6d8515b32d3b30d7fe9bc99925805adcdf146a0136ecf53f6478f5df33d007a"
   },
   "parityOutputs": {
-    "_comment": "3,000 points drawn the same way, each with its percentile at one and three decimals and the measurements at a z-score and a percentile; the SHA-256 of their lines.",
+    "_comment": "3,000 points drawn the same way, each with its percentile at one and three decimals, the measurements at a z-score and a percentile, the age and the typed value a page table shows, and a percentile line's z-score; the SHA-256 of their lines.",
     "seed": 20261016,
     "points": 3000,
-    "sha256": "a2963f8a9866ab7b47d3a8160265983028a00c2bf229a38f0acc418c7ce6ebc4"
+    "sha256": "f57b41aeb191fdf4d7a206335c31d6a22034ac516070aff1bc492feb7fbe144a"
   }
 }

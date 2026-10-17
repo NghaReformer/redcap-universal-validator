@@ -46,6 +46,9 @@ node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score 
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, percentile, bounds and reference values written into fields on the page
 php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
+php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
+php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, refusals, staff notes, page curves and tables, the pageCharts cap; --write refreshes growth_chart_fixture.json
+node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
@@ -498,6 +501,48 @@ the same constants, cut-offs and branches.
   refusals (chains and two references sharing a field included), and the live
   fixture `docs/testbed/uvrange_return_test_fields.csv` loaded as the data
   dictionary.
+- `growth_curve_php.php` measures the claim `php/GrowthCurve.php` makes: on
+  every bundled reference, both sexes and three sets of lines (beyond ±3 SD
+  included), it decodes the curves the page gets, evaluates them at every
+  table row (where a table read by `round` or `floor` is read, and where the
+  page draws this visit's point) and, for a table read by linear
+  interpolation, at a quarter, a half and three quarters of the way between
+  rows, and divides the worst error in each window of the narrowest width by
+  the y range the browser gives that window. The bound is 0.5 of the
+  312-unit-tall plot; the run prints the worst it found. It also covers the
+  payload size, `measureScale`, a curve with a gap, a fixed span (zoom 1,
+  fewer points), curves too large to send or too ragged for the point cap,
+  the span against the reference and the rows of a table of reference values
+  (`showProblems`, per part), and that `QRID_CHART` in the engine has the
+  same geometry.
+- `growth_chart_module_php.php` covers `show` through the module: the
+  grammar with its defaults and refusals (lists for objects, labels with
+  line separators or bidirectional controls, a label given twice), the
+  dictionary hook's notes for a span or a row count the reference does not
+  allow, the page's curve sets (one sex for a saved sex, both for a typed
+  one, none for a chart of z-scores or a sex saved blank), the tables of
+  reference values shared in `growthCurveTables`, branches of one field, the
+  `pageCharts` cap (0, past it, out of range) and its notes. It loads
+  `docs/testbed/uvrange_chart_test_fields.csv` as the data dictionary and
+  checks what section K of the live acceptance sheet expects. It also builds
+  the pages `growth_chart_dom_js.cjs` draws, with the cells the server
+  computes for five visits, and writes them to `growth_chart_fixture.json`
+  with `--write` (the run fails when the file is stale).
+- `growth_chart_dom_js.cjs` drives the real range factory with those pages
+  through a DOM stub that knows `createElementNS`, attributes, `textContent`
+  and a cell's width. It checks the helpers (ticks, the x unit and
+  `chartUnit`, the window, cutting a curve, the y axis, the row the check
+  reads), the container and its `<details>` on forms and surveys, the
+  heading and legend, the SVG's role, title and description, that nothing in
+  the container uses `innerHTML` or a `style` attribute, the curves as drawn
+  against the exact ones, the marker moving alone and sitting at the row
+  read, arrows on every edge, one-sided bands, the empty states, a rule the
+  page withholds, a part that fails without hiding the others, a rule that
+  only shows and has no limits, both tables
+  (this visit's cells equal to the server's, in the field's decimal mark),
+  the cap note, a branch that does not apply, and a language switch that
+  relabels the labels, the unit and sex words in place. It prints the time
+  to build a page of 4 charts and to move a marker.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.

@@ -165,9 +165,21 @@ for (const [key, want] of fx.outputOf) {
   const plain = G.outputs(R['t-days'], 'male', 2, 11, { lo: '-2', hi: '2' }, 1, false);
   for (const id of G.computed) {
     const got = Object.prototype.hasOwnProperty.call(plain, id) ? plain[id]
-      : G.output(R['t-days'], 'male', 2, 11, id, cat[id] && cat[id].param ? cat[id].param.max : null, 1);
+      : G.output(R['t-days'], 'male', 2, 11, id, cat[id] && cat[id].param ? cat[id].param.max : null, 1, null, ' 11.0 ');
     check('computed: ' + id + ' gives a value (got ' + JSON.stringify(got) + ')', typeof got === 'string' && got !== '');
   }
+  /* the page table's own columns, as tests/growth_php.php pins them */
+  check('output age: the axis value, two decimals at most, no trailing zeros',
+    G.output(R['t-days'], 'male', 365, null, 'age', null, 1) === '365' && G.output(R['t-days'], 'male', 12.5, null, 'age', null, 1) === '12.5'
+    && G.output(R['t-days'], 'male', 13.145, null, 'age', null, 1) === '13.15' && G.output(R['t-days'], 'male', 0, null, 'age', null, 1) === '0');
+  check('axisText: nothing for what is not finite', G.axisText(NaN) === null && G.axisText(Infinity) === null && G.axisText(-1.5) === '-1.5');
+  check('output value: the typed text, trimmed; nothing when blank', G.output(R['t-days'], 'male', 2, 11, 'value', null, 1, null, ' 7,70\t') === '7,70'
+    && G.output(R['t-days'], 'male', 2, null, 'value', null, 1, null, '  ') === null && G.output(R['t-days'], 'male', 2, null, 'value', null, 1) === null);
+  check('lineZ: a z-score as itself, a percentile as its quantile, nothing else',
+    G.lineZ('valueAtZ', '-2') === -2 && Math.abs(G.lineZ('valueAtPercentile', '97.5') - 1.959963984540054) < 1e-12
+    && G.lineZ('z', null) === null && G.lineZ('valueAtPercentile', '0') === null);
+  check('outputOf: age and value are columns, not field values', G.outputOf('age') === null && G.outputOf('value') === null
+    && G.outputOf('age', 'column').of === 'age' && G.outputOf('valueAtZ:2', 'line').of === 'valueAtZ' && G.outputOf('z', 'line') === null);
   check('percentileText: no probability, no text', G.percentileText(NaN, 1) === null && G.percentileText(Infinity, 1) === null
     && G.percentileText(-Infinity, 1) === null);
   check('roundedUnits: what is not a number at 0 or above gives nothing', G.roundedUnits(NaN, 1) === null
@@ -320,7 +332,9 @@ check('parity: 5,000 points hash to the pinned SHA-256 (got ' + hash + ')', hash
       const m = G.measure(yt, false);
       const y = m.state === 'ok' ? m.y : null;
       out = [G.output(ref, sex, a.x, y, 'percentile', null, 1), G.output(ref, sex, a.x, y, 'percentile', null, 3),
-        G.output(ref, sex, a.x, null, 'valueAtZ', pz, d), G.output(ref, sex, a.x, null, 'valueAtPercentile', pp, d)];
+        G.output(ref, sex, a.x, null, 'valueAtZ', pz, d), G.output(ref, sex, a.x, null, 'valueAtPercentile', pp, d),
+        G.output(ref, sex, a.x, y, 'age', null, 0), G.output(ref, sex, a.x, y, 'value', null, d, null, yt),
+        G.lineZ('valueAtPercentile', pp).toExponential(12)];
     }
     oLines.push([id, sex, xt, yt, pz, pp, d].concat(out.map((v) => v === null ? '-' : v)).join('|'));
   }
