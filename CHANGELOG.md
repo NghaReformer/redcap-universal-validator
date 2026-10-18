@@ -3,7 +3,9 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
-## Unreleased
+## 2.3.0-rc.2 — 2026-10-18
+
+**`@UVEXISTS` `"return"` and `"where"` work on REDCap 17.** On REDCap 17.0.6 every `@UVEXISTS` rule with `"return"` or `"where"` refused to set up, because the module read the map of repeating forms from a method that version does not offer. Live acceptance of 2.3.0-rc.1 on a REDCap 17.0.6 project found it. This candidate reads the map from the project object first. The `@UVRANGE` live run sheet is corrected too. Nothing else changed since 2.3.0-rc.1: no new setting, no schema change, and no SQL. The PHP suites pass on PHP 7.4 and 8.3 and the JavaScript suites on Node 20; the database matrix was not run again, since no SQL changed.
 
 ### Fixed
 
