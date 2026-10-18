@@ -17,7 +17,10 @@
  *     an SVG with role="img", a <title> and a <desc>, as wide as the cell
  *     allows (320 to 640 units, one to a pixel),
  *   - no innerHTML and no style attribute anywhere in what it builds, and a
- *     label written as text, never markup,
+ *     label written as text, never markup (setAttribute('style') is what a
+ *     strict style-src refuses; a write to el.style is allowed, and a browser
+ *     shows it as a style attribute, which this stub does not, so look for
+ *     CSP errors in the console, not for style attributes, on a live page),
  *   - the curves the server sent, drawn within 0.5 of the exact ones at the
  *     narrowest window (measured against GrowthReference's twin, valueAt),
  *     in the field's unit when the rule has a "measureScale",
@@ -57,7 +60,9 @@ function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' +
 
 const FX = JSON.parse(fs.readFileSync(path.join(__dirname, 'growth_chart_fixture.json'), 'utf8'));
 const SVG_NS = 'http://www.w3.org/2000/svg';
-/* every element given innerHTML or a style attribute; none may be inside a chart's container */
+/* every element given innerHTML or a style attribute; none may be inside a chart's container.
+   Only setAttribute('style') counts: this stub does not reflect writes to el.style (CSSOM) into
+   a style attribute, as a browser does, and a strict CSP allows those writes. */
 const audit = { innerHTML: [], styleAttr: [] };
 function inside(el, root) { for (let e = el; e; e = e.parentNode) if (e === root) return true; return false; }
 /* the width every element reports (clientWidth): 0 is "not known", as in a stub */

@@ -193,11 +193,23 @@ final class ScanCapabilities
     }
 
     /** Is repeating-instrument metadata available for host resolution? */
-    public static function repeatMetadata()
+    public static function repeatMetadata($pid = null)
     {
+        // The order UniversalValidator::REPEAT_MAP_SOURCES reads them in. The
+        // map is an instance method of \Project, so it is probed on the
+        // project's object: PHP 8 answers false for a non-static method
+        // named on its class.
+        try {
+            if ((int) $pid > 0 && class_exists('\Project')
+                    && is_callable([new \Project((int) $pid), 'getRepeatingFormsEvents'])) {
+                return self::yes('Project::getRepeatingFormsEvents');
+            }
+        } catch (\Throwable $e) {
+            // the project's object could not be built: try the static sources
+        }
         if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return self::yes('getRepeatingFormsEvents');
         if (is_callable(['\REDCap', 'isRepeatingForm'])) return self::yes('isRepeatingForm (per form)');
-        return self::no('neither repeat-metadata API is exposed; repeat state falls back to bucket presence');
+        return self::no('no repeat-metadata API is exposed; repeat state falls back to bucket presence');
     }
 
     /** Are event names resolvable, so a report can name an event rather than an id? */
@@ -242,7 +254,7 @@ final class ScanCapabilities
             'schemaPrivilege'   => $ask('schemaPrivilege', function () use ($module) {
                 return self::schemaPrivilege($module);
             }),
-            'repeatMetadata'    => self::repeatMetadata(),
+            'repeatMetadata'    => self::repeatMetadata($pid),
             'eventNames'        => self::eventNames(),
             'dagNames'          => self::dagNames(),
         ];

@@ -6283,24 +6283,66 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function repeatingLayout($pid)
     {
-        try {
-            if (!is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return null;
-            $map = \REDCap::getRepeatingFormsEvents($pid);
-            if ($map === null || $map === false) return ['forms' => [], 'events' => []];
-            if (!is_array($map)) return null;
-            $out = ['forms' => [], 'events' => []];
-            foreach ($map as $event => $node) {
-                $whole = !is_array($node);
-                foreach (is_array($node) ? $node : [] as $form => $_) {
-                    if (is_string($form) && $form !== '') $out['forms'][$form] = true;
-                    else $whole = true;
-                }
-                if ($whole) $out['events'][(int) $event] = true;
+        $map = $this->repeatingMap($pid);
+        if ($map === null) return null;
+        $out = ['forms' => [], 'events' => []];
+        foreach ($map ?: [] as $event => $node) {
+            $whole = !is_array($node);
+            foreach (is_array($node) ? $node : [] as $form => $_) {
+                if (is_string($form) && $form !== '') $out['forms'][$form] = true;
+                else $whole = true;
             }
-            return $out;
-        } catch (\Throwable $e) {
-            return null;
+            if ($whole) $out['events'][(int) $event] = true;
         }
+        return $out;
+    }
+
+    /**
+     * Where REDCap's map of what repeats is read from, in order of trust. Each
+     * name is a method repeatMapFrom<Name>($pid). REDCap 17 exposes the map
+     * on the \Project object only; some builds also offer the static
+     * \REDCap::getRepeatingFormsEvents. Add a source here and a method below.
+     */
+    const REPEAT_MAP_SOURCES = ['Project', 'Static'];
+
+    /**
+     * REDCap's map of what repeats in project $pid: [event_id => node], a node
+     * being [form => custom label] for the forms that repeat on their own, or
+     * "WHOLE", a node keyed '' or a bare list for an event that repeats as a
+     * whole. false when a source answered null or false (each caller keeps
+     * its own reading of that); null when no source could be read. The first
+     * source that is offered and answers with an array, null or false
+     * decides; one that is not offered, throws or answers anything else hands
+     * over to the next.
+     */
+    private function repeatingMap($pid)
+    {
+        foreach (self::REPEAT_MAP_SOURCES as $name) {
+            try {
+                $got = $this->{'repeatMapFrom' . $name}((int) $pid);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if (!is_array($got) || !$got[0]) continue;
+            if (is_array($got[1])) return $got[1];
+            if ($got[1] === null || $got[1] === false) return false;
+        }
+        return null;
+    }
+
+    /** [offered, answer] from \Project::getRepeatingFormsEvents() of project $pid. */
+    private function repeatMapFromProject($pid)
+    {
+        $p = $this->projectObject($pid);
+        if (!$p || !is_callable([$p, 'getRepeatingFormsEvents'])) return [false, null];
+        return [true, $p->getRepeatingFormsEvents()];
+    }
+
+    /** [offered, answer] from the static \REDCap::getRepeatingFormsEvents($pid). */
+    private function repeatMapFromStatic($pid)
+    {
+        if (!is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return [false, null];
+        return [true, \REDCap::getRepeatingFormsEvents($pid)];
     }
 
     /** The forms of each event of project $pid (event_id => form => true), or null when they cannot be read. */
@@ -11772,24 +11814,18 @@ class UniversalValidator extends AbstractExternalModule
     private function repeatingFormsFromMap($project_id, $event_id)
     {
         $out = null;
-        try {
-            if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) {
-                $map = \REDCap::getRepeatingFormsEvents($project_id);
-                if (is_array($map)) {
-                    // [event_id => [form_name => custom_label|null]] and, for a
-                    // repeating EVENT, [event_id => ['' => ...]] or a bare list.
-                    $node = null;
-                    if ($event_id && array_key_exists($event_id, $map)) $node = $map[$event_id];
-                    elseif (!$event_id && count($map)) $node = reset($map);
-                    if (is_array($node)) {
-                        $set = [];
-                        foreach ($node as $form => $_) if (is_string($form) && $form !== '') $set[$form] = true;
-                        $out = $set;    // may legitimately be empty: nothing repeats here
-                    }
-                }
+        $map = $this->repeatingMap($project_id);
+        if (is_array($map)) {
+            // [event_id => [form_name => custom_label|null]] and, for a
+            // repeating EVENT, [event_id => ['' => ...]] or a bare list.
+            $node = null;
+            if ($event_id && array_key_exists($event_id, $map)) $node = $map[$event_id];
+            elseif (!$event_id && count($map)) $node = reset($map);
+            if (is_array($node)) {
+                $set = [];
+                foreach ($node as $form => $_) if (is_string($form) && $form !== '') $set[$form] = true;
+                $out = $set;    // may legitimately be empty: nothing repeats here
             }
-        } catch (\Throwable $e) {
-            $out = null;
         }
         return $out;
     }
@@ -11973,10 +12009,8 @@ class UniversalValidator extends AbstractExternalModule
         $names = null;
         $longitudinal = null;
         try {
-            if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) {
-                $r = \REDCap::getRepeatingFormsEvents($project_id);
-                if (is_array($r)) $rep = $r;
-            }
+            $r = $this->repeatingMap($project_id);
+            if (is_array($r)) $rep = $r;
             if (is_callable(['\REDCap', 'getEventNames'])) {
                 $n = \REDCap::getEventNames(true, false);
                 if (is_array($n)) $names = $n;

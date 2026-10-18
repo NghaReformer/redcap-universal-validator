@@ -27,6 +27,7 @@ php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, e
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
 node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
+php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the static method; "return"/"where" on REDCap 17
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/unique_dom_js.cjs      # @UVUNIQUE browser rule (transport, fail-open, cache, "also" message)
@@ -369,6 +370,20 @@ and the scan read.
 `whereMessage` (escaped) or the module's own line, never `message`; the save
 held per `blockSave`; the cached answer; languages under Multi-Language
 Management; the plain wording on a survey; and `return` fields emptied.
+
+`repeat_metadata_php.php` covers where the module reads which forms and
+events repeat. REDCap 17.0.6 has the map only as `\Project::getRepeatingFormsEvents()`,
+with no static `\REDCap::getRepeatingFormsEvents`, and every other suite stubs
+the static. The test runs itself once per REDCap shape in a child process,
+since a stub class cannot lose a method: only the Project method, only the
+static, a Project method that throws or answers a string (the static answers),
+one that answers `false` (nothing repeats, the static is not asked), and
+neither (`"return"` and `"where"` still refuse). Each shape runs on a
+longitudinal and a classic project. It pins the page config of sound
+`"return"` and `"where"` rules, the refusals that prove the map was read (a
+field on the repeating form, an `"in":"record"` event that repeats as a
+whole), `repeatingLayout`, `repeatingFormsFromMap`, `eventLayout` and the
+scan's `repeatMetadata` probe.
 
 `docs_examples_php.php` also tests the `@UVEXISTS` expect blocks of the
 examples doc. Each line gives an entry (`with consent=1, status=3`) and says

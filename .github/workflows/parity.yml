@@ -226,6 +226,8 @@ jobs:
         run: php tests/exists_return_php.php
       - name: PHP @UVEXISTS "where" (grammar, setup checks, evaluation, confirming read, filtered outcome, audit, scan)
         run: php tests/exists_where_php.php
+      - name: PHP repeat map read from the Project object or the static method ("return"/"where" on REDCap 17)
+        run: php tests/repeat_metadata_php.php
       - name: PHP lookup comparison (@UVEXISTS/@UVUNIQUE letter case and numbers) vs fixture
         run: php tests/lookup_php.php
       - name: PHP @UVRANGE verdict vs fixture, grammar, field hook, branches, audit and scan
