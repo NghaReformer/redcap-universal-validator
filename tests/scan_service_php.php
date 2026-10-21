@@ -2847,6 +2847,47 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv10b1-1: a field added to a settings rule between two requests ends the run failed',
         $w['why'] === ScanService::CONFIG_CHANGED && $inner->run(196, $rid)['terminal'] === ScanOutcome::FAILED
         && (int) $inner->run(196, $rid)['manifest_done'] === 0);
+
+    // rv10b1-6: AN UPGRADE IS SAID TO BE ONE. A run begun under an older
+    // evaluator, on a project nobody touched, is ended - and its reason names
+    // the upgrade, not the project's rules or design.
+    $upgraded = function ($pid, $oldEngine) use ($b7design, $b7codes) {
+        $inner = new ArrayScanStore();
+        $m = new \E2eModule($inner);
+        $m->structure = $b7design;
+        $m->choices = $b7codes;
+        $rid = (int) (new ScanService($m, $inner))->start($pid)['run_id'];
+        $began = $inner->run($pid, $rid);
+        $bag = new \ReflectionMethod(ScanService::class, 'fingerprintInputs');
+        $bag->setAccessible(true);
+        $in = $bag->invoke(new ScanService($m, $inner), $m->durableScanContext($pid, ['generation' => null]),
+                           ScanPolicy::resolve([], []));
+        $policy = json_decode($began['policy_json'], true);
+        if ($oldEngine === null) unset($policy['engine']); else $policy['engine'] = $oldEngine;
+        $p = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+        $p->setAccessible(true);
+        $runs = $p->getValue($inner);
+        $runs[$rid]['fingerprint'] = ScanPlanner::requestFingerprint(
+            array_merge($in, ['engine' => $oldEngine === null ? 'engine-4' : $oldEngine]));
+        $runs[$rid]['policy_json'] = json_encode($policy);
+        $p->setValue($inner, $runs);
+        $w = (new ScanService($m, $inner))->work($pid, $rid);
+        return [$began, $inner->run($pid, $rid), $w];
+    };
+    list($began, $row, $w) = $upgraded(197, 'engine-4');
+    check('rv10b1-6: a run keeps the evaluator revision it began under',
+        ScanPromotion::engineOf($began) === ScanService::ENGINE_REVISION);
+    check('rv10b1-6: a run begun under an older evaluator is ended failed, as before',
+        $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    check('rv10b1-6: and its stored reason says the module was upgraded, not that the project changed',
+        $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED);
+    check('rv10b1-6: and so does the answer to the request that ended it',
+        empty($w['ok']) && $w['why'] === ScanService::ENGINE_CHANGED);
+    list(, $row, $w) = $upgraded(198, null);
+    check('rv10b1-6: a run whose policy names no revision was begun by an older build, and says so too',
+        $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED && $w['why'] === ScanService::ENGINE_CHANGED);
+    check('rv10b1-6 (control): a run the project changed under, same evaluator, still says the project changed',
+        strpos((string) $inner->run(196, $rid)['terminal_reason'], 'validation rules or design changed') !== false);
     // A setting that decides what is stored, loosened: not a privacy stop (it
     // shows more, it does not tighten), and still a different configuration.
     list($in, $fs, $m, $rid) = $b7(194);

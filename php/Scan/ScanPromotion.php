@@ -208,6 +208,11 @@ final class ScanPromotion
      */
     const PARTLY_EXAMINED = ['temporal-budget'];
 
+    /** The stored reason of a run an upgrade of this module ended (review rv10b1-6). */
+    const ENGINE_UPGRADED = 'this module was upgraded while this scan was running, to a version that judges '
+        . 'some values differently, so the scan was ended rather than finished half under each version; '
+        . 'run it again';
+
     /**
      * What a run's aggregates say was found: active findings, rule problems, gaps.
      *
@@ -328,6 +333,8 @@ final class ScanPromotion
      *   uniqueBlocking:     int
      *   rollupDone:         bool
      *   fingerprintNow:     ?string
+     *   engineNow:          ?string  the evaluator's revision now; with it, a
+     *                                fingerprint moved by an upgrade says so
      *   policyRevisionNow:  ?int
      *   maxFindings:        ?int
      *   maxBytes:           ?int
@@ -372,6 +379,14 @@ final class ScanPromotion
         $polNow = $g('policyRevisionNow');
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
+        // WHICH MOVED IT (review rv10b1-6). The evaluator's revision is one of
+        // the fingerprint's inputs, so an upgrade to a build that judges
+        // differently ends every run in flight - and the stored sentence then
+        // said the PROJECT's rules or design had changed, on a project nobody
+        // touched. The run keeps the revision it began under, so an upgrade is
+        // told apart and named.
+        $engNow = $g('engineNow');
+        $engineMoved = $fpBad && is_string($engNow) && $engNow !== '' && self::engineOf($run) !== $engNow;
 
         // NO RECORD IS LEFT DONE: none is `done`, none is still waiting, and
         // nothing is blocked. That is the question `emptyScope` answers, and it
@@ -501,7 +516,24 @@ final class ScanPromotion
         return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
                 'notExamined' => $unread,
                 // Which configuration moved, for the stored reason (conclude()).
-                'configChanged' => $fpBad ? 'rules' : ($polBad ? 'privacy' : null)];
+                'configChanged' => $fpBad ? ($engineMoved ? 'engine' : 'rules') : ($polBad ? 'privacy' : null)];
+    }
+
+    /**
+     * The evaluator revision a run began under, as its stored policy records
+     * it (review rv10b1-6), or null when the policy does not say.
+     *
+     * NULL MEANS AN OLDER EVALUATOR. ScanPlanner::storedPolicy() has written
+     * it since engine-5, so a run without one was begun by a build whose
+     * evaluator was engine-4 or older, and differs from any build that reads
+     * this.
+     */
+    public static function engineOf(array $run)
+    {
+        $raw = isset($run['policy_json']) && is_string($run['policy_json']) ? $run['policy_json'] : null;
+        $p = $raw === null ? null : json_decode($raw, true);
+        return (is_array($p) && isset($p['engine']) && is_string($p['engine']) && $p['engine'] !== '')
+            ? $p['engine'] : null;
     }
 
     /**
@@ -636,8 +668,9 @@ final class ScanPromotion
             $outcome['why'] = $f['configChanged'] === 'rules'
                 ? 'the project\'s validation rules or design changed while this scan was running, so its '
                   . 'results would describe two different configurations; run it again'
+                : ($f['configChanged'] === 'engine' ? self::ENGINE_UPGRADED
                 : 'the project\'s privacy settings were tightened while this scan was running, so it was '
-                  . 'ended rather than finished under the settings it started with; run it again';
+                  . 'ended rather than finished under the settings it started with; run it again');
         }
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
         // What finish() persists beside the terminal. `gaps` is already there.

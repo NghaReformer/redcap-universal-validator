@@ -1495,6 +1495,16 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B7: a moved configuration ends the run through promotion, with its counts and its sentence',
         $row['terminal'] === ScanOutcome::FAILED && (int) $row['rule_problem_count'] === 1
         && strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false);
+    // rv10b1-6: told the evaluator revision, the guard names an upgrade. The
+    // fixture's run records none, which is a run an older build began.
+    list($store, $runId) = $fixture(['A'], 806);
+    $res = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'fingerprint' => $fpNow,
+        'engine' => 'engine-5']))->work(806, $runId);
+    $row = $store->run(806, $runId);
+    check('rv10b1-6: the worker\'s guard, told the revision, says the module was upgraded',
+        $row['terminal'] === ScanOutcome::FAILED && $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED
+        && strpos((string) $res['why'], 'upgraded') !== false);
 
     // A TIGHTENED POLICY IS A STOP, WHATEVER ELSE MOVED (review R5-5, B7). The
     // value mode is a fingerprint input, so tightening it moves both; with the

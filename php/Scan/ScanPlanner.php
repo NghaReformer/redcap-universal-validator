@@ -990,6 +990,13 @@ final class ScanPlanner
             ksort($keyed, SORT_STRING);
             $policy['crossLookups'] = array_values($keyed);
         }
+        // THE EVALUATOR'S REVISION THE RUN BEGAN UNDER (review rv10b1-6), so a
+        // run ended because the module was upgraded can say so rather than
+        // blame the project. The fingerprint folds it into one hash, from
+        // which nothing can be read back. ScanPromotion::engineOf() reads it.
+        if (isset($req['engine']) && is_string($req['engine']) && $req['engine'] !== '') {
+            $policy['engine'] = $req['engine'];
+        }
         return $policy;
     }
 

@@ -195,8 +195,15 @@ final class ScanWorker
         // service's check; a worker built anywhere else is held to it alone.
         if (isset($this->deps['fingerprint'])
                 && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
+            // The evaluator revision, when the composition root says which it
+            // is, so an upgrade is named as one (review rv10b1-6).
+            $engine = isset($this->deps['engine']) && is_string($this->deps['engine']) ? $this->deps['engine'] : null;
             ScanPromotion::promote($this->store, $pid, $runId, array_merge($this->limits(),
-                ['fingerprintNow' => (string) $this->deps['fingerprint']]));
+                ['fingerprintNow' => (string) $this->deps['fingerprint'], 'engineNow' => $engine]));
+            if ($engine !== null && ScanPromotion::engineOf($run) !== $engine) {
+                return self::stop('this module was upgraded during this scan, so it was stopped and '
+                    . 'must be run again');
+            }
             return self::stop('the validation rules changed during this scan, so it was stopped '
                 . 'and must be run again');
         }
