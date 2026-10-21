@@ -398,6 +398,9 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
   check('the table of reference values shows the girl\'s rows (got ' + JSON.stringify(rows()[0]) + ')',
     JSON.stringify(rows()) === JSON.stringify(ROWS.female));
   check('its caption is text, never markup', tagged(tbl, 'caption')[0].textContent === '<b>WHO</b> values');
+  // live finding L2 (rc.2): REDCap 17's Bootstrap puts a caption under the rows
+  check('its caption sits above the rows, whatever the page\'s stylesheet says (got '
+    + JSON.stringify(tagged(tbl, 'caption')[0].style.captionSide) + ')', tagged(tbl, 'caption')[0].style.captionSide === 'top');
   check('its headers: the age, then the values at each percentile', tagged(tbl, 'th').map((t) => t.textContent).join('|')
     === 'Age (days)|Value at percentile 3 (kg)|Value at percentile 15 (kg)|Value at percentile 50 (kg)|Value at percentile 85 (kg)|Value at percentile 97 (kg)'
     && tagged(tbl, 'th').every((t) => t.getAttribute('scope') === 'col'));
@@ -621,6 +624,32 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
   check('a weight in grams ("measureScale" 0.001): the curves in grams, within 0.5 of the exact ones (worst ' + acc.worst.toFixed(3) + ')',
     acc.worst <= 0.5 && acc.pts > 500 && svgText(svg, 'Weight').length === 1);
   check('... and the marker at 6400', Math.abs(+marker(svg).getAttribute('cy') - yMap(svg)(6400)) < 0.06);
+}
+
+// ---- 6b) a chart of the median alone: the y axis leaves room for usual values ----------------
+{
+  // Live finding F1 (rc.2): with only the median drawn, the axis hugged it,
+  // so a usual value sat on the frame or past it. A value axis now shows at
+  // least the reference from z -2 to 2 across the window.
+  const G = boot('median', {}).NS.growthLogic;
+  const ref = FX.growth['who-wfa'];
+  const at = (z, x) => (Math.round(G.valueAt(z, G.lms(ref, 'male', x), true) * 10) / 10).toFixed(1);
+  /* 1700 days after 10 Jan 2025 */
+  const visit = new Date(Date.UTC(2025, 0, 10) + 1700 * 86400000).toISOString().slice(0, 10);
+  for (const [z, x, date] of [[1.55, 1700, visit], [-1.9, 1700, visit], [1.9, 365, '2026-01-10'], [-1.9, 30, '2025-02-09']]) {
+    const typed = at(z, x);
+    const env = boot('median', { sex: '1', dob: '2025-01-10', visit_date: date, weight: typed });
+    const svg = svgOf(env, 'weight');
+    const cy = marker(svg) ? +marker(svg).getAttribute('cy') : NaN;
+    check('the median alone: ' + typed + ' kg at ' + x + ' days (z ' + z + ') is drawn inside the plot, clear of its frame (cy '
+      + cy + ', arrow ' + vis(arrow(svg)) + ')', paths(svg).length === 1 && vis(marker(svg)) && !vis(arrow(svg))
+      && cy > GEO.top + 4 && cy < GEO.top + GEO.plotHeight - 4);
+  }
+  const env = boot('median', { sex: '1', dob: '2025-01-10', visit_date: visit, weight: at(2.5, 1700) });
+  check('... while a value past z 2 can still leave it, with an arrow', vis(arrow(svgOf(env, 'weight'))) || vis(marker(svgOf(env, 'weight'))));
+  const one = boot('form', { sex: '1', dob: '2025-01-10', visit_date: visit });
+  const ym = yMap(svgOf(one, 'weight'));
+  check('a chart whose lines reach past z 2 keeps the axis its lines give', ym(at(1.88, 1700)) > GEO.top && ym(at(-1.88, 0)) < GEO.top + GEO.plotHeight);
 }
 
 // ---- 7) Multi-Language Management ----------------------------------------------------------

@@ -3685,7 +3685,9 @@ chart"). It shows:
   `index.json` entry has `"chartUnit"` counts its age in that unit always
   (weeks for a reference by gestational age). The measurement in the field's
   unit: in grams with `"measureScale":0.001`, since the server divides the
-  scale back out. With `"y":"z"` the y axis is the z-score, from at least -3
+  scale back out. That axis covers at least the reference from z-score -2 to
+  2 over the ages shown, so a chart of the median alone still has room for a
+  usual value. With `"y":"z"` the y axis is the z-score, from at least -3
   to 3, and every curve is a flat line.
 
 **Where the point sits.** WHO's tables have a row a day, and the check reads

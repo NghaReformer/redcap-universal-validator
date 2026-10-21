@@ -3,6 +3,17 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
+## Unreleased
+
+### Fixed
+
+- **A growth chart that draws only the median cut off usual values.** The y axis of a chart of measurements was fitted to the lines it draws, so with the median alone (a rule that only shows, or `"lines":{"z":[0]}`) it hugged the median: a girl's head of 46.0 cm at 12 months (z-score 0.81) sat on the plot's top edge, and 47.0 cm (z-score 1.55) showed as the arrow for a point outside the chart. The axis now covers at least the reference from z-score -2 to 2 over the ages shown (`QRID_CHART.frameZ`), read from the reference rows the page already carries, as a z-score axis covers at least -3 to 3. A chart whose lines reach past z-score 2 keeps the axis they give. Live-found on chpr-redcap.org pid 149 while testing 2.3.0-rc.2; new checks in `tests/growth_chart_dom_js.cjs` fail on the rc.2 engine.
+- **A page table's caption showed under its rows on REDCap 17.** REDCap's Bootstrap sets `caption-side: bottom`, so the caption read like a footer. The engine now sets `caption-side: top` through the caption's `style` object, as it styles the rest of the table. Live-found in the same run.
+
+### Tests
+
+- Live steps K18 to K36 in `docs/testbed/RANGE_LIVE_ACCEPTANCE.md` cover the chart paths section K left out: labels as language maps under Multi-Language Management, a sex saved on another form, branches that switch reference by age, comma decimals, a z-score chart with percentile lines, `"span":"auto"` and `"open":false`, and a charted field on another event and on a repeating instrument. Fixture `docs/testbed/uvrange_chart_gaps_fields.csv`; offline checks `tests/growth_chart_gaps_module_php.php` and `tests/growth_chart_gaps_dom_js.cjs`.
+
 ## 2.3.0-rc.2 — 2026-10-18
 
 **`@UVEXISTS` `"return"` and `"where"` work on REDCap 17.** On REDCap 17.0.6 every `@UVEXISTS` rule with `"return"` or `"where"` refused to set up, because the module read the map of repeating forms from a method that version does not offer. Live acceptance of 2.3.0-rc.1 on a REDCap 17.0.6 project found it. This candidate reads the map from the project object first. The `@UVRANGE` live run sheet is corrected too. Nothing else changed since 2.3.0-rc.1: no new setting, no schema change, and no SQL. The PHP suites pass on PHP 7.4 and 8.3 and the JavaScript suites on Node 20; the database matrix was not run again, since no SQL changed.

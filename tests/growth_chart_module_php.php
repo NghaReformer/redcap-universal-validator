@@ -536,6 +536,10 @@ namespace {
     $GRAMS = dict(['weight' => tag('{"chart":{"lines":{"percentiles":[3,50,97]}}}', 'who-wfa', ',"measureScale":0.001')], 'anthro_form');
     $GRAMS['dob'] = f('anthro_form', '', 'date_ymd');
     $pages['scaled'] = page($GRAMS, [])['cfg'];
+    // a rule that only shows: its chart draws the median alone
+    $MEDIAN = dict(['weight' => '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",' . $AGE . ',"show":{"chart":true}}'], 'anthro_form');
+    $MEDIAN['dob'] = f('anthro_form', '', 'date_ymd');
+    $pages['median'] = page($MEDIAN, [])['cfg'];
     GrowthReference::reset();
     rmtree($dir);
     $wfa = GrowthReference::entry('who-wfa');

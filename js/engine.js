@@ -4730,9 +4730,12 @@ var QRID_SVG_NS = "http://www.w3.org/2000/svg";
    simplifies (tests/growth_curve_php.php compares them). width and
    plotWidth are the widest: a chart fits the field's cell, from minWidth to
    width units wide, drawn one unit to a pixel so its text keeps its size;
-   the error bound is vertical and does not depend on the width. */
+   the error bound is vertical and does not depend on the width. A value
+   axis shows at least the reference from z -frameZ to frameZ, as a z-score
+   axis shows at least -3 to 3; a wider axis only makes the curves' error
+   smaller on screen, so the bound holds. */
 var QRID_CHART = { width: 640, minWidth: 320, height: 380, left: 56, right: 72, top: 20, plotWidth: 512, plotHeight: 312,
-                   maxZoom: 8, yFloor: 0.1 };
+                   maxZoom: 8, yFloor: 0.1, frameZ: 2 };
 /* Run after QRID_relabelTexts swaps the marked texts: a text made of several
    labels and numbers (a chart's description) is written again. */
 var UV_relabelHooks = [];
@@ -5086,8 +5089,12 @@ function QRID_growthChart(V, uid, width){
     if(cv){
       for(var i = 0; i < cv.lines.length; i++) polys.push(cv.lines[i].polys);
       for(var b = 0; b < 2; b++) if(cv.band[b]) polys.push(cv.band[b]);
-      /* a z-score axis shows at least -3 to 3, so most points fall inside */
+      /* a z-score axis shows at least -3 to 3, so most points fall inside;
+         a value axis at least the reference from z -frameZ to frameZ, so a
+         usual value is not drawn on the frame or past it when the lines
+         drawn are close together (the median alone) */
       if(isZ) polys.push([[[win[0], -3], [win[1], 3]]]);
+      else polys.push(frameOf(sex, win, pt));
     }
     drawn.y = QRID_chartYRange(polys);
     if(drawn.y && isZ){ drawn.y = { lo: drawn.y.lo - drawn.y.step, hi: drawn.y.hi + drawn.y.step, step: drawn.y.step }; }
@@ -5136,6 +5143,25 @@ function QRID_growthChart(V, uid, width){
     for(var f = 0; f < ends.length; f++){
       QRID_svgEl("text", { x: QRID_chartNum(C.left + G.plotWidth + 4), y: QRID_chartNum(ends[f].y + 3.5) }, gLines).textContent = ends[f].text;
     }
+  }
+  /* the reference at z -frameZ and frameZ for sex, as one polyline of
+     points [x, y] in the field's unit, at nine places across the window and
+     at this visit: the least a value axis shows. A place the page has no row
+     for (a table cut to the rows around a saved age) is left out. */
+  function frameOf(sex, win, pt){
+    var pts = [], xs = [], sc = V.scale === null ? 1 : parseFloat(V.scale);
+    if(!ref[sex] || !(sc > 0)) return [];
+    for(var i = 0; i <= 8; i++) xs.push(win[0] + (win[1] - win[0]) * i / 8);
+    if(pt && pt.x !== null && pt.x >= win[0] && pt.x <= win[1]) xs.push(pt.x);
+    for(var j = 0; j < xs.length; j++){
+      var lms = QRID_growthLms(ref, sex, xs[j]);
+      if(!lms) continue;
+      for(var k = -1; k <= 1; k += 2){
+        var y = QRID_growthValueAt(k * C.frameZ, lms, ref.adjust === "who-restricted");
+        if(y !== null) pts.push([xs[j], y / sc]);
+      }
+    }
+    return pts.length ? [pts] : [];
   }
   function pathOf(polys){
     var d = "";
@@ -5276,7 +5302,8 @@ function QRID_growthTable(V){
   details.open = show.open !== null && show.open !== undefined ? show.open === true : !QRID_IS_SURVEY;
   QRID_showLabel(V, "table", "summary", curve ? "Reference values" : "This visit", details.appendChild(document.createElement("summary")));
   var table = QRID_htmlEl("table", { borderCollapse: "collapse", fontSize: "13px", margin: "4px 0" }, details);
-  QRID_showLabel(V, "table", "caption", ref.title, table.appendChild(document.createElement("caption")));
+  /* above the rows: REDCap 17's Bootstrap puts a caption under them */
+  QRID_showLabel(V, "table", "caption", ref.title, QRID_htmlEl("caption", { captionSide: "top" }, table));
   var hr = table.appendChild(document.createElement("thead")).appendChild(document.createElement("tr"));
   for(var h = 0; h < cols.length; h++){
     var th = QRID_htmlEl("th", { padding: "2px 8px", borderBottom: "1px solid #9e9e9e", textAlign: "right" }, hr);
