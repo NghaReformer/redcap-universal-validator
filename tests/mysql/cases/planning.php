@@ -676,3 +676,138 @@ $NEIGHBOUR = uv_neighbour($PID);
     (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($lockId,
         \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
 }
+
+/*
+ * R5-3: REDCAP RESETS ITS RECORD-LIST CACHE IN THE MIDDLE OF A SLICE.
+ *
+ * The index was judged complete once, at open(). REDCap empties
+ * redcap_record_list and marks it NOT_STARTED before it rebuilds it, so a page
+ * read after that came back empty, the walk was called done, and the manifest
+ * froze with every record after the cursor missing. The walk now asks the
+ * status after every page and moves to the data table when the index is no
+ * longer the cache it opened.
+ */
+{
+    $CR = 921;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $CR);
+    $A->query('DROP TABLE IF EXISTS redcap_record_counts');
+    uv_redcap_counts_schema($A);
+    $A->query('ALTER TABLE redcap_record_counts ADD COLUMN time_of_list_cache DATETIME NULL');
+    $crIds = array();
+    for ($i = 1; $i <= 2000; $i++) $crIds[] = sprintf('C%05d', $i);
+    $crFill = function () use ($A, $CR, $crIds) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR);
+        foreach (array_chunk($crIds, 1000) as $chunk) {
+            $v = array();
+            foreach ($chunk as $id) $v[] = '(' . $CR . ", '" . $id . "', NULL)";
+            $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $v));
+        }
+        $A->query('DELETE FROM redcap_record_counts WHERE project_id = ' . $CR);
+        $A->query('INSERT INTO redcap_record_counts (project_id, record_list_status, time_of_list_cache)'
+            . ' VALUES (' . $CR . ", 'COMPLETE', '2026-10-21 08:00:00')");
+    };
+    foreach (array_chunk($crIds, 1000) as $chunk) {
+        $v = array();
+        foreach ($chunk as $id) $v[] = '(' . $CR . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+            . implode(',', $v));
+    }
+    // The walk's reads, with something done just before the third page of
+    // the index is read, and optionally something just after it.
+    $crHook = function ($before, $after = null) use ($A) {
+        return new class(new MysqliDb($A), $before, $after) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+            public $inner; public $before; public $after; public $pages = 0; public $dataPages = 0;
+            public function __construct($inner, $b, $a) { $this->inner = $inner; $this->before = $b; $this->after = $a; }
+            public function select($sql, array $params = []) {
+                $page = strpos($sql, 'ORDER BY') !== false && !preg_match('/LIMIT 1\s*$/', $sql);
+                $hit = false;
+                if ($page && strpos($sql, 'FROM redcap_record_list') !== false) {
+                    $this->pages++;
+                    if ($this->pages === 3) { $hit = true; $f = $this->before; $f(); }
+                } elseif ($page && strpos($sql, 'FROM redcap_data') !== false) {
+                    $this->dataPages++;
+                }
+                $rows = $this->inner->select($sql, $params);
+                if ($hit && $this->after) { $f = $this->after; $f(); }
+                return $rows;
+            }
+            public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+            public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+            public function affected() { return $this->inner->affected(); }
+            public function begin() { $this->inner->begin(); }
+            public function commit() { $this->inner->commit(); }
+            public function rollback() { $this->inner->rollback(); }
+        };
+    };
+    $crPlan = function ($hook) use ($CR) {
+        $src = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($hook, $CR, array('pk' => 'record_id'));
+        $hook->pages = 0;
+        $res = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+            new \INSPIRE\UniversalValidator\Scan\SqlScanStore($hook), 'test-secret-key'))
+            ->plan($CR, uv_plan_request(array('source' => $src['source'], 'pageSize' => 250, 'budget' => false)));
+        return array($src, $res);
+    };
+    $crCensus = function ($rid) use ($dbA, $T) {
+        $r = $dbA->select('SELECT COUNT(*), COUNT(DISTINCT record_hash) FROM ' . $T('scan_record')
+            . ' WHERE run_id = ?', array($rid));
+        return array((int) $r[0][0], (int) $r[0][1]);
+    };
+    $crEnd = function ($rid) use ($dbA) {
+        (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($rid,
+            \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    };
+
+    // Emptied and marked NOT_STARTED just before the third page.
+    $crFill();
+    $hook = $crHook(function () use ($A, $CR) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR);
+        $A->query("UPDATE redcap_record_counts SET record_list_status = 'NOT_STARTED', time_of_list_cache = NULL"
+            . ' WHERE project_id = ' . $CR);
+    });
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    $carry = $dbA->select('SELECT plan_carry FROM ' . $T('scan_plan') . ' WHERE run_id = ?', array($rid));
+    check('R5-3: a cache emptied for a rebuild in the middle of a slice leaves no record off the manifest',
+        $res['ok'] === true && $src['source']->via() === 'redcap_record_list'
+        && (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000));
+    check('R5-3: the rest of the walk was read from the data table, which the plan row now names',
+        $hook->dataPages > 0 && strpos((string) $carry[0][0], 'redcap_data') !== false);
+    $crEnd($rid);
+
+    // Torn down and built again between the third page and its check: the
+    // page was read with C00600 missing, and the status reads COMPLETE again
+    // by the time it is asked. Only the time the list was built moved.
+    $crFill();
+    $hook = $crHook(function () use ($A, $CR) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR . " AND record = 'C00600'");
+        $A->query("UPDATE redcap_record_counts SET time_of_list_cache = '2026-10-21 08:00:09'"
+            . ' WHERE project_id = ' . $CR);
+    }, function () use ($A, $CR) {
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (' . $CR . ", 'C00600', NULL)");
+    });
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    $has = $dbA->select('SELECT COUNT(*) FROM ' . $T('scan_record') . ' WHERE run_id = ? AND record_id_bin = ?',
+        array($rid, 'C00600'));
+    check('R5-3: a list rebuilt between a page and its check is caught by the time it was built',
+        (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000)
+        && (int) $has[0][0] === 1);
+    $crEnd($rid);
+
+    // An index that stays complete is walked as it was, from the index alone.
+    $crFill();
+    $hook = $crHook(function () {});
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    check('R5-3: an index that stays complete is walked whole, from the index alone',
+        (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000)
+        && $hook->dataPages === 0);
+    $crEnd($rid);
+
+    // The question asked after every page is one primary-key read.
+    check('R5-3: the status read after each page is a primary-key lookup',
+        uv_explain_keys($A, 'SELECT record_list_status, time_of_list_cache FROM redcap_record_counts'
+            . ' WHERE project_id = ?', array($CR)) === array('PRIMARY'));
+    $A->query('DROP TABLE redcap_record_counts');
+}

@@ -60,6 +60,9 @@ final class RecordManifestSource
     /** How many equal-by-collation ids may sit on a page boundary before we refuse. */
     const TIE_CAP = 200;
 
+    /** What via() answers for REDCap's record index. Every other answer names a data table. */
+    const VIA_INDEX = 'redcap_record_list';
+
     /** @var ScanDb */
     private $db;
     private $pid;
@@ -69,6 +72,14 @@ final class RecordManifestSource
     private $via;
     private $pkField;     // only for the data-table fallback
     private $dataTable;   // for the __GROUPID__ lookup when $dagCol is null
+    /** @var ?string the record-id field, on every source, so the index can hand over to the data table */
+    private $pk;
+    /**
+     * @var ?array what REDCap said about its record-list cache when this walk
+     * was opened over it: {stamped: bool, stamp: ?string}. Null on the data
+     * table, and on an index REDCap keeps no status for.
+     */
+    private $listState;
 
     private function __construct()
     {
@@ -96,8 +107,13 @@ final class RecordManifestSource
         // REDCap keeps the status, anything but COMPLETE (or FIX_SORT, which is
         // complete with its sort order still to be repaired) sends the walk to
         // the data table, which is slower and always whole.
+        //
+        // ONCE AT OPEN IS NOT ENOUGH (review R5-3), so what REDCap said here is
+        // kept and asked again after every page - see page().
         $cols = self::columnsOf($db, 'redcap_record_list');
-        $usable = self::recordListComplete($db, $pid) !== false;
+        $shape = self::listShape($db);
+        $state = $shape === null ? null : self::listStateNow($db, $pid, $shape);
+        $usable = ($state === null || $state['complete']);
         if ($cols !== null && isset($cols['project_id']) && isset($cols['record']) && $usable) {
             $s = new self();
             $s->db = $db;
@@ -109,7 +125,10 @@ final class RecordManifestSource
             // walk - and is reported by hasDag() so the caller can refuse a
             // group-scoped scan rather than silently scanning the project.
             $s->dagCol = isset($cols['dag_id']) ? 'dag_id' : (isset($cols['group_id']) ? 'group_id' : null);
-            $s->via = 'redcap_record_list';
+            $s->via = self::VIA_INDEX;
+            $s->pk = $pk;
+            $s->listState = $state === null ? null
+                : ['stamped' => $shape['stamped'], 'stamp' => $state['stamp']];
             $probe = $s->probe();
             if ($probe['ok']) {
                 $s->dataTable = self::dataTable($db, $pid);
@@ -135,6 +154,17 @@ final class RecordManifestSource
                     'why' => $noIndex . ', and the record-id field could not '
                            . 'be determined, so its records cannot be listed in bounded memory'];
         }
+        return self::overData($db, $pid, $dt, $pk);
+    }
+
+    /**
+     * The walk over the project's data table, restricted to the record-id
+     * field, probed before it is handed out.
+     *
+     * @return array{ok:bool, source:?RecordManifestSource, why:?string}
+     */
+    private static function overData(ScanDb $db, $pid, $dt, $pk)
+    {
         $s = new self();
         $s->db = $db;
         $s->pid = $pid;
@@ -144,11 +174,31 @@ final class RecordManifestSource
         $s->dagCol = null;      // groups come from __GROUPID__ rows, per page
         $s->via = $dt . ' (record-id field only)';
         $s->pkField = $pk;
+        $s->pk = $pk;
         $probe = $s->probe();
         if (!$probe['ok']) {
             return ['ok' => false, 'source' => null, 'why' => $probe['why']];
         }
         return ['ok' => true, 'source' => $s, 'why' => null];
+    }
+
+    /**
+     * The same project's walk over its data table: this source when it is one,
+     * or null when the data table cannot be walked (no data table, no
+     * record-id field, or a probe that failed).
+     *
+     * WHERE A WALK GOES WHEN THE INDEX STOPS BEING TRUSTWORTHY (review R5-3).
+     * The data table is slower and always whole, and it is not a cache, so a
+     * walk that has moved onto it has no reason to move back.
+     *
+     * @return ?RecordManifestSource
+     */
+    public function dataWalk()
+    {
+        if ($this->pkField !== null) return $this;
+        if ($this->dataTable === null || $this->pk === null) return null;
+        $o = self::overData($this->db, $this->pid, $this->dataTable, $this->pk);
+        return empty($o['ok']) ? null : $o['source'];
     }
 
     /**
@@ -240,30 +290,72 @@ final class RecordManifestSource
     }
 
     /**
-     * Does REDCap say this project's record-list cache is complete?
+     * Does this REDCap keep a status for its record-list cache, and a time
+     * the cache was last built?
      *
-     * true for COMPLETE and FIX_SORT; false for any other status, for no row,
-     * and for a read that failed - each of those means the cache may be missing
-     * records. null when this REDCap keeps no status at all (no
-     * redcap_record_counts.record_list_status column), which leaves the index
-     * judged by the probe alone, as it was before the status existed.
+     * Null when there is no redcap_record_counts.record_list_status column,
+     * which leaves the index judged by the probe alone, as it was before the
+     * status existed. `stamped` when the row also carries time_of_list_cache.
+     * Asked of information_schema once, at open(): page() asks the row itself
+     * after every page, and a catalogue read per page would cost more than
+     * the page.
      *
-     * @return bool|null
+     * @return ?array{stamped:bool}
      */
-    private static function recordListComplete(ScanDb $db, $pid)
+    private static function listShape(ScanDb $db)
     {
         $cols = self::columnsOf($db, 'redcap_record_counts');
         if ($cols === null || !isset($cols['project_id']) || !isset($cols['record_list_status'])) {
             return null;
         }
+        return ['stamped' => isset($cols['time_of_list_cache'])];
+    }
+
+    /**
+     * What REDCap says about this project's record-list cache right now.
+     *
+     * `complete` is true for COMPLETE and FIX_SORT; false for any other
+     * status, for no row, and for a read that failed - each of those means the
+     * cache may be missing records. `stamp` is time_of_list_cache where the
+     * row has it: a list torn down and built again between two asks reads
+     * COMPLETE both times, and only the time it was built tells them apart.
+     *
+     * One primary-key read of a one-row-per-project table.
+     *
+     * @param array{stamped:bool} $shape from listShape()
+     * @return array{complete:bool, stamp:?string}
+     */
+    private static function listStateNow(ScanDb $db, $pid, array $shape)
+    {
+        $no = ['complete' => false, 'stamp' => null];
         try {
-            $r = $db->select('SELECT record_list_status FROM redcap_record_counts WHERE project_id = ?',
-                [$pid]);
+            $r = $db->select('SELECT record_list_status'
+                . (empty($shape['stamped']) ? '' : ', time_of_list_cache')
+                . ' FROM redcap_record_counts WHERE project_id = ?', [$pid]);
         } catch (\Throwable $e) {
-            return false;
+            return $no;
         }
-        if (!isset($r[0][0])) return false;
-        return in_array(strtoupper((string) $r[0][0]), ['COMPLETE', 'FIX_SORT'], true);
+        if (!isset($r[0][0])) return $no;
+        $stamp = (!empty($shape['stamped']) && isset($r[0][1])) ? (string) $r[0][1] : null;
+        return ['complete' => in_array(strtoupper((string) $r[0][0]), ['COMPLETE', 'FIX_SORT'], true),
+                'stamp' => $stamp];
+    }
+
+    /**
+     * Is the record index still the cache this walk opened? (review R5-3)
+     *
+     * True on any source this question does not apply to: the data table is
+     * not a cache, and an index REDCap keeps no status for is judged by the
+     * probe, as it always was. On an index REDCap keeps a status for, true
+     * only while REDCap still calls it complete AND it is the same build of
+     * it - the time it was built has not moved since open(). A status that
+     * cannot be read is not complete.
+     */
+    private function stillTrusted()
+    {
+        if ($this->listState === null) return true;
+        $now = self::listStateNow($this->db, $this->pid, ['stamped' => $this->listState['stamped']]);
+        return $now['complete'] && $now['stamp'] === $this->listState['stamp'];
     }
 
     /** Each record's group, or null. Null both for "no group" and for "cannot tell". */
@@ -368,7 +460,9 @@ final class RecordManifestSource
      * @param string|null $after   the last id of the previous page, or null to start
      * @param string[]    $emitted ids already emitted that collate equal to $after
      * @param int         $limit
-     * @return array{ok:bool, rows:array, cursor:?string, emitted:string[], done:bool, why:?string}
+     * @return array{ok:bool, rows:array, cursor:?string, emitted:string[], done:bool, why:?string,
+     *               untrusted?:bool}  `untrusted`: the record index stopped being the
+     *               complete cache this walk opened, and the page was not used
      */
     public function page($after, array $emitted, $limit)
     {
@@ -433,7 +527,13 @@ final class RecordManifestSource
         // the boundary group - so there is nothing left. It is stated rather
         // than assumed, because "no rows" and "no rows we can use" reaching the
         // same conclusion by accident is how a walk stops early.
+        //
+        // AND ONLY A SOURCE STILL TRUSTED MAY SAY IT (review R5-3). An index
+        // REDCap emptied for a rebuild after open() answered this page with
+        // nothing, so the walk was called done, the manifest froze, and every
+        // record after the cursor was missing from it for good.
         if (!$out) {
+            if (!$this->stillTrusted()) return $this->untrusted($after, $emitted);
             return ['ok' => true, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted,
                     'done' => true, 'why' => null];
         }
@@ -478,10 +578,34 @@ final class RecordManifestSource
         // means there is nothing past this page.
         $done = count($rows) < $fetch;
 
+        // THE CACHE IS ASKED AGAIN, AFTER THE PAGE AND ITS BOUNDARY (review
+        // R5-3). REDCap marks the list incomplete when it tears it down, so a
+        // page read from a list being torn down or rebuilt is followed by a
+        // status that is not COMPLETE, or by a build time that moved. Either
+        // way nothing on this page is used: a short page from a half-empty
+        // list reads as the end of the project, and a full one can still have
+        // a hole in the middle. One primary-key read per page.
+        if (!$this->stillTrusted()) return $this->untrusted($after, $emitted);
+
         if ($this->dagCol === null && $out) $this->fillGroups($out);
 
         return ['ok' => true, 'rows' => $out, 'cursor' => $cursor, 'emitted' => $carry,
                 'done' => $done, 'why' => null];
+    }
+
+    /** What REDCap's record index stopping being trustworthy is told as. */
+    const UNTRUSTED = 'REDCap began rebuilding this project\'s record index while it was being read, '
+        . 'so that page was not used';
+
+    /**
+     * A page that must not be used because the index stopped being the cache
+     * this walk opened. Not a read failure: the walk carries on from the
+     * project's data table (ScanPlanner::step()).
+     */
+    private function untrusted($after, array $emitted)
+    {
+        return ['ok' => false, 'untrusted' => true, 'rows' => [], 'cursor' => $after,
+                'emitted' => $emitted, 'done' => false, 'why' => self::UNTRUSTED];
     }
 
     /**

@@ -46,6 +46,9 @@ namespace {
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
+    // R5: the planning walk under a changing record-list cache, budgeted.
+    require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+    require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
     require_once __DIR__ . '/scan_fault_support.php';
     require_once __DIR__ . '/scan_run_row.php';
 
@@ -1282,6 +1285,224 @@ namespace INSPIRE\UniversalValidator\Scan {
     $r = outcomeOf(function () use ($vdb) { return (new ScanRetention($vdb))->revokePreviews(70, 5); });
     check('revoke: a page bound that could not be read clears nothing and says so',
         $r['kind'] === 'other' && $vdb->with(['UPDATE ' . $T('finding')]) === []);
+
+    // =====================================================================
+    // R5 - THE PLANNING WALK WHILE REDCAP CHANGES ITS RECORD-LIST CACHE
+    // =====================================================================
+    //
+    // The walk spans requests and REDCap rebuilds redcap_record_list in the
+    // background, so the source can stop being the cache it was opened as in
+    // the middle of a slice, or open as a different table on the next
+    // request. Whatever it does, every record must be listed exactly once.
+
+    /**
+     * REDCap's tables for one project, as the walk reads them, with a hook
+     * before each page. $index is the cache, $data the record-id rows of the
+     * data table, $extra ids holding rows on other fields only. The status
+     * row carries time_of_list_cache when $stampColumn is set.
+     */
+    $churnDb = function (array $ids) {
+        return new class($ids) implements ScanDb {
+            public $index; public $data; public $extra = [];
+            public $status = 'COMPLETE'; public $stamp = '2026-10-21 08:00:00';
+            public $statusColumn = true; public $stampColumn = true; public $statusFails = false;
+            public $dataTable = 'redcap_data'; public $hasData = true; public $dataFails = false;
+            public $pages = ['index' => 0, 'data' => 0]; public $statusReads = 0;
+            /** @var ?callable(object $db, string $which, int $n): void, before a page is answered */
+            public $onPage = null;
+            public function __construct(array $ids) { $this->index = $ids; $this->data = $ids; }
+            public function select($sql, array $params = [])
+            {
+                if (strpos($sql, 'information_schema.columns') !== false) {
+                    $t = $params[0];
+                    if ($t === 'redcap_record_list') return [['project_id'], ['record'], ['dag_id']];
+                    if ($t === $this->dataTable || $t === 'redcap_data') {
+                        return $this->hasData ? [['project_id'], ['record'], ['field_name']] : [];
+                    }
+                    if ($t === 'redcap_record_counts') {
+                        if (!$this->statusColumn) return [['project_id'], ['record_count']];
+                        $c = [['project_id'], ['record_list_status']];
+                        if ($this->stampColumn) $c[] = ['time_of_list_cache'];
+                        return $c;
+                    }
+                    return [];
+                }
+                if (strpos($sql, 'FROM redcap_record_counts') !== false) {
+                    $this->statusReads++;
+                    if ($this->statusFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    if ($this->status === null) return [];
+                    return [strpos($sql, 'time_of_list_cache') !== false
+                        ? [$this->status, $this->stamp] : [$this->status]];
+                }
+                if (strpos($sql, 'FROM redcap_projects') !== false) {
+                    return $this->hasData ? [[$this->dataTable]] : [];
+                }
+                if (in_array('__GROUPID__', $params, true)) return [];
+                preg_match('/LIMIT (\d+)/', $sql, $m);
+                $lim = isset($m[1]) ? (int) $m[1] : PHP_INT_MAX;
+                $isIndex = strpos($sql, 'FROM redcap_record_list') !== false;
+                if (strpos($sql, 'ORDER BY') !== false && $lim > 1 && strpos($sql, ' IN (') === false
+                        && strpos($sql, 'record = ?') === false) {
+                    $w = $isIndex ? 'index' : 'data';
+                    $this->pages[$w]++;
+                    // Before the page is answered: the hook may change what it reads.
+                    if (is_callable($this->onPage)) call_user_func($this->onPage, $this, $w, $this->pages[$w]);
+                }
+                $p = $params;
+                array_shift($p);                                          // the project id
+                if ($isIndex) {
+                    $ids = $this->index;
+                } else {
+                    if ($this->dataFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    if (strpos($sql, 'field_name = ?') !== false) {
+                        array_shift($p);
+                        $ids = $this->data;
+                    } else {
+                        $ids = array_values(array_unique(array_merge($this->data, $this->extra)));
+                    }
+                }
+                sort($ids, SORT_STRING);
+                if (strpos($sql, ' IN (') !== false) {
+                    $ids = array_values(array_intersect($ids, array_map('strval', $p)));
+                } elseif (strpos($sql, 'record = ?') !== false) {
+                    $ids = in_array((string) $p[0], $ids, true) ? [(string) $p[0]] : [];
+                } else {
+                    if (strpos($sql, '>= ?') !== false) {
+                        $at = (string) $p[0];
+                        $ids = array_values(array_filter($ids, function ($r) use ($at) {
+                            return strcmp($r, $at) >= 0;
+                        }));
+                    }
+                }
+                $ids = array_slice($ids, 0, $lim);
+                $dag = strpos($sql, 'dag_id') !== false;
+                return array_map(function ($r) use ($dag) { return $dag ? [$r, null] : [$r]; }, $ids);
+            }
+            public function exec($sql, array $params = []) {}
+            public function execNoCount($sql, array $params = []) {}
+            public function affected() { return 0; }
+            public function begin() {}
+            public function commit() {}
+            public function rollback() {}
+        };
+    };
+    $thousand = [];
+    for ($i = 1; $i <= 1000; $i++) $thousand[] = sprintf('R%04d', $i);
+    $walkKey = str_repeat('k', 32);
+    $walkReq = ['rules' => [['type' => 'required', 'fields' => ['a']]], 'ownership' => ['a' => 'fa'],
+                'policy' => [], 'createdBy' => 'u', 'engine' => '1', 'pageSize' => 100];
+    /** Plan a project whole in one call, over $db as it is now. */
+    $planWhole = function ($db) use ($walkKey, $walkReq) {
+        $store = new ArrayScanStore();
+        $open = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $res = (new ScanPlanner($store, $walkKey))->plan(88, array_merge($walkReq,
+            ['source' => $open['source'], 'budget' => false]));
+        return [$store, $res, $open];
+    };
+    /** The record ids on a run's manifest, in ordinal order, repeats included. */
+    $manifestIds = function (ArrayScanStore $store, $runId) {
+        $p = new \ReflectionProperty(ArrayScanStore::class, 'records');
+        $p->setAccessible(true);
+        $all = $p->getValue($store);
+        $out = [];
+        foreach (isset($all[$runId]) ? $all[$runId] : [] as $rec) $out[] = (string) $rec['id_bin'];
+        return $out;
+    };
+    $whole = function ($store, $res) use ($manifestIds, $thousand) {
+        if (empty($res['ok']) || !isset($res['run']['run_id'])) return false;
+        $got = $manifestIds($store, (int) $res['run']['run_id']);
+        $sorted = $got;
+        sort($sorted, SORT_STRING);
+        return $sorted === $thousand && (int) $store->run(88, (int) $res['run']['run_id'])['manifest_total'] === 1000;
+    };
+
+    // R5-3: REDCAP RESETS THE CACHE ON PAGE 4 OF THE SAME SLICE. The index
+    // was judged complete once, at open(); page 4 came back empty, the walk
+    // was called done and the manifest froze at 300 of 1000.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 4) { $d->index = []; $d->status = 'NOT_STARTED'; $d->stamp = null; }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a cache REDCap resets in the middle of a slice leaves no record off the manifest',
+        $whole($s3, $r3));
+    check('R5-3: the walk went on from the data table, in the same slice',
+        $db->pages['data'] > 0 && $r3['run']['phase'] === ScanPhase::SCANNING);
+
+    // Half built rather than empty: PROCESSING, and only every other record.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 4) {
+            $d->index = array_values(array_filter($d->index, function ($id) {
+                return ((int) substr($id, 1)) % 2 === 0;
+            }));
+            $d->status = 'PROCESSING';
+        }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a cache found half rebuilt in the middle of a walk leaves no hole in the manifest',
+        $whole($s3, $r3));
+
+    // Torn down and built again between the page and the question: the
+    // status reads COMPLETE both times, and only the build time moved. The
+    // page was read from the list mid-build and lacked R0350.
+    $db = $churnDb($thousand);
+    $full = $thousand;
+    $db->onPage = function ($d, $which, $n) use ($full) {
+        if ($which !== 'index') return;
+        if ($n === 4) {
+            $d->index = array_values(array_diff($full, ['R0350']));
+            $d->stamp = '2026-10-21 08:00:07';
+        } elseif ($n === 5) {
+            $d->index = $full;
+        }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a list rebuilt between a page and its check is caught by the time it was built',
+        $whole($s3, $r3) && in_array('R0350', $manifestIds($s3, (int) $r3['run']['run_id']), true));
+
+    // A status that can no longer be read is not a complete one.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 3) $d->statusFails = true;
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a status that cannot be read after a page moves the walk to the data table',
+        $whole($s3, $r3) && $db->pages['data'] > 0);
+
+    // THE COST. A status-kept index is asked once per page and once at open;
+    // an index REDCap keeps no status for is never asked, as before.
+    $db = $churnDb($thousand);
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a trusted index is walked whole, with one status read per page and one at open',
+        $whole($s3, $r3) && $db->pages['data'] === 0 && $db->statusReads === $db->pages['index'] + 1);
+    $db = $churnDb($thousand);
+    $db->statusColumn = false;
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: an index with no status kept is walked as it was, asking nothing per page',
+        $whole($s3, $r3) && $db->pages['data'] === 0 && $db->statusReads === 0);
+
+    // NOWHERE TO GO. The index stops being trustworthy and the data table
+    // cannot be walked: the slice ends, nothing is frozen, and the lease goes
+    // back so the next request can try.
+    $db = $churnDb($thousand);
+    $db->hasData = false;
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 2) { $d->index = []; $d->status = 'NOT_STARTED'; }
+    };
+    $s3 = new ArrayScanStore();
+    $o3 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $p3 = (new ScanPlanner($s3, $walkKey))->plan(88, array_merge($walkReq,
+        ['source' => $o3['source'], 'budget' => new WorkBudget(['startedAt' => microtime(true) - 3600])]));
+    $rid3 = (int) $p3['run']['run_id'];
+    $sl = (new ScanPlanner($s3, $walkKey))->step(88, $rid3, array_merge($walkReq, ['source' => $o3['source'],
+        'budget' => false, 'owner' => 'tab', 'epoch' => (int) $s3->run(88, $rid3)['lease_epoch']]));
+    check('R5-3: with no data table to move to, the slice ends without freezing anything',
+        $sl['ok'] === false && $sl['phase'] === ScanPhase::PLANNING && $sl['stop'] === 'read'
+        && $sl['why'] === RecordManifestSource::UNTRUSTED
+        && $s3->run(88, $rid3)['phase'] === ScanPhase::PLANNING && count($manifestIds($s3, $rid3)) === 100);
+    check('R5-3: and hands the lease back',
+        $s3->claimPlan($rid3, 'next', (int) $s3->run(88, $rid3)['lease_epoch'], 300, 5)['state'] === 'ok');
 }
 
 namespace {

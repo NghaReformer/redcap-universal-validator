@@ -418,6 +418,37 @@ final class ScanPlanner
             while (true) {
                 $mark = $budget === null ? null : $budget->mark('manifest');
                 $pg = $src->page($cursor, $carry, $pageSize);
+                if (!empty($pg['untrusted'])) {
+                    // THE INDEX STOPPED BEING THE CACHE THIS WALK OPENED (review
+                    // R5-3): REDCap reset or rebuilt it after open(). The page
+                    // is not used, nothing is frozen, and the walk moves to the
+                    // data table, which is whole, in this same slice.
+                    //
+                    // Moved rather than ended. A slice that only ended would
+                    // leave the next request to open the index again, and an
+                    // index REDCap keeps rebuilding would end every slice at its
+                    // first page: no page appended, an attempt counted at every
+                    // claim, and the run retired with PLAN_GAVE_UP over a project
+                    // nothing was wrong with.
+                    //
+                    // FROM THE FIRST RECORD. A cursor is a position in one
+                    // table's collation and the data table's need not be the
+                    // index's; the records already appended are offered again
+                    // and land once (the manifest's unique key). The data table
+                    // is never asked this, so it happens once per slice at most.
+                    $data = $src->dataWalk();
+                    if ($data === null || $data === $src) {
+                        $this->store->releasePlan($runId, $owner);
+                        return self::slice(false, ScanPhase::PLANNING, 'read',
+                            isset($pg['why']) ? $pg['why'] : self::NO_SOURCE, $listedNow, $stats);
+                    }
+                    $src = $data;
+                    $cursor = null;
+                    $carry = [];
+                    $stats['listed'] = 0;
+                    $stats['outOfScope'] = 0;
+                    continue;
+                }
                 if (empty($pg['ok'])) {
                     // The attempt was counted when the lease was taken. The lease
                     // goes back now, so trying again does not wait it out.
