@@ -326,24 +326,41 @@ final class ScanRetention
      * is then the honest measure of how long it has been failing to.
      *
      * The predicate requires active_slot = 1, so this is idempotent: a run it
-     * already expired is no longer a candidate. NOT PAGED, deliberately: it is
-     * one statement over uv_scan_run, which holds a row per run rather than per
-     * finding, and only the live runs qualify.
+     * already expired is no longer a candidate.
      *
+     * THE STORE WRITES IT (wave 10, B6a). This was one UPDATE here over every
+     * project's live runs, and it wrote a row of its own: no detail, no clean,
+     * no counts, a sentence no other writer of an expired run used, the lease
+     * epoch left where it was - so a browser worker returning after the reap
+     * passed the commit fence and wrote findings into a run already reported
+     * expired (Risk 5) - and no audit entry. ScanStore::expireAbandoned() is
+     * the one reaper now, for one project, and Start and the cron both reach
+     * it. This keeps the installation-wide form: one read names the projects
+     * with a stale run, and each is reaped by the store under its own
+     * predicate.
+     *
+     * @param int|null $pid one project, or null for every project
+     * @param string   $actor who the audit names
+     * @param int|null $now unix seconds; null is now
      * @return int runs expired
      */
-    public function expireAbandoned($staleHours)
+    public function expireAbandoned($staleHours, $pid = null, $actor = 'cron', $now = null)
     {
-        $cut = gmdate('Y-m-d H:i:s', time() - (max(1, (int) $staleHours) * 3600));
-        $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
-            SET phase = ?, terminal = ?, coverage = ?, active_slot = NULL,
-                terminal_reason = ?, updated_at = ?
-            WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?
-              AND (lease_expires_at IS NULL OR lease_expires_at < ?)',
-            ['terminal', ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
-             'no progress within the configured stale-run window; the scan slot was released',
-             self::now(), $cut, self::now()]);
-        return $this->db->affected();
+        $store = new SqlScanStore($this->db);
+        if ($pid !== null) {
+            return $store->expireAbandoned(self::project($pid), $staleHours, $actor, $now);
+        }
+        $t = $now === null ? time() : (int) $now;
+        $rows = $this->db->select('SELECT DISTINCT project_id FROM ' . Schema::table('scan_run')
+            . ' WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
+            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY project_id',
+            [gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600), gmdate('Y-m-d H:i:s', $t)]);
+        $n = 0;
+        foreach ($rows as $r) {
+            if ((int) $r[0] < 1) continue;
+            $n += $store->expireAbandoned((int) $r[0], $staleHours, $actor, $now);
+        }
+        return $n;
     }
 
     /**

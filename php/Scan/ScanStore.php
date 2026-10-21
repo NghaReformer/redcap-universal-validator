@@ -619,6 +619,56 @@ interface ScanStore
     /** Request cancellation: sets the flag, the phase, and bumps the lease epoch. */
     public function cancel($pid, $runId, $actor);
 
+    /**
+     * End this project's active run if it has stopped making progress (B6a).
+     *
+     * A run whose lease has lapsed and whose PROGRESS clock - progress_at, or
+     * created_at before its first page - is older than $staleHours holds the
+     * project's one active slot for nobody: its tab closed, its worker died or
+     * its request was killed. It becomes terminally `expired` and the slot is
+     * free.
+     *
+     * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
+     * in it on purpose:
+     *
+     *   THE LEASE EPOCH MOVES (Risk 5). A browser worker that returns after the
+     *   reap still holds the epoch it claimed under; without the bump its next
+     *   commit passes the fence and writes findings into a run already
+     *   reported expired.
+     *
+     *   THE ROW IS finish(ScanOutcome::derive(['expired' => true]))'s ROW:
+     *   terminal, coverage, detail, the derived sentence, clean NULL and the
+     *   three counts at 0, exactly as reapUnworkableScopes() and every other
+     *   writer of an expired run leaves it. A reader cannot tell which request
+     *   ended it, and must not be able to.
+     *
+     *   THE PREDICATE IS REPEATED IN THE WRITE, so a run that made progress or
+     *   renewed its lease between the read that named it and the write is
+     *   left alone.
+     *
+     * AND IT IS AUDITED. A scan that vanished from "running" with no event is
+     * indistinguishable from one that was never started; the audit row names
+     * the run, the event `expire`, who reaped it and the window.
+     *
+     * ONE PROJECT. The cron finds the projects that have a stale run and calls
+     * this for each; Start calls it for its own project. The read and the
+     * write go through uq_project_active, so a project with nothing stale
+     * costs one indexed read.
+     *
+     * @param int      $pid
+     * @param int      $staleHours the window, in hours, at least 1
+     * @param string   $actor      who the audit names: 'cron', or the user
+     *                             whose Start found the run
+     * @param int|null $now        unix seconds the window is measured back
+     *                             from; null is now (a test steps it forward)
+     * @return int runs expired: 0 or 1
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null);
+
+    /** The audit event an expired run is recorded under. */
+    const AUDIT_EXPIRE = 'expire';
+
     // THE INSTALLATION-WIDE WORKER SEMAPHORE IS NOT PART OF THIS CONTRACT, and
     // leaseSlot()/releaseSlot() were removed from it rather than repaired.
     // WorkerSlots is the semaphore, wired at ScanService and ScanWorker; the

@@ -267,6 +267,9 @@ class FaultyStore implements ScanStore
     public function cancel($pid, $runId, $actor)
     { $this->gate('cancel'); return $this->inner->cancel($pid, $runId, $actor); }
 
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    { $this->gate('expireAbandoned'); return $this->inner->expireAbandoned($pid, $staleHours, $actor, $now); }
+
     public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         // FIVE ARGUMENTS, NOT FOUR. This delegate dropped $projectId and shifted

@@ -137,11 +137,13 @@ $m = new UniversalValidator();
 $m->systemSettings = ['scan-system-enable-durable' => '1', 'scan-system-stale-run-hours' => '6'];
 $m->tables = $tables;
 $out = $m->uvScanReapCron();
+// The reaper names the projects with a stale run before the store expires each
+// one (ScanStore::expireAbandoned()); this stub has none, so the read is all.
 $upd = false;
 foreach ($m->sql as $q) {
-    if (stripos($q, 'UPDATE') !== false && stripos($q, 'active_slot') !== false) $upd = true;
+    if (stripos($q, 'active_slot = 1') !== false && stripos($q, 'progress_at') !== false) $upd = true;
 }
-check('reap: the slot-releasing UPDATE was issued', $upd);
+check('reap: the stale-run read was issued', $upd);
 $logged = null;
 foreach ($m->logCalls as $L) if ($L[0] === 'scan-cron') $logged = $L[1];
 check('reap: logged as scan-cron', $logged !== null);

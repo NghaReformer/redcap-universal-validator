@@ -1407,6 +1407,53 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
             && $again['carry'] === null && $again['pages'] === 0 && $again['attempts'] === 1);
     }
 
+    // -- AN ABANDONED RUN IS EXPIRED BY ONE REAPER, THE SAME WAY IN BOTH (B6a)
+    //
+    // The clock is stepped, not waited for: $now is a day and an hour ahead,
+    // so a run created a moment ago has made no progress for 25 hours.
+    $sa = $newStore();
+    $ra = $sa->startRun(785, ['created_by' => 'alice']);
+    $rida = (int) $ra['run']['run_id'];
+    $sa->writeManifest($rida, [$mk5('AB-1')]);
+    $epA = (int) $sa->run(785, $rida)['lease_epoch'];
+    $heldA = $sa->claim($rida, 'w1', $epA, 1);
+    $nbA = $sa->startRun(786, ['created_by' => 'alice']);
+    $later = time() + 25 * 3600;
+    $C('reap: a run inside the stale window is left alone',
+        $sa->expireAbandoned(785, 24, 'cron', time()) === 0
+        && $sa->run(785, $rida)['phase'] !== ScanPhase::TERMINAL);
+    $C('reap: once it has made no progress for longer than the window, it is expired',
+        $sa->expireAbandoned(785, 24, 'cron', $later) === 1);
+    $ex = $sa->run(785, $rida);
+    $want = ScanOutcome::derive(['expired' => true]);
+    $C('reap: the row is the one finish(derive([expired])) writes, column for column',
+        $ex['phase'] === ScanPhase::TERMINAL && $ex['terminal'] === $want['terminal']
+        && $ex['coverage'] === $want['coverage'] && $ex['detail'] === $want['detail']
+        && $ex['terminal_reason'] === $want['why'] && $ex['clean'] === null
+        && (int) $ex['gap_count'] === 0 && (int) $ex['rule_problem_count'] === 0
+        && (int) $ex['not_examined'] === 0);
+    $C('reap: the lease epoch moved in the same write (Risk 5)',
+        (int) $ex['lease_epoch'] === $epA + 1);
+    $C('reap: so a worker that comes back with the epoch it claimed under commits nothing',
+        is_array($heldA) && count($heldA) === 1
+        && $sa->commitBatch($rida, 'w1', $epA, ['bytes' => 0, 'findings' => [],
+            'records' => [['ordinal' => $heldA[0]['ordinal'], 'record_hash' => $heldA[0]['hash'],
+                           'state' => ScanStore::REC_DONE, 'claim' => $heldA[0]['claim']]]]) !== true
+        && !isset($sa->recordStates($rida)[ScanStore::REC_DONE]));
+    $C('reap: a second call finds nothing to do',
+        $sa->expireAbandoned(785, 24, 'cron', $later) === 0);
+    $C('reap: and the project slot is free for the next scan',
+        $sa->startRun(785, ['created_by' => 'bob'])['ok'] === true);
+    $C('reap: the project next door, as stale, is not touched by this project\'s reap',
+        $sa->run(786, (int) $nbA['run']['run_id'])['phase'] !== ScanPhase::TERMINAL);
+    // A LIVE LEASE IS A WORKER, however old the progress clock: the planner
+    // here holds the walk for thirty hours.
+    $sl = $newStore();
+    $rl = (int) $sl->startRun(787, ['created_by' => 'alice'])['run']['run_id'];
+    $sl->claimPlan($rl, 'p1', (int) $sl->run(787, $rl)['lease_epoch'], 30 * 3600, 3);
+    $C('reap: a run whose lease is still live is not abandoned',
+        $sl->expireAbandoned(787, 24, 'cron', $later) === 0);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

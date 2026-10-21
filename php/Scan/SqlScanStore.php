@@ -1845,6 +1845,53 @@ final class SqlScanStore implements ScanStore
         return $ok;
     }
 
+    /**
+     * See ScanStore::expireAbandoned(): one fenced UPDATE, then the audit row.
+     *
+     * READ, THEN WRITE UNDER THE SAME PREDICATE. The audit has to name the
+     * run, and MySQL hands back no row from an UPDATE, so the run is named by
+     * an indexed read first: uq_project_active is (project_id, active_slot),
+     * so the read is one index entry, and in the common case - nothing stale -
+     * it is the only statement sent. The UPDATE carries the whole predicate
+     * again, so a run that moved between the two is not touched, and its
+     * count decides whether there is anything to audit.
+     *
+     * The row is finish()'s for derive(['expired' => true]), column for column,
+     * with the lease epoch moved in the same statement (Risk 5).
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    {
+        $t = $now === null ? time() : (int) $now;
+        $hours = max(1, (int) $staleHours);
+        $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
+        $at = gmdate('Y-m-d H:i:s', $t);
+        $stale = ' WHERE project_id = ? AND active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
+               . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)';
+        try {
+            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale,
+                [(int) $pid, $cut, $at]);
+            if (!isset($r[0][0])) return 0;
+            $runId = (int) $r[0][0];
+            $o = ScanOutcome::derive(['expired' => true]);
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+                SET phase = ?, terminal = ?, coverage = ?, detail = ?, active_slot = NULL,
+                    terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = 0,
+                    not_examined = 0, lease_epoch = lease_epoch + 1, updated_at = ?'
+                . $stale . ' AND run_id = ?',
+                [ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
+                 substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'],
+                 $at, (int) $pid, $cut, $at, $runId]);
+            if ($this->db->affected() !== 1) return 0;
+        } catch (ScanStoreUnavailable $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw $this->unavailable($e);
+        }
+        $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
+            json_encode(['stale_hours' => $hours]));
+        return 1;
+    }
+
     // THE WORKER SLOTS USED TO BE LEASED FROM HERE TOO, and that is why they
     // are not any more. leaseSlot() and releaseSlot() were a second
     // implementation of WorkerSlots over the same uv_scan_worker_slot table,

@@ -183,11 +183,27 @@ $prefix = function ($key, $table, $n) use ($A) {
     // Now age the PROGRESS clock, which is the one the predicate reads.
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET progress_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
+    $epBefore = (int) $store->run(800, $rid)['lease_epoch'];
     check('retention: an abandoned run is expired', $ret->expireAbandoned(1) === 1);
     $ex = $store->run(800, $rid);
     check('retention: as a real terminal state, never as complete',
         $ex['terminal'] === ScanOutcome::EXPIRED
         && $ex['coverage'] === ScanOutcome::COV_PARTIAL);
+    // THE ROW EVERY OTHER WRITER OF AN EXPIRED RUN LEAVES (B6a). This UPDATE
+    // wrote its own sentence and left detail, clean and the counts alone.
+    $want = ScanOutcome::derive(['expired' => true]);
+    check('retention: the reaped row is finish(derive([expired]))\'s, sentence and decision included',
+        $ex['terminal_reason'] === $want['why'] && $ex['detail'] === $want['detail']
+        && $ex['clean'] === null && (int) $ex['not_examined'] === 0);
+    // Risk 5: a browser worker returning after the reap must fail the fence.
+    check('retention: and the lease epoch moved in the same write',
+        (int) $ex['lease_epoch'] === $epBefore + 1);
+    $au = $dbA->select('SELECT event, actor, detail FROM ' . Schema::table('scan_audit')
+        . ' WHERE project_id = ? AND run_id = ?', [$PID, $rid]);
+    check('retention: and the reap left an audit entry naming the run, the reaper and the window (got '
+        . json_encode($au) . ')',
+        count($au) === 1 && $au[0][0] === ScanStore::AUDIT_EXPIRE && $au[0][1] === 'cron'
+        && json_decode((string) $au[0][2], true) === ['stale_hours' => 1]);
     check('retention: releasing the project slot for the next scan',
         $store->startRun($PID, array('created_by' => 'bob'))['ok'] === true);
     check('retention: and expiring it again does nothing', $ret->expireAbandoned(1) === 0);

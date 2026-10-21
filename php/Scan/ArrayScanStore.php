@@ -941,6 +941,33 @@ final class ArrayScanStore implements ScanStore
         return true;
     }
 
+    /**
+     * The SQL store's reap, over the array: the same predicate, the same row,
+     * the same epoch bump and the same audit. See ScanStore::expireAbandoned().
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    {
+        $t = $now === null ? time() : (int) $now;
+        $hours = max(1, (int) $staleHours);
+        $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
+        $at = gmdate('Y-m-d H:i:s', $t);
+        foreach ($this->runs as $id => $r) {
+            if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] !== 1) continue;
+            $clock = $r['progress_at'] !== null ? (string) $r['progress_at'] : (string) $r['created_at'];
+            if (strcmp($clock, $cut) >= 0) return 0;
+            if ($r['lease_expires_at'] !== null && strcmp((string) $r['lease_expires_at'], $at) >= 0) return 0;
+            // finish() writes the derived row; the epoch moves beside it, as in
+            // the one statement the SQL store sends.
+            $this->finish($id, ScanOutcome::derive(['expired' => true]));
+            $this->runs[$id]['lease_epoch']++;
+            $this->runs[$id]['updated_at'] = $at;
+            $this->audit((int) $pid, $id, self::AUDIT_EXPIRE, (string) $actor,
+                json_encode(['stale_hours' => $hours]));
+            return 1;
+        }
+        return 0;
+    }
+
     // THE WORKER SLOTS ARE NOT MODELLED HERE ANY MORE. This class used to carry
     // an in-memory copy of them because the contract declared leaseSlot() and
     // releaseSlot(); the contract does not, because WorkerSlots is the one
