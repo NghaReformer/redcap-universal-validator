@@ -587,6 +587,61 @@ namespace {
             . json_encode($codes) . ')', in_array('unlocatable', $codes, true));
     }
 
+    /* =====================================================================
+     * rv10b1-1  a settings rule's field list is a fingerprint input
+     *
+     * revision() leaves `fields` out, so a settings rule keeps its name when a
+     * field is added to it - and the fingerprint's rule entry was the name,
+     * the revision and the origin. A field added to a settings rule, already
+     * read by another rule, moved no input: the run went on and the records
+     * examined before the edit were never judged on that field.
+     * ===================================================================== */
+    {
+        $fpDict = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'b_val' => ['fa'], 'c_val' => ['fb']]);
+        $fpData = [1 => [1 => ['record_id' => '1', 'a_val' => '5', 'b_val' => '7', 'c_val' => '']]];
+        $req = ['rule-type' => 'required', 'message' => 'must be filled', 'block-save' => 'hard'];
+        $dig = ['rule-type' => 'single', 'pattern' => '^[0-9]+$', 'message' => 'digits only', 'block-save' => 'hard'];
+        $fpOf = function (array $subs) use ($fpDict, $fpData) {
+            $m = mkMod($fpDict, $fpData, $subs);
+            $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'locations', 'generation' => 7, 'runSeq' => 7]);
+            $svc = new \INSPIRE\UniversalValidator\Scan\ScanService($m);
+            $in = new \ReflectionMethod($svc, 'fingerprintInputs');
+            $in->setAccessible(true);
+            $bag = $in->invoke($svc, $ctx, \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve([], []));
+            return ['ctx' => $ctx,
+                    'fp' => \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint($bag),
+                    'bag' => $bag];
+        };
+        $was = $fpOf([$req + ['fields' => ['a_val']], $dig + ['fields' => ['b_val', 'c_val']]]);
+        $now = $fpOf([$req + ['fields' => ['a_val', 'c_val']], $dig + ['fields' => ['b_val', 'c_val']]]);
+        $idsOf = function (array $p) {
+            $out = [];
+            foreach ($p['ctx']['plan']['ruleIds'] as $id) $out[] = $id['source_id'];
+            return $out;
+        };
+        check('rv10b1-1: both configurations plan, and read the same fields on the same forms',
+            $was['ctx']['ok'] === true && $now['ctx']['ok'] === true
+            && $was['ctx']['ownership'] == $now['ctx']['ownership']
+            && $was['ctx']['structure'] == $now['ctx']['structure']);
+        check('rv10b1-1: the rule keeps its name when a field is added to it',
+            $idsOf($was) === $idsOf($now));
+        check('rv10b1-1: and the fingerprint moves',
+            !\INSPIRE\UniversalValidator\Scan\ScanPlanner::fingerprintMatches($was['fp'], $now['fp']));
+        $back = $fpOf([$req + ['fields' => ['a_val']], $dig + ['fields' => ['c_val', 'b_val']]]);
+        check('rv10b1-1: the order the fields are listed in is not an input',
+            \INSPIRE\UniversalValidator\Scan\ScanPlanner::fingerprintMatches($was['fp'], $back['fp']));
+        // The forms: the plan's hostFields, keyed as the rules are.
+        $bag = $was['bag'];
+        check('rv10b1-1: the bag carries each rule\'s instruments, keyed as the rules are',
+            array_keys($bag['hosts']) === array_keys($bag['rules'])
+            && array_keys($bag['hosts'][array_keys($bag['hosts'])[1]]) === ['fa', 'fb']);
+        $moved = $bag;
+        $k1 = array_keys($moved['hosts'])[1];
+        unset($moved['hosts'][$k1]['fb']);
+        check('rv10b1-1: a rule judged on one instrument fewer is a different fingerprint',
+            \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint($moved) !== $was['fp']);
+    }
+
     echo "scan_identity_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

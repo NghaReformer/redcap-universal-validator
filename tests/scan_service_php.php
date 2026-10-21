@@ -2834,6 +2834,19 @@ namespace INSPIRE\UniversalValidator\Scan {
     $w = (new ScanService($m, $fs))->work(193, $rid);
     check('B7: so does a rule added',
         $w['why'] === ScanService::CONFIG_CHANGED && $in->run(193, $rid)['terminal'] === ScanOutcome::FAILED);
+    // rv10b1-1: a field added to a SETTINGS rule. Its name leaves the fields
+    // out, so only the fingerprint's rule entry can notice the edit.
+    $inner = new ArrayScanStore();
+    $m = new \E2eModule($inner);
+    $m->structure = $b7design;
+    $m->choices = $b7codes;
+    $m->rules = [['type' => 'required', 'fields' => ['a_val'], '_origin' => 'settings']];
+    $rid = (int) (new ScanService($m, $inner))->start(196)['run_id'];
+    $m->rules[0]['fields'][] = 'b_val';
+    $w = (new ScanService($m, $inner))->work(196, $rid);
+    check('rv10b1-1: a field added to a settings rule between two requests ends the run failed',
+        $w['why'] === ScanService::CONFIG_CHANGED && $inner->run(196, $rid)['terminal'] === ScanOutcome::FAILED
+        && (int) $inner->run(196, $rid)['manifest_done'] === 0);
     // A setting that decides what is stored, loosened: not a privacy stop (it
     // shows more, it does not tighten), and still a different configuration.
     list($in, $fs, $m, $rid) = $b7(194);

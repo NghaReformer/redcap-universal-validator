@@ -1785,6 +1785,9 @@ final class ScanService
     {
         return [
             'rules'     => isset($ctx['rules']) && is_array($ctx['rules']) ? $ctx['rules'] : [],
+            // rv10b1-1: the instruments each rule is judged on, keyed as `rules`.
+            'hosts'     => isset($ctx['plan']['hostFields']) && is_array($ctx['plan']['hostFields'])
+                           ? $ctx['plan']['hostFields'] : [],
             'ownership' => isset($ctx['ownership']) && is_array($ctx['ownership']) ? $ctx['ownership'] : [],
             // M8: the project's design, as durableScanContext() reports it.
             'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],

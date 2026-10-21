@@ -915,12 +915,41 @@ final class ScanPlanner
      */
     const GAP_POLICY_WIRE = 'separate';
 
-    /** Recompute precisely the semantic inputs used when the run was planned. */
+    /**
+     * Recompute precisely the semantic inputs used when the run was planned.
+     *
+     * EACH RULE ENTRY CARRIES WHERE THE RULE APPLIES (review rv10b1-1): its
+     * fields, sorted, and the instruments it is judged on, sorted. revision()
+     * leaves `fields` out so a settings rule keeps its name when a field is
+     * added to it, and the entry was the rule's id, revision and origin and
+     * nothing else - so a field added to a settings rule between two requests
+     * of one run moved no input when the field was already read by another
+     * rule, the records examined before it were never judged on it, and the
+     * run finished complete and clean. The identity is untouched: only the
+     * fingerprint learns the field list. An annotation rule's id is built from
+     * its fields already, so for it the list repeats what the id says.
+     *
+     * The instruments are `hosts[key]`, keyed as `rules` are: the plan's
+     * hostFields, the forms the evaluator walks for the rule. They must stay
+     * the same for every requester, as every input here must; the durable
+     * plan never narrows them by instrument rights. A bag without `hosts`
+     * gives every rule none, on both sides alike.
+     */
     public static function requestFingerprint(array $req)
     {
-        $ids = self::identifyAll($req['rules'] ?? [], $req['settingsCount'] ?? null);
+        $rules = isset($req['rules']) && is_array($req['rules']) ? $req['rules'] : [];
+        $ids = self::identifyAll($rules, $req['settingsCount'] ?? null);
+        $hosts = isset($req['hosts']) && is_array($req['hosts']) ? $req['hosts'] : [];
         $ruleSpec = [];
-        foreach ($ids as $id) $ruleSpec[] = ['id'=>$id['source_id'], 'rev'=>$id['revision'], 'origin'=>$id['origin']];
+        foreach ($ids as $k => $id) {
+            $fields = (isset($rules[$k]['fields']) && is_array($rules[$k]['fields']))
+                    ? array_map('strval', $rules[$k]['fields']) : [];
+            sort($fields, SORT_STRING);
+            $forms = (isset($hosts[$k]) && is_array($hosts[$k])) ? array_map('strval', array_keys($hosts[$k])) : [];
+            sort($forms, SORT_STRING);
+            $ruleSpec[] = ['id'=>$id['source_id'], 'rev'=>$id['revision'], 'origin'=>$id['origin'],
+                           'fields'=>$fields, 'forms'=>$forms];
+        }
         usort($ruleSpec, function ($a,$b) { $c=strcmp($a['id'],$b['id']); return $c!==0?$c:strcmp($a['rev'],$b['rev']); });
         return self::fingerprint([
             'engine'    => isset($req['engine']) ? $req['engine'] : '',
