@@ -156,23 +156,16 @@ final class ScanWorker
         }
         $epoch = (int) $run['lease_epoch'];
 
-        // THE CONFIGURATION MOVED. A run cannot be half-checked against rules
-        // that no longer exist and still describe the project, and there is no
-        // partial claim that would be true - so it ends, and says so.
-        if (isset($this->deps['fingerprint'])
-                && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
-            $this->store->finish($runId, array_merge(
-                ScanOutcome::derive(['failed' => true]),
-                ['why' => 'the project\'s validation rules changed while this scan was running, '
-                        . 'so its results would describe two different configurations']));
-            return self::stop('the validation rules changed during this scan, so it was stopped '
-                . 'and must be run again');
-        }
-
         // THE PRIVACY POLICY TIGHTENED. The run stores the policy it began
         // under, and continuing would keep writing value previews the project
         // has just decided it does not want. Tightening takes effect at once by
         // design; loosening waits for the next run.
+        //
+        // ASKED BEFORE THE FINGERPRINT (review R5-5, B7). The value mode is a
+        // fingerprint input, so a tightened mode moves both, and a tightened
+        // policy is a stop whatever else moved with it. With the fingerprint
+        // asked first, the run that ScanService hands over to this guard was
+        // ended failed instead.
         if (isset($this->deps['policyRevision'])
                 && (int) $run['policy_revision'] !== (int) $this->deps['policyRevision']) {
             ScanPromotion::finishCancelled($this->store, $pid, $runId, array_merge($this->limits(),
@@ -180,6 +173,25 @@ final class ScanWorker
                         . 'running, so it was stopped before writing anything further']));
             return self::stop('this project\'s privacy settings changed during the scan, so it was '
                 . 'stopped; run it again to get a report under the new settings');
+        }
+
+        // THE CONFIGURATION MOVED. A run cannot be half-checked against rules
+        // that no longer exist and still describe the project, and there is no
+        // partial claim that would be true - so it ends, and says so.
+        //
+        // THROUGH PROMOTION, the finisher ScanService uses for the same fact
+        // (B7). This wrote derive(['failed' => true]) itself: a row with no
+        // counts and a sentence of its own, so one event ended a run two ways
+        // depending on which guard saw it first - the shape review R3U-3 removed
+        // from the stopped runs. ScanService arms this guard with the
+        // fingerprint it has just compared, so in production it agrees with the
+        // service's check; a worker built anywhere else is held to it alone.
+        if (isset($this->deps['fingerprint'])
+                && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
+            ScanPromotion::promote($this->store, $pid, $runId, array_merge($this->limits(),
+                ['fingerprintNow' => (string) $this->deps['fingerprint']]));
+            return self::stop('the validation rules changed during this scan, so it was stopped '
+                . 'and must be run again');
         }
 
         // THE INSTALLATION-WIDE SEMAPHORE, taken before any project work. Two

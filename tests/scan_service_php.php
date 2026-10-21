@@ -546,6 +546,35 @@ namespace {
     }
 
     /**
+     * FaultyStore whose run row reads with a different fingerprint from the
+     * $flipAt-th read after arm() (B7). advanceRun() reads the run once and
+     * compares; the worker it builds reads it again. Flipping the second read
+     * is the only way to see whether the worker's own guard was armed.
+     */
+    class FlipFingerprintStore extends \INSPIRE\UniversalValidator\Scan\FaultyStore
+    {
+        /** @var ?int */
+        private $flipAt = null;
+        private $reads = 0;
+
+        public function arm($at)
+        {
+            $this->reads = 0;
+            $this->flipAt = (int) $at;
+        }
+
+        public function run($pid, $runId)
+        {
+            $r = parent::run($pid, $runId);
+            $this->reads++;
+            if ($r !== null && $this->flipAt !== null && $this->reads >= $this->flipAt) {
+                $r['fingerprint'] = str_repeat('f', 64);
+            }
+            return $r;
+        }
+    }
+
+    /**
      * FaultyStore, plus one thing to happen just before the first finish():
      * another tab's Stop landing between this one's bump and its finish
      * (review R3U-5).
@@ -610,6 +639,8 @@ namespace {
         public $problems = [];
         /** @var bool whether the context asks the service to compare fingerprints */
         public $verifyFingerprint = true;
+        /** @var array the rule list durableScanContext() reports (B7: a test may edit it) */
+        public $rules = [['type' => 'required', 'fields' => ['a_val']]];
         /** @var array the project's design as durableScanContext() reports it (M8) */
         public $structure = [];
         /** @var array the choice sets it reports beside it */
@@ -662,7 +693,7 @@ namespace {
             $key = $this->sys['log-hmac-key'];
             $self = $this;
             return ['ok' => true, 'why' => null,
-                'rules' => [['type' => 'required', 'fields' => ['a_val']]],
+                'rules' => $this->rules,
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
                 'verifyFingerprint' => $this->verifyFingerprint,
@@ -2729,6 +2760,90 @@ namespace INSPIRE\UniversalValidator\Scan {
     });
     check('M8: and an instrument designated to a new event',
         $w['why'] === ScanService::CONFIG_CHANGED && $row['terminal'] === ScanOutcome::FAILED);
+}
+
+/* =====================================================================
+ * B7  ONE FINGERPRINT BAG, AND THE GUARD IT ARMS
+ *
+ * start() and every work request each built the fingerprint's inputs as a
+ * literal of their own. Two literals agree until one is edited, and then an
+ * unchanged project is ended on its first work pass (Risk 6). Both now take
+ * ScanService::fingerprintInputs(), and the worker's own guard - which
+ * workerDeps() never armed - is handed the fingerprint the service compared.
+ * The design and the choice sets are not empty here, so a bag that dropped
+ * either would disagree with the stored one.
+ * ===================================================================== */
+{
+    $b7design = ['fields' => ['a_val' => ['form' => 'fa', 'type' => 'text', 'validation' => '']],
+                 'longitudinal' => false, 'events' => ['1' => ['fa']], 'repeating' => []];
+    $b7codes = ['fields' => ['a_val' => []], 'missing' => ['UNK']];
+    $b7 = function ($pid) use ($b7design, $b7codes) {
+        $inner = new ArrayScanStore();
+        $m = new \E2eModule($inner);
+        $m->structure = $b7design;
+        $m->choices = $b7codes;
+        $store = new \FlipFingerprintStore($inner);
+        $st = (new ScanService($m, $store))->start($pid);
+        return [$inner, $store, $m, (int) $st['run_id'], $st];
+    };
+
+    list($in, $fs, $m, $rid, $st) = $b7(190);
+    $first = (new ScanService($m, $fs))->work(190, $rid);
+    $row = $in->run(190, $rid);
+    check('B7: an unchanged project never trips the guard on its first work pass',
+        !empty($st['ok']) && !empty($first['ok']) && $first['why'] !== ScanService::CONFIG_CHANGED
+        && (int) $first['worked'] === 3 && $row['terminal'] !== ScanOutcome::FAILED);
+    $inputs = new \ReflectionMethod(ScanService::class, 'fingerprintInputs');
+    $inputs->setAccessible(true);
+    $ctxNow = $m->durableScanContext(190, ['generation' => (int) $row['generation_id']]);
+    check('B7: the stored fingerprint is the one fingerprintInputs() makes from the work-time context',
+        ScanPlanner::fingerprintMatches($row['fingerprint'], ScanPlanner::requestFingerprint(
+            $inputs->invoke(new ScanService($m, $fs), $ctxNow, ScanPolicy::resolve([], [])))));
+
+    // The worker the service builds holds the run to the same fingerprint.
+    list($in, $fs, $m, $rid) = $b7(191);
+    $fs->arm(2);
+    $w = (new ScanService($m, $fs))->work(191, $rid);
+    $row = $in->run(191, $rid);
+    check('B7: the worker\'s own guard is armed with the fingerprint the service compared',
+        empty($w['ok']) && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    check('B7: and it ends the run through promotion, with the sentence the service\'s check stores',
+        strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false);
+
+    // A real change between the start and the first work pass trips it.
+    list($in, $fs, $m, $rid) = $b7(192);
+    $m->rules[0]['when'] = "[a_val] <> 'x'";
+    $w = (new ScanService($m, $fs))->work(192, $rid);
+    $row = $in->run(192, $rid);
+    check('B7: a rule edited before the first work pass ends the run failed, with the sentence',
+        empty($w['ok']) && $w['why'] === ScanService::CONFIG_CHANGED
+        && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    list($in, $fs, $m, $rid) = $b7(193);
+    $m->rules[] = ['type' => 'required', 'fields' => ['a_val'], 'when' => "[a_val] = 'y'"];
+    $w = (new ScanService($m, $fs))->work(193, $rid);
+    check('B7: so does a rule added',
+        $w['why'] === ScanService::CONFIG_CHANGED && $in->run(193, $rid)['terminal'] === ScanOutcome::FAILED);
+    // A setting that decides what is stored, loosened: not a privacy stop (it
+    // shows more, it does not tighten), and still a different configuration.
+    list($in, $fs, $m, $rid) = $b7(194);
+    $m->proj['scan-value-storage'] = 'raw';
+    $w = (new ScanService($m, $fs))->work(194, $rid);
+    check('B7: and a value-storage setting changed between them',
+        $w['why'] === ScanService::CONFIG_CHANGED && $in->run(194, $rid)['terminal'] === ScanOutcome::FAILED);
+    // The same setting TIGHTENED moves the fingerprint and the policy revision
+    // together. That is a stop (review R5-5), and the armed worker guard must
+    // not turn it into a failure.
+    $inner = new ArrayScanStore();
+    $m = new \E2eModule($inner);
+    $m->structure = $b7design;
+    $m->choices = $b7codes;
+    $m->proj['scan-value-storage'] = 'raw';
+    $rid = (int) (new ScanService($m, $inner))->start(195)['run_id'];
+    $m->proj['scan-value-storage'] = 'locations';
+    $w = (new ScanService($m, $inner))->work(195, $rid);
+    check('B7: a value-storage setting tightened between them stops the run rather than failing it',
+        $inner->run(195, $rid)['terminal'] === ScanOutcome::CANCELLED
+        && strpos((string) $w['why'], 'privacy settings') !== false);
 }
 }
 

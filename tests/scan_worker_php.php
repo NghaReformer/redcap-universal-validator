@@ -1482,6 +1482,30 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('worker: releasing the project slot for the run that must replace it',
         $store->startRun(800, [])['ok'] === true);
 
+    // THROUGH PROMOTION, NOT A ROW OF ITS OWN (B7). The guard wrote
+    // derive(['failed' => true]) with a sentence of its own, so the same event
+    // stored a different row - no counts - from the one ScanService's check
+    // stores. A rule problem the run had met is counted on the row it ends with.
+    list($store, $runId) = $fixture(['A'], 804);
+    $store->markAggregate($runId, ScanPromotion::RULE_KINDS, '1', 'config', 0, 'rule 1 is broken');
+    (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'fingerprint' => $fpNow]))->work(804, $runId);
+    $row = $store->run(804, $runId);
+    check('B7: a moved configuration ends the run through promotion, with its counts and its sentence',
+        $row['terminal'] === ScanOutcome::FAILED && (int) $row['rule_problem_count'] === 1
+        && strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false);
+
+    // A TIGHTENED POLICY IS A STOP, WHATEVER ELSE MOVED (review R5-5, B7). The
+    // value mode is a fingerprint input, so tightening it moves both; with the
+    // guard armed, the fingerprint must not be asked first.
+    list($store, $runId) = $fixture(['A'], 805);
+    $res = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'fingerprint' => $fpNow, 'policyRevision' => 9]))->work(805, $runId);
+    check('B7: a tightened policy that also moved the fingerprint stops the run, it does not fail it',
+        $store->run(805, $runId)['terminal'] === ScanOutcome::CANCELLED
+        && strpos($res['why'], 'privacy settings') !== false);
+
     // -- the privacy policy tightened ----------------------------------------
     //
     // The run stores the policy it began under. Continuing would keep writing

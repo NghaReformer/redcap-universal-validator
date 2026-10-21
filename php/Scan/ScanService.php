@@ -273,17 +273,14 @@ final class ScanService
         if (!empty($ctx['unread'])) return self::noStart(self::configUnread($ctx['unread']));
 
         $planner = new ScanPlanner($this->store(), $this->key());
-        $r = $planner->plan($pid, [
+        // THE FINGERPRINT'S INPUTS ARE THE BAG configurationNow() HASHES (B7):
+        // the rules, the ownership map, the structure and choice sets (M8), the
+        // policy and the engine, built by one method so the stored fingerprint
+        // and every later request's are made from the same keys.
+        $r = $planner->plan($pid, array_merge($this->fingerprintInputs($ctx, $policy), [
             'source'    => $src['source'],
             'fence'     => $fence,
             'dagFilter' => $dag,
-            'rules'     => $ctx['rules'],
-            'ownership' => $ctx['ownership'],
-            // M8: the two facts the fingerprint guard compares across requests.
-            // advanceRun() rebuilds the fingerprint from the same two keys.
-            'structure' => $ctx['structure'] ?? [],
-            'choices'   => $ctx['choices'] ?? [],
-            'policy'    => $policy,
             // THE FIRST SLICE IS BUDGETED (B10, review R3U-2). plan() was given
             // no deadline and no memory cap here, so the whole list was walked
             // inside this request: past max_execution_time it died uncatchably,
@@ -304,14 +301,13 @@ final class ScanService
                                && array_key_exists('crossLookups', $ctx['plan']))
                                ? $ctx['plan']['crossLookups'] : null,
             'createdBy' => (string) $this->username(),
-            'engine'    => $this->engineVersion(),
             // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
             // unlocatable, unmapped-instrument and group-unscopable rules are
             // decided before a record is read; the planner records them so
             // ScanOutcome's `ruleProblems` term has a producer at all. Without
             // this line the term is dead and `clean` means only "no findings".
             'ruleProblems' => isset($ctx['problems']) ? $ctx['problems'] : [],
-        ]);
+        ]));
         if (empty($r['ok'])) {
             return ['ok' => false, 'busy' => !empty($r['busy']), 'run_id' => null,
                     'why' => $r['why']];
@@ -427,7 +423,8 @@ final class ScanService
                     'why' => self::CONFIG_CHANGED, 'status' => $this->statusOf($pid, $runId, [])];
         }
         $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode,
-                                                           $config['policyRevisionNow']));
+                                                           $config['policyRevisionNow'],
+                                                           $config['fingerprintNow']));
         $r = $worker->work($pid, $runId);
 
         // A RUN WHOSE STORAGE JUST FAILED IS NOT A RUN TO PROMOTE. Promotion
@@ -502,7 +499,7 @@ final class ScanService
      * runs it over such a record.
      */
     private function workerDeps($pid, ScanStore $store, array $run, array $policy, array $ctx, $mode,
-                                $policyRevision = null)
+                                $policyRevision = null, $fingerprint = null)
     {
         $deps = [
             'slots'     => new WorkerSlots($this->db),
@@ -549,6 +546,10 @@ final class ScanService
         // stops the run before writing anything further. Null when this
         // context does not ask for the comparison.
         if ($policyRevision !== null) $deps['policyRevision'] = (int) $policyRevision;
+        // The fingerprint configurationNow() built from fingerprintInputs(), so
+        // the worker's own guard is armed with the value the service compared
+        // (B7). Null, and the guard unarmed, when the context does not ask.
+        if ($fingerprint !== null) $deps['fingerprint'] = (string) $fingerprint;
         return $deps;
     }
 
@@ -1651,12 +1652,42 @@ final class ScanService
     }
 
     /**
+     * The fingerprint's inputs, as one argument bag (B7, Risk 6).
+     *
+     * TWO CALLERS, ONE BAG. openRun() hands it to ScanPlanner::plan(), which
+     * stores the fingerprint it makes; configurationNow() hands it to
+     * ScanPlanner::requestFingerprint() on every work request. Each used to
+     * write its own literal, and two literals agree only for as long as
+     * nobody edits one of them: given a different rule list, a different
+     * settingsCount or one key fewer, the stored and the rebuilt fingerprints
+     * differ on an unchanged project and every run is ended on its first work
+     * pass with "the validation rules changed during this scan".
+     *
+     * NO settingsCount, on purpose and on both sides. Rule origin comes from
+     * each rule's `_origin` (ScanPlanner::identifyAll()); the count is a
+     * deprecated fallback no context supplies.
+     *
+     * @return array the keys ScanPlanner::requestFingerprint() reads
+     */
+    private function fingerprintInputs(array $ctx, array $policy)
+    {
+        return [
+            'rules'     => isset($ctx['rules']) && is_array($ctx['rules']) ? $ctx['rules'] : [],
+            'ownership' => isset($ctx['ownership']) && is_array($ctx['ownership']) ? $ctx['ownership'] : [],
+            // M8: the project's design, as durableScanContext() reports it.
+            'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],
+            'choices'   => isset($ctx['choices']) ? $ctx['choices'] : [],
+            'policy'    => $policy,
+            'engine'    => $this->engineVersion(),
+        ];
+    }
+
+    /**
      * The two inputs promotion judges a moved configuration by (W7-N11), as
      * they are in this request, and whether either differs from the run's.
      *
-     * THE FINGERPRINT is rebuilt from the same keys openRun() planned with -
-     * rules, ownership, structure, choices, policy, engine - so an unchanged
-     * project matches and a changed one does not.
+     * THE FINGERPRINT is rebuilt from fingerprintInputs(), the bag openRun()
+     * planned with, so an unchanged project matches and a changed one does not.
      *
      * THE POLICY REVISION has no stored "current" value to read: a revision is
      * a run's, bumped in place by ScanRetention::revokePreviews(). So it is
@@ -1677,9 +1708,7 @@ final class ScanService
             return ['moved' => false, 'privacyMoved' => false, 'fingerprintNow' => null,
                     'policyRevisionNow' => null];
         }
-        $fp = ScanPlanner::requestFingerprint(['rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
-            'structure' => $ctx['structure'] ?? [], 'choices' => $ctx['choices'] ?? [],
-            'policy' => $policy, 'engine' => $this->engineVersion()]);
+        $fp = ScanPlanner::requestFingerprint($this->fingerprintInputs($ctx, $policy));
         $rev = isset($run['policy_revision']) ? (int) $run['policy_revision'] : 0;
         $frozen = isset($run['policy_json']) && is_string($run['policy_json'])
             ? json_decode($run['policy_json'], true) : null;
