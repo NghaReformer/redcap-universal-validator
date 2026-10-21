@@ -110,14 +110,13 @@ final class ScanRetention
     /**
      * Clear every preview whose time is up, a window at a time.
      *
-     * THE CRON'S CURRENT BODY, kept with its int answer because
-     * UniversalValidator::uvScanExpireValuesCron() reads one. Every statement
-     * it sends is an expireValuesPage() window, so no statement holds more than
-     * PAGE rows; the sweep as a whole still runs to the end in one call. It
-     * stops at the highest id it saw first, so rows written while it runs -
-     * which expire in the future anyway - cannot keep it going. A cron that
-     * runs a fixed slice and resumes calls expireValuesPage() with a stored
-     * cursor instead.
+     * NOT THE CRON'S ANY MORE (wave 10). The retention cron runs
+     * expireValuesPage() under a budget from a stored window
+     * (ScanMaintenance::retain()), because this runs the whole sweep to the end
+     * in one call. Every statement it sends is a window, so none holds more
+     * than PAGE rows, and it stops at the highest id it saw first, so rows
+     * written while it runs - which expire in the future anyway - cannot keep
+     * it going. Kept for the callers that want the whole sweep at once.
      *
      * @return int previews cleared
      */
@@ -163,6 +162,14 @@ final class ScanRetention
      * string, where `//` is query text and MySQL answered ERROR 1064: the
      * cross-project fix it described had never once run. Comments stay in PHP.)
      *
+     * A NULL REVISION BUMPS NOTHING and only carries the clearing on. The
+     * cron's later calls for one revocation pass null (wave 10): a run
+     * started after the bump was planned under the policy that caused it, and
+     * a repeated bump would mark its values expired too. Every run starts at
+     * revision 1, so "below the revision" does not tell such a run apart.
+     *
+     * @param int|null   $newRevision the revision to move the project's runs
+     *                           to, or null to bump nothing
      * @param array|null $cursor what the previous call FOR THIS PROJECT returned,
      *                           or null to start; any other cursor starts again
      *                           (review R8-3, see revokeAt())
@@ -175,11 +182,18 @@ final class ScanRetention
     {
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
-        $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
-            SET policy_revision = ?, values_state = ?, updated_at = ?
-            WHERE project_id = ? AND policy_revision < ?',
-            [(int) $newRevision, 'expired', self::now(), $pid, (int) $newRevision]);
-        $runs = (int) $this->db->affected();
+        $runs = 0;
+        if ($newRevision !== null) {
+            // NOT updated_at. It is a finished run's age for purgeRuns(), and
+            // the bump is no work on the run: moving it restarted every run's
+            // retention, so tightening the privacy policy kept the project's
+            // old findings up to runDays longer (wave 10, the first caller).
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+                SET policy_revision = ?, values_state = ?
+                WHERE project_id = ? AND policy_revision < ?',
+                [(int) $newRevision, 'expired', $pid, (int) $newRevision]);
+            $runs = (int) $this->db->affected();
+        }
 
         $gens = [];
         foreach ($this->db->select('SELECT DISTINCT generation_id FROM ' . Schema::table('scan_run')

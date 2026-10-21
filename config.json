@@ -35,17 +35,17 @@
   "crons": [
     {
       "cron_name": "uv_scan_reap_abandoned",
-      "cron_description": "Release the scan slot held by a validation-scan run that stopped making progress, so a new scan can start.",
+      "cron_description": "Validation scan upkeep: end runs that stopped making progress so their project can scan again, remove worker places above the configured limit, and close the previous report of every project whose latest scan completed. Runs in bounded slices and carries on where it stopped.",
       "method": "uvScanReapCron",
       "cron_frequency": "900",
       "cron_max_run_time": "300"
     },
     {
       "cron_name": "uv_scan_expire_values",
-      "cron_description": "Clear stored value previews from validation-scan findings once their retention window has passed.",
+      "cron_description": "Validation scan retention: clear the stored value previews a tightened privacy setting revoked, remove finished scans older than their project keeps them, and clear value previews once their retention window has passed. Runs in bounded slices and carries on where it stopped.",
       "method": "uvScanExpireValuesCron",
-      "cron_frequency": "86400",
-      "cron_max_run_time": "1800"
+      "cron_frequency": "3600",
+      "cron_max_run_time": "900"
     }
   ],
 
@@ -112,12 +112,12 @@
     },
     {
       "key": "scan-system-max-concurrent-projects",
-      "name": "<b>Validation scan</b> \u2014 how many projects may be scanned at the same time on this server. This rations the SERVER, so a project cannot raise it. Default 2; at most 1000 (a larger number is treated as 1000). Raising it takes effect when this configuration is saved. Lowering it takes effect for the next batch of every scan; a scan already holding a place above the new limit finishes its batch first, and the places above the limit are removed when this configuration is saved.",
+      "name": "<b>Validation scan</b> \u2014 how many projects may be scanned at the same time on this server. This rations the SERVER, so a project cannot raise it. Default 2; at most 1000 (a larger number is treated as 1000). Raising it takes effect when this configuration is saved. Lowering it takes effect for the next batch of every scan; a scan already holding a place above the new limit finishes its batch first, and the places above the limit are removed when this configuration is saved and by the upkeep cron every 15 minutes.",
       "type": "text"
     },
     {
       "key": "scan-system-stale-run-hours",
-      "name": "<b>Validation scan</b> \u2014 hours after which a run that has stopped making progress is treated as abandoned, so its lease can be taken over and it is reported as expired rather than holding the project's scan slot forever. Default 24.",
+      "name": "<b>Validation scan</b> \u2014 hours after which a run that has stopped making progress is treated as abandoned, so its lease can be taken over and it is reported as expired rather than holding the project's scan slot forever. The upkeep cron checks every 15 minutes, and pressing Start checks that project at once. Default 24.",
       "type": "text"
     },
     {
