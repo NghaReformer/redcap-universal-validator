@@ -97,7 +97,8 @@ final class ScanPromotion
      * FORBIDS CLEAN BUT DOES NOT CAP COVERAGE. Passing 1 would put it into
      * blockingAggregates(), which caps coverage at partial - so a project with
      * one misconfigured rule could no longer report that every record was
-     * checked, which it was.
+     * checked, which it was. The one exception is a problem that says a record
+     * was only partly examined (PARTLY_EXAMINED, W7-N6); see marksFor().
      *
      * @param array $problems each {rule:int, fields:array, why:string}
      * @return int how many were recorded
@@ -170,6 +171,16 @@ final class ScanPromotion
      * BLOCKS IS 0, for the reason on noteRuleProblems(): a rule problem forbids
      * clean and does not cap coverage.
      *
+     * EXCEPT WHERE THE PROBLEM IS A RECORD NOT FULLY EXAMINED (W7-N6). When the
+     * extended-evaluation budget runs out, UniversalValidator stops judging
+     * the record's remaining extended rules and reports `temporal-budget`:
+     * "this record was not fully checked". As a rule problem alone it forbade
+     * clean and left coverage whole, so a run could say every record was
+     * examined over a record it had read only in part. Those codes block: the
+     * run's coverage is partial, as it is for a record that could not be read.
+     * The budget is per record and the record's data decides it, so trying the
+     * record again would stop at the same place; its findings so far are kept.
+     *
      * @param array $problems each {rule:int, fields:array, why:string, code?:string}
      * @return array<int, array{kind:string, axis1:string, axis2:string, blocks:int, samples:?string}>
      */
@@ -181,11 +192,21 @@ final class ScanPromotion
             list($a1, $a2) = self::problemKey($p);
             $k = $a1 . "\0" . $a2;
             if (isset($out[$k])) continue;
-            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2, 'blocks' => 0,
+            $partly = isset($p['code']) && is_string($p['code'])
+                      && in_array($p['code'], self::PARTLY_EXAMINED, true);
+            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2,
+                        'blocks' => $partly ? 1 : 0,
                         'samples' => self::sample(isset($p['why']) ? $p['why'] : null)];
         }
         return array_values($out);
     }
+
+    /**
+     * Problem codes that mean a record was only partly examined (W7-N6). Their
+     * marks block coverage. Each must be a code UniversalValidator writes as
+     * the second segment of a problem key, which problemList() hands over.
+     */
+    const PARTLY_EXAMINED = ['temporal-budget'];
 
     /**
      * What a run's aggregates say was found: active findings, rule problems, gaps.

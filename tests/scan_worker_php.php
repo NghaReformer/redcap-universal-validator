@@ -3721,6 +3721,41 @@ namespace INSPIRE\UniversalValidator\Scan {
             count($store->allFindings()) === 6 && $leftOut($store, $runId) === 0);
     }
 
+    /* =====================================================================
+     * W7-N6  A RECORD EXAMINED ONLY IN PART IS A HOLE IN COVERAGE
+     *
+     * When the extended-evaluation budget runs out, the evaluator reports
+     * `temporal-budget` - "this record was not fully checked" - and that
+     * reached the run as a rule problem only: clean was refused and coverage
+     * stayed whole, so a proved run said every record was examined.
+     * ===================================================================== */
+    {
+        $partly = function ($id, $node) {
+            return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'why' => null,
+                    'problems' => $id !== 'B' ? [] : [['rule' => 4, 'code' => 'temporal-budget',
+                        'fields' => ['a'], 'why' => 'Extended record evaluation budget exhausted; this '
+                                                    . 'record was not fully checked.']]];
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C']);
+        // A proved window, so only the hole can keep the run from complete.
+        $store->setProgressState($runId, (int) $store->run(800, $runId)['lease_epoch'], ['fenceTarget' => '9']);
+        (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $partly,
+            'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]))->work(800, $runId);
+        check('W7-N6: a record whose extended evaluation ran out leaves a blocking mark',
+            $store->blockingAggregates($runId) === 1);
+        check('W7-N6: still counted as a rule problem, with the record examined and its findings kept',
+            ScanPromotion::tally($store->aggregates($runId))['ruleProblems'] === 1
+            && $store->recordStates($runId) === [ScanStore::REC_DONE => 3]);
+        ScanPromotion::promote($store, 800, $runId, ['uniqueDone' => true, 'rollupDone' => true]);
+        $row = $store->run(800, $runId);
+        check('W7-N6: so a proved run is partial, never complete, and says a record was examined in part',
+            $row['terminal'] === ScanOutcome::PARTIAL && $row['coverage'] === ScanOutcome::COV_PARTIAL
+            && (int) $row['clean'] === 0 && strpos((string) $row['terminal_reason'], 'only in part') !== false);
+        check('W7-N6: any other problem code still caps nothing',
+            ScanPromotion::marksFor([['rule' => 4, 'code' => 'temporal', 'why' => 'x']])[0]['blocks'] === 0
+            && ScanPromotion::marksFor([['rule' => 4, 'why' => 'temporal-budget']])[0]['blocks'] === 0);
+    }
+
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);
     $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
