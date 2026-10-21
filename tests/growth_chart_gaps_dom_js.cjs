@@ -401,6 +401,8 @@ const BOY_TIP = 'This visit: 9.6 kg at 11.99 months, ' + zp('boy365_9.6');
   check('K34: instance 2\'s values (got ' + JSON.stringify([tip(svg), plain(note(env, 'ucr_weight'))]) + ')',
     tip(svg) === 'This visit: 8.0 kg at 17.94 months, ' + zp('girl546_8.0')
     && plain(note(env, 'ucr_weight')).indexOf('⚠ This value is lower than usual (z-score ' + FX.visits['girl546_8.0'].z + ' on Weight-for-age') === 0);
+  check('K34: the table follows the new visit (got ' + JSON.stringify(table(env, 'ucr_weight').rows) + ')',
+    JSON.stringify(table(env, 'ucr_weight').rows) === JSON.stringify([['546', '8.0', FX.visits['girl546_8.0'].z, FX.visits['girl546_8.0'].pct]]));
   const sx = svgOf(env, 'ucr_xev');
   set(env, 'ucr_visit', '2026-01-10'); set(env, 'ucr_xev', '7.0'); leave(env, 'ucr_xev');
   check('K35: ucr_xev: the boy of event_1_arm_1; the note says it does not block (got ' + JSON.stringify([heading(env, 'ucr_xev')[1], tip(sx), plain(note(env, 'ucr_xev'))]) + ')',

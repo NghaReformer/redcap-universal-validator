@@ -379,7 +379,12 @@ Setup:
    old values back when the fixture is added again. Check each form's values
    before its step, and where a step needs a blank form, use a new record.
 6. K35 needs the project setting "Enable event and instance references"; the
-   steps before it run with the setting off.
+   steps before it run with the setting off. Turning the setting on checks
+   every rule in the project that names an event or an instance, and the
+   dialog refuses to save while one of them has an error. On pid 149 the
+   negative fixtures `xn_unknown_event`, `xn_inst_nonrep` and `xn_arm_empty`
+   fail that check on purpose, so K35 runs only once they are out of the
+   dictionary, or on a project without them.
 
 A chart is drawn to the width of the field's data column. REDCap 17 gives
 that column 317 to 327 pixels (K14), and the axis ticks below are the ones
@@ -404,7 +409,7 @@ the point's `<title>`, as in K4.
 | K31 | Open `uv_chart_saved` for XE-2 (no sex saved). Then `ucs_visit` = 2026-01-10, `ucs_weight` = 9.6, leave | Under `ucs_weight`: "ℹ Growth chart not shown: the sex saved for this record is blank or neither the rule's male nor its female code, so there is nothing to draw." and "ℹ Table not shown: " with the same reason; under `ucs_all` the chart's note. The config has no `growthCurves` and no `growthCurveTables`. The weight: grey "Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the sex is blank." Leave without saving |
 | K32 | Open `uv_chart_saved` for XE-3 (a girl saved) | The heading reads "... · female", and the curve set and the reference values in the config hold `female` only |
 | K33 | Open `uv_chart_repeat` for XE-1 on `visit_1_arm_1` (380), instance 1, with event and instance references off. `ucr_visit` = 2026-01-10, `ucr_weight` = 9.6, leave, Save | `ucr_xev` shows its configuration error: "a "sex" field in another event or instance needs event and instance references — enable them in project settings first." followed by the same for "age" "dob". `ucr_weight` draws the girl's curves, read from `uv_chart_gaps` in this event: "· female", line names 97, 50, 3, tooltip "This visit: 9.6 kg at 11.99 months, z-score 0.57, percentile 71.6", table row 365, 9.6, 0.57, 71.6. The save goes through |
-| K34 | Add instance 2: `ucr_visit` = 2026-07-10, `ucr_weight` = 8.0, leave, Save (answer "save anyway"). Reopen instance 1 | Instance 2: tooltip "This visit: 8.0 kg at 17.94 months, z-score -2.05, percentile 2.0", and amber "This value is lower than usual (z-score -2.05 on Weight-for-age, ...)" followed by "(worked out with ucg_sex, ucg_dob, read when this page was opened ...)". Instance 1 still shows 9.6 at 11.99 months |
+| K34 | Add instance 2: `ucr_visit` = 2026-07-10, `ucr_weight` = 8.0, leave, Save. Reopen instance 1 | Instance 2: tooltip "This visit: 8.0 kg at 17.94 months, z-score -2.05, percentile 2.0", table row 546, 8.0, -2.05, 2.0, and amber "This value is lower than usual (z-score -2.05 on Weight-for-age, ...)" followed by "(worked out with ucg_sex, ucg_dob, read when this page was opened ...)". The save goes through with no question, as that note says: the check does not block saving. Instance 1 still shows 9.6 at 11.99 months |
 | K35 | Tick "Enable event and instance references". Reopen instance 1. `ucr_xev` = 7.0, leave | No configuration error. `ucr_xev` draws the boy's curves, read from `event_1_arm_1`: "· male", tooltip "This visit: 7.0 kg at 11.99 months, z-score -2.90, percentile 0.2", and amber "This value is lower than usual (z-score -2.90 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2). (worked out with saved event/instance values, read when this page was opened — reload if it has changed since. This check does not block saving; it is re-checked after the save.)". The config's set for `ucr_weight` holds `female` only and the one for `ucr_xev` `male` only; `ucr_xev` has `extendedAdvisory` `true`. Clear `ucr_xev`, then untick the setting |
 | K36 | With charts drawn on each of the three forms, open the console. Then reopen each saved form | No Content Security Policy error and no engine error. The forms hold only what was typed: no chart or table value was saved |
 
