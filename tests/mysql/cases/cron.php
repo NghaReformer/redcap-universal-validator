@@ -623,6 +623,166 @@ $runRow = function ($runId) use ($dbA) {
     foreach (array(998, 999) as $p) uv_clear_project($dbA, $p);
 }
 
+// -- WHAT A PASS COSTS (item 12) ------------------------------------------------
+//
+// Two hundred projects with scan data and nothing due: the census reads them in
+// one statement, and nothing else is sent for any of them. Then one project with
+// 50,000 overdue previews and one with 50,000 previews a tightened policy
+// revoked: each is cleared a bounded window per statement, a few statements per
+// pass, and the next pass resumes from the stored cursor. Plans, not timings.
+{
+    foreach (array('scan_record', 'scan_aggregate', 'scan_audit', 'scan_plan', 'unique_candidate',
+                   'unique_group', 'scan_dim', 'finding', 'scan_run', 'scan_worker_slot') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA))->provision(2);
+    $store = new SqlScanStore($dbA);
+    for ($p = 2001; $p <= 2200; $p++) {
+        $r = $store->startRun($p, array('created_by' => 'alice'));
+        $store->finish((int) $r['run']['run_id'],
+            ScanOutcome::derive(array('fenced' => true, 'manifestDone' => true)));
+    }
+    // Each one has closed what came before it: nothing is due anywhere.
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET supersede_cursor = generation_id');
+    check('cost: two hundred projects have scan data',
+        (int) $dbA->select('SELECT COUNT(DISTINCT project_id) FROM ' . Schema::table('scan_run'))[0][0] === 200);
+
+    $recR = new UvRecordingDb($dbA);
+    $rr = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($recR, array('policy' => $policyOf)))->reap(array(), 60.0);
+    $recT = new UvRecordingDb($dbA);
+    $rt = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($recT, array('policy' => $policyOf)))
+        ->retain(array('sweep' => array('cursor' => 0, 'top' => null, 'finished' => time())), 60.0);
+    echo '  idle passes over 200 projects: reap ' . count($recR->log) . ' statements, retention '
+        . count($recT->log) . "\n";
+    $named = function (array $log) {
+        $n = 0;
+        foreach ($log as $row) {
+            foreach ($row[2] as $v) if (is_int($v) && $v >= 2001 && $v <= 2200) { $n++; break; }
+        }
+        return $n;
+    };
+    check('cost: the idle passes did nothing, and finished their lap',
+        $rr['out']['projects'] === 0 && $rt['out']['projects'] === 0 && $rr['state']['after'] === 0
+        && $rt['state']['after'] === 0 && $rr['out']['failed'] === 0 && $rt['out']['failed'] === 0);
+    // The reap pass is the slot census (shrinkTo) and the project census; the
+    // retention pass, whose sweep finished today, the project census alone.
+    check('cost: two hundred idle projects cost the reap pass 2 statements and the retention pass 1',
+        count($recR->log) === 2 && count($recT->log) === 1);
+    check('cost: one census statement each, and no statement for any one project',
+        count($recR->matching('select', array('GROUP_CONCAT(DISTINCT values_state)'))) === 1
+        && count($recT->matching('select', array('GROUP_CONCAT(DISTINCT values_state)'))) === 1
+        && $named($recR->log) === 0 && $named($recT->log) === 0);
+    // THE CENSUS'S PLAN: a project-leading key read in key order, so the
+    // groups come out sorted and LIMIT stops after a page of them.
+    $cs = $recR->matching('select', array('GROUP_CONCAT(DISTINCT values_state)'));
+    $ex = $A->query('EXPLAIN ' . uv_inline_params($A, $cs[0][1], $cs[0][2]))->fetch_assoc();
+    echo '  census plan: key=' . $ex['key'] . ' rows=' . $ex['rows'] . ' extra=' . $ex['Extra'] . "\n";
+    $cols = uv_index_columns($A, Schema::table('scan_run'), (string) $ex['key']);
+    check('cost: the census reads a key that leads with project_id',
+        isset($cols[0]) && $cols[0] === 'project_id');
+    check('cost: and groups in that key\'s order, without a temporary table or a sort',
+        stripos((string) $ex['Extra'], 'temporary') === false && stripos((string) $ex['Extra'], 'filesort') === false);
+
+    /** 50,000 findings of one run of $pid, each with a stored value expiring at $expires. */
+    $bulk = function ($pid, $gen, $n, $expires) use ($A) {
+        $rows = array();
+        for ($i = 1; $i <= $n; $i++) {
+            $rows[] = '(' . $pid . ', ' . $gen . ", UNHEX(SHA2('b" . $pid . '-' . $i . "', 256)), 1, 1,"
+                . " UNHEX(SHA2('R1', 256)), 'R1', 'x', 'demographics', 0, 'required', 'required-blank', '"
+                . str_repeat('c', 64) . "', 'r1', 'V', '" . $expires . "')";
+            if (count($rows) === 1000 || $i === $n) {
+                $A->query('INSERT INTO ' . Schema::table('finding') . ' (project_id, generation_id,'
+                    . ' finding_identity, valid_from_seq, active_slot, record_hash, record_id_bin, field,'
+                    . ' host_form, rule_ord, check_type, reason_code, rule_revision, rule_source_id,'
+                    . ' value_bin, value_expires_at) VALUES ' . implode(',', $rows));
+                $rows = array();
+            }
+        }
+    };
+    $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
+    $ex1 = $plant(2300, 0, null, true, $raw);       // its previews are overdue
+    $bulk(2300, $ex1['gen'], 50000, '2000-01-01 00:00:00');
+    $PRJ[2300] = array('scan-value-storage' => 'raw');
+    $rv1 = $plant(2301, 0, null, true, $raw);       // its project now keeps no values
+    $bulk(2301, $rv1['gen'], 50000, '2999-01-01 00:00:00');
+    $PRJ[2301] = array('scan-value-storage' => 'locations');
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET supersede_cursor = generation_id');
+
+    // ONE SECOND PER CLEARING STATEMENT. The clock moves only when a value
+    // UPDATE has been sent, so the budget is a count of them: 3 per pass,
+    // 60% of it (rounded down to 1 after the first) for the lap's revocation.
+    $rec = new UvRecordingDb($dbA);
+    $clears = function () use ($rec) { return count($rec->matching('exec', array('value_bin = NULL'))); };
+    $byClears = function () use ($clears) { return (float) $clears(); };
+    $mt = new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf, 'clock' => $byClears));
+    $state = array();
+    $passes = 0;
+    $perPass = array();
+    $resumed = true;
+    $revokeCursors = array();
+    do {
+        $before = $clears();
+        $sweepAt = isset($state['sweep']['top']) && $state['sweep']['top'] !== null ? (int) $state['sweep']['cursor'] : null;
+        $from = count($rec->log);
+        $r = $mt->retain($state, 3.0);
+        $passes++;
+        $perPass[] = $clears() - $before;
+        // The first window this pass sent starts where the last pass stopped.
+        if ($sweepAt !== null) {
+            foreach (array_slice($rec->log, $from) as $row) {
+                if ($row[0] === 'exec' && strpos($row[1], 'finding_id > ? AND finding_id <= ?') !== false
+                    && strpos($row[1], 'value_expires_at <= ?') !== false) {
+                    if ((int) $row[2][0] !== $sweepAt) $resumed = false;
+                    break;
+                }
+            }
+        }
+        if (isset($r['state']['revoke'][2301]['cursor'])) $revokeCursors[] = $r['state']['revoke'][2301]['cursor'];
+        $state = $r['state'];
+    } while ($passes < 60 && (isset($state['revoke'][2301]) || $state['sweep']['top'] !== null));
+    echo '  50,000 + 50,000 previews: ' . $passes . ' passes, clearing statements per pass '
+        . json_encode($perPass) . "\n";
+    check('cost: both projects are cleared, across several passes',
+        $passes > 3 && $countWhere('project_id = ? AND value_bin IS NOT NULL', array(2300)) === 0
+        && $countWhere('project_id = ? AND value_bin IS NOT NULL', array(2301)) === 0
+        && $countWhere('project_id IN (?, ?)', array(2300, 2301)) === 100000);
+    check('cost: no pass sent more clearing statements than its budget allows', max($perPass) <= 3);
+    $windows = $rec->matching('exec', array('value_expires_at <= ?', 'finding_id > ? AND finding_id <= ?'));
+    $wide = 0;
+    foreach ($windows as $w) if ((int) $w[2][1] - (int) $w[2][0] > \INSPIRE\UniversalValidator\Scan\ScanRetention::PAGE) $wide++;
+    check('cost: every sweep statement is one window of at most PAGE ids', count($windows) >= 10 && $wide === 0);
+    check('cost: and each pass resumed the sweep from the window the last one stored', $resumed);
+    $after = -1;
+    $moving = true;
+    foreach ($revokeCursors as $c) {
+        if (!is_array($c) || (int) $c['pid'] !== 2301 || !isset($c['set'])) $moving = false;
+        $pos = (int) $c['gen'] * 10 + (int) $c['slot'];
+        if ((int) $c['after'] <= $after && $pos === (isset($lastPos) ? $lastPos : $pos)) $moving = false;
+        $after = (int) $c['after'];
+        $lastPos = $pos;
+    }
+    check('cost: the revocation stopped part way more than once, its whole cursor kept and moving on',
+        count($revokeCursors) >= 2 && $moving);
+    $slices = $rec->matching('select', array('FORCE INDEX (ix_page_v2)', 'ORDER BY finding_id LIMIT'));
+    check('cost: every revocation page reads at most PAGE index entries',
+        count($slices) >= 10 && count(array_filter($slices, function ($s) {
+            return strpos($s[1], 'LIMIT ' . \INSPIRE\UniversalValidator\Scan\ScanRetention::PAGE . ')') === false; })) === 0);
+
+    // THE PLANS of one statement of each kind, on the 50,000 rows.
+    $sweepKey = uv_explain_key($A, $windows[0][1], $windows[0][2]);
+    $sliceKeys = uv_explain_keys($A, $slices[0][1], $slices[0][2]);
+    $revClear = $rec->matching('exec', array('value_bin = NULL', 'AND finding_id > ? AND finding_id <= ?', 'generation_id = ?'));
+    $revKey = uv_explain_key($A, $revClear[0][1], $revClear[0][2]);
+    echo '  plans: sweep window ' . $sweepKey . '; revocation page ' . json_encode($sliceKeys)
+        . ' ' . json_encode(uv_explain_rows($A, $slices[0][1], $slices[0][2])) . '; revocation clear ' . $revKey . "\n";
+    check('cost: a sweep window is a range of the primary key', $sweepKey === 'PRIMARY');
+    check('cost: a revocation page walks ix_page_v2', in_array('ix_page_v2', $sliceKeys, true));
+    $revCols = uv_index_columns($A, Schema::table('finding'), $revKey);
+    check('cost: and its clear is a range of a key that bounds it (the primary key, or the project-generation-slot prefix)',
+        $revKey === 'PRIMARY' || array_slice($revCols, 0, 3) === array('project_id', 'generation_id', 'active_slot'));
+    foreach (array(2300, 2301) as $p) uv_clear_project($dbA, $p);
+}
+
 // -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
 //
 // 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and
