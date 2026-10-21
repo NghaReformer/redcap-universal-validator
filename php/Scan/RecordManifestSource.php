@@ -667,7 +667,17 @@ final class RecordManifestSource
             if ($held !== null) return $held;
         }
 
-        if ($this->dagCol === null && $out) $this->fillGroups($out);
+        // A PAGE WHOSE GROUPS COULD NOT BE READ IS NOT USED (review rv5a-2).
+        // Its rows went on with no group, a group-scoped slice counted every
+        // one of them out of scope, committed the page and moved the cursor
+        // past it, so those records never reached the manifest - 100 of 1000,
+        // all in the run's group, for one failed read. The page is a failed
+        // read now: the attempt is counted and the same page asked again.
+        if ($this->dagCol === null && $out && !$this->fillGroups($out)) {
+            return ['ok' => false, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted,
+                    'done' => false,
+                    'why' => 'the group of each record on this page could not be read, so the page was not used'];
+        }
 
         return ['ok' => true, 'rows' => $out, 'cursor' => $cursor, 'emitted' => $carry,
                 'done' => $done, 'why' => null];
@@ -723,18 +733,23 @@ final class RecordManifestSource
      * Groups for one page, from the data table's `__GROUPID__` rows.
      *
      * One query per page, never per record. A record with no row is ungrouped,
-     * which is a real answer and not a missing one.
+     * which is a real answer and not a missing one. False when the groups
+     * could not be read at all, which page() refuses the page on: nothing
+     * reported "the degradation" the old comment here promised.
+     *
+     * @return bool
      */
     private function fillGroups(array &$rows)
     {
-        if ($this->dataTable === null) return;
+        if ($this->dataTable === null) return false;
         $ids = [];
         foreach ($rows as $r) $ids[] = $r['id'];
         $map = $this->groupsFromDataTable($ids);
-        if ($map === null) return;    // caller sees null groups and reports the degradation
+        if ($map === null) return false;
         foreach ($rows as $i => $r) {
             if (isset($map[$r['id']])) $rows[$i]['dag'] = $map[$r['id']];
         }
+        return true;
     }
 
     /**

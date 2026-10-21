@@ -1317,6 +1317,8 @@ namespace INSPIRE\UniversalValidator\Scan {
             public $home = null;
             /** @var int how many of the next reads of redcap_projects fail (rv5a-1) */
             public $projectsFail = 0;
+            /** @var int how many of the next reads of the data table's __GROUPID__ rows fail (rv5a-2) */
+            public $groupsFail = 0;
             public $pages = ['index' => 0, 'data' => 0]; public $statusReads = 0;
             /** @var ?callable(object $db, string $which, int $n): void, before a page is answered */
             public $onPage = null;
@@ -1355,7 +1357,18 @@ namespace INSPIRE\UniversalValidator\Scan {
                     }
                     return $this->hasData ? [[$this->dataTable]] : [];
                 }
-                if (in_array('__GROUPID__', $params, true)) return [];
+                if (in_array('__GROUPID__', $params, true)) {
+                    // The data table's group rows: $dags, the same groups the index gives.
+                    if ($this->groupsFail > 0) {
+                        $this->groupsFail--;
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
+                    $o = [];
+                    foreach (array_slice($params, 2) as $w) {
+                        if (isset($this->dags[(string) $w])) $o[] = [(string) $w, $this->dags[(string) $w]];
+                    }
+                    return $o;
+                }
                 preg_match('/LIMIT (\d+)/', $sql, $m);
                 $lim = isset($m[1]) ? (int) $m[1] : PHP_INT_MAX;
                 $isIndex = strpos($sql, 'FROM redcap_record_list') !== false;
@@ -1657,6 +1670,34 @@ namespace INSPIRE\UniversalValidator\Scan {
     $db->dataTable = 'redcap_data2';
     check('rv5a-1 control: the table it reads, still the project\'s, does say a deleted record is gone',
         $oE['source']->exist(['R0500']) === ['R0500' => false]);
+
+    // rv5a-2: A PAGE WHOSE GROUPS COULD NOT BE READ. Every record is group 7's
+    // and the walk is on the data table, so each page's groups come from its
+    // __GROUPID__ rows. One of those reads failed; the page's rows went on
+    // ungrouped, the group-7 slice counted all of them out of scope and moved
+    // past them, and 100 of the group's records never reached the manifest.
+    $db = $churnDb($thousand);
+    $db->status = 'PROCESSING';
+    foreach ($thousand as $id) $db->dags[$id] = '7';
+    $sG = new ArrayScanStore();
+    $pG = (new ScanPlanner($sG, $walkKey))->plan(88, array_merge($walkReq, ['dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $ridG = (int) $pG['run']['run_id'];
+    $failedG = null;
+    for ($i = 1; $i <= 20 && $sG->run(88, $ridG)['phase'] === ScanPhase::PLANNING; $i++) {
+        if ($i === 3) $db->groupsFail = 1;
+        $stG = (new ScanPlanner($sG, $walkKey))->step(88, $ridG, array_merge($walkReq, ['dagFilter' => '7',
+            'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+            'budget' => $spentBudget(), 'owner' => 'req' . $i,
+            'epoch' => (int) $sG->run(88, $ridG)['lease_epoch']]));
+        if ($i === 3) $failedG = $stG;
+    }
+    check('rv5a-2: a page whose groups could not be read is a failed read, and lists nothing',
+        is_array($failedG) && $failedG['ok'] === false && $failedG['stop'] === 'read' && $failedG['listed'] === 0);
+    check('rv5a-2: so every record of the group is on the manifest, once',
+        $whole($sG, ['ok' => true, 'run' => ['run_id' => $ridG]])
+        && count($manifestIds($sG, $ridG)) === 1000);
 
     // R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING. Each later
     // slice could not open the source, because its probe found no rows,
