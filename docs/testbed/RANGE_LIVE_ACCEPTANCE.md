@@ -329,6 +329,80 @@ screen readers).
 | K16 | Enable `uv_growth_chart` as a survey and open it for XE-3 | The chart and table boxes start closed. An opened box draws as on the form. The cap and span notes of K2 do not show on the survey (`ugc_arm` and `ugc_span` show nothing), and the broken rules show the survey's general notice |
 | K17 | With the charts drawn, open the browser's console | No Content Security Policy error. The chart sets its styles through each element's `style` object, which a strict `style-src` allows; the browser then shows them as `style` attributes in the markup, so those attributes are expected |
 
+### Section K, continued: labels in two languages, saved inputs, branches, comma decimals, other events
+
+K1 to K17 type every input on one non-repeating form on event 351, in
+English, with a point for decimals. Steps K18 to K36 cover the rest.
+
+Fixture: [`uvrange_chart_gaps_fields.csv`](uvrange_chart_gaps_fields.csv), 14
+fields on three new instruments:
+
+- `uv_chart_gaps` (8 fields) holds its own inputs (`ucg_sex`, `ucg_dob`,
+  `ucg_visit`, `ucg_age_days`) and four charted rules. `ucg_mlm` gives every
+  chart and table label as an English and French map (`"en"` and `"fr"` for
+  the chart, `"default"` and `"fr"` for the table). `ucg_comma` is a
+  comma-decimal field. `ucg_zpct` is a chart of z-scores with percentile
+  lines, `"span":"auto"` and `"open":false`. `ucg_branch` has two rules on one
+  field: WHO 2006 while `ucg_age_days` is at most 1826, WHO 2007 from 1827.
+- `uv_chart_saved` (3 fields) reads the sex and the date of birth saved on
+  `uv_chart_gaps`: `ucs_weight` with the date of the measurement typed in
+  `ucs_visit`, `ucs_all` with all three inputs saved.
+- `uv_chart_repeat` (3 fields) is a repeating instrument on `visit_1_arm_1`.
+  `ucr_weight` reads the sex and the date of birth saved on `uv_chart_gaps`
+  in the same event; `ucr_xev` reads them from `event_1_arm_1`.
+
+`tests/growth_chart_gaps_module_php.php` loads this CSV as the data
+dictionary of a project laid out as pid 149 is (two events, the repeating
+instrument, the map of what repeats on the `\Project` object only, as on
+REDCap 17.0.6). It checks the rule errors, the curve sets and the reference
+values each page carries, and works out with `GrowthReference` every z-score
+and percentile below. `tests/growth_chart_gaps_dom_js.cjs` draws those pages
+with the engine and checks each text below against those numbers.
+
+Setup:
+
+1. Append the 14 rows of the CSV, as in setup step 2. The diff must report
+   three new instruments and 14 new fields.
+2. Designate `uv_chart_gaps` on `event_1_arm_1` (351) and `visit_1_arm_1`
+   (380), `uv_chart_saved` on 351 and `uv_chart_repeat` on 380.
+3. In Project Setup, "Repeating instruments and events", make
+   `uv_chart_repeat` repeat on `visit_1_arm_1`.
+4. Check in Multi-Language Management that the project's languages are `en`
+   and `fr`.
+5. Save `uv_chart_gaps` for XE-1 on 351 (`ucg_sex` = Male, `ucg_dob` =
+   10-01-2025, `ucg_visit` = 2026-01-10), for XE-1 on 380 (Female, the same
+   dates) and for XE-3 on 351 (Female, the same dates). Leave XE-2 without
+   `uv_chart_gaps`.
+6. K35 needs the project setting "Enable event and instance references"; the
+   steps before it run with the setting off.
+
+A chart is drawn to the width of the field's data column. REDCap 17 gives
+that column about 327 pixels (K14), and the axis ticks below are the ones
+drawn at that width; a wider column has more ticks. "Tooltip" is the text of
+the point's `<title>`, as in K4.
+
+| # | Action | Expect |
+|---|---|---|
+| K18 | Open `uv_chart_gaps` for XE-1, event 351, with the MLM language on English. `ucg_mlm` = 9.6, leave | The chart's box reads "Growth chart" and is open. The heading reads "Weight-for-age", then "WHO Child Growth Standards (2006) · boy", and the legend "This visit" and "Usual range". The x axis reads "Age (months)" with ticks 0, 5 and 10, the y axis "Weight (kg)", and "Percentiles" heads the line names 97, 85, 50, 15 and 3. Tooltip: "This visit: 9.6 kg at 11.99 months, z-score -0.04, percentile 48.3". The table's box reads "This visit", its caption "Weight-for-age", its headers Age (days), Weight (kg), Z-score, Percentile, and its row 365, 9.6, -0.04, 48.3 |
+| K19 | Open the browser's Network panel. Switch the MLM language to French, without reloading | The boxes read "Courbe de croissance" and "Cette visite". The heading reads "Poids pour l'âge", "WHO Child Growth Standards (2006) · garçon", and the legend "Cette visite" and "Zone habituelle"; the axes "Âge (mois)" and "Poids (kg)"; "Centiles" heads the line names. Tooltip: "Cette visite: 9.6 kg at 11.99 mois, z-score -0.04, percentile 48.3" (the module's own words "at", "z-score" and "percentile" have no translation and stay English). The table's caption reads "Poids pour l'âge", its headers Âge (jours), Poids (kg), Score z, Centile, and the row is unchanged. The curves are not drawn again, the note is not written again, and the switch sends no request to the module (REDCap's own MLM request only). The boxes of `ucg_comma`, a rule without language maps, still read "Growth chart" and "This visit" |
+| K20 | Still in French, `ucg_visit` = 2027-07-10, then `ucg_sex` = Female. Then set `ucg_visit` = 2026-01-10 and `ucg_sex` = Male, and switch to English | 2027-07-10: the x axis reads "Âge (ans)" and the tooltip "Cette visite: 9.6 kg at 2.49 ans, z-score -2.78, percentile 0.3". With Female the heading reads "... · fille". Back in English, every text reads as in K18 |
+| K21 | Switch to French and reload the page | Once MLM has started, the chart and the table show the French texts of K19. Before that the English ones may show for a moment, as the rc.1 run saw for messages |
+| K22 | Switch to English. With `ucg_age_days` blank, look under `ucg_branch`. Then `ucg_age_days` = 365, `ucg_branch` = 9.6, leave | Blank age: no chart under `ucg_branch`, since neither rule applies. 365: one chart, headed "Weight-for-age, WHO 2006 (birth to 5 years)" and "WHO Child Growth Standards (2006) · male", line names 5, 3, 0, -3, -6, x ticks 0, 5 and 10, tooltip "This visit: 9.6 kg at 11.99 months, z-score -0.04, percentile 48.3", and no note |
+| K23 | `ucg_age_days` = 2000, `ucg_branch` = 18.0, leave. Then `ucg_age_days` = 1826, then 1827 | 2000: the WHO 2006 chart goes, and a chart headed "Weight-for-age, WHO 2007 (5 to 10 years)" and "WHO Growth Reference for 5 to 19 years (2007) · male" takes its place, x axis "Age (months)" with ticks 60, 62, 64, 66, tooltip "This visit: 18.0 kg at 65.71 months, z-score -0.55, percentile 29.1", and no note. 1826: the WHO 2006 chart again, "Age (years)" with ticks 0, 2 and 4, tooltip "This visit: 18.0 kg at 5 years, z-score -0.14, percentile 44.6". 1827: the WHO 2007 chart, tooltip "This visit: 18.0 kg at 60.02 months, z-score -0.14, percentile 44.3". One chart shows at a time |
+| K24 | `ucg_comma` = 9,6, leave. Then 7,0 | 9,6: tooltip "This visit: 9,6 kg at 11,99 months, z-score -0,04, percentile 48,3". The table's caption reads "Weight-for-age, WHO 2006 (birth to 5 years)" (the reference's title, as the rule gives none) and its row 365, 9,6, -0,04, 48,3. The point sits between the 3rd and 97th percentile curves, at 9.6 on the y axis. No note. 7,0: amber "This value is lower than usual (z-score -2.90 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2)." The note writes the z-score with a point, as it writes every growth limit; the chart and the table use the field's comma. Tooltip "This visit: 7,0 kg at 11,99 months, z-score -2,90, percentile 0,2", row 365, 7,0, -2,90, 0,2, and the point drops below the 3rd percentile curve |
+| K25 | `ucg_comma` = 9.6, typed with a point, leave | Record whether REDCap's own check accepts a point on a comma field (as in C6). If it does, the tooltip reads "This visit: 9.6 kg at 11,99 months, z-score -0,04, percentile 48,3", row 365, 9.6, -0,04, 48,3 (the value as typed), no note, and the point at 9.6 |
+| K26 | Look at `ucg_zpct`. Open its box, then `ucg_zpct` = 9.6, leave | The "Growth chart" box starts closed (`"open":false`). Once opened it shows a y axis "z-score" with ticks from -4 to 4; five flat lines named 97, 85, 50, 15 and 3, the 50 line green and the others grey, the 3 and 97 lines at z -1.88 and 1.88; "Percentiles" heads the names. The x axis reads "Age (months)" with ticks 0, 5 and 10, as with no `span`: `"auto"` is the default. The point sits just under the 50 line. Tooltip "This visit: 9.6 kg at 11.99 months, z-score -0.04, percentile 48.3" |
+| K27 | Read the page config (as in Setup) | `growthCurves` has 4 sets, each with `male` and `female`: those of `ucg_mlm`, `ucg_comma` and the two branches of `ucg_branch` (span `[60, 121]` for WHO 2007). `ucg_zpct` has no `growthCurveKey`. `growth` holds `who-wfa` and `who2007-wfa`, 1827 and 62 rows for each sex. The `ucg_mlm` rule's `i18n` has 17 keys, `show.chart.labels.*` with `en` and `fr`, `show.table.labels.*` with `fr` only |
+| K28 | Open `uv_chart_gaps` for XE-1 on `visit_1_arm_1` (380). `ucg_mlm` = 9.6, leave. Leave the page without saving | The girl's inputs saved in setup step 5: the heading reads "... · girl", tooltip "This visit: 9.6 kg at 11.99 months, z-score 0.57, percentile 71.6". The config has the same 4 sets as K27 |
+| K29 | Open `uv_chart_saved` for XE-1, event 351. Look, then `ucs_visit` = 2026-01-10 | With no sex on this page, `ucs_weight`'s chart draws the boy's curves at once: "WHO Child Growth Standards (2006) · male". The table's box reads "Reference values": 5 rows, headers Age (days), Value at percentile 3 (kg), Value at percentile 50 (kg), Value at percentile 97 (kg), and row 365.25 reads 7.8, 9.6, 11.8. After the date the description ends "No measurement to show yet." In the config the sets of `ucs_weight` and `ucs_all` and the reference values hold `male` only, `growth.who-wfa.female` is empty, and `ucs_weight` has `rangeSexOp` `["lit","1"]` and `rangeAgeDobOp` `["lit","2025-01-10"]`. Compare K27, where the sex is typed on the page and every set holds both sexes |
+| K30 | `ucs_weight` = 9.6, leave. Then 7.0, leave, and Save and stay (answer "save anyway" if asked). Then `ucs_visit` = 2027-07-10. Then `ucs_all` = 9.6, leave | 9.6: tooltip as in K18, no note. 7.0: amber "This value is lower than usual (z-score -2.90 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2). (worked out with ucg_sex, ucg_dob, read when this page was opened — reload if it has changed since. This check does not block saving; it is re-checked after the save.)", and the save is not held by it. 2027-07-10: the x axis reads "Age (years)" and the heading still says male. `ucs_all`: its point is placed from the saved date, tooltip as in K18, line names 5, 2, 0, -2, -5 |
+| K31 | Open `uv_chart_saved` for XE-2 (no sex saved). Then `ucs_visit` = 2026-01-10, `ucs_weight` = 9.6, leave | Under `ucs_weight`: "ℹ Growth chart not shown: the sex saved for this record is blank or neither the rule's male nor its female code, so there is nothing to draw." and "ℹ Table not shown: " with the same reason; under `ucs_all` the chart's note. The config has no `growthCurves` and no `growthCurveTables`. The weight: grey "Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the sex is blank." Leave without saving |
+| K32 | Open `uv_chart_saved` for XE-3 (a girl saved) | The heading reads "... · female", and the curve set and the reference values in the config hold `female` only |
+| K33 | Open `uv_chart_repeat` for XE-1 on `visit_1_arm_1` (380), instance 1, with event and instance references off. `ucr_visit` = 2026-01-10, `ucr_weight` = 9.6, leave, Save | `ucr_xev` shows its configuration error: "a "sex" field in another event or instance needs event and instance references — enable them in project settings first." followed by the same for "age" "dob". `ucr_weight` draws the girl's curves, read from `uv_chart_gaps` in this event: "· female", line names 97, 50, 3, tooltip "This visit: 9.6 kg at 11.99 months, z-score 0.57, percentile 71.6", table row 365, 9.6, 0.57, 71.6. The save goes through |
+| K34 | Add instance 2: `ucr_visit` = 2026-07-10, `ucr_weight` = 8.0, leave, Save (answer "save anyway"). Reopen instance 1 | Instance 2: tooltip "This visit: 8.0 kg at 17.94 months, z-score -2.05, percentile 2.0", and amber "This value is lower than usual (z-score -2.05 on Weight-for-age, ...)" followed by "(worked out with ucg_sex, ucg_dob, read when this page was opened ...)". Instance 1 still shows 9.6 at 11.99 months |
+| K35 | Tick "Enable event and instance references". Reopen instance 1. `ucr_xev` = 7.0, leave | No configuration error. `ucr_xev` draws the boy's curves, read from `event_1_arm_1`: "· male", tooltip "This visit: 7.0 kg at 11.99 months, z-score -2.90, percentile 0.2", and amber "This value is lower than usual (z-score -2.90 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2). (worked out with saved event/instance values, read when this page was opened — reload if it has changed since. This check does not block saving; it is re-checked after the save.)". The config's set for `ucr_weight` holds `female` only and the one for `ucr_xev` `male` only; `ucr_xev` has `extendedAdvisory` `true`. Clear `ucr_xev`, then untick the setting |
+| K36 | With charts drawn on each of the three forms, open the console. Then reopen each saved form | No Content Security Policy error and no engine error. The forms hold only what was typed: no chart or table value was saved |
+
 ---
 
 ## Sign-off
@@ -346,10 +420,14 @@ screen readers).
 | 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; on a data entry form the z-scores of the rules on `uv_growth_more` and of event-qualified rules never block (a value that is not a number or is 0 or below on `uv_growth_more` does), and the fifth whole table is checked on save while the page still holds 0; two references on one field both judge; `measureScale`, `plausible` and a lower-case sex code work; on a survey only a value that is not a number above 0 is held; a reference's `when` and its event/instance values affect only that reference, and a rule whose `when` is settled false needs no table; the audit logs findings with their reference, their z-score only with raw values, and values not evaluated | ☐ |
 | 10 | Section J: the returned fields follow the inputs on the page, are emptied when an input is blank, are written for an import and a survey, and the project setting turns the save write off | ☐ |
 | 11 | Section K: the charts and tables draw for the inputs on the page, the point and the table match the values above, only the point moves on a new value, the axes follow the age, a rule that only shows needs no limits, the cap and the span leave a note for staff and nothing on a survey, nothing is saved, and the console shows no Content Security Policy error | ☐ |
+| 12 | Section K, K18 to K36: chart and table labels follow the MLM language in place, with no request; a sex saved on another form sends one sex's curves and a blank one leaves a note for staff; only the active branch's chart shows, with its own reference; a comma field's tooltip, table and point read the comma value; a chart of z-scores draws percentile lines and starts closed; a charted field works on another event and on a repeating instrument, and reads another event's inputs with event and instance references on | ☐ |
 
 ## Cleanup
 
 Delete the `uv_range_test`, `uv_growth_test`, `uv_growth_more`,
-`uv_growth_return` and `uv_growth_chart` instruments, or restore the dictionary
-downloaded in setup step 2. Remove the survey settings if G1, I29, J14 or K16
-enabled them, and the missing data code if section H added it.
+`uv_growth_return`, `uv_growth_chart`, `uv_chart_gaps`, `uv_chart_saved` and
+`uv_chart_repeat` instruments, or restore the dictionary downloaded in setup
+step 2. Remove the survey settings if G1, I29, J14 or K16 enabled them, the
+missing data code if section H added it, and the repeating setting of
+`uv_chart_repeat` if deleting the instrument left it. Untick "Enable event and
+instance references" if K35 ticked it.

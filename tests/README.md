@@ -50,6 +50,8 @@ php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes th
 php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
 php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, refusals, staff notes, page curves and tables, the pageCharts cap; --write refreshes growth_chart_fixture.json
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
+php  tests/growth_chart_gaps_module_php.php  # @UVRANGE "show" on the live fixture uvrange_chart_gaps_fields.csv (steps K18 to K33); --write refreshes growth_chart_gaps_fixture.json
+node tests/growth_chart_gaps_dom_js.cjs  # @UVRANGE "show" texts of steps K18 to K33: language maps, comma decimals, z-score chart, branches, saved inputs, repeating form
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
@@ -558,6 +560,27 @@ the same constants, cut-offs and branches.
   the cap note, a branch that does not apply, and a language switch that
   relabels the labels, the unit and sex words in place. It prints the time
   to build a page of 4 charts and to move a marker.
+- `growth_chart_gaps_module_php.php` loads
+  `docs/testbed/uvrange_chart_gaps_fields.csv` as the data dictionary of a
+  project laid out as pid 149 is (two events, one repeating instrument, the
+  map of what repeats on the `\Project` object only, as on REDCap 17.0.6) and
+  checks what steps K18 to K33 of the live acceptance sheet expect from the
+  server: language maps for the chart and table labels, one sex's curves
+  and reference values for a sex saved on another form (both for a typed
+  one), a sex saved blank, two branches switching reference by age, a
+  comma-decimal field, a chart of z-scores with percentile lines, a charted
+  field on another event and on a repeating instrument, and an input read
+  from another event with and without event and instance references. It
+  works out the visits the steps type with `GrowthReference` and writes the
+  pages, those visits and the reference rows once to
+  `growth_chart_gaps_fixture.json` with `--write`.
+- `growth_chart_gaps_dom_js.cjs` draws those pages with the real range
+  factory, 327 pixels wide as REDCap 17 gives a field's column, and checks
+  every text the steps expect against the server's numbers: the headings,
+  axes, line names, tooltips, descriptions and tables in English and after a
+  switch to French and back, the comma value in the tooltip, table and
+  point, the closed z-score chart, the active branch's chart only, the notes
+  that name saved fields, and the note for a sex saved blank.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.
