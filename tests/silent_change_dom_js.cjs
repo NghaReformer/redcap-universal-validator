@@ -8,6 +8,8 @@
  * 2. The save dialog named a blocked field by its code ("uw_live") instead of
  *    its label: QRID_registerBlocker asked the plain guard object for a label
  *    and overwrote the one its factory had read from the field's row.
+ * 3. The save dialog joined the labels with ", ", so a label holding a comma
+ *    read as two fields (pid 149, 2.3.0-rc.2). It lists one label a line.
  *
  * Run:  node tests/silent_change_dom_js.cjs
  */
@@ -173,6 +175,30 @@ const BMI = { type: 'range', fields: ['bmi'], rangeSoftLo: '16', rangeSoftHi: '3
   check('label: the save is held', env.win._alerts.length === 1 && ev._prevented);
   check('label: the dialog names the label', /Visit 21 to 35 days after the anchor/.test(env.win._alerts[0] || ''));
   check('label: the dialog does not name the field code', !/\blive\b/.test(env.win._alerts[0] || ''));
+}
+
+// ---- 5) the save dialog lists one label a line ------------------------------------
+// Live on rc.2 (pid 149) "Arm circumference (cm), Weight (kg), a span past the
+// reference" named two fields and read as three: a label may hold a comma.
+{
+  const rowOf = (t) => ({ querySelector(sel) { return /labelrc/.test(sel) ? { textContent: t } : null; } });
+  const fields = () => {
+    const arm = numEl('arm', '30'), span = numEl('span', '30');
+    arm._row = rowOf('Arm circumference (cm)');
+    span._row = rowOf('Weight (kg), a span\n past the reference');
+    return [arm, span];
+  };
+  const rule = (f, block) => ({ type: 'range', fields: [f], rangeHardLo: '40', rangeHardHi: '250', rangeHardText: '40 to 250', rangeHardBlock: block });
+  let env = boot(fields(), { rules: [rule('arm', 'confirm'), rule('span', 'confirm')] });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  const asked = env.win._confirms[0] || '';
+  check('confirm: one label a line, a comma inside a label kept (got ' + JSON.stringify(asked) + ')', env.win._confirms.length === 1
+    && asked === 'Validation FAILED for:\n• Arm circumference (cm)\n• Weight (kg), a span past the reference\n\nSave anyway?'
+    && ev._prevented);
+  env = boot(fields(), { rules: [rule('arm', 'hard'), rule('span', 'confirm')] });
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('hard: the alert lists them the same way (got ' + JSON.stringify(env.win._alerts[0] || '') + ')', ev._prevented
+    && env.win._alerts[0] === 'Cannot save yet — please fix the flagged field(s):\n• Arm circumference (cm)\n• Weight (kg), a span past the reference');
 }
 
 console.log('silent_change_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

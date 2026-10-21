@@ -4267,6 +4267,8 @@ class UniversalValidator extends AbstractExternalModule
                                 break;
                             }
                             $set[$sex] = $b === null ? null : ['d' => $b['d'], 'lines' => $b['lines']];
+                            // the least the y axis spans, when the lines do not reach it
+                            if ($b !== null && ($b['extent'][0] !== null || $b['extent'][1] !== null)) $set[$sex]['extent'] = $b['extent'];
                         }
                         if (isset($setWhy[$key])) {
                             // every rule drawing these curves is told why; the set is not sent

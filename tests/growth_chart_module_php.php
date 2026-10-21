@@ -348,6 +348,12 @@ namespace {
         ($set['kind'] ?? null) === 'percentiles' && $set['values'] === ['1', '3', '15', '50', '85', '97', '99'] && $set['band'] === [7, 8]
         && $set['span'] === [0, 1826.25] && $set['xScale'] === 1);
     check('a saved sex: one sex\'s curves (male)', isset($set['male']['lines']) && count($set['male']['lines']) === 9 && !isset($set['female']));
+    check('percentiles 1 to 99 reach z -2 and 2 at every row: no extent sent', !array_key_exists('extent', $set['male'] ?? []));
+    $pm = page(dict(['weight' => tag('{"chart":{"lines":{"z":[0]}}}')]), $SAVED);
+    $sm = $pm['cfg']['growthCurves'][ruleFor($pm, 'weight')['growthCurveKey'] ?? ''] ?? [];
+    check('the median alone: the reference at z -2 and 2 travels as the extent, for the y axis (got ' . json_encode(array_keys($sm['male'] ?? [])) . ')',
+        count($sm['male']['lines'] ?? []) === 1 && count($sm['male']['extent'] ?? []) === 2
+        && is_array($sm['male']['extent'][0]) && is_array($sm['male']['extent'][1]));
     check('the source title travels for the caption', ($r['growthChartSource'] ?? null) === 'WHO Child Growth Standards (2006)');
     check('the rule\'s "show" travels as parsed', ($r['rangeShow']['chart']['bands'] ?? null) === true && !isset($r['growthChartWhy']));
     $p = page(dict(['weight' => tag($SEVEN)], 'anthro_form'), $SAVED);
@@ -498,6 +504,9 @@ namespace {
         && (ruleFor($lp, 'ugc_span')['growthChartWhy']['chart'] ?? null)
             === 'its "span" [0, 2000] lies outside "who-wfa", which covers 0 to under 1826.25 days.'
         && (ruleFor($lp, 'ugc_arm')['rangeSoftLo'] ?? null) === '-2' && (ruleFor($lp, 'ugc_span')['rangeSoftLo'] ?? null) === '-2');
+    $hs = $lp['cfg']['growthCurves'][ruleFor($lp, 'ugc_head')['growthCurveKey'] ?? ''] ?? [];
+    check('live fixture: the head chart draws the median alone, with the extent for its y axis, both sexes (K6, K12)',
+        ($hs['values'] ?? null) === ['0'] && count($hs['male']['extent'] ?? []) === 2 && count($hs['female']['extent'] ?? []) === 2);
     $lt = $lp['cfg']['growthCurveTables'][ruleFor($lp, 'ugc_height')['growthTableKey']] ?? [];
     check('live fixture: the length table at each birthday, both sexes (K5) (got ' . json_encode($lt['male'][1] ?? null) . ')',
         count($lt['male'] ?? []) === 5 && ($lt['male'][1] ?? null) === ['365.25', '71.3', '75.7', '80.2']
@@ -536,6 +545,10 @@ namespace {
     $GRAMS = dict(['weight' => tag('{"chart":{"lines":{"percentiles":[3,50,97]}}}', 'who-wfa', ',"measureScale":0.001')], 'anthro_form');
     $GRAMS['dob'] = f('anthro_form', '', 'date_ymd');
     $pages['scaled'] = page($GRAMS, [])['cfg'];
+    // the median alone: the y axis spans the reference at z -2 to 2 (the extent)
+    $MEDIAN = dict(['weight' => tag('{"chart":{"lines":{"z":[0]}}}')], 'anthro_form');
+    $MEDIAN['dob'] = f('anthro_form', '', 'date_ymd');
+    $pages['median'] = page($MEDIAN, [])['cfg'];
     GrowthReference::reset();
     rmtree($dir);
     $wfa = GrowthReference::entry('who-wfa');

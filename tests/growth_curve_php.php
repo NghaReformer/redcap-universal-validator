@@ -15,7 +15,11 @@
  * reference read by linear interpolation, at a quarter, a half and three
  * quarters of the way between rows, compares it with GrowthReference::valueAt,
  * and divides the worst error in each window of the narrowest width by the y
- * range the browser gives that window. Also:
+ * range the browser gives that window (the lines and the "extent", the
+ * reference at z -2 and 2 the y axis spans at least). Also:
+ *   - the extent is sent for lines that do not reach z -2 and 2 at every row
+ *     (the median alone, percentiles 3 to 97), on each side on its own, and
+ *     left out where they do,
  *   - the payload is whole numbers, with a gap where no measurement above 0
  *     has the z-score, and its size for 7 lines and both sexes,
  *   - "measureScale" is undone (the curves are in the field's unit),
@@ -47,7 +51,8 @@ function check($label, $ok)
 /**
  * The worst vertical error, in chart units, of curve set $b over every
  * window of the narrowest width the chart shows, as the browser would draw
- * it; and the number of points compared.
+ * it; and the number of points compared. The extent is measured as a curve
+ * too, and counts in each window's y range, as the browser reads it.
  */
 function worstPx(array $entry, array $table, $sex, array $zs, array $span, $scale, array $b, $zoom = GC::MAX_ZOOM)
 {
@@ -73,10 +78,14 @@ function worstPx(array $entry, array $table, $sex, array $zs, array $span, $scal
     $err = array_fill(0, $m, 0.0);
     $top = array_fill(0, $m, null);
     $bot = array_fill(0, $m, null);
-    foreach ($zs as $li => $z) {
+    // the curves the browser reads: the lines, then each side of the extent sent
+    $curves = [];
+    foreach ($zs as $li => $z) $curves[] = [$z, $b['lines'][$li]];
+    foreach ([-GC::EXTENT_Z, GC::EXTENT_Z] as $side => $z) if ($b['extent'][$side] !== null) $curves[] = [$z, $b['extent'][$side]];
+    foreach ($curves as list($z, $segs)) {
         // the polyline the browser draws, as [x, y] runs
         $runs = [];
-        foreach ($b['lines'][$li] as $seg) {
+        foreach ($segs as $seg) {
             $pts = [];
             for ($i = 0; $i + 1 < count($seg); $i += 2) $pts[] = [$seg[$i] / $ts, $seg[$i + 1] / $p];
             $runs[] = $pts;
@@ -145,6 +154,7 @@ $lineSets = [
     'z -3..3'           => [-3, -2, -1, 0, 1, 2, 3],
     'z beyond 3 SD'     => [-5, -4, 4, 5],
     'percentiles 3..97' => array_map(function ($p) { return G::normalQuantile($p / 100); }, [3, 15, 50, 85, 97]),
+    'the median alone'  => [0],
 ];
 $refs = 0;
 $worstAll = 0.0;
@@ -190,6 +200,40 @@ $count = function ($b) { $c = 0; foreach ($b['lines'] as $l) foreach ($l as $seg
 check('a fixed span (zoom 1): within the bound over the whole span, with fewer points (' . $count($z1) . ' against ' . $count($z8)
     . ', worst ' . sprintf('%.3f', $px1) . ')', $px1 <= GC::MAX_ERROR && $count($z1) < $count($z8));
 
+// the least the y axis spans: the reference at z -2 and 2, where the lines do not reach it
+$span = GC::span($wfa, null);
+$med = GC::build($wfa, $wfaT, 'female', [0], $span, null);
+check('the median alone: one line, and the reference at z -2 and 2 as the extent', count($med['lines']) === 1
+    && $med['extent'][0] !== null && $med['extent'][1] !== null);
+$yAt = function (array $segs, $key, $d) {
+    foreach ($segs as $seg) {
+        for ($i = 0; $i + 3 < count($seg); $i += 2) {
+            if ($seg[$i] <= $key && $key <= $seg[$i + 2]) {
+                return ($seg[$i + 1] + ($seg[$i + 3] - $seg[$i + 1]) * ($key - $seg[$i]) / ($seg[$i + 2] - $seg[$i])) / pow(10, $d);
+            }
+        }
+    }
+    return null;
+};
+$lms365 = G::lms($wfa, $wfaT, 'female', 365);
+$lo365 = $yAt($med['extent'][0], 365, $med['d']);
+$hi365 = $yAt($med['extent'][1], 365, $med['d']);
+check('... at 365 days the extent is the weight of a girl at z -2 and 2 (got ' . $lo365 . ', ' . $hi365 . ')',
+    abs($lo365 - G::valueAt(-2, $lms365, true)) <= $med['tolerance'] && abs($hi365 - G::valueAt(2, $lms365, true)) <= $med['tolerance']);
+$sides = function ($zs) use ($wfa, $wfaT, $span) {
+    $b = GC::build($wfa, $wfaT, 'male', $zs, $span, null);
+    return [$b['extent'][0] !== null, $b['extent'][1] !== null];
+};
+check('lines that reach z -2 and 2 at every row (-3 to 3, or -2, 0 and 2): no extent',
+    $sides([-3, -2, -1, 0, 1, 2, 3]) === [false, false] && $sides([-2, 0, 2]) === [false, false]);
+check('percentiles 3 to 97 (z +-1.88): the extent on both sides', $sides($lineSets['percentiles 3..97']) === [true, true]);
+check('each side on its own: z -3 and 0 send only the upper side, 0 and 2.5 only the lower',
+    $sides([-3, 0]) === [false, true] && $sides([0, 2.5]) === [true, false]);
+check('the extent is whole numbers, as the lines', (function () use ($med) {
+    foreach ($med['extent'] as $side) foreach ($side as $seg) foreach ($seg as $v) if (!is_int($v)) return false;
+    return true;
+})());
+
 // ---- 2. the payload ------------------------------------------------------------------
 check('the payload is whole numbers only', (function () use ($b) {
     foreach ($b['lines'] as $line) foreach ($line as $seg) foreach ($seg as $v) if (!is_int($v)) return false;
@@ -199,7 +243,7 @@ $seven = [-3, -2, -1, 0, 1, 2, 3];
 $both = 0;
 foreach (['male', 'female'] as $sex) {
     $s = GC::build($wfa, $wfaT, $sex, $seven, GC::span($wfa, null), null);
-    $both += strlen(json_encode(['d' => $s['d'], 'lines' => $s['lines']]));
+    $both += strlen(json_encode(['d' => $s['d'], 'lines' => $s['lines'], 'extent' => $s['extent']]));
 }
 check('7 lines of who-wfa, both sexes, take under 40 KB (' . $both . ' bytes)', $both < 40000);
 foreach ($cat['references'] as $id => $entry) {
@@ -207,7 +251,7 @@ foreach ($cat['references'] as $id => $entry) {
     $size = 0;
     foreach (['male', 'female'] as $sex) {
         $s = GC::build($entry, $t, $sex, $seven, GC::span($entry, null), null);
-        $size += strlen(json_encode(['d' => $s['d'], 'lines' => $s['lines']]));
+        $size += strlen(json_encode(['d' => $s['d'], 'lines' => $s['lines'], 'extent' => $s['extent']]));
     }
     check("$id: 7 lines, both sexes, under 40 KB ($size bytes)", $size < 40000);
 }
