@@ -458,6 +458,9 @@ if (!class_exists('UvBudgetModule')) {
                     'event_id' => null, 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
                     'rule_source_id' => 'r1', 'rule_revision' => str_repeat('f', 64), 'rule_ord' => 1,
                     'check_type' => 'required', 'reason_code' => 'required-blank');
+                // The budget of two was met (H9): the second record found one
+                // more finding, which the gate left out and counted.
+                if ($i === 1) $b['unstored'] = array((int) $c['ordinal'] => 1);
             }
         }
         return array($rid, $store->commitBatch($rid, 'w', $ep, $b) === true);

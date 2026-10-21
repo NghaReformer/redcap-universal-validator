@@ -60,6 +60,13 @@ final class ScanWorker
     private $deps;
     /** @var array run id => mark key => true: rule problems this worker has already committed */
     private $marked = [];
+    /**
+     * @var array run id => {rows:int, bytes:int}: the finding rows and value
+     * bytes the run has stored, as this worker last knew them - the run row's
+     * counters when the request began, plus what its own commits held. What
+     * the detail budget is judged against (H9).
+     */
+    private $detail = [];
 
     /**
      * @param array $deps {
@@ -301,6 +308,15 @@ final class ScanWorker
                 // records with what is left of its budget.
                 $phase = (string) $p['phase'];
             }
+
+            // What the run has stored so far, for the detail budget (H9). Read
+            // from the row this request began with; another worker's commits
+            // after it are not seen, so two workers can take the run past its
+            // budget by at most a batch each - the finding rows they store are
+            // then all kept, and nothing is counted as left out that was not.
+            $this->detail[(int) $runId] = [
+                'rows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
+                'bytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0];
 
             // The run_seq is what a duplicate finding is stamped with, so the
             // finalizer is bound to it below; a row without one binds nothing
@@ -797,6 +813,33 @@ final class ScanWorker
         $setAside = [];    // evaluated, not kept: an attempt is counted against it
         $untouched = [];   // never reached: handed straight back, no attempt
 
+        // THE DETAIL BUDGET GATES HERE (H9), between evaluate() and the commit.
+        // ScanPolicy::budgetSpent() had no caller: every finding was stored,
+        // and only promotion noticed afterwards that the run had gone past
+        // the setting - which says a run "keeps COUNTING every finding and
+        // stops storing detail". Evaluation is untouched, so every finding is
+        // still found and counted; past the budget a finding is left out of
+        // the batch and its record's count of them travels as `unstored`,
+        // which the store adds to ScanStore::DETAIL_UNSTORED for the records
+        // it holds. Once spent, nothing more is stored for the rest of the
+        // run, so a run's stored findings are a prefix and not a sample.
+        //
+        // ONE OVERCOUNT, IN THE DIRECTION THAT CANNOT CERTIFY. A record that
+        // changes during the run is examined again in catch-up. When its
+        // findings were stored the first time, commitBatch() closes them and
+        // these are counted in their place; when they were left out the first
+        // time, they are counted again, because a count has no row to close.
+        // Only records edited after the budget was spent are affected, and the
+        // run is already truncated and so never clean.
+        $limits = $this->limits();
+        $gated = isset($limits['maxFindings']) || isset($limits['maxBytes']);
+        $soFar = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId]
+               : ['rows' => 0, 'bytes' => 0];
+        $rowsNow = (int) $soFar['rows'];
+        $bytesNow = (int) $soFar['bytes'];
+        $unstored = [];    // ordinal => findings found and left out
+        $offered = [];     // ordinal => [finding rows, value bytes] offered for it
+
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
             $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
@@ -898,7 +941,23 @@ final class ScanWorker
                 $outcome[(int) $c['ordinal']] = 'blocked';
                 continue;
             }
+            // A record's value bytes are evaluate()'s figure while all of its
+            // findings are kept, and the kept findings' previews once any is
+            // left out: the counter must not grow by bytes nobody stored.
+            $recBytes = isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
+            $left = 0;
+            $keptRows = 0;
+            $keptBytes = 0;
             foreach ($ev['findings'] as $f) {
+                if ($gated && ScanPolicy::budgetSpent($limits, $rowsNow, $bytesNow)) {
+                    $left++;
+                    continue;
+                }
+                $cost = (isset($f['value_bin']) && is_string($f['value_bin'])) ? strlen($f['value_bin']) : 0;
+                $rowsNow++;
+                $bytesNow += $cost;
+                $keptRows++;
+                $keptBytes += $cost;
                 // WHICH CLAIMED RECORD THIS CAME FROM. The store needs it to
                 // decide whether to write the finding at all: evidence about a
                 // record another worker has taken over is that worker's to
@@ -907,6 +966,11 @@ final class ScanWorker
                 $f['ordinal'] = $c['ordinal'];
                 $batch['findings'][] = $f;
             }
+            if ($left > 0) {
+                $unstored[(int) $c['ordinal']] = $left;
+                $recBytes = $keptBytes;
+            }
+            $offered[(int) $c['ordinal']] = [$keptRows, $recBytes];
             // A uniqueness rule produces a CANDIDATE rather than a finding: no
             // record can be a duplicate on its own evidence. They travel in the
             // same batch so that a rolled-back read leaves no candidate behind
@@ -940,7 +1004,7 @@ final class ScanWorker
                     $marks[$k] = $m;
                 }
             }
-            $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
+            $batch['bytes'] += $recBytes;
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                    'state' => ScanStore::REC_DONE,
                                    'version' => isset($after[$id]) ? $after[$id] : null,
@@ -964,6 +1028,7 @@ final class ScanWorker
         if ($cut === 'retry' && $budget !== null) $budget->reclaim();
 
         $batch['marks'] = array_values($marks);
+        $batch['unstored'] = $unstored;
         // null when the store does not say how many records it still held (a
         // store written before the out-parameter existed); 0 when it held none.
         // The same for WHICH it held.
@@ -1008,8 +1073,13 @@ final class ScanWorker
         // commit that wrote nothing. So the counters are taken again over the
         // rows the store says it kept. A store that does not say keeps the old
         // reading, as $held does above.
-        $findings = count($batch['findings']);
+        //
+        // FINDINGS ARE WHAT WAS FOUND, stored or not (H9): the ones the detail
+        // budget left out are counted with them. What the run has stored grows
+        // by the held records' rows and bytes only, for the next batch's gate.
+        $findings = count($batch['findings']) + array_sum($unstored);
         $candidates = count($batch['candidates']);
+        $keep = null;
         if (is_array($heldOrd)) {
             $keep = array_flip(array_map('intval', $heldOrd));
             $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
@@ -1023,11 +1093,21 @@ final class ScanWorker
             foreach ($batch['findings'] as $f) {
                 if (isset($keep[(int) $f['ordinal']])) $findings++;
             }
+            foreach ($unstored as $o => $k) {
+                if (isset($keep[$o])) $findings += $k;
+            }
             $candidates = 0;
             foreach ($batch['candidates'] as $f) {
                 if (isset($keep[(int) $f['ordinal']])) $candidates++;
             }
         }
+        $stored = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId] : ['rows' => 0, 'bytes' => 0];
+        foreach ($offered as $o => $rb) {
+            if ($keep !== null && !isset($keep[$o])) continue;
+            $stored['rows'] += $rb[0];
+            $stored['bytes'] += $rb[1];
+        }
+        $this->detail[(int) $runId] = $stored;
 
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of

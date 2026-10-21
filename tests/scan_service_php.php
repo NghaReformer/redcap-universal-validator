@@ -2300,6 +2300,10 @@ namespace INSPIRE\UniversalValidator\Scan {
                     'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
                     'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1, 'check_type' => 'required',
                     'reason_code' => 'required-blank'];
+                // THE BUDGET WAS MET (H9): the second examined record found one
+                // more finding than the two the budget stores, and the gate left
+                // it out. A count of one left out is what makes the run truncated.
+                if ($i === 1) $b['unstored'] = [(int) $c['ordinal'] => 1];
             }
         }
         $ok = $store->commitBatch($runId, 'w1', $epoch, $b);
@@ -2844,6 +2848,47 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B7: a value-storage setting tightened between them stops the run rather than failing it',
         $inner->run(195, $rid)['terminal'] === ScanOutcome::CANCELLED
         && strpos((string) $w['why'], 'privacy settings') !== false);
+}
+
+/* =====================================================================
+ * H9 + W7-N8  PAST THE DETAIL BUDGET A RUN KEEPS COUNTING AND STOPS STORING
+ *
+ * The setting says so; nothing did it. Every finding was stored, and
+ * promotion called the run truncated afterwards from the counters - which
+ * also called a run that stored exactly its budget, and dropped nothing,
+ * truncated. Three records, each with one finding, end to end through the
+ * real worker, summary and promotion.
+ * ===================================================================== */
+{
+    $budgeted = function ($pid, $max) {
+        $store = new ArrayScanStore();
+        $m = new \E2eModule($store);
+        $m->flagged = ['R001' => true, 'R002' => true, 'R003' => true];
+        $m->proj['scan-max-detail-findings'] = (string) $max;
+        $runId = (int) (new ScanService($m, $store))->start($pid)['run_id'];
+        $last = null;
+        $found = 0;
+        for ($i = 0; $i < 10 && $store->run($pid, $runId)['terminal'] === null; $i++) {
+            $last = (new ScanService($m, $store))->work($pid, $runId);
+            $found += isset($last['findings']) ? (int) $last['findings'] : 0;
+        }
+        $active = 0;
+        foreach ($store->allFindings() as $f) if ((int) $f['active_slot'] === 1) $active++;
+        return [$store->run($pid, $runId), $last, $found, $active];
+    };
+    list($row, $last, $found, $active) = $budgeted(196, 2);
+    check('H9: past its detail budget a run stores no more findings than the budget',
+        (int) $row['detail_rows'] === 2 && $active === 2);
+    check('H9: and keeps counting: the work answers and the finished run both say three',
+        $found === 3 && isset($last['status']['findings']) && $last['status']['findings'] === 3);
+    check('H9: every record was examined, and the run is truncated, so not clean',
+        $row['terminal'] === ScanOutcome::PARTIAL && $row['coverage'] === ScanOutcome::FENCED
+        && $row['detail'] === ScanOutcome::DETAIL_TRUNCATED && (int) $row['clean'] === 0
+        && (int) $row['manifest_done'] === 3);
+    list($row, $last, $found, $active) = $budgeted(197, 3);
+    check('W7-N8: a run that stored exactly its budget and left nothing out is not truncated',
+        $row['terminal'] === ScanOutcome::COMPLETE && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
+        && (int) $row['detail_rows'] === 3 && $active === 3 && $last['status']['findings'] === 3);
 }
 }
 

@@ -1003,6 +1003,7 @@ final class SqlScanStore implements ScanStore
                     . 'axis; refusing to write a fact that cannot be read back');
             }
         }
+        $unstored = self::unstoredOf($batch);
 
         // SHAPE FIRST, AND OUTSIDE THE TRANSACTION. A missing claim token or an
         // unattributable finding is a programming error, not a database
@@ -1210,6 +1211,17 @@ final class SqlScanStore implements ScanStore
                     $this->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
                                          empty($m['blocks']) ? 0 : 1,
                                          isset($m['samples']) ? $m['samples'] : null);
+                }
+                // WHAT THE DETAIL BUDGET LEFT OUT (H9), counted for the held
+                // records only and in this transaction, so the count rolls back
+                // with the batch and a lost record's findings are not counted
+                // here as well as by the worker that took it over.
+                $dropped = 0;
+                foreach ($unstored as $o => $k) {
+                    if (!empty($held[$o])) $dropped += $k;
+                }
+                if ($dropped > 0) {
+                    $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '', $dropped);
                 }
             }
 
@@ -1492,6 +1504,30 @@ final class SqlScanStore implements ScanStore
      * field can be 64 KB and a candidate per record would be a second copy of
      * the project. A group that actually collides is re-read from the source.
      */
+    /**
+     * A batch's `unstored` counts (H9) as ordinal => count, or a refusal.
+     *
+     * A count that is not a whole number is a programming error, refused
+     * before anything is written as a malformed mark is: read as 0 it would
+     * undercount what the run found, which is the direction that certifies.
+     * The same check and words as ArrayScanStore's.
+     *
+     * @return array<int,int> positive counts only
+     */
+    private static function unstoredOf(array $batch)
+    {
+        $out = [];
+        $in = isset($batch['unstored']) && is_array($batch['unstored']) ? $batch['unstored'] : [];
+        foreach ($in as $o => $k) {
+            if (!is_int($k) && !(is_string($k) && ctype_digit($k))) {
+                throw new \RuntimeException('an unstored-findings count reached the store that is '
+                    . 'not a whole number; refusing to record what was found as less than it was');
+            }
+            if ((int) $k > 0) $out[(int) $o] = (int) $k;
+        }
+        return $out;
+    }
+
     /**
      * The project a row belongs to, or a refusal.
      *

@@ -467,6 +467,16 @@ final class ArrayScanStore implements ScanStore
                     . 'axis; refusing to write a fact that cannot be read back');
             }
         }
+        // The detail budget's counts (H9), refused in the SQL store's words.
+        $unstored = [];
+        foreach ((isset($batch['unstored']) && is_array($batch['unstored']) ? $batch['unstored'] : [])
+                 as $o => $k) {
+            if (!is_int($k) && !(is_string($k) && ctype_digit($k))) {
+                throw new \RuntimeException('an unstored-findings count reached the store that is '
+                    . 'not a whole number; refusing to record what was found as less than it was');
+            }
+            if ((int) $k > 0) $unstored[(int) $o] = (int) $k;
+        }
 
         // Shape first, and with the same words the SQL store uses: a missing
         // claim token is a programming error, and a store that quietly accepted
@@ -683,6 +693,12 @@ final class ArrayScanStore implements ScanStore
                                      empty($m['blocks']) ? 0 : 1,
                                          isset($m['samples']) ? $m['samples'] : null);
             }
+            // The detail budget's count, for held records only (H9).
+            $dropped = 0;
+            foreach ($unstored as $o => $k) {
+                if (!empty($held[$o])) $dropped += $k;
+            }
+            if ($dropped > 0) $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '', $dropped);
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);

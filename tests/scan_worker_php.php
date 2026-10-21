@@ -32,6 +32,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/ScanPolicy.php';    // the detail budget (H9)
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
@@ -2951,6 +2952,22 @@ namespace INSPIRE\UniversalValidator\Scan {
         $o['coverage'] === ScanOutcome::FENCED);
     check('promote: but forbids clean and says _TRUNCATED',
         ScanOutcome::mayClaimClean($o) === false && ScanOutcome::suffix($o) === '_TRUNCATED');
+    // W7-N8: WITH THE COUNT OF WHAT WAS LEFT OUT, truncated is whether there
+    // was any. The counters at the budget say nothing about a finding dropped.
+    $at = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['maxFindings' => 1000, 'unstored' => 0, 'violations' => 1000]));
+    check('W7-N8: a run that stored exactly its budget and left nothing out is not truncated',
+        $at['facts']['truncated'] === false && $at['facts']['violations'] === 1000);
+    $past = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['maxFindings' => 1000, 'unstored' => 7, 'violations' => 1007]));
+    check('W7-N8: one that left any out is, and its violations are every finding found',
+        $past['facts']['truncated'] === true && $past['facts']['violations'] === 1007);
+    // A summary that never finished is a floor over what was stored, and the
+    // ones left out are added to it, never compared with it.
+    $floor = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['rollupDone' => false, 'unstored' => 7, 'violations' => 207]));
+    check('W7-N8: without a finished summary, violations are the stored floor plus those left out',
+        $floor['facts']['violations'] === 1007);
 
     // Gaps are reported, never violations, and never blocking.
     $gp = ScanPromotion::facts($run, $all, array_merge($ok, ['gapCount' => 3860]));
@@ -3299,8 +3316,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             $skew['violations'] === 6);
         check('tally: every rollup axis is read, so a new one cannot be forgotten here',
             count($K) === 4 && ScanPromotion::tally([['kind' => $K[2], 'cnt' => 2]])['violations'] === 2);
-        check('tally: nothing found is three zeroes',
-            ScanPromotion::tally([]) === ['violations' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+        // H9: the findings the detail budget left out are findings, beside the
+        // summary of the ones stored; the summary cannot count a row nobody
+        // wrote.
+        $cut = ScanPromotion::tally([['kind' => $K[0], 'cnt' => 4],
+                                     ['kind' => ScanStore::DETAIL_UNSTORED, 'cnt' => 3]]);
+        check('tally: findings left out by the detail budget are counted beside the summary (H9)',
+            $cut['violations'] === 7 && $cut['stored'] === 4 && $cut['unstored'] === 3);
+        check('tally: nothing found is zeroes',
+            ScanPromotion::tally([]) === ['violations' => 0, 'stored' => 0, 'unstored' => 0,
+                                          'ruleProblems' => 0, 'gaps' => 0]);
 
         // The term, in facts(). A finished summary is believed over the counter
         // in BOTH directions; an unfinished one only ever raises it.
@@ -3624,6 +3649,77 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('storage: and the run is not certified on the way out', $res['done'] === false);
     check('storage: with the slot failure recorded where an administrator can see it',
         count($notes) === 1 && $notes[0][0] === 'scan storage failure');
+
+    /* =====================================================================
+     * H9  THE DETAIL BUDGET GATES WHERE THE FINDINGS ARE MERGED
+     *
+     * ScanPolicy::budgetSpent() had no caller, so a run stored every finding
+     * however far past the setting it went. The gate is between evaluate()
+     * and the commit: every record is still examined and every finding still
+     * counted, and past the budget the finding is left out of the batch and
+     * counted as unstored.
+     * ===================================================================== */
+    {
+        $leftOut = function (ScanStore $st, $rid) {
+            $n = 0;
+            foreach ($st->aggregates($rid) as $a) {
+                if ((string) $a['kind'] === ScanStore::DETAIL_UNSTORED) $n += (int) $a['cnt'];
+            }
+            return $n;
+        };
+        $gated = function ($evaluate, array $limits) use ($reader, $wide, $fin) {
+            return ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $evaluate,
+                    'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+                    'limits' => $limits];
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
+        $res = (new ScanWorker($store, $gated($finder(1), ['maxFindings' => 3, 'maxBytes' => 1000000])))
+            ->work(800, $runId);
+        check('H9: past the budget the worker stores no more findings',
+            (int) $store->run(800, $runId)['detail_rows'] === 3 && count($store->allFindings()) === 3);
+        check('H9: and counts every finding it found, in its answer and in the store',
+            $res['findings'] === 5 && $leftOut($store, $runId) === 2);
+        check('H9: every record is still examined',
+            $res['worked'] === 5 && (int) $store->run(800, $runId)['manifest_done'] === 5);
+
+        // THE NEXT REQUEST KNOWS. The gate starts from what the run row says
+        // is stored, not from zero, so a budget spent by an earlier request
+        // stays spent.
+        list($store, $runId) = $fixture(['A', 'B']);
+        $runsProp = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+        $runsProp->setAccessible(true);
+        $rows = $runsProp->getValue($store);
+        $rows[$runId]['detail_rows'] = 3;
+        $runsProp->setValue($store, $rows);
+        $res = (new ScanWorker($store, $gated($finder(1), ['maxFindings' => 3, 'maxBytes' => 1000000])))
+            ->work(800, $runId);
+        check('H9: a request after the budget was spent stores nothing, and counts what it found',
+            count($store->allFindings()) === 0 && (int) $store->run(800, $runId)['detail_rows'] === 3
+            && $res['findings'] === 2 && $leftOut($store, $runId) === 2);
+
+        // THE BYTES LIMIT, measured as the store measures it: the previews
+        // kept. Ten bytes a finding against twenty-five: the third is stored
+        // (twenty is under the limit) and the fourth is not.
+        $valued = function ($id, $node) use ($finder) {
+            $r = $finder(1)($id, $node);
+            $r['findings'][0]['value_bin'] = 'abcdefghij';
+            return $r;
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C', 'D']);
+        $res = (new ScanWorker($store, $gated($valued, ['maxFindings' => 100, 'maxBytes' => 25])))
+            ->work(800, $runId);
+        check('H9: the bytes limit stops storage too, one preview past it at most',
+            (int) $store->run(800, $runId)['detail_rows'] === 3
+            && (int) $store->run(800, $runId)['detail_bytes'] === 30
+            && $res['findings'] === 4 && $leftOut($store, $runId) === 1);
+
+        // No budget handed over is no gate, which is what a worker built
+        // without the service's limits always was.
+        list($store, $runId) = $fixture(['A', 'B', 'C']);
+        (new ScanWorker($store, $gated($finder(2), [])))->work(800, $runId);
+        check('H9: a worker given no budget stores everything',
+            count($store->allFindings()) === 6 && $leftOut($store, $runId) === 0);
+    }
 
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);

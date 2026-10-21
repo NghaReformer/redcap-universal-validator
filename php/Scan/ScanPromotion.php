@@ -204,8 +204,14 @@ final class ScanPromotion
      * If they ever disagree - an axis added later, a page lost on one - the
      * larger number is the one that cannot certify a project it should not.
      *
+     * AND WHAT THE DETAIL BUDGET LEFT OUT (H9, W7-N8). Past the budget the
+     * worker keeps evaluating and stops storing, and counts each finding it
+     * left out in ScanStore::DETAIL_UNSTORED. The summary cannot count a row
+     * that was never written, so `violations` is the summary's `stored` plus
+     * that `unstored`, and a run with any unstored is the truncated one.
+     *
      * @param array $aggregates rows of {kind, cnt, ...} as ScanStore::aggregates() returns them
-     * @return array{violations:int, ruleProblems:int, gaps:int}
+     * @return array{violations:int, stored:int, unstored:int, ruleProblems:int, gaps:int}
      */
     public static function tally(array $aggregates)
     {
@@ -217,10 +223,11 @@ final class ScanPromotion
                         + (isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0);
         }
         $of = function ($kind) use ($byKind) { return isset($byKind[$kind]) ? $byKind[$kind] : 0; };
-        $violations = 0;
-        foreach (RollupBuilder::KINDS as $kind) $violations = max($violations, $of($kind));
-        return ['violations' => $violations, 'ruleProblems' => $of(self::RULE_KINDS),
-                'gaps' => $of(self::GAP_KINDS)];
+        $stored = 0;
+        foreach (RollupBuilder::KINDS as $kind) $stored = max($stored, $of($kind));
+        $unstored = $of(ScanStore::DETAIL_UNSTORED);
+        return ['violations' => $stored + $unstored, 'stored' => $stored, 'unstored' => $unstored,
+                'ruleProblems' => $of(self::RULE_KINDS), 'gaps' => $of(self::GAP_KINDS)];
     }
 
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
@@ -259,6 +266,10 @@ final class ScanPromotion
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
      *
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN BOTH ANSWERS (H9): they were
+     * found and not stored, so the summary cannot count them and the floor is
+     * taken over what was stored, with them added.
+     *
      * @return int|null null when the run ended before its findings could be counted
      */
     public static function findingsOf(ScanStore $store, array $run)
@@ -266,12 +277,12 @@ final class ScanPromotion
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
         if ($terminal === null) return $rows;
-        $summary = self::tally($store->aggregates((int) $run['run_id']))['violations'];
+        $t = self::tally($store->aggregates((int) $run['run_id']));
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
-            $floor = max($rows, $summary);
+            $floor = max($rows, $t['stored']) + $t['unstored'];
             return $floor > 0 ? $floor : null;
         }
-        return $summary;
+        return $t['violations'];
     }
 
     /**
@@ -299,6 +310,8 @@ final class ScanPromotion
      *   policyRevisionNow:  ?int
      *   maxFindings:        ?int
      *   maxBytes:           ?int
+     *   unstored:           ?int  findings the detail budget left out (tally()); with
+     *                             it, `truncated` is whether there were any (H9)
      *   crossRecordLookups: bool  a rule's verdict depends on OTHER records (@UVEXISTS)
      *   windowChanges:      int   records the change log listed inside the window
      * }
@@ -381,8 +394,19 @@ final class ScanPromotion
         $bytes = isset($run['detail_bytes']) ? (int) $run['detail_bytes'] : 0;
         $maxR  = $g('maxFindings');
         $maxB  = $g('maxBytes');
-        $truncated = (($maxR !== null && $maxR > 0 && $rows >= (int) $maxR)
-                   || ($maxB !== null && $maxB > 0 && $bytes >= (int) $maxB));
+        // TRUNCATED MEANS A FINDING WAS LEFT OUT (H9, W7-N8). The worker stops
+        // storing once the budget is spent and counts what it leaves out, so a
+        // run that counted any is truncated and one that counted none is not -
+        // whatever the counters say. Read off the counters, a run that stored
+        // exactly its budget and dropped nothing was called truncated, and one
+        // that two workers took past it was too, beside a `violations` that
+        // matched what was stored. A caller that does not pass the count keeps
+        // the counter reading, which can only say truncated more often.
+        $unstored = $g('unstored');
+        $unstored = ($unstored === null) ? null : max(0, (int) $unstored);
+        $truncated = ($unstored !== null) ? ($unstored > 0)
+                   : (($maxR !== null && $maxR > 0 && $rows >= (int) $maxR)
+                      || ($maxB !== null && $maxB > 0 && $bytes >= (int) $maxB));
 
         $lookupsMoved = (bool) $g('crossRecordLookups', false) && (int) $g('windowChanges', 0) > 0;
 
@@ -414,10 +438,12 @@ final class ScanPromotion
             // count, or with a summary that never finished (a cancelled or failed
             // run ends whatever is outstanding), the stored-row counter is the
             // floor: a partial summary undercounts, and an undercount is the
-            // direction that certifies.
+            // direction that certifies. The findings the detail budget left out
+            // are added to the floor, never compared with it: the counter does
+            // not hold them either (H9).
             'violations' => ($g('violations') !== null && $g('rollupDone', false))
                 ? max(0, (int) $g('violations'))
-                : max($rows, (int) $g('violations', 0)),
+                : max($rows, (int) $g('violations', 0) - (int) $unstored) + (int) $unstored,
             'ruleProblems' => (int) $g('ruleProblems', 0),
             'gaps' => (int) $g('gapCount', 0),
             // FROM THE CALLER, because no run row carries it: this read
@@ -574,7 +600,8 @@ final class ScanPromotion
         $aggregates = $store->aggregates($runId);
         $t = self::tally($aggregates);
         $f = self::facts($run, $states, array_merge($in, [
-            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
+            'violations' => $t['violations'], 'unstored' => $t['unstored'],
+            'ruleProblems' => $t['ruleProblems'],
             'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
             'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
         if ($cancel) $f['facts']['cancelled'] = true;
