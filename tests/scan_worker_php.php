@@ -2296,6 +2296,104 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('finalizer: binding returns a copy and leaves the unbound one unbound, writing nothing',
         $uf2->forRun('7') !== $uf2 && $unboundWhy === UniqueFinalizer::NO_SEQ);
 
+    // W7-R4: A DUPLICATE IS WRITTEN AS ITS RULE'S OTHER FINDINGS ARE. Rule
+    // ordinal, the record's group and `duplicate-value`, where it wrote 0,
+    // NULL and `duplicate`. The groups come from one call per page.
+    /** One group in `emitting`, three candidates, and the writes it is sent. */
+    class EmitPageDb implements ScanDb
+    {
+        public $limits = [];
+        public $inserts = [];
+        public $updates = 0;
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+            if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+            if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'emitting', null, 2]];
+            if (strpos($sql, 'lookup = 0') !== false && preg_match('/LIMIT (\d+)/', $sql, $m)) {
+                $this->limits[] = (int) $m[1];
+                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
+                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
+                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64)]];
+                return array_slice($rows, 0, (int) $m[1]);
+            }
+            return [];
+        }
+        public function exec($sql, array $params = []) { return 1; }
+        public function execNoCount($sql, array $params = [])
+        {
+            if (strpos($sql, 'INSERT INTO') !== false) $this->inserts[] = [$sql, $params];
+            if (strpos($sql, 'SET emit_cursor') !== false) $this->updates++;
+        }
+        public function affected() { return 1; }
+        public function begin() { }
+        public function commit() { }
+        public function rollback() { }
+        /** Each written row, column => value, read off the statement's own column list. */
+        public function rows()
+        {
+            $out = [];
+            foreach ($this->inserts as $ins) {
+                list($sql, $params) = $ins;
+                if (!preg_match('/\(([a-z_,\s]+)\)\s*VALUES\s*\(([^)]*)\)/', $sql, $m)) continue;
+                $cols = array_map('trim', explode(',', $m[1]));
+                $marks = array_map('trim', explode(',', $m[2]));
+                $p = 0;
+                while ($p < count($params)) {
+                    $row = [];
+                    foreach ($cols as $i => $c) $row[$c] = $marks[$i] === '?' ? $params[$p++] : $marks[$i];
+                    $out[] = $row;
+                }
+            }
+            return $out;
+        }
+    }
+    $g7 = ['group_hmac' => 'g1', 'emit_cursor' => 0, 'group_id' => 7, 'candidate_epoch' => 1];
+    $asked = [];
+    $dagsOk = function (array $ids) use (&$asked) {
+        $asked[] = $ids;
+        $out = [];
+        foreach ($ids as $id) $out[$id] = $id === 'R1' ? 'site_a' : null;
+        return ['ok' => true, 'dags' => $out, 'read' => count($ids), 'why' => null];
+    };
+    $edb = new EmitPageDb();
+    $er = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'ordinals' => ['src-b' => 2],
+                                      'dags' => $dagsOk]))->forRun(5)->emit(1, $g7, 10, 10);
+    $wrote = [];
+    foreach ($edb->rows() as $row) {
+        $wrote[] = [$row['record_id_bin'], $row['field'], $row['rule_ord'], $row['dag_key'], $row['reason_code']];
+    }
+    check('W7-R4: each duplicate carries its rule\'s ordinal, its record\'s group and duplicate-value',
+        $wrote === [['R1', 'sid', 2, 'site_a', 'duplicate-value'], ['R2', 'sid', 2, null, 'duplicate-value'],
+                    ['R1', 'sid2', 0, 'site_a', 'duplicate-value']]);
+    check('W7-R4: a rule the map does not name is ordinal 0, as before, and never a guess',
+        isset($wrote[2]) && $wrote[2][2] === 0);
+    check('W7-R4: the groups are asked once for the page, each record once',
+        $asked === [['R1', 'R2']] && $er['emitted'] === 3 && $er['read'] === 2);
+    // The page is cut to the read limit when the groups may cost a read.
+    $edb = new EmitPageDb();
+    $cut = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'dags' => $dagsOk]))
+        ->forRun(5)->step(1, 10, 2);
+    $edb2 = new EmitPageDb();
+    (new UniqueFinalizer($edb2, ['pid' => 800, 'hmacKey' => 'k']))->forRun(5)->step(1, 10, 2);
+    check('W7-R4: a page that asks for groups is cut to the read limit; one that does not is not',
+        $edb->limits === [2] && $edb2->limits === [10]);
+    check('W7-R4: and the step reports the records that read cost, so the worker measures it',
+        $cut['emitted'] === 2 && $cut['read'] === 2);
+    check('W7-R4: without a groups dependency the row has no group, as before',
+        $edb2->rows() !== [] && $edb2->rows()[0]['dag_key'] === null
+        && $edb2->rows()[0]['reason_code'] === 'duplicate-value');
+    // A failed read is not "no group".
+    $edb = new EmitPageDb();
+    $down = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'dags' => function (array $ids) {
+        return ['ok' => false, 'dags' => [], 'read' => count($ids), 'why' => 'gone'];
+    }]))->forRun(5)->step(1, 10, 10);
+    check('W7-R4: a page whose groups could not be read writes nothing and moves no cursor',
+        $edb->inserts === [] && $edb->updates === 0);
+    check('W7-R4: and says why, with nothing counted as moved, so the worker stops on it',
+        $down['why'] === UniqueFinalizer::NO_DAGS && $down['emitted'] === 0 && $down['read'] === 0
+        && $down['done'] === false);
+
     // -- the duplicate phase is entered, not skipped -------------------------
     //
     // A project with no unique rules still passes through it. "We checked and

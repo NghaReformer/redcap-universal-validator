@@ -147,21 +147,24 @@ namespace {
      * The row Scan\UniqueFinalizer writes for one duplicate candidate.
      *
      * Built from the finalizer's INSERT, not from what a duplicate ought to
-     * carry: rule ordinal 0, reason `duplicate`, no group, and NO VALUE. The
-     * INSERT names no value column, so value_bin and value_len are NULL and the
-     * rest take their column defaults. Section 1 holds this helper to that
-     * INSERT. The fixture it replaces gave the duplicate value_bin 'ID-7',
-     * which the finalizer has never written (RP-1).
+     * carry: the rule's ordinal and the record's group as the finalizer is
+     * given them (W7-R4; 0 and none when it is given neither), the reason
+     * `duplicate-value`, and NO VALUE. The INSERT names no value column, so
+     * value_bin and value_len are NULL and the rest take their column
+     * defaults. Section 1 holds this helper to that INSERT. The fixture it
+     * replaces gave the duplicate value_bin 'ID-7', which the finalizer has
+     * never written (RP-1).
      */
-    function finalized(array $cand, $id) {
+    function finalized(array $cand, $id, $ord = 0, $dag = null) {
         $ev = $cand['event_id'];
         return [
             'finding_id' => $id, 'project_id' => $cand['project_id'], 'record_id_bin' => $cand['record_id_bin'],
             // UniqueFinalizer::eventOrNull(): the candidate's 0 sentinel is undone.
             'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
             'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
-            'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => 0, 'check_type' => 'unique',
-            'reason_code' => 'duplicate', 'reason_bits' => 0, 'dag_key' => null,
+            'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => (int) $ord, 'check_type' => 'unique',
+            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON, 'reason_bits' => 0,
+            'dag_key' => $dag,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
             'as_of' => null, 'z_score' => null, 'growth_reference' => null,
         ];
@@ -272,8 +275,11 @@ namespace {
         $is = [];
         foreach ($found as $i => $f) $is[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $d);
         $isDup = [];
+        // The ordinal the production finalizer is given for each rule (W7-R4).
+        $ordOf = \INSPIRE\UniversalValidator\Scan\ScanService::ruleOrdinals($ctx['plan']);
         foreach ($cands as $i => $c) {
-            $isDup[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i)), $d);
+            $o = isset($ordOf[$c['rule_source_id']]) ? $ordOf[$c['rule_source_id']] : 0;
+            $isDup[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i, $o)), $d);
         }
         ksort($wasDup); ksort($isDup);
 
@@ -324,12 +330,23 @@ namespace {
             foreach (array_keys(array_diff_assoc($cellsWas, $isDup[$rid])) as $k) $differ[$k] = true;
         }
         ksort($differ);
-        // value: not stored (RP-1). reason and problem: the finalizer writes
-        // `duplicate`, the legacy path `duplicate-value` (W7-R4). Every location
-        // cell, the rule and the issue agree.
-        check('differential: a stored duplicate differs from the legacy one only where W7-R4 and RP-1 say (got '
+        // value: not stored (RP-1). Reason and problem used to differ too: the
+        // finalizer wrote `duplicate`, the legacy path `duplicate-value`. Since
+        // W7-R4 they agree, with every location cell, the rule and the issue.
+        check('differential: a stored duplicate differs from the legacy one only where RP-1 says (got '
             . implode(',', array_keys($differ)) . ')',
-            array_keys($differ) === ['problem', 'reason', 'value']);
+            array_keys($differ) === ['value']);
+        // The finalizer's ordinal map gives every rule the number the
+        // evaluator writes on that rule's own findings.
+        $sameOrd = count($found) > 0;
+        foreach ($found as $f) {
+            if (!isset($ordOf[$f['rule_source_id']]) || $ordOf[$f['rule_source_id']] !== (int) $f['rule_ord']) {
+                $sameOrd = false;
+            }
+        }
+        check('differential: the ordinal a duplicate is given is the one its rule\'s findings carry',
+            $sameOrd && isset($cands[0]) && isset($ordOf[$cands[0]['rule_source_id']])
+            && $ordOf[$cands[0]['rule_source_id']] >= 1);
 
         // The helper is the finalizer's INSERT, read from the finalizer. If a
         // later wave gives the duplicate its value, this fails and says which
@@ -347,12 +364,36 @@ namespace {
             $insMarks = array_map('trim', explode(',', end($mm[1])));
         }
         $written = (count($insCols) === count($insMarks) && $insCols) ? array_combine($insCols, $insMarks) : [];
-        check('differential: the duplicate fixture is the row the finalizer writes - no value column, ordinal 0',
+        // Since W7-R4 the ordinal and the group are bound per row and the
+        // reason is UniqueFinalizer::REASON, which finalized() writes.
+        check('differential: the duplicate fixture is the row the finalizer writes - no value column',
             $written !== []
-            && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at', 'dag_key'],
+            && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at'],
                                array_keys($written)) === []
-            && $written['rule_ord'] === '0' && $written['reason_bits'] === '0'
-            && strpos($fin, "'unique', 'duplicate', \$g['group_hmac']") !== false);
+            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '0'
+            && strpos($fin, "\$ord, 'unique', self::REASON, \$dag, \$g['group_hmac']") !== false
+            && \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON === 'duplicate-value');
+
+        // The group a duplicate is given is read off the record node by
+        // ScanService::dagOfNode(), every other finding's by the module's own
+        // dagOfRecordNode(). Two copies of one rule, held equal here (W7-R4).
+        $dagRule = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'dagOfRecordNode');
+        $dagRule->setAccessible(true);
+        $nodes = [
+            ['1' => ['record_id' => 'R-1', 'redcap_data_access_group' => 'site_a']],
+            ['1' => ['record_id' => 'R-1', 'redcap_data_access_group' => ''], '2' => ['redcap_data_access_group' => 'site_b']],
+            ['1' => ['record_id' => 'R-1'], 'repeat_instances' => ['1' => ['fa' => ['2' => ['redcap_data_access_group' => 'site_c']]]]],
+            ['repeat_instances' => ['1' => ['' => ['1' => ['redcap_data_access_group' => 'site_d']]]], '1' => ['redcap_data_access_group' => 'site_e']],
+            ['1' => ['record_id' => 'R-1']],
+            ['1' => ['redcap_data_access_group' => ['nested']], '2' => ['redcap_data_access_group' => 'site_f']],
+            [],
+        ];
+        $agree = true;
+        foreach ($nodes as $node) {
+            if ($dagRule->invoke(null, $node) !== \INSPIRE\UniversalValidator\Scan\ScanService::dagOfNode($node)) $agree = false;
+        }
+        check('differential: a duplicate\'s group is read off the record as every other finding\'s is',
+            $agree && \INSPIRE\UniversalValidator\Scan\ScanService::dagOfNode($nodes[3]) === 'site_d');
 
         // The identifier flags are read twice, by two classes. Held together.
         $flagDict = dict(['record_id' => [], 'p' => ['', 'y'], 'q' => ['', 'Yes'], 'r' => ['', '1'],
@@ -786,9 +827,9 @@ namespace {
         $RULE_B = ['type' => 'unique', 'label' => 'No duplicate IDs', 'message' => '', 'assert' => '', 'fields' => ['sid']];
         $d = dims([1 => $RULE_A, 2 => $RULE_B], ['src-b' => 2]);
 
-        // What Scan\UniqueFinalizer writes: ordinal 0, no DAG, reason `duplicate`,
-        // and no value at all - see finalized(), which section 1 holds to the
-        // finalizer's INSERT.
+        // What Scan\UniqueFinalizer writes when it is given no ordinal: 0, no
+        // DAG, reason `duplicate-value`, and no value at all - see finalized(),
+        // which section 1 holds to the finalizer's INSERT.
         $dup = mapper()->toFinding(finalized(['project_id' => PID, 'record_id_bin' => 'R-1', 'event_id' => 0,
                                               'instance' => 1, 'host_form' => 'fa', 'field' => 'sid',
                                               'rule_source_id' => 'src-b'], 9));
@@ -796,7 +837,7 @@ namespace {
         check('rules: a duplicate finding is found by its source id',
             $r['rule'] === '2' && $r['rule_label'] === 'No duplicate IDs');
         check('rules: it is a Duplicate value, worded from the catalogue',
-            $r['issue'] === 'Duplicate value' && strpos($r['problem'], 'more than once') !== false
+            $r['issue'] === 'Duplicate value' && strpos($r['problem'], 'already recorded') !== false
             && $r['wording'] !== 'fallback');
         check('rules: its value was not kept, which is not an empty field',
             $dup['valueState'] === 'not-kept' && $r['value'] === ScanColumns::VALUE_WORDS['not-kept']);

@@ -1445,6 +1445,12 @@ final class ScanService
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
+        // THE GROUPS THIS REQUEST HAS ALREADY READ (W7-R4). A duplicate's row
+        // carries its record's Data Access Group, and a group is verified (its
+        // records re-read through $read, which exports the group) just before
+        // it is emitted, usually in the same request. Each read leaves its
+        // records' groups here, so emitting the page after it reads nothing.
+        $seen = new \ArrayObject();
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
             'hmacKey'  => $this->key(),
@@ -1452,12 +1458,115 @@ final class ScanService
             // Re-reading a duplicate group goes through the SAME read the worker
             // uses, so a group is verified against the values the scan would
             // have seen rather than a second, differently-shaped export.
-            'read'     => function (array $locs) use ($read, $plan) {
+            'read'     => function (array $locs) use ($read, $plan, $seen) {
                 $ids = [];
                 foreach ($locs as $l) $ids[(string) $l['record']] = true;
-                return self::rereadValues($read(array_keys($ids)), $locs, $plan);
+                $got = $read(array_keys($ids));
+                self::noteDags($got, $seen);
+                return self::rereadValues($got, $locs, $plan);
+            },
+            'ordinals' => self::ruleOrdinals($plan),
+            'dags'     => function (array $ids) use ($read, $seen) {
+                return self::dagsFor($ids, $read, $seen);
             },
         ]);
+    }
+
+    /**
+     * rule_source_id => the ordinal the plan gives that rule (W7-R4): the
+     * number durableEvaluateRecord() writes as rule_ord, which is its key in
+     * $plan['ruleIds'] plus one. Where two rules share a source id the lower
+     * ordinal is kept, so the answer does not depend on the order of a loop.
+     *
+     * @return array<string, int>
+     */
+    public static function ruleOrdinals(array $plan)
+    {
+        $out = [];
+        $ids = (isset($plan['ruleIds']) && is_array($plan['ruleIds'])) ? $plan['ruleIds'] : [];
+        foreach ($ids as $i => $id) {
+            if (!is_int($i) || !is_array($id) || !isset($id['source_id'])) continue;
+            $sid = (string) $id['source_id'];
+            if (!isset($out[$sid]) || $out[$sid] > $i + 1) $out[$sid] = $i + 1;
+        }
+        return $out;
+    }
+
+    /**
+     * Each record's Data Access Group, from what this request has read, and
+     * one read of the rest. The finalizer's `dags` dependency.
+     *
+     * A failed read is ok:false, never "no group". A record the read did not
+     * return - deleted since it was verified - has none, which is what it has.
+     *
+     * @return array{ok:bool, dags:array<string, ?string>, read:int, why:?string}
+     */
+    public static function dagsFor(array $ids, callable $read, \ArrayObject $seen)
+    {
+        $miss = [];
+        foreach ($ids as $id) {
+            if (!$seen->offsetExists((string) $id)) $miss[(string) $id] = true;
+        }
+        if ($miss) {
+            $got = $read(array_keys($miss));
+            if (!is_array($got) || empty($got['ok']) || !isset($got['data']) || !is_array($got['data'])) {
+                return ['ok' => false, 'dags' => [], 'read' => count($miss),
+                        'why' => is_array($got) && isset($got['why']) ? $got['why'] : null];
+            }
+            self::noteDags($got, $seen);
+            foreach (array_keys($miss) as $id) {
+                if (!$seen->offsetExists((string) $id)) $seen[(string) $id] = null;
+            }
+        }
+        $out = [];
+        foreach ($ids as $id) $out[(string) $id] = $seen[(string) $id];
+        return ['ok' => true, 'dags' => $out, 'read' => count($miss), 'why' => null];
+    }
+
+    /** Remember the group of every record a successful read returned. */
+    private static function noteDags($got, \ArrayObject $seen)
+    {
+        if (!is_array($got) || empty($got['ok']) || !isset($got['data']) || !is_array($got['data'])) return;
+        foreach ($got['data'] as $id => $node) {
+            if (is_array($node)) $seen[(string) $id] = self::dagOfNode($node);
+        }
+    }
+
+    /**
+     * The exported Data Access Group unique name of one getData record node,
+     * or null: the first non-empty `redcap_data_access_group` on any of its
+     * rows, in the node's own order (getData puts the event rows before
+     * repeat_instances). The rule
+     * UniversalValidator::dagOfRecordNode() applies to the same node when it
+     * writes every other finding's dag_key; tests/scan_service_php.php holds
+     * the two equal.
+     */
+    public static function dagOfNode(array $node)
+    {
+        $rows = [];
+        foreach ($node as $k => $n) {
+            if ($k === 'repeat_instances') {
+                if (!is_array($n)) continue;
+                foreach ($n as $byInstr) {
+                    if (!is_array($byInstr)) continue;
+                    foreach ($byInstr as $byInst) {
+                        if (!is_array($byInst)) continue;
+                        foreach ($byInst as $row) {
+                            if (is_array($row)) $rows[] = $row;
+                        }
+                    }
+                }
+            } elseif (is_array($n)) {
+                $rows[] = $n;
+            }
+        }
+        foreach ($rows as $row) {
+            if (isset($row['redcap_data_access_group']) && !is_array($row['redcap_data_access_group'])
+                && $row['redcap_data_access_group'] !== '') {
+                return (string) $row['redcap_data_access_group'];
+            }
+        }
+        return null;
     }
 
     /**
@@ -1619,8 +1728,11 @@ final class ScanService
      *   engine-4  the started-form gate and its round-3 corrections (built as
      *             engine-2 on the scan branch, renumbered when it joined main,
      *             where engine-2 and engine-3 had already shipped)
+     *   engine-5  a duplicate the scan's finalizer writes carries its rule's
+     *             ordinal, its record's Data Access Group and the reason
+     *             `duplicate-value`, which is part of its identity (W7-R4)
      */
-    const ENGINE_REVISION = 'engine-4';
+    const ENGINE_REVISION = 'engine-5';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;

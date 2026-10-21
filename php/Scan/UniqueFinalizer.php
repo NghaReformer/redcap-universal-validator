@@ -109,6 +109,13 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     const NO_SEQ = 'the duplicate check was not told which scan it is writing for, so it '
                  . 'wrote no duplicate findings rather than date them to the wrong scan';
 
+    /** Why emit() wrote nothing: the records' Data Access Groups could not be read. */
+    const NO_DAGS = 'the data access groups of the records in a duplicate group could not be '
+                  . 'read, so its duplicate findings were not written; the scan can be resumed';
+
+    /** The reason a duplicate carries, as the live check and the audit write it (W7-R4). */
+    const REASON = 'duplicate-value';
+
     /** Group phases. Ordered: a group moves forward through these and never back. */
     const G_NEW       = 'new';
     const G_VERIFYING = 'verifying';
@@ -165,6 +172,13 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
      *   page:     int  candidates per bounded page
+     *   ordinals: array<string, int>  rule_source_id => the rule's ordinal in
+     *             the run's plan, the number every other finding of that rule
+     *             carries; a source id not in it is written as 0 (W7-R4)
+     *   dags:     ?callable(array $recordIds): array{ok:bool, dags:array, read:int, why:?string}
+     *             each record's Data Access Group unique name (null for none),
+     *             keyed by record id; `read` is how many records it had to
+     *             read. Asked once per emitted page. Without it dag_key is NULL
      * }
      */
     public function __construct(ScanDb $db, array $deps = [])
@@ -256,9 +270,10 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             return $out;
         }
         if ($g['phase'] === self::G_EMITTING) {
-            $r = $this->emit($generationId, $g, $limit);
+            $r = $this->emit($generationId, $g, $limit, $readLimit);
             $out['emitted'] += $r['emitted'];
             $out['published'] += $r['published'] ? 1 : 0;
+            $out['read'] += isset($r['read']) ? $r['read'] : 0;
             $out['why'] = $r['why'];
             return $out;
         }
@@ -556,9 +571,23 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * duplicate group is a report that names one of two matching records and not
      * the other, which is worse than naming neither.
      *
-     * @return array{emitted:int, published:bool, why:?string}
+     * EACH ROW AS THE OTHER FINDINGS OF ITS RULE ARE WRITTEN (W7-R4). These
+     * rows carried rule_ord 0, no group and the reason `duplicate`, where the
+     * live check and the audit write the rule's ordinal, the record's Data
+     * Access Group and `duplicate-value`: the report's Rule column showed 0
+     * with no name, the group cell a dash, and the group axis of the summary
+     * put every duplicate under "no group". The ordinal comes from the
+     * `ordinals` map, the group from ONE `dags` call per page for the page's
+     * records - never a query per row - and the page is cut to the read limit
+     * when that call may read records, because it then costs what a verify
+     * page costs. A page whose groups could not be read writes nothing and
+     * says so (NO_DAGS): "no group" is an answer, and a failed read is not it.
+     * It reports nothing read, so the worker stops on the why rather than
+     * taking the same failing read again.
+     *
+     * @return array{emitted:int, published:bool, read:int, why:?string}
      */
-    public function emit($generationId, array $g, $limit)
+    public function emit($generationId, array $g, $limit, $readLimit = null)
     {
         // NO RUN, NO WRITE. Both writers below stamp the run's sequence, and
         // there is no sequence to fall back to that would be true: the group's
@@ -566,21 +595,41 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // run 1 (review R8-5). The group stays in `emitting`, so the step after
         // a bound one picks it up where this one stopped.
         if ($this->seq === null) {
-            return ['emitted' => 0, 'published' => false, 'why' => self::NO_SEQ];
+            return ['emitted' => 0, 'published' => false, 'read' => 0, 'why' => self::NO_SEQ];
         }
+        $dags = (isset($this->deps['dags']) && is_callable($this->deps['dags'])) ? $this->deps['dags'] : null;
+        $page = max(1, (int) $limit);
+        if ($dags !== null && $readLimit !== null) $page = max(1, min($page, (int) $readLimit));
         $rows = $this->db->select('SELECT candidate_id, record_hash, record_id_bin, event_id,
             instance, host_form, field, rule_source_id, rule_revision
             FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
               AND lookup = 0
-            ORDER BY candidate_id LIMIT ' . max(1, (int) $limit),
+            ORDER BY candidate_id LIMIT ' . $page,
             [$this->pid, $generationId, $g['group_hmac'], $g['emit_cursor']]);
 
         // Checked values only: a lookup was verified with the group and is
         // not a finding (Schema::statementsV4).
         if (!$rows) {
-            return ['emitted' => 0, 'published' => $this->publish($generationId, $g), 'why' => null];
+            return ['emitted' => 0, 'published' => $this->publish($generationId, $g), 'read' => 0,
+                    'why' => null];
         }
+
+        // The page's records' groups, in one call.
+        $groupOf = [];
+        $read = 0;
+        if ($dags !== null) {
+            $ids = [];
+            foreach ($rows as $r) $ids[(string) $r[2]] = true;
+            $got = $dags(array_map('strval', array_keys($ids)));
+            if (!is_array($got) || empty($got['ok']) || !isset($got['dags']) || !is_array($got['dags'])) {
+                return ['emitted' => 0, 'published' => false, 'read' => 0, 'why' => self::NO_DAGS];
+            }
+            $groupOf = $got['dags'];
+            $read = isset($got['read']) ? max(0, (int) $got['read']) : 0;
+        }
+        $ordinals = (isset($this->deps['ordinals']) && is_array($this->deps['ordinals']))
+            ? $this->deps['ordinals'] : [];
 
         $key = isset($this->deps['hmacKey']) ? $this->deps['hmacKey'] : null;
         $cursor = $g['emit_cursor'];
@@ -596,11 +645,14 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $event = self::eventOrNull($r[3]);
             $loc = ['record' => $r[2], 'event_id' => $event, 'instance' => (int) $r[4],
                     'host_form' => $r[5], 'field' => $r[6], 'rule_source_id' => $r[7],
-                    'reason_code' => 'duplicate'];
-            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,0,?,?,0,0,?,?)';
+                    'reason_code' => self::REASON];
+            $ord = isset($ordinals[(string) $r[7]]) ? max(0, (int) $ordinals[(string) $r[7]]) : 0;
+            $dag = (isset($groupOf[(string) $r[2]]) && is_string($groupOf[(string) $r[2]])
+                    && $groupOf[(string) $r[2]] !== '') ? $groupOf[(string) $r[2]] : null;
+            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)';
             foreach ([$this->pid, $generationId, Hmac::findingIdentity($this->pid, $loc, $key),
                       $this->seq, $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
-                      $r[7], $r[8], 'unique', 'duplicate', $g['group_hmac'],
+                      $r[7], $r[8], $ord, 'unique', self::REASON, $dag, $g['group_hmac'],
                       $g['candidate_epoch']] as $v) {
                 $flat[] = $v;
             }
@@ -621,7 +673,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
              record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
-             group_hmac, stage_epoch)
+             dag_key, group_hmac, stage_epoch)
             VALUES ' . implode(',', $marks) . '
             ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
         $emitted = count($marks);
@@ -629,7 +681,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             . ' SET emit_cursor = ?
                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return ['emitted' => $emitted, 'published' => false, 'why' => null];
+        return ['emitted' => $emitted, 'published' => false, 'read' => $read, 'why' => null];
     }
 
     /**

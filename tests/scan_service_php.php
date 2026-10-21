@@ -48,6 +48,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
+    // The finalizer's re-read compares values as Logic::lookupKey (W7-R4 block).
+    require_once __DIR__ . '/../php/Logic.php';
     require_once __DIR__ . '/scan_fault_support.php';
 
     $n = 0; $fail = 0;
@@ -2504,6 +2506,11 @@ namespace INSPIRE\UniversalValidator\Scan {
         && ScanService::ENGINE_REVISION !== 'engine-1');
     check('R3G-4: a different revision is a different fingerprint',
         !ScanPlanner::fingerprintMatches($gfp('engine-1'), $gfp(ScanService::ENGINE_REVISION)));
+    // W7-R4 changed what a duplicate finding carries, its identity included,
+    // so a run the engine-4 evaluator began is not finished by this one.
+    check('R3G-4: the duplicates\' new ordinal, group and reason moved the revision past engine-4',
+        ScanService::ENGINE_REVISION !== 'engine-4'
+        && !ScanPlanner::fingerprintMatches($gfp('engine-4'), $gfp(ScanService::ENGINE_REVISION)));
     check('R3G-4: start() fingerprints the run with this revision',
         !empty($gst['ok']) && ScanPlanner::fingerprintMatches($gs->run(160, $gid)['fingerprint'],
                                                              $gfp(ScanService::ENGINE_REVISION)));
@@ -2889,6 +2896,67 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W7-N8: a run that stored exactly its budget and left nothing out is not truncated',
         $row['terminal'] === ScanOutcome::COMPLETE && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
         && (int) $row['detail_rows'] === 3 && $active === 3 && $last['status']['findings'] === 3);
+}
+
+/* =====================================================================
+ * W7-R4  THE FINALIZER IS GIVEN EACH RULE'S ORDINAL AND EACH RECORD'S GROUP
+ *
+ * The service builds the duplicate finalizer, so it is the one that has the
+ * plan (the ordinals) and the scan's read (the groups). The groups a verify
+ * read saw are kept for the emit after it, so that page reads nothing more.
+ * ===================================================================== */
+{
+    $plan = ['ruleIds' => [0 => ['source_id' => 'src-a', 'revision' => 'r'],
+                           1 => ['source_id' => 'src-b', 'revision' => 'r'],
+                           2 => ['source_id' => 'src-a', 'revision' => 'r']]];
+    check('W7-R4: a rule\'s ordinal is its place in the plan plus one, the lower where two share a source',
+        ScanService::ruleOrdinals($plan) === ['src-a' => 1, 'src-b' => 2]
+        && ScanService::ruleOrdinals([]) === []);
+
+    // The group of a record node: event rows and repeat instances, in order.
+    check('W7-R4: a record node\'s group is the first non-empty one on its rows',
+        ScanService::dagOfNode(['1' => ['redcap_data_access_group' => ''], '2' => ['redcap_data_access_group' => 'site_b']]) === 'site_b'
+        && ScanService::dagOfNode(['1' => ['a' => 'x'], 'repeat_instances' => ['1' => ['f' => ['2' => ['redcap_data_access_group' => 'site_c']]]]]) === 'site_c'
+        && ScanService::dagOfNode(['1' => ['a' => 'x']]) === null);
+
+    $reads = [];
+    $read = function (array $ids) use (&$reads) {
+        $reads[] = array_map('strval', $ids);
+        $d = [];
+        foreach ($ids as $id) {
+            if ((string) $id === 'GONE') continue;
+            $d[(string) $id] = ['1' => ['sid' => 'ID-7', 'redcap_data_access_group' => (string) $id === 'R1' ? 'site_a' : '']];
+        }
+        return ['ok' => true, 'data' => $d, 'why' => null];
+    };
+    $svcR = new ScanService(new \SourceModule());
+    $finOf = new \ReflectionMethod(ScanService::class, 'finalizer');
+    $finOf->setAccessible(true);
+    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan]);
+    $depsP = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
+    $depsP->setAccessible(true);
+    $fd = $depsP->getValue($finR);
+    check('W7-R4: the service gives its finalizer the plan\'s ordinals and a groups reader',
+        isset($fd['ordinals']) && $fd['ordinals'] === ['src-a' => 1, 'src-b' => 2]
+        && isset($fd['dags']) && is_callable($fd['dags']));
+    // Verify reads R1 and R2; the emit after it reads nothing for them.
+    $fd['read']([['record' => 'R1', 'event_id' => 1, 'instance' => 1, 'field' => 'sid', 'form' => null],
+                 ['record' => 'R2', 'event_id' => 1, 'instance' => 1, 'field' => 'sid', 'form' => null]]);
+    $g1 = $fd['dags'](['R1', 'R2']);
+    check('W7-R4: the groups a verify read saw serve the emit after it, with no second read',
+        $g1['ok'] === true && $g1['dags'] === ['R1' => 'site_a', 'R2' => null] && $g1['read'] === 0
+        && count($reads) === 1);
+    // A record not seen yet is read once; one the read does not return has no group.
+    $g2 = $fd['dags'](['R1', 'R3', 'GONE']);
+    check('W7-R4: the rest are read in one call, and a record the read does not return has no group',
+        $g2['ok'] === true && $g2['dags'] === ['R1' => 'site_a', 'R3' => null, 'GONE' => null]
+        && $g2['read'] === 2 && count($reads) === 2 && $reads[1] === ['R3', 'GONE']);
+    // A read that fails is not "no group".
+    $failing = ScanService::dagsFor(['R9'], function (array $ids) {
+        return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
+    }, new \ArrayObject());
+    check('W7-R4: a groups read that fails is ok:false, never a list of records with no group',
+        $failing['ok'] === false && $failing['dags'] === []);
 }
 }
 
