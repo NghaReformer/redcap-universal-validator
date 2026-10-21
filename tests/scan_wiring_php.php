@@ -104,7 +104,8 @@ namespace {
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
-        'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
+        // ScanAuthorization::preFenceStatus stood here until ScanService::
+        // statusOf() called it (H10 part 1, with review R5-1).
 
         // -- wave 11, the report. It could not have been built earlier:
         //    findings() filters on generation_id alone and generation_id was

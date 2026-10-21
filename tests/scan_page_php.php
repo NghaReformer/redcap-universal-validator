@@ -1855,6 +1855,20 @@ namespace {
         check('PREFILL: a run with no total says it is preparing, not 0 of 0',
             $prep['counts'] === 'Preparing' && $prep['pct'] === null);
 
+        // H10 part 1: a group-scoped run that has not proved its scope gives
+        // its status without counts. The panel says why in their place, shows
+        // no findings line rather than "not counted, because the scan ended",
+        // and draws the bar indeterminate.
+        $AZ = '\INSPIRE\UniversalValidator\Scan\ScanAuthorization';
+        $held = $V::panelPrefill($AZ::preFenceStatus(['ok' => true, 'phase' => 'scanning',
+            'terminal' => null, 'total' => 10, 'done' => 3, 'settled' => 3, 'findings' => 2,
+            'detailRows' => 2, 'detailBytes' => 40, 'active' => true]));
+        check('PREFILL: H10 a run that has not proved its group scope says so in place of its counts',
+            $held['counts'] === $AZ::WITHHELD && $held['found'] === '' && $held['pct'] === null
+            && $held['stored'] === null && $held['phase'] === 'Checking records' && $held['active'] === true);
+        check('PREFILL: H10 and a withheld status with no sentence still gets one, never a count',
+            $V::countsText(['ok' => true, 'withheld' => true, 'total' => 10, 'done' => 3]) === $AZ::WITHHELD);
+
         $end = $V::panelPrefill(['ok' => true, 'phase' => 'terminal', 'terminal' => 'complete',
             'coverage' => 'manifest-complete', 'detail' => 'complete', 'total' => 10,
             'done' => 10, 'findings' => 0, 'active' => false]);
@@ -2010,7 +2024,7 @@ namespace {
         $sentences = ['stalled', 'paused', 'stopping',
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
-                      'notCertified', 'ruleProblem', 'ruleProblems'];
+                      'notCertified', 'ruleProblem', 'ruleProblems', 'withheld'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2020,7 +2034,8 @@ namespace {
         check('LABELS: none of them carries an apostrophe into the script block',
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
-        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues'] as $k) {
+        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
+                  'withheld'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

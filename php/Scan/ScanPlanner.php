@@ -76,6 +76,8 @@ final class ScanPlanner
     private $store;
     /** @var string the module's protected secret */
     private $key;
+    /** @var bool whether the slice step() is running has committed a page of the walk */
+    private $moved = false;
 
     public function __construct(ScanStore $store, $key)
     {
@@ -330,13 +332,19 @@ final class ScanPlanner
      * may refuse that write too, and the lease then lapses as it always did.
      *
      * @return array{ok:bool, phase:string, frozen:bool, empty:bool, total:?int,
-     *               listed:int, stop:?string, why:?string, stats:array}
-     *         `listed` is what THIS request listed; `stats` the walk so far.
+     *               listed:int, moved:bool, stop:?string, why:?string, stats:array}
+     *         `listed` is what THIS request listed inside the run's scope (review
+     *         R5-1); `moved` whether it committed a page of the walk at all, in
+     *         scope or not, which is what the page paces itself by; `stats` the
+     *         walk so far, every row read, and never shown.
      */
     public function step($pid, $runId, array $req)
     {
+        $this->moved = false;
         try {
-            return $this->listSlice($pid, $runId, $req);
+            $out = $this->listSlice($pid, $runId, $req);
+            $out['moved'] = $this->moved;
+            return $out;
         } catch (\Throwable $e) {
             $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
             if ($owner !== '') {
@@ -458,8 +466,10 @@ final class ScanPlanner
                 }
                 $batch = [];
                 foreach ($pg['rows'] as $row) {
+                    // THE WALK'S OWN COUNT, every row read: it is kept on the
+                    // plan row and never shown. $listedNow, which the work
+                    // answer reports, is counted below, inside the scope.
                     $stats['listed']++;
-                    $listedNow++;
                     // BOTH SIDES ARE GROUP IDS. $row['dag'] is
                     // redcap_record_list.dag_id (or the __GROUPID__ value on the
                     // data-table fallback), which REDCap stores as the numeric
@@ -476,6 +486,11 @@ final class ScanPlanner
                         $stats['outOfScope']++;
                         continue;
                     }
+                    // ONLY WHAT THE SCOPE ADMITS IS REPORTED (review R5-1).
+                    // Counted per row read, this told a reader confined to one
+                    // group how many records the other groups hold, a page at
+                    // a time; CatchUp::step() answers its `listed` the same way.
+                    $listedNow++;
                     $batch[] = ['id_bin' => $row['id'],
                                 'hash' => Hmac::raw(Hmac::P_RECORD, $pid, $row['id'], $this->key),
                                 'dag' => $row['dag']];
@@ -513,8 +528,9 @@ final class ScanPlanner
                     // Nothing of this page was written; it is not counted.
                     $stats['listed'] -= count($pg['rows']);
                     $stats['outOfScope'] -= (count($pg['rows']) - count($batch));
-                    return $this->notPlanning($pid, $runId, $req, $listedNow - count($pg['rows']), $stats);
+                    return $this->notPlanning($pid, $runId, $req, $listedNow - count($batch), $stats);
                 }
+                $this->moved = true;
                 $appended += (int) $n;
                 $stats['appended'] = $appended;
                 $stats['pages']++;

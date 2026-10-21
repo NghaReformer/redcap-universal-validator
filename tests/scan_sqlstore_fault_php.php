@@ -1306,6 +1306,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     $churnDb = function (array $ids) {
         return new class($ids) implements ScanDb {
             public $index; public $data; public $extra = [];
+            /** @var array record id => the group id the index gives it (none: no group) */
+            public $dags = [];
             public $status = 'COMPLETE'; public $stamp = '2026-10-21 08:00:00';
             public $statusColumn = true; public $stampColumn = true; public $statusFails = false;
             public $dataTable = 'redcap_data'; public $hasData = true; public $dataFails = false;
@@ -1383,7 +1385,10 @@ namespace INSPIRE\UniversalValidator\Scan {
                 }
                 $ids = array_slice($ids, 0, $lim);
                 $dag = strpos($sql, 'dag_id') !== false;
-                return array_map(function ($r) use ($dag) { return $dag ? [$r, null] : [$r]; }, $ids);
+                $dags = $this->dags;
+                return array_map(function ($r) use ($dag, $dags) {
+                    return $dag ? [$r, isset($dags[$r]) ? $dags[$r] : null] : [$r];
+                }, $ids);
             }
             public function exec($sql, array $params = []) {}
             public function execNoCount($sql, array $params = []) {}
@@ -1686,6 +1691,37 @@ namespace INSPIRE\UniversalValidator\Scan {
         ['source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'], 'budget' => false]));
     check('R5-7: a start over a project with no records is refused, and no run is created',
         $p7['ok'] === false && $p7['why'] === ScanPlanner::EMPTY_PROJECT && $s7->run(88, 1) === null);
+
+    // R5-1: A GROUP-SCOPED SLICE REPORTS ONLY WHAT ITS SCOPE ADMITS. `listed`
+    // counted every row the walk read, so a reader confined to group 7 learnt,
+    // a page at a time, how many records the other groups hold. One record in
+    // ten is group 7's, and none on the second page: that slice lists nothing
+    // the reader may count, and still says the walk moved.
+    $db = $churnDb($thousand);
+    foreach ($thousand as $k => $id) {
+        if ($k % 10 === 9 && ($k < 100 || $k >= 200)) $db->dags[$id] = '7';
+        else $db->dags[$id] = '31';
+    }
+    $s1 = new ArrayScanStore();
+    $p1 = (new ScanPlanner($s1, $walkKey))->plan(88, array_merge($walkReq, ['dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid1 = (int) $p1['run']['run_id'];
+    $each1 = [];
+    $moved1 = [];
+    for ($i = 1; $i <= 12 && $s1->run(88, $rid1)['phase'] === ScanPhase::PLANNING; $i++) {
+        $o1 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $st1 = (new ScanPlanner($s1, $walkKey))->step(88, $rid1, array_merge($walkReq, ['dagFilter' => '7',
+            'source' => $o1['source'], 'budget' => $spentBudget(),
+            'owner' => 'req' . $i, 'epoch' => (int) $s1->run(88, $rid1)['lease_epoch']]));
+        $each1[] = $st1['listed'];
+        $moved1[] = $st1['moved'];
+    }
+    check('R5-1: a group-scoped slice counts only the records of its own group',
+        $each1 === [0, 10, 10, 10, 10, 10, 10, 10, 10]
+        && (int) $s1->run(88, $rid1)['manifest_total'] === 90);
+    check('R5-1: and a slice whose page held none of them still says the walk moved',
+        $moved1 === array_fill(0, 9, true));
 }
 
 namespace {

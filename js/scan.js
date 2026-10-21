@@ -119,8 +119,15 @@
      * number before "of" is records EXAMINED; what was not is said beside it.
      */
     function countsText(st, p) {
+        var L = labels();
+        // A group-scoped run that has not proved its scope carries no counts
+        // (H10 part 1); the server says why, and that is the line.
+        if (st.withheld) {
+            if (typeof st.withheldWhy === 'string' && st.withheldWhy) return st.withheldWhy;
+            return L.withheld || 'This scan covers one Data Access Group, so its counts are shown once it has confirmed which records belong to that group.';
+        }
         if (!st.total) return 'Preparing';
-        var L = labels(), excluded = st.excluded | 0, removed = st.removed | 0, line;
+        var excluded = st.excluded | 0, removed = st.removed | 0, line;
         if (excluded <= 0 && removed <= 0) {
             line = fill(L.plain || '{done} of {total} records', { done: st.done, total: st.total });
         } else {
@@ -169,6 +176,8 @@
      * ScanPageView::foundText() builds the same string.
      */
     function foundText(st) {
+        // Withheld is not uncounted: the counts line has said why.
+        if (st.withheld) return '';
         var f = st.findings, L = labels();
         if (typeof f !== 'number' || f < 0 || f !== Math.floor(f)) {
             return L.foundUnknown
@@ -481,7 +490,11 @@
      * would otherwise be read as having moved and re-asked immediately.
      */
     function progressed(r, st) {
-        var moved = (((r.worked | 0) + (r.listed | 0) + (r.requeued | 0)
+        // `moved` is the server's own yes or no. A group-scoped run gives no
+        // counters until it has proved its scope (H10 part 1), and a planning
+        // page holding only other groups' records lists nothing a reader may
+        // count (review R5-1); both still moved the run.
+        var moved = (r.moved === true) || (((r.worked | 0) + (r.listed | 0) + (r.requeued | 0)
                     + (r.blocked | 0) + (r.findings | 0)) > 0);
         if (st) {
             if (!moved && UV.state.seen) {

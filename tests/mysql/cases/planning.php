@@ -954,3 +954,50 @@ $NEIGHBOUR = uv_neighbour($PID);
         $emOpen['ok'] === false && empty($emOpen['empty']));
     $store->finish($emId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
 }
+
+/*
+ * R5-1: A GROUP-SCOPED SLICE REPORTS ONLY WHAT ITS SCOPE ADMITS.
+ *
+ * The planner's `listed` counted every row the walk read, so the work answers
+ * of a run confined to one group said how many records the other groups hold,
+ * a page at a time. 300 records, one in ten in group 7 and none of them on
+ * the second page of 100: that slice lists nothing in scope and still moved.
+ */
+{
+    $SC = 924;
+    uv_redcap_project($A, $SC);
+    $v = array();
+    for ($i = 1; $i <= 300; $i++) {
+        $g = ($i % 10 === 0 && ($i <= 100 || $i > 200)) ? '7' : '31';
+        $v[] = '(' . $SC . ", '" . sprintf('S%03d', $i) . "', " . $g . ')';
+    }
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $v));
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    $scReq = uv_plan_request(array('pageSize' => 100, 'dagFilter' => '7'));
+    $scSpent = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->plan($SC,
+        array_merge($scReq, array('source' => $MS::open($dbA, $SC, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => $scSpent())));
+    $scId = (int) $first['run']['run_id'];
+    $each = array();
+    $moved = array();
+    for ($r = 1; $r <= 5 && $store->run($SC, $scId)['phase'] === 'planning'; $r++) {
+        $s = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($SC, $scId,
+            array_merge($scReq, array('source' => $MS::open($dbA, $SC, array('pk' => 'record_id'))['source'],
+                'budget' => $scSpent(), 'owner' => 'req' . $r,
+                'epoch' => (int) $store->run($SC, $scId)['lease_epoch'], 'attempts' => 3, 'leaseSeconds' => 300)));
+        $each[] = $s['listed'];
+        $moved[] = $s['moved'];
+    }
+    $scRun = $store->run($SC, $scId);
+    check('R5-1: a group-scoped slice counts only the records of its own group',
+        $first['ok'] === true && $each === array(0, 10) && $scRun['phase'] === 'scanning'
+        && (int) $scRun['manifest_total'] === 20);
+    check('R5-1: and a slice whose page held none of them still says the walk moved',
+        $moved === array(true, true));
+    $store->finish($scId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}

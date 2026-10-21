@@ -390,6 +390,7 @@ class ScanPageView
             'notCertified'    => self::NOT_CERTIFIED,
             'ruleProblem'     => self::RULE_PROBLEM,
             'ruleProblems'    => self::RULE_PROBLEMS,
+            'withheld'        => Scan\ScanAuthorization::WITHHELD,
         ];
     }
 
@@ -403,6 +404,11 @@ class ScanPageView
      */
     public static function foundText($status)
     {
+        // WITHHELD IS NOT UNCOUNTED (H10 part 1). A group-scoped run that has
+        // not proved its scope carries no findings count by design, and the
+        // counts line already says why; "not counted, because the scan ended"
+        // would be false of a run still going.
+        if (is_array($status) && !empty($status['withheld'])) return '';
         $f = (is_array($status) && array_key_exists('findings', $status)) ? $status['findings'] : null;
         if (!is_int($f) && !(is_string($f) && ctype_digit($f))) return self::FOUND_UNKNOWN;
         $f = (int) $f;
@@ -474,6 +480,13 @@ class ScanPageView
         $i = function ($k, $d = 0) use ($status) {
             return (is_array($status) && isset($status[$k])) ? (int) $status[$k] : $d;
         };
+        // A group-scoped run that has not proved its scope says so in place of
+        // its counts (H10 part 1), in the server's words.
+        if (is_array($status) && !empty($status['withheld'])) {
+            return (isset($status['withheldWhy']) && is_string($status['withheldWhy'])
+                    && $status['withheldWhy'] !== '')
+                ? $status['withheldWhy'] : Scan\ScanAuthorization::WITHHELD;
+        }
         $total = $i('total');
         if ($total <= 0) return 'Preparing';
         $done = $i('done');

@@ -105,6 +105,12 @@ final class ScanService
     private $plans;
     /** @var ?ScanStore the store a test handed in; null is SqlScanStore over $db */
     private $givenStore;
+    /**
+     * @var bool whether the planning slice of the work request being answered
+     * committed a page of the walk. Set by the planner workerDeps() hands the
+     * worker; read once, by disclosed().
+     */
+    private $planMoved = false;
 
     /**
      * @param object     $module the module
@@ -426,6 +432,7 @@ final class ScanService
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'changed',
                     'why' => self::CONFIG_CHANGED, 'status' => $this->statusOf($pid, $runId, [])];
         }
+        $this->planMoved = false;
         $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode,
                                                            $config['policyRevisionNow']));
         $r = $worker->work($pid, $runId);
@@ -441,8 +448,8 @@ final class ScanService
         // either fails again or answers from a state nobody should trust. The
         // caller gets a refusal shaped like every other refusal.
         if (isset($r['stop']) && $r['stop'] === 'storage') {
-            return array_merge($r, ['status' => ['ok' => false,
-                                                 'why' => ScanStoreUnavailable::OPERATOR_TEXT]]);
+            return $this->disclosed($run, $r, ['ok' => false,
+                                               'why' => ScanStoreUnavailable::OPERATOR_TEXT]);
         }
 
         // Promotion is attempted on every pass, not only the one that finishes.
@@ -486,7 +493,40 @@ final class ScanService
         // sent finish() ended the run, and a census taken before that write
         // must not describe the run after it - so then status() reads again.
         $known = empty($p['wrote']) ? ['run' => $p['run'], 'census' => $p['census']] : [];
-        return array_merge($r, ['status' => $this->statusOf($pid, $runId, $known)]);
+        return $this->disclosed($run, $r, $this->statusOf($pid, $runId, $known));
+    }
+
+    /**
+     * The worker's answer as the reader may see it, with the status beside it.
+     *
+     * `moved` says whether this request moved the run at all: a counter above
+     * zero, a planning page committed, or a new phase. It is what the page
+     * paces itself by, and since review R5-1 `listed` alone cannot say it: a
+     * group-scoped slice whose page held only other groups' records lists
+     * nothing the reader may count, and the walk moved all the same.
+     *
+     * A RUN THAT HAS NOT PROVED ITS SCOPE GIVES NO COUNTS (H10 part 1). The
+     * counters are what the run's counts are summed from, so a status that
+     * withholds the counts withholds them here too - and so does a status that
+     * could not be given at all, for a group-scoped run: unread is not proved.
+     *
+     * @param array $before the run row as this request first read it
+     */
+    private function disclosed(array $before, array $r, array $status)
+    {
+        $sum = 0;
+        foreach (['worked', 'requeued', 'blocked', 'findings', 'listed'] as $k) {
+            if (isset($r[$k])) $sum += max(0, (int) $r[$k]);
+        }
+        $moved = $sum > 0 || $this->planMoved
+              || (isset($r['phase']) && isset($before['phase']) && (string) $r['phase'] !== (string) $before['phase']);
+        $scoped = isset($before['scope_dag']) && $before['scope_dag'] !== null && $before['scope_dag'] !== '';
+        $r['moved'] = $moved;
+        if (!empty($status['withheld']) || ($scoped && empty($status['ok']))) {
+            $r = ScanAuthorization::preFenceWork($r, $moved);
+        }
+        $r['status'] = $status;
+        return $r;
     }
 
     /**
@@ -534,11 +574,16 @@ final class ScanService
             // closure failing before anything is counted.
             'planner'   => function ($runId, array $slice) use ($pid, $store, $run) {
                 $planner = new ScanPlanner($store, $this->key());
-                return $planner->step($pid, $runId, array_merge($slice, [
+                $res = $planner->step($pid, $runId, array_merge($slice, [
                     'source'    => $this->openSource($pid),
                     'dagFilter' => isset($run['scope_dag']) ? $run['scope_dag'] : null,
                     'pageSize'  => ScanPlanner::PAGE_SIZE,
                 ]));
+                // Whether the walk moved, which `listed` no longer says for a
+                // group-scoped slice whose page held only other groups'
+                // records (review R5-1). See disclosed().
+                $this->planMoved = is_array($res) && !empty($res['moved']);
+                return $res;
             },
             'note'      => function ($event, array $context) {
                 $this->note($event, $context);
@@ -628,8 +673,16 @@ final class ScanService
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
         $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        // A GROUP-SCOPED RUN SHOWS NO COUNTS UNTIL ITS SCOPE IS PROVED AT THE
+        // TARGET FENCE (H10 part 1). Its list is the group as planning read it,
+        // and records move between groups while it runs; until catch-up has
+        // walked the window, a total, a findings count or a percentage is a
+        // claim about a scope nobody has established. preFenceStatus() keeps
+        // the phase, the verdict and the controls. The findings read is not
+        // made for a status that will not carry it.
+        $proved = ScanAuthorization::scopeProved($run);
 
-        return [
+        $full = [
             'ok'        => true,
             'run_id'    => (int) $run['run_id'],
             'phase'     => $run['phase'],
@@ -651,7 +704,7 @@ final class ScanService
             'paused'    => $progress['paused'],
             'stopping'  => $progress['stopping'],
             'idleSeconds' => $progress['idleSeconds'],
-            'findings'  => ScanPromotion::findingsOf($store, $run),
+            'findings'  => $proved ? ScanPromotion::findingsOf($store, $run) : null,
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
@@ -659,6 +712,7 @@ final class ScanService
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
         ] + self::decisionOf($run);
+        return $proved ? $full : ScanAuthorization::preFenceStatus($full);
     }
 
     /**

@@ -2681,6 +2681,149 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * H10 part 1 (with review R5-1)  A GROUP-SCOPED RUN SHOWS NO COUNT UNTIL
+ * ITS SCOPE IS PROVED AT THE TARGET FENCE
+ *
+ * 3000 records, 200 of them in group 7, read by a user confined to group 7;
+ * none of the group's records is on the walk's second page of 1000.
+ * Until catch-up has walked the window to the target fence, the run's list
+ * is the group as planning read it, so no count describes an established
+ * scope: the status keeps its phase, its flags and Stop, and the work
+ * answers keep `moved` (what the page paces itself by) and nothing else
+ * that counts. The planner's own `listed` is pinned in
+ * tests/scan_sqlstore_fault_php.php.
+ * ===================================================================== */
+{
+    $gs = new ArrayScanStore();
+    $gm = new class($gs) extends \E2eModule {
+        public $dagOf = [];
+        /** @var float one read of record data takes this long, then reads are quick again */
+        public $readSleep = 0.0;
+        public function query($sql, $params = [])
+        {
+            if (strpos($sql, 'log_event_table') === false
+                    && (strpos($sql, 'information_schema.columns') !== false
+                        || strpos($sql, 'redcap_record_list') !== false
+                        || strpos($sql, 'redcap_projects') !== false
+                        || strpos($sql, 'FROM redcap_data') !== false)) {
+                $rows = [];
+                foreach ($this->records as $id) $rows[] = [$id, isset($this->dagOf[$id]) ? $this->dagOf[$id] : null];
+                $this->index->rows = $rows;
+                return $this->index->select($sql, $params);
+            }
+            return parent::query($sql, $params);
+        }
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $ctx = parent::durableScanContext($pid, $opts, $dag);
+            $read = $ctx['read'];
+            $self = $this;
+            $ctx['read'] = function (array $ids) use ($read, $self) {
+                if ($self->readSleep > 0) { usleep((int) ($self->readSleep * 1e6)); $self->readSleep = 0.0; }
+                return $read($ids);
+            };
+            return $ctx;
+        }
+    };
+    $gm->records = [];
+    for ($i = 1; $i <= 3000; $i++) {
+        $id = sprintf('G%04d', $i);
+        $gm->records[] = $id;
+        $gm->dagOf[$id] = ($i % 10 === 0 && ($i <= 1000 || $i > 2000)) ? '7' : '31';
+    }
+    $gm->index = new \MoodySourceDb();
+    $gm->index->slowFor = 3.2;                // past the 3 s browser target: the start lists one page
+    $gm->user->rights['group_id'] = 7;
+    $keptNames = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'site_a', 31 => 'site_b'];
+    $counts = ['total', 'done', 'settled', 'excluded', 'removed', 'findings',
+               'detailRows', 'detailBytes', 'ruleProblems', 'notExamined'];
+    $counters = ['worked', 'requeued', 'blocked', 'findings', 'listed'];
+
+    $gst = (new ScanService($gm, $gs))->start(162);
+    $gid = (int) $gst['run_id'];
+    $g0 = (new ScanService($gm, $gs))->status(162, $gid);
+    check('H10: a group-scoped run that is still listing shows its phase and Stop, and no count',
+        !empty($gst['ok']) && $gs->run(162, $gid)['scope_dag'] === '7'
+        && $g0['ok'] === true && $g0['phase'] === ScanPhase::PLANNING && $g0['mayCancel'] === true
+        && $g0['withheld'] === true && $g0['withheldWhy'] === ScanAuthorization::WITHHELD
+        && !array_intersect($counts, array_keys($g0)));
+
+    // A planning slice that lists one more page and runs out of time. The
+    // page holds none of group 7's records, so nothing the reader may count
+    // moved: the planner's own word is what says the walk did.
+    $gm->index->slowFor = 3.2;
+    $gw1 = (new ScanService($gm, $gs))->work(162, $gid);
+    check('H10: a work answer while the group is being listed carries no counter, and says the run moved',
+        $gw1['ok'] === true && !array_intersect($counters, array_keys($gw1))
+        && $gw1['moved'] === true && $gw1['withheld'] === true
+        && $gs->run(162, $gid)['phase'] === ScanPhase::PLANNING
+        && $gw1['status']['withheld'] === true && !array_intersect($counts, array_keys($gw1['status'])));
+
+    // The last page, the freeze, and a scan whose first read runs out of time.
+    $gm->readSleep = 3.2;
+    $gw2 = (new ScanService($gm, $gs))->work(162, $gid);
+    $gRow = $gs->run(162, $gid);
+    check('H10: and so does one that froze the group\'s list and examined records, before the fence',
+        $gw2['ok'] === true && !array_intersect($counters, array_keys($gw2))
+        && $gw2['moved'] === true && $gw2['withheld'] === true
+        && (int) $gRow['manifest_total'] === 200 && (int) $gRow['manifest_done'] > 0
+        && empty($gRow['fence_target']));
+    $g1 = (new ScanService($gm, $gs))->status(162, $gid);
+    check('H10: the status of a frozen run that has not reached the fence gives no count either',
+        $g1['ok'] === true && $g1['withheld'] === true && !array_intersect($counts, array_keys($g1))
+        && $g1['phase'] === $gRow['phase']);
+
+    // Driven to the end: every answer given before the fence withholds.
+    $leaks = 0;
+    for ($i = 0; $i < 10 && $gs->run(162, $gid)['terminal'] === null; $i++) {
+        $a = (new ScanService($gm, $gs))->work(162, $gid);
+        $proved = ScanAuthorization::scopeProved($gs->run(162, $gid));
+        if (!$proved && (array_intersect($counters, array_keys($a)) || empty($a['withheld']))) $leaks++;
+    }
+    $gEnd = (new ScanService($gm, $gs))->status(162, $gid);
+    check('H10: no answer given before the scope was proved carried a count', $leaks === 0);
+    check('H10: once catch-up has proved the scope at the target fence, the counts are the group\'s own',
+        $gEnd['ok'] === true && empty($gEnd['withheld']) && $gEnd['terminal'] !== null
+        && $gEnd['total'] === 200 && !empty($gs->run(162, $gid)['fence_target']));
+
+    // The same project, read by a user with no group: nothing is withheld.
+    $us = new ArrayScanStore();
+    $um = clone $gm;
+    $um->store = $us;
+    $um->user = clone $gm->user;
+    $um->user->rights['group_id'] = null;
+    $um->index = new \MoodySourceDb();
+    $ust = (new ScanService($um, $us))->start(163);
+    $uid = (int) $ust['run_id'];
+    $u0 = (new ScanService($um, $us))->status(163, $uid);
+    $uw = (new ScanService($um, $us))->work(163, $uid);
+    check('H10: a run over the whole project is not withheld, and its answers keep their counts',
+        !empty($ust['ok']) && empty($u0['withheld']) && $u0['total'] === 3000
+        && empty($uw['withheld']) && $uw['moved'] === true && $uw['worked'] > 0
+        && empty($uw['status']['withheld']) && isset($uw['status']['total']));
+
+    // A status that could not be read at all is no proof of the scope: the
+    // answer to a request whose storage failed, for a group-scoped run, keeps
+    // no counter either, while the same answer for a whole-project run does.
+    $disc = new \ReflectionMethod(ScanService::class, 'disclosed');
+    $disc->setAccessible(true);
+    $failed = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+               'phase' => ScanPhase::SCANNING, 'done' => false, 'stop' => 'storage',
+               'why' => ScanStoreUnavailable::OPERATOR_TEXT];
+    $unread = ['ok' => false, 'why' => ScanStoreUnavailable::OPERATOR_TEXT];
+    $dScoped = $disc->invoke(new ScanService($gm, $gs),
+        ['scope_dag' => '7', 'phase' => ScanPhase::SCANNING], $failed, $unread);
+    $dWhole = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $failed, $unread);
+    check('H10: a group-scoped answer whose status could not be read withholds its counters',
+        $dScoped['withheld'] === true && $dScoped['moved'] === false
+        && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage'
+        && $dWhole['worked'] === 0 && empty($dWhole['withheld']));
+    \REDCap::$groupNames = $keptNames;
+}
+
+/* =====================================================================
  * M8  A PROJECT REDESIGNED UNDER A RUNNING SCAN ENDS IT
  *
  * Through ScanService: start() fingerprints the structure and choice sets
