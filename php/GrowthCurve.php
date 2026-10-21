@@ -15,9 +15,10 @@
  * vertically, in the chart's own units, at the largest zoom the chart allows:
  * its narrowest window is 1/MAX_ZOOM of the span ("auto"), or the whole span
  * when the rule fixes it. A window's y axis spans at least the curves inside
- * it (the browser uses the same floor, Y_FLOOR), so the smallest such range
- * over every window of that width sets how many units one unit of the drawing
- * area is.
+ * it and the reference at -EXTENT_Z and EXTENT_Z (sent as "extent", not
+ * drawn), with the same floor the browser uses (Y_FLOOR), so the smallest
+ * such range over every window of that width sets how many units one unit of
+ * the drawing area is.
  *
  * The curve is exact at the table's rows. With "lookup" "round" or "floor"
  * the reference reads the row at or below an age, a step from row to row, so
@@ -66,6 +67,17 @@ final class GrowthCurve
      * flat curve is not magnified without end. Twin: QRID_CHART.yFloor.
      */
     const Y_FLOOR = 0.1;
+    /**
+     * A chart of measurements spans at least the reference at -EXTENT_Z and
+     * EXTENT_Z over the ages it shows, so a child inside that range is drawn
+     * inside the plot when the chart draws only narrow lines (the median
+     * alone, or [25, 75]). 2 is the "usual range" line of the WHO charts; a
+     * chart that draws P3 to P97 (z +-1.88) keeps nearly the same axis, where
+     * 3 would squeeze its curves into about the middle 60% of the plot. A point past
+     * it may still fall outside and get the arrow, and it is unusual by then.
+     * A chart of z-scores has its own floor in the browser (-3 to 3).
+     */
+    const EXTENT_Z = 2.0;
     /** The most rows a table of reference values ("rows":"curve") has. */
     const MAX_CURVE_ROWS = 100;
     /** The most decimals a sent measurement has, and the largest whole number it may become. */
@@ -176,13 +188,16 @@ final class GrowthCurve
      * (the browser then always shows all of it).
      *
      * @return array|null ['d' => decimals, 'tolerance' => float (field
-     *   units), 'lines' => [[segment, ...] per curve]] where a segment is a
-     *   flat list of whole numbers [key, units, key, units, ...] (x = key /
-     *   the table's "scale", y = units / 10^d) and a gap between segments is
-     *   where no measurement above 0 has that z-score; ['why' => reason] when
-     *   the curves cannot be sent (values too large to send as whole numbers,
-     *   or more than MAX_SET_POINTS points); null when no curve has a point in
-     *   the span.
+     *   units), 'lines' => [[segment, ...] per curve], 'extent' => [low,
+     *   high]] where a segment is a flat list of whole numbers [key, units,
+     *   key, units, ...] (x = key / the table's "scale", y = units / 10^d) and
+     *   a gap between segments is where no measurement above 0 has that
+     *   z-score. "extent" holds the reference at -EXTENT_Z and EXTENT_Z as
+     *   segments, each null when the curves already reach past it at every
+     *   row (it changes no axis then); the browser reads it for the y axis
+     *   and draws nothing of it. ['why' => reason] when the curves cannot be
+     *   sent (values too large to send as whole numbers, or more than
+     *   MAX_SET_POINTS points); null when no curve has a point in the span.
      */
     public static function build(array $entry, array $table, $sex, array $zs, array $span, $scale = null, $zoom = self::MAX_ZOOM)
     {
@@ -198,20 +213,31 @@ final class GrowthCurve
         if ($kHi < $kLo) return null;
         $restricted = $entry['adjust'] === 'who-restricted';
         $keys = range($kLo, $kHi);
-        $ys = [];
-        foreach ($zs as $li => $z) {
+        $column = function ($z) use ($keys, $rows, $first, $restricted, $f) {
             $col = [];
             foreach ($keys as $k) {
                 $v = GrowthReference::valueAt($z, $rows[$k - $first], $restricted);
                 $col[] = $v === null ? null : $v / $f;
             }
-            $ys[$li] = $col;
+            return $col;
+        };
+        $ys = [];
+        foreach ($zs as $z) $ys[] = $column($z);
+        // nothing to draw when no curve has a point in the span
+        $drawn = false;
+        foreach ($keys as $i => $k) {
+            $x = $k / $ts;
+            if ($x < $lo || $x > $hi) continue;
+            foreach ($ys as $col) if ($col[$i] !== null) { $drawn = true; break 2; }
         }
-        $range = self::minRange($keys, $ys, $ts, $lo, $hi, max(1, (int) $zoom));
+        if (!$drawn) return null;
+        $ext = [$column(-self::EXTENT_Z), $column(self::EXTENT_Z)];
+        $all = array_merge($ys, $ext);
+        $range = self::minRange($keys, $all, $ts, $lo, $hi, max(1, (int) $zoom));
         if ($range === null) return null;
         $tol = self::MAX_ERROR * self::SHARE * $range / self::PLOT_HEIGHT;
         $top = 0.0;
-        foreach ($ys as $col) foreach ($col as $y) if ($y !== null && abs($y) > $top) $top = abs($y);
+        foreach ($all as $col) foreach ($col as $y) if ($y !== null && abs($y) > $top) $top = abs($y);
         $d = (int) ceil(-log10($tol / 4));
         $d = max(0, min(self::MAX_DECIMALS, $d));
         while ($d > 0 && $top * pow(10, $d) > self::MAX_UNITS) $d--;
@@ -219,32 +245,62 @@ final class GrowthCurve
             return ['why' => 'the curves of "' . $entry['id'] . '" reach values too large to send (above ' . number_format(self::MAX_UNITS, 0, '.', ',')
                 . ' in the field\'s unit). The check itself is not affected.'];
         }
-        $n = count($keys);
-        $lines = [];
         $points = 0;
-        foreach ($ys as $col) {
-            $out = [];
-            // each run of rows with a value is one segment
-            for ($a = 0; $a < $n; $a = $b + 1) {
-                while ($a < $n && $col[$a] === null) $a++;
-                if ($a >= $n) break;
-                for ($b = $a; $b + 1 < $n && $col[$b + 1] !== null; $b++);
-                $flat = [];
-                foreach (self::simplify($keys, $col, $a, $b, $tol) as $i) {
-                    $flat[] = $keys[$i];
-                    $flat[] = self::units($col[$i], $d);
-                }
-                $points += count($flat) / 2;
-                $out[] = $flat;
-            }
-            $lines[] = $out;
+        $lines = [];
+        foreach ($ys as $col) $lines[] = self::segments($keys, $col, $tol, $d, $points);
+        $extent = [];
+        foreach ($ext as $side => $col) {
+            $extent[] = self::covered($col, $ys, $side === 0) ? null : self::segments($keys, $col, $tol, $d, $points);
         }
         if ($points > self::MAX_SET_POINTS) {
             return ['why' => 'the curves of "' . $entry['id'] . '" need ' . $points . ' points to be drawn to within half a unit, more than the '
                 . self::MAX_SET_POINTS . ' one chart may send (the table\'s rows are not smooth enough). '
                 . 'The check itself is not affected.'];
         }
-        return ['d' => $d, 'tolerance' => $tol, 'lines' => $lines];
+        return ['d' => $d, 'tolerance' => $tol, 'lines' => $lines, 'extent' => $extent];
+    }
+
+    /**
+     * One curve as segments: each run of rows with a value, simplified to
+     * within $tol and written as [key, units, key, units, ...]. Adds the
+     * points kept to $points.
+     */
+    private static function segments(array $keys, array $col, $tol, $d, &$points)
+    {
+        $n = count($keys);
+        $out = [];
+        for ($a = 0; $a < $n; $a = $b + 1) {
+            while ($a < $n && $col[$a] === null) $a++;
+            if ($a >= $n) break;
+            for ($b = $a; $b + 1 < $n && $col[$b + 1] !== null; $b++);
+            $flat = [];
+            foreach (self::simplify($keys, $col, $a, $b, $tol) as $i) {
+                $flat[] = $keys[$i];
+                $flat[] = self::units($col[$i], $d);
+            }
+            $points += count($flat) / 2;
+            $out[] = $flat;
+        }
+        return $out;
+    }
+
+    /**
+     * Whether the curves $ys reach $ext at every row where $ext has a value:
+     * some curve at or below it ($low), or at or above it. The y axis then
+     * spans $ext without it.
+     */
+    private static function covered(array $ext, array $ys, $low)
+    {
+        foreach ($ext as $i => $e) {
+            if ($e === null) continue;
+            $hit = false;
+            foreach ($ys as $col) {
+                $y = $col[$i];
+                if ($y !== null && ($low ? $y <= $e : $y >= $e)) { $hit = true; break; }
+            }
+            if (!$hit) return false;
+        }
+        return true;
     }
 
     /**

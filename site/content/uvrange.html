@@ -367,8 +367,9 @@ check is the same without them. A rule that only shows needs no limits.</p>
     and the percentile. Only the point moves when the value changes.</li>
 <li>The chart fits the field's cell, 320 to 640 pixels wide. The x axis counts months
     while the chart spans less than two years, years beyond, cm for weight-for-length,
-    or the <code>chartUnit</code> of the reference (weeks for gestational age).
-    <code>"y":"z"</code> draws z-scores instead of the measurement, and
+    or the <code>chartUnit</code> of the reference (weeks for gestational age). The y axis
+    spans at least the reference at z-scores -2 to 2, so a chart of the median alone has
+    room for every child in that range. <code>"y":"z"</code> draws z-scores instead of the measurement, and
     <code>span</code> fixes the ages shown.</li>
 <li><code>"table":true</code> shows this visit's age, value, z-score and percentile;
     <code>columns</code> picks any value <code>return</code> writes. <code>"rows":"curve"</code>

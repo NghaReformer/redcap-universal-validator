@@ -3331,17 +3331,21 @@ function QRID_registerBlocker(input, fieldName, blockMode){
     var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
     if(!bad.length && !pend.length) return;
     var label = QRID_guardLabel;
-    var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; })).join(", ");
+    /* one label a line (QRID_fieldLabel folds a label's own line breaks):
+       a label may hold a comma, so a list joined by ", " reads as more
+       fields than it names */
+    var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; }))
+      .map(function(t){ return "\n• " + t; }).join("");
     var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
       e.preventDefault();
       if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s): " + names
-                              : "Cannot save yet — please wait a moment and save again: " + names);
+      window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s):" + names
+                              : "Cannot save yet — please wait a moment and save again:" + names);
       try { (bad[0] || pend[0]).focus(); } catch(_f){}
       return;
     }
-    if(window.confirm("Validation FAILED for: " + names + "\n\nSave anyway?")){
+    if(window.confirm("Validation FAILED for:" + names + "\n\nSave anyway?")){
       UV_guard.passUntil = new Date().getTime() + 2000;
     } else {
       e.preventDefault();
@@ -5054,9 +5058,11 @@ function QRID_growthChart(V, uid, width){
   function unitWord(xu){ return xu.name ? QRID_showLabel(V, "chart", xu.name, xu.word) : xu.word; }
   function sexWord(sex){ return QRID_showLabel(V, "chart", sex, sex); }
   /* the curves of one sex in the window: { lines: [{ z, text, polys }],
-     band: [lo polys, hi polys] } */
+     band: [lo polys, hi polys], extent: [polys, ...] }. extent is the
+     reference at z -2 and 2 (GrowthCurve::EXTENT_Z), sent when the lines do
+     not reach it: read for the y axis, never drawn. */
   function curvesFor(sex, win){
-    var out = { lines: [], band: [null, null] };
+    var out = { lines: [], band: [null, null], extent: [] };
     if(isZ){
       for(var i = 0; i < zs.length; i++){
         if(zs[i] !== null) out.lines.push({ z: zs[i], text: show.lines.values[i], polys: [[[win[0], zs[i]], [win[1], zs[i]]]] });
@@ -5072,6 +5078,9 @@ function QRID_growthChart(V, uid, width){
     if(set.band) for(var k = 0; k < 2; k++){
       if(set.band[k] !== null && set.band[k] !== undefined) out.band[k] = QRID_chartClip(s.lines[set.band[k]], set.xScale, s.d, win[0], win[1]);
     }
+    if(s.extent) for(var e = 0; e < s.extent.length; e++){
+      if(s.extent[e]) out.extent.push(QRID_chartClip(s.extent[e], set.xScale, s.d, win[0], win[1]));
+    }
     return out;
   }
   function draw(sex, win, pt){
@@ -5086,8 +5095,10 @@ function QRID_growthChart(V, uid, width){
     if(cv){
       for(var i = 0; i < cv.lines.length; i++) polys.push(cv.lines[i].polys);
       for(var b = 0; b < 2; b++) if(cv.band[b]) polys.push(cv.band[b]);
-      /* a z-score axis shows at least -3 to 3, so most points fall inside */
+      /* a z-score axis shows at least -3 to 3, so most points fall inside;
+         an axis of measurements at least the reference at z -2 to 2 */
       if(isZ) polys.push([[[win[0], -3], [win[1], 3]]]);
+      for(var ex = 0; ex < cv.extent.length; ex++) polys.push(cv.extent[ex]);
     }
     drawn.y = QRID_chartYRange(polys);
     if(drawn.y && isZ){ drawn.y = { lo: drawn.y.lo - drawn.y.step, hi: drawn.y.hi + drawn.y.step, step: drawn.y.step }; }
@@ -5276,7 +5287,8 @@ function QRID_growthTable(V){
   details.open = show.open !== null && show.open !== undefined ? show.open === true : !QRID_IS_SURVEY;
   QRID_showLabel(V, "table", "summary", curve ? "Reference values" : "This visit", details.appendChild(document.createElement("summary")));
   var table = QRID_htmlEl("table", { borderCollapse: "collapse", fontSize: "13px", margin: "4px 0" }, details);
-  QRID_showLabel(V, "table", "caption", ref.title, table.appendChild(document.createElement("caption")));
+  /* over the rows: Bootstrap (REDCap 17) puts every caption under its table */
+  QRID_showLabel(V, "table", "caption", ref.title, QRID_htmlEl("caption", { captionSide: "top" }, table));
   var hr = table.appendChild(document.createElement("thead")).appendChild(document.createElement("tr"));
   for(var h = 0; h < cols.length; h++){
     var th = QRID_htmlEl("th", { padding: "2px 8px", borderBottom: "1px solid #9e9e9e", textAlign: "right" }, hr);

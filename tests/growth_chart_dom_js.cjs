@@ -32,8 +32,11 @@
  *     named by their own value, and the colours by z-score,
  *   - the band between the soft limits or from one to the edge, and the
  *     legend shows it only when it is drawn,
+ *   - a chart of the median alone: its y axis spans the reference at z -2
+ *     to 2 (the "extent" the server sends), so a point at z 1.5 or -1.5 sits
+ *     inside the plot, where rc.2 drew the arrow,
  *   - the table of reference values for the sex on the page, each cell under
- *     its own header, and the table of this visit, whose cells equal the
+ *     its own header, its caption over the rows, and the table of this visit, whose cells equal the
  *     server's for the same typed values (parity), in the field's decimal
  *     mark,
  *   - what each empty state says (no sex, a code that is neither, no age),
@@ -398,6 +401,8 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
   check('the table of reference values shows the girl\'s rows (got ' + JSON.stringify(rows()[0]) + ')',
     JSON.stringify(rows()) === JSON.stringify(ROWS.female));
   check('its caption is text, never markup', tagged(tbl, 'caption')[0].textContent === '<b>WHO</b> values');
+  check('... and sits over the rows (REDCap 17\'s Bootstrap puts a caption under them)', tagged(tbl, 'caption')[0].style.captionSide === 'top'
+    && tbl.children[0] === tagged(tbl, 'caption')[0]);
   check('its headers: the age, then the values at each percentile', tagged(tbl, 'th').map((t) => t.textContent).join('|')
     === 'Age (days)|Value at percentile 3 (kg)|Value at percentile 15 (kg)|Value at percentile 50 (kg)|Value at percentile 85 (kg)|Value at percentile 97 (kg)'
     && tagged(tbl, 'th').every((t) => t.getAttribute('scope') === 'col'));
@@ -651,6 +656,50 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
   env.mlm.cbs.forEach((fn) => fn());
   check('a language the rule does not give: the default', titleOf(svg) === 'Weight for age'
     && tagged(box(env, 'weight2'), 'th')[2].textContent === 'z' && svgText(svg, 'Age (months)').length === 1);
+}
+
+// ---- 8) a chart of the median alone: the y axis spans the reference at z -2 to 2 -----------
+// Live on rc.2 (pid 149, ugc_head) the axis hugged the median: a girl of 12
+// months at z 0.81 sat on the top frame, and one at z 1.55 was the arrow.
+{
+  const ref = FX.growth['who-wfa'];
+  const set = FX.pages.median.growthCurves[ruleOf(FX.pages.median, 'weight').growthCurveKey];
+  check('the median page draws one line and carries the extent for both sexes', set.values.join() === '0'
+    && ['male', 'female'].every((s) => set[s].lines.length === 1 && set[s].extent.length === 2));
+  const G = boot('median', {}).NS.growthLogic;
+  const C = boot('median', {}).NS.chartLogic;
+  const noExtent = (cfg) => { for (const k in cfg.growthCurves) for (const s of ['male', 'female']) delete cfg.growthCurves[k][s].extent; };
+  // a girl of 365 days and one of 10 days, at z 1.5 and -1.5
+  for (const [at, x, z] of [['2026-01-10', 365, 1.5], ['2026-01-10', 365, -1.5], ['2025-01-20', 10, 1.5], ['2025-01-20', 10, -1.5]]) {
+    const w = G.valueAt(z, G.lms(ref, 'female', x), true).toFixed(2);
+    const vals = { sex: '2', dob: '2025-01-10', visit_date: at, weight: w };
+    const env = boot('median', vals);
+    const svg = svgOf(env, 'weight');
+    const ym = yMap(svg), cy = +marker(svg).getAttribute('cy');
+    check('the median alone, ' + w + ' kg at ' + x + ' days (z ' + z + '): the point sits inside the plot, not the arrow (got cy '
+      + cy + ', ' + descOf(svg) + ')', vis(marker(svg)) && !vis(arrow(svg)) && cy > GEO.top && cy < GEO.top + GEO.plotHeight
+      && Math.abs(cy - ym(+w)) < 0.06 && paths(svg).length === 1 && lineNames(svg).map((e) => e.textContent).join() === '0');
+    // the window shown spans the reference at z -2 and 2, on every row in it
+    const win = C.window(C.span(ref), x);
+    let lo = Infinity, hi = -Infinity;
+    for (let k = Math.ceil(win[0]); k <= Math.floor(win[1]); k++) {
+      const lms = G.lms(ref, 'female', k);
+      lo = Math.min(lo, G.valueAt(-2, lms, true)); hi = Math.max(hi, G.valueAt(2, lms, true));
+    }
+    check('... and its y axis spans the reference at z -2 to 2 over the window [' + win.join(', ') + '] (' + lo.toFixed(2) + ' to '
+      + hi.toFixed(2) + ' kg)', ym(lo) <= GEO.top + GEO.plotHeight + 0.5 && ym(hi) >= GEO.top - 0.5);
+    if (z === 1.5 && x === 365) {
+      const old = boot('median', vals, null, noExtent), os = svgOf(old, 'weight');
+      check('... where without the extent (rc.2) the same point was the arrow at the top edge', vis(arrow(os)) && !vis(marker(os))
+        && arrow(os).getAttribute('points').split(' ')[0].split(',')[1] === GEO.top.toFixed(1));
+    }
+  }
+  // percentiles 3 to 97 lie inside z -2 to 2, so the extent travels with
+  // them, unless the band's own curves at -2 and 2 already reach it
+  const S = FX.pages.scaled, banded = SET;
+  const p397 = S.growthCurves[S.rules.find((r) => r.fields.includes('weight')).growthCurveKey];
+  check('percentiles 3, 50 and 97: the extent too; with the band at z -2 and 2: none', p397.female.extent.length === 2
+    && ['male', 'female'].every((s) => banded[s].extent === undefined));
 }
 
 console.log('growth_chart_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
