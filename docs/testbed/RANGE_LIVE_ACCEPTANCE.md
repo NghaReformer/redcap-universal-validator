@@ -324,7 +324,7 @@ screen readers).
 | K11 | `ugc_visit` = 2027-07-10 | The charts are drawn again for a window of 0 to 3 years: "Age (years)" on `ugc_weight` and "Age in years" on `ugc_weight_z`. With 9.6 kg the tooltip reads "This visit: 9.6 kg at 2.49 years, z-score -2.78, percentile 0.3", and the amber note shows. Set `ugc_visit` back to 2026-01-10 |
 | K12 | `ugc_sex` = Female | The curves change to the girl's; the heading says "female"; the table of reference values shows the girl's values (row 365.25: 69.2, 74.0, 78.8) |
 | K13 | Collapse the "Growth chart" box of `ugc_weight` and type a new weight | The box stays closed; the note under the field still follows the value |
-| K14 | Narrow the browser window until the form's data column is under 640 pixels wide, then type a new `ugc_weight` and leave | While the window narrows the chart shrinks as a whole and nothing overflows the column. After the new value it is drawn again to the column's width (at least 320 pixels), with its text at the size it had in a wide column. Widen the window and type another value, and it grows back, up to 640 pixels |
+| K14 | Narrow the browser window until the form's data column is under 640 pixels wide, then type a new `ugc_weight` and leave | While the window narrows the chart shrinks as a whole and nothing overflows the column. After the new value it is drawn again to the column's width (its `viewBox` at least 320 units wide; a 317-pixel column draws it 310 pixels wide), with its text at the size it had in a wide column. Widen the window and type another value, and it grows back, up to 640 pixels |
 | K15 | Save the form. Open it again | The fields hold only what was typed: no chart or table value is saved. Logging shows no field the chart wrote |
 | K16 | Enable `uv_growth_chart` as a survey and open it for XE-3 | The chart and table boxes start closed. An opened box draws as on the form. The cap and span notes of K2 do not show on the survey (`ugc_arm` and `ugc_span` show nothing), and the broken rules show the survey's general notice |
 | K17 | With the charts drawn, open the browser's console | No Content Security Policy error. The chart sets its styles through each element's `style` object, which a strict `style-src` allows; the browser then shows them as `style` attributes in the markup, so those attributes are expected |
@@ -368,16 +368,21 @@ Setup:
 3. In Project Setup, "Repeating instruments and events", make
    `uv_chart_repeat` repeat on `visit_1_arm_1`.
 4. Check in Multi-Language Management that the project's languages are `en`
-   and `fr`.
+   and `fr`. On its Forms/Surveys tab, switch `uv_chart_gaps` on for both
+   languages. New forms start off in both, and with the form on in French
+   only, the page shows French with no language menu, so K19 cannot switch.
 5. Save `uv_chart_gaps` for XE-1 on 351 (`ucg_sex` = Male, `ucg_dob` =
    10-01-2025, `ucg_visit` = 2026-01-10), for XE-1 on 380 (Female, the same
    dates) and for XE-3 on 351 (Female, the same dates). Leave XE-2 without
-   `uv_chart_gaps`.
+   `uv_chart_gaps`. REDCap keeps the values of fields removed from the
+   dictionary, so a record that held these forms in an earlier run gets its
+   old values back when the fixture is added again. Check each form's values
+   before its step, and where a step needs a blank form, use a new record.
 6. K35 needs the project setting "Enable event and instance references"; the
    steps before it run with the setting off.
 
 A chart is drawn to the width of the field's data column. REDCap 17 gives
-that column about 327 pixels (K14), and the axis ticks below are the ones
+that column 317 to 327 pixels (K14), and the axis ticks below are the ones
 drawn at that width; a wider column has more ticks. "Tooltip" is the text of
 the point's `<title>`, as in K4.
 
@@ -430,4 +435,5 @@ Delete the `uv_range_test`, `uv_growth_test`, `uv_growth_more`,
 step 2. Remove the survey settings if G1, I29, J14 or K16 enabled them, the
 missing data code if section H added it, and the repeating setting of
 `uv_chart_repeat` if deleting the instrument left it. Untick "Enable event and
-instance references" if K35 ticked it.
+instance references" if K35 ticked it, and switch `uv_chart_gaps` off again in
+Multi-Language Management's Forms/Surveys tab.
