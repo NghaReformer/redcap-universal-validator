@@ -2020,9 +2020,15 @@ final class SqlScanStore implements ScanStore
      *
      * LOCK ORDER is this run's row, then the older generations' finding rows.
      * commitBatch() takes ITS run's row and then its own generation's rows, so
-     * the two never wait on each other's rows; the one meeting point is the
-     * next-key lock at the end of a closed range, which InnoDB resolves as a
-     * deadlock and this method reports as unavailable, having closed nothing.
+     * the two never wait on each other's rows. The one meeting point is the
+     * gap lock that ends a closed range in ix_page_v2, and it is a wait, not a
+     * deadlock (W8-N5, measured under REPEATABLE READ on MySQL 5.7 and MariaDB
+     * 10.5 in tests/mysql/cases/cron.php): when the completed run's own
+     * generation holds no rows, a batch inserting into the next generation
+     * waits until this page commits, and nothing waits the other way. A wait
+     * past innodb_lock_wait_timeout refuses that batch whole, for its worker
+     * to retry; a deadlock with anything else is reported unavailable, having
+     * closed nothing, and the cron asks again next pass.
      *
      * valid_to_seq IS THIS RUN'S run_seq. A newer run that completes before
      * this one has finished closing will close the rest with its own sequence,
