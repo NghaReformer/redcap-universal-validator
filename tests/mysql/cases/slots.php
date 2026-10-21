@@ -214,3 +214,29 @@ $NEIGHBOUR = uv_neighbour($PID);
             $res2['stop'] !== 'unprovisioned');
     }
 }
+
+// -- releaseAll: the module switched off (M17) ---------------------------------
+{
+    $slots = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slots->provision(3);
+    $h1 = $slots->acquire('w1', 1, 600);
+    $h2 = $slots->acquire('w2', 2, 600);
+    $freeEpoch = function () use ($dbA, $h1, $h2) {
+        $r = $dbA->select('SELECT epoch FROM ' . Schema::table('scan_worker_slot')
+            . ' WHERE slot_no NOT IN (?, ?)', array($h1['slot_no'], $h2['slot_no']));
+        return (int) $r[0][0];
+    };
+    $before = $freeEpoch();
+    check('releaseAll: frees every held slot and says how many', $slots->releaseAll() === 2);
+    $c = $slots->census();
+    check('releaseAll: none is held after it, and none was deleted', $c['total'] === 3 && $c['held'] === 0);
+    check('releaseAll: a slot nobody held is not touched', $freeEpoch() === $before);
+    check('releaseAll: a holder from before cannot renew the slot it had',
+        $slots->renew($h1['slot_no'], 'w1', $h1['epoch'], 600) === false);
+    $h3 = $slots->acquire('w3', 3, 600);
+    check('releaseAll: nor release it from under the next holder',
+        is_array($h3) && $slots->release($h3['slot_no'], 'w1', $h1['epoch']) === false
+        && $slots->census()['held'] === 1);
+    check('releaseAll: a second call has nothing to free but the new holder', $slots->releaseAll() === 1);
+}

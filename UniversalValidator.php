@@ -7534,6 +7534,90 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The module is being switched off on this server (M17).
+     *
+     * A disabled module answers no request and runs no cron, so whatever it
+     * holds now it holds until it is enabled again: a worker slot leased by a
+     * worker that will never renew it, a run keeping its project's one active
+     * slot, a maintenance pass in another process still walking the projects.
+     * In this order:
+     *
+     *   1. THE STOP MARKER, first and alone: SCAN_DISABLED_AT, the time. A
+     *      maintenance pass that began at or before it stops at its next unit
+     *      (scanMaintenance()'s `stopped`). The framework starts no new pass
+     *      for a disabled module.
+     *   2. EVERY WORKER SLOT RELEASED AND EVERY ACTIVE RUN STOPPED, as
+     *      cancelled with ScanMaintenance::DISABLED_WHY by the finisher Stop
+     *      uses. Only where the scan is switched on and its tables are
+     *      healthy, the crons' own gates: with the switch off no worker runs
+     *      and Start refuses, and an installation that never turned the scan
+     *      on has its schema inspected by nobody.
+     *   3. NOTHING DELETED, unless the installation opted in with
+     *      SCAN_DROP_ON_DISABLE (off by default). Then every table the module
+     *      created is dropped, the version table last, and the crons' saved
+     *      cursors are forgotten with the rows they pointed into.
+     *
+     * NEVER THROWS: a throw here would fail the administrator's disable.
+     */
+    public function redcap_module_system_disable($version = null)
+    {
+        try {
+            $this->setSystemSetting(self::SCAN_DISABLED_AT, (string) time());
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('marker', $e);
+        }
+        try {
+            $sys = $this->scanSystemPolicy();
+            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+                'log'    => function ($event, array $context) {
+                    $this->log($event, array_merge(['what' => 'disable'], $context));
+                },
+            ]);
+            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the durable scan is not enabled here']);
+            } elseif (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the scan tables are not ready']);
+            } else {
+                $this->log('scan-disable', $m->disable());
+            }
+            $drop = $this->getSystemSetting(self::SCAN_DROP_ON_DISABLE);
+            if ($drop === true || $drop === 1 || $drop === '1' || $drop === 'true') {
+                $n = $m->dropTables();
+                // Empty, which scanCronState() reads as a pass from the start.
+                foreach (['reap', 'retention'] as $what) $this->setSystemSetting('scan-cron-state-' . $what, '');
+                $this->log('scan-disable-dropped', ['tables' => (int) $n]);
+            }
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('disable', $e);
+        }
+    }
+
+    /** The disable hook's failure, logged as class and redacted detail, never thrown. */
+    private function scanDisableFailed($step, \Throwable $e)
+    {
+        try {
+            $this->log('scan-disable-failed', ['step' => (string) $step, 'error' => get_class($e),
+                'detail' => Scan\DbError::safe($e)]);
+        } catch (\Throwable $ignored) {
+        }
+    }
+
+    /** The system setting the disable hook writes its time to (M17). */
+    const SCAN_DISABLED_AT = 'scan-disabled-at';
+
+    /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
+    const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';
+
+    /**
+     * Seconds between two reads of the stop marker by a running pass: often
+     * enough that a disable is honoured within a unit or two, rarely enough
+     * that a pass over many projects is not a settings read per project.
+     */
+    const SCAN_STOP_LOOK_EVERY = 5;
+
+    /**
      * Migrate, but only when the installation has asked for the feature.
      *
      * Returns nothing and throws nothing: this runs inside a framework hook
@@ -7687,6 +7771,28 @@ class UniversalValidator extends AbstractExternalModule
         return Scan\ScanPolicy::resolve($sys, $prj);
     }
 
+    /**
+     * ScanMaintenance's `stopped` for a pass that began at $began: true once
+     * the disable hook's marker is at or after it (M17). A marker from an
+     * earlier disable is older than any pass of the enable that followed, so
+     * it stops nothing. Read at most every SCAN_STOP_LOOK_EVERY seconds, and
+     * once true it stays true.
+     */
+    private function scanStopMarker($began)
+    {
+        $looked = null;
+        $stop = false;
+        return function () use ($began, &$looked, &$stop) {
+            if ($stop) return true;
+            $t = microtime(true);
+            if ($looked !== null && $t - $looked < self::SCAN_STOP_LOOK_EVERY) return false;
+            $looked = $t;
+            $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
+            $stop = is_numeric($at) && (int) $at >= (int) $began;
+            return $stop;
+        };
+    }
+
     /** The installation's scan settings a maintenance pass resolves policy from. */
     private function scanSystemPolicy()
     {
@@ -7762,6 +7868,7 @@ class UniversalValidator extends AbstractExternalModule
                     $this->log($event, array_merge(['what' => (string) $what], $context));
                 },
                 'save'   => $save,
+                'stopped' => $this->scanStopMarker(time()),
             ]);
             $max = (is_array($cronInfo) && isset($cronInfo['cron_max_run_time']))
                 ? (int) $cronInfo['cron_max_run_time'] : 0;

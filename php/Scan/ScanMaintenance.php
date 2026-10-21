@@ -39,7 +39,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  * was.
  *
  * A PASS CAN BE TOLD TO STOP. `stopped` is asked before every unit, beside the
- * budget.
+ * budget. The module answers it from the marker its disable hook writes, so a
+ * pass running in another process when the module is switched off stops at
+ * its next unit (M17).
+ *
+ * SWITCHING THE MODULE OFF is here too: disable() frees every worker slot and
+ * stops every active run, deleting nothing; dropTables() is the opt-in that
+ * deletes.
  *
  * PHP 7.4.
  */
@@ -56,6 +62,13 @@ final class ScanMaintenance
 
     /** The share of cron_max_run_time a pass is given: well inside it, so a slow page cannot overrun. */
     const BUDGET_SHARE = 0.25;
+
+    /** The terminal sentence of a run the module's disabling stopped. */
+    const DISABLED_WHY = 'the module was disabled on this server, so this scan was stopped before it '
+        . 'finished; nothing it had examined was lost';
+
+    /** Active runs disable() reads per statement. */
+    const DISABLE_PAGE = 500;
 
     /**
      * The settings ScanPolicy::resolve() reads, by owner: the ones the policy
@@ -416,6 +429,91 @@ final class ScanMaintenance
                 return;
             }
         }
+    }
+
+    // -- switching the module off (M17) ----------------------------------------
+
+    /**
+     * Release every worker slot and stop every active run, deleting nothing.
+     *
+     * A disabled module answers no request, so a run left active would hold
+     * its project's slot through the next enable, and a leased worker slot
+     * would be counted against the limit for a worker that is gone. Each run
+     * is stopped the way Stop stops one nobody drives: cancel() moves the
+     * epoch and records the actor `system`, then
+     * ScanPromotion::finishCancelled() writes the terminal row with what the
+     * run found counted, and DISABLED_WHY. A worker mid-batch at that moment
+     * is refused at its next fence; nothing it committed is lost. A run whose
+     * finish fails is left `cancelling`, which the next Start finishes.
+     *
+     * A keyset over run_id, DISABLE_PAGE runs per read, so the read is
+     * bounded however many projects were scanning; each run is then a handful
+     * of statements of its own.
+     *
+     * @return array{slots_released:int, runs_stopped:int, failed:int}
+     */
+    public function disable()
+    {
+        $this->what = 'disable';
+        $out = ['slots_released' => 0, 'runs_stopped' => 0, 'failed' => 0];
+        try {
+            $out['slots_released'] = $this->slots->releaseAll();
+        } catch (\Throwable $e) {
+            $this->failed('slots', null, $e);
+            $out['failed']++;
+        }
+        $after = 0;
+        while (true) {
+            try {
+                $runs = $this->db->select('SELECT run_id, project_id FROM ' . Schema::table('scan_run')
+                    . ' WHERE active_slot = 1 AND run_id > ? ORDER BY run_id LIMIT ' . self::DISABLE_PAGE, [$after]);
+            } catch (\Throwable $e) {
+                $this->failed('runs', null, $e);
+                $out['failed']++;
+                return $out;
+            }
+            foreach ($runs as $r) {
+                $runId = (int) $r[0];
+                $pid = (int) $r[1];
+                $after = $runId;
+                try {
+                    // False: it left its slot since the read, so it is not ours to stop.
+                    if (!$this->store->cancel($pid, $runId, 'system')) continue;
+                    $policy = call_user_func($this->policy, $pid);
+                    if (ScanPromotion::finishCancelled($this->store, $pid, $runId, [
+                            'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes'],
+                            'why' => self::DISABLED_WHY])) {
+                        $out['runs_stopped']++;
+                    }
+                } catch (\Throwable $e) {
+                    $this->failed('stop', $pid, $e);
+                    $out['failed']++;
+                }
+            }
+            if (count($runs) < self::DISABLE_PAGE) return $out;
+        }
+    }
+
+    /**
+     * Drop every table the module created. Only when the installation opted
+     * in (scan-system-drop-tables-on-disable, off by default); the caller
+     * decides that. The version table goes last, so a drop that fails part
+     * way leaves a version row, a health check that names the missing tables,
+     * and an enable that recreates them.
+     *
+     * @return int tables dropped
+     */
+    public function dropTables()
+    {
+        $last = Schema::table('schema_version');
+        $names = array_values(array_diff(Schema::tables(), [$last]));
+        $names[] = $last;
+        $n = 0;
+        foreach ($names as $t) {
+            $this->db->execNoCount('DROP TABLE IF EXISTS ' . $t);
+            $n++;
+        }
+        return $n;
     }
 
     // -- the pieces ----------------------------------------------------------

@@ -348,6 +348,91 @@ $stopped = (new ScanMaintenance($db, ['policy' => $policy, 'clock' => $clock,
 check('stop: a pass told to stop does no project work', $stopped['out']['stopped'] === 1
     && $stopped['out']['projects'] === 0);
 
+// ---- 9) the module switched off (M17) ---------------------------------------
+$SLOT = Schema::table('scan_worker_slot');
+$check9 = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
+    $m = new UniversalValidator();
+    $m->systemSettings = $sys + ['scan-cron-state-reap' => '{"after":7}', 'scan-cron-state-retention' => '{"after":9}'];
+    $m->tables = $tables;
+    $m->responder = function ($sql, $params) use ($RUN) {
+        if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) return [[5, 42]];
+        if (stripos($sql, 'ROW_COUNT()') !== false) return [[1]];
+        return null;
+    };
+    $m->queryThrows = $throws;
+    $threw = false;
+    try { $m->redcap_module_system_disable('9.9.9'); } catch (\Throwable $e) { $threw = true; }
+    check($label . ': the disable hook never throws', !$threw);
+    $at = $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT);
+    check($label . ': the stop marker is written, whatever else happens',
+        is_numeric($at) && abs((int) $at - time()) <= 5);
+    return $m;
+};
+$on = ['scan-system-enable-durable' => '1'];
+$m = $check9('disable', $on);
+check('disable: every leased worker slot is released, in one statement',
+    count($m->sent(['UPDATE ' . $SLOT, 'owner = NULL', 'WHERE owner IS NOT NULL'])) === 1);
+check('disable: the active runs are read a bounded keyset page at a time',
+    count($m->sent(['SELECT run_id, project_id FROM ' . $RUN, 'active_slot = 1 AND run_id > ?', 'LIMIT '])) === 1);
+$cancel = $m->sent(['UPDATE ' . $RUN, 'cancel_requested_at']);
+check('disable: each active run is stopped through the store, in its own project',
+    count($cancel) === 1 && in_array(5, $cancel[0][1], true) && in_array(42, $cancel[0][1], true));
+check('disable: the stop is audited as the system\'s',
+    count(array_filter($m->sent(['INSERT INTO ' . Schema::table('scan_audit')]), function ($b) {
+        return in_array('system', $b[1], true); })) === 1);
+$dl = $m->logged('scan-disable');
+check('disable: what it did is logged', count($dl) === 1 && $dl[0]['slots_released'] === 1);
+check('disable: with the opt-in off nothing is deleted or dropped',
+    $m->sent(['DROP TABLE']) === [] && $m->sent(['DELETE FROM']) === []
+    && $m->getSystemSetting('scan-cron-state-reap') === '{"after":7}');
+
+$m = $check9('disable, scan switched off', []);
+check('disable, scan switched off: no scan table is touched',
+    $m->sent([Schema::table('scan_run')]) === [] && $m->sent([$SLOT]) === []);
+
+$m = $check9('disable, database down', $on, true);
+$dl = $m->logged('scan-disable');
+check('disable, database down: the log says why nothing was stopped',
+    count($dl) === 1 && $dl[0]['stopped'] === 0 && $dl[0]['why'] === 'the scan tables are not ready');
+
+$m = $check9('disable, drop opted in', $on + [UniversalValidator::SCAN_DROP_ON_DISABLE => '1']);
+$drops = array_map(function ($b) { return trim(substr($b[0], strlen('DROP TABLE IF EXISTS '))); }, $m->sent(['DROP TABLE IF EXISTS']));
+$want = $tables;
+sort($want);
+$got = $drops;
+sort($got);
+check('disable, drop opted in: every table the module created is dropped', $got === $want);
+check('disable, drop opted in: the version table last', end($drops) === Schema::table('schema_version'));
+check('disable, drop opted in: after the runs were stopped, not instead',
+    count($m->sent(['UPDATE ' . $RUN, 'cancel_requested_at'])) === 1);
+check('disable, drop opted in: the crons\' cursors are forgotten with the rows',
+    (string) $m->getSystemSetting('scan-cron-state-reap') === ''
+    && (string) $m->getSystemSetting('scan-cron-state-retention') === '');
+check('the drop opt-in is declared, as a checkbox, and off unless ticked',
+    count(array_filter($cfg['system-settings'], function ($s) {
+        return isset($s['key']) && $s['key'] === UniversalValidator::SCAN_DROP_ON_DISABLE
+            && $s['type'] === 'checkbox' && !isset($s['default']); })) === 1);
+
+// A pass running when the module is switched off stops at its next unit; a
+// marker from an earlier disable stops nothing.
+$m = new UniversalValidator();
+$m->systemSettings = $on + [UniversalValidator::SCAN_DISABLED_AT => (string) (time() + 100)];
+$m->tables = $tables;
+$m->responder = $census([[42, 1, 0, null, '']]);
+$m->uvScanReapCron();
+$cl = $m->logged('scan-cron');
+check('stop marker: a pass that began before the disable does no project work',
+    count($cl) === 1 && $cl[0]['stopped'] === 1 && $cl[0]['projects'] === 0
+    && $m->sent(['GROUP_CONCAT(DISTINCT values_state)']) === []);
+$m = new UniversalValidator();
+$m->systemSettings = $on + [UniversalValidator::SCAN_DISABLED_AT => (string) (time() - 100)];
+$m->tables = $tables;
+$m->responder = $census([[42, 1, 0, null, '']]);
+$m->uvScanReapCron();
+$cl = $m->logged('scan-cron');
+check('stop marker: an earlier disable stops no pass of the enable after it',
+    count($cl) === 1 && $cl[0]['stopped'] === 0 && $cl[0]['projects'] === 1);
+
 echo sprintf("scan_cron_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);
 

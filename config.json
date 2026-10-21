@@ -126,6 +126,11 @@
       "type": "text"
     },
     {
+      "key": "scan-system-drop-tables-on-disable",
+      "name": "<b>Validation scan</b> \u2014 delete every table this module created, with every stored scan, finding and audit row, when the module is disabled on this server. <b>Off by default.</b> Disabling always frees the worker places and stops every scan in progress (each one is reported as stopped, nothing it examined is lost); with this off, disabling deletes nothing, and enabling again finds every earlier scan where it was.",
+      "type": "checkbox"
+    },
+    {
       "key": "exists-system-cross-project",
       "name": "<b>@UVEXISTS in other projects</b> — allow a lookup to search another project on this server (\"project\" in @UVEXISTS). <b>Off by default.</b> Each searched project must also agree in its own module settings: name the project that may ask and the fields it may search, and say whether only users with rights there get an answer. While this is off, a lookup that names another project shows a setup error and checks nothing.",
       "type": "checkbox"

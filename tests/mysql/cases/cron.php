@@ -622,3 +622,79 @@ $runRow = function ($runId) use ($dbA) {
         $isoRead($A) === $wasA && $isoRead($B) === $wasB);
     foreach (array(998, 999) as $p) uv_clear_project($dbA, $p);
 }
+
+// -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
+//
+// 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and
+// is still `cancelling`; 1003 finished. Disabling frees the slot and ends the
+// two active runs as stopped, with the sentence that says why, and deletes
+// nothing.
+{
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slots = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $slots->provision(2);
+    $store = new SqlScanStore($dbA);
+    $live = $plant(1001, 2, null, false);
+    $liveEpoch = (int) $store->run(1001, $live['run'])['lease_epoch'];
+    $lease = $slots->acquire('w', $live['run'], 600);
+    $stop = $plant(1002, 1, null, false);
+    $store->cancel(1002, $stop['run'], 'alice');
+    $done = $plant(1003, 1);
+    $doneRow = $runRow($done['run']);
+    $everything = function () use ($dbA) {
+        $n = 0;
+        foreach (Schema::tables() as $t) $n += (int) $dbA->select('SELECT COUNT(*) FROM ' . $t)[0][0];
+        return $n;
+    };
+    $rowsBefore = $everything();
+    $logs = array();
+    $r = $maint()->disable();
+    echo '  disable: ' . json_encode($r) . "\n";
+    check('disable: the leased slot is freed, and both active runs are stopped',
+        $r['slots_released'] === 1 && $r['runs_stopped'] === 2 && $r['failed'] === 0
+        && $slots->census()['held'] === 0);
+    foreach (array(array(1001, $live), array(1002, $stop)) as $pair) {
+        $row = $store->run($pair[0], $pair[1]['run']);
+        $slot = $dbA->select('SELECT active_slot FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
+            array($pair[1]['run']));
+        check('disable: ' . $pair[0] . ' ends as stopped, with the reason, and leaves the project free',
+            $row['terminal'] === ScanOutcome::CANCELLED && $slot[0][0] === null
+            && $row['terminal_reason'] === \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY);
+    }
+    $au = $dbA->select('SELECT actor FROM ' . Schema::table('scan_audit')
+        . " WHERE project_id = ? AND run_id = ? AND event = 'cancel' ORDER BY audit_id", array(1001, $live['run']));
+    check('disable: the stop is audited as the system\'s', count($au) === 1 && $au[0][0] === 'system');
+    check('disable: a finished run is not touched', $runRow($done['run']) === $doneRow);
+    check('disable: the worker that was mid-batch is refused at its next fence',
+        $store->commitBatch($live['run'], 'w', $liveEpoch, array('bytes' => 0, 'findings' => array(),
+            'records' => array())) !== true
+        && $slots->renew($lease['slot_no'], 'w', $lease['epoch'], 600) === false);
+    // Nothing deleted: every table is still there, and only rows were added
+    // (the audit) or changed in place (the runs and the slot).
+    check('disable: nothing is deleted without the opt-in', $everything() >= $rowsBefore
+        && $countWhere('project_id = ?', array(1001)) === 2);
+    $again = $maint()->disable();
+    check('disable: a second disable finds nothing to stop', $again['runs_stopped'] === 0
+        && $again['slots_released'] === 0 && $again['failed'] === 0);
+    check('disable: and the project can be scanned again once enabled',
+        $store->startRun(1001, array('created_by' => 'alice'))['ok'] === true);
+}
+
+// -- THE OPT-IN DROP, last: it leaves nothing for a section after it -------------
+{
+    $ours = function () use ($A) {
+        $names = Schema::tables();
+        $in = "'" . implode("','", $names) . "'";
+        $r = $A->query('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()'
+            . ' AND table_name IN (' . $in . ')');
+        return (int) $r->fetch_row()[0];
+    };
+    check('drop: every table is there before', $ours() === count(Schema::tables()));
+    $rec = new UvRecordingDb($dbA);
+    $n = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf)))->dropTables();
+    $drops = $rec->matching('exec', array('DROP TABLE IF EXISTS'));
+    check('drop: every table the module created is dropped, and nothing else',
+        $n === count(Schema::tables()) && $ours() === 0 && count($drops) === $n);
+    check('drop: the version table last, so a drop that stops part way still says what is missing',
+        strpos(end($drops)[1], Schema::table('schema_version')) !== false);
+}
