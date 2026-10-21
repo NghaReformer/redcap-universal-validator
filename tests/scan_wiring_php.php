@@ -94,14 +94,10 @@ namespace {
         //    lands, which is why they are last and not first.
         //    expireAbandoned and expireValues graduated when this line of work
         //    was merged with 1.11.0, whose uvScanReapCron and
-        //    uvScanExpireValuesCron call them. Wave 8 paged expireValues into
-        //    primary-key windows (expireValuesPage); the cron still runs the
-        //    whole sweep in one request until wave 10 gives it a cursor.
-        'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
-        'ScanStore::supersedePrevious'      => 'wave 10 (W4-D1) wires the cron: until then a finished run leaves the previous generation\'s rows active',
-        'SqlScanStore::supersedePrevious'   => 'wave 10 (W4-D1), with the contract',
-        'ArrayScanStore::supersedePrevious' => 'wave 10 (W4-D1), with the contract',
-        'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
+        //    uvScanExpireValuesCron call them. Wave 10 (B6) graduated
+        //    purgeRuns, revokePreviews and supersedePrevious: the two crons run
+        //    them through ScanMaintenance, a bounded page at a time.
+        'ScanRetention::expireValues'    => 'no production caller since wave 10: the retention cron pages expireValuesPage() from a stored window; its callers are tests that want the whole sweep in one call, which can move to the page and let this go (wave 12)',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         // ScanAuthorization::preFenceStatus stood here until ScanService::
         // statusOf() called it (H10 part 1, with review R5-1).

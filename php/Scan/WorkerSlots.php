@@ -252,6 +252,26 @@ final class WorkerSlots
         return $this->db->affected() === 1;
     }
 
+    /**
+     * Free every slot, whoever holds it (M17: the module is being disabled).
+     *
+     * A disabled module answers no request, so nothing will release or renew
+     * these, and a lease left in place is a slot counted against the limit by
+     * a worker that no longer exists. Each row is cleared as release() clears
+     * one. A holder that was mid-batch then fails its next renew() or
+     * release(), which fence on (owner, epoch), and acquire() moves the epoch
+     * for whoever takes the row next. One statement: the table holds at most
+     * the 1000 rows the limit allows.
+     *
+     * @return int slots released
+     */
+    public function releaseAll()
+    {
+        $this->db->exec('UPDATE ' . Schema::table('scan_worker_slot')
+            . ' SET owner = NULL, run_id = NULL, expires_at = NULL WHERE owner IS NOT NULL');
+        return (int) $this->db->affected();
+    }
+
     /** How many slots exist, and how many are currently held. For diagnostics. */
     public function census()
     {

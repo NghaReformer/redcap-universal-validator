@@ -362,9 +362,11 @@ $RECORDS = 6;
     // lease (claimPlan(): begin, the run row and the plan row locked, the plan
     // row written, the lease written, commit), the page's cursor and its
     // heartbeat written in the page's own transaction, and the plan_done gate
-    // the freeze reads. A start sent 35 before them.
+    // the freeze reads. A start sent 35 before them. Wave 10 put one more on
+    // it, B6a's: the indexed read of this project's active run that asks
+    // whether it was abandoned (ScanStore::expireAbandoned()).
     $bounds = array(
-        'start'                              => array($startCount, 44),
+        'start'                              => array($startCount, 45),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 76),
         'the work request that finishes'     => array($finishCount, 77),

@@ -66,6 +66,7 @@ require_once __DIR__ . '/php/Scan/RollupBuilder.php';
 require_once __DIR__ . '/php/Scan/ScanPromotion.php';
 require_once __DIR__ . '/php/Scan/ScanWorker.php';
 require_once __DIR__ . '/php/Scan/ScanService.php';
+require_once __DIR__ . '/php/Scan/ScanMaintenance.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -7533,6 +7534,90 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The module is being switched off on this server (M17).
+     *
+     * A disabled module answers no request and runs no cron, so whatever it
+     * holds now it holds until it is enabled again: a worker slot leased by a
+     * worker that will never renew it, a run keeping its project's one active
+     * slot, a maintenance pass in another process still walking the projects.
+     * In this order:
+     *
+     *   1. THE STOP MARKER, first and alone: SCAN_DISABLED_AT, the time. A
+     *      maintenance pass that began at or before it stops at its next unit
+     *      (scanMaintenance()'s `stopped`). The framework starts no new pass
+     *      for a disabled module.
+     *   2. EVERY WORKER SLOT RELEASED AND EVERY ACTIVE RUN STOPPED, as
+     *      cancelled with ScanMaintenance::DISABLED_WHY by the finisher Stop
+     *      uses. Only where the scan is switched on and its tables are
+     *      healthy, the crons' own gates: with the switch off no worker runs
+     *      and Start refuses, and an installation that never turned the scan
+     *      on has its schema inspected by nobody.
+     *   3. NOTHING DELETED, unless the installation opted in with
+     *      SCAN_DROP_ON_DISABLE (off by default). Then every table the module
+     *      created is dropped, the version table last, and the crons' saved
+     *      cursors are forgotten with the rows they pointed into.
+     *
+     * NEVER THROWS: a throw here would fail the administrator's disable.
+     */
+    public function redcap_module_system_disable($version = null)
+    {
+        try {
+            $this->setSystemSetting(self::SCAN_DISABLED_AT, (string) time());
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('marker', $e);
+        }
+        try {
+            $sys = $this->scanSystemPolicy();
+            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+                'log'    => function ($event, array $context) {
+                    $this->log($event, array_merge(['what' => 'disable'], $context));
+                },
+            ]);
+            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the durable scan is not enabled here']);
+            } elseif (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the scan tables are not ready']);
+            } else {
+                $this->log('scan-disable', $m->disable());
+            }
+            $drop = $this->getSystemSetting(self::SCAN_DROP_ON_DISABLE);
+            if ($drop === true || $drop === 1 || $drop === '1' || $drop === 'true') {
+                $n = $m->dropTables();
+                // Empty, which scanCronState() reads as a pass from the start.
+                foreach (['reap', 'retention'] as $what) $this->setSystemSetting('scan-cron-state-' . $what, '');
+                $this->log('scan-disable-dropped', ['tables' => (int) $n]);
+            }
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('disable', $e);
+        }
+    }
+
+    /** The disable hook's failure, logged as class and redacted detail, never thrown. */
+    private function scanDisableFailed($step, \Throwable $e)
+    {
+        try {
+            $this->log('scan-disable-failed', ['step' => (string) $step, 'error' => get_class($e),
+                'detail' => Scan\DbError::safe($e)]);
+        } catch (\Throwable $ignored) {
+        }
+    }
+
+    /** The system setting the disable hook writes its time to (M17). */
+    const SCAN_DISABLED_AT = 'scan-disabled-at';
+
+    /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
+    const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';
+
+    /**
+     * Seconds between two reads of the stop marker by a running pass: often
+     * enough that a disable is honoured within a unit or two, rarely enough
+     * that a pass over many projects is not a settings read per project.
+     */
+    const SCAN_STOP_LOOK_EVERY = 5;
+
+    /**
      * Migrate, but only when the installation has asked for the feature.
      *
      * Returns nothing and throws nothing: this runs inside a framework hook
@@ -7624,20 +7709,18 @@ class UniversalValidator extends AbstractExternalModule
     // -- scheduled maintenance ---------------------------------------------
 
     /**
-     * Release the slot held by a run that stopped making progress.
+     * Free what is stuck: abandoned runs, worker slots above the limit, and
+     * the previous reports of every project whose latest scan completed.
      *
-     * php/Scan/ScanRetention.php has always held this logic and NOTHING EVER
-     * CALLED IT: config.json declared no crons and this class declared no cron
-     * method, so the only code paths into ScanRetention were its own tests
-     * (H-2). The consequence is not cosmetic. A project has one scan slot; a run
-     * whose browser closed or whose worker died keeps holding it, and every
-     * later scan on that project is told the server is busy - forever, because
-     * the reaper that exists to break exactly that deadlock never ran.
+     * php/Scan/ScanRetention.php held the reaper for releases before anything
+     * called it (H-2): a run whose browser closed kept its project's one scan
+     * slot, and every later scan there was told the server was busy, for ever.
+     * Fifteen minutes is chosen against the lease, not against the retention
+     * windows: a slot is the scarce thing.
      *
-     * A cron in this framework runs ONCE GLOBALLY, not per project, and
-     * expireAbandoned() is a single project-independent UPDATE, so there is
-     * nothing to iterate. Fifteen minutes is chosen against the lease, not
-     * against the retention windows: a slot is the scarce thing.
+     * The pass is Scan\ScanMaintenance::reap(): every project with scan data, a
+     * census page at a time, under a budget well inside cron_max_run_time, and
+     * resumed by the next pass where this one stopped (wave 10, B6).
      *
      * NEVER THROWS. A cron method that throws is reported to administrators on
      * every tick and has no user who can act on it, so the same posture as
@@ -7645,35 +7728,137 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function uvScanReapCron($cronInfo = [])
     {
-        return $this->scanMaintenance('reap', function (Scan\ScanRetention $ret, array $policy) {
-            $n = $ret->expireAbandoned($policy['staleHours']);
-            return ['runs_expired' => (int) $n, 'stale_hours' => (int) $policy['staleHours']];
+        return $this->scanMaintenance('reap', $cronInfo, function (Scan\ScanMaintenance $m, array $state, $seconds) {
+            return $m->reap($state, $seconds);
         });
     }
 
     /**
-     * Clear stored value previews whose retention window has passed.
+     * Forget what retention says to: revoked previews, finished runs past
+     * their project's retention, and value previews past their window.
      *
-     * The column, not the row: the finding stays true and stops being a copy of
-     * the project. Daily, because a value's window is measured in days.
+     * The column, not the row, for a value: the finding stays true and stops
+     * being a copy of the project. Whole runs go once the project's runDays
+     * have passed, a bounded page per statement (wave 8 paged them; a
+     * single DELETE of 500,000 findings measured 160 seconds holding its row
+     * locks), scoped by project and generation (wave 4). Hourly, so a sweep
+     * that needs more than one pass's budget is not a day behind; the value
+     * sweep itself restarts once a day (ScanMaintenance::SWEEP_EVERY).
      *
-     * PURGING WHOLE RUNS IS DELIBERATELY NOT WIRED HERE, and that is not an
-     * oversight. ScanRetention::purgeRuns() used to delete findings with
-     * `DELETE FROM uv_finding WHERE generation_id = ?` while every run in every
-     * project was written with generation_id = 1, so one project's purge deleted
-     * every project's findings. 2.0.0 scopes those deletes by project and
-     * generation, but they are still unpaged: measured, an unpaged DELETE of
-     * 500,000 findings is one 160-second statement holding row locks throughout.
-     * Run retention stays manual until the remediation plan's wave 8 pages it.
-     * The value sweep below is the same kind of unpaged statement (an UPDATE),
-     * and is also on wave 8's list.
+     * The pass is Scan\ScanMaintenance::retain(); see reap() above for the
+     * budget, the census and the cursors.
      */
     public function uvScanExpireValuesCron($cronInfo = [])
     {
-        return $this->scanMaintenance('expire-values', function (Scan\ScanRetention $ret, array $policy) {
-            $n = $ret->expireValues();
-            return ['values_cleared' => (int) $n];
+        return $this->scanMaintenance('retention', $cronInfo, function (Scan\ScanMaintenance $m, array $state, $seconds) {
+            return $m->retain($state, $seconds);
         });
+    }
+
+    /**
+     * The policy a maintenance pass applies to one project, or the
+     * installation's with null: the same settings, through the same
+     * resolve(), as ScanService::policy() reads for a scan. $sys is the
+     * installation's settings, read once per pass by scanSystemPolicy(), so a
+     * lap over many projects reads only each project's own.
+     */
+    private function scanPolicyOf($pid, array $sys)
+    {
+        $prj = [];
+        if ($pid !== null) {
+            foreach (Scan\ScanMaintenance::PROJECT_POLICY_KEYS as $k) $prj[$k] = $this->getProjectSetting($k, (int) $pid);
+        }
+        return Scan\ScanPolicy::resolve($sys, $prj);
+    }
+
+    /**
+     * ScanMaintenance's `stopped` for a pass that began at $began: true once
+     * the disable hook's marker is at or after it (M17). A marker from an
+     * earlier disable is older than any pass of the enable that followed, so
+     * it stops nothing. Read at most every SCAN_STOP_LOOK_EVERY seconds, and
+     * once true it stays true.
+     */
+    private function scanStopMarker($began)
+    {
+        $looked = null;
+        $stop = false;
+        return function () use ($began, &$looked, &$stop) {
+            if ($stop) return true;
+            $t = microtime(true);
+            if ($looked !== null && $t - $looked < self::SCAN_STOP_LOOK_EVERY) return false;
+            $looked = $t;
+            $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
+            $stop = is_numeric($at) && (int) $at >= (int) $began;
+            return $stop;
+        };
+    }
+
+    /**
+     * The instance properties that remember something about a project, or
+     * about the user's standing in one, for the rest of the request (MEMO
+     * LIFETIME, W8-N10). A page request is one project and one user, so the
+     * memos are right there. A cron runs many projects through this one
+     * instance, so resetScanMemos() puts every one of these back to its
+     * declared default before each project's work (ScanMaintenance's
+     * `enter`): rules, rights, data dictionary or consent read for one
+     * project are never the answer for the next. Pid-keyed memos are reset too: a pass
+     * that comes back to a project later in the same process reads it again.
+     *
+     * tests/scan_cron_php.php holds this list and SCAN_NOT_MEMOS to exactly
+     * the class's own instance properties, so a memo added later fails there
+     * until it is put in one of the two.
+     */
+    const SCAN_MEMOS = [
+        'ddCache', 'hmacKey', 'existsIndexes', 'groupVisibility', 'groupVisibilityRead', 'existsLookupMemo',
+        'existsReads', 'recordIds', 'recordRows', 'crossConsents', 'projectObjects', 'rightsIn',
+        'crossReadFailed', 'configUnread', 'missingCodesMemo', 'crossIds', 'crossBudgetFailSaid',
+        'crossExtraRead', 'crossSource', 'valueStampsMemo', 'clockMemo', 'rulesMemo', 'repeatFormsCache',
+        'repeatProbeCache', 'eventFormsCache', 'mappedFormsCache', 'formEventsCache', 'eventLayoutCache',
+        'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
+    ];
+
+    /**
+     * The instance properties that are not memos: what a test pinned
+     * (existsIndexCap, clockOverride, valueStampsOverride), and the record save
+     * in progress (returnQueue, surveySave), which a cron pass is never inside.
+     */
+    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave'];
+
+    /** Every SCAN_MEMOS property back to its declared default. */
+    private function resetScanMemos()
+    {
+        static $defaults = null;
+        if ($defaults === null) $defaults = (new \ReflectionClass(self::class))->getDefaultProperties();
+        foreach (self::SCAN_MEMOS as $p) $this->$p = $defaults[$p];
+    }
+
+    /** The installation's scan settings a maintenance pass resolves policy from. */
+    private function scanSystemPolicy()
+    {
+        $sys = [];
+        foreach (Scan\ScanMaintenance::SYSTEM_POLICY_KEYS as $k) $sys[$k] = $this->getSystemSetting($k);
+        return $sys;
+    }
+
+    /**
+     * Where a pass's cursors are kept between passes: one system setting per
+     * cron, the whole state as JSON (review R8-3: the whole cursor arrays,
+     * never an id taken out of them).
+     *
+     * UNREADABLE STARTS OVER, AND SAYS SO. Every unit a pass runs is
+     * idempotent, so starting from the first project and the first window is
+     * rework, never a skip. A revocation in progress at that moment loses its
+     * cursor: its runs are already marked expired, so its remaining previews
+     * are served to nobody, and they go with their runs.
+     */
+    private function scanCronState($key)
+    {
+        $raw = $this->getSystemSetting($key);
+        if ($raw === null || $raw === '') return [];
+        $state = is_array($raw) ? $raw : json_decode((string) $raw, true);
+        if (is_array($state)) return $state;
+        $this->log('scan-cron-state-unreadable', ['key' => (string) $key]);
+        return [];
     }
 
     /**
@@ -7684,9 +7869,16 @@ class UniversalValidator extends AbstractExternalModule
      * it: an installation that never turned the scan on should not have its
      * schema inspected on a timer.
      *
+     * THE BUDGET IS THE CRON'S OWN DECLARATION. The framework hands the cron
+     * method its config.json entry; a pass is given
+     * ScanMaintenance::BUDGET_SHARE of its cron_max_run_time, so the pass that
+     * starts its last page near the end still finishes far inside the time
+     * the framework allows it. The state is saved at the pass's checkpoints
+     * and at its end.
+     *
      * @return string the one-line summary REDCap shows beside the cron
      */
-    private function scanMaintenance($what, callable $work)
+    private function scanMaintenance($what, $cronInfo, callable $work)
     {
         try {
             $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
@@ -7704,28 +7896,53 @@ class UniversalValidator extends AbstractExternalModule
                     'why' => isset($health['why']) ? (string) $health['why'] : 'schema not ready']);
                 return 'the scan tables are not ready; nothing was done';
             }
-            $sys = [];
-            foreach (['scan-system-stale-run-hours', 'scan-system-max-concurrent-projects'] as $k) {
-                $sys[$k] = $this->getSystemSetting($k);
-            }
-            $policy = Scan\ScanPolicy::resolve($sys, []);
-            $ret = new Scan\ScanRetention(new Scan\ModuleDb($this));
-            $out = $work($ret, $policy);
+            $key = 'scan-cron-state-' . $what;
+            $save = function (array $state) use ($key) {
+                $this->setSystemSetting($key, json_encode($state));
+            };
+            $sys = $this->scanSystemPolicy();
+            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+                'log'    => function ($event, array $context) use ($what) {
+                    $this->log($event, array_merge(['what' => (string) $what], $context));
+                },
+                'save'   => $save,
+                'stopped' => $this->scanStopMarker(time()),
+                // A FRESH START FOR EVERY PROJECT (MEMO LIFETIME). The passes
+                // build no ScanService: every statement goes through the store
+                // or ScanRetention, which keep nothing between calls. What
+                // this instance remembers is reset before each project's work.
+                'enter'  => function ($pid) { $this->resetScanMemos(); },
+            ]);
+            $max = (is_array($cronInfo) && isset($cronInfo['cron_max_run_time']))
+                ? (int) $cronInfo['cron_max_run_time'] : 0;
+            $r = $work($m, $this->scanCronState($key),
+                Scan\ScanMaintenance::budgetFor($max > 0 ? $max : self::SCAN_CRON_MAX_RUN_TIME));
+            $save($r['state']);
+            $out = $r['out'];
             $this->log('scan-cron', array_merge(['what' => (string) $what], $out));
             $bits = [];
             foreach ($out as $k => $v) $bits[] = $k . '=' . $v;
             return $what . ': ' . implode(', ', $bits);
         } catch (\Throwable $e) {
             // Same posture as installScanSchema: a throw out of a cron is mailed
-            // to administrators every tick and nobody can act on it.
+            // to administrators every tick and nobody can act on it. The class
+            // and the redacted detail: the message can carry statement text.
             try {
                 $this->log('scan-cron-failed', ['what' => (string) $what,
-                    'error' => get_class($e) . ': ' . $e->getMessage()]);
+                    'error' => get_class($e), 'detail' => Scan\DbError::safe($e)]);
             } catch (\Throwable $ignored) {
             }
             return $what . ': failed, logged to the module log';
         }
     }
+
+    /**
+     * cron_max_run_time when the framework hands the cron method no entry: the
+     * shorter of the two this module declares, so the budget derived from it
+     * fits either.
+     */
+    const SCAN_CRON_MAX_RUN_TIME = 300;
 
     /**
      * Show the "Validation scan" project link only to users who can already
