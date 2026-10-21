@@ -40,6 +40,10 @@ node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown ch
 node tests/mlm_messages_dom_js.cjs  # rule messages in the MLM language on screen; string messages unchanged, a switch asks nothing
 php  tests/message_i18n_php.php  # "message" as a language map: grammar, refusals, string messages unchanged, branches, page shape
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
+php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
+node tests/delta_dom_js.cjs      # @UVDELTA browser rule (live vs blocks, saved vs and calc never block)
+php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -418,6 +422,36 @@ read a second time with every number quoted), exponents written out, the
   branch, two true conditions (a rule problem, never a finding), the survey
   page's baked-in branch choice, and the branch on a branched `@UVUNIQUE`
   duplicate.
+
+## `delta_*` — how far a number may change
+
+`delta_fixture.json` holds cases that `delta_php.php` runs through
+`Logic::deltaVerdict` and `delta_js.cjs` through `QRID_deltaVerdict`; both must
+give the same verdict (ok, up, down, inert, unknown), reason and change, the
+change written as an exact decimal. Cases cover changes on and next to each
+limit, a percent of a negative earlier value, an earlier 0 (no percent),
+direction, comma decimals on either side, exponents, numbers past 2^53 and
+long fractions where a double would say "equal", and values too long to
+compare (past `ExactDecimal::MAX_DIGITS`, or a change too long to multiply for
+the percent). A long value is written `{prefix, repeat, times, suffix}`.
+`delta_php.php` also covers the grammar: the shorthands, limits kept exactly as
+typed, the branch group, and every refusal.
+
+- `delta_dom_js.cjs` boots the browser rule on a stub page: a `vs` on the page
+  is read as typed and blocks per `blockSave`, changing it re-checks; a
+  snapshot, an event/instance rule (`extendedAdvisory`), a calc, a read-only
+  field and a deferred rule never block; a withheld earlier value and one that
+  is not a number are amber notes for staff and nothing on a survey; the note's
+  wording (percent, comma, survey without the label, escaping); two tags on
+  one field say one line each.
+- `delta_module_php.php` covers the server side with a `\Project` stub for
+  events and repeats: the field and dictionary hooks and their refusals, the
+  shorthand written out per field, the page fold (live, snapshot, withheld),
+  the audit on a classic project (Missing Data Codes, `when`, two tags logged
+  apart by `vs`), across events (previous, first and named event; the first
+  visit and an event with nothing saved compare with nothing; saving an earlier
+  visit re-checks the later one) and across instances, and the scan with its
+  labels and detail lines.
 
 ## `growth_*` — growth references (z-scores)
 

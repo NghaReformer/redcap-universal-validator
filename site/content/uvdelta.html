@@ -90,7 +90,9 @@ way. On a comma-decimal field <code>72,5</code> reads as 72.5.</p>
 <h2>Audit</h2>
 
 <p>The post-save audit logs a change past a limit as <code>type: delta</code> with reason
-<code>up</code> or <code>down</code>, and the Validation scan counts it, with the limits
-and the value compared with in its detail line. A <code>vs</code> that cannot be
+<code>up</code> or <code>down</code> and names the <code>vs</code> it compared with, and
+the Validation scan counts it, with the limits and the value compared with in its
+detail line. Saving an earlier visit or instance re-checks the ones that compare
+with it. A <code>vs</code> that cannot be
 resolved, and a saved value or earlier value that is not a number, are reported as rule
 problems, never as a pass.</p>

@@ -14,7 +14,7 @@
  * cannot pass by being refused for some other mistake.
  *
  * A block whose info string contains "expect" (```text expect) tests the LAST
- * @UVALIDATE or @UVRANGE tag of the fenced block just before it. Each line reads
+ * @UVALIDATE, @UVRANGE or @UVDELTA tag of the fenced block just before it. Each line reads
  *
  *     <input>  =>  <result>
  *
@@ -32,6 +32,14 @@
  *     soft-low, soft-high              outside "soft" (unusual)
  *     hard-low, hard-high              outside "hard" (implausible)
  *     not-a-number                     not a plain decimal number
+ *
+ * A @UVDELTA line gives the earlier value after the value, as
+ * "<value> from <earlier>", and its result is one of
+ *
+ *     ok                               within every limit, or a change the other way
+ *     blank                            nothing to check (a blank side, or an earlier 0 with "maxPct" alone)
+ *     up, down                         a change larger than a limit
+ *     not-a-number, earlier-not-a-number, too-long
  *
  * A @UVRANGE rule with a growth "reference" also reads its inputs, given
  * after the value as "with <field>=<value>, ..." (dates as Y-M-D; an input
@@ -164,6 +172,14 @@ $rangeSpec = function (array $frag) {
 
 $norm = function ($s) { return preg_replace('/\s+/', ' ', trim($s)); };
 
+/** The limits the @UVDELTA verdict reads (UniversalValidator::findingsDelta). */
+$deltaSpec = function (array $frag) {
+    return ['max' => isset($frag['deltaMax']) ? $frag['deltaMax'] : null,
+            'maxPct' => isset($frag['deltaMaxPct']) ? $frag['deltaMaxPct'] : null,
+            'direction' => isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both',
+            'decimalComma' => false, 'earlierComma' => false];
+};
+
 /**
  * A growth rule's documented outcome (UniversalValidator::findingsRange):
  * [outcome text, fixture case]. $inputs maps field name => value.
@@ -222,13 +238,13 @@ foreach ($docs as $doc) {
             }
         }
     }
-    $previous = null;   // [kind, last parsed @UVALIDATE / @UVRANGE / @UVEXISTS-with-where fragment or null, its line]
+    $previous = null;   // [kind, last parsed @UVALIDATE / @UVRANGE / @UVDELTA / @UVEXISTS-with-where fragment or null, its line]
     foreach ($blocks as $block) {
         list($kind, $start, $body) = $block;
         if ($kind === 'expect') {
             if (!$previous || $previous[0] !== 'plain' || !$previous[1]) {
-                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE, @UVRANGE "
-                    . 'or @UVEXISTS-with-"where" tag';
+                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE, @UVRANGE, "
+                    . '@UVDELTA or @UVEXISTS-with-"where" tag';
                 $previous = null;
                 continue;
             }
@@ -283,6 +299,23 @@ foreach ($docs as $doc) {
                     }
                     continue;
                 }
+                if (($frag['type'] ?? null) === 'delta') {
+                    $f = stripos($input, ' from ');
+                    if ($f === false) { $failures[] = "$doc:$lineNo expect input \"$input\" is not <value> from <earlier>"; continue; }
+                    $earlier = trim(substr($input, $f + 6));
+                    $input = trim(substr($input, 0, $f));
+                    $spec = $deltaSpec($frag);
+                    $r = Logic::deltaVerdict($spec, $input, $earlier);
+                    $got = $r['verdict'] === 'inert' ? 'blank' : ($r['verdict'] === 'unknown' ? $r['reason'] : $r['verdict']);
+                    $checks++;
+                    if ($norm($got) !== $want) {
+                        $failures[] = "$doc:$lineNo " . json_encode($input) . ' from ' . json_encode($earlier) . " expected \"$want\" but got \"$got\"";
+                    }
+                    $fixture[] = ['where' => "$doc:$lineNo", 'tagLine' => $tagLine, 'kind' => 'delta', 'spec' => $spec,
+                                  'input' => $input, 'earlier' => $earlier, 'verdict' => $r['verdict'], 'reason' => $r['reason'],
+                                  'change' => $r['change']];
+                    continue;
+                }
                 if (($frag['type'] ?? null) === 'range') {
                     $spec = $rangeSpec($frag);
                     $r = Logic::rangeVerdict($spec, $input);
@@ -325,6 +358,7 @@ foreach ($docs as $doc) {
             }
             if ($errors) { $failures[] = "$doc:$lineNo " . implode(' | ', $errors) . ' :: ' . substr($tagText, 0, 90); continue; }
             if (count($frags) === 1 && (strncmp($tagText, '@UVALIDATE', 10) === 0 || strncmp($tagText, '@UVRANGE', 8) === 0
+                    || strncmp($tagText, '@UVDELTA', 8) === 0
                     || (strncmp($tagText, '@UVEXISTS', 9) === 0 && isset($frags[0]['existsWhere'])))) {
                 $last = $frags[0];
                 $lastLine = $lineNo;

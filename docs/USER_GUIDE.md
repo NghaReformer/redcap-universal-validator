@@ -917,7 +917,9 @@ Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
 validation (including comma decimals), calc fields and sliders; for a growth
 reference, the sex field may be a radio, dropdown, yes/no, true/false, Text,
 calc or SQL field, the dates date or datetime fields, and an age, length or
-height a Text field with integer or number validation, or a calc.
+height a Text field with integer or number validation, or a calc. Change
+limits (`@UVDELTA`): the same fields as `@UVRANGE`, compared with a field that
+holds numbers the same way.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1081,6 +1083,24 @@ value", "Implausible value" or "Not a number". Annotation-only; see the README
 section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
+**Can a weight be flagged when it changed too much since the last visit?**
+Yes. The `@UVDELTA` tag limits how far a number may move from an earlier value.
+`@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}` flags a weight more
+than 10% above or below the same field at the previous event, and
+`@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}` one more than 5 kg
+from the screening weight. `previous-instance`, `first-event` and
+`first-instance` work the same way, and `"direction":"up"` or `"down"` limits
+one way only (`"max":0,"direction":"down"`: a height may not fall). The
+shorthands and a reference to another event or instance need event and
+instance references on. The change is exact, with no rounding. A blank value,
+a blank earlier value and a missing data code check nothing, and so does the
+first visit. A `vs` field on the same page blocks as `blockSave` says; an
+earlier value read from another form, event or instance only warns, since it
+was read when the page opened. The post-save audit logs `type: delta` with
+reason `up` or `down`, and the scan labels them "Rose more than allowed" or
+"Fell more than allowed". Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvdelta--how-far-a-number-may-change).
+
 **Can a child's weight or height be checked against the WHO growth standards?**
 Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
 child's sex and age:
@@ -1218,10 +1238,11 @@ for the word of the unit it counts in. Earlier visits are not shown yet.
 A field marked with one of the project's missing data codes (REDCap's "M"
 button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not
 validate it, and the module treats it as blank: no check-character, format,
-`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW` or `@UVRANGE` verdict, on the
-page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
+`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW`, `@UVRANGE` or `@UVDELTA`
+verdict, on the page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
 an answer, so a field marked "unknown" is not reported as missing. A code in an
-`@UVEXISTS` `match` field or a `@UVWINDOW` "from" date also counts as blank.
+`@UVEXISTS` `match` field, a `@UVWINDOW` "from" date or the value a `@UVDELTA`
+compares with also counts as blank.
 In a `when` condition or an `@UVASSERT` expression the code is read as itself,
 the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
 `when` to leave such records out.

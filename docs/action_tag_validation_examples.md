@@ -8,7 +8,7 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS` and `@UVRANGE`. The tags and
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE` and `@UVDELTA`. The tags and
 the dialog are the same rules through different doors, and they mix freely.
 
 ---
@@ -25,6 +25,7 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
 - [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
 - [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
+- [`@UVDELTA` — how far a number may change](#uvdelta--how-far-a-number-may-change)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -38,6 +39,7 @@ the dialog are the same rules through different doors, and they mix freely.
   - [`@UVWINDOW` recipes](#uvwindow-recipes)
   - [`@UVEXISTS` recipes](#uvexists-recipes)
   - [`@UVRANGE` recipes](#uvrange-recipes)
+  - [`@UVDELTA` recipes](#uvdelta-recipes)
   - [Combination recipes](#combination-recipes)
 - [Messages in several languages](#messages-in-several-languages)
 - [Tags the module refuses](#tags-the-module-refuses)
@@ -59,6 +61,7 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVWINDOW`   | A date falls within a window around another date, or is not after today                                                 | Text with date, datetime or datetime-with-seconds validation   |
 | `@UVEXISTS`   | The value is already saved in the project: a record ID, or a value of another field                                     | Text, dropdown, radio, SQL                                     |
 | `@UVRANGE`    | A number lies within usual and plausible limits (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
+| `@UVDELTA`    | A number has not changed more than a limit since an earlier value (the previous visit, baseline, another field)         | Text with no, integer or number validation, calc, slider       |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -4108,6 +4111,210 @@ day, a `male` or `female` code that is not among the sex field's choices or
 matches two of them once letter case is ignored, and a limit the reference
 cannot reach (see "Limits the reference can reach" above).
 
+## `@UVDELTA` — how far a number may change
+
+`@UVRANGE` judges one value on its own, and `@UVASSERT` can say that a weight
+is not below the previous one. Neither can say "this weight may not change by
+more than 10% since the last visit". `@UVDELTA` compares a number with an
+**earlier value** and flags a change larger than its limit: a number of units
+(`max`), a percent of the earlier value (`maxPct`), or both. JSON form only.
+
+### Level 1 — a limit on the change from another field
+
+```text
+# on: weight — at most 5 kg either way from the screening weight
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}
+```
+
+```text expect
+74 from 70     => ok
+75 from 70     => ok
+75.01 from 70  => up
+64.9 from 70   => down
+abc from 70    => not-a-number
+70 from n/a    => earlier-not-a-number
+```
+
+`vs` names the earlier value, and `max` the largest change allowed, in the
+field's own unit. Both ends are included, so a change of exactly 5 passes. The note
+under the field names the change, its percent, the earlier value and the limit:
+
+> ✗ This value rose by 5.01 kg (7.2%) from 70 kg ([weight_screening]). Allowed: a change of at most 5 kg.
+
+The note appears when the user leaves the field. A blank value, a blank earlier
+value and a missing data code on either side check nothing.
+
+### Level 2 — a percent, a direction, or both limits
+
+```text
+# on: weight — a rise of at most 10%; a fall is not limited by this tag
+@UVDELTA={"vs":"[weight_prev]","maxPct":10,"direction":"up"}
+```
+
+```text expect
+110 from 100       => ok
+110.0001 from 100  => up
+50 from 100        => ok
+5 from 0           => blank
+```
+
+```text
+# on: hb — at most 2 g/dL and at most 15%
+@UVDELTA={"vs":"[hb_prev]","max":2,"maxPct":15,"unit":"g/dL"}
+```
+
+```text expect
+13 from 12     => ok
+14.5 from 12   => up
+3.5 from 3     => up
+2.9 from 3     => ok
+```
+
+```text
+# on: height_cm — a height may not fall; any rise passes
+@UVDELTA={"vs":"[height_prev]","max":0,"direction":"down","unit":"cm"}
+```
+
+```text expect
+149.9 from 150  => down
+152 from 150    => ok
+```
+
+- `maxPct` is a percent of the earlier value. With both `max` and `maxPct`, a
+  change must keep both: 3.5 after 3 is 0.5 g/dL but 16.7%.
+- `direction` is `both` (the default), `up` or `down`. The limits apply to
+  changes that way; a change the other way always passes.
+- An earlier value of 0 has no percent, so `maxPct` does not apply to it.
+  `max` still does.
+- Values and limits are compared as exact decimals. The percent test is
+  `|change| × 100` against `maxPct × |earlier value|`, with no division and no
+  rounding, so a change of exactly 10% is 10%.
+
+### Level 3 — the previous or first event or instance
+
+These need **Enable event and instance references** in the project settings.
+Without it the tag shows a configuration error that says so.
+
+```text
+# on: weight, on a form at every visit
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+
+# on: cd4, on a repeating form — a fall of at most 50% since the last result
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"down"}
+
+# on: weight — at most 15% below baseline
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+```
+
+| `vs`                | Means                                         | Written out for a field `weight`  |
+| ------------------- | --------------------------------------------- | --------------------------------- |
+| `previous-event`    | This field at the event before this one       | `[previous-event-name][weight]`   |
+| `first-event`       | This field at the first event of the arm      | `[first-event-name][weight]`      |
+| `previous-instance` | This field in the instance before this one    | `[weight][previous-instance]`     |
+| `first-instance`    | This field in the first instance              | `[weight][first-instance]`        |
+
+Any one field reference works too, in this entry, another event or another
+instance:
+
+```text
+@UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15,"direction":"down"}
+@UVDELTA={"vs":"[previous-event-name][weight][last-instance]","max":2,"unit":"kg"}
+```
+
+- `previous-event` is the event before this one in the arm, whether or not
+  anything was saved there. On the first visit and the first instance there is
+  no earlier value, so nothing is checked.
+- An event shorthand needs the form on two or more events, and an instance
+  shorthand a form that repeats (on its own, or in a repeating event).
+- On a form that repeats on its own, `previous-event` is refused: it does not
+  say which instance of the earlier event to compare with. Write it out with
+  one, as in the second line above.
+- An earlier value from another event or instance is read when the page opens.
+  That check warns and never blocks, and its note says it is re-checked
+  after the save.
+- Saving an earlier visit re-checks the visits that compare with it, in the
+  post-save audit.
+
+### Level 4 — several comparisons on one field
+
+```text
+# on: weight — at most 5% from the previous visit and 15% from baseline
+@UVDELTA={"vs":"previous-event","maxPct":5}
+@UVDELTA={"vs":"first-event","maxPct":15}
+
+# on: heart_rate — a rise of at most 20% and a fall of at most 10%
+@UVDELTA={"vs":"[hr_prev]","maxPct":20,"direction":"up"}
+@UVDELTA={"vs":"[hr_prev]","maxPct":10,"direction":"down"}
+```
+
+Tags that compare with different values, or limit different directions, all
+apply, and each one that fails says its own line. Two tags with the same `vs`
+and direction branch like other tags, so each needs its own `when`:
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10,"when":"[age_years]>=18"}
+@UVDELTA={"vs":"previous-event","maxPct":20,"when":"[age_years]<18"}
+```
+
+### Level 5 — enforcement and your own message
+
+```text
+# on: weight — ask before saving a change of more than 5 kg since screening
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg","blockSave":"confirm","message":"Weight changed by more than 5 kg since screening. Re-weigh before saving."}
+```
+
+`blockSave` is `off` by default: the note shows and the save goes ahead. Only
+a `vs` field on the same page can block. A `vs` on another form, event or
+instance is a saved value read when the page opened, so that check never
+blocks, and a calc field never blocks.
+
+### Semantics worth knowing
+
+- **Field types.** Text fields with integer or number validation (any number of
+  decimals, comma decimals included) or with no validation, calc fields and
+  sliders. A `vs` field must hold numbers too. On a comma-decimal field `72,5`
+  reads as 72.5, and the note writes numbers with a comma.
+- **Not a number.** A value that is not a number is left to REDCap's own
+  validation on the page. A saved one, or an earlier value that is not a
+  number, is a rule problem in the audit and the scan, never a pass.
+- **Surveys.** A survey is never sent a value of another form, event or
+  instance. On a survey the rule checks only a `vs` field on the same page, and
+  the note does not name what it compares with. The audit and the scan check
+  the rest.
+- **Rights.** A `vs` on a form the user may not view is not sent to the page.
+  Staff see that the change is checked when the record is saved.
+- **Audit and scan.** The post-save audit logs a change past a limit as
+  `type: delta` with reason `up` or `down`, and names the `vs` it compared
+  with, so two tags on one field log findings that can be told apart. The
+  Validation scan counts them as "Rose more than allowed" or "Fell more than
+  allowed", with the limits and the value compared with in the detail line.
+  Configure via field annotation only.
+
+These are refused, with a configuration error under the field:
+
+```text invalid
+# refused: needs its settings as JSON
+@UVDELTA=previous-event
+# refused: needs "vs"
+@UVDELTA={"max":5}
+# refused: needs a limit
+@UVDELTA={"vs":"previous-event"}
+# refused: "vs" must be previous-event, previous-instance, first-event or first-instance
+@UVDELTA={"vs":"previous-visit","max":5}
+# refused: exactly one field reference
+@UVDELTA={"vs":"[a] or [b]","max":5}
+# refused: "max" must be 0 or more
+@UVDELTA={"vs":"previous-event","max":-1}
+# refused: "direction" must be both, up or down
+@UVDELTA={"vs":"previous-event","max":5,"direction":"left"}
+# refused: unknown @UVDELTA option(s): min
+@UVDELTA={"vs":"previous-event","max":5,"min":1}
+```
+
+Once the data dictionary is read, the module also refuses a field that does not
+hold numbers, a `vs` that is not a field, does not hold numbers, or is the tagged
+field itself, and a shorthand with no earlier entry to name (see Level 3).
+
 ---
 
 ## Combining tags on one field
@@ -4391,6 +4598,9 @@ Current-page values can stay live; other events/instances are snapshots. A missi
 ambiguous match is unresolved, not a saved blank. An unresolved branch does not
 activate its fallback. Save/reload to refresh snapshots, and run a scan to reconcile
 imports, deleted instances or writes that do not invoke a save hook.
+
+To limit how far a value may change since an earlier event or instance, rather
+than compare it, use [`@UVDELTA`](#uvdelta--how-far-a-number-may-change).
 
 ### Named events and relative events
 
@@ -5279,6 +5489,45 @@ counts as the same value), `scope` narrows the **search** (which records are com
 The limits -6 and 5 for weight-for-age, and ±6 for length/height-for-age, are
 the ones WHO's software uses to flag a z-score as implausible.
 
+### `@UVDELTA` recipes
+
+The shorthands and any `vs` in another event or instance need event and instance
+references on.
+
+#### Weight and growth across visits
+
+```text
+# on: weight_kg — at most 10% either way since the previous visit
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+
+# on: weight_kg — at most 5% since the previous visit and 15% below baseline
+@UVDELTA={"vs":"previous-event","maxPct":5}
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+
+# on: height_cm — a child's height may not fall (0.5 cm allowed for measurement error)
+@UVDELTA={"vs":"previous-event","max":0.5,"direction":"down","unit":"cm"}
+```
+
+#### Laboratory trends
+
+```text
+# on: creatinine (µmol/L), a repeating lab form — ask before saving a rise of more than 50%
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"up","blockSave":"confirm"}
+
+# on: hb (g/dL) — at most 2 g/dL from the screening result on another form
+@UVDELTA={"vs":"[hb_screening]","max":2,"unit":"g/dL"}
+```
+
+#### Vital signs and repeated measurements on one form
+
+```text
+# on: sbp_2 — the second reading within 20 mmHg of the first, held until fixed
+@UVDELTA={"vs":"[sbp_1]","max":20,"unit":"mmHg","blockSave":"hard","message":"The two readings differ by more than 20 mmHg. Take a third."}
+
+# on: weight_2 — a second weighing within 0.2 kg of the first
+@UVDELTA={"vs":"[weight_1]","max":0.2,"unit":"kg","blockSave":"confirm"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -5674,6 +5923,20 @@ target the same field: different kinds compose, and the same kind branches by `w
 A limit is a JSON number, or a decimal in quotes for more digits than a JSON
 number keeps. `blockSave` is refused.
 
+### `@UVDELTA`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `vs`            | string          | *(none)*     | Required. `previous-event`, `previous-instance`, `first-event`, `first-instance` (this field there), or one field reference such as `[weight_screening]` or `[baseline_arm_1][weight]`. The shorthands and another event or instance need event and instance references |
+| `max`           | number          | *(none)*     | The largest change allowed, in the field's unit, 0 or more             |
+| `maxPct`        | number          | *(none)*     | The largest change allowed as a percent of the earlier value, 0 or more; not applied to an earlier 0. At least one of `max` and `maxPct` |
+| `direction`     | string          | `both`       | `both`, `up`, `down`: the changes the limits apply to                  |
+| `unit`          | string          | *(none)*     | Label shown after the numbers in the note, up to 20 characters         |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string or map   | generic line   | Replaces the line that names the change and the limit                  |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `vs` saved elsewhere and a calc never block |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -5852,6 +6115,13 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
                                                                   ... and write the z-score into a field
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":true,"table":true}}
                                                                   ... and draw a growth chart and a table under it
+
+# ── @UVDELTA — how far a number may change ──────────────────────────────────
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}           at most 5 kg either way
+@UVDELTA={"vs":"previous-event","maxPct":10}                       at most 10% since the previous visit
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"up"}   a rise of at most 50%
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}       at most 15% below baseline
+@UVDELTA={"vs":"previous-event","max":0,"direction":"down"}        may not fall
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

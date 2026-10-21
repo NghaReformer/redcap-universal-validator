@@ -893,6 +893,55 @@ slip:
   Nothing shown is saved, and nothing is drawn with `innerHTML` or inline
   styles.
 
+## How far a number may change — the `@UVDELTA` tag
+
+`@UVASSERT` can say that a weight is not below the previous one. It cannot say
+how far the weight may move. `@UVDELTA` compares a number with an earlier value
+and flags a change larger than its limit:
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg","blockSave":"confirm"}
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+@UVDELTA={"vs":"previous-instance","max":0,"direction":"down"}
+```
+
+- **JSON form only.** `vs` names the earlier value: `previous-event`,
+  `previous-instance`, `first-event` or `first-instance` (this field there), or
+  any one field reference such as `[weight_screening]` or
+  `[baseline_arm_1][weight]`. The shorthands and a reference to another event
+  or instance need event and instance references on. `max` limits the change in
+  the field's unit and `maxPct` as a percent of the earlier value; give one or
+  both. `direction` (`both`, `up` or `down`) says which changes the limits
+  apply to. Optional `unit`, `when`, `message`, `blockSave`.
+- **Number fields:** Text fields with no, integer or number validation
+  (including comma decimals), calc fields and sliders, compared with a field
+  that holds numbers the same way.
+- **Exact.** The change is worked out as an exact decimal, and the percent test
+  is `|change| × 100` against `maxPct × |earlier value|`, with no division and
+  no rounding. A limit is at most 64 characters and a value at most 4,096
+  digits, so the work stays linear. An earlier value of 0 has no percent, so
+  `maxPct` does not apply to it.
+- **Nothing to compare with.** A blank value, a blank earlier value and a
+  missing data code on either side check nothing. On the first visit or the
+  first instance there is no earlier value. On a form that repeats on its own,
+  `previous-event` is refused because it does not say which instance; write
+  `[previous-event-name][weight][last-instance]`.
+- **When it blocks.** A `vs` field on the same page is read as it is typed, and
+  the rule blocks as `blockSave` says (default `off`). An earlier value from
+  another form, event or instance is read when the page opens, so that check
+  warns and never blocks. A calc never blocks. A survey gets only a `vs` on
+  its own page.
+- **Several comparisons.** Tags with different `vs` or different directions on
+  one field all apply (5% from the previous visit and 15% from baseline). Tags
+  with the same `vs` and direction need different `when` conditions.
+- **Audited.** The post-save audit logs `type: delta` with reason `up` or
+  `down` and the `vs` it compared with. Saving an earlier visit re-checks the
+  visits that compare with it. A value or an earlier value that is not a number
+  is a rule problem. The Validation scan counts the findings as "Rose more than
+  allowed" or "Fell more than allowed", with the limits in the detail line.
+  Configure via field annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -1102,6 +1151,14 @@ check-character primitive, but the full runtime path the module actually uses:
   field to be left, each level's block, calc and read-only fields never block)
   and `tests/range_module_php.php` the server side: eligible fields, the audit,
   the scan and its per-branch detail line.
+- `tests/delta_js.cjs` / `tests/delta_php.php` — the `@UVDELTA` verdict (exact
+  changes past 2^53, percents without division, an earlier 0, direction, comma
+  decimals, values too long to compare) in both runtimes from one fixture,
+  `tests/delta_fixture.json`, plus the grammar. `tests/delta_dom_js.cjs` drives
+  the browser rule (a live `vs` blocks, a saved one and a calc never do, two
+  comparisons on one field) and `tests/delta_module_php.php` the server side:
+  the hooks, the page fold, the audit on a classic project, across events and
+  across instances, and the scan.
 - `tests/growth_js.cjs` / `tests/growth_php.php` — growth references: the
   z-score in both runtimes from one fixture (`tests/growth_fixture.json`),
   2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
@@ -1189,6 +1246,10 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
+php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
+node tests/delta_dom_js.cjs      # @UVDELTA DOM contract (live vs blocks, saved vs and calc never block)
+php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file
