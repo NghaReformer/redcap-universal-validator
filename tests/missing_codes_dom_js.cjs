@@ -141,6 +141,7 @@ const CASES = [
   ['pooled (@UVALIDATE pooled)', { type: 'pooled', fields: ['pool'], algorithm: 'iso7064_mod37_36', blockSave: 'hard' }, 'pool', 'zz'],
   ['constraint (@UVASSERT)', { type: 'constraint', fields: ['dose'], assert: '[dose]<=10', blockSave: 'hard' }, 'dose', '50'],
   ['range (@UVRANGE)', { type: 'range', fields: ['wt'], rangeHardLo: '0', rangeHardHi: '250', rangeHardText: '0 to 250' }, 'wt', '-5'],
+  ['delta (@UVDELTA)', { type: 'delta', fields: ['wd'], deltaVs: '[w0]', deltaVsOp: ['lit', '70'], deltaMax: '5', blockSave: 'hard' }, 'wd', '90'],
 ];
 for (const [label, rule, field, bad] of CASES) {
   for (const code of ['UNK', '-99', ' NASK ']) {
@@ -149,7 +150,7 @@ for (const [label, rule, field, bad] of CASES) {
     check(label + ': ' + JSON.stringify(code) + ' on load is not judged', !noted(env, field) && el.getAttribute('aria-invalid') !== 'true');
     check(label + ': ' + JSON.stringify(code) + ' on load does not hold the save', saves(env));
     const reg = env.win.INSPIREUniversalValidator && env.win.INSPIREUniversalValidator.validators;
-    if (rule.type === 'constraint' || rule.type === 'range') {
+    if (rule.type === 'constraint' || rule.type === 'range' || rule.type === 'delta') {
       check(label + ': the field test answers null for ' + JSON.stringify(code), reg && reg[field] && reg[field].test() === null);
     }
     set(env, el, bad);
@@ -160,12 +161,34 @@ for (const [label, rule, field, bad] of CASES) {
   // A code is a code only for a project that has it.
   const el = input(field, '-99');
   const env = boot([el], { rules: [rule], missingCodes: ['UNK'] });
-  if (label.indexOf('range') === 0) {
+  if (label.indexOf('range') === 0 || label.indexOf('delta') === 0) {
     check(label + ': -99 is an ordinary value where it is not a code', noted(env, field) && !saves(env));
   }
-  const el2 = input(field, 'unk');
-  const env2 = boot([el2], Object.assign({ rules: [rule] }, CODES));
-  check(label + ': codes are case-sensitive ("unk" is judged)', noted(env2, field));
+  // @UVDELTA leaves a value that is not a number to REDCap's own check, so
+  // its case test is on the value it compares with (below).
+  if (rule.type !== 'delta') {
+    const el2 = input(field, 'unk');
+    const env2 = boot([el2], Object.assign({ rules: [rule] }, CODES));
+    check(label + ': codes are case-sensitive ("unk" is judged)', noted(env2, field));
+  }
+}
+
+// @UVDELTA: an earlier value holding a code is like a blank one, on the page or baked in.
+for (const from of ['live', 'snapshot']) {
+  const wd = input('wd', '90');
+  const els = [wd];
+  const rule = { type: 'delta', fields: ['wd'], deltaVs: '[w0]', deltaMax: '5', blockSave: 'hard' };
+  let w0 = null;
+  if (from === 'live') { w0 = input('w0', 'UNK'); els.push(w0); rule.deltaVsOp = ['ref', 'w0', null]; }
+  else { rule.deltaVsOp = ['lit', 'NASK']; rule.snapshotFields = ['w0']; }
+  const env = boot(els, Object.assign({ rules: [rule] }, CODES));
+  check('delta, ' + from + ' earlier value holding a code: nothing to compare with', !noted(env, 'wd') && saves(env));
+  if (w0) {
+    set(env, w0, '70');
+    check('delta, live earlier value entered: judged', noted(env, 'wd') && !saves(env));
+    set(env, w0, 'unk');
+    check('delta: codes are case-sensitive ("unk" as the earlier value is not a number, and says so)', noted(env, 'wd') && saves(env));
+  }
 }
 
 // @UVWINDOW: a code is not a date, and is not reported as one.

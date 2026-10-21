@@ -15,7 +15,8 @@
  *     not brought back,
  *   - MLM that appears only after the page loads is still picked up,
  *   - every mode with a message (@UVASSERT, @UVREQUIRED, @UVUNIQUE,
- *     @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE) shows the translated text,
+ *     @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE, @UVDELTA) shows the
+ *     translated text,
  *   - translated text is escaped, and a stale or malformed map falls back to
  *     the default.
  *
@@ -312,6 +313,13 @@ function frAndBack(label, env, field, en, fr, mlm) {
   const env = boot([input('sbp', '300')], { rules: [{ type: 'range', fields: ['sbp'], rangeHardLo: '40', rangeHardHi: '250',
     rangeHardBlock: 'confirm', message: 'Check the blood pressure', i18n: { message: { fr: 'Vérifiez la tension' } } }] }, { mlm });
   frAndBack('range', env, 'sbp', 'Check the blood pressure', 'Vérifiez la tension', mlm);
+}
+{
+  const mlm = makeMlm('fr');
+  const env = boot([input('w0', '70'), input('weight', '90')], { rules: [{ type: 'delta', fields: ['weight'],
+    deltaVs: '[w0]', deltaVsOp: ['ref', 'w0', null], deltaMax: '5', blockSave: 'hard',
+    message: 'Re-weigh the patient', i18n: { message: { fr: 'Repesez le patient' } } }] }, { mlm });
+  frAndBack('delta', env, 'weight', 'Re-weigh the patient', 'Repesez le patient', mlm);
 }
 {
   const mlm = makeMlm('fr');

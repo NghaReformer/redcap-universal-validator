@@ -460,6 +460,8 @@ class UniversalValidator extends AbstractExternalModule
             // must not keep the z-score either.
             if (isset($v['z']) && $logMode === 'raw') $extra['z'] = (string) $v['z'];
             if (isset($v['reference'])) $extra['reference'] = (string) $v['reference'];
+            // A @UVDELTA finding: the reference it compared with (rule text, never a value).
+            if (isset($v['vs'])) $extra['vs'] = (string) $v['vs'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra);
         }
@@ -3426,7 +3428,10 @@ class UniversalValidator extends AbstractExternalModule
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => $why . ' — field skipped'];
                 continue;
             }
-            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict']];
+            // vs: what the value was compared with, so two tags on one field
+            // (the previous visit, baseline) log findings that can be told apart.
+            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict'],
+                'vs' => $vs];
         }
         return $out;
     }

@@ -9,7 +9,7 @@
  *   - parseMissingDataCodes: REDCap's "CODE, Label" lines,
  *   - the registry: every mode declares a policy, and only @UVREQUIRED answers,
  *   - the post-save audit: a field holding a code logs nothing for check,
- *     @UVASSERT, @UVWINDOW, @UVRANGE and @UVEXISTS, and @UVREQUIRED counts it;
+ *     @UVASSERT, @UVWINDOW, @UVRANGE, @UVDELTA and @UVEXISTS, and @UVREQUIRED counts it;
  *     a @UVWINDOW "from" date holding a code is like a blank one;
  *     the same record without codes configured is reported (the control),
  *   - the scan: no finding for a code, and two records marked UNK are not
@@ -157,6 +157,10 @@ namespace {
         'm_anchor'    => f('result', '', 'date_ymd'),
         'm_after'     => f('result', '@UVWINDOW={"from":"[m_anchor]","window":[0,30]}', 'date_ymd'),
         'm_range'     => f('result', '@UVRANGE={"hard":[0,250]}', 'number'),
+        'm_wvs'       => f('result', '', 'number'),
+        'm_delta'     => f('result', '@UVDELTA={"vs":"[m_wvs]","max":1}', 'number'),
+        'm_wvs2'      => f('result', '', 'number'),
+        'm_delta2'    => f('result', '@UVDELTA={"vs":"[m_wvs2]","max":1}', 'number'),
         'm_exists'    => f('result', '@UVEXISTS=[specimen_id]'),
         'm_site'      => f('result'),
         'm_match'     => f('result', '@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[m_site]"}}'),
@@ -165,6 +169,7 @@ namespace {
     ];
     // m_assert is stored with spaces around the code: it is still the code.
     $CODED = ['m_check' => 'UNK', 'm_assert' => ' NASK ', 'm_window' => 'UNK', 'm_range' => '-99',
+              'm_wvs' => '10', 'm_delta' => '-99', 'm_wvs2' => 'UNK', 'm_delta2' => '50',
               'm_anchor' => 'UNK', 'm_after' => '2026-01-01',
               'm_exists' => 'UNK', 'm_site' => 'UNK', 'm_match' => 'SP-404', 'm_unique' => 'UNK', 'm_req' => 'NASK'];
     $DATA = [
@@ -172,6 +177,7 @@ namespace {
         '2' => [351 => ['record_id' => '2', 'm_check' => 'X1', 'm_assert' => '50', 'm_window' => '2999-01-01',
                         'm_anchor' => '2025-01-01', 'm_after' => '2026-01-01',
                         'm_range' => '-5', 'm_exists' => 'SP-404', 'm_site' => 'A', 'm_match' => 'SP-404',
+                        'm_wvs' => '10', 'm_delta' => '50', 'm_wvs2' => '10', 'm_delta2' => '50',
                         'm_unique' => 'U-1', 'm_req' => '']],
         '3' => [351 => ['record_id' => '3', 'm_unique' => 'U-1', 'm_req' => 'x']],
         '4' => [351 => ['record_id' => '4', 'm_unique' => 'UNK', 'm_req' => 'x']],
@@ -215,16 +221,17 @@ namespace {
     save($m, '1');
     $bad = fieldsOf(logged($m, 'invalid-id-saved'));
     check('control, no codes configured: the same values are findings (got ' . json_encode($bad) . ')',
-        $bad === ['m_assert', 'm_check', 'm_exists', 'm_match', 'm_range', 'm_unique']);
+        $bad === ['m_assert', 'm_check', 'm_delta', 'm_exists', 'm_match', 'm_range', 'm_unique']);
     $unc = fieldsOf(logged($m, 'uvalidate-unconfigurable'), 'fields');
     check('control: @UVWINDOW cannot read UNK as a date, saved or "from" (got ' . json_encode($unc) . ')',
         in_array('m_window', $unc, true) && in_array('m_after', $unc, true));
+    check('control: @UVDELTA cannot read UNK as the number it compares with', in_array('m_delta2', $unc, true));
 
     $m = mod($CODES);
     save($m, '2');
     $bad = fieldsOf(logged($m, 'invalid-id-saved'));
     check('control, ordinary bad values with codes configured: still findings (got ' . json_encode($bad) . ')',
-        $bad === ['m_after', 'm_assert', 'm_check', 'm_exists', 'm_match', 'm_range', 'm_req', 'm_unique', 'm_window']);
+        $bad === ['m_after', 'm_assert', 'm_check', 'm_delta', 'm_delta2', 'm_exists', 'm_match', 'm_range', 'm_req', 'm_unique', 'm_window']);
 
     // ---- 4) the scan --------------------------------------------------------------------
     $m = mod($CODES);
