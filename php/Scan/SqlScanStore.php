@@ -1243,7 +1243,9 @@ final class SqlScanStore implements ScanStore
             // at any staleHours setting - while the sweep's own terminal_reason
             // says "no progress within the configured window". This column
             // measures progress: records actually finished, and the manifest
-            // freezing. The other place is freezeManifest().
+            // freezing. The other places are freezeManifest(), a manifest page
+            // appended, and setProgressState() when a finishing phase's step
+            // moved the run forward (W7-N9) - each of them progress too.
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
                     detail_bytes = detail_bytes + ?, updated_at = ?';
@@ -2303,14 +2305,20 @@ final class SqlScanStore implements ScanStore
         $map = ['catchupCursor' => 'catchup_cursor', 'catchupRound' => 'catchup_round',
                 'catchupDirty' => 'catchup_dirty', 'rollupCursor' => 'rollup_cursor',
                 'fenceTarget' => 'fence_target'];
+        $now = self::now();
         foreach ($map as $k => $col) {
             if (!array_key_exists($k, $st)) continue;
             $sets[] = $col . ' = ?';
             $params[] = $st[$k];
         }
+        // A finishing phase's step that moved the run forward (W7-N9).
+        if (!empty($st['progress'])) {
+            $sets[] = 'progress_at = ?';
+            $params[] = $now;
+        }
         if (!$sets) return false;
         $sets[] = 'updated_at = ?';
-        $params[] = self::now();
+        $params[] = $now;
         $params[] = $runId;
         $params[] = $epoch;
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET ' . implode(', ', $sets)

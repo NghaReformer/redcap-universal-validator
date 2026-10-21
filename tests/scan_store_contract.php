@@ -1460,6 +1460,25 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     } catch (\Throwable $e) { $threw = true; }
     $C('unstored: a count that is not a whole number is refused loudly', $threw === true);
 
+    // -- THE FINISHING PHASES' PROGRESS CLOCK (W7-N9) ----------------------
+    //
+    // setProgressState() moves progress_at only when told the step moved the
+    // run forward, fenced on the lease like every cursor it writes. A run
+    // that was never planned has a NULL clock, so any write to it shows.
+    $sP = $newStore();
+    $rP = (int) $sP->startRun(789, ['created_by' => 'alice'])['run']['run_id'];
+    $epP = (int) $sP->run(789, $rP)['lease_epoch'];
+    $C('progress: a fresh run has no progress clock', $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a cursor written alone does not move it',
+        $sP->setProgressState($rP, $epP, ['rollupCursor' => 0]) === true
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a stale lease cannot move it',
+        $sP->setProgressState($rP, $epP + 1, ['progress' => true]) === false
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: told the run moved forward, the lease holder moves it, with no cursor beside it',
+        $sP->setProgressState($rP, $epP, ['progress' => true]) === true
+        && $sP->run(789, $rP)['progress_at'] !== null);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

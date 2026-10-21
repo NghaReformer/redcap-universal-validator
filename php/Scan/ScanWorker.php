@@ -472,6 +472,30 @@ final class ScanWorker
                 // movement that is neither a finding nor an exclusion.
                 $listed += max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
                          + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                // WHAT THE STEP MOVED. Forward is groups found, candidates
+                // verified, findings written, groups published or decided
+                // undecidable: the run nearer its end. A step that only re-read
+                // records (a group restarted because a record changed) did
+                // work and moved nothing forward.
+                $forward = max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                         + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
+                $stepWhy = isset($r['why']) && $r['why'] !== null ? (string) $r['why'] : null;
+                // A STEP THAT DID NOTHING AND SAYS WHY IS AN ANSWER (R3S-N4).
+                // The why used to be dropped and the step taken again, so a
+                // finalizer that could not write (NO_SEQ, a group in a state
+                // this build does not know) was retried until the request's
+                // budget ended, and every request after it did the same with
+                // nothing said. The next step would meet the same refusal, so
+                // the loop stops and the browser is told what it was; ok:false,
+                // as for a rollup page the lease refused.
+                if (empty($r['done']) && $forward === 0 && $reread === 0 && $stepWhy !== null) {
+                    return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => 'finalizer',
+                            'why' => $stepWhy];
+                }
                 if ($r['done']) {
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -481,11 +505,23 @@ final class ScanWorker
                     $done = true;
                     break;
                 }
+                // THE PROGRESS CLOCK (W7-N9). This phase finishes no records,
+                // so commitBatch() never moved progress_at for it, and the
+                // finalizer writes nothing to the run row: a long
+                // unique-finalize read as stalled to the page after two minutes
+                // and as abandoned to the reaper after staleHours, while it
+                // worked. A step that moved forward says so through the store,
+                // fenced on the lease; one that only retried does not, so a
+                // wedged finalizer still ages. Refused means this worker no
+                // longer holds the run, which is the scanning phase's fence
+                // refusal and gets its answer.
+                if ($forward > 0 && !$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
+                    return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                }
                 // A step that re-read records WAS a batch of records, and is
                 // measured as one, so the next verify page is sized by what
                 // re-reading records actually cost.
                 $units = max(1, $r['verified'] + $r['emitted'] + $r['groups']);
-                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
                 if ($reread > 0) {
                     $mark['kind'] = 'records';
                     $units = $reread;

@@ -115,8 +115,8 @@ final class ArrayScanStore implements ScanStore
             // here, and only one of them is safe to read.
             'fence_open' => null, 'fence_target' => null, 'catchup_cursor' => null,
             'catchup_round' => 0, 'catchup_dirty' => 0, 'rollup_cursor' => 0,
-            // Written in exactly two places, both real progress - see
-            // SqlScanStore::commitBatch. NULL until one of them happens.
+            // Written only for real progress - see SqlScanStore::commitBatch.
+            // NULL until some happens.
             'progress_at' => null,
             // The rest of ScanStore::RUN_COLUMNS, with the defaults the schema
             // gives them. `clean` is NULL, not 0: nothing has been decided.
@@ -1204,6 +1204,13 @@ final class ArrayScanStore implements ScanStore
         foreach ($st as $k => $v) {
             if (!isset($map[$k])) continue;
             $this->runs[$runId][$map[$k]] = $v;
+        }
+        // A finishing phase's step that moved the run forward (W7-N9), with
+        // updated_at beside it as the SQL store writes them.
+        if (!empty($st['progress'])) {
+            $now = gmdate('Y-m-d H:i:s');
+            $this->runs[$runId]['progress_at'] = $now;
+            $this->runs[$runId]['updated_at'] = $now;
         }
         return true;
     }

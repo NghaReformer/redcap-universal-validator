@@ -3756,6 +3756,118 @@ namespace INSPIRE\UniversalValidator\Scan {
             && ScanPromotion::marksFor([['rule' => 4, 'why' => 'temporal-budget']])[0]['blocks'] === 0);
     }
 
+    /* =====================================================================
+     * W7-N9, R3S-N4  THE DUPLICATE PHASE HAS A PROGRESS CLOCK, AND A STEP
+     *                THAT DID NOTHING AND SAYS WHY ENDS THE REQUEST
+     *
+     * progress_at moved only when records finished, and unique-finalize
+     * finishes none, so a long one read as stalled and, to the reaper, as
+     * abandoned. And a step's why was dropped: a finalizer that could not
+     * write was stepped again until the request's budget ran out.
+     * ===================================================================== */
+    /** Answers from a script, the last one repeated; a hook may act first. */
+    class ScriptedFinalizer implements DuplicateFinalizer
+    {
+        public $script;
+        public $calls = 0;
+        public $hook;
+        public function __construct(array $script, $hook = null)
+        {
+            $this->script = $script;
+            $this->hook = $hook;
+        }
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            $i = min($this->calls, count($this->script) - 1);
+            $this->calls++;
+            if (is_callable($this->hook)) ($this->hook)($this->calls);
+            // A bound on a loop that never stops: done at the 20th step.
+            if ($this->calls >= 20) return ['done' => true] + self::zero();
+            return $this->script[$i] + self::zero();
+        }
+        public static function zero()
+        {
+            return ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+        }
+    }
+    {
+        $poke = function (ArrayScanStore $store, $runId, array $set) {
+            $p = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+            $p->setAccessible(true);
+            $runs = $p->getValue($store);
+            foreach ($set as $k => $v) $runs[$runId][$k] = $v;
+            $p->setValue($store, $runs);
+        };
+        $OLD = '2000-01-01 00:00:00';
+        $inUnique = function ($pid) use ($fixture, $poke, $OLD) {
+            list($store, $runId) = $fixture(['A'], $pid);
+            $ep = (int) $store->run($pid, $runId)['lease_epoch'];
+            foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $p) $store->advancePhase($runId, $ep, $p);
+            $poke($store, $runId, ['progress_at' => $OLD, 'updated_at' => $OLD]);
+            return [$store, $runId];
+        };
+        $drive = function ($store, $pid, $runId, $f) use ($reader, $finder, $wide) {
+            return (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+                'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+                'finalizer' => $f]))->work($pid, $runId);
+        };
+
+        // A step that found groups moves the clock, through the store's fence.
+        list($store, $runId) = $inUnique(840);
+        $f = new ScriptedFinalizer([['groups' => 2], ['done' => true]]);
+        $res = $drive($store, 840, $runId, $f);
+        $row = $store->run(840, $runId);
+        check('W7-N9: a duplicate step that found groups moves progress_at and updated_at',
+            $res['ok'] === true && $f->calls === 2 && $row['progress_at'] !== $OLD
+            && $row['updated_at'] !== $OLD);
+
+        // A step that only re-read records (its group restarted) moves nothing
+        // forward: the clock stays, and the loop goes on, because it said why
+        // AND did work.
+        list($store, $runId) = $inUnique(841);
+        $f = new ScriptedFinalizer([['read' => 3, 'why' => 'a record in this duplicate group changed '
+                                     . 'while it was being checked, so the group is being checked again'],
+                                    ['done' => true]]);
+        $res = $drive($store, 841, $runId, $f);
+        check('W7-N9: a step that only re-read records leaves progress_at where it was',
+            $store->run(841, $runId)['progress_at'] === $OLD);
+        check('R3S-N4: and is not a refusal: the next step is taken',
+            $res['ok'] === true && $f->calls === 2 && $res['stop'] !== 'finalizer');
+
+        // A step that did nothing and said why ends the request with that why.
+        list($store, $runId) = $inUnique(842);
+        $f = new ScriptedFinalizer([['why' => UniqueFinalizer::NO_SEQ]]);
+        $res = $drive($store, 842, $runId, $f);
+        check('R3S-N4: a finalizer step that did nothing and says why is taken once, not until the budget ends',
+            $f->calls === 1);
+        check('R3S-N4: and the request stops with that why, ok:false, still in the duplicate phase',
+            $res['ok'] === false && $res['stop'] === 'finalizer' && $res['why'] === UniqueFinalizer::NO_SEQ
+            && $res['done'] === false && $res['phase'] === ScanPhase::UNIQUE
+            && $store->run(842, $runId)['phase'] === ScanPhase::UNIQUE);
+        check('W7-N9: and a refused step does not move the clock',
+            $store->run(842, $runId)['progress_at'] === $OLD);
+        // The same words with no why are a step that moved state the counts do
+        // not show (a verified group going on to be written), and go on.
+        list($store, $runId) = $inUnique(843);
+        $f = new ScriptedFinalizer([[], ['done' => true]]);
+        $res = $drive($store, 843, $runId, $f);
+        check('R3S-N4: a step with no counts and no why is still stepped past', $f->calls === 2
+            && $res['ok'] === true);
+
+        // The clock is fenced: a worker whose lease moved during the step stops
+        // as any refused fence does, and takes no second step.
+        list($store, $runId) = $inUnique(844);
+        $f = new ScriptedFinalizer([['groups' => 1], ['done' => true]],
+            function ($n) use ($poke, $store, $runId) {
+                if ($n === 1) $poke($store, $runId, ['lease_epoch' => 99]);
+            });
+        $res = $drive($store, 844, $runId, $f);
+        check('W7-N9: a progress write the lease refuses ends the request as a refused fence',
+            $res['ok'] === true && $res['stop'] === 'fenced' && $f->calls === 1
+            && $store->run(844, $runId)['progress_at'] === $OLD);
+    }
+
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);
     $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));

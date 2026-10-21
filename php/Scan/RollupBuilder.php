@@ -119,7 +119,11 @@ final class RollupBuilder
             foreach ($tally as $t) {
                 $this->store->addAggregate($runId, $t['kind'], $t['axis'], null, $t['n']);
             }
-            $ok = $this->store->setProgressState($runId, $epoch, ['rollupCursor' => $last]);
+            // AND THE PROGRESS CLOCK, in the same fenced write (W7-N9). A page
+            // summarised is the run moving forward; without it a long rollup
+            // read as stalled to the page and as abandoned to the reaper.
+            $ok = $this->store->setProgressState($runId, $epoch,
+                                                 ['rollupCursor' => $last, 'progress' => true]);
             if (!$ok) {
                 // The lease moved: this worker no longer owns the run, and the
                 // counts it just added would be added again by whoever does.
