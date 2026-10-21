@@ -175,11 +175,13 @@ final class ScanOutcome
         // A record that could not be read, or a degradation that blocks
         // validation, caps coverage at 'partial' whatever else is true. This is
         // checked BEFORE the fence, because a proved fence over a manifest with
-        // a hole in it still has a hole in it.
+        // a hole in it still has a hole in it. A record examined only in part
+        // (W7-N6: its extended-evaluation budget ran out) is one of those holes,
+        // and the sentence names it.
         if ($b('blocked')) {
             return self::out(self::PARTIAL, self::COV_PARTIAL, $detail, false, $gaps,
-                'at least one record could not be read or could not be held still, so the project '
-                . 'was not covered');
+                'at least one record could not be read, could not be held still or was examined '
+                . 'only in part, so the project was not covered');
         }
 
         // THE MANIFEST BEFORE THE FENCE. These two were the other way round, and

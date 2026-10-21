@@ -174,7 +174,7 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     $f = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
         . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ?',
-        array($PID, $GEN, 'duplicate'));
+        array($PID, $GEN, \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON));
     check('unique: one finding for every record in a duplicate group',
         (int) $f[0][0] === 5);
     $active = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
@@ -202,7 +202,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
     $f2 = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
         . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ?',
-        array($PID, $GEN, 'duplicate'));
+        array($PID, $GEN, \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON));
     check('unique: re-emitting a group writes the same rows rather than a second set',
         (int) $f2[0][0] === 5);
 
@@ -215,7 +215,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $out = array();
         foreach ($dbA->select('SELECT ' . $col . ', COUNT(*) FROM ' . Schema::table('finding')
                 . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ? AND ' . $where
-                . ' GROUP BY ' . $col . ' ORDER BY ' . $col, array($PID, $GEN, 'duplicate')) as $r) {
+                . ' GROUP BY ' . $col . ' ORDER BY ' . $col, array($PID, $GEN, \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON)) as $r) {
             $out[(string) $r[0]] = (int) $r[1];
         }
         return $out;
@@ -613,6 +613,100 @@ $NEIGHBOUR = uv_neighbour($PID);
             fwrite(STDERR, '  the optimiser chose: ' . ($key === '' ? '(no index)' : $key) . "\n");
         }
     }
+
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
+// -- W7-R4: A DUPLICATE IS WRITTEN AS ITS RULE'S OTHER FINDINGS ARE -----------
+//
+// Every duplicate the finalizer wrote carried rule_ord 0, no group and the
+// reason `duplicate`, where the live check and the audit write the rule's
+// ordinal, the record's Data Access Group and `duplicate-value`. The ordinal
+// comes from a map, the groups from one call per emitted page.
+{
+    $KEY = 'finalizer-r4-key';
+    $GENR = uv_generation('duplicate-columns');
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    $putR = function ($gen, $group, $rec) use ($A, $KEY, $PID) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $PID . ", " . (int) $gen . ", 'r2', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
+    };
+    $sameR = function ($locs) {
+        $out = array();
+        foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('V1');
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    foreach (array('R1', 'R2', 'R3') as $rec) $putR($GENR, 'V1', $rec);
+    $asked = array();
+    $dagsR = function (array $ids) use (&$asked) {
+        $asked[] = $ids;
+        $map = array('R1' => 'site_a', 'R3' => 'site_b');
+        $out = array();
+        foreach ($ids as $id) $out[$id] = isset($map[$id]) ? $map[$id] : null;
+        return array('ok' => true, 'dags' => $out, 'read' => count($ids), 'why' => null);
+    };
+    $finR = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 43,
+        'hmacKey' => $KEY, 'read' => $sameR, 'ordinals' => array('r2' => 3), 'dags' => $dagsR));
+    $readByEmit = 0;
+    $k = 0;
+    while ($k++ < 50) {
+        $r = $finR->step($GENR, 2);
+        if ($r['emitted'] > 0) $readByEmit += $r['read'];
+        if ($r['done']) break;
+    }
+    $rows = array();
+    foreach ($dbA->select('SELECT record_id_bin, rule_ord, dag_key, reason_code FROM ' . Schema::table('finding')
+            . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1 ORDER BY record_id_bin',
+            array($PID, $GENR)) as $row) {
+        $rows[] = array((string) $row[0], (int) $row[1], $row[2] === null ? null : (string) $row[2], (string) $row[3]);
+    }
+    check('W7-R4: each duplicate carries its rule\'s ordinal, its record\'s group and duplicate-value',
+        $rows === array(array('R1', 3, 'site_a', 'duplicate-value'), array('R2', 3, null, 'duplicate-value'),
+                        array('R3', 3, 'site_b', 'duplicate-value')));
+    check('W7-R4: the groups are asked once per emitted page, for that page\'s records, never per row',
+        $asked === array(array('R1', 'R2'), array('R3')));
+    check('W7-R4: and what that cost is reported as records read', $readByEmit === 3);
+
+    // A page whose groups could not be read writes nothing and says why, and
+    // the group waits in `emitting` for a read that works.
+    $GENF = uv_generation('duplicate-columns-unread');
+    foreach (array('R4', 'R5') as $rec) $putR($GENF, 'V2', $rec);
+    $down = true;
+    $flaky = function (array $ids) use (&$down) {
+        if ($down) return array('ok' => false, 'dags' => array(), 'read' => count($ids), 'why' => 'gone');
+        $out = array();
+        foreach ($ids as $id) $out[$id] = 'site_c';
+        return array('ok' => true, 'dags' => $out, 'read' => count($ids), 'why' => null);
+    };
+    $finF = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 44,
+        'hmacKey' => $KEY, 'read' => $sameR, 'ordinals' => array('r2' => 3), 'dags' => $flaky));
+    $last = null;
+    $k = 0;
+    while ($k++ < 20) {
+        $last = $finF->step($GENF, 10);
+        if ($last['done'] || $last['why'] !== null) break;
+    }
+    $none = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GENF));
+    check('W7-R4: a page whose groups could not be read writes no row and says so',
+        $last !== null && $last['why'] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::NO_DAGS
+        && $last['emitted'] === 0 && $last['read'] === 0 && (int) $none[0][0] === 0);
+    $down = false;
+    $k = 0;
+    while ($k++ < 20) { if ($finF->step($GENF, 10)['done']) break; }
+    $back = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . " WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND dag_key = 'site_c'",
+        array($PID, $GENF));
+    check('W7-R4: and the next step with a read that works writes the group', (int) $back[0][0] === 2);
 
     foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
         $A->query('DELETE FROM ' . Schema::table($t));

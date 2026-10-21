@@ -507,10 +507,25 @@ interface ScanStore
      * set it to the list of ordinals the commit held, and to [] whenever
      * nothing was written.
      *
+     * FINDINGS COUNTED AND NOT STORED (H9). `$batch['unstored']` is ordinal =>
+     * how many findings that record produced which the worker left out because
+     * the run's detail budget was spent. The store keeps no detail for them,
+     * and adds the count of the HELD records' to the DETAIL_UNSTORED aggregate
+     * in the same transaction, behind the same fences: a record lost to
+     * another worker is that worker's to count. Absent is none.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */
     public function commitBatch($runId, $owner, $epoch, array $batch);
+
+    /**
+     * The aggregate kind that counts findings a run found and did not store,
+     * because its detail budget was spent (H9). ScanPromotion::tally() adds it
+     * to what the summary counts, so `violations` is every finding; a run with
+     * any is `truncated`, and one with none is not.
+     */
+    const DETAIL_UNSTORED = 'detail-unstored';
 
     /**
      * Hand claimed records back so another worker can take them immediately.
@@ -781,7 +796,18 @@ interface ScanStore
     /** Where reconciliation and rollup had reached. Survives the request. */
     public function progressState($runId);
 
-    /** Move those cursors, fenced on the lease epoch. */
+    /**
+     * Move those cursors, fenced on the lease epoch.
+     *
+     * `progress` => true also moves progress_at (W7-N9). The finishing phases
+     * finish no records, so commitBatch() never moved it for them, and a long
+     * unique-finalize or rollup read as stalled to the page and as abandoned to
+     * the reaper while it worked. A caller passes it only for a step that moved
+     * the run forward - a page summarised, groups found or decided, findings
+     * written - never for a step that retried, or the reaper could no longer
+     * tell a wedged run from a working one (see commitBatch()). Alone it is a
+     * write: true when this lease still holds the run, false when it does not.
+     */
     public function setProgressState($runId, $epoch, array $state);
 
     /**

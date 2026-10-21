@@ -32,6 +32,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/ScanPolicy.php';    // the detail budget (H9)
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
@@ -1482,6 +1483,30 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('worker: releasing the project slot for the run that must replace it',
         $store->startRun(800, [])['ok'] === true);
 
+    // THROUGH PROMOTION, NOT A ROW OF ITS OWN (B7). The guard wrote
+    // derive(['failed' => true]) with a sentence of its own, so the same event
+    // stored a different row - no counts - from the one ScanService's check
+    // stores. A rule problem the run had met is counted on the row it ends with.
+    list($store, $runId) = $fixture(['A'], 804);
+    $store->markAggregate($runId, ScanPromotion::RULE_KINDS, '1', 'config', 0, 'rule 1 is broken');
+    (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'fingerprint' => $fpNow]))->work(804, $runId);
+    $row = $store->run(804, $runId);
+    check('B7: a moved configuration ends the run through promotion, with its counts and its sentence',
+        $row['terminal'] === ScanOutcome::FAILED && (int) $row['rule_problem_count'] === 1
+        && strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false);
+
+    // A TIGHTENED POLICY IS A STOP, WHATEVER ELSE MOVED (review R5-5, B7). The
+    // value mode is a fingerprint input, so tightening it moves both; with the
+    // guard armed, the fingerprint must not be asked first.
+    list($store, $runId) = $fixture(['A'], 805);
+    $res = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'fingerprint' => $fpNow, 'policyRevision' => 9]))->work(805, $runId);
+    check('B7: a tightened policy that also moved the fingerprint stops the run, it does not fail it',
+        $store->run(805, $runId)['terminal'] === ScanOutcome::CANCELLED
+        && strpos($res['why'], 'privacy settings') !== false);
+
     // -- the privacy policy tightened ----------------------------------------
     //
     // The run stores the policy it began under. Continuing would keep writing
@@ -2271,6 +2296,104 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('finalizer: binding returns a copy and leaves the unbound one unbound, writing nothing',
         $uf2->forRun('7') !== $uf2 && $unboundWhy === UniqueFinalizer::NO_SEQ);
 
+    // W7-R4: A DUPLICATE IS WRITTEN AS ITS RULE'S OTHER FINDINGS ARE. Rule
+    // ordinal, the record's group and `duplicate-value`, where it wrote 0,
+    // NULL and `duplicate`. The groups come from one call per page.
+    /** One group in `emitting`, three candidates, and the writes it is sent. */
+    class EmitPageDb implements ScanDb
+    {
+        public $limits = [];
+        public $inserts = [];
+        public $updates = 0;
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+            if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+            if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'emitting', null, 2]];
+            if (strpos($sql, 'lookup = 0') !== false && preg_match('/LIMIT (\d+)/', $sql, $m)) {
+                $this->limits[] = (int) $m[1];
+                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
+                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
+                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64)]];
+                return array_slice($rows, 0, (int) $m[1]);
+            }
+            return [];
+        }
+        public function exec($sql, array $params = []) { return 1; }
+        public function execNoCount($sql, array $params = [])
+        {
+            if (strpos($sql, 'INSERT INTO') !== false) $this->inserts[] = [$sql, $params];
+            if (strpos($sql, 'SET emit_cursor') !== false) $this->updates++;
+        }
+        public function affected() { return 1; }
+        public function begin() { }
+        public function commit() { }
+        public function rollback() { }
+        /** Each written row, column => value, read off the statement's own column list. */
+        public function rows()
+        {
+            $out = [];
+            foreach ($this->inserts as $ins) {
+                list($sql, $params) = $ins;
+                if (!preg_match('/\(([a-z_,\s]+)\)\s*VALUES\s*\(([^)]*)\)/', $sql, $m)) continue;
+                $cols = array_map('trim', explode(',', $m[1]));
+                $marks = array_map('trim', explode(',', $m[2]));
+                $p = 0;
+                while ($p < count($params)) {
+                    $row = [];
+                    foreach ($cols as $i => $c) $row[$c] = $marks[$i] === '?' ? $params[$p++] : $marks[$i];
+                    $out[] = $row;
+                }
+            }
+            return $out;
+        }
+    }
+    $g7 = ['group_hmac' => 'g1', 'emit_cursor' => 0, 'group_id' => 7, 'candidate_epoch' => 1];
+    $asked = [];
+    $dagsOk = function (array $ids) use (&$asked) {
+        $asked[] = $ids;
+        $out = [];
+        foreach ($ids as $id) $out[$id] = $id === 'R1' ? 'site_a' : null;
+        return ['ok' => true, 'dags' => $out, 'read' => count($ids), 'why' => null];
+    };
+    $edb = new EmitPageDb();
+    $er = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'ordinals' => ['src-b' => 2],
+                                      'dags' => $dagsOk]))->forRun(5)->emit(1, $g7, 10, 10);
+    $wrote = [];
+    foreach ($edb->rows() as $row) {
+        $wrote[] = [$row['record_id_bin'], $row['field'], $row['rule_ord'], $row['dag_key'], $row['reason_code']];
+    }
+    check('W7-R4: each duplicate carries its rule\'s ordinal, its record\'s group and duplicate-value',
+        $wrote === [['R1', 'sid', 2, 'site_a', 'duplicate-value'], ['R2', 'sid', 2, null, 'duplicate-value'],
+                    ['R1', 'sid2', 0, 'site_a', 'duplicate-value']]);
+    check('W7-R4: a rule the map does not name is ordinal 0, as before, and never a guess',
+        isset($wrote[2]) && $wrote[2][2] === 0);
+    check('W7-R4: the groups are asked once for the page, each record once',
+        $asked === [['R1', 'R2']] && $er['emitted'] === 3 && $er['read'] === 2);
+    // The page is cut to the read limit when the groups may cost a read.
+    $edb = new EmitPageDb();
+    $cut = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'dags' => $dagsOk]))
+        ->forRun(5)->step(1, 10, 2);
+    $edb2 = new EmitPageDb();
+    (new UniqueFinalizer($edb2, ['pid' => 800, 'hmacKey' => 'k']))->forRun(5)->step(1, 10, 2);
+    check('W7-R4: a page that asks for groups is cut to the read limit; one that does not is not',
+        $edb->limits === [2] && $edb2->limits === [10]);
+    check('W7-R4: and the step reports the records that read cost, so the worker measures it',
+        $cut['emitted'] === 2 && $cut['read'] === 2);
+    check('W7-R4: without a groups dependency the row has no group, as before',
+        $edb2->rows() !== [] && $edb2->rows()[0]['dag_key'] === null
+        && $edb2->rows()[0]['reason_code'] === 'duplicate-value');
+    // A failed read is not "no group".
+    $edb = new EmitPageDb();
+    $down = (new UniqueFinalizer($edb, ['pid' => 800, 'hmacKey' => 'k', 'dags' => function (array $ids) {
+        return ['ok' => false, 'dags' => [], 'read' => count($ids), 'why' => 'gone'];
+    }]))->forRun(5)->step(1, 10, 10);
+    check('W7-R4: a page whose groups could not be read writes nothing and moves no cursor',
+        $edb->inserts === [] && $edb->updates === 0);
+    check('W7-R4: and says why, with nothing counted as moved, so the worker stops on it',
+        $down['why'] === UniqueFinalizer::NO_DAGS && $down['emitted'] === 0 && $down['read'] === 0
+        && $down['done'] === false);
+
     // -- the duplicate phase is entered, not skipped -------------------------
     //
     // A project with no unique rules still passes through it. "We checked and
@@ -2927,6 +3050,22 @@ namespace INSPIRE\UniversalValidator\Scan {
         $o['coverage'] === ScanOutcome::FENCED);
     check('promote: but forbids clean and says _TRUNCATED',
         ScanOutcome::mayClaimClean($o) === false && ScanOutcome::suffix($o) === '_TRUNCATED');
+    // W7-N8: WITH THE COUNT OF WHAT WAS LEFT OUT, truncated is whether there
+    // was any. The counters at the budget say nothing about a finding dropped.
+    $at = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['maxFindings' => 1000, 'unstored' => 0, 'violations' => 1000]));
+    check('W7-N8: a run that stored exactly its budget and left nothing out is not truncated',
+        $at['facts']['truncated'] === false && $at['facts']['violations'] === 1000);
+    $past = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['maxFindings' => 1000, 'unstored' => 7, 'violations' => 1007]));
+    check('W7-N8: one that left any out is, and its violations are every finding found',
+        $past['facts']['truncated'] === true && $past['facts']['violations'] === 1007);
+    // A summary that never finished is a floor over what was stored, and the
+    // ones left out are added to it, never compared with it.
+    $floor = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['rollupDone' => false, 'unstored' => 7, 'violations' => 207]));
+    check('W7-N8: without a finished summary, violations are the stored floor plus those left out',
+        $floor['facts']['violations'] === 1007);
 
     // Gaps are reported, never violations, and never blocking.
     $gp = ScanPromotion::facts($run, $all, array_merge($ok, ['gapCount' => 3860]));
@@ -3275,8 +3414,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             $skew['violations'] === 6);
         check('tally: every rollup axis is read, so a new one cannot be forgotten here',
             count($K) === 4 && ScanPromotion::tally([['kind' => $K[2], 'cnt' => 2]])['violations'] === 2);
-        check('tally: nothing found is three zeroes',
-            ScanPromotion::tally([]) === ['violations' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+        // H9: the findings the detail budget left out are findings, beside the
+        // summary of the ones stored; the summary cannot count a row nobody
+        // wrote.
+        $cut = ScanPromotion::tally([['kind' => $K[0], 'cnt' => 4],
+                                     ['kind' => ScanStore::DETAIL_UNSTORED, 'cnt' => 3]]);
+        check('tally: findings left out by the detail budget are counted beside the summary (H9)',
+            $cut['violations'] === 7 && $cut['stored'] === 4 && $cut['unstored'] === 3);
+        check('tally: nothing found is zeroes',
+            ScanPromotion::tally([]) === ['violations' => 0, 'stored' => 0, 'unstored' => 0,
+                                          'ruleProblems' => 0, 'gaps' => 0]);
 
         // The term, in facts(). A finished summary is believed over the counter
         // in BOTH directions; an unfinished one only ever raises it.
@@ -3600,6 +3747,224 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('storage: and the run is not certified on the way out', $res['done'] === false);
     check('storage: with the slot failure recorded where an administrator can see it',
         count($notes) === 1 && $notes[0][0] === 'scan storage failure');
+
+    /* =====================================================================
+     * H9  THE DETAIL BUDGET GATES WHERE THE FINDINGS ARE MERGED
+     *
+     * ScanPolicy::budgetSpent() had no caller, so a run stored every finding
+     * however far past the setting it went. The gate is between evaluate()
+     * and the commit: every record is still examined and every finding still
+     * counted, and past the budget the finding is left out of the batch and
+     * counted as unstored.
+     * ===================================================================== */
+    {
+        $leftOut = function (ScanStore $st, $rid) {
+            $n = 0;
+            foreach ($st->aggregates($rid) as $a) {
+                if ((string) $a['kind'] === ScanStore::DETAIL_UNSTORED) $n += (int) $a['cnt'];
+            }
+            return $n;
+        };
+        $gated = function ($evaluate, array $limits) use ($reader, $wide, $fin) {
+            return ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $evaluate,
+                    'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+                    'limits' => $limits];
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
+        $res = (new ScanWorker($store, $gated($finder(1), ['maxFindings' => 3, 'maxBytes' => 1000000])))
+            ->work(800, $runId);
+        check('H9: past the budget the worker stores no more findings',
+            (int) $store->run(800, $runId)['detail_rows'] === 3 && count($store->allFindings()) === 3);
+        check('H9: and counts every finding it found, in its answer and in the store',
+            $res['findings'] === 5 && $leftOut($store, $runId) === 2);
+        check('H9: every record is still examined',
+            $res['worked'] === 5 && (int) $store->run(800, $runId)['manifest_done'] === 5);
+
+        // THE NEXT REQUEST KNOWS. The gate starts from what the run row says
+        // is stored, not from zero, so a budget spent by an earlier request
+        // stays spent.
+        list($store, $runId) = $fixture(['A', 'B']);
+        $runsProp = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+        $runsProp->setAccessible(true);
+        $rows = $runsProp->getValue($store);
+        $rows[$runId]['detail_rows'] = 3;
+        $runsProp->setValue($store, $rows);
+        $res = (new ScanWorker($store, $gated($finder(1), ['maxFindings' => 3, 'maxBytes' => 1000000])))
+            ->work(800, $runId);
+        check('H9: a request after the budget was spent stores nothing, and counts what it found',
+            count($store->allFindings()) === 0 && (int) $store->run(800, $runId)['detail_rows'] === 3
+            && $res['findings'] === 2 && $leftOut($store, $runId) === 2);
+
+        // THE BYTES LIMIT, measured as the store measures it: the previews
+        // kept. Ten bytes a finding against twenty-five: the third is stored
+        // (twenty is under the limit) and the fourth is not.
+        $valued = function ($id, $node) use ($finder) {
+            $r = $finder(1)($id, $node);
+            $r['findings'][0]['value_bin'] = 'abcdefghij';
+            return $r;
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C', 'D']);
+        $res = (new ScanWorker($store, $gated($valued, ['maxFindings' => 100, 'maxBytes' => 25])))
+            ->work(800, $runId);
+        check('H9: the bytes limit stops storage too, one preview past it at most',
+            (int) $store->run(800, $runId)['detail_rows'] === 3
+            && (int) $store->run(800, $runId)['detail_bytes'] === 30
+            && $res['findings'] === 4 && $leftOut($store, $runId) === 1);
+
+        // No budget handed over is no gate, which is what a worker built
+        // without the service's limits always was.
+        list($store, $runId) = $fixture(['A', 'B', 'C']);
+        (new ScanWorker($store, $gated($finder(2), [])))->work(800, $runId);
+        check('H9: a worker given no budget stores everything',
+            count($store->allFindings()) === 6 && $leftOut($store, $runId) === 0);
+    }
+
+    /* =====================================================================
+     * W7-N6  A RECORD EXAMINED ONLY IN PART IS A HOLE IN COVERAGE
+     *
+     * When the extended-evaluation budget runs out, the evaluator reports
+     * `temporal-budget` - "this record was not fully checked" - and that
+     * reached the run as a rule problem only: clean was refused and coverage
+     * stayed whole, so a proved run said every record was examined.
+     * ===================================================================== */
+    {
+        $partly = function ($id, $node) {
+            return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'why' => null,
+                    'problems' => $id !== 'B' ? [] : [['rule' => 4, 'code' => 'temporal-budget',
+                        'fields' => ['a'], 'why' => 'Extended record evaluation budget exhausted; this '
+                                                    . 'record was not fully checked.']]];
+        };
+        list($store, $runId) = $fixture(['A', 'B', 'C']);
+        // A proved window, so only the hole can keep the run from complete.
+        $store->setProgressState($runId, (int) $store->run(800, $runId)['lease_epoch'], ['fenceTarget' => '9']);
+        (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $partly,
+            'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]))->work(800, $runId);
+        check('W7-N6: a record whose extended evaluation ran out leaves a blocking mark',
+            $store->blockingAggregates($runId) === 1);
+        check('W7-N6: still counted as a rule problem, with the record examined and its findings kept',
+            ScanPromotion::tally($store->aggregates($runId))['ruleProblems'] === 1
+            && $store->recordStates($runId) === [ScanStore::REC_DONE => 3]);
+        ScanPromotion::promote($store, 800, $runId, ['uniqueDone' => true, 'rollupDone' => true]);
+        $row = $store->run(800, $runId);
+        check('W7-N6: so a proved run is partial, never complete, and says a record was examined in part',
+            $row['terminal'] === ScanOutcome::PARTIAL && $row['coverage'] === ScanOutcome::COV_PARTIAL
+            && (int) $row['clean'] === 0 && strpos((string) $row['terminal_reason'], 'only in part') !== false);
+        check('W7-N6: any other problem code still caps nothing',
+            ScanPromotion::marksFor([['rule' => 4, 'code' => 'temporal', 'why' => 'x']])[0]['blocks'] === 0
+            && ScanPromotion::marksFor([['rule' => 4, 'why' => 'temporal-budget']])[0]['blocks'] === 0);
+    }
+
+    /* =====================================================================
+     * W7-N9, R3S-N4  THE DUPLICATE PHASE HAS A PROGRESS CLOCK, AND A STEP
+     *                THAT DID NOTHING AND SAYS WHY ENDS THE REQUEST
+     *
+     * progress_at moved only when records finished, and unique-finalize
+     * finishes none, so a long one read as stalled and, to the reaper, as
+     * abandoned. And a step's why was dropped: a finalizer that could not
+     * write was stepped again until the request's budget ran out.
+     * ===================================================================== */
+    /** Answers from a script, the last one repeated; a hook may act first. */
+    class ScriptedFinalizer implements DuplicateFinalizer
+    {
+        public $script;
+        public $calls = 0;
+        public $hook;
+        public function __construct(array $script, $hook = null)
+        {
+            $this->script = $script;
+            $this->hook = $hook;
+        }
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            $i = min($this->calls, count($this->script) - 1);
+            $this->calls++;
+            if (is_callable($this->hook)) ($this->hook)($this->calls);
+            // A bound on a loop that never stops: done at the 20th step.
+            if ($this->calls >= 20) return ['done' => true] + self::zero();
+            return $this->script[$i] + self::zero();
+        }
+        public static function zero()
+        {
+            return ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+        }
+    }
+    {
+        $poke = function (ArrayScanStore $store, $runId, array $set) {
+            $p = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+            $p->setAccessible(true);
+            $runs = $p->getValue($store);
+            foreach ($set as $k => $v) $runs[$runId][$k] = $v;
+            $p->setValue($store, $runs);
+        };
+        $OLD = '2000-01-01 00:00:00';
+        $inUnique = function ($pid) use ($fixture, $poke, $OLD) {
+            list($store, $runId) = $fixture(['A'], $pid);
+            $ep = (int) $store->run($pid, $runId)['lease_epoch'];
+            foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $p) $store->advancePhase($runId, $ep, $p);
+            $poke($store, $runId, ['progress_at' => $OLD, 'updated_at' => $OLD]);
+            return [$store, $runId];
+        };
+        $drive = function ($store, $pid, $runId, $f) use ($reader, $finder, $wide) {
+            return (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+                'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+                'finalizer' => $f]))->work($pid, $runId);
+        };
+
+        // A step that found groups moves the clock, through the store's fence.
+        list($store, $runId) = $inUnique(840);
+        $f = new ScriptedFinalizer([['groups' => 2], ['done' => true]]);
+        $res = $drive($store, 840, $runId, $f);
+        $row = $store->run(840, $runId);
+        check('W7-N9: a duplicate step that found groups moves progress_at and updated_at',
+            $res['ok'] === true && $f->calls === 2 && $row['progress_at'] !== $OLD
+            && $row['updated_at'] !== $OLD);
+
+        // A step that only re-read records (its group restarted) moves nothing
+        // forward: the clock stays, and the loop goes on, because it said why
+        // AND did work.
+        list($store, $runId) = $inUnique(841);
+        $f = new ScriptedFinalizer([['read' => 3, 'why' => 'a record in this duplicate group changed '
+                                     . 'while it was being checked, so the group is being checked again'],
+                                    ['done' => true]]);
+        $res = $drive($store, 841, $runId, $f);
+        check('W7-N9: a step that only re-read records leaves progress_at where it was',
+            $store->run(841, $runId)['progress_at'] === $OLD);
+        check('R3S-N4: and is not a refusal: the next step is taken',
+            $res['ok'] === true && $f->calls === 2 && $res['stop'] !== 'finalizer');
+
+        // A step that did nothing and said why ends the request with that why.
+        list($store, $runId) = $inUnique(842);
+        $f = new ScriptedFinalizer([['why' => UniqueFinalizer::NO_SEQ]]);
+        $res = $drive($store, 842, $runId, $f);
+        check('R3S-N4: a finalizer step that did nothing and says why is taken once, not until the budget ends',
+            $f->calls === 1);
+        check('R3S-N4: and the request stops with that why, ok:false, still in the duplicate phase',
+            $res['ok'] === false && $res['stop'] === 'finalizer' && $res['why'] === UniqueFinalizer::NO_SEQ
+            && $res['done'] === false && $res['phase'] === ScanPhase::UNIQUE
+            && $store->run(842, $runId)['phase'] === ScanPhase::UNIQUE);
+        check('W7-N9: and a refused step does not move the clock',
+            $store->run(842, $runId)['progress_at'] === $OLD);
+        // The same words with no why are a step that moved state the counts do
+        // not show (a verified group going on to be written), and go on.
+        list($store, $runId) = $inUnique(843);
+        $f = new ScriptedFinalizer([[], ['done' => true]]);
+        $res = $drive($store, 843, $runId, $f);
+        check('R3S-N4: a step with no counts and no why is still stepped past', $f->calls === 2
+            && $res['ok'] === true);
+
+        // The clock is fenced: a worker whose lease moved during the step stops
+        // as any refused fence does, and takes no second step.
+        list($store, $runId) = $inUnique(844);
+        $f = new ScriptedFinalizer([['groups' => 1], ['done' => true]],
+            function ($n) use ($poke, $store, $runId) {
+                if ($n === 1) $poke($store, $runId, ['lease_epoch' => 99]);
+            });
+        $res = $drive($store, 844, $runId, $f);
+        check('W7-N9: a progress write the lease refuses ends the request as a refused fence',
+            $res['ok'] === true && $res['stop'] === 'fenced' && $f->calls === 1
+            && $store->run(844, $runId)['progress_at'] === $OLD);
+    }
 
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);

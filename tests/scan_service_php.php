@@ -48,6 +48,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
+    // The finalizer's re-read compares values as Logic::lookupKey (W7-R4 block).
+    require_once __DIR__ . '/../php/Logic.php';
     require_once __DIR__ . '/scan_fault_support.php';
 
     $n = 0; $fail = 0;
@@ -546,6 +548,35 @@ namespace {
     }
 
     /**
+     * FaultyStore whose run row reads with a different fingerprint from the
+     * $flipAt-th read after arm() (B7). advanceRun() reads the run once and
+     * compares; the worker it builds reads it again. Flipping the second read
+     * is the only way to see whether the worker's own guard was armed.
+     */
+    class FlipFingerprintStore extends \INSPIRE\UniversalValidator\Scan\FaultyStore
+    {
+        /** @var ?int */
+        private $flipAt = null;
+        private $reads = 0;
+
+        public function arm($at)
+        {
+            $this->reads = 0;
+            $this->flipAt = (int) $at;
+        }
+
+        public function run($pid, $runId)
+        {
+            $r = parent::run($pid, $runId);
+            $this->reads++;
+            if ($r !== null && $this->flipAt !== null && $this->reads >= $this->flipAt) {
+                $r['fingerprint'] = str_repeat('f', 64);
+            }
+            return $r;
+        }
+    }
+
+    /**
      * FaultyStore, plus one thing to happen just before the first finish():
      * another tab's Stop landing between this one's bump and its finish
      * (review R3U-5).
@@ -610,6 +641,8 @@ namespace {
         public $problems = [];
         /** @var bool whether the context asks the service to compare fingerprints */
         public $verifyFingerprint = true;
+        /** @var array the rule list durableScanContext() reports (B7: a test may edit it) */
+        public $rules = [['type' => 'required', 'fields' => ['a_val']]];
         /** @var array the project's design as durableScanContext() reports it (M8) */
         public $structure = [];
         /** @var array the choice sets it reports beside it */
@@ -662,7 +695,7 @@ namespace {
             $key = $this->sys['log-hmac-key'];
             $self = $this;
             return ['ok' => true, 'why' => null,
-                'rules' => [['type' => 'required', 'fields' => ['a_val']]],
+                'rules' => $this->rules,
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
                 'verifyFingerprint' => $this->verifyFingerprint,
@@ -2269,6 +2302,10 @@ namespace INSPIRE\UniversalValidator\Scan {
                     'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
                     'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1, 'check_type' => 'required',
                     'reason_code' => 'required-blank'];
+                // THE BUDGET WAS MET (H9): the second examined record found one
+                // more finding than the two the budget stores, and the gate left
+                // it out. A count of one left out is what makes the run truncated.
+                if ($i === 1) $b['unstored'] = [(int) $c['ordinal'] => 1];
             }
         }
         $ok = $store->commitBatch($runId, 'w1', $epoch, $b);
@@ -2469,6 +2506,11 @@ namespace INSPIRE\UniversalValidator\Scan {
         && ScanService::ENGINE_REVISION !== 'engine-1');
     check('R3G-4: a different revision is a different fingerprint',
         !ScanPlanner::fingerprintMatches($gfp('engine-1'), $gfp(ScanService::ENGINE_REVISION)));
+    // W7-R4 changed what a duplicate finding carries, its identity included,
+    // so a run the engine-4 evaluator began is not finished by this one.
+    check('R3G-4: the duplicates\' new ordinal, group and reason moved the revision past engine-4',
+        ScanService::ENGINE_REVISION !== 'engine-4'
+        && !ScanPlanner::fingerprintMatches($gfp('engine-4'), $gfp(ScanService::ENGINE_REVISION)));
     check('R3G-4: start() fingerprints the run with this revision',
         !empty($gst['ok']) && ScanPlanner::fingerprintMatches($gs->run(160, $gid)['fingerprint'],
                                                              $gfp(ScanService::ENGINE_REVISION)));
@@ -2872,6 +2914,192 @@ namespace INSPIRE\UniversalValidator\Scan {
     });
     check('M8: and an instrument designated to a new event',
         $w['why'] === ScanService::CONFIG_CHANGED && $row['terminal'] === ScanOutcome::FAILED);
+}
+
+/* =====================================================================
+ * B7  ONE FINGERPRINT BAG, AND THE GUARD IT ARMS
+ *
+ * start() and every work request each built the fingerprint's inputs as a
+ * literal of their own. Two literals agree until one is edited, and then an
+ * unchanged project is ended on its first work pass (Risk 6). Both now take
+ * ScanService::fingerprintInputs(), and the worker's own guard - which
+ * workerDeps() never armed - is handed the fingerprint the service compared.
+ * The design and the choice sets are not empty here, so a bag that dropped
+ * either would disagree with the stored one.
+ * ===================================================================== */
+{
+    $b7design = ['fields' => ['a_val' => ['form' => 'fa', 'type' => 'text', 'validation' => '']],
+                 'longitudinal' => false, 'events' => ['1' => ['fa']], 'repeating' => []];
+    $b7codes = ['fields' => ['a_val' => []], 'missing' => ['UNK']];
+    $b7 = function ($pid) use ($b7design, $b7codes) {
+        $inner = new ArrayScanStore();
+        $m = new \E2eModule($inner);
+        $m->structure = $b7design;
+        $m->choices = $b7codes;
+        $store = new \FlipFingerprintStore($inner);
+        $st = (new ScanService($m, $store))->start($pid);
+        return [$inner, $store, $m, (int) $st['run_id'], $st];
+    };
+
+    list($in, $fs, $m, $rid, $st) = $b7(190);
+    $first = (new ScanService($m, $fs))->work(190, $rid);
+    $row = $in->run(190, $rid);
+    check('B7: an unchanged project never trips the guard on its first work pass',
+        !empty($st['ok']) && !empty($first['ok']) && $first['why'] !== ScanService::CONFIG_CHANGED
+        && (int) $first['worked'] === 3 && $row['terminal'] !== ScanOutcome::FAILED);
+    $inputs = new \ReflectionMethod(ScanService::class, 'fingerprintInputs');
+    $inputs->setAccessible(true);
+    $ctxNow = $m->durableScanContext(190, ['generation' => (int) $row['generation_id']]);
+    check('B7: the stored fingerprint is the one fingerprintInputs() makes from the work-time context',
+        ScanPlanner::fingerprintMatches($row['fingerprint'], ScanPlanner::requestFingerprint(
+            $inputs->invoke(new ScanService($m, $fs), $ctxNow, ScanPolicy::resolve([], [])))));
+
+    // The worker the service builds holds the run to the same fingerprint.
+    list($in, $fs, $m, $rid) = $b7(191);
+    $fs->arm(2);
+    $w = (new ScanService($m, $fs))->work(191, $rid);
+    $row = $in->run(191, $rid);
+    check('B7: the worker\'s own guard is armed with the fingerprint the service compared',
+        empty($w['ok']) && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    check('B7: and it ends the run through promotion, with the sentence the service\'s check stores',
+        strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false);
+
+    // A real change between the start and the first work pass trips it.
+    list($in, $fs, $m, $rid) = $b7(192);
+    $m->rules[0]['when'] = "[a_val] <> 'x'";
+    $w = (new ScanService($m, $fs))->work(192, $rid);
+    $row = $in->run(192, $rid);
+    check('B7: a rule edited before the first work pass ends the run failed, with the sentence',
+        empty($w['ok']) && $w['why'] === ScanService::CONFIG_CHANGED
+        && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    list($in, $fs, $m, $rid) = $b7(193);
+    $m->rules[] = ['type' => 'required', 'fields' => ['a_val'], 'when' => "[a_val] = 'y'"];
+    $w = (new ScanService($m, $fs))->work(193, $rid);
+    check('B7: so does a rule added',
+        $w['why'] === ScanService::CONFIG_CHANGED && $in->run(193, $rid)['terminal'] === ScanOutcome::FAILED);
+    // A setting that decides what is stored, loosened: not a privacy stop (it
+    // shows more, it does not tighten), and still a different configuration.
+    list($in, $fs, $m, $rid) = $b7(194);
+    $m->proj['scan-value-storage'] = 'raw';
+    $w = (new ScanService($m, $fs))->work(194, $rid);
+    check('B7: and a value-storage setting changed between them',
+        $w['why'] === ScanService::CONFIG_CHANGED && $in->run(194, $rid)['terminal'] === ScanOutcome::FAILED);
+    // The same setting TIGHTENED moves the fingerprint and the policy revision
+    // together. That is a stop (review R5-5), and the armed worker guard must
+    // not turn it into a failure.
+    $inner = new ArrayScanStore();
+    $m = new \E2eModule($inner);
+    $m->structure = $b7design;
+    $m->choices = $b7codes;
+    $m->proj['scan-value-storage'] = 'raw';
+    $rid = (int) (new ScanService($m, $inner))->start(195)['run_id'];
+    $m->proj['scan-value-storage'] = 'locations';
+    $w = (new ScanService($m, $inner))->work(195, $rid);
+    check('B7: a value-storage setting tightened between them stops the run rather than failing it',
+        $inner->run(195, $rid)['terminal'] === ScanOutcome::CANCELLED
+        && strpos((string) $w['why'], 'privacy settings') !== false);
+}
+
+/* =====================================================================
+ * H9 + W7-N8  PAST THE DETAIL BUDGET A RUN KEEPS COUNTING AND STOPS STORING
+ *
+ * The setting says so; nothing did it. Every finding was stored, and
+ * promotion called the run truncated afterwards from the counters - which
+ * also called a run that stored exactly its budget, and dropped nothing,
+ * truncated. Three records, each with one finding, end to end through the
+ * real worker, summary and promotion.
+ * ===================================================================== */
+{
+    $budgeted = function ($pid, $max) {
+        $store = new ArrayScanStore();
+        $m = new \E2eModule($store);
+        $m->flagged = ['R001' => true, 'R002' => true, 'R003' => true];
+        $m->proj['scan-max-detail-findings'] = (string) $max;
+        $runId = (int) (new ScanService($m, $store))->start($pid)['run_id'];
+        $last = null;
+        $found = 0;
+        for ($i = 0; $i < 10 && $store->run($pid, $runId)['terminal'] === null; $i++) {
+            $last = (new ScanService($m, $store))->work($pid, $runId);
+            $found += isset($last['findings']) ? (int) $last['findings'] : 0;
+        }
+        $active = 0;
+        foreach ($store->allFindings() as $f) if ((int) $f['active_slot'] === 1) $active++;
+        return [$store->run($pid, $runId), $last, $found, $active];
+    };
+    list($row, $last, $found, $active) = $budgeted(196, 2);
+    check('H9: past its detail budget a run stores no more findings than the budget',
+        (int) $row['detail_rows'] === 2 && $active === 2);
+    check('H9: and keeps counting: the work answers and the finished run both say three',
+        $found === 3 && isset($last['status']['findings']) && $last['status']['findings'] === 3);
+    check('H9: every record was examined, and the run is truncated, so not clean',
+        $row['terminal'] === ScanOutcome::PARTIAL && $row['coverage'] === ScanOutcome::FENCED
+        && $row['detail'] === ScanOutcome::DETAIL_TRUNCATED && (int) $row['clean'] === 0
+        && (int) $row['manifest_done'] === 3);
+    list($row, $last, $found, $active) = $budgeted(197, 3);
+    check('W7-N8: a run that stored exactly its budget and left nothing out is not truncated',
+        $row['terminal'] === ScanOutcome::COMPLETE && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
+        && (int) $row['detail_rows'] === 3 && $active === 3 && $last['status']['findings'] === 3);
+}
+
+/* =====================================================================
+ * W7-R4  THE FINALIZER IS GIVEN EACH RULE'S ORDINAL AND EACH RECORD'S GROUP
+ *
+ * The service builds the duplicate finalizer, so it is the one that has the
+ * plan (the ordinals) and the scan's read (the groups). The groups a verify
+ * read saw are kept for the emit after it, so that page reads nothing more.
+ * ===================================================================== */
+{
+    $plan = ['ruleIds' => [0 => ['source_id' => 'src-a', 'revision' => 'r'],
+                           1 => ['source_id' => 'src-b', 'revision' => 'r'],
+                           2 => ['source_id' => 'src-a', 'revision' => 'r']]];
+    check('W7-R4: a rule\'s ordinal is its place in the plan plus one, the lower where two share a source',
+        ScanService::ruleOrdinals($plan) === ['src-a' => 1, 'src-b' => 2]
+        && ScanService::ruleOrdinals([]) === []);
+
+    // The group of a record node: event rows and repeat instances, in order.
+    check('W7-R4: a record node\'s group is the first non-empty one on its rows',
+        ScanService::dagOfNode(['1' => ['redcap_data_access_group' => ''], '2' => ['redcap_data_access_group' => 'site_b']]) === 'site_b'
+        && ScanService::dagOfNode(['1' => ['a' => 'x'], 'repeat_instances' => ['1' => ['f' => ['2' => ['redcap_data_access_group' => 'site_c']]]]]) === 'site_c'
+        && ScanService::dagOfNode(['1' => ['a' => 'x']]) === null);
+
+    $reads = [];
+    $read = function (array $ids) use (&$reads) {
+        $reads[] = array_map('strval', $ids);
+        $d = [];
+        foreach ($ids as $id) {
+            if ((string) $id === 'GONE') continue;
+            $d[(string) $id] = ['1' => ['sid' => 'ID-7', 'redcap_data_access_group' => (string) $id === 'R1' ? 'site_a' : '']];
+        }
+        return ['ok' => true, 'data' => $d, 'why' => null];
+    };
+    $svcR = new ScanService(new \SourceModule());
+    $finOf = new \ReflectionMethod(ScanService::class, 'finalizer');
+    $finOf->setAccessible(true);
+    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan]);
+    $depsP = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
+    $depsP->setAccessible(true);
+    $fd = $depsP->getValue($finR);
+    check('W7-R4: the service gives its finalizer the plan\'s ordinals and a groups reader',
+        isset($fd['ordinals']) && $fd['ordinals'] === ['src-a' => 1, 'src-b' => 2]
+        && isset($fd['dags']) && is_callable($fd['dags']));
+    // Verify reads R1 and R2; the emit after it reads nothing for them.
+    $fd['read']([['record' => 'R1', 'event_id' => 1, 'instance' => 1, 'field' => 'sid', 'form' => null],
+                 ['record' => 'R2', 'event_id' => 1, 'instance' => 1, 'field' => 'sid', 'form' => null]]);
+    $g1 = $fd['dags'](['R1', 'R2']);
+    check('W7-R4: the groups a verify read saw serve the emit after it, with no second read',
+        $g1['ok'] === true && $g1['dags'] === ['R1' => 'site_a', 'R2' => null] && $g1['read'] === 0
+        && count($reads) === 1);
+    // A record not seen yet is read once; one the read does not return has no group.
+    $g2 = $fd['dags'](['R1', 'R3', 'GONE']);
+    check('W7-R4: the rest are read in one call, and a record the read does not return has no group',
+        $g2['ok'] === true && $g2['dags'] === ['R1' => 'site_a', 'R3' => null, 'GONE' => null]
+        && $g2['read'] === 2 && count($reads) === 2 && $reads[1] === ['R3', 'GONE']);
+    // A read that fails is not "no group".
+    $failing = ScanService::dagsFor(['R9'], function (array $ids) {
+        return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
+    }, new \ArrayObject());
+    check('W7-R4: a groups read that fails is ok:false, never a list of records with no group',
+        $failing['ok'] === false && $failing['dags'] === []);
 }
 }
 

@@ -103,7 +103,6 @@ namespace {
         'ArrayScanStore::supersedePrevious' => 'wave 10 (W4-D1), with the contract',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
-        'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
         // ScanAuthorization::preFenceStatus stood here until ScanService::
         // statusOf() called it (H10 part 1, with review R5-1).
 

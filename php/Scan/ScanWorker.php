@@ -60,6 +60,13 @@ final class ScanWorker
     private $deps;
     /** @var array run id => mark key => true: rule problems this worker has already committed */
     private $marked = [];
+    /**
+     * @var array run id => {rows:int, bytes:int}: the finding rows and value
+     * bytes the run has stored, as this worker last knew them - the run row's
+     * counters when the request began, plus what its own commits held. What
+     * the detail budget is judged against (H9).
+     */
+    private $detail = [];
 
     /**
      * @param array $deps {
@@ -156,23 +163,16 @@ final class ScanWorker
         }
         $epoch = (int) $run['lease_epoch'];
 
-        // THE CONFIGURATION MOVED. A run cannot be half-checked against rules
-        // that no longer exist and still describe the project, and there is no
-        // partial claim that would be true - so it ends, and says so.
-        if (isset($this->deps['fingerprint'])
-                && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
-            $this->store->finish($runId, array_merge(
-                ScanOutcome::derive(['failed' => true]),
-                ['why' => 'the project\'s validation rules changed while this scan was running, '
-                        . 'so its results would describe two different configurations']));
-            return self::stop('the validation rules changed during this scan, so it was stopped '
-                . 'and must be run again');
-        }
-
         // THE PRIVACY POLICY TIGHTENED. The run stores the policy it began
         // under, and continuing would keep writing value previews the project
         // has just decided it does not want. Tightening takes effect at once by
         // design; loosening waits for the next run.
+        //
+        // ASKED BEFORE THE FINGERPRINT (review R5-5, B7). The value mode is a
+        // fingerprint input, so a tightened mode moves both, and a tightened
+        // policy is a stop whatever else moved with it. With the fingerprint
+        // asked first, the run that ScanService hands over to this guard was
+        // ended failed instead.
         if (isset($this->deps['policyRevision'])
                 && (int) $run['policy_revision'] !== (int) $this->deps['policyRevision']) {
             ScanPromotion::finishCancelled($this->store, $pid, $runId, array_merge($this->limits(),
@@ -180,6 +180,25 @@ final class ScanWorker
                         . 'running, so it was stopped before writing anything further']));
             return self::stop('this project\'s privacy settings changed during the scan, so it was '
                 . 'stopped; run it again to get a report under the new settings');
+        }
+
+        // THE CONFIGURATION MOVED. A run cannot be half-checked against rules
+        // that no longer exist and still describe the project, and there is no
+        // partial claim that would be true - so it ends, and says so.
+        //
+        // THROUGH PROMOTION, the finisher ScanService uses for the same fact
+        // (B7). This wrote derive(['failed' => true]) itself: a row with no
+        // counts and a sentence of its own, so one event ended a run two ways
+        // depending on which guard saw it first - the shape review R3U-3 removed
+        // from the stopped runs. ScanService arms this guard with the
+        // fingerprint it has just compared, so in production it agrees with the
+        // service's check; a worker built anywhere else is held to it alone.
+        if (isset($this->deps['fingerprint'])
+                && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
+            ScanPromotion::promote($this->store, $pid, $runId, array_merge($this->limits(),
+                ['fingerprintNow' => (string) $this->deps['fingerprint']]));
+            return self::stop('the validation rules changed during this scan, so it was stopped '
+                . 'and must be run again');
         }
 
         // THE INSTALLATION-WIDE SEMAPHORE, taken before any project work. Two
@@ -289,6 +308,15 @@ final class ScanWorker
                 // records with what is left of its budget.
                 $phase = (string) $p['phase'];
             }
+
+            // What the run has stored so far, for the detail budget (H9). Read
+            // from the row this request began with; another worker's commits
+            // after it are not seen, so two workers can take the run past its
+            // budget by at most a batch each - the finding rows they store are
+            // then all kept, and nothing is counted as left out that was not.
+            $this->detail[(int) $runId] = [
+                'rows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
+                'bytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0];
 
             // The run_seq is what a duplicate finding is stamped with, so the
             // finalizer is bound to it below; a row without one binds nothing
@@ -444,6 +472,30 @@ final class ScanWorker
                 // movement that is neither a finding nor an exclusion.
                 $listed += max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
                          + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                // WHAT THE STEP MOVED. Forward is groups found, candidates
+                // verified, findings written, groups published or decided
+                // undecidable: the run nearer its end. A step that only re-read
+                // records (a group restarted because a record changed) did
+                // work and moved nothing forward.
+                $forward = max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                         + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
+                $stepWhy = isset($r['why']) && $r['why'] !== null ? (string) $r['why'] : null;
+                // A STEP THAT DID NOTHING AND SAYS WHY IS AN ANSWER (R3S-N4).
+                // The why used to be dropped and the step taken again, so a
+                // finalizer that could not write (NO_SEQ, a group in a state
+                // this build does not know) was retried until the request's
+                // budget ended, and every request after it did the same with
+                // nothing said. The next step would meet the same refusal, so
+                // the loop stops and the browser is told what it was; ok:false,
+                // as for a rollup page the lease refused.
+                if (empty($r['done']) && $forward === 0 && $reread === 0 && $stepWhy !== null) {
+                    return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => 'finalizer',
+                            'why' => $stepWhy];
+                }
                 if ($r['done']) {
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -453,11 +505,23 @@ final class ScanWorker
                     $done = true;
                     break;
                 }
+                // THE PROGRESS CLOCK (W7-N9). This phase finishes no records,
+                // so commitBatch() never moved progress_at for it, and the
+                // finalizer writes nothing to the run row: a long
+                // unique-finalize read as stalled to the page after two minutes
+                // and as abandoned to the reaper after staleHours, while it
+                // worked. A step that moved forward says so through the store,
+                // fenced on the lease; one that only retried does not, so a
+                // wedged finalizer still ages. Refused means this worker no
+                // longer holds the run, which is the scanning phase's fence
+                // refusal and gets its answer.
+                if ($forward > 0 && !$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
+                    return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                }
                 // A step that re-read records WAS a batch of records, and is
                 // measured as one, so the next verify page is sized by what
                 // re-reading records actually cost.
                 $units = max(1, $r['verified'] + $r['emitted'] + $r['groups']);
-                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
                 if ($reread > 0) {
                     $mark['kind'] = 'records';
                     $units = $reread;
@@ -785,6 +849,33 @@ final class ScanWorker
         $setAside = [];    // evaluated, not kept: an attempt is counted against it
         $untouched = [];   // never reached: handed straight back, no attempt
 
+        // THE DETAIL BUDGET GATES HERE (H9), between evaluate() and the commit.
+        // ScanPolicy::budgetSpent() had no caller: every finding was stored,
+        // and only promotion noticed afterwards that the run had gone past
+        // the setting - which says a run "keeps COUNTING every finding and
+        // stops storing detail". Evaluation is untouched, so every finding is
+        // still found and counted; past the budget a finding is left out of
+        // the batch and its record's count of them travels as `unstored`,
+        // which the store adds to ScanStore::DETAIL_UNSTORED for the records
+        // it holds. Once spent, nothing more is stored for the rest of the
+        // run, so a run's stored findings are a prefix and not a sample.
+        //
+        // ONE OVERCOUNT, IN THE DIRECTION THAT CANNOT CERTIFY. A record that
+        // changes during the run is examined again in catch-up. When its
+        // findings were stored the first time, commitBatch() closes them and
+        // these are counted in their place; when they were left out the first
+        // time, they are counted again, because a count has no row to close.
+        // Only records edited after the budget was spent are affected, and the
+        // run is already truncated and so never clean.
+        $limits = $this->limits();
+        $gated = isset($limits['maxFindings']) || isset($limits['maxBytes']);
+        $soFar = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId]
+               : ['rows' => 0, 'bytes' => 0];
+        $rowsNow = (int) $soFar['rows'];
+        $bytesNow = (int) $soFar['bytes'];
+        $unstored = [];    // ordinal => findings found and left out
+        $offered = [];     // ordinal => [finding rows, value bytes] offered for it
+
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
             $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
@@ -886,7 +977,23 @@ final class ScanWorker
                 $outcome[(int) $c['ordinal']] = 'blocked';
                 continue;
             }
+            // A record's value bytes are evaluate()'s figure while all of its
+            // findings are kept, and the kept findings' previews once any is
+            // left out: the counter must not grow by bytes nobody stored.
+            $recBytes = isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
+            $left = 0;
+            $keptRows = 0;
+            $keptBytes = 0;
             foreach ($ev['findings'] as $f) {
+                if ($gated && ScanPolicy::budgetSpent($limits, $rowsNow, $bytesNow)) {
+                    $left++;
+                    continue;
+                }
+                $cost = (isset($f['value_bin']) && is_string($f['value_bin'])) ? strlen($f['value_bin']) : 0;
+                $rowsNow++;
+                $bytesNow += $cost;
+                $keptRows++;
+                $keptBytes += $cost;
                 // WHICH CLAIMED RECORD THIS CAME FROM. The store needs it to
                 // decide whether to write the finding at all: evidence about a
                 // record another worker has taken over is that worker's to
@@ -895,6 +1002,11 @@ final class ScanWorker
                 $f['ordinal'] = $c['ordinal'];
                 $batch['findings'][] = $f;
             }
+            if ($left > 0) {
+                $unstored[(int) $c['ordinal']] = $left;
+                $recBytes = $keptBytes;
+            }
+            $offered[(int) $c['ordinal']] = [$keptRows, $recBytes];
             // A uniqueness rule produces a CANDIDATE rather than a finding: no
             // record can be a duplicate on its own evidence. They travel in the
             // same batch so that a rolled-back read leaves no candidate behind
@@ -928,7 +1040,7 @@ final class ScanWorker
                     $marks[$k] = $m;
                 }
             }
-            $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
+            $batch['bytes'] += $recBytes;
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                    'state' => ScanStore::REC_DONE,
                                    'version' => isset($after[$id]) ? $after[$id] : null,
@@ -952,6 +1064,7 @@ final class ScanWorker
         if ($cut === 'retry' && $budget !== null) $budget->reclaim();
 
         $batch['marks'] = array_values($marks);
+        $batch['unstored'] = $unstored;
         // null when the store does not say how many records it still held (a
         // store written before the out-parameter existed); 0 when it held none.
         // The same for WHICH it held.
@@ -996,8 +1109,13 @@ final class ScanWorker
         // commit that wrote nothing. So the counters are taken again over the
         // rows the store says it kept. A store that does not say keeps the old
         // reading, as $held does above.
-        $findings = count($batch['findings']);
+        //
+        // FINDINGS ARE WHAT WAS FOUND, stored or not (H9): the ones the detail
+        // budget left out are counted with them. What the run has stored grows
+        // by the held records' rows and bytes only, for the next batch's gate.
+        $findings = count($batch['findings']) + array_sum($unstored);
         $candidates = count($batch['candidates']);
+        $keep = null;
         if (is_array($heldOrd)) {
             $keep = array_flip(array_map('intval', $heldOrd));
             $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
@@ -1011,11 +1129,21 @@ final class ScanWorker
             foreach ($batch['findings'] as $f) {
                 if (isset($keep[(int) $f['ordinal']])) $findings++;
             }
+            foreach ($unstored as $o => $k) {
+                if (isset($keep[$o])) $findings += $k;
+            }
             $candidates = 0;
             foreach ($batch['candidates'] as $f) {
                 if (isset($keep[(int) $f['ordinal']])) $candidates++;
             }
         }
+        $stored = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId] : ['rows' => 0, 'bytes' => 0];
+        foreach ($offered as $o => $rb) {
+            if ($keep !== null && !isset($keep[$o])) continue;
+            $stored['rows'] += $rb[0];
+            $stored['bytes'] += $rb[1];
+        }
+        $this->detail[(int) $runId] = $stored;
 
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of

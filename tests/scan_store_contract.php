@@ -1407,6 +1407,78 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
             && $again['carry'] === null && $again['pages'] === 0 && $again['attempts'] === 1);
     }
 
+    // -- FINDINGS COUNTED AND NOT STORED (H9) ------------------------------
+    //
+    // Past the run's detail budget the worker leaves a finding out of the
+    // batch and sends how many as `unstored`, ordinal => count. The store
+    // counts the HELD records' under ScanStore::DETAIL_UNSTORED in the batch's
+    // own commit, and nothing for a record it lost: that record's findings are
+    // its new holder's to count.
+    $sU = $newStore();
+    $rU = (int) $sU->startRun(798, ['created_by' => 'alice'])['run']['run_id'];
+    $sU->writeManifest($rU, [$mk('U1'), $mk('U2'), $mk('U3')]);
+    $epU = (int) $sU->run(798, $rU)['lease_epoch'];
+    $mineU = $sU->claim($rU, 'w1', $epU, 2);
+    // The straggler sweep takes the first of the two back out from under w1.
+    $takenU = $sU->claimPending($rU, 'w2', $epU, 1);
+    $bU = function (array $rows) {
+        $b = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+        foreach ($rows as $c) {
+            $b['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
+            $b['unstored'][(int) $c['ordinal']] = 3;
+        }
+        return $b;
+    };
+    $leftOut = function (ScanStore $st, $rid) {
+        $n = 0;
+        foreach ($st->aggregates($rid) as $a) {
+            if ((string) $a['kind'] === ScanStore::DETAIL_UNSTORED) $n += (int) $a['cnt'];
+        }
+        return $n;
+    };
+    $C('unstored: the fixture has one record of two taken over',
+        count($mineU) === 2 && count($takenU) === 1
+        && (int) $takenU[0]['ordinal'] === (int) $mineU[0]['ordinal']);
+    $C('unstored: a batch carrying counts of findings left out commits',
+        $sU->commitBatch($rU, 'w1', $epU, $bU($mineU)) === true);
+    $C('unstored: the held record\'s count is kept, and the lost record\'s is not',
+        $leftOut($sU, $rU) === 3);
+    $C('unstored: no finding row is written for them, so the detail counter does not move',
+        (int) $sU->run(798, $rU)['detail_rows'] === 0);
+    $C('unstored: and the count is not a blocking fact',
+        $sU->blockingAggregates($rU) === 0);
+    // A refused batch counts nothing, as it stores nothing.
+    $C('unstored: a batch refused at the fence counts nothing',
+        $sU->commitBatch($rU, 'w2', $epU - 1, $bU($takenU)) !== true && $leftOut($sU, $rU) === 3);
+    $C('unstored: the new holder counts its own record\'s',
+        $sU->commitBatch($rU, 'w2', $epU, $bU($takenU)) === true && $leftOut($sU, $rU) === 6);
+    $threw = false;
+    try {
+        $sU->commitBatch($rU, 'w1', $epU, ['bytes' => 0, 'records' => [], 'findings' => [],
+                                           'unstored' => [1 => 'several']]);
+    } catch (\Throwable $e) { $threw = true; }
+    $C('unstored: a count that is not a whole number is refused loudly', $threw === true);
+
+    // -- THE FINISHING PHASES' PROGRESS CLOCK (W7-N9) ----------------------
+    //
+    // setProgressState() moves progress_at only when told the step moved the
+    // run forward, fenced on the lease like every cursor it writes. A run
+    // that was never planned has a NULL clock, so any write to it shows.
+    $sP = $newStore();
+    $rP = (int) $sP->startRun(789, ['created_by' => 'alice'])['run']['run_id'];
+    $epP = (int) $sP->run(789, $rP)['lease_epoch'];
+    $C('progress: a fresh run has no progress clock', $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a cursor written alone does not move it',
+        $sP->setProgressState($rP, $epP, ['rollupCursor' => 0]) === true
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a stale lease cannot move it',
+        $sP->setProgressState($rP, $epP + 1, ['progress' => true]) === false
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: told the run moved forward, the lease holder moves it, with no cursor beside it',
+        $sP->setProgressState($rP, $epP, ['progress' => true]) === true
+        && $sP->run(789, $rP)['progress_at'] !== null);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

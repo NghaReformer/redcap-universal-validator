@@ -73,6 +73,10 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbA, $store);
 
+    // The progress clock set back, so the pages below can be seen moving it.
+    $A->query("UPDATE " . Schema::table('scan_run') . " SET progress_at = '2000-01-01 00:00:00'"
+        . ' WHERE run_id = ' . $rid);
+
     // Bounded pages, and the cursor survives them. Seven pages of ten.
     $pages = 0;
     while ($pages++ < 50) {
@@ -82,6 +86,10 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('rollup: the summary is built in bounded pages', $pages > 1 && $pages < 50);
     check('rollup: and the cursor reached the last active finding',
         (int) $store->progressState($rid)['rollupCursor'] > 0);
+    // W7-N9: a page summarised is progress, and the page's own fenced write
+    // says so, or a long rollup reads as abandoned to the reaper.
+    check('rollup: the pages moved the progress clock of the run',
+        (string) $store->run($PID, $rid)['progress_at'] !== '2000-01-01 00:00:00');
 
     $by = array();
     foreach ($store->aggregates($rid) as $a) {
