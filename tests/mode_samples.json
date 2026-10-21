@@ -46,6 +46,11 @@
       "tagForm": "@UVRANGE={\"hard\":[0,10],\"when\":\"[a]='x'\",%s}",
       "fragment": {"rangeHardLo": "0", "rangeHardHi": "10"},
       "client": {"rangeHardLo": "0", "rangeHardHi": "10"}
+    },
+    "delta": {
+      "tagForm": "@UVDELTA={\"vs\":\"[b]\",\"max\":1,\"when\":\"[a]='x'\",%s}",
+      "fragment": {"deltaVs": "[b]", "deltaMax": "1"},
+      "client": {"deltaVs": "[earlier]", "deltaMax": "1", "deltaVsOp": ["lit", "100"]}
     }
   }
 }

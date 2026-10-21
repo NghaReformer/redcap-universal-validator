@@ -51,10 +51,11 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVWINDOW'   => 'window',      // 2.2.0
     '@UVEXISTS'   => 'exists',      // 2.3.0
     '@UVRANGE'    => 'range',       // 2.5.0
+    '@UVDELTA'    => 'delta',
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
           'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
-          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range'] as $const => $mode) {
+          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range', 'TAG_DELTA' => 'delta'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -97,6 +98,10 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangePercentileDecimals', 'rangeReturnComma',
     // @UVRANGE "show": the growth chart and the page table
     'rangeShow',
+    // @UVDELTA: what it compares with (as written, its shorthand, its name,
+    // that field's decimal comma), the limits, their words, the branch group
+    'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
+    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -142,6 +147,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // chart draws, the page table's rows, why the chart is left off, and the
     // reference's source line
     'rangeShow', 'growthCurveKey', 'growthTableKey', 'growthChartWhy', 'growthChartSource',
+    // @UVDELTA (the earlier value travels folded, as deltaVsOp)
+    'deltaVs', 'deltaVsOp', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
+    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
 ]);
 
 // Branching::modeOfType.
@@ -315,7 +323,8 @@ check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], 
     === [['windowFrom', 'windowFromOp', 'windowFromValue'],
          ['rangeSex', 'rangeSexOp', 'rangeSexValue'], ['rangeAgeDob', 'rangeAgeDobOp', 'rangeAgeDobValue'],
          ['rangeAgeAt', 'rangeAgeAtOp', 'rangeAgeAtValue'], ['rangeAgeDays', 'rangeAgeDaysOp', 'rangeAgeDaysValue'],
-         ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue']]);
+         ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue'],
+         ['deltaVs', 'deltaVsOp', 'deltaVsValue']]);
 check('an operand is not a condition key', !in_array('windowFrom', ModeRegistry::condKeys(), true));
 foreach ([
     '[visit_date]' => ['ref', 'visit_date', null],

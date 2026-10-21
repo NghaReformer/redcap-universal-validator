@@ -304,6 +304,41 @@
                                "plausible-low": "Implausible value", "plausible-high": "Implausible value",
                                "*": "Implausible value"},
                "detailKeys": ["rangeSoftText", "rangeHardText", "rangePlausibleText"]}
+    },
+    {
+      "mode": "delta",
+      "tag": "@UVDELTA",
+      "types": ["delta"],
+      "defaultType": "delta",
+      "parser": "parseDeltaValue",
+      "checker": "checkDelta",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "calc", "slider"],
+        "textValidations": "^(?:|int|integer|float|number(?:_[1-9]dp)?(?:_comma_decimal)?)$",
+        "annotationWhy": "@UVDELTA does not support \"{type}\" fields — it compares a number typed into a Text field, a calc or a slider with an earlier one.",
+        "dialogWhy": "a Delta rule supports number Text fields, calc fields and sliders"
+      },
+      "hooks": {"field": "annotateDeltaField", "dictionary": "annotateDeltaDictionary"},
+      "evaluator": "findingsDelta",
+      "missingCodes": "skip",
+      "branchGroup": {"key": "deltaGroup", "name": "vs and direction"},
+      "refKeys": [
+        {"key": "deltaVs", "kind": "operand", "role": "test", "op": "deltaVsOp", "value": "deltaVsValue"}
+      ],
+      "branchKeys": ["deltaVs", "deltaVsName", "deltaVsLabel", "deltaVsComma", "deltaMax", "deltaMaxPct", "deltaDirection",
+                     "deltaUnit", "deltaText", "deltaGroup", "deltaComputed", "decimalComma",
+                     "blockSave", "caseSensitive", "message", "references", "i18n"],
+      "clientKeys": ["deltaVs", "deltaVsOp", "deltaVsName", "deltaVsLabel", "deltaVsComma", "deltaMax", "deltaMaxPct",
+                     "deltaDirection", "deltaUnit", "deltaText", "deltaGroup", "deltaComputed", "decimalComma",
+                     "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
+                     "snapshotGate", "extendedAdvisory", "i18n"],
+      "textKeys": ["message"],
+      "needs": [],
+      "dialog": false,
+      "js": {"factories": {"delta": "QRIDDeltaInit"}},
+      "scan": {"issueLabels": {"up": "Rose more than allowed", "down": "Fell more than allowed", "*": "Changed more than allowed"},
+               "detailKeys": ["deltaText", "deltaVsLabel"]}
     }
   ]
 }

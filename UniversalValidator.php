@@ -3357,6 +3357,81 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Delta mode (@UVDELTA): each saved number may move from the earlier value
+     * its "vs" names by at most "max" (in its unit) and "maxPct" (a percent of
+     * the earlier value), in the rule's direction. The verdict is
+     * Logic::deltaVerdict, the twin of the browser's; a finding's reason is
+     * the way the value moved, "up" or "down".
+     *
+     * A blank value or a blank earlier value checks nothing: on a first visit
+     * or instance there is no earlier one (the extended path resolves an
+     * absent row to blank). A "vs" this context could not resolve is
+     * reported, never read as blank, as the assert above is (M-01); so is a
+     * saved value, or an earlier one, that is not a number this rule can
+     * read. A "vs" that resolved to the field itself in this same entry (the
+     * extended path's deltaVsValueSelf: [baseline_arm_1][weight] saved on the
+     * baseline visit) has nothing to compare with there.
+     */
+    private function findingsDelta(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $vs = isset($rule['deltaVs']) && is_string($rule['deltaVs']) ? $rule['deltaVs'] : '';
+        if (array_key_exists('deltaVsValue', $rule)) {
+            // Compiled on the extended (event/instance) path, which resolved it.
+            $earlier = $rule['deltaVsValue'];
+            if (!is_string($earlier)) {
+                $why = 'the "vs" value ' . $vs . ' could not be resolved';
+                if (isset($rule['deltaVsValueWhy']) && is_string($rule['deltaVsValueWhy'])) {
+                    $why .= ' (' . rtrim($rule['deltaVsValueWhy'], '.') . ')';
+                }
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $why . ' — field skipped'];
+                return $out;
+            }
+        } else {
+            $op = ModeRegistry::operandRef($vs);
+            $state = $op === null ? null : (isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok');
+            if ($op === null) {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "vs" value cannot be evaluated — field skipped'];
+                return $out;
+            }
+            if ($state !== 'ok') {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "vs" value ' . self::resolutionProblem($state, $op[1])];
+                return $out;
+            }
+            $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
+            $earlier = is_array($v) ? '' : (string) $v;
+        }
+        // An earlier value marked with a Missing Data Code was not entered.
+        if (self::isMissingCode($earlier, $this->missingDataCodes($project_id))) $earlier = '';
+        $self = isset($rule['deltaVsValueSelf']) ? $rule['deltaVsValueSelf'] : null;
+        $spec = [
+            'max' => isset($rule['deltaMax']) ? $rule['deltaMax'] : null,
+            'maxPct' => isset($rule['deltaMaxPct']) ? $rule['deltaMaxPct'] : null,
+            'direction' => isset($rule['deltaDirection']) ? $rule['deltaDirection'] : 'both',
+            'decimalComma' => !empty($rule['decimalComma']),
+            'earlierComma' => !empty($rule['deltaVsComma']),
+        ];
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value)) continue;
+            if ($self === $field) continue;
+            $r = Logic::deltaVerdict($spec, (string) $value, $earlier);
+            if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
+            if ($r['verdict'] === 'unknown') {
+                $why = $r['reason'] === 'not-a-number' ? 'the saved value is not a number this rule can read'
+                     : ($r['reason'] === 'earlier-not-a-number' ? 'the "vs" value ' . $vs . ' is not a number this rule can read'
+                     : 'the value and its "vs" value are too long to compare');
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $why . ' — field skipped'];
+                continue;
+            }
+            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict']];
+        }
+        return $out;
+    }
+
+    /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
      * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
@@ -6985,6 +7060,129 @@ class UniversalValidator extends AbstractExternalModule
             return $label . ' searches an ontology (BioPortal), whose search box keeps its own text — write to a field without one.';
         }
         return null;
+    }
+
+    /**
+     * @UVDELTA "field" hook. The field must hold numbers, as @UVRANGE's must
+     * (modes.json eligibility.textValidations); a *_comma_decimal field is
+     * marked so both runtimes read 17,5 as 17.5, and a calc so the browser
+     * never blocks a value nobody typed. A "vs" shorthand is written out as
+     * the reference it stands for (AnnotationRules::DELTA_SHORTHANDS), and the
+     * rule's branch group follows it. A "vs" that names the field itself on
+     * this entry is refused: it would compare the value with itself. The
+     * limits travel as words (deltaText) and "vs" as a name (deltaVsLabel),
+     * for the message and the scan report.
+     */
+    private function annotateDeltaField(array $frag, $name, array $meta, $pid)
+    {
+        $tag = AnnotationRules::TAG_DELTA;
+        $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+        if ($ftype === 'text') {
+            $validation = self::validationOf($meta);
+            $re = ModeRegistry::eligibility('delta')['textValidations'] ?? null;
+            if (!is_string($re) || !preg_match('~' . $re . '~', $validation)) {
+                return ['error' => $tag . ' needs a number field — give this Text field integer or number validation, '
+                    . 'or none (it has "' . $validation . '").', '_tag' => $tag];
+            }
+            if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['decimalComma'] = true;
+        } elseif ($ftype === 'calc') {
+            $frag['deltaComputed'] = true;
+        }
+        $short = isset($frag['deltaVsName']) && isset(AnnotationRules::DELTA_SHORTHANDS[$frag['deltaVsName']])
+            ? $frag['deltaVsName'] : null;
+        if ($short !== null) {
+            $frag['deltaVs'] = sprintf(AnnotationRules::DELTA_SHORTHANDS[$short], $name);
+        } else {
+            $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
+            if ($op !== null && $op[0] === 'ref' && $op[1] === $name) {
+                return ['error' => '"vs" names this field itself — compare it with another entry, e.g. "vs":"previous-event" '
+                    . 'or "vs":"[baseline_arm_1][' . $name . ']".', '_tag' => $tag];
+            }
+        }
+        $frag['deltaGroup'] = AnnotationRules::deltaGroup($frag['deltaVs'], isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both');
+        $frag['deltaText'] = self::deltaText($frag, !empty($frag['decimalComma']));
+        $labels = ['previous-event' => 'the previous event', 'previous-instance' => 'the previous instance',
+                   'first-event' => 'the first event', 'first-instance' => 'the first instance'];
+        $frag['deltaVsLabel'] = $short !== null ? $labels[$short] : (string) $frag['deltaVs'];
+        return $frag;
+    }
+
+    /**
+     * @UVDELTA "dictionary" hook. The "vs" field must exist and hold numbers
+     * (a Text field with number validation or none, a calc or a slider); its
+     * decimal comma travels as deltaVsComma. A shorthand must have something
+     * to name: an instance shorthand a form that repeats (on its own, or with
+     * a repeating event), an event shorthand a form on two or more events.
+     * An event shorthand on a form that repeats on its own is refused: which
+     * instance of the earlier event it means is not said, so the reference
+     * would be ambiguous; written out with an instance it is not.
+     */
+    private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $tag = AnnotationRules::TAG_DELTA;
+        $refuse = function ($why) use ($tag) { return ['error' => $why, '_tag' => $tag]; };
+        if (!isset($frag['deltaVs']) || !is_string($frag['deltaVs'])) return $frag;
+        $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
+        if ($op === null) return $frag;   // refused already by AnnotationRules::checkDelta
+        $f = (string) $op[1];
+        $dd = $this->dataDictionary($pid);
+        if (!$dd || !isset($dd[$f])) return $refuse('"vs" names "[' . $f . ']", which is not a field in this project.');
+        $meta = $dd[$f];
+        $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+        $validation = $ftype === 'text' ? self::validationOf($meta) : '';
+        $re = ModeRegistry::eligibility('delta')['textValidations'] ?? null;
+        if (!in_array($ftype, ['calc', 'slider'], true) && !($ftype === 'text' && is_string($re) && preg_match('~' . $re . '~', $validation))) {
+            return $refuse('"vs" field "' . $f . '" is not a number field — it needs integer or number validation, or none, '
+                . 'or to be a calc or a slider.');
+        }
+        if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['deltaVsComma'] = true;
+        $short = isset($frag['deltaVsName']) ? $frag['deltaVsName'] : null;
+        if ($short === null) return $frag;
+        $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
+        $layout = $this->repeatingLayout($pid);
+        $eventForms = $this->eventForms($pid);
+        $events = [];
+        foreach ($eventForms ?: [] as $e => $forms) if (isset($forms[$form])) $events[] = (int) $e;
+        $repeatsAlone = $layout !== null && isset($layout['forms'][$form]);
+        $repeatsWithEvent = false;
+        if ($layout !== null) foreach ($events as $e) if (isset($layout['events'][$e])) $repeatsWithEvent = true;
+        if ($short === 'previous-instance' || $short === 'first-instance') {
+            if ($layout !== null && $eventForms !== null && !$repeatsAlone && !$repeatsWithEvent) {
+                return $refuse('"vs": "' . $short . '" needs a form that repeats — "' . $form . '" does not repeat in this project.');
+            }
+            return $frag;
+        }
+        if ($eventForms !== null && count($events) < 2) {
+            return $refuse('"vs": "' . $short . '" needs the form on two or more events — "' . $form . '" is on '
+                . (count($events) === 1 ? 'one' : 'no') . ' event in this project.');
+        }
+        if ($repeatsAlone) {
+            return $refuse('"vs": "' . $short . '" on a form that repeats does not say which instance of the earlier event to compare with — '
+                . 'write it out with one, e.g. "vs":"[' . ($short === 'previous-event' ? 'previous' : 'first') . '-event-name][' . $name . '][last-instance]".');
+        }
+        return $frag;
+    }
+
+    /**
+     * An @UVDELTA rule's limits in words, for the message and the scan
+     * report: "a change of at most 5 kg and 10%", "a rise of at most 10%",
+     * "no fall". A comma field shows 2,5.
+     */
+    private static function deltaText(array $frag, $comma)
+    {
+        $f = function ($n) use ($comma) { return $comma ? str_replace('.', ',', (string) $n) : (string) $n; };
+        $dir = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
+        $word = $dir === 'up' ? 'rise' : ($dir === 'down' ? 'fall' : 'change');
+        $max = isset($frag['deltaMax']) && is_string($frag['deltaMax']) ? $frag['deltaMax'] : null;
+        $pct = isset($frag['deltaMaxPct']) && is_string($frag['deltaMaxPct']) ? $frag['deltaMaxPct'] : null;
+        // a limit of 0 allows no move at all: the other one says nothing more
+        if (($max !== null && Logic::numCompare($max, '0') === 0) || ($pct !== null && Logic::numCompare($pct, '0') === 0)) {
+            return 'no ' . $word;
+        }
+        $parts = [];
+        if ($max !== null) $parts[] = $f($max) . (isset($frag['deltaUnit']) && $frag['deltaUnit'] !== '' ? ' ' . $frag['deltaUnit'] : '');
+        if ($pct !== null) $parts[] = $f($pct) . '%';
+        return 'a ' . $word . ' of at most ' . implode(' and ', $parts);
     }
 
     /**

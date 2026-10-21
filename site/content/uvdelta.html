@@ -1,0 +1,96 @@
+<p>REDCap's number validation judges one value on its own. It cannot say "this weight
+may not change by more than 10% since the previous visit", because the previous visit
+is another event of the same record. <code>@UVDELTA</code> compares a number with an
+<strong>earlier value</strong> (the same field at the previous or first event or
+instance, or any one field) and flags a change larger than its limit, when the field is
+left, after the record is saved and in the Validation scan.</p>
+
+<h2>Syntax</h2>
+
+<p><strong>JSON form only.</strong> <code>vs</code> and at least one of <code>max</code>
+and <code>maxPct</code>.</p>
+
+<pre><code>@UVDELTA={"vs":"previous-event","maxPct":10}
+
+@UVDELTA={"vs":"previous-instance","max":5,"unit":"kg"}
+
+@UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15,"direction":"down"}
+
+@UVDELTA={"vs":"previous-event","max":0,"direction":"down"}</code></pre>
+
+<p>The last one says a height may not fall: any fall is more than 0, and a rise is not
+limited.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>vs</code></td><td>The earlier value. <code>previous-event</code>,
+    <code>previous-instance</code>, <code>first-event</code> and <code>first-instance</code>
+    mean this same field there. Any one field reference works too:
+    <code>[weight_screening]</code>, <code>[baseline_arm_1][weight]</code>,
+    <code>[weight][2]</code></td></tr>
+<tr><td><code>max</code></td><td>The most the value may change, in its own unit. A
+    number of 0 or more</td></tr>
+<tr><td><code>maxPct</code></td><td>The most the value may change, as a percent of the
+    earlier value. A number of 0 or more</td></tr>
+<tr><td><code>direction</code></td><td><code>both</code> (default), <code>up</code> or
+    <code>down</code>: the changes the limits apply to. A change the other way always
+    passes</td></tr>
+<tr><td><code>unit</code></td><td>A short label shown in the note, such as
+    <code>kg</code> (up to 20 characters)</td></tr>
+<tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
+    <code>caseSensitive</code></td><td>As for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>With both <code>max</code> and <code>maxPct</code>, a change must keep both. Limits
+and values are compared as exact decimals, so a change of 10% is computed digit for
+digit (<code>|change| × 100</code> against <code>maxPct × |earlier value|</code>), with
+no rounding.</p>
+
+<h2>Field types</h2>
+
+<p>Text fields with <strong>integer</strong> or <strong>number</strong> validation (any
+number of decimals, comma decimals included) or with no validation, <strong>calc</strong>
+fields and <strong>sliders</strong>. A <code>vs</code> field must hold numbers the same
+way. On a comma-decimal field <code>72,5</code> reads as 72.5.</p>
+
+<h2>What is checked, and when</h2>
+
+<ul>
+<li>The shorthands, and any <code>vs</code> in another event or instance, need
+    <strong>Enable event and instance references</strong> in the project settings.
+    Without it the tag shows a configuration error that says so.</li>
+<li>A <strong>blank</strong> value, a blank earlier value and a field marked with a
+    <strong>missing data code</strong> on either side check nothing. On the first visit
+    or the first instance there is no earlier value, so nothing is checked there.</li>
+<li><code>previous-event</code> is the event before this one in the arm that has this
+    form, whether or not anything was saved there. On a form that repeats, name the
+    instance: <code>[previous-event-name][weight][last-instance]</code>.</li>
+<li>An earlier value of <strong>0</strong> has no percent, so <code>maxPct</code> does
+    not apply to it; <code>max</code> still does.</li>
+<li>An earlier value from another form, event or instance is read when the page opens.
+    That check <strong>warns and never blocks</strong>: the note says it is re-checked
+    after the save. A <code>vs</code> field on the same page is read as it is typed, and
+    the rule blocks as <code>blockSave</code> says. A calc field never blocks.</li>
+<li>A survey is never sent a value of another form, event or instance, so on a survey
+    the rule checks only a <code>vs</code> field on the same page. The audit and the
+    scan check the rest.</li>
+<li>The note appears when the field is left and names the change, its percent, the
+    earlier value and the limit. A change within the limits shows nothing.</li>
+<li>Tags that compare with <strong>different values</strong>, or limit
+    <strong>different directions</strong>, may sit on one field and must all pass: at
+    most 5% from the previous visit and 15% from baseline, or a rise of 10% and a fall
+    of 5%. Two tags with the same <code>vs</code> and direction need different
+    <code>when</code> conditions, as other tags do.</li>
+</ul>
+
+<h2>Audit</h2>
+
+<p>The post-save audit logs a change past a limit as <code>type: delta</code> with reason
+<code>up</code> or <code>down</code>, and the Validation scan counts it, with the limits
+and the value compared with in its detail line. A <code>vs</code> that cannot be
+resolved, and a saved value or earlier value that is not a number, are reported as rule
+problems, never as a pass.</p>

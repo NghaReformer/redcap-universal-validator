@@ -51,7 +51,7 @@ class Page:
 # Ordered as they appear in the nav.
 
 TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists",
-             "uvrange")
+             "uvrange", "uvdelta")
 
 PAGES = [
     Page(
@@ -178,6 +178,19 @@ PAGES = [
         keywords=("@UVRANGE", "REDCap action tag", "range check", "plausibility check",
                   "lab values", "vital signs", "soft and hard limits"),
         related=("uvassert", "uvrequired", "index"),
+    ),
+    Page(
+        slug="uvdelta",
+        title="@UVDELTA — limit how far a value may change between REDCap visits",
+        heading="@UVDELTA",
+        description=(
+            "@UVDELTA is a REDCap action tag that limits how far a number may move from an earlier "
+            "value, such as a weight that may change by at most 10% since the previous visit."
+        ),
+        nav_label="@UVDELTA",
+        keywords=("@UVDELTA", "REDCap action tag", "change check", "delta check",
+                  "longitudinal data", "previous visit", "repeating instruments"),
+        related=("uvrange", "uvassert", "index"),
     ),
     Page(
         slug="install",

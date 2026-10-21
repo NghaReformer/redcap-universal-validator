@@ -46,6 +46,19 @@ class AnnotationRules
     const TAG_WINDOW = '@UVWINDOW';
     const TAG_EXISTS = '@UVEXISTS';
     const TAG_RANGE = '@UVRANGE';
+    const TAG_DELTA = '@UVDELTA';
+
+    /**
+     * @UVDELTA "vs" shorthands: this same field in another entry of the
+     * record, as the reference each one stands for (%s is the field's name).
+     * UniversalValidator::annotateDeltaField writes them out.
+     */
+    const DELTA_SHORTHANDS = [
+        'previous-event' => '[previous-event-name][%s]',
+        'previous-instance' => '[%s][previous-instance]',
+        'first-event' => '[first-event-name][%s]',
+        'first-instance' => '[%s][first-instance]',
+    ];
 
     /** Most languages one text key (a "message" map) may name, "default" included. */
     const MAX_TEXT_LANGUAGES = 50;
@@ -1099,6 +1112,107 @@ class AnnotationRules
         self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVDELTA value into a delta fragment: how far a number may
+     * move from an earlier value. JSON form only:
+     *   @UVDELTA={"vs":"previous-event","maxPct":10}
+     *   @UVDELTA={"vs":"previous-instance","max":5,"unit":"kg","direction":"up"}
+     *   @UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15}
+     * "vs" is a shorthand (DELTA_SHORTHANDS: this field in the previous or
+     * first event or instance), kept as deltaVsName, or one field reference.
+     * Either way deltaVs is the operand the rule reads; the field hook writes
+     * a shorthand out once the field's name is known
+     * (UniversalValidator::annotateDeltaField). "max" limits the size of the
+     * change in the field's unit and "maxPct" as a percent of the earlier
+     * value; with both, a change must keep both. "direction" (both, up,
+     * down) names the changes the limits apply to. Limits are exact decimal
+     * strings, as @UVRANGE's are. deltaGroup (what the rule compares with,
+     * and which way) lets tags that compare with different values, or limit
+     * different ways, sit on one field (php/modes.json branchGroup). The
+     * verdict is Logic::deltaVerdict.
+     */
+    private static function parseDeltaValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_DELTA . ' needs its settings as JSON, e.g. '
+                . self::TAG_DELTA . '={"vs":"previous-event","maxPct":10}.'];
+        }
+        $cfg = json_decode($val, true, 512, JSON_BIGINT_AS_STRING);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_DELTA . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        // every number as the text it was typed as, so a limit keeps its digits
+        $exact = json_decode(self::quoteJsonNumbers($val), true);
+        $allowed = ['vs', 'max', 'maxPct', 'direction', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_DELTA . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'delta'];
+        if (array_key_exists('vs', $cfg)) {
+            if (!is_string($cfg['vs']) || trim($cfg['vs']) === '') {
+                return ['error' => '"vs" must be ' . self::deltaShorthandText()
+                    . ' or one field reference, such as "[baseline_arm_1][weight]".'];
+            }
+            $vs = trim($cfg['vs']);
+            $kw = strtolower($vs);
+            if (isset(self::DELTA_SHORTHANDS[$kw])) {
+                $out['deltaVsName'] = $kw;
+                $vs = $kw;
+            }
+            $out['deltaVs'] = $vs;
+        }
+        foreach (['max' => 'deltaMax', 'maxPct' => 'deltaMaxPct'] as $k => $key) {
+            if (!array_key_exists($k, $cfg)) continue;
+            $typed = isset($exact[$k]) && is_string($exact[$k]) ? $exact[$k] : null;
+            $b = self::rangeBound($cfg[$k], $typed);
+            if ($b === null) {
+                return ['error' => '"' . $k . '" must be a number such as ' . ($k === 'max' ? '5' : '10') . ' — got '
+                    . ((is_int($cfg[$k]) || is_float($cfg[$k])) && $typed !== null ? $typed : json_encode($cfg[$k])) . '.'];
+            }
+            if ($b === false || strlen($b) > self::MAX_RANGE_BOUND) {
+                return ['error' => '"' . $k . '" is longer than ' . self::MAX_RANGE_BOUND . ' characters written out.'];
+            }
+            $out[$key] = $b;
+        }
+        if (array_key_exists('direction', $cfg)) {
+            if (!is_string($cfg['direction'])) return ['error' => '"direction" must be both, up or down.'];
+            $d = strtolower(trim($cfg['direction']));
+            // "both" is the default, dropped so two spellings of one rule group as one
+            if ($d !== 'both') $out['deltaDirection'] = $d;
+        }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+        foreach (['unit' => 'deltaUnit', 'when' => 'when', 'message' => 'message', 'blockSave' => 'blockSave'] as $k => $key) {
+            if (!isset($cfg[$k])) continue;
+            if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+            $out[$key] = $k === 'unit' ? trim($cfg[$k]) : $cfg[$k];
+        }
+        self::takeCaseSensitive($cfg, $out);
+        if (isset($out['deltaVs'])) $out['deltaGroup'] = self::deltaGroup($out['deltaVs'], isset($out['deltaDirection']) ? $out['deltaDirection'] : 'both');
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * The branch group of a delta rule (php/modes.json branchGroup): the value
+     * it compares with, without spaces and letter case, and the way it limits.
+     * Two tags on one field that differ in either both apply.
+     */
+    public static function deltaGroup($vs, $direction)
+    {
+        return strtolower(preg_replace('/\s+/', '', (string) $vs)) . ' ' . $direction;
+    }
+
+    /** The "vs" shorthands as a list in words: "previous-event, ... or first-instance". */
+    private static function deltaShorthandText()
+    {
+        $names = array_keys(self::DELTA_SHORTHANDS);
+        return implode(', ', array_slice($names, 0, -1)) . ' or ' . end($names);
     }
 
     /**
@@ -2879,6 +2993,60 @@ class AnnotationRules
             }
         }
         return array_merge($errors, self::checkGrowth($frag, $zLimits, $opts), self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a delta (@UVDELTA) fragment: a "vs" that is a
+     * shorthand (which reads another event or instance, so it needs event and
+     * instance references) or exactly one field reference; at least one of
+     * "max" and "maxPct", each a number of 0 or more; a known direction and a
+     * short unit label. Whether the field and its "vs" field hold numbers is
+     * checked in the channel glue, where the data dictionary is in hand
+     * (UniversalValidator::annotateDeltaField and annotateDeltaDictionary).
+     */
+    public static function checkDelta(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (!isset($frag['deltaVs'])) {
+            $errors[] = self::TAG_DELTA . ' needs "vs", the value to compare with — e.g. "vs":"previous-event".';
+        } elseif (!is_string($frag['deltaVs'])) {
+            $errors[] = '"vs" must be ' . self::deltaShorthandText() . ' or one field reference.';
+        } elseif (isset(self::DELTA_SHORTHANDS[$frag['deltaVs']])) {
+            // not written out yet: it names this field in another entry
+            if (empty($opts['qualified'])) {
+                $errors[] = '"vs": "' . $frag['deltaVs'] . '" reads another event or instance, which needs event and '
+                    . 'instance references — enable them in project settings first.';
+            }
+        } elseif (ModeRegistry::operandRef($frag['deltaVs'], $opts) === null) {
+            $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($frag['deltaVs'], ['qualified' => true]) !== null)
+                ? 'a "vs" value in another event or instance needs event and instance references — enable them in project settings first.'
+                : '"vs" must be ' . self::deltaShorthandText() . ' or exactly one field reference, e.g. "[weight_screening]" '
+                  . 'or "[baseline_arm_1][weight]" (not a checkbox code, a {binding} or a list of instances).';
+        }
+        if (!array_key_exists('deltaMax', $frag) && !array_key_exists('deltaMaxPct', $frag)) {
+            $errors[] = self::TAG_DELTA . ' needs a limit: "max" (the most the value may change, in its own unit) or '
+                . '"maxPct" (the most it may change as a percent of the earlier value), e.g. "maxPct":10.';
+        }
+        foreach (['deltaMax' => 'max', 'deltaMaxPct' => 'maxPct'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            $v = $frag[$k];
+            if (!is_string($v) || !preg_match(Logic::NUM_RE, $v)) {
+                $errors[] = '"' . $label . '" must be a number — got ' . json_encode($v) . '.';
+            } elseif (Logic::numCompare($v, '0') < 0) {
+                $errors[] = '"' . $label . '" must be 0 or more — it is the size of a change; "direction" says which way.';
+            }
+        }
+        if (isset($frag['deltaDirection']) && !in_array($frag['deltaDirection'], ['up', 'down'], true)) {
+            $errors[] = '"direction" must be both, up or down.';
+        }
+        if (array_key_exists('deltaUnit', $frag)) {
+            $u = $frag['deltaUnit'];
+            if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
+                    || (function_exists('mb_strlen') ? mb_strlen($u, 'UTF-8') : strlen($u)) > self::MAX_RANGE_UNIT) {
+                $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "kg".';
+            }
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**

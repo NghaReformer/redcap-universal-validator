@@ -2327,6 +2327,39 @@ function QRID_rangeVerdict(spec, value){
   if(b("softHi") !== null && QRID_whenDecCmp(n, b("softHi")) > 0) return { tier: "soft", reason: "soft-high" };
   return { tier: "ok", reason: null };
 }
+/* The @UVDELTA verdict for a value against the earlier one: { verdict:
+   ok|inert|up|down|unknown, reason: null|max|maxPct|not-a-number|
+   earlier-not-a-number|too-long, change }. Exact decimals: the change by
+   QRID_temporalSum, the percent limit by QRID_temporalMultiply
+   (|change| * 100 against maxPct * |earlier|), never a division. An earlier
+   value of 0 has no percent, so "maxPct" is not applied there. Twin of
+   Logic::deltaVerdict; tests/delta_fixture.json pins both. */
+function QRID_deltaVerdict(spec, value, earlier){
+  var v = QRID_rangeNumber(value, !!spec.decimalComma), e = QRID_rangeNumber(earlier, !!spec.earlierComma);
+  if(v === "" || e === "") return { verdict: "inert", reason: null, change: null };
+  if(v === null) return { verdict: "unknown", reason: "not-a-number", change: null };
+  if(e === null) return { verdict: "unknown", reason: "earlier-not-a-number", change: null };
+  var minus = e.charAt(0) === "-" ? e.slice(1) : "-" + e.replace(/^\+/, "");
+  var change = QRID_temporalSum([v, minus]);
+  if(change === null) return { verdict: "unknown", reason: "too-long", change: null };
+  function lim(k){ return (typeof spec[k] === "string" && spec[k] !== "") ? spec[k] : null; }
+  var max = lim("max"), pct = lim("maxPct"), base = e.replace(/^[+-]/, "");
+  /* a percent of nothing: only "max" can judge */
+  if(pct !== null && QRID_whenDecCmp(base, "0") === 0){
+    pct = null;
+    if(max === null) return { verdict: "inert", reason: null, change: change };
+  }
+  var sign = QRID_whenDecCmp(change, "0"), dir = spec.direction || "both";
+  if(sign === 0 || (sign > 0 && dir === "down") || (sign < 0 && dir === "up")) return { verdict: "ok", reason: null, change: change };
+  var way = sign > 0 ? "up" : "down", size = change.replace(/^-/, "");
+  if(max !== null && QRID_whenDecCmp(size, max) > 0) return { verdict: way, reason: "max", change: change };
+  if(pct !== null){
+    var lhs = QRID_temporalMultiply(size, "100"), rhs = QRID_temporalMultiply(pct, base);
+    if(lhs === null || rhs === null) return { verdict: "unknown", reason: "too-long", change: change };
+    if(QRID_whenDecCmp(lhs, rhs) > 0) return { verdict: way, reason: "maxPct", change: change };
+  }
+  return { verdict: "ok", reason: null, change: change };
+}
 /* @UVRANGE growth references: the z-score of a measurement against an LMS
    table. Twin of php/GrowthReference.php; tests/growth_fixture.json and
    tests/who_golden.json pin both. A reference here is the page's copy
@@ -6054,6 +6087,289 @@ function QRIDRangeInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- delta validator (@UVDELTA) --------------------------------------------
+   How far a number may move from an earlier value: the same field at the
+   previous or first event or instance, or any one field reference ("vs").
+   The verdict is QRID_deltaVerdict, the twin of Logic::deltaVerdict
+   (tests/delta_fixture.json drives both), and
+   UniversalValidator::findingsDelta is the server side of this factory.
+   The earlier value arrives FOLDED (deltaVsOp): ["ref", field, null] when it
+   is on this page, read as typed; ["lit", value] when it is a saved value
+   this user may read on another form, event or instance, a snapshot, so the
+   rule never blocks; ["withheld"] when this viewer may not read it. A rule
+   with event or instance references arrives extendedAdvisory
+   (TemporalRules::compile): it warns, and the save re-checks it. A calc
+   never blocks: the person cannot change its value.
+   Branch groups (deltaGroup: what a rule compares with, and which way) let
+   several tags on one field all judge; the worst decides the colour and the
+   guard. Typing clears the note and leaving the field judges it, as
+   @UVRANGE does. A pass shows nothing. tests/delta_dom_js.cjs locks it. */
+function QRIDDeltaInit(QRID_CONFIG){
+  function styleMsg(el, kind){   /* "warn" | "bad" */
+    var c = (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
+                              : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    function limit(key, label){
+      var v = cfg[key];
+      if(v === undefined || v === null || v === "") return null;
+      if(typeof v !== "string" || !QRID_WHEN_NUM_RE.test(v) || QRID_whenDecCmp(v, "0") < 0){
+        if(!configError) configError = '@UVDELTA "' + label + '" is not a number of 0 or more.';
+        return null;
+      }
+      return v;
+    }
+    var max = limit("deltaMax", "max"), pct = limit("deltaMaxPct", "maxPct");
+    var dir = cfg.deltaDirection == null ? "both" : cfg.deltaDirection;
+    if(!configError && dir !== "both" && dir !== "up" && dir !== "down") configError = '@UVDELTA "direction" must be both, up or down.';
+    /* A deferred stub (the page could not be given this rule) carries no limits:
+       it reports its deferral, not a configuration error. */
+    if(!configError && !cfg.deferred && max === null && pct === null) configError = "@UVDELTA has no limit to check.";
+    /* The earlier value. A rule the server built always carries deltaVsOp
+       unless it is deferred; the plain-text fallback serves hand-written
+       configs and the test harnesses, and reads only a plain [field] of this page. */
+    var vsOp = null;
+    if(!configError){
+      var op = cfg.deltaVsOp;
+      if(op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld")) vsOp = op;
+      else if(typeof cfg.deltaVs === "string" && cfg.deltaVs !== ""){
+        var p = QRID_whenParse(cfg.deltaVs + "=''");
+        if(p.ok && p.ast[0] === "cmp" && p.ast[2][0] === "ref" && p.ast[2][2] === null) vsOp = ["ref", p.ast[2][1], null];
+      }
+      if(!vsOp && !cfg.deferred) configError = '@UVDELTA cannot read its "vs" value.';
+    }
+    var DEFERRED = !configError && !!cfg.deferred;
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    /* A "vs" field on this page re-checks the change when it changes. */
+    var WATCH = (vsOp && vsOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", vsOp, ["lit", ""]]) : null;
+    /* QRID_buildVariants turns blockSave off for a deferred rule and for one
+       that reads a value saved when the page opened. An event/instance rule
+       and a calc never block either. cfg.blockSave is this rule's own setting
+       or the project's default, which cfgFor fills in: "blockSave" is one of
+       this mode's keys (php/modes.json). */
+    var advisory = cfg.extendedAdvisory === true || cfg.deltaComputed === true || DEFERRED;
+    return { configError: configError, gate: GATE, watch: WATCH ? [WATCH] : [],
+             blockSave: advisory ? "off" : BLOCK,
+             deferred: DEFERRED, snapshot: SNAPSHOT, snapshotGate: cfg.snapshotGate === true,
+             extended: cfg.extendedAdvisory === true,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             spec: { max: max, maxPct: pct, direction: dir,
+                     decimalComma: cfg.decimalComma === true, earlierComma: cfg.deltaVsComma === true },
+             vsOp: vsOp,
+             label: (typeof cfg.deltaVsLabel === "string" && cfg.deltaVsLabel !== "") ? cfg.deltaVsLabel
+                  : (typeof cfg.deltaVs === "string" ? cfg.deltaVs : ""),
+             text: (typeof cfg.deltaText === "string") ? cfg.deltaText : "",
+             unit: (typeof cfg.deltaUnit === "string") ? cfg.deltaUnit : "",
+             mode: { delta: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
+  /* The earlier value as text, "" when blank, marked with a Missing Data Code
+     or the field itself (a reference the extended path folded to this very
+     entry: nothing to compare with); null when this viewer was not sent it. */
+  function earlierOf(V, fieldName){
+    var op = V.vsOp;
+    if(!op) return "";
+    if(op[0] === "withheld") return null;
+    var e = op[0] === "ref" ? (op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null)) : op[1];
+    e = (e == null || typeof e === "object") ? "" : String(e);
+    return QRID_isMissingCode(e) ? "" : e;
+  }
+  function verdictOf(V, fieldName, typed){
+    var e = earlierOf(V, fieldName);
+    if(e === null) return { verdict: "withheld" };
+    var r = QRID_deltaVerdict(V.spec, (typed == null || typeof typed === "object") ? "" : String(typed), e);
+    r.earlier = e;
+    return r;
+  }
+  /* A number as the field shows it: its own decimal mark. */
+  function shown(n, comma){ return comma ? String(n).replace(".", ",") : String(n); }
+  /* The change as a percent of the earlier value, one decimal, for the
+     message only (the verdict never divides). */
+  function percentOf(change, earlier){
+    var c = Math.abs(Number(change)), e = Math.abs(Number(earlier));
+    if(!(e > 0) || !isFinite(c) || !isFinite(e)) return null;
+    var p = Math.round(c / e * 1000) / 10;
+    return isFinite(p) ? p : null;
+  }
+  function describe(V, r){
+    if(V.message) return QRID_ruleHtml(V, "message");
+    var comma = V.spec.decimalComma, unit = V.unit ? " " + V.unit : "";
+    var size = String(r.change).replace(/^-/, "");
+    var pct = percentOf(r.change, QRID_rangeNumber(r.earlier, V.spec.earlierComma));
+    var earlier = QRID_rangeNumber(r.earlier, V.spec.earlierComma);
+    /* Survey respondents are not told which field or entry the value is
+       compared with. */
+    var from = shown(earlier, V.spec.earlierComma) + unit + (QRID_IS_SURVEY || !V.label ? "" : " (" + V.label + ")");
+    var text = (r.verdict === "up" ? "This value rose by " : "This value fell by ") + shown(size, comma) + unit +
+      (pct !== null ? " (" + shown(pct, comma) + "%)" : "") + " from " + from + ".";
+    return QRID_escapeHtml(text) + (V.text ? " " + QRID_escapeHtml("Allowed: " + V.text + ".") : "");
+  }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-d")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-d", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "d");
+    /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
+       time: the note waits for the field to be left, the guard does not. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} },
+                __qridRecheck: function(){ check(); } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "d", null); }
+    function subject(V){
+      return QRID_escapeHtml("The change from " + (V.label || "the earlier value"));
+    }
+    /* What one active variant says about the typed value: { kind: "none" },
+       "deferral" (why), "warn" (an amber note for staff, never a block) or
+       "bad" (html, block). */
+    function judge(V, typed){
+      if(V.deferred){
+        return (V.deferredWhy && !QRID_IS_SURVEY)
+          ? { kind: "deferral", why: V.deferredWhy, checkedOnSave: V.checkedOnSave === true } : { kind: "none" };
+      }
+      var r;
+      try { r = verdictOf(V, fieldName, typed); } catch(e){ return { kind: "none" }; }   /* fail open */
+      if(r.verdict === "withheld"){
+        if(QRID_IS_SURVEY) return { kind: "none" };
+        return { kind: "warn", html: subject(V) + " is not checked on this page: that value is on a form you cannot view here." +
+          " It is checked when the record is saved." };
+      }
+      if(r.verdict === "unknown"){
+        /* A value that is not (yet) a number is REDCap's own check's to name. */
+        if(QRID_IS_SURVEY || r.reason === "not-a-number") return { kind: "none" };
+        return { kind: "warn", html: subject(V) + " is not checked: " + (r.reason === "earlier-not-a-number"
+          ? "its saved value is not a number this rule can read." : "the numbers are too long to compare.") };
+      }
+      if(r.verdict !== "up" && r.verdict !== "down") return { kind: "none" };
+      var base = describe(V, r);
+      if(V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(' + (V.snapshotGate ? "based on " : "compared with ") +
+          QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
+      } else if(V.extended && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(This check does not block saving; it is re-checked after the save.)</span>';
+      }
+      return { kind: "bad", html: base, block: V.blockSave };
+    }
+    var ICON = { warn: "&#9888; ", bad: "&#10007; ", deferral: "&#9888; " };
+    var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "d")){ setGuard(false); QRID_setModeState(input, "d", null); return; }
+        inert(); return;
+      }
+      if(act.conflict || (act.length > 1 && !VS.grouped)){ QRID_renderConflict(msg, input, act, "d"); setGuard(false); return; }
+      var typed = QRID_WHEN.readRef(fieldName, null);
+      /* A Missing Data Code is judged by no variant; one that is not checked
+         still says so. */
+      var missing = QRID_isMissingCode(typed);
+      var lines = [], seen = Object.create(null), worst = null, block = "off";
+      for(var ai = 0; ai < act.length; ai++){
+        var one = (act[ai].deferred || !missing) ? judge(act[ai], typed) : { kind: "none" };
+        if(one.kind === "none") continue;
+        var line = ICON[one.kind] + (one.kind === "deferral"
+          ? QRID_deferralText(one.why, one.checkedOnSave, VS.grouped ? subject(act[ai]) + " is" : "") : one.html);
+        if(!seen[line]){ seen[line] = true; lines.push(line); }
+        if(one.kind === "bad") worst = "bad";
+        if(one.block && BLOCK_RANK[one.block] > BLOCK_RANK[block]) block = one.block;
+      }
+      if(!lines.length){ inert(); return; }
+      if(worst === null){
+        /* only notes: amber, never a block, and no opinion about the value */
+        styleMsg(msg, "warn");
+        msg.innerHTML = lines.join("<br>");
+        setGuard(false); QRID_setModeState(input, "d", null);
+        return;
+      }
+      styleMsg(msg, "bad");
+      QRID_setModeState(input, "d", "bad");
+      setGuard(true, block);
+      msg.innerHTML = lines.join("<br>");
+    }
+    /* Typing clears the note; leaving the field (or a change from a script,
+       a calc or the slider) judges the value. The self-watch below also hears
+       every keystroke, so it stays quiet while the person is in the field. */
+    function typing(){ return typeof document !== "undefined" && document.activeElement === input; }
+    if(input.addEventListener){
+      input.addEventListener("input", function(){ if(msg.style.display !== "none") inert(); });
+      input.addEventListener("change", function(){ check(); });
+      input.addEventListener("blur", function(){ check(); });
+    }
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ if(!typing()) check(); });
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      for(var wi = 0; wi < VS.all[gi].watch.length; wi++) VS.all[gi].watch[wi].onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "delta", mode: { delta: true, configError: configError },
+      test: function(){
+        if(configError) return null;
+        var a = QRID_activeVariants(VS);
+        if(!a.length || a.conflict || (a.length > 1 && !VS.grouped)) return null;
+        var typed = QRID_WHEN.readRef(f, null);
+        if(QRID_isMissingCode(typed)) return null;
+        /* every comparison must pass; one that cannot judge leaves the answer open */
+        var open = false;
+        for(var ti = 0; ti < a.length; ti++){
+          if(a[ti].deferred){ open = true; continue; }
+          var v;
+          try { v = verdictOf(a[ti], f, typed).verdict; } catch(e){ open = true; continue; }   /* fail open, as check() */
+          if(v === "up" || v === "down") return false;
+          if(v !== "ok") open = true;
+        }
+        return open ? null : true;
+      } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- required validator (@UVREQUIRED) -------------------------------------
    The INVERSE emptiness rule: a BLANK field is the violation (every other mode
    is inert on blank). Optional "when" makes the requirement conditional —
@@ -7988,8 +8304,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeReturn", "rangeReturnLimits", "rangeDecimals",
                       "rangePercentileDecimals", "rangeReturnComma", "deferredOnSave",
                       "extendedAdvisory", "growthIdle", "selectorBlocked", "rangeShow",
-                      "growthCurveKey", "growthTableKey", "growthChartWhy",
-                      "growthChartSource"];
+                      "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
+                      "deltaVs", "deltaVsOp", "deltaVsName", "deltaVsLabel", "deltaVsComma",
+                      "deltaMax", "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText",
+                      "deltaGroup", "deltaComputed"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -7999,7 +8317,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "choices": "choices",
     "window": "window",
     "exists": "exists",
-    "range": "range"
+    "range": "range",
+    "delta": "delta"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -8010,12 +8329,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "choices": "QRIDChoiceFilterInit",
     "window": "QRIDWindowInit",
     "exists": "QRIDExistsInit",
-    "range": "QRIDRangeInit"
+    "range": "QRIDRangeInit",
+    "delta": "QRIDDeltaInit"
   };
   var BRANCH_GROUP_OF_TYPE = {
-    "range": "rangeReference"
+    "range": "rangeReference",
+    "delta": "deltaGroup"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\" or \"range\"";
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\" or \"delta\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -8029,7 +8350,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDChoiceFilterInit: QRIDChoiceFilterInit,
     QRIDWindowInit: QRIDWindowInit,
     QRIDExistsInit: QRIDExistsInit,
-    QRIDRangeInit: QRIDRangeInit
+    QRIDRangeInit: QRIDRangeInit,
+    QRIDDeltaInit: QRIDDeltaInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -8185,6 +8507,9 @@ window.INSPIREUniversalValidator = {
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
   },
+  deltaLogic: {                              /* @UVDELTA twin, locked by tests/delta_js.cjs */
+    verdict: QRID_deltaVerdict
+  },
   returnWriter: {                            /* the one writer of returned values, locked by tests/growth_return_dom_js.cjs */
     write: QRID_writeReturned
   },
@@ -8215,6 +8540,7 @@ window.INSPIREUniversalValidator = {
   windowInit: QRIDWindowInit,           /* @UVWINDOW — locked by tests/window_dom_js.cjs */
   existsInit: QRIDExistsInit,           /* @UVEXISTS — locked by tests/exists_dom_js.cjs */
   rangeInit: QRIDRangeInit,             /* @UVRANGE — locked by tests/range_dom_js.cjs */
+  deltaInit: QRIDDeltaInit,             /* @UVDELTA — locked by tests/delta_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

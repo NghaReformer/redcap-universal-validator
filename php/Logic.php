@@ -93,6 +93,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ExactDecimal.php';
+
 class Logic
 {
     const MAX_EXPR_LEN = 500; // characters, after whitespace normalization + trim
@@ -1082,6 +1084,69 @@ class Logic
         if ($b('softLo') !== null && self::decCmp($n, $b('softLo')) < 0) return ['tier' => 'soft', 'reason' => 'soft-low'];
         if ($b('softHi') !== null && self::decCmp($n, $b('softHi')) > 0) return ['tier' => 'soft', 'reason' => 'soft-high'];
         return ['tier' => 'ok', 'reason' => null];
+    }
+
+    /**
+     * The @UVDELTA verdict for one value against the earlier one it is
+     * compared with: ['verdict' => ok|inert|up|down|unknown, 'reason' =>
+     * null|max|maxPct|not-a-number|earlier-not-a-number|too-long, 'change' =>
+     * value - earlier as an exact decimal string, or null].
+     *
+     * $spec holds 'max' and 'maxPct' (NUM_RE strings at least 0; null or
+     * absent = no such limit), 'direction' (both, up or down: the changes the
+     * limits apply to), 'decimalComma' (the value's field reads one comma as
+     * the decimal mark) and 'earlierComma' (the same for the earlier value's
+     * field).
+     *
+     * A blank value or a blank earlier value is inert: nothing to compare. A
+     * value that is not a number is unknown, as is a change too long to work
+     * out (ExactDecimal::MAX_DIGITS). A change against "direction" is ok.
+     * "max" holds when |change| <= max; "maxPct" when |change| * 100 <=
+     * maxPct * |earlier|, so no division and no rounding. An earlier value of
+     * 0 has no percent: "maxPct" is not applied, and a rule with no other
+     * limit is inert there. "up" and "down" name the way a value moved past a
+     * limit, reason the limit it broke ("max" first). Each limit is at most
+     * AnnotationRules::MAX_RANGE_BOUND characters, so the work is linear in
+     * the value's length. The twin is QRID_deltaVerdict; tests/delta_fixture.json
+     * pins both.
+     */
+    public static function deltaVerdict(array $spec, $value, $earlier)
+    {
+        $v = self::normalizeNumber($value, !empty($spec['decimalComma']));
+        $e = self::normalizeNumber($earlier, !empty($spec['earlierComma']));
+        if ($v === '' || $e === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
+        if ($v === null) return ['verdict' => 'unknown', 'reason' => 'not-a-number', 'change' => null];
+        if ($e === null) return ['verdict' => 'unknown', 'reason' => 'earlier-not-a-number', 'change' => null];
+        $minus = $e[0] === '-' ? substr($e, 1) : '-' . ltrim($e, '+');
+        $d = ExactDecimal::sum([$v, $minus]);
+        if ($d['state'] !== 'ok') return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
+        $change = $d['value'];
+        $limit = function ($k) use ($spec) {
+            return (isset($spec[$k]) && is_string($spec[$k]) && $spec[$k] !== '') ? $spec[$k] : null;
+        };
+        $max = $limit('max');
+        $pct = $limit('maxPct');
+        $base = ltrim($e, '+-');
+        // a percent of nothing: only "max" can judge
+        if ($pct !== null && self::decCmp($base, '0') === 0) {
+            $pct = null;
+            if ($max === null) return ['verdict' => 'inert', 'reason' => null, 'change' => $change];
+        }
+        $sign = self::decCmp($change, '0');
+        $dir = isset($spec['direction']) ? $spec['direction'] : 'both';
+        if ($sign === 0 || ($sign > 0 && $dir === 'down') || ($sign < 0 && $dir === 'up')) {
+            return ['verdict' => 'ok', 'reason' => null, 'change' => $change];
+        }
+        $way = $sign > 0 ? 'up' : 'down';
+        $size = ltrim($change, '-');
+        if ($max !== null && self::decCmp($size, $max) > 0) return ['verdict' => $way, 'reason' => 'max', 'change' => $change];
+        if ($pct !== null) {
+            $lhs = ExactDecimal::multiply($size, '100');
+            $rhs = ExactDecimal::multiply($pct, $base);
+            if ($lhs === null || $rhs === null) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => $change];
+            if (self::decCmp($lhs, $rhs) > 0) return ['verdict' => $way, 'reason' => 'maxPct', 'change' => $change];
+        }
+        return ['verdict' => 'ok', 'reason' => null, 'change' => $change];
     }
 
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */

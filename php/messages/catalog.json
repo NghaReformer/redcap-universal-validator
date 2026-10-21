@@ -124,6 +124,20 @@
     "survey": "This value is not allowed here.",
     "zScore": "Its z-score is {z} on the growth reference {reference}."
   },
+  "delta/up": {
+    "staff":  "The value rose more than allowed from the value it is compared with.",
+    "survey": "This value is much higher than before. Please check it.",
+    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+  },
+  "delta/down": {
+    "staff":  "The value fell more than allowed from the value it is compared with.",
+    "survey": "This value is much lower than before. Please check it.",
+    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+  },
+  "delta/*": {
+    "staff":  "The value changed more than allowed from the value it is compared with.",
+    "survey": "This value changed more than expected. Please check it."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."
