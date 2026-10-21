@@ -314,11 +314,37 @@ final class ScanPlanner
      *                 false stops the slice after the page in hand
      *   limits:       array    maxFindings and maxBytes, for a stopped run's finish
      * }
+     * AN EXCEPTION THAT LEAVES A SLICE HANDS THE LEASE BACK FIRST (review
+     * R5-6). A page whose append failed at the store - a deadlock, a lock wait,
+     * a lost connection - left the lease held, so for the next five minutes
+     * every request was told another request was listing the project, while
+     * none was. The attempt was counted at the claim, so the release costs the
+     * retry rule nothing. It is best effort: a database that has just failed
+     * may refuse that write too, and the lease then lapses as it always did.
+     *
      * @return array{ok:bool, phase:string, frozen:bool, empty:bool, total:?int,
      *               listed:int, stop:?string, why:?string, stats:array}
      *         `listed` is what THIS request listed; `stats` the walk so far.
      */
     public function step($pid, $runId, array $req)
+    {
+        try {
+            return $this->listSlice($pid, $runId, $req);
+        } catch (\Throwable $e) {
+            $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
+            if ($owner !== '') {
+                try {
+                    $this->store->releasePlan($runId, $owner);
+                } catch (\Throwable $ignored) {
+                    // The failure the caller is about to hear about is the one that matters.
+                }
+            }
+            throw $e;
+        }
+    }
+
+    /** The body of step(), which owns the release on the way out. */
+    private function listSlice($pid, $runId, array $req)
     {
         $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
         $epoch = isset($req['epoch']) ? (int) $req['epoch'] : 0;

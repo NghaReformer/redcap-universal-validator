@@ -2625,6 +2625,28 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $r5['why'] === ScanPlanner::PLAN_STOPPED && $db5->pages === 3
         && $ms->run(300, $rid5)['terminal'] === ScanOutcome::CANCELLED
         && $ms->recordStates($rid5) === [ScanStore::REC_PENDING => 2]);
+
+    // R5-6: A SLICE WHOSE APPEND FAILS AT THE STORE HANDS ITS LEASE BACK. It
+    // kept it, and every request for the next five minutes was told another
+    // request was listing the project while none was.
+    list($fs, $rid6, $src6) = $fresh(6);
+    $faulty = (new \INSPIRE\UniversalValidator\Scan\FaultyStore($fs))->failFrom('appendManifest');
+    $fplanner = function ($runId, array $slice) use ($faulty, $src6, $key) {
+        return (new ScanPlanner($faulty, $key))->step(300, $runId,
+            array_merge($slice, ['source' => $src6, 'pageSize' => 1]));
+    };
+    $f1 = (new ScanWorker($faulty, ['planner' => $fplanner, 'budget' => $wide(), 'owner' => 'tabA',
+        'attempts' => 3]))->work(300, $rid6);
+    $leaseOf = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $leaseOf->setAccessible(true);
+    check('R5-6: a slice whose page could not be stored says so, and leaves no planning lease behind',
+        $f1['ok'] === false && $f1['stop'] === 'storage'
+        && $leaseOf->getValue($fs)[$rid6]['lease_owner'] === null
+        && $fs->recordStates($rid6) === [ScanStore::REC_PENDING => 1]);
+    $f2 = $worker($fs, $src6, $spent())->work(300, $rid6);
+    check('R5-6: so the next request lists the next page rather than being told the walk is held',
+        $f2['ok'] === true && $f2['stop'] === 'time' && $f2['listed'] === 1
+        && $fs->recordStates($rid6) === [ScanStore::REC_PENDING => 2]);
 }
 
 /* =====================================================================

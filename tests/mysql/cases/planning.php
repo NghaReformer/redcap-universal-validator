@@ -605,3 +605,74 @@ $NEIGHBOUR = uv_neighbour($PID);
             && $final['phase'] === 'terminal' && $final['terminal'] === 'cancelled');
     }
 }
+
+/*
+ * R5-6: A SLICE WHOSE PAGE THE STORE REFUSED HANDS ITS LEASE BACK.
+ *
+ * The page's write of where the walk stands fails as a lock wait would, on
+ * a connection that stays usable. The transaction rolls back, the planner
+ * hears ScanStoreUnavailable - and the lease it held used to stay with it,
+ * so the next request was told for five minutes that another request was
+ * listing the project.
+ */
+{
+    $LOCKED = 920;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $LOCKED);
+    $vals = array();
+    for ($i = 1; $i <= 30; $i++) $vals[] = '(' . $LOCKED . ", 'K" . sprintf('%03d', $i) . "', NULL)";
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $vals));
+    $lockSrc = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, $LOCKED, array('pk' => 'record_id'));
+    $spentL = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $lockReq = uv_plan_request(array('source' => $lockSrc['source'], 'pageSize' => 10));
+    $lp = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA), 'test-secret-key'))
+        ->plan($LOCKED, array_merge($lockReq, array('budget' => $spentL(), 'owner' => 'req0')));
+    $lockId = (int) $lp['run']['run_id'];
+    $lockEpoch = (int) $lp['run']['lease_epoch'];
+    $waits = new class(new MysqliDb($A), $T('scan_plan')) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $table; public $failed = 0;
+        public function __construct($inner, $table) { $this->inner = $inner; $this->table = $table; }
+        public function select($sql, array $params = []) { return $this->inner->select($sql, $params); }
+        public function exec($sql, array $params = []) { $this->seam($sql); $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->seam($sql); $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+        // The page's write of where the walk stands, refused once.
+        private function seam($sql) {
+            if ($this->failed === 0 && stripos(ltrim($sql), 'UPDATE ' . $this->table) === 0
+                    && strpos($sql, 'plan_cursor') !== false) {
+                $this->failed++;
+                throw new \RuntimeException('Lock wait timeout exceeded; try restarting transaction');
+            }
+        }
+    };
+    $lockThrew = null;
+    try {
+        (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+            new \INSPIRE\UniversalValidator\Scan\SqlScanStore($waits), 'test-secret-key'))
+            ->step($LOCKED, $lockId, array_merge($lockReq, array('budget' => $spentL(),
+                'owner' => 'tabA', 'epoch' => $lockEpoch, 'attempts' => 3, 'leaseSeconds' => 300)));
+    } catch (\Throwable $e) {
+        $lockThrew = $e;
+    }
+    check('R5-6: the page write was refused, and the planner heard it as the storage failing',
+        $waits->failed === 1
+        && $lockThrew instanceof \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable);
+    $after = $dbA->select('SELECT lease_owner FROM ' . $T('scan_run') . ' WHERE run_id = ?', array($lockId));
+    check('R5-6: nothing of the page was kept, and the lease went back with it',
+        array_key_exists(0, $after) && $after[0][0] === null
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . $T('scan_record') . ' WHERE run_id = ?',
+            array($lockId))[0][0] === 10);
+    $next = (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->claimPlan($lockId, 'tabA-continue',
+        $lockEpoch, 300, 3);
+    check('R5-6: so the next request takes the walk on, rather than being told it is held',
+        is_array($next) && $next['state'] === 'ok' && $next['pages'] === 1 && $next['attempts'] === 2);
+    (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($lockId,
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}
