@@ -142,6 +142,13 @@ final class ScanPlanner
                 . 'exporting it, so no scan may start');
         }
         $dag = isset($req['dagFilter']) && $req['dagFilter'] !== '' ? $req['dagFilter'] : null;
+        if ($src->isEmpty()) {
+            // A PROJECT WITH NO RECORDS IS REFUSED BEFORE A RUN EXISTS, as it
+            // was when open() refused it. open() hands the empty walk out now
+            // (review R5-7) so that a run whose records are all deleted while
+            // it is listing them can end over it; a start has nothing to list.
+            return self::no(self::emptyWhy($dag));
+        }
         if ($dag !== null && !$src->hasDag()) {
             // Running anyway would build a project-wide manifest for a user
             // entitled to one group. The persisted report is readable later by
@@ -565,12 +572,7 @@ final class ScanPlanner
             // group-scoped user is entitled to. The walk counters travel in
             // `stats`: `listed` and `outOfScope` distinguish a genuinely empty
             // group from a scope value compared on the wrong axis.
-            $why = $dag === null
-                ? 'this project has no records, so there was nothing to scan'
-                : 'no records were found in the Data Access Group this scan was scoped '
-                . 'to, so there was nothing to scan. If you expect records in that '
-                . 'group, ask an administrator to check the scan scope before treating '
-                . 'this as an empty group.';
+            $why = self::emptyWhy($dag);
             $out = self::slice(false, ScanPhase::TERMINAL, 'empty', $why, $listedNow, $stats);
             $out['frozen'] = true;
             $out['empty'] = true;
@@ -607,6 +609,21 @@ final class ScanPlanner
     /** A walk whose run was stopped under it. */
     const PLAN_STOPPED = 'this scan was stopped while it was listing the project\'s records, so no '
         . 'record was examined';
+
+    /** A run, or a start, over a project that holds no records. */
+    const EMPTY_PROJECT = 'this project has no records, so there was nothing to scan';
+
+    /** The same for a group-scoped one. See step() for why it asserts nothing about the group. */
+    const EMPTY_GROUP = 'no records were found in the Data Access Group this scan was scoped '
+        . 'to, so there was nothing to scan. If you expect records in that '
+        . 'group, ask an administrator to check the scan scope before treating '
+        . 'this as an empty group.';
+
+    /** The empty-scope sentence for a run scoped to $dag, or to the whole project when null. */
+    public static function emptyWhy($dag)
+    {
+        return ($dag === null || $dag === '') ? self::EMPTY_PROJECT : self::EMPTY_GROUP;
+    }
 
     /**
      * An append, a claim or the freeze was refused: the run is not planning

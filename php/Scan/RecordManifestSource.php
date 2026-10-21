@@ -80,6 +80,8 @@ final class RecordManifestSource
      * table, and on an index REDCap keeps no status for.
      */
     private $listState;
+    /** @var bool the data table was read at open() and holds nothing for this project (R5-7) */
+    private $empty = false;
 
     private function __construct()
     {
@@ -89,7 +91,10 @@ final class RecordManifestSource
      * Open a bounded walk, or refuse and say why.
      *
      * @param array $opts {pk: ?string record-id field name}
-     * @return array{ok:bool, source:?RecordManifestSource, why:?string}
+     * @return array{ok:bool, source:?RecordManifestSource, why:?string, empty?:bool}
+     *         `empty`: the project holds no records, read rather than assumed
+     *         (see overData()); the source is handed out and lists nothing,
+     *         and `why` says so for a caller that refuses on it
      */
     public static function open(ScanDb $db, $pid, array $opts = [])
     {
@@ -161,7 +166,21 @@ final class RecordManifestSource
      * The walk over the project's data table, restricted to the record-id
      * field, probed before it is handed out.
      *
-     * @return array{ok:bool, source:?RecordManifestSource, why:?string}
+     * A PROJECT WITH NO RECORDS IS AN ANSWER, NOT A FAILURE (review R5-7).
+     * This refused when the probe found no record-id row, and the run whose
+     * every record was deleted while it was still listing could then never
+     * open its source again: each later slice counted a failed attempt, and at
+     * the cap the run ended `failed`, saying listing had failed on the same
+     * page in every attempt. Nothing had failed.
+     *
+     * So the walk is handed out EMPTY - `empty` true, `why` saying the project
+     * has no records - when the data table was read and holds NO ROW AT ALL
+     * for this project, on any field. It is still refused when rows exist and
+     * none of them is a record-id row (a record-id field resolved wrongly
+     * would otherwise read as an empty project), and when either read fails:
+     * a table that could not be read is never taken as "no records".
+     *
+     * @return array{ok:bool, source:?RecordManifestSource, why:?string, empty?:bool}
      */
     private static function overData(ScanDb $db, $pid, $dt, $pk)
     {
@@ -177,9 +196,46 @@ final class RecordManifestSource
         $s->pk = $pk;
         $probe = $s->probe();
         if (!$probe['ok']) {
-            return ['ok' => false, 'source' => null, 'why' => $probe['why']];
+            if (empty($probe['none']) || $s->holdsAnything() !== false) {
+                return ['ok' => false, 'source' => null, 'why' => $probe['why']];
+            }
+            $s->empty = true;
+            return ['ok' => true, 'source' => $s, 'empty' => true, 'why' => self::NO_RECORDS];
         }
-        return ['ok' => true, 'source' => $s, 'why' => null];
+        return ['ok' => true, 'source' => $s, 'why' => null, 'empty' => false];
+    }
+
+    /** What an open() of a project that holds no records says, with `empty`. */
+    const NO_RECORDS = 'this project has no records';
+
+    /**
+     * Does the data table hold any row for this project, on any field?
+     *
+     * Null when it could not be asked. `project_id = ? ... LIMIT 1` is the
+     * leading column of the data table's own indexes: one row read, or none.
+     *
+     * @return ?bool
+     */
+    private function holdsAnything()
+    {
+        if ($this->dataTable === null) return null;
+        try {
+            $r = $this->db->select('SELECT record FROM ' . $this->dataTable . ' WHERE project_id = ? LIMIT 1',
+                [$this->pid]);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return isset($r[0]);
+    }
+
+    /**
+     * Was the data table read at open() and found to hold nothing for this
+     * project? A walk over it lists nothing and is done; ScanService::start()
+     * refuses a run over it before one exists.
+     */
+    public function isEmpty()
+    {
+        return $this->empty;
     }
 
     /**
@@ -712,7 +768,9 @@ final class RecordManifestSource
             }
             $r = $this->db->select($sql . ' ORDER BY ' . $this->recordCol . ' LIMIT 1', $params);
             if (!isset($r[0])) {
-                return ['ok' => false,
+                // `none`: the read worked and found nothing, which overData()
+                // may take for an empty project. A read that threw never is.
+                return ['ok' => false, 'none' => true,
                         'why' => $this->via . ' holds no records for this project, so it cannot be '
                                . 'used to list them'];
             }

@@ -896,3 +896,61 @@ $NEIGHBOUR = uv_neighbour($PID);
         \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
     $A->query('DROP TABLE redcap_record_counts');
 }
+
+/*
+ * R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING.
+ *
+ * open() refused a project whose data table held no record-id row, so each
+ * slice after the deletion counted a failed attempt and the run ended
+ * `failed` with PLAN_GAVE_UP. A data table read and found to hold nothing at
+ * all for the project is an empty walk now, and the listing ends over it.
+ */
+{
+    $EM = 923;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $EM);
+    $l = array();
+    $d = array();
+    for ($i = 1; $i <= 30; $i++) {
+        $id = sprintf('E%03d', $i);
+        $l[] = '(' . $EM . ", '" . $id . "', NULL)";
+        $d[] = '(' . $EM . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        $d[] = '(' . $EM . ", 1, '" . $id . "', 'dob', '2020-01-01')";
+    }
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $l));
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+        . implode(',', $d));
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    $emReq = uv_plan_request(array('pageSize' => 10));
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA), 'test-secret-key'))
+        ->plan($EM, array_merge($emReq, array('source' => $MS::open($dbA, $EM, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+                array('mode' => 'browser', 'startedAt' => microtime(true) - 3600)))));
+    $emId = (int) $first['run']['run_id'];
+    $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $EM);
+    $A->query('DELETE FROM redcap_data WHERE project_id = ' . $EM);
+    $emOpen = $MS::open($dbA, $EM, array('pk' => 'record_id'));
+    check('R5-7: a project whose every record is gone opens as an empty walk over its data table',
+        $first['run']['phase'] === 'planning' && $emOpen['ok'] === true && $emOpen['empty'] === true
+        && strpos($emOpen['source']->via(), 'redcap_data') === 0);
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $slice = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($EM, $emId,
+        array_merge($emReq, array('source' => $emOpen['source'], 'owner' => 'req1', 'budget' => false,
+            'epoch' => (int) $store->run($EM, $emId)['lease_epoch'], 'attempts' => 3, 'leaseSeconds' => 300)));
+    $emRun = $store->run($EM, $emId);
+    check('R5-7: the next slice ends the listing over it, freezing what was listed, rather than failing',
+        $slice['ok'] === true && !empty($slice['frozen']) && $slice['total'] === 10
+        && $emRun['phase'] === 'scanning' && (int) $emRun['manifest_total'] === 10);
+    check('R5-7: whether the project holds anything is asked on an index that leads with project_id',
+        ($k = uv_explain_keys($A, 'SELECT record FROM redcap_data WHERE project_id = ? LIMIT 1', array($EM))) !== array()
+        && uv_index_columns($A, 'redcap_data', $k[0])[0] === 'project_id');
+    // Rows on another field only: the record-id field may be the wrong one,
+    // so that is not an empty project.
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES ('
+        . $EM . ", 1, 'E001', 'dob', '2020-01-01')");
+    $emOpen = $MS::open($dbA, $EM, array('pk' => 'record_id'));
+    check('R5-7: a data table with rows for the project, none of them record-id rows, is not an empty project',
+        $emOpen['ok'] === false && empty($emOpen['empty']));
+    $store->finish($emId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}

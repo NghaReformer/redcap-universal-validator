@@ -49,6 +49,8 @@ namespace {
     // R5: the planning walk under a changing record-list cache, budgeted.
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
+    require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
+    require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/scan_fault_support.php';
     require_once __DIR__ . '/scan_run_row.php';
 
@@ -1307,6 +1309,8 @@ namespace INSPIRE\UniversalValidator\Scan {
             public $status = 'COMPLETE'; public $stamp = '2026-10-21 08:00:00';
             public $statusColumn = true; public $stampColumn = true; public $statusFails = false;
             public $dataTable = 'redcap_data'; public $hasData = true; public $dataFails = false;
+            /** @var bool the data table's any-field read fails (and only that one) */
+            public $anyFails = false;
             public $pages = ['index' => 0, 'data' => 0]; public $statusReads = 0;
             /** @var ?callable(object $db, string $which, int $n): void, before a page is answered */
             public $onPage = null;
@@ -1358,6 +1362,9 @@ namespace INSPIRE\UniversalValidator\Scan {
                         array_shift($p);
                         $ids = $this->data;
                     } else {
+                        if ($this->anyFails && strpos($sql, ' IN (') === false) {
+                            throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                        }
                         $ids = array_values(array_unique(array_merge($this->data, $this->extra)));
                     }
                 }
@@ -1563,6 +1570,122 @@ namespace INSPIRE\UniversalValidator\Scan {
     });
     check('R5-2: a walk whose data table moved starts again once, over the new one, and finishes whole',
         $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 14);
+
+    // R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING. Each later
+    // slice could not open the source, because its probe found no rows,
+    // counted a failed attempt, and at the cap the run ended `failed` with
+    // PLAN_GAVE_UP: "listing this project's records failed on the same page
+    // in every attempt". Nothing had failed; the project was empty.
+    $five = ['E001', 'E002', 'E003', 'E004', 'E005'];
+    $noDupes = new class implements DuplicateFinalizer {
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+        }
+    };
+    /** One work request as ScanService::workerDeps() wires it: the source opened afresh. */
+    $emptiedWork = function (ArrayScanStore $store, $db, $rid, $n, $dag = null) use ($walkKey, $walkReq, $noDupes) {
+        $open = function () use ($db) {
+            $o = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+            return empty($o['ok']) ? null : $o['source'];
+        };
+        $planner = function ($runId, array $slice) use ($store, $open, $walkKey, $walkReq, $dag) {
+            return (new ScanPlanner($store, $walkKey))->step(88, $runId, array_merge($walkReq, $slice,
+                ['source' => $open(), 'dagFilter' => $dag, 'pageSize' => 1]));
+        };
+        return (new ScanWorker($store, ['planner' => $planner, 'owner' => 'w' . $n, 'attempts' => 3,
+            'budget' => new WorkBudget(['startedAt' => microtime(true) + 3600]), 'finalizer' => $noDupes,
+            'exists' => function (array $ids) use ($open) {
+                $s = $open();
+                return $s === null ? array_fill_keys($ids, true) : $s->exist($ids);
+            },
+            'read' => function ($ids) use ($db) {
+                $d = [];
+                foreach ($ids as $id) if (in_array((string) $id, $db->data, true)) $d[(string) $id] = ['1' => ['a' => 'x']];
+                return ['ok' => true, 'data' => $d, 'why' => null];
+            },
+            'evaluate' => function ($id, $n) { return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null]; }]))
+            ->work(88, $rid);
+    };
+    $db = $churnDb($five);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq, ['pageSize' => 1,
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid7 = (int) $p7['run']['run_id'];
+    $db->index = [];
+    $db->data = [];
+    $db->status = 'NOT_STARTED';
+    $o7 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: a project whose every record is gone opens as an empty walk, said to be one',
+        $o7['ok'] === true && $o7['empty'] === true && $o7['source']->isEmpty()
+        && $o7['why'] === RecordManifestSource::NO_RECORDS);
+    $answers = [];
+    for ($i = 1; $i <= 4 && $s7->run(88, $rid7)['phase'] !== ScanPhase::TERMINAL; $i++) {
+        $answers[] = $emptiedWork($s7, $db, $rid7, $i);
+        $row7 = $s7->run(88, $rid7);
+        if ($row7['phase'] === ScanPhase::ROLLUP) {
+            ScanPromotion::promote($s7, 88, $rid7, ['uniqueDone' => true, 'uniqueBlocking' => 0,
+                'rollupDone' => true, 'maxFindings' => 0, 'maxBytes' => 0,
+                'fingerprintNow' => $row7['fingerprint'], 'policyRevisionNow' => $row7['policy_revision']]);
+        }
+    }
+    $row7 = $s7->run(88, $rid7);
+    check('R5-7: the listing ends at once over the emptied project; no request failed',
+        $answers[0]['ok'] === true && $answers[0]['stop'] !== 'read'
+        && (int) $row7['manifest_total'] === 1);
+    check('R5-7: the record it had listed is a deletion, not a record it could not read',
+        $s7->recordState($rid7, 1) === ScanStore::REC_TOMBSTONE);
+    check('R5-7: and the run ends saying no record is left, not that listing failed',
+        $row7['terminal'] === ScanOutcome::PARTIAL && $row7['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && strpos((string) $row7['terminal_reason'], 'listing') === false);
+
+    // Emptied before a record in the run's scope was listed: the freeze finds
+    // nothing, and the request answers with the empty-scope sentence.
+    $db = $churnDb($five);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq, ['pageSize' => 1, 'dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid7 = (int) $p7['run']['run_id'];
+    $db->index = [];
+    $db->data = [];
+    $a7 = $emptiedWork($s7, $db, $rid7, 1, '7');
+    $row7 = $s7->run(88, $rid7);
+    check('R5-7: a run emptied before anything in its scope was listed ends as an empty scope, and says so',
+        $a7['stop'] === 'empty' && $a7['why'] === ScanPlanner::EMPTY_GROUP
+        && $row7['terminal'] === ScanOutcome::PARTIAL && $row7['coverage'] === ScanOutcome::EMPTY_SCOPE);
+
+    // FAIL CLOSED. Rows for the project on other fields only: the record-id
+    // field may be resolved wrongly, so that is not an empty project. And a
+    // data table that cannot be asked is never one either.
+    $db = $churnDb([]);
+    $db->extra = ['E001'];
+    $oe = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: a data table holding rows for the project, none of them record-id rows, is not an empty project',
+        $oe['ok'] === false && $oe['source'] === null && empty($oe['empty']));
+    $db = $churnDb([]);
+    $db->anyFails = true;
+    $oe = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: nor is one whose rows could not be counted',
+        $oe['ok'] === false && $oe['source'] === null && empty($oe['empty']));
+    $db = $churnDb($five);
+    $o7 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $db->index = [];
+    $db->data = [];
+    $db->dataFails = true;
+    $db->status = 'NOT_STARTED';
+    check('R5-7: and a walk that could not read the data table is a failed read, not an empty one',
+        RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['ok'] === false);
+
+    // A START over a project with no records is refused before a run exists.
+    $db = $churnDb([]);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq,
+        ['source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'], 'budget' => false]));
+    check('R5-7: a start over a project with no records is refused, and no run is created',
+        $p7['ok'] === false && $p7['why'] === ScanPlanner::EMPTY_PROJECT && $s7->run(88, 1) === null);
 }
 
 namespace {
