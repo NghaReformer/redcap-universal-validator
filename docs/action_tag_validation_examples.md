@@ -4208,8 +4208,8 @@ Without it the tag shows a configuration error that says so.
 
 | `vs`                | Means                                         | Written out for a field `weight`  |
 | ------------------- | --------------------------------------------- | --------------------------------- |
-| `previous-event`    | This field at the event before this one       | `[previous-event-name][weight]`   |
-| `first-event`       | This field at the first event of the arm      | `[first-event-name][weight]`      |
+| `previous-event`    | This field at the event before this one, among those with the form | `[previous-event-name][weight]`   |
+| `first-event`       | This field at the first event of the arm with the form             | `[first-event-name][weight]`      |
 | `previous-instance` | This field in the instance before this one    | `[weight][previous-instance]`     |
 | `first-instance`    | This field in the first instance              | `[weight][first-instance]`        |
 
@@ -4221,9 +4221,9 @@ instance:
 @UVDELTA={"vs":"[previous-event-name][weight][last-instance]","max":2,"unit":"kg"}
 ```
 
-- `previous-event` is the event before this one in the arm, whether or not
-  anything was saved there. On the first visit and the first instance there is
-  no earlier value, so nothing is checked.
+- `previous-event` is the event before this one, in the same arm, that has
+  this form, whether or not anything was saved there. On the first such event
+  and the first instance there is no earlier value, so nothing is checked.
 - An event shorthand needs the form on two or more events, and an instance
   shorthand a form that repeats (on its own, or in a repeating event).
 - On a form that repeats on its own, `previous-event` is refused: it does not

@@ -239,10 +239,11 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP @UVDELTA verdict vs fixture, grammar, hooks, page, audit (events, instances) and scan
+      - name: PHP @UVDELTA verdict vs fixture, grammar, hooks, page, audit (events, instances), scan, and 34 mutations the suites must kill
         run: |
           php tests/delta_php.php
           php tests/delta_module_php.php
+          python3 tests/delta_mutations.py
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |
           php tests/growth_php.php

@@ -564,6 +564,41 @@ namespace {
     check('an instance shorthand on a form of a repeating event: accepted (got ' . json_encode(ruleFor($p, 'weight')['configError'] ?? null) . ')',
         empty(ruleFor($p, 'weight')['configError']));
 
+    // ============================================================================
+    // A "vs" that cannot be read is a rule problem, never a blank.
+    // ============================================================================
+    // Plain path, longitudinal: w_enrol is collected only at enrolment, so a
+    // visit cannot read it.
+    longitudinal();
+    $OFF = $LD + ['w_off' => f('visit_form', '@UVDELTA={"vs":"[w_enrol]","max":1}', 'number')];
+    $V = $LDATA; $V['2'][3]['w_off'] = '99';
+    $m = mod($OFF, $V, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    $why = problems($m, 'w_off');
+    check('a plain "vs" not collected in this event: a rule problem (got ' . json_encode($why) . ')', !isset(deltaBy($m, 3)['w_off'])
+        && (bool) array_filter($why, function ($w) { return strpos($w, 'the "vs" value references "[w_enrol]", which is not collected in this event') !== false; }));
+    // Plain path, repeating: a field of a non-repeating form compared with one
+    // on a form that repeats has no instance to pair with.
+    classic();
+    \Project::$repeats = [351 => ['visit_form' => '']];
+    $AMB = $RD + ['e_w' => f('enrol_form', '@UVDELTA={"vs":"[weight]","max":1}', 'number')];
+    $V = $RDATA; $V['2'][351]['e_w'] = '99';
+    $m = mod($AMB, $V, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $why = problems($m, 'e_w');
+    check('a plain "vs" on another repeating form: a rule problem (got ' . json_encode($why) . ')', !isset(deltaBy($m)['e_w'])
+        && (bool) array_filter($why, function ($w) { return strpos($w, 'which is on a different repeating instrument') !== false; }));
+    // Extended path: a "vs" the resolver could not read arrives without a
+    // value and with the reason, and the evaluator reports it.
+    $fd = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'findingsDelta');
+    $fd->setAccessible(true);
+    $res = $fd->invoke(mod($RD, $RDATA, $FULL, $REFS), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[previous-event-name][weight]',
+        'deltaVsValue' => null, 'deltaVsValueWhy' => 'Extended reference unavailable: ambiguous.', 'deltaMax' => '1'],
+        'delta', ['weight' => '99'], [], null, PID, '2', 351, []);
+    check('an unresolved event/instance "vs": a rule problem with its reason (got ' . json_encode($res) . ')', !$res['invalid']
+        && count($res['unconfigurable']) === 1
+        && strpos($res['unconfigurable'][0]['why'], 'the "vs" value [previous-event-name][weight] could not be resolved (Extended reference unavailable: ambiguous)') === 0);
+
     fwrite(STDOUT, "delta_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
 }

@@ -1,0 +1,29 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+ud_w1,uv_delta_test,A. Same page (event and instance references not needed),text,First weighing (kg),,,number_1dp,,,,,,,,,,
+ud_w2,uv_delta_test,,text,Second weighing (kg),,At most 0.2 kg from the first. Blocks.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]"",""max"":0.2,""unit"":""kg"",""blockSave"":""hard""}"
+ud_sbp1,uv_delta_test,,text,"Systolic pressure, first reading",,,integer,,,,,,,,,,
+ud_sbp2,uv_delta_test,,text,"Systolic pressure, second reading",,Within 20 mmHg of the first. Asks.,integer,,,,,,,,,,"@UVDELTA={""vs"":""[ud_sbp1]"",""max"":20,""unit"":""mmHg"",""blockSave"":""confirm"",""message"":""The two readings differ by more than 20 mmHg. Take a third.""}"
+ud_ht0,uv_delta_test,,text,Height before (cm),,,number_1dp,,,,,,,,,,
+ud_ht,uv_delta_test,,text,Height now (cm),,May not fall. Blocks.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""[ud_ht0]"",""max"":0,""direction"":""down"",""unit"":""cm"",""blockSave"":""hard""}"
+ud_htcalc,uv_delta_test,,calc,"Height now, as a calc",[ud_ht],A calc never blocks.,,,,,,,,,,,"@UVDELTA={""vs"":""[ud_ht0]"",""max"":0.5,""blockSave"":""hard""}"
+ud_pct0,uv_delta_test,,text,Count before,,,number,,,,,,,,,,
+ud_pct,uv_delta_test,,text,Count now,,At most 2 and at most 15%. Blocks.,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_pct0]"",""max"":2,""maxPct"":15,""blockSave"":""hard""}"
+ud_c0,uv_delta_test,,text,"Weight before, comma decimals (kg)",,,number_1dp_comma_decimal,,,,,,,,,,
+ud_c,uv_delta_test,,text,"Weight now, comma decimals (kg)",,"At most 2,5 kg. Blocks.",number_1dp_comma_decimal,,,,,,,,,,"@UVDELTA={""vs"":""[ud_c0]"",""max"":2.5,""unit"":""kg"",""blockSave"":""hard""}"
+ud_pain0,uv_delta_test,,slider,Pain before,None | Some | Worst,,number,,,,,,,,,,
+ud_pain,uv_delta_test,,slider,Pain now,None | Some | Worst,At most 3 either way. Asks.,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_pain0]"",""max"":3,""blockSave"":""confirm""}"
+ud_two,uv_delta_test,,text,Two comparisons,,At most 5% from the first weighing (asks) and 15% from the first reading (blocks).,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]"",""maxPct"":5,""blockSave"":""confirm""} @UVDELTA={""vs"":""[ud_sbp1]"",""maxPct"":15,""blockSave"":""hard""}"
+ud_grp,uv_delta_test,,radio,Check the next field?,"1, Check | 2, Skip",,,,,,,,,,,,
+ud_when,uv_delta_test,,text,Checked only while the answer above is Check,,At most 1 from the first weighing. Blocks.,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]"",""max"":1,""when"":""[ud_grp]='1'"",""blockSave"":""hard""}"
+ud_snap,uv_delta_test,B. Another form of this event,text,Weight against xv_weight on xe_visit (kg),,"A saved value of another form: warns, never blocks.",number,,,,,,,,,,"@UVDELTA={""vs"":""[xv_weight]"",""max"":1,""unit"":""kg"",""blockSave"":""hard""}"
+ud_wt,uv_delta_test,C. Other events (event and instance references on),text,"Weight, against the previous event (kg)",,At most 10% from the previous event.,number,,,,,,,,,,"@UVDELTA={""vs"":""previous-event"",""maxPct"":10,""unit"":""kg"",""blockSave"":""hard""}"
+ud_height,uv_delta_test,,text,"Height, against the first event (cm)",,May not fall more than 0.5 cm below the first event.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""first-event"",""max"":0.5,""direction"":""down"",""unit"":""cm""}"
+ud_bl,uv_delta_test,,text,"Weight, against xv_weight at baseline (kg)",,At most 20% from baseline.,number,,,,,,,,,,"@UVDELTA={""vs"":""[baseline_arm_1][xv_weight]"",""maxPct"":20}"
+ud_twoev,uv_delta_test,,text,"Weight, against the previous and the first event (kg)",,At most 5% from the previous event and 15% from the first.,number,,,,,,,,,,"@UVDELTA={""vs"":""previous-event"",""maxPct"":5} @UVDELTA={""vs"":""first-event"",""maxPct"":15}"
+ud_bad_email,uv_delta_test,F. Configuration errors,text,Bad: email field,,,email,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]"",""max"":1}"
+ud_bad_self,uv_delta_test,,text,Bad: compares with itself,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_bad_self]"",""max"":1}"
+ud_bad_vs,uv_delta_test,,text,Bad: vs is a date,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[xv_date]"",""max"":1}"
+ud_bad_nofield,uv_delta_test,,text,Bad: vs is not a field,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_nope]"",""max"":1}"
+ud_bad_inst,uv_delta_test,,text,Bad: previous-instance on a form that does not repeat,,,number,,,,,,,,,,"@UVDELTA={""vs"":""previous-instance"",""max"":1}"
+ud_bad_nolimit,uv_delta_test,,text,Bad: no limit,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]""}"
+ud_rep,xr_specimen,D. Repeating instances (@UVDELTA),text,"Specimen value, against the previous instance",,A fall of at most 20% from the previous instance.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""previous-instance"",""maxPct"":20,""direction"":""down""}"

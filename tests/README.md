@@ -451,7 +451,11 @@ typed, the branch group, and every refusal.
   apart by `vs`), across events (previous, first and named event; the first
   visit and an event with nothing saved compare with nothing; saving an earlier
   visit re-checks the later one) and across instances, and the scan with its
-  labels and detail lines.
+  labels and detail lines. A `vs` that cannot be read (not collected in this
+  event, on another repeating form, or unresolved on the event/instance path)
+  is a rule problem.
+- `delta_mutations.py` applies 34 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them.
 
 ## `growth_*` — growth references (z-scores)
 
