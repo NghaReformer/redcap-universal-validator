@@ -7,20 +7,32 @@ real number, comma-decimal, calc and slider fields, real events and repeating
 instances, the browser's save dialog, the module log and the Validation scan.
 
 Target: chpr-redcap.org pid 149 (longitudinal, repeating, seed records XE-1 to
-XE-4). Fixture: [`uvdelta_test_fields.csv`](uvdelta_test_fields.csv), 28 rows:
-27 fields on one new instrument `uv_delta_test` (21 rule fields carry a valid
-`@UVDELTA`, 6 `ud_bad_*` fields carry a broken one) and `ud_rep`, appended to
-the repeating instrument `xr_specimen`.
+XE-4). The fixture is two files:
 
-Every "Expect" below is the module's own answer. `tools/temporal_delta_live_check.php`
+- [`uvdelta_test_fields.csv`](uvdelta_test_fields.csv), 27 fields on one new
+  instrument `uv_delta_test`. 14 carry a valid `@UVDELTA`, the 6 `ud_bad_*`
+  fields carry a broken one, and 7 hold a value compared with or the `when`
+  switch (`ud_w1`, `ud_sbp1`, `ud_ht0`, `ud_pct0`, `ud_c0`, `ud_pain0`,
+  `ud_grp`).
+- [`uvdelta_test_fields_xr_specimen.csv`](uvdelta_test_fields_xr_specimen.csv),
+  one field, `ud_rep`, for the existing repeating instrument `xr_specimen`.
+  It is a file of its own because REDCap wants the fields of one instrument
+  next to each other in the dictionary: appended at the end, after
+  `uv_delta_test`, it would split `xr_specimen` in two and the upload would
+  fail.
+
+Every "Expect" below is the module's own answer. `tests/delta_live_twin_php.php`
 runs the real module over the fixture on a copy of pid 149's events, forms and
-repeats with XE-1's seed values, replays each save of this sheet in order and
-runs the scan; `tools/temporal_delta_live_check.cjs` replays the typing through
-`js/engine.js` with the page configs the module built, and checks each note
-word for word:
+repeats with XE-1's seed values. It checks each configuration error word for
+word, replays each save of this sheet in order and checks every log entry it
+writes, and runs the scan. `tests/delta_live_twin_js.cjs` replays the typing
+through `js/engine.js` with the page configs the module built
+(`tests/delta_live_pages.json`) and checks each note, each save and the label
+the save dialog names, word for word. Both run in CI; run them after any
+change to the module, the engine or this sheet:
 
 ```bash
-php tools/temporal_delta_live_check.php && node tools/temporal_delta_live_check.cjs
+php tests/delta_live_twin_php.php && node tests/delta_live_twin_js.cjs
 ```
 
 ---
@@ -29,9 +41,13 @@ php tools/temporal_delta_live_check.php && node tools/temporal_delta_live_check.
 
 1. Deploy the release that contains `@UVDELTA` and confirm the version in
    Control Center.
-2. Append, never replace. Download the current dictionary, append the 28 rows
-   of the CSV, upload. The diff must report one new instrument, 27 new fields
-   on it and one new field on `xr_specimen`, and nothing else.
+2. Append, never replace. Download the current dictionary. Paste the 27 rows
+   of `uvdelta_test_fields.csv` after its last row. Paste the row of
+   `uvdelta_test_fields_xr_specimen.csv` right after the last `xr_specimen`
+   row, not at the end. Upload. (Or upload the 27 rows and add `ud_rep` to
+   `xr_specimen` in the Online Designer, with the validation and the Action
+   Tag of its CSV row.) The diff must report one new instrument with 27 new
+   fields, one new field on `xr_specimen`, and nothing else.
 3. Designate `uv_delta_test` on `baseline_arm_1` (379), `visit_1_arm_1` (380)
    and `visit_2_arm_1` (381). Do not designate it on `event_1_arm_1`.
 4. Sections A, B and F run with **Enable event and instance references** off.
@@ -80,34 +96,34 @@ A "note" below is the message under the field. Red notes start with ✗.
 | A12 | `ud_grp` = Check, `ud_when` = 80, leave; Save | "✗ This value rose by 9.5 (13.5%) from 70.5 ([ud_w1]). Allowed: a change of at most 1." Save is blocked |
 | A12b | `ud_grp` = Skip; Save | The note goes away and the record saves |
 | A13 | `ud_sbp2` = 145; Save, answer "save anyway" | The record saves |
-| A14 | Module log (External Modules → View Logs) | `invalid-id-saved` entries with `type: delta`: `ud_htcalc` reason `up`, `vs` `[ud_ht0]` (A6 and each later save of the form), `ud_two` `up` `[ud_w1]` (A11), `ud_sbp2` `up` `[ud_sbp1]` (A13). Event 380, instance 1. Nothing for `ud_when` |
+| A14 | Module log (External Modules → View Logs) | `invalid-id-saved` entries with `type: delta`, all at event 380, instance 1. Each save that went through logs every finding left on the form: A6 `ud_htcalc` reason `up`, `vs` `[ud_ht0]`. A11 `ud_htcalc` `up` `[ud_ht0]` and `ud_two` `up` `[ud_w1]`. A12b `ud_htcalc` `up` `[ud_ht0]` only (`ud_two` is blank and `ud_when` is off). A13 `ud_htcalc` `up` `[ud_ht0]` and `ud_sbp2` `up` `[ud_sbp1]`. The saves the sheet held or cancelled (A2, A4, A5, A10, A11b, A12) log nothing |
 
 ## Section B: a value of another form (references off), visit 1
 
 | # | Action | Expect |
 |---|---|---|
 | B1 | `ud_snap` = 74, leave | "✗ This value rose by 2 kg (2.8%) from 72 kg ([xv_weight]). Allowed: a change of at most 1 kg. (compared with xv_weight, read when this page was opened — reload if it has changed since. This check does not block saving; it is re-checked after the save.)" |
-| B2 | Save | The record saves although the rule says `hard`. Log: `ud_snap` `up` `[xv_weight]` |
-| B3 | Open `xe_visit` at visit 1, set `xv_weight` = 73.5, Save. Then set it back to 72, Save | First save: no new `ud_snap` entry (74 is within 1 kg of 73.5). Second: a new `ud_snap` `up` entry. Saving the form that holds the `vs` re-checks the rule |
+| B2 | Save | The record saves although the rule says `hard`. Log at event 380: `ud_htcalc` `up` `[ud_ht0]`, `ud_sbp2` `up` `[ud_sbp1]` and `ud_snap` `up` `[xv_weight]` |
+| B3 | Open `xe_visit` at visit 1, set `xv_weight` = 73.5, Save. Then set it back to 72, Save | First save: no `type: delta` entry at all (74 is within 1 kg of 73.5, and a save of `xe_visit` re-checks only the rules that read it). Second: one entry, `ud_snap` `up` `[xv_weight]`. Saving the form that holds the `vs` re-checks the rule |
 
 ## Section C: other events (references on)
 
 | # | Action | Expect |
 |---|---|---|
 | C0 | Before switching the setting on, open visit 1 | Configuration errors: `ud_wt` '"vs": "previous-event" reads another event or instance, which needs event and instance references — enable them in project settings first.' (`ud_height`, `ud_twoev` and `ud_bad_inst` the same, with their shorthand); `ud_bl` 'a "vs" value in another event or instance needs event and instance references — enable them in project settings first.' Now switch the setting on (see Setup 4) and reload: the four rule fields configure |
-| C1 | Baseline (379): `ud_wt` = 70, `ud_height` = 170.0, `ud_bl` = 70, `ud_twoev` = 70; Save | No note and no log entry for them: baseline is the first event that has `uv_delta_test`, so there is nothing earlier |
+| C1 | Baseline (379): `ud_wt` = 70, `ud_height` = 170.0, `ud_bl` = 70, `ud_twoev` = 70; Save | No note and no `type: delta` entry. `ud_wt`, `ud_height` and `ud_twoev`: baseline is the first event that has `uv_delta_test`, so there is nothing earlier. `ud_bl` is compared with `xv_weight` at baseline, which is 70 too, so there is no change |
 | C2 | Visit 1 (380): `ud_wt` = 78, `ud_height` = 169.4, `ud_bl` = 85, `ud_twoev` = 74, leaving each | `ud_wt`: "✗ This value rose by 8 kg (11.4%) from 70 kg (the previous event). Allowed: a change of at most 10%." `ud_height`: "✗ This value fell by 0.6 cm (0.4%) from 170.0 cm (the first event). Allowed: a fall of at most 0.5 cm." `ud_bl`: "✗ This value rose by 15 (21.4%) from 70 ([baseline_arm_1][xv_weight]). Allowed: a change of at most 20%." `ud_twoev`: one line, "… rose by 4 (5.7%) from 70 (the previous event). Allowed: a change of at most 5%." Each ends with "(compared with saved event/instance values, read when this page was opened — … re-checked after the save.)" |
-| C3 | Save | The record saves, although `ud_wt` says `hard`. Log at event 380: `ud_wt` `up` `[previous-event-name][ud_wt]`, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]`, `ud_twoev` `up` `[previous-event-name][ud_twoev]` |
-| C4 | Visit 2 (381): `ud_wt` = 80, `ud_height` = 170.0, `ud_twoev` = 82; Save | `ud_twoev` shows two lines: "… rose by 8 (10.8%) from 74 (the previous event) …" and "… rose by 12 (17.1%) from 70 (the first event). Allowed: a change of at most 15%. …". No note under `ud_wt` (2.6%) or `ud_height`. Log at event 381: two `ud_twoev` `up` entries, one per `vs` |
-| C5 | Baseline: `ud_wt` = 76; Save | The save re-checks visit 1 and visit 2: the new entries for event 380 list `ud_bl`, `ud_height` and `ud_twoev`, and no longer `ud_wt` (78 is 2.6% above 76) |
+| C3 | Save | The record saves, although `ud_wt` says `hard`. Seven entries, all at event 380: `ud_wt` `up` `[previous-event-name][ud_wt]`, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]`, `ud_twoev` `up` `[previous-event-name][ud_twoev]`, and the three findings left from A and B: `ud_htcalc` `up` `[ud_ht0]`, `ud_sbp2` `up` `[ud_sbp1]`, `ud_snap` `up` `[xv_weight]` |
+| C4 | Visit 2 (381): `ud_wt` = 80, `ud_height` = 170.0, `ud_twoev` = 82; Save | `ud_twoev` shows two lines: "… rose by 8 (10.8%) from 74 (the previous event) …" and "… rose by 12 (17.1%) from 70 (the first event). Allowed: a change of at most 15%. …". No note under `ud_wt` (80 is 2.6% above 78) or `ud_height` (no fall from 170.0). The record saves. Six entries: at event 381, `ud_twoev` `up` `[previous-event-name][ud_twoev]` and `ud_twoev` `up` `[first-event-name][ud_twoev]`; at event 380, which the save re-checks because its rules read other events, `ud_wt`, `ud_height`, `ud_bl` and `ud_twoev` as in C3. The rules of event 380 that read only their own entry (`ud_htcalc`, `ud_sbp2`, `ud_snap`) are not re-checked |
+| C5 | Baseline: `ud_wt` = 76; Save | The save re-checks visit 1 and visit 2. Five entries: at event 380, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]` and `ud_twoev` `up` `[previous-event-name][ud_twoev]`, and no longer `ud_wt` (78 is 2.6% above 76); at event 381, the two `ud_twoev` entries of C4 |
 
 ## Section D: repeating instances (references on)
 
 | # | Action | Expect |
 |---|---|---|
 | D1 | `xr_specimen` at baseline, instance 1: `ud_rep` = 10.0; Save | No note, no entry: the first instance has nothing earlier |
-| D2 | Instance 2: `ud_rep` = 7.5, leave; Save | "✗ This value fell by 2.5 (25%) from 10.0 (the previous instance). Allowed: a fall of at most 20%. (compared with saved event/instance values …)". The record saves. Log: `ud_rep` `down` `[ud_rep][previous-instance]`, event 379, instance 2 |
-| D3 | Instance 2: type `ud_rep` = 8.0 and leave, then reload without saving | No note while 8.0 is typed (exactly 20%). Instance 2 keeps 7.5 |
+| D2 | Instance 2: `ud_rep` = 7.5, leave; Save | "✗ This value fell by 2.5 (25%) from 10.0 (the previous instance). Allowed: a fall of at most 20%. (compared with saved event/instance values …)". The record saves. One entry: `ud_rep` `down` `[ud_rep][previous-instance]`, event 379, instance 2 |
+| D3 | Instance 2: set `ud_rep` = 8.0 and leave; then reload without saving | Once the field is left, no note: 8.0 is exactly 20% below 10.0, and limits are inclusive. After the reload, instance 2 still holds 7.5 |
 
 ## Section E: the Validation scan
 
@@ -119,8 +135,8 @@ A "note" below is the message under the field. Red notes start with ✗.
 
 ## Section F: configuration errors
 
-Open visit 1. Each `ud_bad_*` field shows its error under the field, and none of
-them blocks a save:
+Open visit 1. Each `ud_bad_*` field shows its error under the field. A broken
+rule shows a red note but never blocks a save:
 
 | Field | Error |
 |---|---|
@@ -129,7 +145,7 @@ them blocks a save:
 | `ud_bad_vs` | "vs" field "xv_date" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider. |
 | `ud_bad_nofield` | "vs" names "[ud_nope]", which is not a field in this project. |
 | `ud_bad_nolimit` | @UVDELTA needs a limit: "max" (the most the value may change, in its own unit) or "maxPct" (the most it may change as a percent of the earlier value), e.g. "maxPct":10. |
-| `ud_bad_inst` | References off: "vs": "previous-instance" reads another event or instance, which needs event and instance references — enable them in project settings first. References on: "vs": "previous-instance" needs a form that repeats — "uv_delta_test" does not repeat in this project. |
+| `ud_bad_inst` | References off: "vs": "previous-instance" reads another event or instance, which needs event and instance references — enable them in project settings first. References on: "vs": "previous-instance" needs a form that repeats — "uv_delta_test" does not repeat at "baseline_arm_1", "visit_1_arm_1" and "visit_2_arm_1". |
 
 Each error starts with `@UVDELTA on "<field>": `.
 

@@ -6289,6 +6289,16 @@ function QRIDDeltaInit(QRID_CONFIG){
   }
   /* A number as the field shows it: its own decimal mark. */
   function shown(n, comma){ return comma ? String(n).replace(".", ",") : String(n); }
+  /* The earlier value as the note says it: the decimals it was saved with
+     ("70.0" stays 70.0), without a plus sign, leading zeros or a point with
+     nothing after it ("+70", "070" and "70." are 70, ".5" is 0.5, "-0" is 0). */
+  function tidy(n){
+    var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?$/.exec(String(n));
+    if(!m) return String(n);
+    var whole = m[2].replace(/^0+/, "") || "0", frac = m[3] || "";
+    var neg = m[1] === "-" && /[1-9]/.test(whole + frac);
+    return (neg ? "-" : "") + whole + (frac !== "" ? "." + frac : "");
+  }
   /* The change as a percent of the earlier value, for the message only (the
      verdict never divides): one decimal, in brackets. A percent that rounds
      to the limit it broke reads "more than" the limit, one that rounds to 0
@@ -6309,9 +6319,7 @@ function QRIDDeltaInit(QRID_CONFIG){
     if(V.message) return QRID_ruleHtml(V, "message");
     var comma = V.spec.decimalComma, unit = V.unit ? " " + V.unit : "";
     var size = String(r.change).replace(/^-/, "");
-    /* the earlier value in one written form: "+70", "070" and "70." are 70 */
-    var earlier = QRID_numberKey(r.earlier, V.spec.earlierComma ? "comma" : "point");
-    if(earlier === null) earlier = QRID_deltaNumber(r.earlier, V.spec.earlierComma);
+    var earlier = tidy(QRID_deltaNumber(r.earlier, V.spec.earlierComma));
     /* Survey respondents are not told which field or entry the value is
        compared with. */
     var from = shown(earlier, V.spec.earlierComma) + unit + (QRID_IS_SURVEY || !V.label ? "" : " (" + V.label + ")");

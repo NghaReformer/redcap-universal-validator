@@ -44,6 +44,8 @@ node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
 php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
 node tests/delta_dom_js.cjs      # @UVDELTA browser rule (live vs blocks, saved vs and calc never block)
 php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
+php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
+node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -430,20 +432,29 @@ read a second time with every number quoted), exponents written out, the
 give the same verdict (ok, up, down, inert, unknown), reason and change, the
 change written as an exact decimal. Cases cover changes on and next to each
 limit, a percent of a negative earlier value, an earlier 0 (no percent),
-direction, comma decimals on either side, exponents, numbers past 2^53 and
-long fractions where a double would say "equal", and values too long to
-compare (past `ExactDecimal::MAX_DIGITS`, or a change too long to multiply for
-the percent). A long value is written `{prefix, repeat, times, suffix}`.
-`delta_php.php` also covers the grammar: the shorthands, limits kept exactly as
-typed, the branch group, and every refusal.
+direction, comma decimals on either side, exponents written out in full (1e80
+against 1e100), numbers past 2^53 and long fractions where a double would say
+"equal", spaces other than space, tab, CR and LF (not a number), and values
+too long to compare (past `ExactDecimal::MAX_DIGITS` written out, or a product
+too long for the percent). A long value is written `{prefix, repeat, times,
+suffix}`. `delta_php.php` also covers the evaluation budget (long numbers pay
+before the work, a refused payment is unknown, reason `limit`) and the grammar:
+the shorthands, limits kept exactly as typed, the branch group, and every
+refusal, `"maxPct": 0` among them. `delta_js.cjs` times a value with 100,000
+inner spaces.
 
 - `delta_dom_js.cjs` boots the browser rule on a stub page: a `vs` on the page
   is read as typed and blocks per `blockSave`, changing it re-checks; a
   snapshot, an event/instance rule (`extendedAdvisory`), a calc, a read-only
   field and a deferred rule never block; a withheld earlier value and one that
   is not a number are amber notes for staff and nothing on a survey; the note's
-  wording (percent, comma, survey without the label, escaping); two tags on
-  one field say one line each.
+  wording (percent, "more than" the limit it broke, "under 0.1%", the earlier
+  value with its own decimals, comma, survey without the label, escaping); two
+  tags on one field say one line each; a deferral only this viewer meets says
+  the save checks it; the public registry composes @UVRANGE and @UVDELTA on
+  one field; a value written by a script is judged without any event; typing
+  in the `vs` field or a field the `when` reads is judged once the field is
+  left.
 - `delta_module_php.php` covers the server side with a `\Project` stub for
   events and repeats: the field and dictionary hooks and their refusals, the
   shorthand written out per field, the page fold (live, snapshot, withheld),
@@ -453,8 +464,21 @@ typed, the branch group, and every refusal.
   visit re-checks the later one) and across instances, and the scan with its
   labels and detail lines. A `vs` that cannot be read (not collected in this
   event, on another repeating form, or unresolved on the event/instance path)
-  is a rule problem.
-- `delta_mutations.py` applies 34 mutations to a copy of the code, one at a
+  is a rule problem, and so is a spent evaluation budget. The shorthand layout
+  is judged at every event that holds the form, arm by arm (a form that repeats
+  at some visits only, a whole repeating event, one event in each of two arms),
+  a written-out reference to the same entry is refused, one `vs` with two
+  directions judges both ways (the heart-rate recipe), and a deferral only
+  this viewer meets is marked and still checked on save.
+- `delta_live_twin_php.php` runs the module over the live fixture on a copy of
+  pid 149's events and checks every answer of
+  `docs/testbed/DELTA_LIVE_ACCEPTANCE.md`: the configuration errors word for
+  word, every log entry of each save in the sheet's order, and the scan with
+  its detail lines. It keeps the page configs in `delta_live_pages.json`
+  (`--write` after a change) for `delta_live_twin_js.cjs`, which replays the
+  sheet's typing through the engine and checks each note, each save and the
+  label the save dialog names.
+- `delta_mutations.py` applies 61 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them.
 
 ## `growth_*` — growth references (z-scores)

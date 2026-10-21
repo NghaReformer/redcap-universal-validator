@@ -73,10 +73,11 @@ jobs:
         run: |
           node tests/range_js.cjs
           node tests/range_dom_js.cjs
-      - name: JS delta (@UVDELTA) verdict vs fixture, and its DOM contract (live vs blocks, saved vs and calc never block, two comparisons)
+      - name: JS delta (@UVDELTA) verdict vs fixture, its DOM contract (live vs blocks, saved vs and calc never block, two comparisons, typing, scripted values), and the live run sheet's notes replayed through the engine
         run: |
           node tests/delta_js.cjs
           node tests/delta_dom_js.cjs
+          node tests/delta_live_twin_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
       - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
@@ -239,10 +240,11 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP @UVDELTA verdict vs fixture, grammar, hooks, page, audit (events, instances), scan, and 34 mutations the suites must kill
+      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 61 mutations the suites must kill
         run: |
           php tests/delta_php.php
           php tests/delta_module_php.php
+          php tests/delta_live_twin_php.php
           python3 tests/delta_mutations.py
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |

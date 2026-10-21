@@ -915,23 +915,36 @@ and flags a change larger than its limit:
   both. `direction` (`both`, `up` or `down`) says which changes the limits
   apply to. Optional `unit`, `when`, `message`, `blockSave`.
 - **Number fields:** Text fields with no, integer or number validation
-  (including comma decimals), calc fields and sliders, compared with a field
-  that holds numbers the same way.
+  (including comma decimals), calc fields and sliders. The `vs` field must
+  hold numbers too: a Text field with no, integer or number validation, a calc
+  or a slider, whichever kind the tagged field is.
 - **Exact.** The change is worked out as an exact decimal, and the percent test
   is `|change| × 100` against `maxPct × |earlier value|`, with no division and
-  no rounding. A limit is at most 64 characters and a value at most 4,096
-  digits, so the work stays linear. An earlier value of 0 has no percent, so
-  `maxPct` does not apply to it.
+  no rounding. A number with an exponent is written out in full, so `1e80`
+  against `1e100` is a real change. A value longer than 4,096 digits written
+  out is reported as too long to compare, never judged. A limit is at most 64
+  characters. Long numbers are charged to the record's evaluation budget in
+  the audit and the scan. An earlier value of 0 has no percent, so `maxPct`
+  does not apply to it; `"maxPct": 0` is refused for that reason (use
+  `"max": 0` for "no change").
 - **Nothing to compare with.** A blank value, a blank earlier value and a
   missing data code on either side check nothing. On the first visit or the
-  first instance there is no earlier value. On a form that repeats on its own,
-  `previous-event` is refused because it does not say which instance; write
-  `[previous-event-name][weight][last-instance]`.
+  first instance there is no earlier value.
+- **Checked at every event.** Each entry resolves its shorthand on its own, so
+  the tag is checked at every event that holds the form, arm by arm. An event
+  shorthand is refused when no arm has two events with the form, or when an
+  event it names holds the form more than once (the form repeats there, or the
+  whole event repeats); the refusal gives a reference that names the event and
+  the instance. An instance shorthand is refused unless the form repeats at
+  every event that holds it. A reference that always names this same entry,
+  such as `[event-name][weight]`, is refused.
 - **When it blocks.** A `vs` field on the same page is read as it is typed, and
-  the rule blocks as `blockSave` says (default `off`). An earlier value from
+  the rule blocks as `blockSave` says (default `off`). The note waits while
+  the person is still typing in a field the rule reads. An earlier value from
   another form, event or instance is read when the page opens, so that check
-  warns and never blocks. A calc never blocks. A survey gets only a `vs` on
-  its own page.
+  shows a red note but never blocks. A calc never blocks. A survey gets only a
+  `vs` on its own page, and the page source does not name the field it
+  compares with.
 - **Several comparisons.** Tags with different `vs` or different directions on
   one field all apply (5% from the previous visit and 15% from baseline). Tags
   with the same `vs` and direction need different `when` conditions.

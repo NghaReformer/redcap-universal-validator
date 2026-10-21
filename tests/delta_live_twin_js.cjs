@@ -1,15 +1,16 @@
 /*
- * temporal_delta_live_check.cjs - replay the typing of
+ * delta_live_twin_js.cjs - replay the typing of
  * docs/testbed/DELTA_LIVE_ACCEPTANCE.md through js/engine.js, booted with the
- * page configs the real module built (temporal_delta_live_pages.json in the system temp folder,
- * written by tools/temporal_delta_live_check.php), and check each note and
- * save outcome the sheet expects.
+ * page configs the real module built (tests/delta_live_pages.json, which
+ * tests/delta_live_twin_php.php keeps in step with the module), and check
+ * each note, each save outcome and the field label the save dialog names,
+ * word for word.
  *
- * RUN:  php tools/temporal_delta_live_check.php && node tools/temporal_delta_live_check.cjs
+ * RUN:  php tests/delta_live_twin_php.php && node tests/delta_live_twin_js.cjs
  */
 'use strict';
 const path = require('path');
-const PAGES = require(path.join(require('os').tmpdir(), 'temporal_delta_live_pages.json'));
+const PAGES = require('./delta_live_pages.json');
 
 let n = 0, fail = 0;
 function check(label, ok, got) { n++; if (!ok) { fail++; console.error('FAIL: ' + label + (got !== undefined ? ' (got ' + JSON.stringify(got) + ')' : '')); } }
@@ -51,6 +52,8 @@ function boot(cfg, values) {
     const el = makeEl('input'); el.name = f; el.value = (values && values[f]) || '';
     const h = makeEl('div'); h.appendChild(el); body.appendChild(h);
     all.push(el, h); holders[f] = h; els[f] = el;
+    /* the label REDCap renders as #label-<field>, which the save dialog names */
+    if (PAGES.labels && PAGES.labels[f]) { const lab = makeEl('td'); lab.id = 'label-' + f; lab.textContent = PAGES.labels[f]; all.push(lab); }
   }
   const doc = {
     body, readyState: 'complete', _handlers: {}, activeElement: null,
@@ -96,7 +99,7 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   set(env, 'ud_w2', '70.3');
   check('A2 note', note(env, 'ud_w2') === '✗ This value rose by 0.3 kg (0.4%) from 70.0 kg ([ud_w1]). Allowed: a change of at most 0.2 kg.', note(env, 'ud_w2'));
   const s = save(env);
-  check('A2 save held, naming the field', /^held/.test(s) && /ud_w2|Second weighing/.test(s), s);
+  check('A2 save held, the dialog naming "Second weighing (kg)"', /^held/.test(s) && /Second weighing \(kg\)/.test(s), s);
   set(env, 'ud_w1', '70.5');
   check('A3 changing ud_w1 re-checks: 70.3 is 0.2 below 70.5', note(env, 'ud_w2') === '', note(env, 'ud_w2'));
   set(env, 'ud_sbp1', '120'); set(env, 'ud_sbp2', '145');
@@ -166,9 +169,13 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
 }
 {
   const env = boot(PAGES.visit2_on);
+  set(env, 'ud_wt', '80'); set(env, 'ud_height', '170.0');
+  check('C4 no note under ud_wt (80 is 2.6% above 78)', note(env, 'ud_wt') === '', note(env, 'ud_wt'));
+  check('C4 no note under ud_height (no fall from 170.0)', note(env, 'ud_height') === '', note(env, 'ud_height'));
   set(env, 'ud_twoev', '82');
   check('C4 two lines', note(env, 'ud_twoev') === '✗ This value rose by 8 (10.8%) from 74 (the previous event). Allowed: a change of at most 5%.' + SNAP
     + '<br>✗ This value rose by 12 (17.1%) from 70 (the first event). Allowed: a change of at most 15%.' + SNAP, note(env, 'ud_twoev'));
+  check('C4 the record saves', save(env) === 'saved', save(env));
 }
 {
   const env = boot(PAGES.baseline_on);
@@ -180,9 +187,10 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
 {
   const env = boot(PAGES.specimen2_on);
   set(env, 'ud_rep', '7.5');
-  check('D1 previous instance', note(env, 'ud_rep') === '✗ This value fell by 2.5 (25%) from 10.0 (the previous instance). Allowed: a fall of at most 20%.' + SNAP, note(env, 'ud_rep'));
+  check('D2 previous instance', note(env, 'ud_rep') === '✗ This value fell by 2.5 (25%) from 10.0 (the previous instance). Allowed: a fall of at most 20%.' + SNAP, note(env, 'ud_rep'));
+  check('D2 the record saves', save(env) === 'saved', save(env));
   set(env, 'ud_rep', '8.0');
-  check('D1 8.0: exactly 20%, no note', note(env, 'ud_rep') === '');
+  check('D3 8.0: exactly 20%, no note', note(env, 'ud_rep') === '');
 }
 
 // ---- Section F: configuration errors are shown, never a block -------------------------
@@ -192,5 +200,5 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   check('F the bad fields never block', save(env) === 'saved', save(env));
 }
 
-console.log('temporal_delta_live_check (engine): ' + n + ' checks, ' + fail + ' failure(s)');
+console.log('delta_live_twin_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

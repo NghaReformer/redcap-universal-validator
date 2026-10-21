@@ -217,7 +217,7 @@ function W(extra) {
   const env = boot([w0, w], { rules: [W({ deltaMaxPct: undefined, deltaMax: '2', decimalComma: true, deltaVsComma: true,
     deltaText: 'a change of at most 2 kg' })] });
   check('comma fields: read, and said with a comma (got ' + dMsg(env, 'weight').innerHTML + ')',
-    /rose by 2,5 kg \(3,6%\) from 70 kg/.test(dMsg(env, 'weight').innerHTML));
+    /rose by 2,5 kg \(3,6%\) from 70,0 kg/.test(dMsg(env, 'weight').innerHTML));
 }
 {
   const w0 = numEl('w0', '70'), w = numEl('weight', '72,5');
@@ -484,7 +484,7 @@ function W(extra) {
   const t = dMsg(env, 'weight').innerHTML;
   check('a percent of a million or more is left out (got ' + t.slice(0, 120) + ')', /rose by 9{68}30 kg from 70 kg/.test(t) && !/%\)/.test(t));
 }
-for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.50', '70.5']]) {
+for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0', '70.0'], ['-0', '0'], ['1.5E1', '15']]) {
   const w0 = numEl('w0', typed), w = numEl('weight', '90');
   const env = boot([w0, w], { rules: [W()] });
   check('the earlier value ' + JSON.stringify(typed) + ' is said as ' + want + ' (got ' + dMsg(env, 'weight').innerHTML + ')',

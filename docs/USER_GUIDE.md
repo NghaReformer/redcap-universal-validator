@@ -918,8 +918,9 @@ validation (including comma decimals), calc fields and sliders; for a growth
 reference, the sex field may be a radio, dropdown, yes/no, true/false, Text,
 calc or SQL field, the dates date or datetime fields, and an age, length or
 height a Text field with integer or number validation, or a calc. Change
-limits (`@UVDELTA`): the same fields as `@UVRANGE`, compared with a field that
-holds numbers the same way.
+limits (`@UVDELTA`): Text fields with no, integer or number validation
+(including comma decimals), calc fields and sliders, compared with a field of
+any of those kinds.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,

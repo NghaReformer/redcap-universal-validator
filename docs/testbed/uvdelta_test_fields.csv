@@ -26,4 +26,3 @@ ud_bad_vs,uv_delta_test,,text,Bad: vs is a date,,,number,,,,,,,,,,"@UVDELTA={""v
 ud_bad_nofield,uv_delta_test,,text,Bad: vs is not a field,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_nope]"",""max"":1}"
 ud_bad_inst,uv_delta_test,,text,Bad: previous-instance on a form that does not repeat,,,number,,,,,,,,,,"@UVDELTA={""vs"":""previous-instance"",""max"":1}"
 ud_bad_nolimit,uv_delta_test,,text,Bad: no limit,,,number,,,,,,,,,,"@UVDELTA={""vs"":""[ud_w1]""}"
-ud_rep,xr_specimen,D. Repeating instances (@UVDELTA),text,"Specimen value, against the previous instance",,A fall of at most 20% from the previous instance.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""previous-instance"",""maxPct"":20,""direction"":""down""}"

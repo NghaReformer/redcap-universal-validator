@@ -4185,10 +4185,16 @@ value and a missing data code on either side check nothing.
 - `direction` is `both` (the default), `up` or `down`. The limits apply to
   changes that way; a change the other way always passes.
 - An earlier value of 0 has no percent, so `maxPct` does not apply to it.
-  `max` still does.
+  `max` still does. For the same reason `"maxPct": 0` is refused; `"max": 0`
+  says "no change", from 0 too.
 - Values and limits are compared as exact decimals. The percent test is
   `|change| × 100` against `maxPct × |earlier value|`, with no division and no
-  rounding, so a change of exactly 10% is 10%.
+  rounding, so a change of exactly 10% is 10%. A number with an exponent is
+  written out in full; one longer than 4,096 digits written out is too long to
+  compare and is reported, not judged.
+- The note gives the percent to one decimal. A percent that rounds to the
+  limit it broke reads "more than 10%", one that rounds to 0 reads "under
+  0.1%", and the earlier value is written in one form (`070` and `+70` are 70).
 
 ### Level 3 — the previous or first event or instance
 
@@ -4218,20 +4224,30 @@ instance:
 
 ```text
 @UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15,"direction":"down"}
+# where the form repeats at every visit: the last instance of the visit before
 @UVDELTA={"vs":"[previous-event-name][weight][last-instance]","max":2,"unit":"kg"}
 ```
 
 - `previous-event` is the event before this one, in the same arm, that has
   this form, whether or not anything was saved there. On the first such event
   and the first instance there is no earlier value, so nothing is checked.
-- An event shorthand needs the form on two or more events, and an instance
-  shorthand a form that repeats (on its own, or in a repeating event).
-- On a form that repeats on its own, `previous-event` is refused: it does not
-  say which instance of the earlier event to compare with. Write it out with
-  one, as in the second line above.
+- Each entry resolves its shorthand on its own, so the tag is checked at every
+  event that holds the form, arm by arm:
+  - An event shorthand needs, in some arm, two or more events with the form.
+  - An event shorthand is refused when an event it names holds the form more
+    than once (the form repeats there, or the whole event repeats): it does not
+    say which instance to compare with. The refusal gives a reference that
+    names the event and the instance, such as
+    `[visit1_arm_1][weight][last-instance]`. A form that repeats only at the
+    last visit is fine: no shorthand names that visit.
+  - An instance shorthand needs the form to repeat at every event that holds
+    it, on its own or in a repeating event.
+- A reference that always names this same entry (`[event-name][weight]`,
+  `[weight][current-instance]`, or the one event the form is on) is refused:
+  the change would always be 0.
 - An earlier value from another event or instance is read when the page opens.
-  That check warns and never blocks, and its note says it is re-checked
-  after the save.
+  That check shows a red note but never blocks, and its note says it is
+  re-checked after the save.
 - Saving an earlier visit re-checks the visits that compare with it, in the
   post-save audit.
 
@@ -4283,6 +4299,9 @@ blocks, and a calc field never blocks.
   the rest.
 - **Rights.** A `vs` on a form the user may not view is not sent to the page.
   Staff see that the change is checked when the record is saved.
+- **Typing.** A note waits while the person is still typing in a field the
+  rule reads (the field itself, its `vs` or a field of its `when`), and comes
+  when they leave it. The save judges every field first either way.
 - **Audit and scan.** The post-save audit logs a change past a limit as
   `type: delta` with reason `up` or `down`, and names the `vs` it compared
   with, so two tags on one field log findings that can be told apart. The
@@ -4305,6 +4324,8 @@ These are refused, with a configuration error under the field:
 @UVDELTA={"vs":"[a] or [b]","max":5}
 # refused: "max" must be 0 or more
 @UVDELTA={"vs":"previous-event","max":-1}
+# refused: "maxPct": 0 does not stop a change from an earlier 0
+@UVDELTA={"vs":"previous-event","maxPct":0}
 # refused: "direction" must be both, up or down
 @UVDELTA={"vs":"previous-event","max":5,"direction":"left"}
 # refused: unknown @UVDELTA option(s): min
@@ -4312,8 +4333,9 @@ These are refused, with a configuration error under the field:
 ```
 
 Once the data dictionary is read, the module also refuses a field that does not
-hold numbers, a `vs` that is not a field, does not hold numbers, or is the tagged
-field itself, and a shorthand with no earlier entry to name (see Level 3).
+hold numbers, a `vs` that is not a field, does not hold numbers, or always names
+this same entry, and a shorthand that cannot name an earlier entry at every
+event that holds the form (see Level 3).
 
 ---
 

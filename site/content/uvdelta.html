@@ -48,7 +48,8 @@ limited.</p>
 <p>With both <code>max</code> and <code>maxPct</code>, a change must keep both. Limits
 and values are compared as exact decimals, so a change of 10% is computed digit for
 digit (<code>|change| × 100</code> against <code>maxPct × |earlier value|</code>), with
-no rounding.</p>
+no rounding. A number with an exponent is written out in full; one longer than 4,096
+digits written out is reported as too long to compare.</p>
 
 <h2>Field types</h2>
 
@@ -67,17 +68,23 @@ way. On a comma-decimal field <code>72,5</code> reads as 72.5.</p>
     <strong>missing data code</strong> on either side check nothing. On the first visit
     or the first instance there is no earlier value, so nothing is checked there.</li>
 <li><code>previous-event</code> is the event before this one in the arm that has this
-    form, whether or not anything was saved there. On a form that repeats, name the
-    instance: <code>[previous-event-name][weight][last-instance]</code>.</li>
+    form, whether or not anything was saved there. The tag is checked at every event
+    that holds the form: an event shorthand is refused when an event it names holds the
+    form more than once, and the refusal gives a reference that names the event and the
+    instance, such as <code>[visit1_arm_1][weight][last-instance]</code>. An instance
+    shorthand needs the form to repeat at every event that holds it.</li>
 <li>An earlier value of <strong>0</strong> has no percent, so <code>maxPct</code> does
-    not apply to it; <code>max</code> still does.</li>
+    not apply to it; <code>max</code> still does. For that reason
+    <code>"maxPct": 0</code> is refused: use <code>"max": 0</code> for "no change".</li>
 <li>An earlier value from another form, event or instance is read when the page opens.
-    That check <strong>warns and never blocks</strong>: the note says it is re-checked
-    after the save. A <code>vs</code> field on the same page is read as it is typed, and
-    the rule blocks as <code>blockSave</code> says. A calc field never blocks.</li>
+    That check <strong>shows a red note but never blocks</strong>: the note says it is
+    re-checked after the save. A <code>vs</code> field on the same page is read as it is
+    typed, and the rule blocks as <code>blockSave</code> says. A calc field never blocks.
+    A note waits while the person is still typing in a field the rule reads.</li>
 <li>A survey is never sent a value of another form, event or instance, so on a survey
-    the rule checks only a <code>vs</code> field on the same page. The audit and the
-    scan check the rest.</li>
+    the rule checks only a <code>vs</code> field on the same page, and the page source
+    does not name the field it compares with. The audit and the scan check the
+    rest.</li>
 <li>The note appears when the field is left and names the change, its percent, the
     earlier value and the limit. A change within the limits shows nothing.</li>
 <li>Tags that compare with <strong>different values</strong>, or limit
