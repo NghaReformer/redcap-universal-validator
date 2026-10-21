@@ -3406,6 +3406,12 @@ class UniversalValidator extends AbstractExternalModule
         // An earlier value marked with a Missing Data Code was not entered.
         if (self::isMissingCode($earlier, $this->missingDataCodes($project_id))) $earlier = '';
         $self = isset($rule['deltaVsValueSelf']) ? $rule['deltaVsValueSelf'] : null;
+        // Long numbers pay the record's evaluation budget (Logic::deltaVerdict).
+        // The extended audit and the scan start one per record; a save with no
+        // event or instance rule has not, and starts it here.
+        if ($this->temporalBudget === null) $this->temporalBegin($project_id);
+        $budget = $this->temporalBudget;
+        $charge = function ($units) use ($budget) { return $budget->take($units); };
         $spec = [
             'max' => isset($rule['deltaMax']) ? $rule['deltaMax'] : null,
             'maxPct' => isset($rule['deltaMaxPct']) ? $rule['deltaMaxPct'] : null,
@@ -3419,12 +3425,13 @@ class UniversalValidator extends AbstractExternalModule
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || is_array($value)) continue;
             if ($self === $field) continue;
-            $r = Logic::deltaVerdict($spec, (string) $value, $earlier);
+            $r = Logic::deltaVerdict($spec, (string) $value, $earlier, $charge);
             if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
             if ($r['verdict'] === 'unknown') {
                 $why = $r['reason'] === 'not-a-number' ? 'the saved value is not a number this rule can read'
                      : ($r['reason'] === 'earlier-not-a-number' ? 'the "vs" value ' . $vs . ' is not a number this rule can read'
-                     : 'the value and its "vs" value are too long to compare');
+                     : ($r['reason'] === 'limit' ? 'the evaluation budget for this record is spent, so the change was not worked out'
+                     : 'the value and its "vs" value are too long to compare'));
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => $why . ' — field skipped'];
                 continue;
             }
@@ -7115,12 +7122,11 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * @UVDELTA "dictionary" hook. The "vs" field must exist and hold numbers
      * (a Text field with number validation or none, a calc or a slider); its
-     * decimal comma travels as deltaVsComma. A shorthand must have something
-     * to name: an instance shorthand a form that repeats (on its own, or with
-     * a repeating event), an event shorthand a form on two or more events.
-     * An event shorthand on a form that repeats on its own is refused: which
-     * instance of the earlier event it means is not said, so the reference
-     * would be ambiguous; written out with an instance it is not.
+     * decimal comma travels as deltaVsComma. A written-out reference that
+     * always names this same entry ([event-name][weight], [weight][current-
+     * instance], or the one event the form is on) is refused: the change
+     * would always be 0. A shorthand must name something in every entry it
+     * can: deltaShorthandProblem.
      */
     private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -7142,30 +7148,103 @@ class UniversalValidator extends AbstractExternalModule
         }
         if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['deltaVsComma'] = true;
         $short = isset($frag['deltaVsName']) ? $frag['deltaVsName'] : null;
-        if ($short === null) return $frag;
         $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
-        $layout = $this->repeatingLayout($pid);
-        $eventForms = $this->eventForms($pid);
-        $events = [];
-        foreach ($eventForms ?: [] as $e => $forms) if (isset($forms[$form])) $events[] = (int) $e;
-        $repeatsAlone = $layout !== null && isset($layout['forms'][$form]);
-        $repeatsWithEvent = false;
-        if ($layout !== null) foreach ($events as $e) if (isset($layout['events'][$e])) $repeatsWithEvent = true;
-        if ($short === 'previous-instance' || $short === 'first-instance') {
-            if ($layout !== null && $eventForms !== null && !$repeatsAlone && !$repeatsWithEvent) {
-                return $refuse('"vs": "' . $short . '" needs a form that repeats — "' . $form . '" does not repeat in this project.');
+        $shape = $this->temporalShape($pid, $dd);
+        if ($short === null) {
+            if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {
+                return $refuse('"vs" names this field in this same entry, so the change would always be 0 — compare it with '
+                    . 'another entry, e.g. "vs":"previous-event" or "vs":"[baseline_arm_1][' . $name . ']".');
             }
             return $frag;
         }
-        if ($eventForms !== null && count($events) < 2) {
-            return $refuse('"vs": "' . $short . '" needs the form on two or more events — "' . $form . '" is on '
-                . (count($events) === 1 ? 'one' : 'no') . ' event in this project.');
+        $why = self::deltaShorthandProblem($shape, $short, $form, $name);
+        return $why === null ? $frag : $refuse($why);
+    }
+
+    /**
+     * Whether a written-out "vs" reference to the field itself ($op, a qref)
+     * names the entry being judged in every entry of $form: its event is this
+     * one ([event-name] or none, or the one event the form is on) and its
+     * instance this one ([current-instance] or none).
+     */
+    private static function deltaNamesItself(ProjectShape $shape, array $op, $form)
+    {
+        $instance = isset($op[4]) ? $op[4] : null;
+        if ($instance !== null && $instance !== 'current-instance') return false;
+        $event = isset($op[3]) ? $op[3] : null;
+        if ($event === null || $event === 'event-name') return true;
+        $hosts = [];
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms'])) return false;
+            if (in_array($form, $e['forms'], true)) $hosts[] = isset($e['name']) ? (string) $e['name'] : '';
         }
-        if ($repeatsAlone) {
-            return $refuse('"vs": "' . $short . '" on a form that repeats does not say which instance of the earlier event to compare with — '
-                . 'write it out with one, e.g. "vs":"[' . ($short === 'previous-event' ? 'previous' : 'first') . '-event-name][' . $name . '][last-instance]".');
+        return count($hosts) === 1 && $hosts[0] === $event;
+    }
+
+    /**
+     * Why a "vs" shorthand on a field of $form cannot name an entry to compare
+     * with, or null. Each entry resolves its own shorthand (ProjectShape at
+     * run time), so this asks of every event that holds the form, arm by arm:
+     *  - an event shorthand needs, for at least one event, an earlier event of
+     *    the same arm that holds the form, and no event it names may hold the
+     *    form more than once (the form repeats there, or the whole event
+     *    does): which instance it means would not be said;
+     *  - an instance shorthand needs the form to repeat at every event that
+     *    holds it, on its own or with the whole event: where it does not,
+     *    there is no other instance.
+     * A layout that cannot be read answers null; the resolver then reports
+     * what it cannot resolve, on each save.
+     */
+    private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name)
+    {
+        $hosts = [];
+        foreach ($shape->events() as $id => $event) {
+            if (!isset($event['forms']) || !is_array($event['forms'])) return null;
+            if (in_array($form, $event['forms'], true)) $hosts[] = $id;
         }
-        return $frag;
+        if (!$hosts) return null;
+        $label = function ($id) use ($shape) {
+            $e = $shape->event($id);
+            return isset($e['name']) && $e['name'] !== '' ? (string) $e['name'] : (string) $id;
+        };
+        $list = function (array $names) {
+            $last = array_pop($names);
+            return ($names ? '"' . implode('", "', $names) . '" and ' : '') . '"' . $last . '"';
+        };
+        if ($short === 'previous-instance' || $short === 'first-instance') {
+            $flat = [];
+            foreach ($hosts as $id) {
+                $b = $shape->bucket($id, $form);
+                if ($b['state'] !== 'ok') return null;
+                if ($b['bucket'] === null) $flat[] = $label($id);
+            }
+            if (!$flat) return null;
+            return '"vs": "' . $short . '" needs a form that repeats — "' . $form . '" does not repeat '
+                . (count($hosts) === 1 ? 'in this project' : 'at ' . $list($flat)) . '.';
+        }
+        $token = $short === 'previous-event' ? 'previous-event-name' : 'first-event-name';
+        $pairs = 0;
+        $repeating = [];
+        foreach ($hosts as $id) {
+            $t = $shape->eventId($token, $id, $form);
+            if ($t['state'] === 'absent') continue;
+            if ($t['state'] !== 'ok') return null;
+            if ((string) $t['event'] === (string) $id) continue;   // the first event itself: nothing earlier
+            $pairs++;
+            $b = $shape->bucket($t['event'], $form);
+            if ($b['state'] !== 'ok') return null;
+            if ($b['bucket'] !== null) $repeating[(string) $t['event']] = $label($t['event']);
+        }
+        if ($pairs === 0) {
+            return '"vs": "' . $short . '" needs the form on two or more events of one arm — "' . $form . '" is on '
+                . (count($hosts) === 1 ? 'one event' : 'no two events of the same arm') . ' in this project.';
+        }
+        if ($repeating) {
+            $names = array_values($repeating);
+            return '"vs": "' . $short . '" names ' . $list($names) . ', where "' . $form . '" repeats, and does not say which '
+                . 'instance to compare with — name the event and the instance, e.g. "vs":"[' . $names[0] . '][' . $name . '][last-instance]".';
+        }
+        return null;
     }
 
     /**
@@ -7180,10 +7259,9 @@ class UniversalValidator extends AbstractExternalModule
         $word = $dir === 'up' ? 'rise' : ($dir === 'down' ? 'fall' : 'change');
         $max = isset($frag['deltaMax']) && is_string($frag['deltaMax']) ? $frag['deltaMax'] : null;
         $pct = isset($frag['deltaMaxPct']) && is_string($frag['deltaMaxPct']) ? $frag['deltaMaxPct'] : null;
-        // a limit of 0 allows no move at all: the other one says nothing more
-        if (($max !== null && Logic::numCompare($max, '0') === 0) || ($pct !== null && Logic::numCompare($pct, '0') === 0)) {
-            return 'no ' . $word;
-        }
+        // "max": 0 allows no move at all: a percent says nothing more
+        // ("maxPct": 0 is refused, AnnotationRules::checkDelta)
+        if ($max !== null && Logic::numCompare($max, '0') === 0) return 'no ' . $word;
         $parts = [];
         if ($max !== null) $parts[] = $f($max) . (isset($frag['deltaUnit']) && $frag['deltaUnit'] !== '' ? ' ' . $frag['deltaUnit'] : '');
         if ($pct !== null) $parts[] = $f($pct) . '%';

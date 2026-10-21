@@ -403,5 +403,21 @@ const HB = { type: 'range', fields: ['hb'], rangeSoftLo: '12', rangeSoftHi: '17.
   check('soft-only: outside soft asks', save(env) === 'asked');
 }
 
-console.log('range_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
-process.exit(fail ? 1 : 0);
+// A field the "when" reads, typed into: the value is judged once the person
+// leaves it, not per keystroke (QRID_afterTyping).
+{
+  const age = numEl('age', ''), hb = numEl('hb', '30');
+  const env = boot([age, hb], { rules: [Object.assign({}, HB, { when: '[age] > 5', whenAst: ['cmp', '>', ['ref', 'age', null], ['lit', '5']] })] });
+  const msg = nMsg(env, 'hb');
+  check('typing: the gate is closed while age is blank', !shown(msg));
+  env.doc.activeElement = age;
+  age.value = '1'; age.fire('input');
+  age.value = '10'; age.fire('input');
+  check('typing "10" into the age the "when" reads: nothing judged yet', !shown(msg));
+  env.doc.activeElement = null; age.fire('blur');
+  setTimeout(() => {
+    check('... leaving the age field judges: implausible', shown(msg) && /3 to 25 g\/dL/.test(msg.innerHTML));
+    console.log('range_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
+    process.exit(fail ? 1 : 0);
+  }, 10);
+}

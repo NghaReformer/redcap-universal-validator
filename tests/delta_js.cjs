@@ -29,5 +29,15 @@ for (const c of FIX.cases) {
 // the verdict reads no other key of spec, and an unknown direction is "both"
 check('a direction it does not know limits both ways', L.verdict({ max: '1', direction: 'sideways' }, '0', '5').verdict === 'down');
 
+// a run of spaces inside a value is read in linear time: the trim used to retry
+// its end-anchored pattern from every space, seconds for a saved value like this
+for (const [label, v, e] of [['the value', '5' + ' '.repeat(100000) + '5', '1'],
+                             ['the earlier value', '1', '5' + '	'.repeat(100000) + '5']]) {
+  const t0 = Date.now();
+  const r = L.verdict({ max: '1' }, v, e);
+  const ms = Date.now() - t0;
+  check('100,000 inner spaces in ' + label + ' are judged in under 250 ms (took ' + ms + ' ms)', ms < 250 && r.verdict === 'unknown');
+}
+
 console.log('delta_js: ' + n + ' checks, ' + fails + ' failure(s)');
 process.exit(fails ? 1 : 0);

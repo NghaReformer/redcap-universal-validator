@@ -282,6 +282,40 @@ namespace {
     check('a limit of 0: "no fall"', ruleFor($p, 'height')['deltaText'] === 'no fall');
     check('message travels', ruleFor($p, 'msg_w')['message'] === 'Re-weigh.');
 
+    // One "vs", two directions: both tags judge (the heart-rate recipe, review D4).
+    $HR = ['record_id' => f('enrol_form'), 'hr0' => f('enrol_form', '', 'integer'),
+        'hr' => f('visit_form', '@UVDELTA={"vs":"[hr0]","maxPct":10,"direction":"down"} @UVDELTA={"vs":"[hr0]","maxPct":20,"direction":"up"}', 'integer')];
+    foreach (['85' => 'down', '115' => null, '125' => 'up', '92' => null] as $hv => $want) {
+        $m = mod($HR, ['2' => [351 => ['record_id' => '2', 'hr0' => '100', 'hr' => (string) $hv]]], $FULL);
+        $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
+        check('heart rate ' . $hv . ' from 100 (fall at most 10%, rise at most 20%): ' . json_encode($want) . ' (got ' . json_encode(deltaBy($m)) . ')',
+            (deltaBy($m)['hr']['reason'] ?? null) === $want && !problems($m, 'hr'));
+    }
+    $hp = page(mod($HR, ['2' => [351 => ['record_id' => '2', 'hr0' => '100']]], $FULL), 'form', '2', 'visit_form');
+    $hr = ruleFor($hp, 'hr');
+    check('... the page gets both, one group each', $hr && isset($hr['branches']) && count($hr['branches']) === 2
+        && array_column($hr['branches'], 'deltaGroup') === ['[hr0] down', '[hr0] up']);
+
+    // Long numbers pay the record's evaluation budget; a spent budget is a rule problem.
+    $fdx = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'findingsDelta');
+    $fdx->setAccessible(true);
+    $long = '1' . str_repeat('0', 3000);
+    $mb = mod($DICT, $DATA, $FULL);
+    $bp = new \ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class, 'temporalBudget');
+    $bp->setAccessible(true);
+    $bp->setValue($mb, new \INSPIRE\UniversalValidator\ReferenceBudget(10));
+    $res = $fdx->invoke($mb, ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => $long, 'w_screen' => $long], [], null, PID, '2', 351, []);
+    check('a spent budget: the change is not worked out, and says so (got ' . json_encode($res['unconfigurable']) . ')', !$res['invalid']
+        && ($res['unconfigurable'][0]['why'] ?? '') === 'the evaluation budget for this record is spent, so the change was not worked out — field skipped');
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => $long . '0', 'w_screen' => '1'], [], null, PID, '2', 351, []);
+    check('a budget left: a long change is judged', ($res['invalid'][0]['reason'] ?? null) === 'up');
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => '1' . str_repeat('0', 4096), 'w_screen' => '1'], [], null, PID, '2', 351, []);
+    check('a value too long to compare: a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
+        ($res['unconfigurable'][0]['why'] ?? '') === 'the value and its "vs" value are too long to compare — field skipped');
+
     // ---- 3) the page: live, snapshot, withheld --------------------------------------
     $r = ruleFor($p, 'w_same');
     check('a vs on this page: a live ref, no snapshot, its own blockSave (got ' . json_encode($r['deltaVsOp'] ?? null) . ')',
@@ -435,6 +469,9 @@ namespace {
     foreach (['weight', 'height', 'w_bl', 'w_last'] as $ok) {
         check('longitudinal ' . $ok . ': no configuration error (got ' . $err($ok) . ')', ruleFor($p, $ok) !== null && $err($ok) === '');
     }
+    check('each shorthand has its own name for the message (got ' . json_encode([ruleFor($p, 'weight')['deltaVsLabel'] ?? null,
+        ruleFor($p, 'height')['deltaVsLabel'] ?? null]) . ')',
+        (ruleFor($p, 'weight')['deltaVsLabel'] ?? null) === 'the previous event' && (ruleFor($p, 'height')['deltaVsLabel'] ?? null) === 'the first event');
     check('an instance shorthand on a form that does not repeat: refused (got ' . $err('bad_inst') . ')',
         strpos($err('bad_inst'), '"vs": "previous-instance" needs a form that repeats') !== false);
     $pe = page(mod($LD, $LDATA, $FULL, $REFS), 'form', '2', 'enrol_form', 1);
@@ -466,6 +503,19 @@ namespace {
     $r = ruleFor(page(mod($LD, $LDATA, $PART, $REFS), 'form', '2', 'visit_form', 3), 'w_bl');
     check('a named event on a form this viewer may not read: withheld (got ' . json_encode($r['deltaVsOp'] ?? null) . ')',
         $r && ($r['deltaVsOp'] ?? null) === ['withheld']);
+    // A condition that reads this entry and a form this viewer may not read
+    // cannot run on the page; the save, which reads every form, checks it,
+    // and the page is told so (deferredChecked, review B3).
+    $DCK = $LD + ['w_dck' => f('visit_form', '@UVDELTA={"vs":"[visit1_arm_1][w_dck]","max":1,"when":"[enrol_arm_1][w_enrol]<[w_dck]"}', 'number')];
+    $r = ruleFor(page(mod($DCK, $LDATA, $PART, $REFS), 'form', '2', 'visit_form', 3), 'w_dck');
+    check('a deferral only this viewer meets: deferredChecked (got ' . json_encode($r) . ')', $r && !empty($r['deferred'])
+        && ($r['deferredChecked'] ?? null) === true && strpos(json_encode($r['deferredWhy'] ?? []), 'unauthorized') !== false);
+    $r = ruleFor(page(mod($DCK, $LDATA, $FULL, $REFS), 'form', '2', 'visit_form', 3), 'w_dck');
+    check('... a viewer who may read both forms gets the rule', $r && empty($r['deferred']) && !isset($r['deferredChecked']));
+    $D2 = $LDATA; $D2['2'][2]['w_dck'] = '70'; $D2['2'][3]['w_dck'] = '75';
+    $m = mod($DCK, $D2, $PART, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    check('... and the save does check it (got ' . json_encode(deltaBy($m, 3)) . ')', (deltaBy($m, 3)['w_dck']['reason'] ?? null) === 'up');
     $r = ruleFor(page(mod($LD, $LDATA, $FULL, $REFS), 'form', '2', 'visit_form', 2), 'w_last');
     check('a vs that is this very entry: a live ref to the field itself (no change)',
         $r && ($r['deltaVsOp'] ?? null) === ['ref', 'w_last', null]);
@@ -552,17 +602,70 @@ namespace {
         'w_ok' => f('visit_form', '@UVDELTA={"vs":"[previous-event-name][w_ok][last-instance]","max":2}', 'number')];
     $p = page(mod($ev, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
     $e = ruleFor($p, 'weight')['configError'] ?? '';
-    check('an event shorthand on a form that repeats: refused, with the written-out form (got ' . $e . ')',
-        strpos($e, 'does not say which instance of the earlier event') !== false
-        && strpos($e, '"vs":"[previous-event-name][weight][last-instance]"') !== false);
+    check('an event shorthand on a form that repeats: refused, names the events and a reference that works (got ' . $e . ')',
+        strpos($e, '"vs": "previous-event" names "visit1_arm_1" and "visit2_arm_1", where "visit_form" repeats') !== false
+        && strpos($e, '"vs":"[visit1_arm_1][weight][last-instance]"') !== false);
     check('... written out with an instance it is accepted', empty(ruleFor($p, 'w_ok')['configError']));
 
     // A repeating event: the instance shorthand names the event's own instances.
-    longitudinal([2 => 'WHOLE']);
+    longitudinal([2 => 'WHOLE', 3 => 'WHOLE', 4 => 'WHOLE']);
     $iv = ['record_id' => f('enrol_form'), 'weight' => f('visit_form', '@UVDELTA={"vs":"previous-instance","max":2}', 'number')];
     $p = page(mod($iv, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 2);
-    check('an instance shorthand on a form of a repeating event: accepted (got ' . json_encode(ruleFor($p, 'weight')['configError'] ?? null) . ')',
+    check('an instance shorthand on a form of repeating events: accepted (got ' . json_encode(ruleFor($p, 'weight')['configError'] ?? null) . ')',
         empty(ruleFor($p, 'weight')['configError']));
+
+    // Each entry resolves its own shorthand, so the layout is judged at every
+    // event that holds the form, arm by arm (review S1).
+    $layoutErr = function (array $repeats, $ann, array $eventsForms = null, array $eventInfo = null) use ($FULL, $REFS) {
+        longitudinal($repeats);
+        if ($eventsForms !== null) \Project::$eventsFormsAll = $eventsForms;
+        if ($eventInfo !== null) \Project::$eventInfoAll = $eventInfo;
+        $d = ['record_id' => f('enrol_form'), 'weight' => f('visit_form', $ann, 'number')];
+        $r = ruleFor(page(mod($d, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3), 'weight');
+        return $r['configError'] ?? '';
+    };
+    $e = $layoutErr([2 => ['visit_form' => '']], '@UVDELTA={"vs":"previous-instance","max":2}');
+    check('an instance shorthand on a form that repeats at one visit of three: refused, names the others (got ' . $e . ')',
+        strpos($e, '"visit_form" does not repeat at "visit2_arm_1" and "visit3_arm_1"') !== false);
+    $e = $layoutErr([2 => 'WHOLE'], '@UVDELTA={"vs":"previous-instance","max":2}');
+    check('an instance shorthand where only the first visit repeats as a whole: refused (got ' . $e . ')',
+        strpos($e, 'does not repeat at "visit2_arm_1" and "visit3_arm_1"') !== false);
+    $e = $layoutErr([2 => 'WHOLE'], '@UVDELTA={"vs":"previous-event","max":2}');
+    check('an event shorthand that names a visit repeating as a whole: refused (got ' . $e . ')',
+        strpos($e, 'names "visit1_arm_1", where "visit_form" repeats') !== false);
+    $e = $layoutErr([4 => ['visit_form' => '']], '@UVDELTA={"vs":"previous-event","max":2}');
+    check('an event shorthand on a form that repeats only at the last visit: accepted, it never names that visit (got ' . $e . ')', $e === '');
+    $e = $layoutErr([4 => ['visit_form' => '']], '@UVDELTA={"vs":"first-event","max":2}');
+    check('... first-event too', $e === '');
+    $twoArms = [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1], 2 => ['unique_event_name' => 'visit_arm_1', 'arm_num' => 1],
+                5 => ['unique_event_name' => 'enrol_arm_2', 'arm_num' => 2], 6 => ['unique_event_name' => 'visit_arm_2', 'arm_num' => 2]];
+    $e = $layoutErr([], '@UVDELTA={"vs":"previous-event","max":2}', [1 => ['enrol_form'], 2 => ['visit_form'], 5 => ['enrol_form'], 6 => ['visit_form']], $twoArms);
+    check('an event shorthand on a form on one event in each of two arms: refused (got ' . $e . ')',
+        strpos($e, 'needs the form on two or more events of one arm') !== false && strpos($e, 'no two events of the same arm') !== false);
+    // The plain reference the refusal of case (c) used to send people to works at every visit.
+    longitudinal([4 => ['visit_form' => '']]);
+    $c = ['record_id' => f('enrol_form'), 'weight' => f('visit_form', '@UVDELTA={"vs":"previous-event","max":2}', 'number')];
+    $m = mod($c, ['2' => [1 => ['record_id' => '2'], 3 => ['weight' => '60'],
+                          'repeat_instances' => [4 => ['visit_form' => [1 => ['weight' => '90']]]]]], $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('the last visit, which repeats, compares each instance with the visit before (got ' . json_encode(deltaBy($m, 4)) . ')',
+        (deltaBy($m, 4, 1)['weight']['reason'] ?? null) === 'up' && !problems($m, 'weight'));
+
+    // A written-out reference that always names this same entry (review S2).
+    longitudinal();
+    $self = ['record_id' => f('enrol_form'),
+        's_inst' => f('visit_form', '@UVDELTA={"vs":"[s_inst][current-instance]","max":1}', 'number'),
+        's_evt'  => f('visit_form', '@UVDELTA={"vs":"[event-name][s_evt]","max":1}', 'number'),
+        's_both' => f('visit_form', '@UVDELTA={"vs":"[event-name][s_both][current-instance]","max":1}', 'number'),
+        's_one'  => f('enrol_form', '@UVDELTA={"vs":"[enrol_arm_1][s_one]","max":1}', 'number'),
+        's_ok'   => f('visit_form', '@UVDELTA={"vs":"[visit1_arm_1][s_ok]","max":1}', 'number')];
+    $p = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
+    $pe = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
+    foreach (['s_inst' => $p, 's_evt' => $p, 's_both' => $p, 's_one' => $pe] as $sf => $pg) {
+        $e = ruleFor($pg, $sf)['configError'] ?? '';
+        check('"vs" ' . $sf . ' names this same entry: refused (got ' . $e . ')', strpos($e, '"vs" names this field in this same entry') !== false);
+    }
+    check('... a named event on a form at several events is another entry there: accepted', empty(ruleFor($p, 's_ok')['configError']));
 
     // ============================================================================
     // A "vs" that cannot be read is a rule problem, never a blank.

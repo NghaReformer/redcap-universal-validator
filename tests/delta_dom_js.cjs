@@ -163,7 +163,10 @@ function W(extra) {
   w.value = '71';
   check('validators registry: true within', env.NS.validators.weight.test() === true);
   w.value = '';
-  check('validators registry: true for a blank value (nothing to judge, inside every limit)', env.NS.validators.weight.test() !== false);
+  check('validators registry: null for a blank value (nothing to judge)', env.NS.validators.weight.test() === null);
+  w.value = '90'; w0.value = 'n/a';
+  check('validators registry: null when the earlier value is not a number', env.NS.validators.weight.test() === null);
+  w0.value = '70';
 }
 
 // ---- 2) blockSave: confirm, and the page default ("off") ------------------------
@@ -214,7 +217,7 @@ function W(extra) {
   const env = boot([w0, w], { rules: [W({ deltaMaxPct: undefined, deltaMax: '2', decimalComma: true, deltaVsComma: true,
     deltaText: 'a change of at most 2 kg' })] });
   check('comma fields: read, and said with a comma (got ' + dMsg(env, 'weight').innerHTML + ')',
-    /rose by 2,5 kg \(3,6%\) from 70,0 kg/.test(dMsg(env, 'weight').innerHTML));
+    /rose by 2,5 kg \(3,6%\) from 70 kg/.test(dMsg(env, 'weight').innerHTML));
 }
 {
   const w0 = numEl('w0', '70'), w = numEl('weight', '72,5');
@@ -245,7 +248,7 @@ function W(extra) {
   const env = boot([w0, w], { rules: [W()] });
   const msg = dMsg(env, 'weight');
   check('an earlier value that is not a number: an amber note for staff (got ' + msg.innerHTML + ')',
-    /^&#9888; The change from \[w0\] is not checked: its saved value is not a number this rule can read\./.test(msg.innerHTML)
+    /^&#9888; The change from \[w0\] is not checked: the value it is compared with is not a number this rule can read\./.test(msg.innerHTML)
     && /#fdf8e6/.test(msg.style.cssText));
   check('... never blocks', save(env) === 'saved');
 }
@@ -302,7 +305,23 @@ function W(extra) {
     deferredWhy: ['Extended reference unavailable: unauthorized.'] }] });
   check('deferred stub: no configuration error', !cfgErr(env, 'weight'));
   check('deferred: says why on staff forms', /unauthorized/.test(dMsg(env, 'weight').innerHTML));
+  check('... and, unmarked, that the save does not check it either',
+    /It is not checked after saving either/.test(dMsg(env, 'weight').innerHTML));
   check('deferred: never blocks', save(env) === 'saved');
+  check('deferred: validators registry answers null', env.NS.validators.weight.test() === null);
+}
+{
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [{ type: 'delta', fields: ['weight'], deferred: true, deferredChecked: true, blockSave: 'hard',
+    deferredWhy: ['Extended reference unavailable: unauthorized.'] }] });
+  check('deferred only for this viewer (deferredChecked): says the save checks it (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /It is checked after the record is saved\./.test(dMsg(env, 'weight').innerHTML)
+    && !/not checked after saving either/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '90');
+  const env = boot([w0, w], { rules: [W({ deltaVsOp: ['withheld'] })] });
+  check('withheld: validators registry answers null', env.NS.validators.weight.test() === null);
 }
 {
   const w0 = numEl('w0', '20'), c = numEl('bmi', '30');
@@ -381,6 +400,20 @@ function W(extra) {
     msg.innerHTML.split('<br>').length === 1 && /from 70 \(\[wp\]\)/.test(msg.innerHTML) && save(env) === 'asked');
 }
 {
+  /* One group deferred only for this viewer (deferredChecked on the branch):
+     its line says the save checks it, while the other group judges. */
+  const prev = numEl('wp', '70'), w = numEl('weight', '80');
+  const env = boot([prev, w], { rules: [{ type: 'delta', fields: ['weight'], branches: [
+    { deltaVs: '[wp]', deltaVsOp: ['ref', 'wp', null], deltaVsLabel: '[wp]', deltaMaxPct: '5', deltaText: 'a change of at most 5%',
+      deltaGroup: '[wp] both', blockSave: 'confirm' },
+    { deltaVs: '[enrol_arm_1][wb]', deltaVsLabel: '[enrol_arm_1][wb]', deltaMaxPct: '15', deltaGroup: '[enrol_arm_1][wb] both',
+      deferred: true, deferredChecked: true, deferredWhy: ['Extended reference unavailable: unauthorized.'] } ] }] });
+  const t = dMsg(env, 'weight').innerHTML;
+  check('a group deferred for this viewer alone: its line says the save checks it (got ' + t + ')',
+    /\[enrol_arm_1\]\[wb\] is not being checked — Extended reference unavailable: unauthorized\. It is checked after the record is saved\./.test(t)
+    && /from 70 \(\[wp\]\)/.test(t));
+}
+{
   // Two tags with the same comparison need their own "when": the active one judges.
   const grp = numEl('grp', 'a'), w0 = numEl('w0', '100'), w = numEl('weight', '108');
   const env = boot([grp, w0, w], { rules: [{ type: 'delta', fields: ['weight'], branches: [
@@ -432,6 +465,43 @@ function W(extra) {
   check('a limit with an exponent: configuration error', cfgErr(env, 'weight') && /not a number of 0 or more/.test(cfgErr(env, 'weight').innerHTML));
 }
 
+// ---- 9b) the message's numbers (review B2, V5) -----------------------------------
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '77.001');
+  const env = boot([w0, w], { rules: [W({ deltaMax: undefined, deltaText: 'a change of at most 10%' })] });
+  check('a percent that rounds to the limit it broke reads "more than" (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /rose by 7\.001 kg \(more than 10%\) from 70 kg/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w0 = numEl('w0', '150'), w = numEl('weight', '150.01');
+  const env = boot([w0, w], { rules: [W({ deltaMax: '0', deltaMaxPct: undefined, deltaText: 'no change' })] });
+  check('a percent that rounds to 0 reads "under 0.1%" (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /rose by 0\.01 kg \(under 0\.1%\) from 150 kg/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '1e70');
+  const env = boot([w0, w], { rules: [W()] });
+  const t = dMsg(env, 'weight').innerHTML;
+  check('a percent of a million or more is left out (got ' + t.slice(0, 120) + ')', /rose by 9{68}30 kg from 70 kg/.test(t) && !/%\)/.test(t));
+}
+for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.50', '70.5']]) {
+  const w0 = numEl('w0', typed), w = numEl('weight', '90');
+  const env = boot([w0, w], { rules: [W()] });
+  check('the earlier value ' + JSON.stringify(typed) + ' is said as ' + want + ' (got ' + dMsg(env, 'weight').innerHTML + ')',
+    new RegExp('from ' + want.replace('.', '\\.') + ' kg').test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w0 = numEl('w0', '.5'), w = numEl('weight', '9');
+  const env = boot([w0, w], { rules: [W()] });
+  check('an earlier ".5" is said as 0.5', /from 0\.5 kg/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w = numEl('weight', '5');
+  const env = boot([w], { rules: [W({ deltaMax: undefined, deltaMaxPct: '0' })] });
+  check('"maxPct": 0 on a hand-written config: a configuration error',
+    cfgErr(env, 'weight') && /maxPct(&quot;|")?: 0 does not stop a change from an earlier 0/.test(cfgErr(env, 'weight').innerHTML));
+}
+
 // ---- 10) composes with another mode on the same field ---------------------------
 {
   const w0 = numEl('w0', '70'), w = numEl('weight', '71');
@@ -443,5 +513,58 @@ function W(extra) {
   check('compose: delta holds on its own', save(env) === 'held' && /rose by/.test(dMsg(env, 'weight').innerHTML));
 }
 
-console.log('delta_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
-process.exit(fail ? 1 : 0);
+// One registry entry per field, every mode composing (review B4).
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '300');
+  const env = boot([w0, w], { rules: [{ type: 'range', fields: ['weight'], rangeHardLo: '20', rangeHardHi: '250', rangeHardBlock: 'hard',
+    rangeHardText: '20 to 250 kg' }, W({ deltaMax: undefined, deltaMaxPct: '500', deltaText: 'a change of at most 500%' })] });
+  const reg = env.NS.validators.weight;
+  check('two modes on one field: the entry lists both (got ' + JSON.stringify(reg.types) + ')',
+    Array.isArray(reg.types) && reg.types.indexOf('range') >= 0 && reg.types.indexOf('delta') >= 0);
+  check('... test() is false while the range check fails, though the change passes', reg.test() === false
+    && reg.byMode.delta.test() === true && reg.byMode.range.test() === false);
+  w.value = '80';
+  check('... true once both pass', reg.test() === true);
+}
+
+// ---- 11) what the page hears from scripts and while typing (async) --------------
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  {
+    /* A value written by a script raises no event (a calc, a slider, @SETVALUE):
+       the silent-change poll fires the field and the change is judged (review D5). */
+    const w0 = numEl('w0', '70'), w = numEl('weight', '71');
+    const env = boot([w0, w], { rules: [W()] });
+    w.value = '90';
+    await tick(900);
+    check('a value written by a script is judged without any event (got ' + dMsg(env, 'weight').innerHTML + ')',
+      /rose by 20 kg/.test(dMsg(env, 'weight').innerHTML));
+  }
+  {
+    /* Typing in the "vs" field: the change is not judged per keystroke, and is
+       once the person leaves the field (review B1). */
+    const w0 = numEl('w0', '70'), w = numEl('weight', '74');
+    const env = boot([w0, w], { rules: [W()] });
+    env.doc.activeElement = w0;
+    w0.value = '7'; w0.fire('input'); w0.fire('keyup');
+    check('typing "7" on the way to "70" in the vs field: no note on the delta field', !shown(dMsg(env, 'weight')));
+    w0.value = '50';
+    env.doc.activeElement = null; w0.fire('blur');
+    await tick(10);
+    check('... leaving the vs field judges the change (got ' + dMsg(env, 'weight').innerHTML + ')',
+      /rose by 24 kg/.test(dMsg(env, 'weight').innerHTML));
+  }
+  {
+    const w0 = numEl('w0', '70'), w = numEl('weight', '');
+    const env = boot([w0, w], { rules: [W({ when: '[weight] > 0', whenAst: ['cmp', '>', ['ref', 'weight', null], ['lit', '0']] })] });
+    env.doc.activeElement = w;
+    w.value = '7'; w.fire('input');
+    check('typing "7" in a field its "when" reads: no note while typing', !shown(dMsg(env, 'weight')));
+    w.value = '72';
+    env.doc.activeElement = null; w.fire('blur');
+    await tick(10);
+    check('... and nothing to say once "72" is left', !shown(dMsg(env, 'weight')));
+  }
+  console.log('delta_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
+  process.exit(fail ? 1 : 0);
+})();

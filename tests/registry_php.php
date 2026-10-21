@@ -109,7 +109,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'suggestFix',
     'keepChars', 'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'when', 'whenAst',
-    'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy', 'snapshotFields',
+    'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy',
+    // a deferral only this viewer meets: the save checks the rule
+    'deferredChecked', 'snapshotFields',
     // a rule message's other languages (modes.json textKeys)
     'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',
@@ -148,7 +150,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // reference's source line
     'rangeShow', 'growthCurveKey', 'growthTableKey', 'growthChartWhy', 'growthChartSource',
     // @UVDELTA (the earlier value travels folded, as deltaVsOp)
-    'deltaVs', 'deltaVsOp', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
+    'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
     'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
 ]);
 
@@ -381,7 +383,28 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
-check('only "whereMessage" is kept off survey pages', ModeRegistry::staffOnlyKeys() === ['whereMessage']);
+check('kept off survey pages: the @UVEXISTS "whereMessage", and what @UVDELTA compares with',
+    ModeRegistry::staffOnlyKeys() === ['whereMessage', 'deltaVs', 'deltaVsLabel']);
+// Every mode that may defer a rule says when the save still checks it, and
+// every mode with branch groups carries the server's "selector blocked" mark.
+foreach (ModeRegistry::all() as $m) {
+    if (in_array('deferred', $m['clientKeys'], true)) {
+        check($m['mode'] . ': a deferred rule carries deferredChecked', in_array('deferredChecked', $m['clientKeys'], true));
+    }
+    if (isset($m['branchGroup'])) {
+        check($m['mode'] . ': a branch group carries selectorBlocked', in_array('selectorBlocked', $m['clientKeys'], true));
+    }
+}
+// On a survey a delta group is g1, g2, ...: the page source does not name the "vs" field.
+$sv = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs' => '[enrol_arm_1][w0]', 'deltaVsLabel' => '[enrol_arm_1][w0]',
+    'branches' => [['deltaGroup' => '[enrol_arm_1][w0] both', 'when' => null], ['deltaGroup' => '[visit_arm_1][w] up', 'when' => null],
+                   ['deltaGroup' => '[enrol_arm_1][w0] both', 'when' => '[x]=1']]], true);
+check('survey: delta groups are opaque, in order, the same group the same id', !isset($sv['deltaVs']) && !isset($sv['deltaVsLabel'])
+    && array_column($sv['branches'], 'deltaGroup') === ['g1', 'g2', 'g1'] && strpos(json_encode($sv), 'enrol_arm_1') === false);
+$st = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs' => '[w0]', 'deltaGroup' => '[w0] both'], false);
+check('staff: the group and the "vs" travel as written', $st['deltaGroup'] === '[w0] both' && $st['deltaVs'] === '[w0]');
+$rg = ModeRegistry::clientShape(['type' => 'range', 'fields' => ['w'], 'branches' => [['rangeReference' => 'who-weight', 'when' => null]]], true);
+check('survey: a range reference keeps its name (the page reads its table by it)', $rg['branches'][0]['rangeReference'] === 'who-weight');
 check('exists explains a filtered finding with "whereMessage"', ModeRegistry::reasonMessageKeys('exists') === ['filtered' => 'whereMessage']
     && ModeRegistry::reasonMessageKeys('range') === []);
 check('exists issue labels', ModeRegistry::issueLabel('exists', 'filtered') === 'Saved, but not where its conditions hold'

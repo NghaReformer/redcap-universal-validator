@@ -12,10 +12,12 @@
  */
 
 require_once __DIR__ . '/../php/Logic.php';
+require_once __DIR__ . '/../php/ExactDecimal.php';
 require_once __DIR__ . '/../php/ModeRegistry.php';
 require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\AnnotationRules;
+use INSPIRE\UniversalValidator\ExactDecimal;
 use INSPIRE\UniversalValidator\Logic;
 
 $n = 0;
@@ -49,6 +51,30 @@ foreach ($fx['cases'] as $c) {
 check('a direction it does not know limits both ways',
     Logic::deltaVerdict(['max' => '1', 'direction' => 'sideways'], '0', '5')['verdict'] === 'down');
 check('an empty limit is no limit', Logic::deltaVerdict(['max' => '', 'maxPct' => '10'], '105', '100')['verdict'] === 'ok');
+
+// the evaluation budget (wargame P1): long numbers pay before the work, short ones are free
+$paid = [];
+$wallet = function ($units) use (&$paid) { $paid[] = $units; return true; };
+Logic::deltaVerdict(['max' => '5', 'maxPct' => '10'], '74', '70', $wallet);
+check('short values cost nothing, and the budget is not asked', $paid === []);
+$long = '1' . str_repeat('0', 3000);
+$paid = [];
+$r = Logic::deltaVerdict(['max' => '1'], $long, $long, $wallet);
+check('a long sum is paid for first (sumCost of both sides)', $r['verdict'] === 'ok'
+    && $paid === [ExactDecimal::sumCost([$long, '-' . $long])]);
+$paid = [];
+$r = Logic::deltaVerdict(['maxPct' => '10'], $long . '0', $long, $wallet);
+check('the percent products are paid for too', $r['verdict'] === 'up' && count($paid) === 2
+    && $paid[1] === ExactDecimal::multiplyCost($r['change'], '100') + ExactDecimal::multiplyCost('10', $long));
+$broke = function ($units) { return false; };
+check('a refused sum is unknown, reason "limit", with no change',
+    Logic::deltaVerdict(['max' => '1'], $long, $long, $broke) === ['verdict' => 'unknown', 'reason' => 'limit', 'change' => null]);
+$once = 0;
+$tight = function ($units) use (&$once) { return $once++ === 0; };
+$r = Logic::deltaVerdict(['maxPct' => '10'], $long . '0', $long, $tight);
+check('a refused product is unknown, reason "limit", and keeps the change',
+    $r['verdict'] === 'unknown' && $r['reason'] === 'limit' && $r['change'] === '9' . str_repeat('0', 3000));
+check('no budget given: nothing is refused', Logic::deltaVerdict(['max' => '1'], $long, $long)['verdict'] === 'ok');
 
 // ---- 2. the grammar ---------------------------------------------------------
 
@@ -129,6 +155,8 @@ $refused = [
     '@UVDELTA={"vs":"[w][any-instance]","max":5}'                  => 'exactly one field reference',
     '@UVDELTA={"vs":"previous-event","max":-1}'                    => '"max" must be 0 or more',
     '@UVDELTA={"vs":"previous-event","maxPct":"-0.5"}'             => '"maxPct" must be 0 or more',
+    '@UVDELTA={"vs":"previous-event","maxPct":0}'                  => '"maxPct": 0 does not stop a change from an earlier 0',
+    '@UVDELTA={"vs":"previous-event","maxPct":"0.00"}'             => '"maxPct": 0 does not stop',
     '@UVDELTA={"vs":"previous-event","max":"abc"}'                 => '"max" must be a number such as 5',
     '@UVDELTA={"vs":"previous-event","maxPct":true}'               => '"maxPct" must be a number such as 10',
     '@UVDELTA={"vs":"previous-event","max":1e100}'                 => '"max" is longer than 64 characters',

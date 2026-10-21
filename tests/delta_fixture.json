@@ -57,6 +57,25 @@
     {"name": "a change too long to multiply for the percent", "spec": {"maxPct": "10"}, "value": {"prefix": "1", "repeat": "0", "times": 4094}, "earlier": "1", "verdict": "unknown", "reason": "too-long", "change": {"prefix": "", "repeat": "9", "times": 4094}},
     {"name": "a long value inside max", "spec": {"max": "1"}, "value": {"prefix": "1", "repeat": "0", "times": 3000}, "earlier": {"prefix": "1", "repeat": "0", "times": 3000}, "verdict": "ok", "reason": null, "change": "0"},
     {"name": "a long value past max", "spec": {"max": "1"}, "value": {"prefix": "1", "repeat": "0", "times": 3000, "suffix": "2"}, "earlier": {"prefix": "1", "repeat": "0", "times": 3001}, "verdict": "up", "reason": "max", "change": "2"},
-    {"name": "a huge exponent is judged as 10^70", "spec": {"maxPct": "10"}, "value": "1e1000", "earlier": "1", "verdict": "up", "reason": "maxPct", "change": {"prefix": "", "repeat": "9", "times": 70}}
+    {"name": "an exponent is written out in full: 1e1000 from 1", "spec": {"maxPct": "10"}, "value": "1e1000", "earlier": "1", "verdict": "up", "reason": "maxPct", "change": {"prefix": "", "repeat": "9", "times": 1000}},
+    {"name": "an exponent past 4,096 digits written out is too long to compare", "spec": {"maxPct": "10"}, "value": "1e5000", "earlier": "1", "verdict": "unknown", "reason": "too-long", "change": null},
+    {"name": "an earlier exponent past 4,096 digits is too long to compare", "spec": {"max": "1"}, "value": "1", "earlier": "1e-5000", "verdict": "unknown", "reason": "too-long", "change": null},
+    {"name": "1e80 against the same number written out: no change", "spec": {"max": "5"}, "value": "1e80", "earlier": {"prefix": "1", "repeat": "0", "times": 80}, "verdict": "ok", "reason": null, "change": "0"},
+    {"name": "2e100 from 1e100 rises by 1e100", "spec": {"max": "5"}, "value": "2e100", "earlier": "1e100", "verdict": "up", "reason": "max", "change": {"prefix": "1", "repeat": "0", "times": 100}},
+    {"name": "7e-138 from 8e-138 falls 12.5%", "spec": {"maxPct": "10"}, "value": "7e-138", "earlier": "8e-138", "verdict": "down", "reason": "maxPct", "change": {"prefix": "-0.", "repeat": "0", "times": 137, "suffix": "1"}},
+    {"name": "-8e92 from -9e92 rises", "spec": {"max": "0"}, "value": "-8e92", "earlier": "-9e92", "verdict": "up", "reason": "max", "change": {"prefix": "1", "repeat": "0", "times": 92}},
+    {"name": "1e70 against 10^70 written out", "spec": {"max": "0"}, "value": "1e70", "earlier": {"prefix": "1", "repeat": "0", "times": 70}, "verdict": "ok", "reason": null, "change": "0"},
+    {"name": "1e71 against 10^71 written out", "spec": {"max": "0"}, "value": "1e71", "earlier": {"prefix": "1", "repeat": "0", "times": 71}, "verdict": "ok", "reason": null, "change": "0"},
+    {"name": "a no-break space around the value is not a number", "spec": {"max": "5"}, "value": "\u00a072", "earlier": "70", "verdict": "unknown", "reason": "not-a-number", "change": null},
+    {"name": "a vertical tab after the value is not a number", "spec": {"max": "5"}, "value": "72\u000b", "earlier": "70", "verdict": "unknown", "reason": "not-a-number", "change": null},
+    {"name": "a NUL before the value is not a number", "spec": {"max": "5"}, "value": "\u000072", "earlier": "70", "verdict": "unknown", "reason": "not-a-number", "change": null},
+    {"name": "a no-break space around the earlier value is not a number", "spec": {"max": "5"}, "value": "72", "earlier": "70\u00a0", "verdict": "unknown", "reason": "earlier-not-a-number", "change": null},
+    {"name": "exactly the percent of a negative earlier value", "spec": {"maxPct": "10"}, "value": "-55", "earlier": "-50", "verdict": "ok", "reason": null, "change": "-5"},
+    {"name": "across 0 at exactly 200%", "spec": {"maxPct": "200"}, "value": "5", "earlier": "-5", "verdict": "ok", "reason": null, "change": "10"},
+    {"name": "across 0 just past 199.99%", "spec": {"maxPct": "199.99"}, "value": "5", "earlier": "-5", "verdict": "up", "reason": "maxPct", "change": "10"},
+    {"name": "maxPct times a long earlier value is too long to multiply", "spec": {"maxPct": "1000000000000000000000000000000000000000000000000000000000000000"}, "value": {"prefix": "1", "repeat": "0", "times": 4039, "suffix": "1"}, "earlier": {"prefix": "1", "repeat": "0", "times": 4040}, "verdict": "unknown", "reason": "too-long", "change": "1"},
+    {"name": "comma field: a point and a comma together is not a number", "spec": {"max": "5", "decimalComma": true}, "value": "1.000,5", "earlier": "1", "verdict": "unknown", "reason": "not-a-number", "change": null},
+    {"name": "comma field: 1,000 is one", "spec": {"max": "0", "decimalComma": true}, "value": "1,000", "earlier": "1", "verdict": "ok", "reason": null, "change": "0"},
+    {"name": "comma field: a comma with an exponent", "spec": {"max": "4", "decimalComma": true}, "value": "1,5e1", "earlier": "10", "verdict": "up", "reason": "max", "change": "5"}
   ]
 }

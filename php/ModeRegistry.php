@@ -126,8 +126,10 @@ final class ModeRegistry
             if (isset($m['branchGroup'])) {
                 $g = $m['branchGroup'];
                 if (!is_array($g) || !isset($g['key'], $g['name']) || !is_string($g['name']) || $g['name'] === ''
-                    || !in_array($g['key'], $m['branchKeys'], true)) {
-                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name}');
+                    || !in_array($g['key'], $m['branchKeys'], true)
+                    || (isset($g['surveyOpaque']) && !is_bool($g['surveyOpaque']))
+                    || array_diff(array_keys($g), ['key', 'name', 'surveyOpaque'])) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name, surveyOpaque?: bool}');
                 }
             }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
@@ -356,7 +358,38 @@ final class ModeRegistry
                 if (is_array($b)) $r['branches'][$i] = $strip($b);
             }
         }
+        // A branch group named after what the rule reads (@UVDELTA: the "vs"
+        // reference and the direction) only groups the page's variants. On a
+        // survey it travels as g1, g2, ... in order of first appearance, so the
+        // page source does not name the field or event an answer is compared
+        // with (branchGroup surveyOpaque).
+        $key = $survey ? self::surveyOpaqueGroup(isset($r['type']) ? $r['type'] : '') : null;
+        if ($key !== null) {
+            $ids = [];
+            $hide = function (array $x) use ($key, &$ids) {
+                if (isset($x[$key]) && is_string($x[$key])) {
+                    if (!isset($ids[$x[$key]])) $ids[$x[$key]] = 'g' . (count($ids) + 1);
+                    $x[$key] = $ids[$x[$key]];
+                }
+                return $x;
+            };
+            $r = $hide($r);
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                foreach ($r['branches'] as $i => $b) if (is_array($b)) $r['branches'][$i] = $hide($b);
+            }
+        }
         return $r;
+    }
+
+    /** The branch-group key of $type's mode when its values are hidden on a survey, or null. */
+    private static function surveyOpaqueGroup($type)
+    {
+        $mode = self::modeOfType($type);
+        foreach (self::all() as $m) {
+            if ($m['mode'] !== $mode) continue;
+            return !empty($m['branchGroup']['surveyOpaque']) ? $m['branchGroup']['key'] : null;
+        }
+        return null;
     }
 
     /** Field-type eligibility of a mode: fieldTypes plus the refusal wording. */

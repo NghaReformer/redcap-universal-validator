@@ -909,6 +909,25 @@ class Logic
         return self::partsText($p);
     }
 
+    /**
+     * A typed or saved number for @UVDELTA, written out in full: '' for blank,
+     * null when it is not a number, false when written out it would be longer
+     * than MAX_PLAIN characters. normalizeNumber judges a number past 70
+     * places as 10^70, which is right against one limit of at most 64
+     * characters; a change is the difference of two values, so 1e80 and 1e100
+     * must keep every digit. Twin of QRID_deltaNumber.
+     */
+    public static function deltaNumber($value, $decimalComma = false)
+    {
+        $v = trim((string) $value, " \t\r\n");
+        if ($v === '') return '';
+        if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
+        if (preg_match(self::NUM_RE, $v)) return $v;
+        if (self::exponentParts($v) === null) return null;
+        $plain = self::plainDecimal($v);
+        return $plain === null ? false : $plain;
+    }
+
     /** The longest number plainDecimal writes out. */
     const MAX_PLAIN = 4096;
 
@@ -1099,8 +1118,9 @@ class Logic
      * field).
      *
      * A blank value or a blank earlier value is inert: nothing to compare. A
-     * value that is not a number is unknown, as is a change too long to work
-     * out (ExactDecimal::MAX_DIGITS). A change against "direction" is ok.
+     * value that is not a number is unknown, as is a number or a change too
+     * long to work out (deltaNumber, ExactDecimal::MAX_DIGITS). A change
+     * against "direction" is ok.
      * "max" holds when |change| <= max; "maxPct" when |change| * 100 <=
      * maxPct * |earlier|, so no division and no rounding. An earlier value of
      * 0 has no percent: "maxPct" is not applied, and a rule with no other
@@ -1109,15 +1129,25 @@ class Logic
      * AnnotationRules::MAX_RANGE_BOUND characters, so the work is linear in
      * the value's length. The twin is QRID_deltaVerdict; tests/delta_fixture.json
      * pins both.
+     *
+     * $charge, when given, is the record's evaluation budget: the sum and the
+     * products are paid for before they are worked out (ExactDecimal::sumCost,
+     * multiplyCost; values under 64 characters are free), and a refused
+     * payment is unknown with reason "limit". The extended audit judges one
+     * field in every entry of a record, and long numbers re-judged per entry
+     * must spend what they cost (wargame P1). The browser judges one value
+     * and has no budget.
      */
-    public static function deltaVerdict(array $spec, $value, $earlier)
+    public static function deltaVerdict(array $spec, $value, $earlier, ?callable $charge = null)
     {
-        $v = self::normalizeNumber($value, !empty($spec['decimalComma']));
-        $e = self::normalizeNumber($earlier, !empty($spec['earlierComma']));
+        $v = self::deltaNumber($value, !empty($spec['decimalComma']));
+        $e = self::deltaNumber($earlier, !empty($spec['earlierComma']));
         if ($v === '' || $e === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
         if ($v === null) return ['verdict' => 'unknown', 'reason' => 'not-a-number', 'change' => null];
         if ($e === null) return ['verdict' => 'unknown', 'reason' => 'earlier-not-a-number', 'change' => null];
+        if ($v === false || $e === false) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
         $minus = $e[0] === '-' ? substr($e, 1) : '-' . ltrim($e, '+');
+        if (!self::spendOn($charge, ExactDecimal::sumCost([$v, $minus]))) return ['verdict' => 'unknown', 'reason' => 'limit', 'change' => null];
         $d = ExactDecimal::sum([$v, $minus]);
         if ($d['state'] !== 'ok') return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
         $change = $d['value'];
@@ -1141,12 +1171,21 @@ class Logic
         $size = ltrim($change, '-');
         if ($max !== null && self::decCmp($size, $max) > 0) return ['verdict' => $way, 'reason' => 'max', 'change' => $change];
         if ($pct !== null) {
+            if (!self::spendOn($charge, ExactDecimal::multiplyCost($size, '100') + ExactDecimal::multiplyCost($pct, $base))) {
+                return ['verdict' => 'unknown', 'reason' => 'limit', 'change' => $change];
+            }
             $lhs = ExactDecimal::multiply($size, '100');
             $rhs = ExactDecimal::multiply($pct, $base);
             if ($lhs === null || $rhs === null) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => $change];
             if (self::decCmp($lhs, $rhs) > 0) return ['verdict' => $way, 'reason' => 'maxPct', 'change' => $change];
         }
         return ['verdict' => 'ok', 'reason' => null, 'change' => $change];
+    }
+
+    /** Pay $units to $charge: true when free (under one unit or no budget) or paid. */
+    private static function spendOn(?callable $charge, $units)
+    {
+        return $units < 1 || $charge === null || $charge($units);
     }
 
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */

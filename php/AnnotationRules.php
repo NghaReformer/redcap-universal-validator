@@ -3034,6 +3034,10 @@ class AnnotationRules
                 $errors[] = '"' . $label . '" must be a number — got ' . json_encode($v) . '.';
             } elseif (Logic::numCompare($v, '0') < 0) {
                 $errors[] = '"' . $label . '" must be 0 or more — it is the size of a change; "direction" says which way.';
+            } elseif ($k === 'deltaMaxPct' && Logic::numCompare($v, '0') === 0) {
+                // An earlier 0 has no percent, so "maxPct": 0 would let any change
+                // away from 0 through while it reads as "no change at all".
+                $errors[] = '"maxPct": 0 does not stop a change from an earlier 0, which has no percent — use "max": 0 for "no change".';
             }
         }
         if (isset($frag['deltaDirection']) && !in_array($frag['deltaDirection'], ['up', 'down'], true)) {

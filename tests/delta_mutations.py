@@ -24,6 +24,9 @@ VERDICT_PHP = 'tests/delta_php.php'
 VERDICT_JS = 'tests/delta_js.cjs'
 DOM = 'tests/delta_dom_js.cjs'
 MODULE = 'tests/delta_module_php.php'
+REGISTRY = 'tests/registry_php.php'
+TEMPORAL = 'php/TemporalRules.php'
+MODES = 'php/modes.json'
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -47,8 +50,8 @@ MUTATIONS = [
      "if ($lhs === null || $rhs === null) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => $change];",
      "if ($lhs === null || $rhs === null) return ['verdict' => 'ok', 'reason' => null, 'change' => $change];", VERDICT_PHP),
     ('the earlier value read with a point always', LOGIC,
-     "$e = self::normalizeNumber($earlier, !empty($spec['earlierComma']));",
-     '$e = self::normalizeNumber($earlier, false);', VERDICT_PHP),
+     "$e = self::deltaNumber($earlier, !empty($spec['earlierComma']));",
+     '$e = self::deltaNumber($earlier, false);', VERDICT_PHP),
     # ---- the verdict, browser ----
     ('JS: an earlier 0 judged by maxPct', ENGINE,
      'if(pct !== null && QRID_whenDecCmp(base, "0") === 0){',
@@ -79,7 +82,7 @@ MUTATIONS = [
      "return strtolower(preg_replace('/\\s+/', '', (string) $vs)) . ' ' . $direction;",
      "return strtolower(preg_replace('/\\s+/', '', (string) $vs));", VERDICT_PHP),
     ('no branch groups: two tags on one field conflict', 'php/modes.json',
-     '"branchGroup": {"key": "deltaGroup", "name": "vs and direction"},',
+     '"branchGroup": {"key": "deltaGroup", "name": "vs and direction", "surveyOpaque": true},',
      '', MODULE),
     # ---- the hooks ----
     ('a "vs" naming the field itself accepted', UV,
@@ -91,9 +94,36 @@ MUTATIONS = [
     ('the "vs" field\'s comma not marked', UV,
      "if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['deltaVsComma'] = true;",
      '', MODULE),
-    ('an event shorthand on a form that repeats alone accepted', UV,
-     'if ($repeatsAlone) {',
+    ('an event shorthand that names an event where the form repeats accepted', UV,
+     "if ($b['bucket'] !== null) $repeating[(string) $t['event']] = $label($t['event']);",
+     '', MODULE),
+    ('an instance shorthand at an event where the form does not repeat accepted', UV,
+     "if ($b['bucket'] === null) $flat[] = $label($id);",
+     '', MODULE),
+    ('an event shorthand with no earlier event in any arm accepted', UV,
+     'if ($pairs === 0) {',
      'if (false) {', MODULE),
+    ('a written-out reference to this same entry accepted', UV,
+     "if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {",
+     'if (false) {', MODULE),
+    ('the one event a form is on not read as this entry', UV,
+     'return count($hosts) === 1 && $hosts[0] === $event;',
+     'return false;', MODULE),
+    ('the hook\'s branch group forgets the direction (heart-rate recipe)', UV,
+     "$frag['deltaGroup'] = AnnotationRules::deltaGroup($frag['deltaVs'], isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both');",
+     "$frag['deltaGroup'] = AnnotationRules::deltaGroup($frag['deltaVs'], 'both');", MODULE),
+    ('the first-event and first-instance names swapped', UV,
+     "'first-event' => 'the first event', 'first-instance' => 'the first instance'];",
+     "'first-event' => 'the first instance', 'first-instance' => 'the first event'];", MODULE),
+    ('"too long to compare" said as something else', UV,
+     ": 'the value and its \"vs\" value are too long to compare'));",
+     ": 'the value could not be read'));", MODULE),
+    ('the audit judges with no budget', UV,
+     '$charge = function ($units) use ($budget) { return $budget->take($units); };',
+     '$charge = null;', MODULE),
+    ('a deferral only this viewer meets not marked as checked on save', TEMPORAL,
+     "if($browser&&$problems&&array_values(array_unique($problems))===['unauthorized'])$compiled['deferredChecked']=true;",
+     '', MODULE),
     ('a "vs" field that holds no numbers accepted', UV,
      "if (!in_array($ftype, ['calc', 'slider'], true) && !($ftype === 'text' && is_string($re) && preg_match('~' . $re . '~', $validation))) {",
      'if (false) {', MODULE),
@@ -113,7 +143,86 @@ MUTATIONS = [
     ('an unresolved event/instance "vs" read as blank', UV,
      "            if (!is_string($earlier)) {\n                $why = 'the \"vs\" value ' . $vs . ' could not be resolved';",
      "            if (!is_string($earlier)) $earlier = '';\n            if (false) {\n                $why = 'the \"vs\" value ' . $vs . ' could not be resolved';", MODULE),
+    # ---- the verdict: exact numbers, and the budget ----
+    ('an exponent clamped to 10^70 again', LOGIC,
+     "$v = self::deltaNumber($value, !empty($spec['decimalComma']));",
+     "$v = self::normalizeNumber($value, !empty($spec['decimalComma']));", VERDICT_PHP),
+    ('JS: an exponent clamped to 10^70 again', ENGINE,
+     'var v = QRID_deltaNumber(value, !!spec.decimalComma), e = QRID_deltaNumber(earlier, !!spec.earlierComma);',
+     'var v = QRID_rangeNumber(value, !!spec.decimalComma), e = QRID_rangeNumber(earlier, !!spec.earlierComma);', VERDICT_JS),
+    ('the sum not paid for', LOGIC,
+     "if (!self::spendOn($charge, ExactDecimal::sumCost([$v, $minus]))) return",
+     "if (false) return", VERDICT_PHP),
+    ('the percent products not paid for', LOGIC,
+     "if (!self::spendOn($charge, ExactDecimal::multiplyCost($size, '100') + ExactDecimal::multiplyCost($pct, $base))) {",
+     'if (false) {', VERDICT_PHP),
+    ('JS: the trim retried from every inner space again', ENGINE,
+     '''function QRID_whenTrim(v){
+  var s = String(v), i = 0, j = s.length;
+  while(i < j && QRID_whenSpace(s.charCodeAt(i))) i++;
+  while(j > i && QRID_whenSpace(s.charCodeAt(j - 1))) j--;
+  return (i === 0 && j === s.length) ? s : s.slice(i, j);
+}''',
+     'function QRID_whenTrim(v){ return String(v).replace(/^[ \\t\\r\\n]+|[ \\t\\r\\n]+$/g, ""); }', VERDICT_JS),
+    ('"maxPct": 0 accepted', RULES,
+     "} elseif ($k === 'deltaMaxPct' && Logic::numCompare($v, '0') === 0) {",
+     '} elseif (false) {', VERDICT_PHP),
+    # ---- the registry ----
+    ('a survey told which field a delta group compares with', 'php/ModeRegistry.php',
+     "$key = $survey ? self::surveyOpaqueGroup(isset($r['type']) ? $r['type'] : '') : null;",
+     '$key = null;', REGISTRY),
+    ('a survey page carries the "vs" and its name', MODES,
+     '"staffOnlyKeys": ["deltaVs", "deltaVsLabel"],',
+     '', REGISTRY),
     # ---- the page ----
+    ('JS: "maxPct": 0 accepted', ENGINE,
+     'if(!configError && pct !== null && QRID_whenDecCmp(pct, "0") === 0){',
+     'if(false){', DOM),
+    ('a rounded percent shown at the limit it broke', ENGINE,
+     'if(r.reason === "maxPct" && V.spec.maxPct !== null && QRID_whenDecCmp(String(one), V.spec.maxPct) <= 0){',
+     'if(false){', DOM),
+    ('a percent that rounds to 0 said as 0%', ENGINE,
+     'if(one === 0) return " (under " + shown("0.1", comma) + "%)";',
+     '', DOM),
+    ('a percent of a million or more shown', ENGINE,
+     'if(!isFinite(p) || p >= 1e6) return "";',
+     'if(!isFinite(p)) return "";', DOM),
+    ('the earlier value said as typed', ENGINE,
+     'var earlier = QRID_numberKey(r.earlier, V.spec.earlierComma ? "comma" : "point");',
+     'var earlier = QRID_deltaNumber(r.earlier, V.spec.earlierComma);', DOM),
+    ('a gate judges every keystroke', ENGINE,
+     'if(!text || typeof a.addEventListener !== "function"){ check(); return; }',
+     '{ check(); return; }', DOM),
+    ('a value written by a script never judged (no self-watch)', ENGINE,
+     '''    if(selfWatch) selfWatch.onChange(function(){ if(!typing()) check(); });
+    /* A gate or a watched field heard a keystroke: judge once the person
+       leaves the box they are typing in (QRID_afterTyping). */
+    var later = QRID_afterTyping(check);
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(later);
+      for(var wi = 0; wi < VS.all[gi].watch.length; wi++) VS.all[gi].watch[wi].onChange(later);
+    }
+    check();
+    return true;''',
+     '''    /* A gate or a watched field heard a keystroke: judge once the person
+       leaves the box they are typing in (QRID_afterTyping). */
+    var later = QRID_afterTyping(check);
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(later);
+      for(var wi = 0; wi < VS.all[gi].watch.length; wi++) VS.all[gi].watch[wi].onChange(later);
+    }
+    check();
+    return true;''', DOM),
+    ('the registry answers true for a value it cannot judge', ENGINE,
+     'if(v !== "ok") open = true;',
+     '', DOM),
+    ('two modes on one field: a failing one ignored by the registry', ENGINE,
+     'if(r === false) return false;',
+     'if(r === false) continue;', DOM),
+    ('a deferral the save checks said to be unchecked', ENGINE,
+     'v.checkedOnSave = v.checkedOnSave === true || input.deferredChecked === true || cfg.deferredChecked === true;',
+     'v.checkedOnSave = v.checkedOnSave === true;', DOM),
+
     ('a calc and an event/instance rule block', ENGINE,
      'var advisory = cfg.extendedAdvisory === true || cfg.deltaComputed === true || DEFERRED;',
      'var advisory = DEFERRED;', DOM),
