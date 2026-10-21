@@ -163,7 +163,12 @@ $NEIGHBOUR = uv_neighbour($PID);
     // thing between redcap_projects and an interpolated identifier.
     $A->query("UPDATE redcap_projects SET data_table = 'redcap_data; DROP TABLE x'
         WHERE project_id = " . $PID);
+    // Nor read as the default (review rv5a-1): redcap_data holds none of a
+    // project whose own table cannot be named.
     check('walk: a data-table name that is not one is refused, not interpolated',
+        \INSPIRE\UniversalValidator\Scan\RecordManifestSource::dataTable($dbA, $PID) === null);
+    $A->query("UPDATE redcap_projects SET data_table = NULL WHERE project_id = " . $PID);
+    check('walk: and a project with no data table named is in REDCap\'s default one',
         \INSPIRE\UniversalValidator\Scan\RecordManifestSource::dataTable($dbA, $PID) === 'redcap_data');
     $A->query("UPDATE redcap_projects SET data_table = 'redcap_data' WHERE project_id = " . $PID);
 }
