@@ -274,6 +274,7 @@ final class ScanMaintenance
         foreach (array_keys($this->state['revoke']) as $pid) {
             // revokeMore() asks the budget itself, after a bump still owed.
             try {
+                call_user_func($this->enter, (int) $pid);
                 $this->revokeMore((int) $pid, $lapUntil, $out);
             } catch (\Throwable $e) {
                 $this->failed('revoke', (int) $pid, $e);

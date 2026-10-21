@@ -79,7 +79,8 @@ namespace ExternalModules {
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
-        public function getUser() { return null; }
+        public $user = null;
+        public function getUser() { return $this->user; }
         /** The statements sent that contain every one of $needles. */
         public function sent(array $needles) {
             $out = [];
@@ -432,6 +433,100 @@ $m->uvScanReapCron();
 $cl = $m->logged('scan-cron');
 check('stop marker: an earlier disable stops no pass of the enable after it',
     count($cl) === 1 && $cl[0]['stopped'] === 0 && $cl[0]['projects'] === 1);
+
+// ---- 10) memo lifetime: one module instance, many projects (W8-N10) ---------
+//
+// A page request is one project and one user; a cron pass is many projects
+// through the same instance. What the instance remembers about one project
+// must not be the answer for the next.
+$rc = new ReflectionClass(UniversalValidator::class);
+$own = [];
+foreach ($rc->getProperties() as $p) {
+    if (!$p->isStatic() && $p->getDeclaringClass()->getName() === $rc->getName()) $own[] = $p->getName();
+}
+$listed = array_merge(UniversalValidator::SCAN_MEMOS, UniversalValidator::SCAN_NOT_MEMOS);
+sort($own);
+$sortedListed = $listed;
+sort($sortedListed);
+check('memos: every instance property of the module is a memo the cron resets or is named as not one',
+    $own === $sortedListed && count(array_unique($listed)) === count($listed));
+
+final class MemoUser
+{
+    public $forms;
+    public function __construct(array $forms) { $this->forms = $forms; }
+    public function isSuperUser() { return false; }
+    public function getRights($pid) { return [$pid => ['forms' => $this->forms, 'group_id' => null, 'expiration' => '']]; }
+}
+$rightsIn = new ReflectionMethod(UniversalValidator::class, 'userRightsIn');
+$rightsIn->setAccessible(true);
+$memo = new ReflectionProperty(UniversalValidator::class, 'rightsIn');
+$memo->setAccessible(true);
+
+$m = new UniversalValidator();
+$m->systemSettings = $on;
+$m->tables = $tables;
+$m->user = new MemoUser(['demographics' => '1']);
+check('memos: the rights read really is remembered within a request',
+    $rightsIn->invoke($m, 42)['forms'] === ['demographics' => '1']
+    && ($m->user->forms = ['demographics' => '0']) && $rightsIn->invoke($m, 42)['forms'] === ['demographics' => '1']);
+// Project 42's work reads the rights in 42; what 43's work finds remembered is recorded.
+$at43 = 'not reached';
+$inner = $census([[42, 1, 0, null, ''], [43, 1, 0, null, '']]);
+$m->responder = function ($sql, $params) use ($inner, $RUN, $m, $rightsIn, $memo, &$at43) {
+    if (strpos($sql, 'SELECT run_id FROM ' . $RUN) !== false && isset($params[0])) {
+        if ($params[0] === 42) $rightsIn->invoke($m, 42);
+        if ($params[0] === 43) $at43 = $memo->getValue($m);
+    }
+    return $inner($sql, $params);
+};
+$m->uvScanReapCron();
+check('memos: the next project in the same pass starts with nothing remembered', $at43 === []);
+$m->user->forms = ['demographics' => '1', 'visits' => '1'];
+$m->responder = $census([[42, 1, 0, null, '']]);
+$m->uvScanReapCron();
+check('memos: a second pass in the same process reads the rights as they are now',
+    $rightsIn->invoke($m, 42)['forms'] === ['demographics' => '1', 'visits' => '1']);
+// The retention pass: a revocation carried on for 43, then 42 purged in the lap.
+$m = new UniversalValidator();
+$m->systemSettings = $on;
+$m->tables = $tables;
+$m->user = new MemoUser(['demographics' => '1']);
+$memo->setValue($m, [99 => ['forms' => true, 'group' => null]]);
+$seen = [];
+$inner = $census([[42, 0, 0, '2000-01-01 00:00:00', '']]);
+$m->responder = function ($sql, $params) use ($inner, $RUN, $m, $rightsIn, $memo, &$seen) {
+    if (strpos($sql, 'SELECT DISTINCT generation_id') !== false && $params[0] === 43) {
+        $seen['43'] = $memo->getValue($m);
+        $rightsIn->invoke($m, 43);
+    }
+    if (strpos($sql, 'SELECT run_id, generation_id FROM ' . $RUN) !== false && $params[0] === 42 && !isset($seen['42'])) {
+        $seen['42'] = $memo->getValue($m);
+    }
+    return $inner($sql, $params);
+};
+$m->systemSettings['scan-cron-state-retention'] = json_encode(['revoke' => [43 => ['revision' => 2, 'bumped' => true, 'cursor' => null]]]);
+$m->uvScanExpireValuesCron(['cron_max_run_time' => '900']);
+check('memos: a revocation carried on, and the lap\'s next project, each start with nothing remembered',
+    isset($seen['43'], $seen['42']) && $seen['43'] === [] && $seen['42'] === []);
+
+// And every memo, not only the one read above.
+$defaults = $rc->getDefaultProperties();
+foreach (UniversalValidator::SCAN_MEMOS as $p) {
+    $rp = new ReflectionProperty(UniversalValidator::class, $p);
+    $rp->setAccessible(true);
+    $rp->setValue($m, ['stale' => 'from the project before']);
+}
+$m->responder = $census([[42, 1, 0, null, '']]);
+$m->uvScanReapCron();
+$left = [];
+foreach (UniversalValidator::SCAN_MEMOS as $p) {
+    $rp = new ReflectionProperty(UniversalValidator::class, $p);
+    $rp->setAccessible(true);
+    if ($rp->getValue($m) !== $defaults[$p]) $left[] = $p;
+}
+check('memos: every memo is back to its default once a project is entered (left: ' . implode(', ', $left) . ')',
+    $left === []);
 
 echo sprintf("scan_cron_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

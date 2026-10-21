@@ -7793,6 +7793,45 @@ class UniversalValidator extends AbstractExternalModule
         };
     }
 
+    /**
+     * The instance properties that remember something about a project, or
+     * about the user's standing in one, for the rest of the request (MEMO
+     * LIFETIME, W8-N10). A page request is one project and one user, so the
+     * memos are right there. A cron runs many projects through this one
+     * instance, so resetScanMemos() puts every one of these back to its
+     * declared default before each project's work (ScanMaintenance's
+     * `enter`): rules, rights, data dictionary or consent read for one
+     * project are never the answer for the next. Pid-keyed memos are reset too: a pass
+     * that comes back to a project later in the same process reads it again.
+     *
+     * tests/scan_cron_php.php holds this list and SCAN_NOT_MEMOS to exactly
+     * the class's own instance properties, so a memo added later fails there
+     * until it is put in one of the two.
+     */
+    const SCAN_MEMOS = [
+        'ddCache', 'hmacKey', 'existsIndexes', 'groupVisibility', 'groupVisibilityRead', 'existsLookupMemo',
+        'existsReads', 'recordIds', 'recordRows', 'crossConsents', 'projectObjects', 'rightsIn',
+        'crossReadFailed', 'configUnread', 'missingCodesMemo', 'crossIds', 'crossBudgetFailSaid',
+        'crossExtraRead', 'crossSource', 'valueStampsMemo', 'clockMemo', 'rulesMemo', 'repeatFormsCache',
+        'repeatProbeCache', 'eventFormsCache', 'mappedFormsCache', 'formEventsCache', 'eventLayoutCache',
+        'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
+    ];
+
+    /**
+     * The instance properties that are not memos: what a test pinned
+     * (existsIndexCap, clockOverride, valueStampsOverride), and the record save
+     * in progress (returnQueue, surveySave), which a cron pass is never inside.
+     */
+    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave'];
+
+    /** Every SCAN_MEMOS property back to its declared default. */
+    private function resetScanMemos()
+    {
+        static $defaults = null;
+        if ($defaults === null) $defaults = (new \ReflectionClass(self::class))->getDefaultProperties();
+        foreach (self::SCAN_MEMOS as $p) $this->$p = $defaults[$p];
+    }
+
     /** The installation's scan settings a maintenance pass resolves policy from. */
     private function scanSystemPolicy()
     {
@@ -7869,6 +7908,11 @@ class UniversalValidator extends AbstractExternalModule
                 },
                 'save'   => $save,
                 'stopped' => $this->scanStopMarker(time()),
+                // A FRESH START FOR EVERY PROJECT (MEMO LIFETIME). The passes
+                // build no ScanService: every statement goes through the store
+                // or ScanRetention, which keep nothing between calls. What
+                // this instance remembers is reset before each project's work.
+                'enter'  => function ($pid) { $this->resetScanMemos(); },
             ]);
             $max = (is_array($cronInfo) && isset($cronInfo['cron_max_run_time']))
                 ? (int) $cronInfo['cron_max_run_time'] : 0;
