@@ -394,19 +394,11 @@ final class ScanPlanner
         }
 
         if ($claim['state'] === 'ok') {
-            $cursor = $claim['cursor'];
-            $carry = self::carryIn($claim['carry'], $src === null ? null : $src->via(), $cursor);
-            if ($carry === null) {
-                // A DIFFERENT SOURCE, OR A CARRY THAT CANNOT BE READ: START THE
-                // WALK AGAIN. A cursor is a position in one table's collation,
-                // and the carry is the set of ids that collation calls equal to
-                // it; RecordManifestSource::open() prefers the record index and
-                // falls back to the data table, and which one answers can change
-                // between two requests. Carried across, the cursor can step over
-                // records the other collation sorts differently. Appending is
-                // idempotent, so a second walk costs time and adds nothing twice.
-                $cursor = null;
-                $carry = [];
+            $at = self::resumeOn($claim['carry'], $src, $claim['cursor']);
+            $src = $at['source'];
+            $cursor = $at['cursor'];
+            $carry = $at['carry'];
+            if ($at['restart']) {
                 $stats['listed'] = 0;
                 $stats['outOfScope'] = 0;
             }
@@ -434,8 +426,9 @@ final class ScanPlanner
                     // FROM THE FIRST RECORD. A cursor is a position in one
                     // table's collation and the data table's need not be the
                     // index's; the records already appended are offered again
-                    // and land once (the manifest's unique key). The data table
-                    // is never asked this, so it happens once per slice at most.
+                    // and land once (the manifest's unique key). It happens once
+                    // per run: the carry now names the data table, and a walk
+                    // that has used the data table stays on it (resumeOn()).
                     $data = $src->dataWalk();
                     if ($data === null || $data === $src) {
                         $this->store->releasePlan($runId, $owner);
@@ -679,27 +672,83 @@ final class ScanPlanner
     }
 
     /**
-     * The carry back, or null when the walk must start again: a carry written
-     * over a different source, or one that cannot be read. A walk that has not
-     * begun (no cursor, no carry) is a walk at the start.
+     * The carry back: the source it was written over and the boundary ids,
+     * `via` null for a walk that has not begun (no cursor, no carry), or null
+     * for a carry that cannot be read.
      *
-     * @return string[]|null
+     * @return ?array{via:?string, ids:string[]}
      */
-    private static function carryIn($raw, $via, $cursor)
+    private static function carryIn($raw, $cursor)
     {
-        if ($raw === null || $raw === '') return $cursor === null ? [] : null;
+        if ($raw === null || $raw === '') return $cursor === null ? ['via' => null, 'ids' => []] : null;
         $c = json_decode((string) $raw, true);
         if (!is_array($c) || !isset($c['v']) || (int) $c['v'] !== 1 || !isset($c['via'])
-                || !isset($c['carry']) || !is_array($c['carry'])) {
+                || !is_string($c['via']) || !isset($c['carry']) || !is_array($c['carry'])) {
             return null;
         }
-        if ($via === null || (string) $c['via'] !== (string) $via) return null;
         $out = [];
         foreach ($c['carry'] as $h) {
             if (!is_string($h) || !ctype_xdigit($h) || strlen($h) % 2 !== 0) return null;
             $out[] = (string) hex2bin($h);
         }
-        return $out;
+        return ['via' => $c['via'], 'ids' => $out];
+    }
+
+    /**
+     * Where this slice takes the walk up, and over which source (review R5-2).
+     *
+     * A cursor is a position in one table's collation, and the carry is the
+     * set of ids that collation calls equal to it. open() prefers the record
+     * index and falls back to the data table, and which one answers changes
+     * between requests while REDCap rebuilds its cache - so the walk used to
+     * start again from the first record at every change, and with the source
+     * alternating it never ended, while each request listed rows and moved
+     * progress_at, so nothing called it stalled or reaped it.
+     *
+     * THE DATA TABLE IS STICKY. A walk whose carry names a data table goes on
+     * over the data table, whatever this request opened: the data table is
+     * whole, and nothing about the index becoming complete again makes the
+     * walk's own position wrong. So the source can change under a walk once,
+     * from the index to the data table (here, or mid-slice in listSlice()),
+     * and that change starts the walk again from the first record. Twice only
+     * if REDCap moves the project to another data table while it is listed.
+     * The rework is bounded by what was listed before the change, and what it
+     * offers again lands once on the manifest's unique key.
+     *
+     * NOT A CURSOR CARRIED ACROSS. redcap_record_list.record and the data
+     * table's record are separate columns whose collations each installation
+     * set when the table was created, and REDCap has created them in different
+     * versions; ordering, case folding and trailing-space padding are all the
+     * collation's. A cursor is only portable where both columns share one, and
+     * no test suite can prove that of an installation it has not seen.
+     *
+     * @return array{source:?RecordManifestSource, cursor:?string, carry:string[], restart:bool}
+     */
+    private static function resumeOn($raw, $src, $cursor)
+    {
+        if (!($src instanceof RecordManifestSource)) {
+            return ['source' => null, 'cursor' => $cursor, 'carry' => [], 'restart' => false];
+        }
+        $c = self::carryIn($raw, $cursor);
+        if ($c === null) {
+            // A carry that cannot be read: nothing this file writes, so start again.
+            return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => true];
+        }
+        if ($c['via'] === null) {
+            return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => false];
+        }
+        if ($c['via'] !== RecordManifestSource::VIA_INDEX && $src->via() === RecordManifestSource::VIA_INDEX) {
+            // The walk has used the data table: it stays there. A data table
+            // that cannot be walked now is a source that cannot be opened.
+            $src = $src->dataWalk();
+            if ($src === null) {
+                return ['source' => null, 'cursor' => $cursor, 'carry' => [], 'restart' => false];
+            }
+        }
+        if ($c['via'] === $src->via()) {
+            return ['source' => $src, 'cursor' => $cursor, 'carry' => $c['ids'], 'restart' => false];
+        }
+        return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => true];
     }
 
     private static function no($why)

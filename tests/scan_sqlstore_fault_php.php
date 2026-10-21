@@ -1503,6 +1503,66 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $s3->run(88, $rid3)['phase'] === ScanPhase::PLANNING && count($manifestIds($s3, $rid3)) === 100);
     check('R5-3: and hands the lease back',
         $s3->claimPlan($rid3, 'next', (int) $s3->run(88, $rid3)['lease_epoch'], 300, 5)['state'] === 'ok');
+
+    // R5-2: THE SOURCE A REQUEST OPENS CHANGES BETWEEN REQUESTS. Each request
+    // opens the source afresh, as ScanService::openSource() does, and lists
+    // one page (its budget is spent before it starts). The walk used to start
+    // again at every change of source; with REDCap rebuilding its cache on
+    // one request in four it never ended.
+    $spentBudget = function () { return new WorkBudget(['startedAt' => microtime(true) - 3600]); };
+    /** Start, then drive one request at a time; $before($db, $n) runs before request $n opens. */
+    $drive = function ($db, callable $before, $cap = 60) use ($walkKey, $walkReq, $spentBudget) {
+        $store = new ArrayScanStore();
+        $before($db, 0);
+        $open = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $first = (new ScanPlanner($store, $walkKey))->plan(88, array_merge($walkReq,
+            ['source' => $open['source'], 'budget' => $spentBudget()]));
+        $rid = (int) $first['run']['run_id'];
+        $n = 0;
+        $listedEach = [];
+        while ($store->run(88, $rid)['phase'] === ScanPhase::PLANNING && $n < $cap) {
+            $n++;
+            $before($db, $n);
+            $o = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+            $s = (new ScanPlanner($store, $walkKey))->step(88, $rid, array_merge($walkReq, [
+                'source' => empty($o['ok']) ? null : $o['source'], 'budget' => $spentBudget(),
+                'owner' => 'req' . $n, 'epoch' => (int) $store->run(88, $rid)['lease_epoch']]));
+            $listedEach[] = $s['listed'];
+        }
+        return [$store, ['ok' => true, 'run' => ['run_id' => $rid]], $n, $listedEach];
+    };
+
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2) = $drive($db, function ($d, $n) {
+        $d->status = ($n > 0 && $n % 4 === 0) ? 'PROCESSING' : 'COMPLETE';
+    });
+    check('R5-2: a walk whose source alternates between the index and the data table finishes',
+        $s2->run(88, (int) $r2['run']['run_id'])['phase'] === ScanPhase::SCANNING && $n2 <= 15);
+    check('R5-2: with every record on the manifest exactly once', $whole($s2, $r2)
+        && count($manifestIds($s2, (int) $r2['run']['run_id'])) === 1000);
+    check('R5-2: and once on the data table it stays there: four index pages, then the data table from its start',
+        $db->pages['index'] === 4 && $db->pages['data'] === 10);
+
+    // Started on the data table, because the cache was being rebuilt at the
+    // start; complete again for every request after. The walk keeps its
+    // place on the data table rather than starting again on the index.
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2, $each) = $drive($db, function ($d, $n) {
+        $d->status = $n === 0 ? 'PROCESSING' : 'COMPLETE';
+    });
+    check('R5-2: a walk begun on the data table is not sent back to the index when the cache completes',
+        $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 10 && $n2 === 9
+        && min($each) === 100);
+
+    // REDCap moves the project to another data table while it is listed: the
+    // walk starts again once, over the table that holds the project now.
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2) = $drive($db, function ($d, $n) {
+        $d->status = 'NOT_STARTED';
+        if ($n === 4) $d->dataTable = 'redcap_data4';
+    });
+    check('R5-2: a walk whose data table moved starts again once, over the new one, and finishes whole',
+        $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 14);
 }
 
 namespace {

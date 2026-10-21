@@ -811,3 +811,88 @@ $NEIGHBOUR = uv_neighbour($PID);
             . ' WHERE project_id = ?', array($CR)) === array('PRIMARY'));
     $A->query('DROP TABLE redcap_record_counts');
 }
+
+/*
+ * R5-2: THE SOURCE A REQUEST OPENS CHANGES BETWEEN REQUESTS.
+ *
+ * Each request opens the record source afresh, as ScanService::openSource()
+ * does, and REDCap rebuilds its record-list cache on one request in four, so
+ * open() answers with the data table there and the index elsewhere. The walk
+ * started again from the first record at every change and never ended; it
+ * now stays on the data table once it has used it.
+ */
+{
+    $FL = 922;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $FL);
+    $A->query('DROP TABLE IF EXISTS redcap_record_counts');
+    uv_redcap_counts_schema($A);
+    uv_redcap_counts($A, $FL, 'COMPLETE');
+    for ($from = 1; $from <= 3000; $from += 1000) {
+        $l = array();
+        $d = array();
+        for ($i = $from; $i < $from + 1000; $i++) {
+            $id = sprintf('F%05d', $i);
+            $l[] = '(' . $FL . ", '" . $id . "', NULL)";
+            $d[] = '(' . $FL . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        }
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $l));
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+            . implode(',', $d));
+    }
+    $flPages = array('index' => 0, 'data' => 0);
+    $flDb = new class(new MysqliDb($A), $flPages) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $pages;
+        public function __construct($inner, $p) { $this->inner = $inner; $this->pages = $p; }
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'ORDER BY') !== false && !preg_match('/LIMIT 1\s*$/', $sql)) {
+                if (strpos($sql, 'FROM redcap_record_list') !== false) $this->pages['index']++;
+                elseif (strpos($sql, 'FROM redcap_data') !== false) $this->pages['data']++;
+            }
+            return $this->inner->select($sql, $params);
+        }
+        public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+    };
+    $flSpent = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $flOpen = function () use ($flDb, $FL) {
+        $o = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($flDb, $FL, array('pk' => 'record_id'));
+        return empty($o['ok']) ? null : $o['source'];
+    };
+    $flReq = uv_plan_request(array('pageSize' => 250));
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($flDb), 'test-secret-key'))
+        ->plan($FL, array_merge($flReq, array('source' => $flOpen(), 'budget' => $flSpent(), 'owner' => 'req0')));
+    $flId = (int) $first['run']['run_id'];
+    $requests = 0;
+    for ($r = 1; $r <= 40; $r++) {
+        $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($flDb);
+        $run = $store->run($FL, $flId);
+        if ($run['phase'] !== 'planning') break;
+        uv_redcap_counts($A, $FL, ($r % 4 === 0) ? 'PROCESSING' : 'COMPLETE');
+        (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($FL, $flId,
+            array_merge($flReq, array('source' => $flOpen(), 'budget' => $flSpent(), 'owner' => 'req' . $r,
+                'epoch' => (int) $run['lease_epoch'], 'attempts' => 5, 'leaseSeconds' => 300)));
+        $requests++;
+    }
+    $flRun = (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->run($FL, $flId);
+    $flCensus = $dbA->select('SELECT COUNT(*), COUNT(DISTINCT record_hash) FROM ' . $T('scan_record')
+        . ' WHERE run_id = ?', array($flId));
+    check('R5-2: a walk whose source alternates between the index and the data table finishes',
+        $flRun['phase'] === 'scanning' && $requests <= 16);
+    check('R5-2: with every record on the manifest exactly once',
+        (int) $flRun['manifest_total'] === 3000 && (int) $flCensus[0][0] === 3000
+        && (int) $flCensus[0][1] === 3000);
+    check('R5-2: four index pages, then the data table from its first record and never the index again',
+        $flDb->pages === array('index' => 4, 'data' => 12));
+    (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($flId,
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    $A->query('DROP TABLE redcap_record_counts');
+}
