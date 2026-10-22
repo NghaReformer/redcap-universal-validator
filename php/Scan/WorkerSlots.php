@@ -272,6 +272,22 @@ final class WorkerSlots
         return (int) $this->db->affected();
     }
 
+    /**
+     * Free the slots held for one run, whoever holds them (review rv10a2-7:
+     * the module is disabled for that run's project, which then answers its
+     * worker no more). Cleared as releaseAll() clears them; the run is
+     * stopped first, so its holder is refused at its next fence either way.
+     *
+     * @return int slots released
+     */
+    public function releaseRun($runId)
+    {
+        $this->db->exec('UPDATE ' . Schema::table('scan_worker_slot')
+            . ' SET owner = NULL, run_id = NULL, expires_at = NULL WHERE run_id = ? AND owner IS NOT NULL',
+            [(int) $runId]);
+        return (int) $this->db->affected();
+    }
+
     /** How many slots exist, and how many are currently held. For diagnostics. */
     public function census()
     {

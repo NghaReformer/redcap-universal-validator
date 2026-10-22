@@ -1065,6 +1065,50 @@ $runRow = function ($runId) use ($dbA) {
         $store->startRun(1001, array('created_by' => 'alice'))['ok'] === true);
 }
 
+// -- THE MODULE DISABLED FOR ONE PROJECT (review rv10a2-7) ----------------------
+//
+// 1004 and 1005 are both mid-scan, each worker holding a slot. Disabling the
+// module for 1004 stops its run, with that project's sentence, frees its
+// worker's slot and nothing else, and leaves 1005 scanning.
+{
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slots = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $slots->provision(2);
+    $store = new SqlScanStore($dbA);
+    $off = $plant(1004, 1, null, false);
+    $on = $plant(1005, 1, null, false);
+    $offEpoch = (int) $store->run(1004, $off['run'])['lease_epoch'];
+    $offLease = $slots->acquire('w4', $off['run'], 600);
+    $onLease = $slots->acquire('w5', $on['run'], 600);
+    $onRow = $runRow($on['run']);
+    $rec = new UvRecordingDb($dbA);
+    $d = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf)))->disableProject(1004);
+    echo '  project disable: ' . json_encode($d) . ', ' . count($rec->log) . " statements\n";
+    $why = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::PROJECT_DISABLED_WHY;
+    $row = $store->run(1004, $off['run']);
+    check('project disable: its run ends as stopped, with the project\'s sentence, and leaves the project free',
+        $d['runs_stopped'] === 1 && $d['failed'] === 0 && $row['terminal'] === ScanOutcome::CANCELLED
+        && $row['terminal_reason'] === $why
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = 1004 AND active_slot = 1')[0][0] === 0);
+    check('project disable: the stop is audited once, as the system\'s',
+        (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id = 1004 AND run_id = ? AND event = 'cancel' AND actor = 'system'",
+            array($off['run']))[0][0] === 1);
+    check('project disable: its worker is refused at its next fence, and only its slot is freed',
+        $d['slots_released'] === 1
+        && $store->commitBatch($off['run'], 'w4', $offEpoch, array('bytes' => 0, 'findings' => array(),
+            'records' => array())) !== true
+        && $slots->renew($offLease['slot_no'], 'w4', $offLease['epoch'], 600) === false
+        && $slots->renew($onLease['slot_no'], 'w5', $onLease['epoch'], 600) === true);
+    check('project disable: another project\'s run is not touched', $runRow($on['run']) === $onRow);
+    $again = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA, array('policy' => $policyOf)))->disableProject(1004);
+    check('project disable: a second one finds nothing to stop',
+        $again === array('runs_stopped' => 0, 'slots_released' => 0, 'failed' => 0));
+    foreach (array(1004, 1005) as $p) uv_clear_project($dbA, $p);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+}
+
 // -- A DISABLE OVER MORE THAN ONE PAGE, WITH NO TIME TO FINISH (rv10a2-3, rv10a2-5)
 //
 // DISABLE_PAGE + 1 active runs, and a budget of nothing: every run is stopped,

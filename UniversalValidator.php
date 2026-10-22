@@ -7580,18 +7580,10 @@ class UniversalValidator extends AbstractExternalModule
             $this->scanDisableFailed('marker', $e);
         }
         try {
-            $sys = $this->scanSystemPolicy();
-            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
-                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
-                'log'    => function ($event, array $context) {
-                    $this->log($event, array_merge(['what' => 'disable'], $context));
-                },
-            ]);
-            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
-            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the durable scan is not enabled here']);
-            } elseif (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the scan tables are not ready']);
+            $m = $this->scanDisabler('disable');
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => $why]);
             } else {
                 $this->log('scan-disable', $m->disable());
             }
@@ -7605,6 +7597,62 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             $this->scanDisableFailed('disable', $e);
         }
+    }
+
+    /**
+     * The module disabled for one project (review rv10a2-7). That project's
+     * active run is stopped, the slots held for it freed, and the run
+     * finished as cancelled with ScanMaintenance::PROJECT_DISABLED_WHY
+     * (ScanMaintenance::disableProject()). Before this the run held the
+     * project's slot until the reaper expired it, staleHours later, as
+     * abandoned. Under the system disable's gates; nothing deleted; never
+     * thrown.
+     */
+    public function redcap_module_project_disable($version = null, $project_id = null)
+    {
+        try {
+            $pid = (int) $project_id;
+            if ($pid < 1) return;
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-project-disable', ['project_id' => $pid, 'stopped' => 0, 'why' => $why]);
+                return;
+            }
+            $this->log('scan-project-disable',
+                ['project_id' => $pid] + $this->scanDisabler('disable-project')->disableProject($pid));
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('project-disable', $e);
+        }
+    }
+
+    /**
+     * Why a disable hook may not touch the scan tables, or null when it may:
+     * the crons' own gates. With the scan switched off no worker runs and
+     * Start refuses, and an installation that never turned the scan on has
+     * its schema inspected by nobody.
+     */
+    private function scanDisableGate()
+    {
+        $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+        if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+            return 'the durable scan is not enabled here';
+        }
+        if (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
+            return 'the scan tables are not ready';
+        }
+        return null;
+    }
+
+    /** The maintenance a disable hook works through, its log entries marked $what. */
+    private function scanDisabler($what)
+    {
+        $sys = $this->scanSystemPolicy();
+        return new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+            'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+            'log'    => function ($event, array $context) use ($what) {
+                $this->log($event, array_merge(['what' => (string) $what], $context));
+            },
+        ]);
     }
 
     /** The disable hook's failure, logged as class and redacted detail, never thrown. */

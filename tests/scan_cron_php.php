@@ -468,6 +468,54 @@ check('the drop opt-in is declared, as a checkbox, and off unless ticked',
         return isset($s['key']) && $s['key'] === UniversalValidator::SCAN_DROP_ON_DISABLE
             && $s['type'] === 'checkbox' && !isset($s['default']); })) === 1);
 
+// rv10a2-7: the module disabled for one project stops that project's run
+// alone, with its own sentence, and frees the slots held for that run alone.
+$checkP = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
+    $m = new UniversalValidator();
+    $m->systemSettings = $sys;
+    $m->tables = $tables;
+    $m->responder = function ($sql, $params) use ($RUN) {
+        if (strpos($sql, 'SELECT run_id FROM ' . $RUN . ' WHERE project_id = ? AND active_slot = 1') !== false) {
+            return $params === [42] ? [[5]] : [];
+        }
+        if (stripos($sql, 'ROW_COUNT()') !== false) return [[1]];
+        return null;
+    };
+    $m->queryThrows = $throws;
+    $threw = false;
+    try { $m->redcap_module_project_disable('9.9.9', 42); } catch (\Throwable $e) { $threw = true; }
+    check($label . ': the project disable hook never throws', !$threw);
+    check($label . ': and writes no stop marker, since the module is still on elsewhere',
+        $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT) === null);
+    return $m;
+};
+$m = $checkP('project disable', $on);
+$cancel = $m->sent(['UPDATE ' . $RUN, 'cancel_requested_at']);
+check('project disable: the project\'s active run is read by the project, and stopped with the project\'s sentence',
+    count($m->sent(['SELECT run_id FROM ' . $RUN, 'WHERE project_id = ? AND active_slot = 1'])) === 1
+    && count($cancel) === 1 && in_array(5, $cancel[0][1], true)
+    && in_array(ScanMaintenance::PROJECT_DISABLED_WHY, $cancel[0][1], true)
+    && !in_array(ScanMaintenance::DISABLED_WHY, $cancel[0][1], true));
+$order = [];
+foreach ($m->bound as $i => $b) {
+    if (strpos($b[0], 'cancel_requested_at') !== false && !isset($order['stop'])) $order['stop'] = $i;
+    if (strpos($b[0], 'UPDATE ' . $SLOT) !== false) $order['slots'][] = [$i, $b];
+}
+check('project disable: then the slots held for that run alone are freed',
+    isset($order['stop'], $order['slots']) && count($order['slots']) === 1 && $order['slots'][0][0] > $order['stop']
+    && strpos($order['slots'][0][1][0], 'WHERE run_id = ? AND owner IS NOT NULL') !== false
+    && $order['slots'][0][1][1] === [5]);
+$dl = $m->logged('scan-project-disable');
+check('project disable: what it did is logged, under the project', count($dl) === 1 && $dl[0]['project_id'] === 42
+    && $m->logged('scan-disable') === []);
+$m = $checkP('project disable, scan switched off', []);
+check('project disable, scan switched off: no scan table is touched',
+    $m->sent([Schema::table('scan_run')]) === [] && $m->sent([$SLOT]) === []);
+$m = $checkP('project disable, database down', $on, true);
+$dl = $m->logged('scan-project-disable');
+check('project disable, database down: the log says why nothing was stopped',
+    count($dl) === 1 && $dl[0]['stopped'] === 0 && $dl[0]['why'] === 'the scan tables are not ready');
+
 // rv10a2-3: enabling writes its own marker, which ends the refusal Start and
 // work give while a disable is newer (ScanService::disabling()).
 $m = new UniversalValidator();
