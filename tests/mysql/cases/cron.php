@@ -929,6 +929,51 @@ $runRow = function ($runId) use ($dbA) {
     foreach (array(2300, 2301) as $p) uv_clear_project($dbA, $p);
 }
 
+// -- A PASS STOPPED INSIDE A PROJECT RESUMES AT THAT PROJECT (review rv10a1-6) --
+//
+// 2400 and 2401 each have three finished runs past their retention, a purge
+// call per run. The pass is told to stop once 2400's first run is gone, so it
+// stops inside 2400; the cursor it hands back is the project before, and the
+// next pass works 2400 first. Handing back 2400 itself would leave its last
+// two runs for a whole lap.
+{
+    $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
+    foreach (array(2400, 2401) as $p) {
+        for ($i = 0; $i < 3; $i++) {
+            $x = $plant($p, 1);
+            $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $old . "' WHERE run_id = " . (int) $x['run']);
+        }
+        $PRJ[$p] = array('scan-run-retention-days' => '10');
+    }
+    $gone = false;
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$gone) {
+        if ($kind === 'exec' && strpos($sql, 'DELETE FROM ' . Schema::table('scan_run')) !== false
+            && in_array(2400, $params, true)) {
+            $gone = true;
+        }
+    };
+    $entered = array();
+    $lapOf = function ($db, callable $stopped) use ($policyOf, &$entered) {
+        return new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($db, array('policy' => $policyOf,
+            'stopped' => $stopped, 'enter' => function ($pid) use (&$entered) { $entered[] = (int) $pid; }));
+    };
+    $runsOf = function ($p) use ($dbA) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE project_id = ?', array($p))[0][0];
+    };
+    $p1 = $lapOf($hook, function () use (&$gone) { return $gone; })->retain(array(), 60.0);
+    $entered1 = $entered;
+    $left1 = $runsOf(2400);
+    $entered = array();
+    $p2 = $lapOf($dbA, function () { return false; })->retain($p1['state'], 60.0);
+    check('lap: a pass stopped inside a project hands back the project before it',
+        $p1['out']['stopped'] === 1 && $entered1 === array(2400) && $p1['state']['after'] === 2399
+        && $left1 === 2);
+    check('lap: and the next pass works that project first, and finishes both',
+        isset($entered[0]) && $entered[0] === 2400 && $runsOf(2400) === 0 && $runsOf(2401) === 0);
+    foreach (array(2400, 2401) as $p) uv_clear_project($dbA, $p);
+}
+
 // -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
 //
 // 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and
