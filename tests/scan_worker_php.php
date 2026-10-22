@@ -3920,6 +3920,30 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('W7-N6: any other problem code still caps nothing',
             ScanPromotion::marksFor([['rule' => 4, 'code' => 'temporal', 'why' => 'x']])[0]['blocks'] === 0
             && ScanPromotion::marksFor([['rule' => 4, 'why' => 'temporal-budget']])[0]['blocks'] === 0);
+
+        // THE DESIGN QUESTION (review rv10b1): a rule that cannot be judged at
+        // one event or instance is an answer, not a record left unexamined.
+        // The run is complete and never clean, and says a rule could not be
+        // evaluated; see the note on ScanPromotion::PARTLY_EXAMINED.
+        foreach (['temporal', 'temporal-group'] as $code) {
+            $unjudged = function ($id, $node) use ($code) {
+                return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'why' => null,
+                        'problems' => $id !== 'B' ? [] : [['rule' => 4, 'code' => $code, 'fields' => ['a'],
+                            'why' => 'Extended validation unavailable at event 41, instance 2: unresolved reference']]];
+            };
+            list($store, $runId) = $fixture(['A', 'B', 'C'], $code === 'temporal' ? 809 : 810);
+            $pidT = $code === 'temporal' ? 809 : 810;
+            $store->setProgressState($runId, (int) $store->run($pidT, $runId)['lease_epoch'], ['fenceTarget' => '9']);
+            (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $unjudged,
+                'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]))->work($pidT, $runId);
+            ScanPromotion::promote($store, $pidT, $runId, ['uniqueDone' => true, 'rollupDone' => true]);
+            $row = $store->run($pidT, $runId);
+            check("rv10b1 design: a `$code` problem leaves coverage complete, the run not clean, the rule counted",
+                $store->blockingAggregates($runId) === 0
+                && $row['terminal'] === ScanOutcome::COMPLETE && $row['coverage'] === ScanOutcome::FENCED
+                && (int) $row['clean'] === 0
+                && (int) $row['rule_problem_count'] === 1);
+        }
     }
 
     /* =====================================================================

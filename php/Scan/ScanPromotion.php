@@ -205,6 +205,23 @@ final class ScanPromotion
      * Problem codes that mean a record was only partly examined (W7-N6). Their
      * marks block coverage. Each must be a code UniversalValidator writes as
      * the second segment of a problem key, which problemList() hands over.
+     *
+     * `temporal` AND `temporal-group` ARE NOT HERE, and that was decided, not
+     * missed (review rv10b1, design question). They mean an event/instance
+     * rule could not be judged at one event or instance of the record - a
+     * reference that does not resolve there, a branch selector that cannot be
+     * read - and the evaluator says so and goes on to every other rule and
+     * context. Coverage says every record in scope was examined: every rule
+     * was asked of every context. These codes are an answer to that question
+     * ("this rule cannot be judged here"), and the run reports them as rule
+     * problems, so it is never clean and the report names the rule, the event
+     * and the instance. `temporal-budget` is different in kind: the evaluator
+     * stopped asking, and the rules after it were never put to the record.
+     * The record's data decides a temporal code, as it decides the budget,
+     * but a rerun meets the same code at the same context for as long as the
+     * project is designed that way. Blocking it would make such a project
+     * partial forever, and partial would no longer mean "the scan did not get
+     * to part of it".
      */
     const PARTLY_EXAMINED = ['temporal-budget'];
 
