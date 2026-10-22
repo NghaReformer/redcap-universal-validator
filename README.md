@@ -1123,7 +1123,9 @@ writes a `scan-cron` entry to the module log.
   previous findings of each project whose latest whole-project run finished
   complete. Pressing Start ends an abandoned run of its own project at once.
 - `uv_scan_expire_values` runs every hour. It clears stored values that a
-  tightened privacy setting revoked, deletes finished runs older than
+  tightened privacy setting revoked, in the runs planned under the looser
+  setting (a run planned under the setting now in force keeps its own),
+  deletes finished runs older than
   `scan-run-retention-days` days (90 by default, never more than
   `scan-system-max-run-retention-days`), and clears stored values past their
   retention window.

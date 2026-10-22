@@ -370,33 +370,40 @@ final class ScanMaintenance
      * ScanPolicy::tightened(): the value mode and the value window. A frozen
      * policy that cannot be read is tightened, as ScanService treats it.
      *
-     * The revision is one past the project's highest, so the bump reaches
-     * every run of the project. A run starts at the project's highest
-     * revision (W10A-N1), so one started under the new policy before a pass
-     * noticed the change sits at the same revision as the runs it tightened,
-     * and its previews are cleared too: more than it must, never less. A run
-     * started after the bump starts at the new revision, and a repeat of the
-     * bump leaves it alone. The intent is checkpointed before the bump and
-     * again after it, so a pass that dies in between bumps again rather than
-     * leaving previews it never clears.
+     * The revision is one past the project's highest, and the bump reaches
+     * the runs up to the newest one judged tightened (`through`). A run
+     * starts at the project's highest revision (W10A-N1), so one started
+     * under the new policy before a pass noticed the change sat at the same
+     * revision as the runs it tightened, and the bump cleared its previews
+     * too (W10AF-N6). Run ids only grow, and every run started before the
+     * policy changed has a lower id than any started after it, so the bound
+     * spares it; a run whose frozen policy cannot be read counts as
+     * tightened, so the bound can still reach further than it must, never
+     * less far. A run started after the bump starts at the new revision, and
+     * a repeat of the bump leaves it alone. The intent is checkpointed before
+     * the bump and again after it, so a pass that dies in between bumps again
+     * rather than leaving previews it never clears.
      *
      * @return bool false when the budget ran out inside the clearing
      */
     private function revokeStart($pid, array $policy, array $kept, $until, array &$out)
     {
-        $rows = $this->db->select('SELECT values_state, policy_json FROM ' . Schema::table('scan_run')
+        $rows = $this->db->select('SELECT run_id, values_state, policy_json FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND values_state IN (' . implode(',', array_fill(0, count($kept), '?')) . ')',
             array_merge([(int) $pid], $kept));
-        $applies = false;
+        // Every row is judged, not only until the first that is tightened:
+        // the bound is the newest of them.
+        $through = null;
         $now = ['valueMode' => $policy['valueMode'], 'valueDays' => (int) $policy['valueDays']];
         foreach ($rows as $r) {
-            $frozen = is_string($r[1]) ? json_decode($r[1], true) : null;
-            if (!is_array($frozen)) { $applies = true; break; }
-            $then = ['valueMode' => (string) $r[0]];
-            if (isset($frozen['valueDays'])) $then['valueDays'] = (int) $frozen['valueDays'];
-            if (ScanPolicy::tightened($then, $now)) { $applies = true; break; }
+            $frozen = is_string($r[2]) ? json_decode($r[2], true) : null;
+            $then = ['valueMode' => (string) $r[1]];
+            if (is_array($frozen) && isset($frozen['valueDays'])) $then['valueDays'] = (int) $frozen['valueDays'];
+            if (!is_array($frozen) || ScanPolicy::tightened($then, $now)) {
+                $through = max((int) $through, (int) $r[0]);
+            }
         }
-        if (!$applies) return true;
+        if ($through === null) return true;
         $max = $this->db->select('SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ?', [(int) $pid]);
         if (!isset($max[0]) || !array_key_exists(0, (array) $max[0])) {
@@ -405,9 +412,11 @@ final class ScanMaintenance
             throw new \RuntimeException('the project\'s policy revision could not be read');
         }
         $rev = (int) $max[0][0] + 1;
-        $this->state['revoke'][$pid] = ['revision' => $rev, 'bumped' => false, 'cursor' => null];
+        $this->state['revoke'][$pid] = ['revision' => $rev, 'bumped' => false, 'cursor' => null,
+                                        'through' => $through];
         $this->checkpoint();
-        call_user_func($this->log, 'scan-cron-revoke', ['project_id' => (int) $pid, 'revision' => $rev]);
+        call_user_func($this->log, 'scan-cron-revoke', ['project_id' => (int) $pid, 'revision' => $rev,
+                                                        'through' => $through]);
         return $this->revokeMore($pid, $until, $out);
     }
 
@@ -416,6 +425,8 @@ final class ScanMaintenance
      *
      * The first call after the intent was stored bumps; every later one passes
      * no revision and bumps nothing (ScanRetention::revokePreviews()). The
+     * bump stops at the intent's `through` run (W10AF-N6); an intent stored
+     * by an earlier build has none, and bumps every run as it did. The
      * cursor kept is the whole array the call handed back: it carries the
      * project and the generation digest, and a bare id would restart it.
      *
@@ -432,7 +443,8 @@ final class ScanMaintenance
         while (true) {
             if (!empty($st['bumped']) && $this->halted($until, $out)) return false;
             $r = $this->retention->revokePreviews($pid, empty($st['bumped']) ? (int) $st['revision'] : null,
-                isset($st['cursor']) && is_array($st['cursor']) ? $st['cursor'] : null, ScanRetention::PAGE);
+                isset($st['cursor']) && is_array($st['cursor']) ? $st['cursor'] : null, ScanRetention::PAGE,
+                isset($st['through']) && is_numeric($st['through']) ? (int) $st['through'] : null);
             $out['runs_revoked'] += (int) $r['runs'];
             $out['previews_revoked'] += (int) $r['rows'];
             $first = empty($st['bumped']);

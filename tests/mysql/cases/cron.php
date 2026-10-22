@@ -511,6 +511,28 @@ $runRow = function ($runId) use ($dbA) {
     check('expire: and is started again after it', count($rec->matching('exec', array('value_bin = NULL', 'finding_id > ?'))) >= 1);
     check('retain: nothing failed', $r1['out']['failed'] === 0 && $r2['out']['failed'] === 0 && $r3['out']['failed'] === 0);
 
+    // W10AF-N6. A RUN STARTED UNDER THE NEW POLICY BEFORE A PASS NOTICED THE
+    // CHANGE KEEPS ITS PREVIEWS. 988 kept raw values for 30 days and now
+    // keeps them for 7: its first run was planned under 30, its second under
+    // 7, both before the pass. The bump reached every run of the project and
+    // revoked both.
+    $raw30 = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
+    $raw7 = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 7)));
+    $g1 = $plant(988, 2, '2999-01-01 00:00:00', true, $raw30);
+    $g2 = $plant(988, 2, '2999-01-01 00:00:00', true, $raw7);
+    $PRJ[988] = array('scan-value-storage' => 'raw', 'scan-value-retention-days' => '7');
+    $r6 = $maint()->retain(array(), 60.0);
+    $rev6 = $dbA->select('SELECT run_id, policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE project_id = ? ORDER BY run_id', array(988));
+    check('revoke W10AF-N6: the run planned under the old policy is revoked',
+        $runRow($g1['run'])[4] === 'expired'
+        && $countWhere('project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', array(988, $g1['gen'])) === 0
+        && !isset($r6['state']['revoke'][988]) && $r6['out']['failed'] === 0);
+    check('revoke W10AF-N6: the run planned under the policy now in force keeps its previews and its revision',
+        $runRow($g2['run'])[4] === 'raw'
+        && $countWhere('project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', array(988, $g2['gen'])) === 2
+        && count($rev6) === 2 && (int) $rev6[1][1] === (int) $rev6[0][1] - 1);
+
     // A PROJECT'S PURGE WAITS FOR ITS REVOCATION (R8-3). The continuation of
     // 986's revocation fails this pass, so the lap reaches 986 with budget in
     // hand and a run past retention: purging it would change the generations

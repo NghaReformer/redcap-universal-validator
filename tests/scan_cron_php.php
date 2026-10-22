@@ -419,6 +419,44 @@ check('gone: and tries no revocation it still owes after the first, nor any proj
         || strpos($l[0], 'GROUP_CONCAT(DISTINCT values_state)') !== false; }) === []
     && array_keys($gone['state']['revoke']) === [5, 9]);
 
+// W10AF-N6: THE BUMP STOPS AT THE NEWEST RUN THE OLD POLICY GOVERNED. It
+// reached every run of the project, so a run started under the new policy
+// before the pass noticed the change had its previews revoked too. Run 10
+// kept values for 30 days and the project now keeps them 7; run 11's frozen
+// policy cannot be read, so it counts as tightened; run 12 was started under
+// the policy now in force.
+$n6 = function (array $stateIn) use ($census, $RUN) {
+    $logs = [];
+    $db = new ScriptDb(function ($sql, $params) use ($census, $RUN) {
+        if (strpos($sql, 'SELECT run_id, values_state, policy_json FROM ' . $RUN) === 0) {
+            return [[10, 'raw', json_encode(['valueMode' => 'raw', 'valueDays' => 30])],
+                    [11, 'raw', '{not json'],
+                    [12, 'raw', json_encode(['valueMode' => 'raw', 'valueDays' => 7])]];
+        }
+        if (strpos($sql, 'SELECT MAX(policy_revision)') === 0) return [[4]];
+        return call_user_func($census([[61, 1, 0, null, 'raw']]), $sql, $params);
+    });
+    $pol = function ($pid) {
+        return \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve([],
+            ['scan-value-storage' => 'raw', 'scan-value-retention-days' => '7']);
+    };
+    $r = (new ScanMaintenance($db, ['policy' => $pol,
+        'log' => function ($e, array $c) use (&$logs) { $logs[] = [$e, $c]; }]))->retain($stateIn, 100.0);
+    $bump = array_values(array_filter($db->log, function ($l) { return strpos($l[0], 'SET policy_revision = ?') !== false; }));
+    return ['out' => $r, 'bump' => $bump, 'logs' => $logs];
+};
+$b6 = $n6([]);
+check('W10AF-N6: the bump moves the runs up to the newest the old policy governed, and no later one',
+    count($b6['bump']) === 1 && strpos($b6['bump'][0][0], 'AND run_id <= ?') !== false
+    && $b6['bump'][0][1] === [5, 'expired', 61, 5, 11]);
+check('W10AF-N6: and the intent it logs says how far it reaches',
+    $b6['logs'] !== [] && $b6['logs'][0][0] === 'scan-cron-revoke'
+    && $b6['logs'][0][1] === ['project_id' => 61, 'revision' => 5, 'through' => 11]);
+$o6 = $n6(['revoke' => [61 => ['revision' => 5, 'bumped' => false, 'cursor' => null]]]);
+check('W10AF-N6: an intent an earlier build stored, with no bound, bumps every run as it did',
+    count($o6['bump']) >= 1 && strpos($o6['bump'][0][0], 'run_id <= ?') === false
+    && $o6['bump'][0][1] === [5, 'expired', 61, 5]);
+
 // ---- 9) the module switched off (M17) ---------------------------------------
 $SLOT = Schema::table('scan_worker_slot');
 $check9 = function ($label, array $sys, $throws = false) use ($tables, $RUN) {

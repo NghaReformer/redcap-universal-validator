@@ -170,17 +170,26 @@ final class ScanRetention
      * repeat of the same bump - a pass that died between the bump and its
      * checkpoint - leaves it alone as well.
      *
+     * UP TO THE RUNS THE OLD POLICY GOVERNED (W10AF-N6). $throughRun is the
+     * newest run the caller judged tightened. A run started under the new
+     * policy before the cron noticed the change starts at the project's
+     * revision, below the new one, and has a higher id than every run
+     * started before it, so the bound spares its previews; without it the
+     * bump reaches every run of the project.
+     *
      * @param int|null   $newRevision the revision to move the project's runs
      *                           to, or null to bump nothing
      * @param array|null $cursor what the previous call FOR THIS PROJECT returned,
      *                           or null to start; any other cursor starts again
      *                           (review R8-3, see revokeAt())
      * @param int        $limit  rows per page, at most PAGE
+     * @param int|null   $throughRun the newest run id the bump may move, or
+     *                           null for every run of the project
      * @return array{runs:int, rows:int, done:bool, cursor:?array} `runs` whose
      *         previews this call revoked (0 once the bump has been made),
      *         `rows` previews cleared by this call
      */
-    public function revokePreviews($pid, $newRevision, $cursor = null, $limit = self::PAGE)
+    public function revokePreviews($pid, $newRevision, $cursor = null, $limit = self::PAGE, $throughRun = null)
     {
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
@@ -190,10 +199,12 @@ final class ScanRetention
             // the bump is no work on the run: moving it restarted every run's
             // retention, so tightening the privacy policy kept the project's
             // old findings up to runDays longer (wave 10, the first caller).
+            $bound = $throughRun === null ? '' : ' AND run_id <= ?';
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET policy_revision = ?, values_state = ?
-                WHERE project_id = ? AND policy_revision < ?',
-                [(int) $newRevision, 'expired', $pid, (int) $newRevision]);
+                WHERE project_id = ? AND policy_revision < ?' . $bound,
+                array_merge([(int) $newRevision, 'expired', $pid, (int) $newRevision],
+                            $throughRun === null ? [] : [(int) $throughRun]));
             $runs = (int) $this->db->affected();
         }
 
