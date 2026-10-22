@@ -4163,6 +4163,18 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('W7-N9: a progress write the lease refuses ends the request as a refused fence',
             $res['ok'] === true && $res['stop'] === 'fenced' && $f->calls === 1
             && $store->run(844, $runId)['progress_at'] === $OLD);
+
+        // EACH KIND OF FORWARD STEP MOVES THE CLOCK ON ITS OWN (review
+        // rv10b2-3). A forward count reduced to groups alone left every suite
+        // green while verify, emit and publish moved nothing: W7-N9 undone
+        // for all but discovery.
+        foreach (['groups', 'verified', 'emitted', 'published', 'collisions'] as $i => $kind) {
+            list($store, $runId) = $inUnique(850 + $i);
+            $f = new ScriptedFinalizer([[$kind => 1], ['done' => true]]);
+            $res = $drive($store, 850 + $i, $runId, $f);
+            check("rv10b2-3: a step that only $kind moves progress_at",
+                $res['ok'] === true && $f->calls === 2 && $store->run(850 + $i, $runId)['progress_at'] !== $OLD);
+        }
     }
 
     // -- a finished run takes no more work -----------------------------------
