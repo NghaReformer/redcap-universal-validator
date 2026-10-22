@@ -1152,14 +1152,20 @@ $NEIGHBOUR = uv_neighbour($PID);
     };
     $dFin->step($GEND, 10, 2);
     $dDrops = 0;
+    $dDropped = array();
     for ($i = 0; $i < 12 && $dGone; $i++) {
         $s = $dFin->step($GEND, 10, 2);
-        if ($s['why'] !== null && strpos($s['why'], 'left the group') !== false) $dDrops++;
+        if ($s['why'] !== null && strpos($s['why'], 'left the group') !== false) {
+            $dDrops++;
+            $dDropped[] = $s['dropped'];
+        }
     }
     $afterDrops = $dGroupRow();
     check('rvf2-5: four departures, one a verify page, leave the group at its first epoch with four records',
         $dDrops === 4 && count($afterDrops) === 1 && (int) $afterDrops[0][1] === 1
         && (int) $afterDrops[0][3] === 4);
+    check('rvf2-6: each departure step says it dropped its departed record\'s candidate',
+        $dDropped === array(1, 1, 1, 1));
     // One edit, once, to a record still in the group (D8 is on its last page).
     $dVer->v['D8'] = '101';
     $dRestarts = 0;

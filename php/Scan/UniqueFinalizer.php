@@ -31,8 +31,12 @@ interface DuplicateFinalizer
      * verified already (review rv10b2-1): work the step did, and no ground the
      * run gained. Absent is none.
      *
+     * `dropped` is how many candidates of records that left the run's group
+     * the step deleted (review rvf2-6): ground the run gained, since each
+     * candidate is deleted once. Absent is none.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, read:int, revisited:int, why:?string}
+     *               collisions:int, read:int, revisited:int, dropped:int, why:?string}
      */
     public function step($generationId, $limit = 500, $readLimit = null);
 }
@@ -347,7 +351,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $limit = max(1, min(5000, (int) $limit));
         $readLimit = $readLimit === null ? $limit : max(1, min(5000, (int) $readLimit));
         $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                'published' => 0, 'collisions' => 0, 'read' => 0, 'revisited' => 0, 'why' => null];
+                'published' => 0, 'collisions' => 0, 'read' => 0, 'revisited' => 0, 'dropped' => 0,
+                'why' => null];
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
@@ -367,6 +372,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $r = $this->verify($generationId, $g, $readLimit);
             $out['verified'] += $r['checked'];
             $out['revisited'] += isset($r['revisited']) ? $r['revisited'] : 0;
+            $out['dropped'] += isset($r['dropped']) ? (int) $r['dropped'] : 0;
             $out['read'] += $r['read'];
             $out['collisions'] += $r['collision'] ? 1 : 0;
             $out['why'] = $r['why'];
@@ -577,7 +583,11 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                 }
                 if ($drop) {
                     $this->dropCandidates($generationId, $g, $drop);
-                    return ['checked' => 0, 'collision' => false, 'read' => 0,
+                    // `dropped`, so the worker counts the step as moving the
+                    // run forward (review rvf2-6): it read nothing, wrote no
+                    // finding and said why, which the worker otherwise takes
+                    // as a step that could not proceed, and stopped on.
+                    return ['checked' => 0, 'collision' => false, 'read' => 0, 'dropped' => count($drop),
                             'why' => 'a record in this duplicate group left the group this scan '
                                    . 'covers, so the group is being checked again without it'];
                 }

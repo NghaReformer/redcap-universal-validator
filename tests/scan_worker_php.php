@@ -4400,6 +4400,18 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $store->run(842, $runId)['phase'] === ScanPhase::UNIQUE);
         check('W7-N9: and a refused step does not move the clock',
             $store->run(842, $runId)['progress_at'] === $OLD);
+        // A STEP THAT DROPPED A DEPARTED RECORD'S CANDIDATES moved the run
+        // forward (review rvf2-6). It reads nothing, writes no finding and
+        // says why, and was taken for a refusal: ok:false, stop 'finalizer'.
+        list($store, $runId) = $inUnique(849);
+        $f = new ScriptedFinalizer([['dropped' => 2, 'why' => 'a record in this duplicate group left the '
+                                     . 'group this scan covers, so the group is being checked again without it'],
+                                    ['done' => true]]);
+        $res = $drive($store, 849, $runId, $f);
+        check('rvf2-6: a step that dropped a departed record\'s candidates is stepped past, not stopped on',
+            $res['ok'] === true && $f->calls === 2 && $res['stop'] !== 'finalizer');
+        check('rvf2-6: and it moves the clock, so a run whose records depart does not age toward the reaper',
+            $store->run(849, $runId)['progress_at'] !== $OLD);
         // The same words with no why are a step that moved state the counts do
         // not show (a verified group going on to be written), and go on.
         list($store, $runId) = $inUnique(843);
@@ -4424,7 +4436,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         // rv10b2-3). A forward count reduced to groups alone left every suite
         // green while verify, emit and publish moved nothing: W7-N9 undone
         // for all but discovery.
-        foreach (['groups', 'verified', 'emitted', 'published', 'collisions'] as $i => $kind) {
+        foreach (['groups', 'verified', 'emitted', 'published', 'collisions', 'dropped'] as $i => $kind) {
             list($store, $runId) = $inUnique(850 + $i);
             $f = new ScriptedFinalizer([[$kind => 1], ['done' => true]]);
             $res = $drive($store, 850 + $i, $runId, $f);
