@@ -452,7 +452,9 @@ inner spaces.
 - `delta_dom_js.cjs` boots the browser rule on a stub page: a `vs` on the page
   is read as typed and blocks per `blockSave`, changing it re-checks; a
   snapshot, an event/instance rule (`extendedAdvisory`), a calc, a read-only
-  field and a deferred rule never block; a withheld earlier value and one that
+  field and a deferred rule never block; a Missing Data Code on either side,
+  a numeric one such as `-99` included, checks nothing, in `check()` and in
+  `test()`; a withheld earlier value and one that
   is not a number are amber notes for staff and nothing on a survey; the note's
   wording (percent, "more than" the limit it broke, "under 0.1%", the earlier
   value with its own decimals, comma, survey without the label, escaping); two
@@ -510,7 +512,24 @@ inner spaces.
   path that suggests a reference passes over the groups other tags hold, in
   the tag's direction; and that another form's field gets the second event
   that holds it, named outright, when the first lands on the field's own
-  event. The refusal of a plain `vs` naming the field
+  event. For review R10 it checks that a conditional tag is not offered the
+  group of another whose condition could be true at the same time (`>` beside
+  `=`, `1` beside `'01'` or `1.0`, a space inside the quotes, `'Yes'` beside
+  `'yes'` unless both tags are `caseSensitive`, `<>`, an `or`, a field at
+  another event, one condition never true said twice), and is offered it
+  beside one that can never be true with it (two values of one field, either
+  way round, inside an `and`, a number beside a text), each written back and
+  accepted, and that at run time each value picks one branch with no
+  conflict; that a tag without a condition is the fallback beside a
+  conditional one; that a tag that failed to parse is read with single or
+  curly quotes and a trailing comma, keeping its `when`, direction,
+  `caseSensitive` (only when true) and a shorthand in capitals, from its own
+  value; that beside a tag whose `vs` cannot be read nothing is offered and
+  each kind of refusal says to fix it first, and that each says when the
+  other tags hold every reference that would work; that two tags written the
+  same are told apart, each field reads its own tags, and the rules built
+  again with references on are worked out again; and that a refused
+  reference and a refused shorthand hand their suggestions on. The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
   form repeats at the visits, a written reference when no shorthand fits
@@ -531,7 +550,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 179 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 228 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral

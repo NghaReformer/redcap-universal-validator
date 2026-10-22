@@ -1030,13 +1030,28 @@ and flags a change larger than its limit:
   `[last-instance]` and an instance numbered after the first only at another,
   `[first-instance]` at either (tried last), and never `[next-instance]`, nor
   `[current-instance]` at another event. It offers nothing with the `vs` and
-  direction of another `@UVDELTA` tag on the field under the same condition,
-  which would be refused once written back. Two conditions are the same when
-  they differ only in spacing, quote style, parentheses or keyword case, or in
-  letter case when neither tag is `caseSensitive`. A refused tag earlier on
-  the field counts with the reference its own refusal suggests, and a tag
-  that failed to parse with the `vs` its JSON names, so the suggestions for
-  one field can be written back together. An event is named outright only when every
+  direction of another `@UVDELTA` tag on the field when neither tag has a
+  condition, or when both have one and the two could be true at once. Written
+  back, two such tags without a condition are refused, and so are two whose
+  conditions say the same thing, however written (keyword case, spacing,
+  quote style, parentheses, the order of `and`/`or` members and of a
+  comparison's sides aside, and letter case when neither tag is
+  `caseSensitive`). Two other conditions that are true at once are a runtime
+  conflict, and the field validates nothing while both hold. Two conditions
+  count as never true at once only when each tests one field for equality
+  with a value, alone or as part of an `and`, and no value equals both as
+  conditions compare values. For example, `[arm]='1'` and `[arm]='2'`
+  qualify, while `[x]=1` and `[x]='01'` (numbers compare by value),
+  `[x]='Yes'` and `[x]='yes'` (unless both tags are `caseSensitive`), and
+  `[x]>0` and `[x]=1` do not. A tag without a condition is the fallback
+  beside tags that have one, so the two may share a `vs`. A refused tag
+  earlier on the field counts with the reference its own refusal suggests. A
+  tag that failed to parse counts with the `vs` its JSON names, read with
+  single or curly quotes as double quotes and without a trailing comma; when
+  even that cannot be read, nothing is suggested beside it, and the refusal
+  says to fix that tag first. So the suggestions for one field can be
+  written back together. When the other tags hold every reference that
+  would work, the refusal says so. An event is named outright only when every
   event of the field's form is in its arm: an event of another arm holds a
   value only for a record entered in both arms. Written by hand, such an
   event is accepted. A `vs` form designated at no event is said to be so.

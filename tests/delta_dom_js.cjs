@@ -238,6 +238,19 @@ function W(extra) {
   check('a Missing Data Code as the value: nothing checked', !shown(msg) && save(env) === 'saved');
 }
 {
+  // a numeric code (user guide: -99) reads as a number, so only the code list keeps it unjudged (review R10-4)
+  const w0 = numEl('w0', '70'), w = numEl('weight', '-99');
+  const env = boot([w0, w], { missingCodes: ['-99'], rules: [W()] });
+  const msg = dMsg(env, 'weight');
+  check('a numeric Missing Data Code as the value: nothing checked (got ' + msg.innerHTML + ')', !shown(msg) && save(env) === 'saved');
+  check('... and test() leaves the answer open', env.NS.validators.weight.test() === null);
+  w0.value = '-99'; w.value = '72'; w.fire('change');
+  check('a numeric Missing Data Code as the earlier value: nothing checked', !shown(msg) && save(env) === 'saved'
+    && env.NS.validators.weight.test() === null);
+  w0.value = '70'; w.value = '-98'; w.fire('change');
+  check('... while a number that is not a code is judged', shown(msg) && save(env) === 'held' && env.NS.validators.weight.test() === false);
+}
+{
   const w = numEl('weight', '90');
   const env = boot([w], { rules: [W({ deltaVs: '[weight]', deltaVsOp: ['ref', 'weight', null] })] });
   check('a vs that is the field itself (an extended ref folded to this entry): no change, nothing said',

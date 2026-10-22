@@ -4287,12 +4287,26 @@ instance:
   the last event or a later visit named outright, which compare with a later
   entry, even when the reference as written named one. Nor does it suggest a
   reference with the `vs` and direction of another `@UVDELTA` tag on the
-  field under the same condition. Conditions that differ only in spacing,
-  quote style, parentheses or keyword case are the same, and so are
-  conditions that differ in letter case unless a tag is `caseSensitive`. A
-  refused tag earlier on the field counts with the reference its own refusal
-  suggests, and a tag that failed to parse with the `vs` its JSON names, so
-  the suggestions for one field can be written back together. For the field
+  field when neither tag has a condition, or when both have one and the two
+  could be true at once. Written back, two such tags without a condition are
+  refused, and so are two whose conditions say the same thing, however
+  written (keyword case, spacing, quote style, parentheses, the order of
+  `and`/`or` members and of a comparison's sides aside, and letter case when
+  neither tag is `caseSensitive`). Two other conditions that are true at
+  once are a runtime conflict, and the field validates nothing while both
+  hold. Two conditions count as never true at once only when each tests one
+  field for equality with a value, alone or as part of an `and`, and no
+  value equals both as conditions compare values. For example, `[arm]='1'`
+  and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'` (numbers compare by
+  value), `[x]='Yes'` and `[x]='yes'` (unless both tags are
+  `caseSensitive`), and `[x]>0` and `[x]=1` do not. A tag without a
+  condition is the fallback beside tags that have one, so the two may share
+  a `vs`. A refused tag earlier on the field counts with the reference its
+  own refusal suggests. A tag that failed to parse counts with the `vs` its
+  JSON names, read with single or curly quotes as double quotes and without
+  a trailing comma; when even that cannot be read, nothing is suggested
+  beside it, and the refusal says to fix that tag first. So the suggestions
+  for one field can be written back together. For the field
   itself the instance must read an earlier entry where the event lands:
   `[previous-instance]` only at the field's own event, `[last-instance]` and
   an instance numbered after the first only at another, `[first-instance]`

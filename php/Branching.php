@@ -277,6 +277,35 @@ class Branching
     }
 
     /**
+     * Whether two rules' "when" conditions can never be true at once, so the
+     * two can share a branch group with no runtime conflict; false when
+     * either has none. Only what shows without doubt counts: both need one
+     * plain field to equal a value (Logic::requiredValues), and no value
+     * equals both (Logic::neverBothEqual: numbers by value, so 1, 01 and 1.0
+     * are one; text trimmed, and with its letter case folded unless both
+     * rules are caseSensitive, since a value meets each rule's own way of
+     * comparing). Any other two conditions may overlap. Public so the
+     * @UVDELTA suggestions leave a group alone where a suggestion would
+     * conflict (UniversalValidator::deltaGroupsTaken, review R10-1).
+     */
+    public static function whenExclusive(array $a, array $b)
+    {
+        $wa = self::whenOf($a);
+        $wb = self::whenOf($b);
+        if ($wa === null || $wb === null) return false;
+        $pa = Logic::parse($wa, ['qualified' => true]);
+        $pb = Logic::parse($wb, ['qualified' => true]);
+        if (empty($pa['ok']) || empty($pb['ok'])) return false;
+        $fold = empty($a['caseSensitive']) || empty($b['caseSensitive']);
+        $need = Logic::requiredValues($pb['ast']);
+        foreach (Logic::requiredValues($pa['ast']) as $key => $values) {
+            if (!isset($need[$key])) continue;
+            foreach ($values as $x) foreach ($need[$key] as $y) if (Logic::neverBothEqual($x, $y, $fold)) return true;
+        }
+        return false;
+    }
+
+    /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
      * fixed priority order: two-unconditional, identical-when, mixed-type,

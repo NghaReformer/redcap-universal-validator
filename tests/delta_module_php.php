@@ -1172,11 +1172,13 @@ namespace {
         check('... and the dictionary hook offers the first event too (got ' . json_encode($e) . ')', $e === [$SAME9 . '[first-event-name][w9]".']);
         check('... which is accepted next to it', $fieldErrs($W9, 'w9', 'visit_form', 3, $held . '{"vs":"[first-event-name][w9]","max":5,"when":"' . $w[1] . '"}') === []);
     }
+    // 'Yes' and 'yes' are two conditions when one tag is caseSensitive, but "Yes"
+    // makes both true, a runtime conflict (review R10-1): the previous event is held.
     $held = '@UVDELTA={"vs":"previous-event","max":1,"when":"[flag]=\'Yes\'","caseSensitive":true} @UVDELTA=';
     $e = $fieldErrs($W9, 'w9', 'visit_form', 3, $held . '{"vs":"[w9]","max":5,"when":"[flag]=\'yes\'"}');
-    check('R9-1: \'Yes\' and \'yes\' are two conditions when one tag is caseSensitive: nothing is held (got ' . json_encode($e) . ')',
-        $e === [$SELF9 . 'previous-event".']);
-    check('... and the previous event is accepted next to it', $fieldErrs($W9, 'w9', 'visit_form', 3, $held . '{"vs":"previous-event","max":5,"when":"[flag]=\'yes\'"}') === []);
+    check('R9-1, R10-1: \'Yes\' and \'yes\' when one tag is caseSensitive: both true for "Yes", so the previous event is held (got ' . json_encode($e) . ')',
+        $e === [$SELF9 . 'first-event".']);
+    check('... and the first event is accepted next to it', $fieldErrs($W9, 'w9', 'visit_form', 3, $held . '{"vs":"first-event","max":5,"when":"[flag]=\'yes\'"}') === []);
 
     // R9-2: a token that finds no event from some event of the field's form says something
     // else than the plain reference: arm 2 has no b_form, so there the first event reads
@@ -1284,8 +1286,10 @@ namespace {
     // R8-7): with the previous event, the first event and that one held, nothing is left.
     $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1} @UVDELTA={"vs":"first-event","max":2} '
         . '@UVDELTA={"vs":"[visit1_arm_1][w9]","max":3} @UVDELTA={"vs":"[w9]","max":5}');
-    check('R8-7: no later visit named outright once the earlier references are held (got ' . json_encode($e) . ')',
-        $e === ['@UVDELTA on "w9": "vs" names this field itself — compare it with another entry.']);
+    $HELD10 = ' (an entry another @UVDELTA tag on this field compares with in the same direction is not suggested, '
+        . 'unless just one of the two tags has a "when", or both have one and the two can never be true at once).';
+    check('R8-7, R10-1: no later visit named outright once the earlier references are held, and the refusal says why (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": "vs" names this field itself — compare it with another entry' . $HELD10]);
     // N3: the field hook's written reference, where visit_form repeats at visit 1 only
     // and no shorthand fits (M1's layout).
     $layout([1 => ['enrol_form'], 2 => ['visit_form'], 3 => ['visit_form']], [2 => ['visit_form' => '']]);
@@ -1313,6 +1317,150 @@ namespace {
     check('R9-9 N43: another form: the second event holding it, named outright (got ' . json_encode($e) . ')',
         $e === '@UVDELTA on "n9": "vs" names "[enrol_arm_1][w_b]", but "w_b" is on the form "b_form", which is not designated at "enrol_arm_1"' . $sug('[visit3_arm_1][w_b]'));
     check('... which is accepted', $roundTrip($N9, 'n9', 'visit_form', 2, $e, $FOUR, $REFS));
+
+    // ---- the tenth review (R10-1 to R10-4) ----
+    // R10-1: a tag with a "when" meets every other tag with one, unless the two
+    // conditions can never be true at once: two that are true together validate
+    // nothing (a runtime conflict). Only equality tests of one plain field against
+    // values no value equals both count as never true at once.
+    longitudinal();
+    $X10 = ['record_id' => f('enrol_form'), 'flag' => f('visit_form', '', 'text'), 'y' => f('visit_form', '', 'text'), 'w9' => f('visit_form', '', 'number')];
+    $whenTag = function ($vs, $max, $when, $extra = '') { return '@UVDELTA={"vs":"' . $vs . '","max":' . $max . ',"when":"' . $when . '"' . $extra . '}'; };
+    $CS = ',"caseSensitive":true';
+    foreach ([
+        'overlapping, [flag] > 0 and [flag] = 1' => ["[flag] > 0", "[flag] = 1", 'first-event'],
+        'numbers by value, 1 and 01' => ["[flag] = 1", "[flag] = '01'", 'first-event'],
+        'numbers by value, 1 and 1.0' => ["[flag] = 1", "[flag] = 1.0", 'first-event'],
+        'a space inside the quotes' => ["[flag] = '1'", "[flag] = ' 1'", 'first-event'],
+        '<> is not an equality test' => ["[flag] <> '1'", "[flag] = '2'", 'first-event'],
+        'an "or" needs nothing' => ["[flag] = '1' or [y] = '1'", "[flag] = '2'", 'first-event'],
+        'a field at another event' => ["[visit1_arm_1][flag] = '1'", "[flag] = '2'", 'first-event'],
+        'one condition, never true, said twice' => ["[flag] = '1' and [flag] = '2'", "[flag] = '2' and [flag] = '1'", 'first-event'],
+        'never true at once, 1 and 2' => ["[flag] = '1'", "[flag] = '2'", 'previous-event'],
+        'never true at once, either way round' => ["'1' = [flag]", "[flag] = '2'", 'previous-event'],
+        'never true at once, members of an "and"' => ["[flag] = '1' and [y] = '1'", "[y] = '3' and [flag] = '2'", 'previous-event'],
+        'never true at once, a number and a text' => ["[flag] = 1", "[flag] = 'a'", 'previous-event'],
+        "never true at once, 'Yes' and 'yes' when both tags are caseSensitive" => ["[flag] = 'Yes'", "[flag] = 'yes'", 'previous-event', $CS, $CS],
+    ] as $how => $c) {
+        $held = $whenTag('previous-event', 1, $c[0], isset($c[3]) ? $c[3] : '') . ' ';
+        $own = isset($c[4]) ? $c[4] : '';
+        $e = $fieldErrs($X10, 'w9', 'visit_form', 3, $held . $whenTag('[w9]', 5, $c[1], $own));
+        check('R10-1: ' . $how . ': ' . $c[2] . ' is offered (got ' . json_encode($e) . ')', $e === [$SELF9 . $c[2] . '".']);
+        check('... which is accepted next to it', $fieldErrs($X10, 'w9', 'visit_form', 3, $held . $whenTag($c[2], 5, $c[1], $own)) === []);
+    }
+    $e = $fieldErrs($X10, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1} ' . $whenTag('[w9]', 5, "[flag] = '1'"));
+    check('R10-1: a tag without a "when" is the else branch of a conditional one: the previous event is offered (got ' . json_encode($e) . ')',
+        $e === [$SELF9 . 'previous-event".']);
+    // ... and at run time conditions that are never true at once pick one branch each
+    $X10['w9']['field_annotation'] = $whenTag('previous-event', 1, "[flag] = '1'") . ' ' . $whenTag('previous-event', 60, "[flag] = '2'");
+    foreach (['1' => 'up', '2' => null] as $flag => $reason) {
+        $m = mod($X10, ['2' => [2 => ['w9' => '50', 'flag' => $flag], 3 => ['w9' => '100', 'flag' => $flag]]], $FOUR, $REFS);
+        $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+        check('R10-1: run time, flag ' . $flag . ': one branch validates, no conflict (got ' . json_encode([deltaBy($m, 3), problems($m, 'w9')]) . ')',
+            (deltaBy($m, 3)['w9']['reason'] ?? null) === $reason && !problems($m, 'w9'));
+    }
+
+    // R10-2: a tag that failed to parse is read leniently for the group it holds;
+    // one whose "vs" cannot be read at all leaves no suggestion beside it.
+    foreach (['single quotes' => "{'vs':'previous-event','max':1}",
+              'a trailing comma' => '{"vs":"previous-event","max":1,}',
+              'curly quotes' => "{\u{201C}vs\u{201D}:\u{201C}previous-event\u{201D},\u{201C}max\u{201D}:1}",
+              'curly quotes around one value' => "{\"vs\":\"previous-event\",\"unit\":\u{201C}kg\u{201D},\"max\":1}",
+              'single quotes, and an apostrophe in a double-quoted message' => "{'vs':'previous-event','message':\"don't\",'max':1}",
+              'single quotes around a message in double quotes' => "{'vs':'previous-event','message':'a \"big\" change','max':1}",
+              'single quotes, and a "when"' => "{'vs':'previous-event','max':1,'when':\"[flag]='1'\"}"] as $how => $bad) {
+        $own = strpos($bad, 'when') !== false ? ',"when":"[flag]=\'1\'"' : '';
+        $e = $fieldErrs($X10, 'w9', 'visit_form', 3, '@UVDELTA=' . $bad . ' @UVDELTA={"vs":"[w9]","max":5' . $own . '}');
+        check('R10-2: a tag with ' . $how . ' holds the group its "vs" names (got ' . json_encode($e) . ')',
+            count($e) === 2 && $e[1] === $SELF9 . 'first-event".');
+    }
+    $UNREAD10 = ' (nothing is suggested while another @UVDELTA tag on this field cannot be read; fix that tag first).';
+    foreach (['bare words' => '@UVDELTA={vs:previous-event,max:1}', 'no value' => '@UVDELTA', 'no "vs"' => '@UVDELTA={"max":1}'] as $how => $bad) {
+        $e = $fieldErrs($T9, 'w9', 'visit_form', 3, $bad . ' @UVDELTA={"vs":"[w9]","max":5}');
+        check('R10-2: a tag whose "vs" cannot be read (' . $how . '): nothing is offered beside it, and the refusal says why (got ' . json_encode($e) . ')',
+            count($e) === 2 && $e[1] === '@UVDELTA on "w9": "vs" names this field itself — compare it with another entry' . $UNREAD10);
+    }
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={vs:x} @UVDELTA={"vs":"[event-name][w9]","max":5}');
+    check('R10-2: ... the same-entry refusal too (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === '@UVDELTA on "w9": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry' . $UNREAD10);
+    // R10-1 says why too: the earlier references are held by the other tags.
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1} @UVDELTA={"vs":"first-event","max":2} '
+        . '@UVDELTA={"vs":"[visit1_arm_1][w9]","max":3} @UVDELTA={"vs":"[event-name][w9]","max":5}');
+    check('R10-1: ... and the same-entry refusal says when the other tags hold every entry it could offer (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry' . $HELD10]);
+    longitudinal([2 => ['visit_form' => ''], 3 => ['visit_form' => ''], 4 => ['visit_form' => '']]);
+    $REPWHY = '"vs" names "[previous-event-name][w9]" with no instance, but its form "visit_form" repeats at "visit1_arm_1", "visit2_arm_1", so which instance it means is not said';
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={vs:x} @UVDELTA={"vs":"[previous-event-name][w9]","max":5}');
+    check('R10-2: ... the refusal of a reference it cannot read says only why (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === '@UVDELTA on "w9": ' . $REPWHY . $UNREAD10);
+    $SHORTWHY = '"vs": "previous-event" names "visit1_arm_1" and "visit2_arm_1", where "visit_form" repeats, and does not say which instance to compare with — name the event and the instance';
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={vs:x} @UVDELTA={"vs":"previous-event","max":5}');
+    check('R10-2: ... and so does the shorthand refusal (got ' . json_encode($e) . ')', count($e) === 2 && $e[1] === '@UVDELTA on "w9": ' . $SHORTWHY . $UNREAD10);
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[previous-event-name][w9][last-instance]","max":1} '
+        . '@UVDELTA={"vs":"[previous-event-name][w9][first-instance]","max":2} @UVDELTA={"vs":"previous-event","max":5}');
+    check('R10-1: the shorthand refusal says when the other tags hold both instances it could offer (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": ' . $SHORTWHY . $HELD10]);
+    classic();
+    \Project::$repeats = [351 => ['visit_form' => '']];
+    $DEADWHY = '"vs" names "[previous-event-name][w9]", but from no event where this field is entered does "[previous-event-name]" find an event holding "visit_form", '
+        . 'so nothing would ever be compared — and none of the references to "[w9]" this check tried (with no instance, the last, the previous or the first one) works';
+    $e = $errsOf(page(mod(['record_id' => f('enrol_form'), 'w9' => f('visit_form', '@UVDELTA={"vs":"previous-instance","max":1} '
+        . '@UVDELTA={"vs":"first-instance","max":2} @UVDELTA={"vs":"[previous-event-name][w9]","max":5}', 'number')],
+        ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form'), 'w9');
+    check('R10-1: a reference it cannot read whose instances the other tags hold: none works, and why (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": ' . $DEADWHY . $HELD10]);
+    \Project::$repeats = [];
+    $e = $errsOf(page(mod(['record_id' => f('enrol_form'), 'w9' => f('visit_form', '@UVDELTA={"vs":"previous-instance","max":1} @UVDELTA={"vs":"[w9]","max":5}', 'number')],
+        ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form'), 'w9');
+    check('R10-1: a held shorthand that would not fit anyway is not given as the reason (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === '@UVDELTA on "w9": "vs" names this field itself — compare it with another entry.');
+
+    // R10-3: each tag's answer is worked out once for its place, and afresh for each
+    // build of the rules.
+    longitudinal();
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[w9]","max":1} @UVDELTA={"vs":"[w9]","max":1}');
+    check('R10-3: two tags written the same are told apart by their place (got ' . json_encode($e) . ')',
+        $e === [$SELF9 . 'previous-event".', $SELF9 . 'first-event".']);
+    $m = mod(['record_id' => f('enrol_form'), 'w9' => f('visit_form', '@UVDELTA={"vs":"[w9]","max":1}', 'number')],
+        ['2' => [1 => ['record_id' => '2']]], $FOUR, []);
+    $off = ruleFor(page($m, 'form', '2', 'visit_form', 3), 'w9')['configError'] ?? '';
+    $m->projectSettings['enable-event-instance-refs'] = true;
+    $on = ruleFor(page($m, 'form', '2', 'visit_form', 3), 'w9')['configError'] ?? '';
+    check('R10-3: the rules built again with references on are worked out again (got ' . json_encode([$off, $on]) . ')',
+        $off === $SELF9 . 'previous-event" (this needs event and instance references, a project setting).' && $on === $SELF9 . 'previous-event".');
+    $two = ['record_id' => f('enrol_form'), 'wa' => f('visit_form', '@UVDELTA={"vs":"previous-event","max":1} @UVDELTA={"vs":"[wa]","max":5}', 'number'),
+        'wb' => f('visit_form', '@UVDELTA={"vs":"[wb]","max":5}', 'number')];
+    $pg = $pageAt($two, 'visit_form', 3, $REFS);
+    check('R10-3: each field\'s tags are its own (got ' . json_encode([$errsOf($pg, 'wa'), $errsOf($pg, 'wb')]) . ')',
+        $errsOf($pg, 'wa') === ['@UVDELTA on "wa": "vs" names this field itself — compare it with another entry, as "vs":"first-event".']
+        && $errsOf($pg, 'wb') === ['@UVDELTA on "wb": "vs" names this field itself — compare it with another entry, as "vs":"previous-event".']);
+
+    // R10-4: what a tag that failed to parse holds, key by key (the reviewer's X1-X5).
+    foreach (['its "when" (X1)' => ['{"vs":"previous-event","max":"x","when":"[flag]=\'1\'"}', '{"vs":"[w9]","max":5,"when":"[flag]=\'1\'"}', 'first-event'],
+              'its direction (X2)' => ['{"vs":"previous-event","max":"x","direction":"up"}', '{"vs":"[w9]","max":5,"direction":"up"}', 'first-event'],
+              'its caseSensitive (X3)' => ['{"vs":"previous-event","max":"x","when":"[flag]=\'Yes\'","caseSensitive":true}',
+                  '{"vs":"[w9]","max":5,"when":"[flag]=\'yes\'","caseSensitive":true}', 'previous-event'],
+              'a shorthand in capitals (X4)' => ['{"vs":"PREVIOUS-EVENT","max":"x"}', '{"vs":"[w9]","max":5}', 'first-event'],
+              'a caseSensitive that is not true as ignoring case' => ['{"vs":"previous-event","max":1,"when":"[flag]=\'Yes\'","caseSensitive":"yes"}',
+                  '{"vs":"[w9]","max":5,"when":"[flag]=\'yes\'","caseSensitive":true}', 'first-event']] as $how => $c) {
+        $e = $fieldErrs($X10, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[0] . ' @UVDELTA=' . $c[1]);
+        check('R10-4: a tag that failed to parse keeps ' . $how . ' (got ' . json_encode($e) . ')', count($e) === 2 && $e[1] === $SELF9 . $c[2] . '".');
+    }
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"first-event","max":1} @UVDELTA={"vs":"previous-event","max":"x"} @UVDELTA={"vs":"[w9]","max":5}');
+    check('R10-4 X5: a tag that failed to parse, second of three, is read from its own value (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === $SELF9 . '[visit1_arm_1][w9]".');
+    // X9, X10: a refused reference and a refused shorthand hand their suggestions on.
+    longitudinal([2 => ['visit_form' => ''], 3 => ['visit_form' => ''], 4 => ['visit_form' => '']]);
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[previous-event-name][w9]","max":1} @UVDELTA={"vs":"[previous-event-name][w9]","max":5}');
+    check('R10-4 X9: two references with no instance: the second gets the instance the first will not hold (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": ' . $REPWHY . ' — write it as "[previous-event-name][w9][last-instance]".',
+                '@UVDELTA on "w9": ' . $REPWHY . ' — write it as "[previous-event-name][w9][first-instance]".']);
+    $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1} @UVDELTA={"vs":"[previous-event-name][w9]","max":5}');
+    check('R10-4 X10: a refused shorthand, then a reference with no instance: the reference gets the other instance (got ' . json_encode($e) . ')',
+        $e === ['@UVDELTA on "w9": ' . $SHORTWHY . ', as "vs":"[previous-event-name][w9][last-instance]".',
+                '@UVDELTA on "w9": ' . $REPWHY . ' — write it as "[previous-event-name][w9][first-instance]".']);
+    check('... both written back are accepted', $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[previous-event-name][w9][last-instance]","max":1} '
+        . '@UVDELTA={"vs":"[previous-event-name][w9][first-instance]","max":5}') === []);
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

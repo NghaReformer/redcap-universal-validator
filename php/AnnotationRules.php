@@ -1206,14 +1206,17 @@ class AnnotationRules
      * The keys a @UVDELTA value ($val) that failed to parse would give its
      * branch, read from its JSON as parseDeltaValue reads them: deltaVs
      * (and deltaVsName for a shorthand), deltaDirection, "when" and
-     * "caseSensitive"; null when the JSON does not decode or "vs" is not a
+     * "caseSensitive" (only when true: any other value may be fixed to
+     * false). The JSON is read leniently (jsonLenient), as it will read
+     * once fixed. Null when even so it does not decode or "vs" is not a
      * text. Fixing the key the tag failed on brings the branch back, so the
-     * @UVDELTA suggestions leave its group alone
-     * (UniversalValidator::deltaGroupsTaken, review R9-7).
+     * @UVDELTA suggestions leave its group alone, and all groups alone
+     * while its "vs" cannot be read (UniversalValidator::deltaGroupsTaken,
+     * reviews R9-7, R10-2).
      */
     public static function deltaBranchAsWritten($val)
     {
-        $cfg = json_decode(trim((string) $val), true, 512, JSON_BIGINT_AS_STRING);
+        $cfg = self::jsonLenient(trim((string) $val));
         if (!is_array($cfg) || !isset($cfg['vs']) || !is_string($cfg['vs']) || trim($cfg['vs']) === '') return null;
         $out = ['deltaVs' => trim($cfg['vs'])];
         $kw = strtolower($out['deltaVs']);
@@ -1222,8 +1225,54 @@ class AnnotationRules
             $out['deltaDirection'] = strtolower(trim($cfg['direction']));
         }
         if (isset($cfg['when']) && is_string($cfg['when'])) $out['when'] = $cfg['when'];
-        if (array_key_exists('caseSensitive', $cfg) && $cfg['caseSensitive'] !== false) $out['caseSensitive'] = $cfg['caseSensitive'];
+        if (isset($cfg['caseSensitive']) && $cfg['caseSensitive'] === true) $out['caseSensitive'] = true;
         return $out;
+    }
+
+    /**
+     * $text decoded as a JSON object, or, when it does not decode, decoded
+     * once single quotes and curly quotes are read as double quotes and a
+     * comma before a closing } or ] is dropped: the slips a designer makes
+     * and the tag's refusal names. A string ends only at the kind of quote
+     * that opened it, so an apostrophe in a double-quoted message stays
+     * text. Null when neither decodes. A scan from the start, so a long or
+     * broken value costs its length.
+     */
+    private static function jsonLenient($text)
+    {
+        $cfg = json_decode($text, true, 512, JSON_BIGINT_AS_STRING);
+        if (is_array($cfg)) return $cfg;
+        $curly = ["\u{201C}" => '"', "\u{201D}" => '"', "\u{2018}" => "'", "\u{2019}" => "'"];
+        $out = '';
+        $open = null;       // the quote that opened the string being read, null outside one
+        $n = strlen($text);
+        for ($i = 0; $i < $n; $i++) {
+            $c = $text[$i];
+            $q = $c === '"' || $c === "'" ? $c : null;
+            if ($q === null && $c === "\xE2" && isset($curly[substr($text, $i, 3)])) {
+                $q = $curly[substr($text, $i, 3)];
+                $c = substr($text, $i, 3);
+            }
+            if ($open === null) {
+                if ($q !== null) { $open = [$q, $c]; $out .= '"'; $i += strlen($c) - 1; continue; }
+                if ($c === ',') {
+                    $j = $i + 1;
+                    while ($j < $n && strpos(" \t\r\n", $text[$j]) !== false) $j++;
+                    if ($j < $n && ($text[$j] === '}' || $text[$j] === ']')) continue;
+                }
+                $out .= $c;
+                continue;
+            }
+            // a straight quote is ended by itself, a curly one by either curly quote of its kind
+            if ($q === $open[0] && ($c === $open[1] || strlen($c) === strlen($open[1]))) {
+                $open = null; $out .= '"'; $i += strlen($c) - 1; continue;
+            }
+            if ($c === '\\' && $i + 1 < $n) { $out .= $c . $text[++$i]; continue; }
+            $out .= $c === '"' ? '\\"' : $c;
+            $i += strlen($c) - 1;
+        }
+        $cfg = json_decode($out, true, 512, JSON_BIGINT_AS_STRING);
+        return is_array($cfg) ? $cfg : null;
     }
 
     /**
