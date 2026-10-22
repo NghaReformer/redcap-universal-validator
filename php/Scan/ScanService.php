@@ -1137,7 +1137,8 @@ final class ScanService
         $run = $r['run'];
         $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
                 'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
-                'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($run)]
+                'report' => $r['report']->runFacts($r['expected'], $r['emptied']),
+                'marks' => self::incompleteMarks($run, $r['emptied'])]
              + self::decisionOf($run);
         // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
         // status shows no counts: a row is a count of one. No facets either.
@@ -1174,7 +1175,8 @@ final class ScanService
      *
      * @return array{ok:bool, answer?:array, run?:array, report?:ScanReport,
      *               dims?:ScanDimensions, scope?:array, withheld?:?string,
-     *               columns?:array, expected?:?int, aggregates?:array}
+     *               columns?:array, expected?:?int, aggregates?:array,
+     *               emptied?:?array}
      */
     private function reportOf($pid, $runId)
     {
@@ -1231,9 +1233,19 @@ final class ScanService
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
         $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
             ? self::expectedRows($aggregates, $scope) : null;
+        // HOW AN EMPTY SCOPE EMPTIED (review rvf1-2, deferred to here). The
+        // report's coverage sentence and its terminal row said every record
+        // was deleted for a group whose records all moved to another group;
+        // the census says which, and is read only for the one coverage whose
+        // sentence depends on it. status() reads the same census every poll.
+        $emptied = null;
+        if ((string) $run['coverage'] === ScanOutcome::EMPTY_SCOPE) {
+            $p = self::progressOf($run, $store->recordStates((int) $run['run_id']), time());
+            $emptied = ['departed' => $p['departed'], 'removed' => $p['removed']];
+        }
         return ['ok' => true, 'run' => $run, 'report' => $report, 'dims' => $dims, 'scope' => $scope,
                 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
-                'aggregates' => $aggregates];
+                'aggregates' => $aggregates, 'emptied' => $emptied];
     }
 
     /**
@@ -1303,9 +1315,14 @@ final class ScanService
      * run that may still not be called clean is not incomplete: its suffix
      * says _NOT-CERTIFIED and it carries no banner.
      *
+     * The row ends on the run's coverage sentence, chosen as the panel and
+     * runFacts() choose it: $emptied is the same pair runFacts() takes, so a
+     * group whose records moved away is not told they were deleted.
+     *
+     * @param array|null $emptied ['departed' => int, 'removed' => int] from the census, or null
      * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
      */
-    public static function incompleteMarks(array $run)
+    public static function incompleteMarks(array $run, ?array $emptied = null)
     {
         $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
               'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
@@ -1323,7 +1340,12 @@ final class ScanService
             'row'        => $incomplete
                 ? 'This scan did not cover the whole project. Rows above are real findings over the records '
                   . 'that WERE examined; absence of a row is not evidence a record is clean. '
-                  . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
+                  . ScanPageView::endedSentence([
+                        'coverage'  => $o['coverage'],
+                        'detail'    => $o['detail'],
+                        'leftGroup' => is_array($emptied) && isset($emptied['departed']) && (int) $emptied['departed'] > 0,
+                        'removed'   => (is_array($emptied) && isset($emptied['removed'])) ? max(0, (int) $emptied['removed']) : 0,
+                    ])
                 : null,
             'suffix'     => $suffix,
         ];
@@ -1391,7 +1413,7 @@ final class ScanService
             return self::exportRefusal(['why' => $this->storageFailed($pid, $runId, $e), 'final' => false]);
         }
         $run = $r['run'];
-        $facts = $r['report']->runFacts($r['expected']);
+        $facts = $r['report']->runFacts($r['expected'], $r['emptied']);
         $reader = $this->readerScope($pid);
         $head = [
             ['schema', ScanReport::SCHEMA],
@@ -1410,7 +1432,7 @@ final class ScanService
         ];
         // README's three marks of a file that cannot certify (incompleteMarks()):
         // the banner and the terminal row go in the file, the suffix in its name.
-        $marks = self::incompleteMarks($run);
+        $marks = self::incompleteMarks($run, $r['emptied']);
         $filename = sprintf('uv-scan-%d-run%d-%s%s.csv', (int) $pid, (int) $run['run_id'], gmdate('Ymd'),
                             preg_replace('/[^A-Za-z0-9_-]/', '', $marks['suffix']));
         $store = $this->store();

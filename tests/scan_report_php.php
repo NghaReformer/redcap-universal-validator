@@ -1016,6 +1016,29 @@ namespace {
         check('facts: the coverage sentence is the page\'s own, truncation included',
             $p['coverageSentence'] === ScanPageView::coverageSentence(ScanOutcome::COV_PARTIAL, ScanOutcome::DETAIL_TRUNCATED)
             && strpos($p['coverageSentence'], 'not kept') !== false);
+        // review rvf1-2, deferred to the report: the header of a group run
+        // whose records all moved to another group said they were deleted.
+        $emptyRow = ['terminal' => ScanOutcome::PARTIAL, 'coverage' => ScanOutcome::EMPTY_SCOPE,
+                     'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'locations', 'clean' => 0];
+        $emptyFacts = function (array $run, $emptied) {
+            return (new ScanReport(mapper(['valuesState' => $run['values_state']]), dims(), runRow($run)))
+                ->runFacts(null, $emptied)['coverageSentence'];
+        };
+        check('facts rvf1-2: an empty scope its records left says they moved, not that they were deleted',
+            $emptyFacts($emptyRow, ['departed' => 5, 'removed' => 0]) === ScanPageView::EMPTY_SCOPE_LEFT
+            && strpos($emptyFacts($emptyRow, ['departed' => 5, 'removed' => 0]), 'deleted') === false);
+        check('facts rvf1-2: some moved and the rest were deleted, and it says both',
+            $emptyFacts($emptyRow, ['departed' => 3, 'removed' => 2]) === ScanPageView::EMPTY_SCOPE_LEFT_DELETED);
+        check('facts rvf1-2: and the truncation note still follows it',
+            $emptyFacts(['detail' => ScanOutcome::DETAIL_TRUNCATED] + $emptyRow, ['departed' => 1, 'removed' => 0])
+            === ScanPageView::EMPTY_SCOPE_LEFT . ' ' . ScanPageView::DETAIL_TRUNCATED);
+        check('facts rvf1-2 control: an empty scope no record left, or one the caller did not count, keeps the deleted sentence',
+            $emptyFacts($emptyRow, ['departed' => 0, 'removed' => 4]) === ScanPageView::coverageSentence(ScanOutcome::EMPTY_SCOPE)
+            && $emptyFacts($emptyRow, null) === ScanPageView::coverageSentence(ScanOutcome::EMPTY_SCOPE));
+        check('facts rvf1-2 control: departures change no other coverage sentence',
+            $emptyFacts($complete + ['clean' => 1], ['departed' => 2, 'removed' => 0])
+            === ScanPageView::coverageSentence(ScanOutcome::FENCED, ScanOutcome::DETAIL_COMPLETE));
+
         check('facts: the keys are the ones wave 11 was promised',
             array_keys($p) === ['schema', 'columns', 'legend', 'coverage', 'detail', 'coverageSentence', 'mayCertify',
                                 'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows']);

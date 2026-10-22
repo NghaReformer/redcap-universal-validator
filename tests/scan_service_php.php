@@ -3713,8 +3713,15 @@ namespace INSPIRE\UniversalValidator\Scan {
             (new ScanService($lm, $ls))->work($pid, $rid);
         }
         $st = (new ScanService($lm, $ls))->status($pid, $rid);
+        // The report of the same run, on the page and in the file (the
+        // deferral from this review): its coverage sentence and its terminal
+        // row were built from the run row alone.
+        $x = (new ScanService($lm, $ls))->exportOpen($pid, $rid);
+        $csv = '';
+        if (!empty($x['ok'])) $x['stream'](function ($s) use (&$csv) { $csv .= $s; }, function () {});
         return ['row' => $ls->run($pid, $rid), 'states' => $ls->recordStates($rid), 'status' => $st,
-                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st),
+                'page' => (new ScanService($lm, $ls))->findings($pid, $rid), 'csv' => $csv];
     };
     $V = '\INSPIRE\UniversalValidator\ScanPageView';
     $gone = $leftRun(194, ['R01', 'R02', 'R03', 'R04', 'R05'], []);
@@ -3731,7 +3738,19 @@ namespace INSPIRE\UniversalValidator\Scan {
         strpos((string) $gone['pf']['done'], $V::EMPTY_SCOPE_LEFT) === 0
         && strpos((string) $gone['pf']['done'], 'deleted') === false
         && $gone['pf']['counts'] === $V::COUNT_NONE);
+    check('rvf1-2 report: the findings page says every record moved, in its coverage sentence and its terminal row',
+        !empty($gone['page']['ok']) && $gone['page']['report']['coverageSentence'] === $V::EMPTY_SCOPE_LEFT
+        && $gone['page']['marks']['incomplete'] === true
+        && substr((string) $gone['page']['marks']['row'], -strlen($V::EMPTY_SCOPE_LEFT)) === $V::EMPTY_SCOPE_LEFT
+        && strpos((string) $gone['page']['marks']['row'], 'deleted') === false);
+    check('rvf1-2 report: and so does the file, in its header and its terminal row',
+        strpos($gone['csv'], '"# coverage","' . $V::EMPTY_SCOPE_LEFT . '"') !== false
+        && strpos($gone['csv'], '"INCOMPLETE SCAN","') !== false
+        && strpos($gone['csv'], 'deleted while it ran') === false);
     $mixed = $leftRun(195, ['R01', 'R02', 'R03'], ['R04', 'R05']);
+    check('rvf1-2 report: a group that partly moved and was partly deleted says both on the page and in the file',
+        $mixed['page']['report']['coverageSentence'] === $V::EMPTY_SCOPE_LEFT_DELETED
+        && strpos($mixed['csv'], '"# coverage","' . $V::EMPTY_SCOPE_LEFT_DELETED . '"') !== false);
     check('rvf1-2: a group that partly moved and was partly deleted says both',
         $mixed['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
         && strpos((string) $mixed['row']['terminal_reason'], 'moved to another Data Access Group or was deleted') !== false
@@ -3741,6 +3760,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rvf1-2 control: a group one record left still finishes on the records it kept',
         $kept['row']['coverage'] === ScanOutcome::FENCED && $kept['status']['leftGroup'] === true
         && strpos((string) $kept['pf']['done'], $V::coverageSentence(ScanOutcome::FENCED)) === 0);
+    check('rvf1-2 report control: and its report keeps the coverage sentence of the records it kept',
+        !empty($kept['page']['ok']) && $kept['page']['report']['coverageSentence'] === $V::coverageSentence(ScanOutcome::FENCED)
+        && strpos($kept['csv'], '"# coverage","' . $V::coverageSentence(ScanOutcome::FENCED) . '"') !== false);
 
     /* -----------------------------------------------------------------
      * rvf2-1  A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING
