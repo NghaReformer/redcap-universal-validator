@@ -104,6 +104,8 @@ jobs:
         run: node tests/explain_js.cjs
       - name: Durable scan client (progress loop, refusals, backoff)
         run: node tests/scan_client_js.cjs
+      - name: JS message parity fixture (the form's sentence beside the report's)
+        run: node tests/messages_fixture_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
@@ -212,6 +214,8 @@ jobs:
         run: php tests/annotation_php.php
       - name: PHP rule message as a language map (grammar, refusals, string messages unchanged)
         run: php tests/message_i18n_php.php
+      - name: PHP message parity fixture (the report's sentence beside the form's)
+        run: php tests/messages_fixture_php.php
       - name: PHP @UVCHOICES choices parser + branching
         run: php tests/choices_php.php
       - name: PHP @UVWINDOW verdict vs fixture, hooks, fold, audit and scan clock
