@@ -262,7 +262,7 @@ final class ScanService
         $ctx = $this->module->durableScanContext($pid,
             $this->planOptions($pid, ['valueCeiling' => $policy['valueMode'], 'generation' => null,
                                       'policy' => $policy]), $dag);
-        if (empty($ctx['ok'])) return self::noStart($ctx['why']);
+        if (empty($ctx['ok'])) return self::noStart(self::contextRefusal($ctx));
 
         // Every instrument the run will read, from the plan rather than from a
         // list somebody maintains. A field the plan could not place on an
@@ -1453,7 +1453,7 @@ final class ScanService
         ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
         // could not be read just now.
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
+        if (empty($ctx['ok'])) return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false];
 
         // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
         // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
@@ -2015,6 +2015,19 @@ final class ScanService
     private static function configUnread(array $unread)
     {
         return sprintf(self::CONFIG_UNREAD, implode(', ', array_map('strval', $unread)));
+    }
+
+    /**
+     * Why a context that is not ok refuses (W10BF-4): its own sentence, unless
+     * part of the configuration could not be read. Every rule refused because
+     * the growth reference folder would not open is "no rules this scan can
+     * evaluate", and that sentence sent a reader to fix rules the next read
+     * could check.
+     */
+    private static function contextRefusal(array $ctx)
+    {
+        if (!empty($ctx['unread']) && is_array($ctx['unread'])) return self::configUnread($ctx['unread']);
+        return isset($ctx['why']) ? $ctx['why'] : null;
     }
 
     /**

@@ -672,6 +672,8 @@ namespace {
         public $logFails = 0;
         /** @var string[] the configuration reads durableScanContext() says failed (R5-4) */
         public $unread = [];
+        /** @var ?string the sentence durableScanContext() refuses with, or null for a context (W10BF-4) */
+        public $refuse = null;
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -722,6 +724,12 @@ namespace {
                     if (isset($this->refusedBy[$l['pid']])) $refused[(int) $l['pid']] = (int) $l['pid'];
                 }
                 $refused = array_values($refused);
+            }
+            // W10BF-4: a context that refuses, with whatever it says it could not read.
+            if ($this->refuse !== null) {
+                return ['ok' => false, 'why' => $this->refuse, 'plan' => null, 'evaluate' => null,
+                        'read' => null, 'rules' => [], 'ownership' => [], 'problems' => $this->problems,
+                        'unread' => $this->unread];
             }
             $plan = ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => $refused,
                      'crossUnread' => $this->planUnread, 'crossLookups' => $this->crossLookups,
@@ -2181,6 +2189,38 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('R5-4 E2E: read in full again, the same run finishes complete',
         $us->run(161, $urun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // W10BF-4: A CONTEXT THAT REFUSES ON A READ THAT FAILED says so. Every
+    // @UVRANGE rule refused because the growth reference folder would not
+    // open left "no rules this scan can evaluate", and the start and every
+    // work request answered with that, about rules the next read could check.
+    $gs = new ArrayScanStore();
+    $gm = new \E2eModule($gs);
+    $g1 = (new ScanService($gm, $gs))->start(166);
+    $grun = (int) $g1['run_id'];
+    $gm->refuse = 'this project has no rules this scan can evaluate';
+    $gm->unread = ['the growth reference folder'];
+    $g0 = (new ScanService($gm, $gs))->start(167);
+    check('W10BF-4 E2E: a start refused on a folder that could not be read is told so, not that there are no rules',
+        empty($g0['ok']) && strpos((string) $g0['why'], 'could not be read just now') !== false
+        && strpos((string) $g0['why'], 'the growth reference folder') !== false
+        && strpos((string) $g0['why'], 'no rules') === false && $g0['run_id'] === null);
+    $gw = (new ScanService($gm, $gs))->work(166, $grun);
+    check('W10BF-4 E2E: and so is a work request, which ends nothing',
+        $gw['ok'] === false && empty($gw['final'])
+        && strpos((string) $gw['why'], 'the growth reference folder') !== false
+        && $gs->run(166, $grun)['terminal'] === null);
+    $gm->unread = [];
+    $gn = (new ScanService($gm, $gs))->start(168);
+    check('W10BF-4 E2E: a refusal resting on no failed read keeps its own sentence',
+        empty($gn['ok']) && $gn['why'] === 'this project has no rules this scan can evaluate');
+    $gm->refuse = null;
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($gm, $gs))->work(166, $grun);
+        if (empty($w['ok']) || $gs->run(166, $grun)['terminal'] !== null) break;
+    }
+    check('W10BF-4 E2E: read in full again, the run finishes complete',
+        $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
 
     // -- a finished run is answered with its status (review R5-8) ---------------
     //

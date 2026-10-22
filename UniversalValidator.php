@@ -3388,7 +3388,7 @@ class UniversalValidator extends AbstractExternalModule
             // the browser's trim set (QRID_whenTrim): \v or \0 is not whitespace there
             $read[$k] = self::isMissingCode($v, $codes) ? '' : trim($v, " \t\r\n");
         }
-        $dir = $this->referenceDir();
+        $dir = $this->referenceDir($pid);
         $entry = GrowthReference::entry($rule['rangeReference'], $dir);
         if ($entry === null) {
             $why = GrowthReference::unavailableWhy($rule['rangeReference'], $dir);
@@ -3408,16 +3408,35 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * The folder of extra growth references an administrator named in the
      * system setting "reference-data-dir", or null (the bundled ones only).
+     *
+     * A SETTING THAT COULD NOT BE READ IS NOTED for $pid (W10BF-4): the
+     * answer is then "the bundled ones only", which judges a rule against a
+     * table the administrator may have replaced, and a scan must ask again
+     * rather than judge by it (R5-4).
+     *
+     * READ ONCE PER REQUEST, when the read works. The rules are checked
+     * against the folder when they are compiled, and a scan request then
+     * judges its records with them; a second read that failed between the
+     * two judged those records against the bundled tables, with nothing to
+     * say so. A failed read is not kept, so the next asks again.
      */
-    private function referenceDir()
+    private function referenceDir($pid = null)
     {
+        if (array_key_exists('dir', $this->referenceDirMemo)) return $this->referenceDirMemo['dir'];
         try {
             $dir = $this->getSystemSetting('reference-data-dir');
         } catch (\Throwable $e) {
+            if ($pid !== null) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
             return null;
         }
-        return (is_string($dir) && trim($dir) !== '') ? trim($dir) : null;
+        return $this->referenceDirMemo['dir'] = (is_string($dir) && trim($dir) !== '') ? trim($dir) : null;
     }
+
+    /** @var array ['dir' => ?string] once "reference-data-dir" was read this request */
+    private $referenceDirMemo = [];
+
+    /** What CONFIG_UNREAD names when the growth references could not be read (W10BF-4). */
+    const REFERENCES_UNREAD = 'the growth reference folder';
 
     /** @var array|null a pinned clock (tests); null reads the real one */
     private $clockOverride = null;
@@ -6731,10 +6750,16 @@ class UniversalValidator extends AbstractExternalModule
         if (!isset($frag['rangeReference'])) return $frag;
         $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_RANGE]; };
         $id = $frag['rangeReference'];
-        $dir = $this->referenceDir();
+        $dir = $this->referenceDir($pid);
         $catalog = GrowthReference::catalog($dir);
         $entry = GrowthReference::entry($id, $dir);
         $gone = GrowthReference::unavailableWhy($id, $dir);
+        // A REFUSAL RESTING ON A FOLDER THAT COULD NOT BE READ IS NOTED
+        // (W10BF-4, review R5-4). It stays a refusal - the rule cannot be
+        // checked - but the project has no such configuration error, and a
+        // scan run on with the rule as one reports a problem the next read
+        // may not have. durableScanContext() hands it back as `unread`.
+        if ($entry === null && $catalog['unread'] !== null) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
         if ($entry === null && $gone !== null) {
             // meant to be there: the extra folder cannot be read, or its entry for this id is broken
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $gone);
@@ -6754,6 +6779,8 @@ class UniversalValidator extends AbstractExternalModule
                 'hard' => [$lim('rangeHardLo'), $lim('rangeHardHi')],
             ]);
         } catch (\Throwable $e) {
+            // A table file that would not open, as the folder above (W10BF-4).
+            if ($e->getCode() === GrowthReference::E_UNREAD) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
         if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
@@ -7815,6 +7842,7 @@ class UniversalValidator extends AbstractExternalModule
         'crossExtraRead', 'crossSource', 'valueStampsMemo', 'clockMemo', 'rulesMemo', 'repeatFormsCache',
         'repeatProbeCache', 'eventFormsCache', 'mappedFormsCache', 'formEventsCache', 'eventLayoutCache',
         'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
+        'referenceDirMemo',
     ];
 
     /**
@@ -8602,9 +8630,10 @@ class UniversalValidator extends AbstractExternalModule
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
      *               read:?callable, rules:array, ownership:array, problems:array,
      *               verifyFingerprint?:bool, structure?:array, choices?:array,
-     *               unread?:string[]}
-     *         the last four on success only (scanStructureFacts()); `unread`
-     *         names the configuration reads that failed (review R5-4)
+     *               unread:string[]}
+     *         the three marked ? on success only (scanStructureFacts());
+     *         `unread`, on every return, names the configuration reads that
+     *         failed (review R5-4, W10BF-4)
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
@@ -8612,10 +8641,17 @@ class UniversalValidator extends AbstractExternalModule
         // THE SHAPE IS THE SAME ON EVERY RETURN, including the refusals. A
         // caller that has to know which branch answered before it knows which
         // keys exist is a caller that will read the wrong one.
+        //
+        // `unread` TOO (W10BF-4). A refusal can rest on a read that failed:
+        // every rule a configuration error because the growth reference
+        // folder could not be read is "no rules this scan can evaluate", and
+        // ScanService answered with that, for good, about a project whose
+        // rules the next read could check. It answers configuration unread
+        // when the list is not empty.
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
                     'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf']), 'unread' => $this->configUnreadOf($pid)];
         }
         if (!empty($plan['nothingToScan'])) {
             // The rule problems survive the refusal even though no run can carry
@@ -8627,7 +8663,7 @@ class UniversalValidator extends AbstractExternalModule
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
                     'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf']), 'unread' => $this->configUnreadOf($pid)];
         }
 
         $key = $this->hmacKey();
@@ -8742,14 +8778,20 @@ class UniversalValidator extends AbstractExternalModule
         // fingerprint's inputs, and a fact built from a failed read is not the
         // project's. Named, so the refusal can say what; ScanService refuses
         // to start or advance a run on a configuration with any.
-        $pk = (int) $pid;
-        $unread = isset($this->configUnread[$pk]) ? array_keys($this->configUnread[$pk]) : [];
-        sort($unread, SORT_STRING);
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
                 'verifyFingerprint' => true, 'structure' => $facts['structure'],
-                'choices' => $facts['choices'], 'unread' => $unread,
+                'choices' => $facts['choices'], 'unread' => $this->configUnreadOf($pid),
                 'problems' => self::problemList($plan['unconf'])];
+    }
+
+    /** The configuration reads noted as failed for $pid this request (R5-4), sorted. */
+    private function configUnreadOf($pid)
+    {
+        $pk = (int) $pid;
+        $unread = isset($this->configUnread[$pk]) ? array_map('strval', array_keys($this->configUnread[$pk])) : [];
+        sort($unread, SORT_STRING);
+        return $unread;
     }
 
     /**
@@ -8914,7 +8956,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         if ($ids) {
-            $dir = $this->referenceDir();
+            $dir = $this->referenceDir($pid);
             $refs = [];
             foreach (array_keys($ids) as $id) {
                 $e = GrowthReference::entry((string) $id, $dir);
