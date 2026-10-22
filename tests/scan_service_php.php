@@ -2649,6 +2649,31 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W10BF-2: and loosening it mid-run is no tightening: the run finishes complete',
         $ns->run(165, $nrun)['terminal'] === ScanOutcome::COMPLETE);
 
+    // rvc1-1: A RUN PLANNED BEFORE THE POSTURE WAS FROZEN is not stopped by
+    // the upgrade. The v5 build froze no hashRecordIds, which read as "raw
+    // ids", so every run in flight on a "none" project was stopped at its
+    // next work request as a privacy tightening that never happened.
+    $vs = new ArrayScanStore();
+    $vm = new \E2eModule($vs);
+    $vm->proj['log-values'] = 'none';
+    $v0 = (new ScanService($vm, $vs))->start(166);
+    $vrun = (int) $v0['run_id'];
+    $vrp = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $vrp->setAccessible(true);
+    $vruns = $vrp->getValue($vs);
+    $vpol = json_decode((string) $vruns[$vrun]['policy_json'], true);
+    unset($vpol['hashRecordIds']);
+    $vruns[$vrun]['policy_json'] = json_encode($vpol);
+    $vrp->setValue($vs, $vruns);
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($vm, $vs))->work(166, $vrun);
+        if (empty($w['ok']) || $vs->run(166, $vrun)['terminal'] !== null) break;
+    }
+    $vrow = $vs->run(166, $vrun);
+    check('rvc1-1: a run whose frozen policy states no record-id posture, on a "none" project, finishes complete',
+        $vrow['terminal'] === ScanOutcome::COMPLETE
+        && strpos((string) $vrow['terminal_reason'], 'privacy') === false);
+
     // -- the run's clock is frozen at planning (W10BF-3) -------------------------
     //
     // A @UVWINDOW part judged against today changed its answer at midnight
