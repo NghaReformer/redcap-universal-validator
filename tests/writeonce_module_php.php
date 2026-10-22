@@ -273,6 +273,14 @@ namespace {
     check('page: a new record locks nothing', lockedOn($pn) === []);
     $pv = page(mod($DICT, $DATA), 'form', '2', 'visit_form');
     check('page: another form locks its own fields only', lockedOn($pv) === ['v_text']);
+    // "since": nothing is locked before the day it names, in the project's clock
+    $SINCE = ['2' => [351 => array_merge($ROW, ['baseline_wt' => '70'])]];
+    foreach (['2026-10-04' => false, '2026-10-05' => true, '2026-11-30' => true] as $day => $locks) {
+        $ms = mod($DICT, $SINCE);
+        setPrivate($ms, 'clockOverride', \INSPIRE\UniversalValidator\UniversalValidator::clockStamp(new \DateTimeImmutable($day . ' 08:00:00', new \DateTimeZone('UTC'))));
+        check('page: "since" 2026-10-05 on ' . $day . ': ' . ($locks ? 'locked' : 'not locked yet'),
+            in_array('baseline_wt', lockedOn(page($ms, 'form', '2', 'enrol_form')), true) === $locks);
+    }
 
     // ============================================================================
     // The audit

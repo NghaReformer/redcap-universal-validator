@@ -3526,21 +3526,28 @@ class UniversalValidator extends AbstractExternalModule
      * value is a value (not blank, not a Missing Data Code) and the person
      * looking holds none of the rule's roles. A survey respondent holds no
      * role. Every other field is left off the page, and so is a rule with no
-     * field left. The roles and "since" never reach the page (serverKeys).
-     * Roles that cannot be read lock nothing: the page does not keep a person
-     * from a change the audit may find was theirs to make.
+     * field left, or one whose "since" is a day still to come in the
+     * project's clock (the audit locks nothing before it either). The roles
+     * and "since" never reach the page (serverKeys). Roles that cannot be
+     * read lock nothing: the page does not keep a person from a change the
+     * audit may find was theirs to make.
      */
     private function pageWriteonce(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
     {
         $out = [];
         $codes = null;
         $user = null;
+        $today = null;
         foreach ($rules as $r) {
             if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce' || !empty($r['configError'])) {
                 $out[] = $r;
                 continue;
             }
             if ($record === null || $record === '' || $pid === null) continue;   // a new record: nothing saved to lock
+            if (isset($r['writeonceSince']) && is_string($r['writeonceSince'])) {
+                if ($today === null) $today = (string) $this->serverClock($pid)['today'];
+                if (strcmp($today, $r['writeonceSince']) < 0) continue;   // the lock starts later
+            }
             $roles = isset($r['writeonceRoles']) && is_array($r['writeonceRoles']) ? $r['writeonceRoles'] : [];
             if ($roles && $context !== 'survey') {
                 if ($user === null) $user = (string) $this->currentUsername();
