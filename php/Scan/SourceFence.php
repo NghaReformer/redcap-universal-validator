@@ -359,6 +359,62 @@ final class SourceFence implements RecordVersions, ChangeLog
     }
 
     /**
+     * One page of the log's entries in ($after, $upTo], in log order: each
+     * entry's position and the record id it names ('' for none).
+     *
+     * BOUNDED BY ENTRIES, NOT BY RECORDS (review rv11a1-2). changedSince()
+     * groups the whole window before its LIMIT applies, which is right for a
+     * window as long as a run and wrong for one that grows with the time
+     * since the run: ScopeDrift reads from a finished run's fence to now. No
+     * filter on pk here either, so the LIMIT bounds what the server reads
+     * along (project_id, log_event_id); an entry naming no record is skipped
+     * by the caller.
+     *
+     * @return array<int,array{at:string, id:string}>
+     */
+    public function entriesSince($after, $upTo, $limit)
+    {
+        $limit = max(1, min(5000, (int) $limit));
+        if (!ctype_digit((string) $after) || !ctype_digit((string) $upTo)) {
+            throw new \InvalidArgumentException('a change-log window needs two log positions');
+        }
+        $out = [];
+        foreach ($this->db->select('SELECT log_event_id, CAST(pk AS BINARY) FROM ' . $this->table
+                . ' WHERE project_id = ? AND log_event_id > ? AND log_event_id <= ?'
+                . ' ORDER BY log_event_id LIMIT ' . $limit, [$this->pid, (string) $after, (string) $upTo])
+                as $row) {
+            $out[] = ['at' => (string) $row[0], 'id' => $row[1] === null ? '' : (string) $row[1]];
+        }
+        return $out;
+    }
+
+    /**
+     * Each record's FIRST log position, keyed by record id; null for a
+     * record the log does not name. versions()' statement with MIN for MAX:
+     * ScopeDrift asks it to tell a record created after a run's fence from
+     * one that was in another group at the fence.
+     *
+     * @param string[] $recordIds
+     * @return array<string,?string>
+     */
+    public function firstSeen(array $recordIds)
+    {
+        $out = [];
+        foreach ($recordIds as $r) $out[(string) $r] = null;
+        if (!$recordIds) return $out;
+        $marks = implode(',', array_fill(0, count($recordIds), '?'));
+        $params = array_merge([$this->pid], array_map('strval', $recordIds));
+        $rows = $this->db->select('SELECT CAST(pk AS BINARY) AS p, MIN(log_event_id) FROM '
+            . $this->table . ' WHERE project_id = ? AND pk IN (' . $marks . ') GROUP BY p', $params);
+        foreach ($rows as $row) {
+            $id = (string) $row[0];
+            if (!array_key_exists($id, $out)) continue;
+            $out[$id] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
+        }
+        return $out;
+    }
+
+    /**
      * Compare two arbitrary-length decimal integers.
      *
      * Not (int) - a log id can exceed 2^31 on a 32-bit build and would wrap.
@@ -373,5 +429,151 @@ final class SourceFence implements RecordVersions, ChangeLog
         if ($b === '') $b = '0';
         if (strlen($a) !== strlen($b)) return strlen($a) < strlen($b) ? -1 : 1;
         return strcmp($a, $b);
+    }
+}
+
+/**
+ * Has a group-scoped run's group changed since the run's fence?
+ * (review rv11a1-2, H10 part 2)
+ *
+ * A group run's report is its group as it stood at the run's target fence.
+ * A record that left the group after that stayed on the report - its id, its
+ * findings and any value the run kept - for a group that can no longer open
+ * it in REDCap; a record that joined the group is missing from a report that
+ * says it covered the group. ScanAuthorization::projectionStillValid() says
+ * either invalidates the WHOLE report. This counts them.
+ *
+ * WHAT IT READS: the change log from the fence to its top now, a page of
+ * entries at a time, and for each page's records the run's list
+ * (scannedVersions), the group each is in now (the scope probe catch-up
+ * uses), whether a record no group can be found for still exists, and, for a
+ * record now in the group that the run did not hold, its first log entry.
+ *
+ *   moved out  on the run's list (not departed, not deleted) and now, on an
+ *              explicit answer, in another group or in none
+ *   moved in   now in the group, not held by the run, and logged at or
+ *              before the fence. A record first logged after the fence was
+ *              created since: a change after the fence, like an edit, which
+ *              the report's "through" claim already leaves out.
+ *
+ * It relies on what catch-up relies on: REDCap writes a log entry naming the
+ * record when it changes the record's group.
+ *
+ * FAILS CLOSED. No log, a log that no longer reaches back to the fence, and
+ * more entries since the fence than one read may walk all refuse the report
+ * until a new scan: none of them is evidence that the group held still. A
+ * record that still exists and whose group cannot be read refuses it for
+ * this request only.
+ *
+ * BOUNDED: at most $pages pages of $page entries, each read along
+ * (project_id, log_event_id), and at most four statements a page about its
+ * records. It stops at the first page that finds a move.
+ *
+ * PHP 7.4.
+ */
+final class ScopeDrift
+{
+    /** Log entries per page, and pages per check: at most 50,000 entries since the fence. */
+    const PAGE = 5000;
+    const PAGES = 10;
+
+    /**
+     * No log, a log cut short, or too many entries to walk. One sentence for
+     * all three: the walk's length depends on every group's activity, and a
+     * group reader is not told how busy the others have been (review R5-1).
+     * No apostrophes: the page prints it through json_encode with JSON_HEX_APOS.
+     */
+    const UNCONFIRMED = 'this report can no longer be confirmed to describe your Data Access Group, '
+        . 'because the changes made since the scan cannot all be checked. Run a new scan.';
+    /** A record that still exists, whose group could not be read just now. */
+    const CANNOT_TELL = 'the group of a record changed since this scan could not be read just now, '
+        . 'so this report is not shown. Try again in a moment.';
+
+    /**
+     * @param SourceFence|null $log    the project change log; null is none
+     * @param array            $run    the run row: run_id and fence_target
+     * @param callable         $scope  string[] => array<string,?bool>: in the run's group?
+     * @param callable         $exists string[] => array<string,bool>: still in the project?
+     * @return array{ok:bool, movedIn:int, movedOut:int, why:?string, final:bool}
+     * @throws ScanStoreUnavailable when the log could not be read
+     */
+    public static function check($log, ScanStore $store, array $run, callable $scope, callable $exists,
+                                 $page = self::PAGE, $pages = self::PAGES)
+    {
+        $no = function ($why, $final, $in = 0, $out = 0) {
+            return ['ok' => false, 'movedIn' => $in, 'movedOut' => $out, 'why' => $why, 'final' => $final];
+        };
+        $valid = ['ok' => true, 'movedIn' => 0, 'movedOut' => 0, 'why' => null, 'final' => false];
+        $fence = isset($run['fence_target']) ? (string) $run['fence_target'] : '';
+        if (!($log instanceof SourceFence) || !ctype_digit($fence)) return $no(self::UNCONFIRMED, true);
+        $keeps = $log->retained($fence);
+        if (empty($keeps['ok'])) return $no(self::UNCONFIRMED, true);
+        $top = $log->now();
+        if ($top === null) return $no(self::UNCONFIRMED, true);
+        if (SourceFence::decCmp($fence, $top) >= 0) return $valid;
+
+        $page = max(1, min(5000, (int) $page));
+        $runId = (int) $run['run_id'];
+        $after = $fence;
+        for ($p = 0; $p < max(1, (int) $pages); $p++) {
+            $entries = $log->entriesSince($after, $top, $page);
+            if (!$entries) return $valid;
+            $ids = [];
+            foreach ($entries as $e) if ($e['id'] !== '') $ids[$e['id']] = true;
+            // array_keys() turns "12" back into 12; every lookup below is by string.
+            $ids = array_map('strval', array_keys($ids));
+            $after = $entries[count($entries) - 1]['at'];
+            if ($ids) {
+                try {
+                    $where = $scope($ids);
+                } catch (\Throwable $e) {
+                    return $no(self::CANNOT_TELL, false);
+                }
+                $known = $store->scannedVersions($runId, $ids);
+                $out = 0;
+                $joined = [];
+                $unplaced = [];
+                foreach ($ids as $id) {
+                    $now = (is_array($where) && array_key_exists($id, $where)) ? $where[$id] : null;
+                    $held = isset($known[$id]) && !in_array((int) $known[$id]['state'],
+                        [ScanStore::REC_DEPARTED, ScanStore::REC_TOMBSTONE], true);
+                    if ($now === null) {
+                        $unplaced[] = $id;
+                    } elseif ($now === false) {
+                        if ($held) $out++;
+                    } elseif (!$held) {
+                        $joined[] = $id;
+                    }
+                }
+                $in = 0;
+                if ($joined) {
+                    $first = $log->firstSeen($joined);
+                    foreach ($joined as $id) {
+                        $f = isset($first[$id]) ? $first[$id] : null;
+                        if ($f !== null && SourceFence::decCmp($f, $fence) > 0) continue;
+                        $in++;
+                    }
+                }
+                if ($in > 0 || $out > 0) {
+                    return $no(ScanAuthorization::projectionStillValid($in, $out)['why'], true, $in, $out);
+                }
+                if ($unplaced) {
+                    // Deleted is an explicit false and nothing else: exist()'s
+                    // own rule, and a read that failed is "still there".
+                    try {
+                        $there = $exists($unplaced);
+                    } catch (\Throwable $e) {
+                        $there = [];
+                    }
+                    foreach ($unplaced as $id) {
+                        if (!(is_array($there) && array_key_exists($id, $there) && $there[$id] === false)) {
+                            return $no(self::CANNOT_TELL, false);
+                        }
+                    }
+                }
+            }
+            if (count($entries) < $page || SourceFence::decCmp($after, $top) >= 0) return $valid;
+        }
+        return $no(self::UNCONFIRMED, true);
     }
 }

@@ -15,6 +15,7 @@
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
+use INSPIRE\UniversalValidator\Scan\RecordManifestSource;
 
 $PID = 900;
 $NEIGHBOUR = uv_neighbour($PID);
@@ -112,4 +113,132 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('fence: leading zeros are not a different number',
         \INSPIRE\UniversalValidator\Scan\SourceFence::decCmp('0042', '42') === 0);
 
+}
+
+/* ---------------------------------------------------------------------------
+ * ScopeDrift over a real log, record index and store (review rv11a1-2)
+ *
+ * A group run's report is shown to its group's readers only while the group
+ * holds what the run held at its fence. The check walks the log from the
+ * fence a bounded page at a time, asks each changed record's group of the
+ * record index, and its first log entry when it is in the group and was not
+ * on the run's list. The neighbour's entries are interleaved with this
+ * project's on purpose: a walk that read the log by position alone would
+ * read them all, and one that lost its project predicate would read them as
+ * this project's records.
+ * ------------------------------------------------------------------------- */
+{
+    $DP = 910;
+    $DN = uv_neighbour($DP);
+    uv_redcap_project($A, $DP);
+    $dput = function ($rec, $dag) use ($A, $DP) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $DP . " AND record = '" . $rec . "'");
+        $A->query('DELETE FROM redcap_data WHERE project_id = ' . $DP . " AND record = '" . $rec . "'");
+        if ($dag === false) return;
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (' . $DP . ", '" . $rec
+            . "', " . ($dag === null ? 'NULL' : (int) $dag) . ')');
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES ('
+            . $DP . ", 1, '" . $rec . "', 'record_id', '" . $rec . "')");
+    };
+    $dlog = function ($at, $rec) use ($A, $DP) {
+        $A->query('INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES (' . (int) $at
+            . ', ' . $DP . ', ' . ($rec === null ? 'NULL' : "'" . $rec . "'") . ", 'UPDATE')");
+    };
+    // G1-G4 in group 7, H1 in group 31, all logged before the fence at 100000.
+    foreach (array('G1' => 7, 'G2' => 7, 'G3' => 7, 'G4' => 7, 'H1' => 31) as $rec => $dag) $dput($rec, $dag);
+    foreach (array('G1', 'G2', 'G3', 'G4', 'H1') as $i => $rec) $dlog(1000 * ($i + 1), $rec);
+    $dlog(100000, 'G1');
+    // The neighbour's entries fill every gap above the fence, naming one of
+    // this project's record ids; this project's own entries land on ...500.
+    $vals = array();
+    for ($at = 100001; $at <= 109999; $at++) {
+        if ($at % 1000 === 500) continue;
+        $vals[] = '(' . $at . ', ' . $DN . ", 'G3', 'UPDATE')";
+        if (count($vals) === 1000) {
+            $A->query('INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES ' . implode(',', $vals));
+            $vals = array();
+        }
+    }
+    if ($vals) $A->query('INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES ' . implode(',', $vals));
+    $A->query('ANALYZE TABLE redcap_log_event');
+
+    $dsrc = RecordManifestSource::open($dbA, $DP, array('pk' => 'record_id'));
+    $dstore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $dplan = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($dstore, 'test-secret-key'))->plan($DP, uv_plan_request(array(
+        'source' => $dsrc['source'], 'fence' => null, 'dagFilter' => '7',
+        'rules' => array(array('type' => 'required', 'fields' => array('record_id'))),
+        'ownership' => array('record_id' => 'demographics'),
+    )));
+    $drid = (int) $dplan['run']['run_id'];
+    $dbA->exec('UPDATE ' . Schema::table('scan_run') . " SET fence_target = '100000' WHERE run_id = ?", array($drid));
+    $drec = new UvRecordingDb($dbA);
+    $dlogf = \INSPIRE\UniversalValidator\Scan\SourceFence::forProject($drec, $DP);
+    $dscope = function (array $ids) use ($dsrc) { return $dsrc['source']->scopeOf($ids, '7'); };
+    $dexist = function (array $ids) use ($dsrc) { return $dsrc['source']->exist($ids); };
+    $drift = function ($page = 5000, $pages = 10) use ($dlogf, $dstore, $DP, $drid, $dscope, $dexist) {
+        return \INSPIRE\UniversalValidator\Scan\ScopeDrift::check($dlogf['fence'], $dstore,
+            $dstore->run($DP, $drid), $dscope, $dexist, $page, $pages);
+    };
+    $moved = \INSPIRE\UniversalValidator\Scan\ScanAuthorization::projectionStillValid(1, 0)['why'];
+    check('drift: the fixture is a group-7 run of four records, fenced at 100000',
+        $dplan['ok'] === true && (int) $dplan['run']['manifest_total'] === 4 && $dlogf['ok'] === true
+        && $dstore->run($DP, $drid)['fence_target'] === '100000');
+    check('drift: with nothing logged since the fence, the group is as the run left it', $drift()['ok'] === true);
+
+    $dlog(101500, 'G2');
+    $dlog(102500, null);
+    check('drift: an edit in the group and an entry naming no record are not moves', $drift()['ok'] === true);
+    $walk = $drec->matching('select', array('ORDER BY log_event_id'));
+    $wkeys = $walk ? uv_explain_keys($A, $walk[0][1], $walk[0][2]) : array();
+    check('drift: the walk reads along (project_id, log_event_id), not past the neighbour entries',
+        count($wkeys) === 1 && uv_index_columns($A, 'redcap_log_event', $wkeys[0]) === array('project_id', 'log_event_id'));
+    if (count($wkeys) !== 1 && $walk) {
+        fwrite(STDERR, '  drift walk plan: ' . implode(' ', uv_explain_rows($A, $walk[0][1], $walk[0][2])) . "\n");
+    }
+
+    $dput('G3', 31);
+    $dlog(103500, 'G3');
+    $out = $drift();
+    check('drift: a record moved out of the group refuses the report, final, with the H10 sentence',
+        $out === array('ok' => false, 'movedIn' => 0, 'movedOut' => 1, 'why' => $moved, 'final' => true));
+    $dput('G3', 7);
+    $dlog(104500, 'G3');
+    check('drift: moved back, the group again holds what the run held', $drift()['ok'] === true);
+
+    $dput('N1', 7);
+    $dlog(105500, 'N1');
+    check('drift: a record created in the group after the fence is not a move', $drift()['ok'] === true);
+    $dput('H1', 7);
+    $dlog(106500, 'H1');
+    $out = $drift();
+    check('drift: a record that was in another group at the fence and is in this one now moved in',
+        $out['ok'] === false && $out['movedIn'] === 1 && $out['movedOut'] === 0 && $out['final'] === true);
+    $dput('H1', 31);
+    $dlog(107500, 'H1');
+    check('drift: and moved back out of it, the report is shown again', $drift()['ok'] === true);
+
+    $dbA->exec('UPDATE ' . Schema::table('scan_record') . ' SET state = ? WHERE run_id = ? AND record_id_bin = ?',
+        array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DEPARTED, $drid, 'G2'));
+    $dlog(108500, 'G2');
+    $out = $drift();
+    check('drift: a record the run let go of as departed, in the group now, moved in',
+        $out['ok'] === false && $out['movedIn'] === 1);
+    $dbA->exec('UPDATE ' . Schema::table('scan_record') . ' SET state = ? WHERE run_id = ? AND record_id_bin = ?',
+        array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_PENDING, $drid, 'G2'));
+    $dput('G4', false);
+    $dlog(109500, 'G4');
+    check('drift: a record deleted since the fence is not a move', $drift()['ok'] === true);
+
+    // Nine entries since the fence. Three pages of three reach the top; two do not.
+    check('drift: a walk that reaches the top of the log within its pages confirms the group',
+        $drift(3, 3)['ok'] === true);
+    $out = $drift(3, 2);
+    check('drift: one with more entries since the fence than it may read refuses, final',
+        $out['ok'] === false && $out['why'] === \INSPIRE\UniversalValidator\Scan\ScopeDrift::UNCONFIRMED
+        && $out['final'] === true);
+    $A->query('DELETE FROM redcap_log_event WHERE project_id = ' . $DP . ' AND log_event_id <= 100000');
+    $out = $drift();
+    check('drift: a log pruned past the fence cannot confirm the group, final',
+        $out['ok'] === false && $out['why'] === \INSPIRE\UniversalValidator\Scan\ScopeDrift::UNCONFIRMED
+        && $out['final'] === true);
 }

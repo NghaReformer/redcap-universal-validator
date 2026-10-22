@@ -1248,6 +1248,16 @@ final class ScanService
             $withheld = ScanAuthorization::preFenceStatus(['terminal' => $run['terminal']])['withheldWhy'];
             $shown['detail'] = null;
         }
+        // A GROUP'S REPORT IS SHOWN WHILE IT STILL DESCRIBES THE GROUP (review
+        // rv11a1-2, H10 part 2). A record moved out of the group after the
+        // run's fence stayed on its page and in its file, id and kept value
+        // included, for a group that can no longer open it. Asked for a group
+        // reader only: anyone else may open every group's records. A withheld
+        // run shows no rows to drift.
+        if ($withheld === null && $reader['dag'] !== null) {
+            $drift = $this->scopeDrift($pid, $store, $run);
+            if (empty($drift['ok'])) return $no($drift['why'], !empty($drift['final']));
+        }
 
         $ctx = $ent['ctx'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1279,6 +1289,13 @@ final class ScanService
         return ['ok' => true, 'run' => $run, 'shown' => $shown, 'report' => $report, 'dims' => $dims,
                 'scope' => $scope, 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
                 'aggregates' => $aggregates];
+    }
+
+    /** Has a group run's group changed since its fence (ScopeDrift, review rv11a1-2)? */
+    private function scopeDrift($pid, ScanStore $store, array $run)
+    {
+        return ScopeDrift::check($this->fence($pid), $store, $run,
+            $this->scopeProbe($pid, $run['scope_dag']), $this->existsProbe($pid));
     }
 
     /**
@@ -1468,9 +1485,15 @@ final class ScanService
         $store = $this->store();
         return ['ok' => true, 'filename' => $filename,
                 'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head, $marks) {
+                    // A group reader's file is checked for drift again at its
+                    // end (review rv11a1-2), as its run is (rv11a2-1).
+                    $drift = $r['scope']['dag'] === null ? null : function () use ($store, $pid, $run) {
+                        return $this->scopeDrift($pid, $store, $run);
+                    };
                     $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
                                                 $r['scope'], $head, $marks, $write, $flush,
-                                                ['run' => (int) $run['run_id'], 'expected' => $r['expected']]);
+                                                ['run' => (int) $run['run_id'], 'expected' => $r['expected'],
+                                                 'drift' => $drift]);
                     if ($out['error'] instanceof ScanStoreUnavailable) {
                         $this->storageFailed($pid, $runId, $out['error']);
                     }
@@ -1540,7 +1563,9 @@ final class ScanService
      *                     null when the run needs none
      * @param array $whole ['run' => int, 'expected' => ?int]: the run to read
      *                     again at the end and the rows its head promised (null:
-     *                     not known, so not compared); [] asks nothing
+     *                     not known, so not compared); [] asks nothing.
+     *                     'drift' => ?callable: ScopeDrift asked again at the
+     *                     end for a group reader's file (review rv11a1-2)
      * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
      */
     public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
@@ -1582,6 +1607,9 @@ final class ScanService
                 }
                 if ($expected !== null && $rows !== (int) $expected) {
                     throw new \RuntimeException('the export wrote ' . $rows . ' rows of ' . (int) $expected);
+                }
+                if (isset($whole['drift']) && empty(call_user_func($whole['drift'])['ok'])) {
+                    throw new \RuntimeException('the group changed while it was exported');
                 }
             }
         } catch (\Throwable $e) {

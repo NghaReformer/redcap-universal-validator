@@ -3387,19 +3387,35 @@ namespace INSPIRE\UniversalValidator\Scan {
             public $bottom = '1';
             public $reads = [];
             public $readSleep = 0.0;
+            /** A record's first log position, for ScopeDrift; '1' when unset. */
+            public $firstSeen = [];
             public function query($sql, $params = [])
             {
                 if (strpos($sql, 'FROM redcap_log_event') !== false) {
                     $s = ltrim($sql);
                     if (strpos($sql, 'pk IN (') !== false) {
+                        $min = strpos($sql, 'MIN(log_event_id)') !== false;
                         $out = [];
                         foreach (array_slice($params, 1) as $id) {
                             $id = (string) $id;
                             if (in_array($id, $this->records, true)) {
-                                $out[] = [$id, isset($this->version[$id]) ? $this->version[$id] : '50'];
+                                $out[] = [$id, $min ? (isset($this->firstSeen[$id]) ? $this->firstSeen[$id] : '1')
+                                    : (isset($this->version[$id]) ? $this->version[$id] : '50')];
                             }
                         }
                         return $out;
+                    }
+                    if (strpos($sql, 'ORDER BY log_event_id') !== false) {
+                        // SourceFence::entriesSince(): one entry per change, in log order.
+                        preg_match('/LIMIT (\d+)/', $sql, $lim);
+                        $rows = [];
+                        foreach ($this->changes as $id => $v) {
+                            if ((int) $v > (int) $params[1] && (int) $v <= (int) $params[2]) {
+                                $rows[] = [(string) $v, (string) $id];
+                            }
+                        }
+                        usort($rows, function ($a, $b) { return (int) $a[0] - (int) $b[0]; });
+                        return array_slice($rows, 0, (int) $lim[1]);
                     }
                     if (strpos($sql, 'log_event_id > ?') !== false) {
                         $rows = [];
@@ -4382,6 +4398,88 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('rv11a1-4: a group run\'s summary is kept per group, and a whole-project run\'s is not',
         $split8 === ['site_a' => 1, 'site_b' => 4] && $whole8 === ['' => 10]);
+
+    /* rv11a1-2  A GROUP'S REPORT IS SHOWN WHILE IT STILL DESCRIBES THE
+     * GROUP (H10 part 2). The reviewer's repro: a raw group-31 run, then
+     * R07 moves to group 7. The site_b reader was still shown R07's row and
+     * value on the page and in the file; nothing called
+     * projectionStillValid(). */
+    list($s9, $m9) = $wv($all10);
+    $m9->proj['scan-value-storage'] = 'raw';
+    foreach ($m9->records as $id) $m9->valueOf[$id] = 'value-of-' . $id;
+    $g9 = $wvRun($m9, $s9, 211, 31);
+    $drifted = ['ok' => false, 'why' => ScanAuthorization::projectionStillValid(0, 1)['why'], 'final' => true];
+    $pg9 = $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]);
+    check('rv11a1-2 (control): a raw group-31 run, fenced at 100, is its reader\'s five rows while nothing moved',
+        $s9->run(211, $g9)['terminal'] === ScanOutcome::COMPLETE && $s9->run(211, $g9)['fence_target'] === '100'
+        && $s9->run(211, $g9)['values_state'] === 'raw' && $pg9['ok'] === true && count($pg9['rows']) === 5);
+    $open9 = (new ScanService($m9, $s9))->exportOpen(211, $g9);
+    $m9->dagOf['R07'] = '7';
+    $m9->dagNames['R07'] = 'site_a';
+    $m9->changes['R07'] = '150';
+    $m9->version['R07'] = '150';
+    $m9->top = '160';
+    check('rv11a1-2: once R07 has moved to group 7, the site_b reader\'s page is refused, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]) === $drifted);
+    $x9 = $wvCsv($m9, $s9, 211, $g9, 31);
+    check('rv11a1-2: and so is their file, before a line of it is written',
+        $x9 === ['ok' => false, 'http' => 403, 'why' => $drifted['why']]);
+    $mid9 = $lostOf($open9);
+    check('rv11a1-2: a file opened before the move ends as one that lost rows, not a whole one',
+        !empty($open9['ok']) && $mid9['res']['ok'] === false && $mid9['lost']);
+    $un9 = $wvPage($m9, $s9, 211, $g9, null, ['limit' => 100]);
+    check('rv11a1-2 (control): an unconfined reader, who may open every group\'s records, still reads the run',
+        $un9['ok'] === true && count($un9['rows']) === 5);
+    $m9->dagOf['R07'] = '31';
+    $m9->dagNames['R07'] = 'site_b';
+    $m9->changes['R07'] = '170';
+    $m9->top = '170';
+    check('rv11a1-2: R07 moved back, the group holds what the run held, and the report is shown again',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])['ok'] === true);
+    $m9->records[] = 'R11';
+    $m9->dagOf['R11'] = '31';
+    $m9->dagNames['R11'] = 'site_b';
+    $m9->changes['R11'] = '180';
+    $m9->firstSeen['R11'] = '180';
+    $m9->top = '180';
+    check('rv11a1-2: a record created in the group after the fence is a change after it, not a move',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])['ok'] === true);
+    $m9->firstSeen['R11'] = '90';
+    check('rv11a1-2: but a record logged before the fence and in the group only since moved in',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])
+            === ['ok' => false, 'why' => ScanAuthorization::projectionStillValid(1, 0)['why'], 'final' => true]);
+    $m9->firstSeen['R11'] = '180';
+    $keptIndex9 = $m9->index;
+    $m9->index = new class extends \FakeSourceDb {
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'redcap_record_list') !== false && strpos($sql, ' IN (') !== false) {
+                throw new \RuntimeException('the record list could not be read');
+            }
+            return parent::select($sql, $params);
+        }
+    };
+    check('rv11a1-2: a changed record whose group cannot be read just now refuses the report, not final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])
+            === ['ok' => false, 'why' => ScopeDrift::CANNOT_TELL, 'final' => false]);
+    $m9->index = $keptIndex9;
+    $m9->bottom = '120';
+    check('rv11a1-2: a change log that no longer reaches back to the fence cannot confirm the group, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])
+            === ['ok' => false, 'why' => ScopeDrift::UNCONFIRMED, 'final' => true]);
+    $m9->bottom = '1';
+    // THE WALK IS BOUNDED. Three entries since the fence, read two a page:
+    // two pages walk them, and one page cannot.
+    $m9->changes['R08'] = '175';
+    $fenceOf = new \ReflectionMethod(ScanService::class, 'fence');
+    $fenceOf->setAccessible(true);
+    $log9 = $fenceOf->invoke(new ScanService($m9, $s9), 211);
+    $yes = function (array $ids) { return array_fill_keys($ids, true); };
+    check('rv11a1-2: a walk that reaches the top of the log in its pages confirms the group',
+        ScopeDrift::check($log9, $s9, $s9->run(211, $g9), $yes, $yes, 2, 2)['ok'] === true);
+    check('rv11a1-2: and one with more entries since the fence than it may read refuses, final',
+        ScopeDrift::check($log9, $s9, $s9->run(211, $g9), $yes, $yes, 2, 1)
+            === ['ok' => false, 'movedIn' => 0, 'movedOut' => 0, 'why' => ScopeDrift::UNCONFIRMED, 'final' => true]);
 
     \REDCap::$groupNames = $keptNames;
 }
