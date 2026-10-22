@@ -27,6 +27,9 @@
  *     quotes the page's outcome sentences as the page words them, names every
  *     report column, and every export filename suffix a doc names is one the
  *     exporter can produce (README names each part).
+ *   - README's findings-page section names the panel's four filters, quotes
+ *     its paging buttons, its download link and its empty-filter sentence,
+ *     and states the page size; the run sheet tests every filter.
  *   - A default a doc states beside a setting key is the default ScanPolicy
  *     applies.
  *   - TESTING's table of database cases is the list tests/mysql/run.php runs.
@@ -330,6 +333,39 @@ namespace INSPIRE\UniversalValidator\Scan {
     foreach ($cm[1] as $label) {
         check('README.md names the report column "' . $label . '"', strpos($readme, $label) !== false);
     }
+
+    // The findings panel, as README's findings-page section and the run
+    // sheet quote it: the filter labels, the paging buttons and the download
+    // link of pages/scan.php, the empty-filter sentence, and the page size.
+    $scanPage = (string) $read('pages/scan.php');
+    preg_match('/foreach \(\[(\'form\' => [^\]]+)\] as \$fk => \$fl\)/', $scanPage, $fm);
+    preg_match_all("/=> '([^']+)'/", isset($fm[1]) ? $fm[1] : '', $fl);
+    check('build: pages/scan.php names the four findings filters', count($fl[1]) === 4);
+    preg_match_all('/id="uv-scan-report-(?:prev|next)"[^>]*>([^<]+)</', $scanPage, $bm);
+    check('build: pages/scan.php has the two paging buttons', count($bm[1]) === 2);
+    preg_match('/<a id="uv-scan-report-export">([^<]+)<\/a>/', $scanPage, $dm);
+    check('build: pages/scan.php has the download link', isset($dm[1]));
+    preg_match('/### The findings page(.*?)\n### /s', (string) $docs['README.md'], $fp);
+    $panel = $flat(isset($fp[1]) ? $fp[1] : '');
+    check('README.md has a "The findings page" section', $panel !== '');
+    $sheetText = $flat((string) $docs[$sheet]);
+    foreach ($fl[1] as $label) {
+        check('README.md names the findings filter "' . $label . '"', strpos($panel, $label) !== false);
+        check('the live run sheet tests the findings filter "' . $label . '"',
+            strpos($sheetText, $label . ' filter') !== false);
+    }
+    foreach (array_merge($bm[1], isset($dm[1]) ? [$dm[1]] : [], [ScanPageView::REPORT_EMPTY]) as $s) {
+        check('README.md quotes "' . $s . '" as the page words it', strpos($panel, '"' . $s . '"') !== false);
+    }
+    foreach ($scanDocs as $doc) {
+        if (!isset($docs[$doc]) || $docs[$doc] === null) continue;
+        preg_match_all('/\b(\d+) to a page\b/', $flat($docs[$doc]), $pm);
+        foreach ($pm[1] as $size) {
+            check($doc . ': "' . $size . ' to a page" is the findings page size (' . ScanService::FINDINGS_PAGE . ')',
+                (int) $size === ScanService::FINDINGS_PAGE);
+        }
+    }
+    check('README.md states the findings page size', strpos($panel, ScanService::FINDINGS_PAGE . ' to a page') !== false);
 
     // Filename suffixes: every one the exporter can give a file, and its parts.
     $suffixes = [];

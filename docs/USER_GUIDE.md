@@ -816,19 +816,28 @@ record has been read.
 
 ### Reading the findings
 
-A finished scan's findings are shown a page at a time. Use "Next" and
-"Previous" to move through them, and the filters to show one instrument,
-issue, check type or Data Access Group; each filter lists the values the scan
-found, with how many. The page has no row cap. Every finding the scan kept is
-on some page, and in the file. A scan that reached its project's limit on
-stored detail says so, and its count still includes what it did not store.
+Under the panel, the page shows the findings of your newest finished scan:
+the newest whole-project scan, or, if you work in a Data Access Group, the
+newest scan of your group. They appear when you have no scan running, and
+open by themselves when a scan you are watching finishes. Earlier scans are
+not listed.
 
-The download link saves the same findings as a CSV file, written straight from
-the stored scan. It opens in a spreadsheet, and its first lines say which
-scan it is, what it covered, whether it certifies the project, and how many
-rows to expect. A file from a scan that did not cover the whole project says
-so three ways. It has a banner on its first line, a last row that survives
-sorting the sheet, and `_INCOMPLETE` in its filename. A file whose last line is not
+The findings come 50 to a page. Use "Next page" and "Previous page" to move
+through them, and the Instrument, Reason, Check and Data Access Group filters
+to narrow them; each filter lists the values the scan found, with how many,
+and changing one goes back to page 1. The page has no row cap. Every finding
+the scan kept is on some page, and in the file. A scan that reached its
+project's limit on stored detail says so, and its count still includes what
+it did not store.
+
+The link "Download these findings as a CSV file" saves the same findings,
+written straight from the stored scan. The file opens in a spreadsheet, and
+its first lines say which scan it is, what it covered, whether it certifies
+the project, and how many rows to expect. A scan that did not cover the whole
+project says so three ways, on the page and in the file. A banner comes
+first, a row after the findings says the scan did not cover the whole
+project, and the file name ends in a suffix such as `_INCOMPLETE_CANCELLED`,
+which the page states beside the link. A file whose last line is not
 `# export_complete=1` was cut off and is not the whole report.
 
 If you work inside a Data Access Group, the scan covers your group only, and

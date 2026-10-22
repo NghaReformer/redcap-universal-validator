@@ -23,8 +23,7 @@ Four accounts, all with design rights on both projects:
 | deid | De-Identified | none |
 | admin | REDCap administrator | none |
 
-Beside every step, write pass, fail, or what
-happened instead.
+Beside every step, write pass, fail, or what happened instead.
 
 ---
 
@@ -107,7 +106,7 @@ otherwise.
 |---|---|---|
 | U1 | Before deploying this build, start a scan on Project A and close the tab during "Checking records". | The run is left part done. |
 | U2 | Deploy this build in a new version folder and upgrade the module in the Control Center. | The upgrade request returns. The module log has `scan-schema-migrate` with ok 1, from 5, to 6 and applied 7. |
-| U3 | Open Project A's scan page and press Continue. | The run ends at once, as failed. The note starts "this module was upgraded while this scan was running" and ends "run it again". |
+| U3 | Open Project A's scan page and press Continue. | The run ends at once, as failed. The note starts "This module was upgraded while this scan was running" and ends "Start a new scan." |
 
 ---
 
@@ -150,7 +149,7 @@ Have record 100 and record 200 open in a second tab before you start.
 | D2 | While the scan still runs, delete record 200. | The record is deleted. |
 | D3 | While the scan still runs, create record 5001 with `sd_fmt` = `SD-BAD`, `sd_age` 40, `sd_phone` 555-0100, `sd_code` C5001, `sd_visit` 2025-01-15. | The record saves. |
 | D4 | Let the run finish. | The phase "Checking what changed while it ran" appeared. The counts line says "1 deleted during the scan". 95 findings: record 100's and record 200's are gone and record 5001's is added. "Every record was checked, including changes made while it ran." |
-| D5 | On the findings page, look for records 100, 200 and 5001. | No `sd_fmt` finding on record 100, no finding at all on record 200, one `sd_fmt` finding on record 5001. |
+| D5 | In the findings under the panel, look for records 100, 200 and 5001. | No `sd_fmt` finding on record 100, no finding at all on record 200, one `sd_fmt` finding on record 5001. |
 | D6 | Restore the data: set record 100's `sd_fmt` to `SD-BAD`, delete record 5001, and import record 200 again from the data file. | The project holds 5,000 records and 96 violations again. |
 
 ## Section E: rights
@@ -168,31 +167,36 @@ Have record 100 and record 200 open in a second tab before you start.
 | F1 | As designer, start a scan and leave it running. As north, open the scan page and press "Start a scan". | Refused with "a validation scan is already running for this project. Try again when it has finished." North is shown no Continue button for designer's run. |
 | F2 | Let designer's run finish. As north, press "Start a scan". | The page says "Your scope: records in your Data Access Group only." While the run works, the counts line says "This scan covers one Data Access Group, so its counts are shown once it has confirmed which records belong to that group." |
 | F3 | Let the run finish. | 1,000 records, 20 findings, and "1 rule could not be evaluated, so this result does not certify the project.": `sd_code` is unique across the whole project, which a group scan cannot see, so its 2 duplicates are not counted. |
-| F4 | As north, page through the findings and open the download. | No record above 1000 appears, on the page or in the file. The file's `# scope` line names the group `north`. |
+| F4 | As north, page through the findings under the panel and open the download. | No record above 1000 appears, on the page or in the file. The file's `# scope` line names the group `north`. |
 | F5 | As north, start a scan and press Stop during "Checking records". | "This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group." No findings table and no download link. |
 
 ## Section G: the findings page (Project A)
 
-Use designer's finished run from A6 (96 findings).
+The page shows, under the panel, the findings of the newest finished run in
+your own scope, once no run of yours is going. Earlier runs are not listed.
+Before this section, as designer, run a scan to the end (96 findings) and do
+not start another.
 
 | # | Action | Expect |
 |---|---|---|
-| G1 | Open the run's findings. | A table with a caption, the first page of findings, and Next. The columns include Record, Data Access Group, Instrument, Field, Value and What is wrong; there is no Event column. |
-| G2 | Press Next until it is gone, then Previous back to the start. | Every page holds different rows, the pages hold 96 rows between them, and the first page shows the same rows as before. |
-| G3 | Open the issue filter. | Five issues, with counts 52, 20, 12, 10 and 2. Choosing one shows only its rows. |
-| G4 | Open the check type filter, then the Data Access Group filter. | Five check types with the same counts as G3. Two groups, `north` 22 and `south` 74. |
-| G5 | Open the instrument filter. | One instrument, `scan_demo`, 96. |
-| G6 | Use only the keyboard (Tab, Enter, Space) to move pages and set a filter. | Every control is reachable and works. |
-| G7 | Open the findings of the stopped run from B1. | A banner above the table that the scan is incomplete and does not certify the project, and a row below it that says the scan did not cover the whole project. |
+| G1 | Open the scan page. | "Findings of the last finished scan", "This report holds 96 findings.", and a table captioned "Findings of this scan, page 1" with 50 rows. The columns include Record, Data Access Group, Instrument, Field, Value and What is wrong; there is no Event column. |
+| G2 | Press "Next page", then "Previous page". | Page 2 holds the other 46 rows, and "Next page" then does nothing. "Previous page" shows the same 50 rows as the first page. |
+| G3 | Open the Reason filter. | "All", then five reasons with counts 52, 20, 12, 10 and 2. Choosing one shows only its rows, from page 1. |
+| G4 | Open the Check filter, then the Data Access Group filter. | Five checks with the same counts as G3. "All", `north (22)` and `south (74)`. |
+| G5 | Open the Instrument filter. | One instrument, the `scan_demo` form's name, with 96. |
+| G6 | Set Reason to the duplicate reason and Data Access Group to `south`. | "No findings match these filters." and no row: both duplicates are in `north`. Set both back to "All". |
+| G7 | Use only the keyboard (Tab, Enter, Space) to move pages and set a filter. | Every control is reachable and works. |
+| G8 | Start a scan and let it finish. Watch the area under the panel. | The new run's findings open by themselves when the phase reads "Finished", with no reload. |
 
 ## Section H: the CSV file (Project A)
 
 | # | Action | Expect |
 |---|---|---|
-| H1 | Download the A6 run. | A file named `uv-scan-<pid>-run<id>-<date>_NOT-CERTIFIED.csv`. |
+| H1 | Under the findings of a complete run, press "Download these findings as a CSV file". | A file named `uv-scan-<pid>-run<id>-<date>_NOT-CERTIFIED.csv`. |
 | H2 | Open it in a text editor. | The first bytes are a byte-order mark and a line starting `# schema`. Then `# project`, `# run`, `# generated_at`, `# scope` (whole project), `# coverage`, `# certified` (no), `# values`, `# labels`, `# columns` and `# expected_rows` (96), a header row of column keys, 96 rows, and last `# export_complete=1` with rows=96. |
 | H3 | Open it in Excel. | Columns, not one cell of HTML. |
-| H4 | Download the stopped run from B1. | The name ends `_INCOMPLETE_CANCELLED.csv`. The first line, before `# schema`, starts `# INCOMPLETE SCAN - this report does NOT certify the project as clean`. A row whose first cell is `INCOMPLETE SCAN` comes after the findings and before `# export_complete=1`. |
+| H4 | Start a scan and press Stop during "Checking records". When it reads "Finished", look under the panel. | The stopped run's findings, with the banner "INCOMPLETE SCAN - this report does NOT certify the project as clean" above the table, a row below it starting "This scan did not cover the whole project.", and beside the download "Its file name ends in _INCOMPLETE_CANCELLED, so the file says it is incomplete wherever it is saved." |
+| H5 | Download that run. | The name ends `_INCOMPLETE_CANCELLED.csv`. The first line, before `# schema`, starts `# INCOMPLETE SCAN - this report does NOT certify the project as clean`. A row whose first cell is `INCOMPLETE SCAN` comes after the findings and before `# export_complete=1`. |
 
 ## Section I: values and retention (Project A)
 
@@ -201,13 +205,13 @@ check retention by its effects.
 
 | # | Action | Expect |
 |---|---|---|
-| I1 | With `scan-value-storage` at its default, look at a finished run's Value column. | The column is there and shows no value. |
+| I1 | With `scan-value-storage` at its default, run a scan to the end and look at its Value column. | The column is there and shows no value. |
 | I2 | Set `scan-value-storage` to show every value. Run a scan. | The Value column shows values: `SD-BAD`, `150`, the future dates. |
 | I3 | Find record 3 and record 4 on the page. | Record 3 shows the text `SD<1>`, with the angle brackets visible. Record 4 shows `=1+1`. |
 | I4 | Download the run and open it in Excel. | Record 4's value cell reads `'=1+1` as text and computes nothing. |
-| I5 | Set `scan-value-storage` back to locations only, and save. Reload the I2 run's findings. | No value is shown, before any cron has run. |
+| I5 | Set `scan-value-storage` back to locations only, and save. Reload the scan page, which still shows the I2 run. | No value is shown, before any cron has run. |
 | I6 | Wait for the next `uv_scan_expire_values` pass (section J). | Its `scan-cron` log entry (what: retention) has runs_revoked at least 1 and previews_revoked above 0. |
-| I7 | Set `scan-value-storage` to show every value again. Reload the I2 run's findings. | The values do not come back. |
+| I7 | Set `scan-value-storage` to show every value again. Reload the scan page. | The values do not come back. |
 | I8 | (Next day.) Set Project A's `scan-run-retention-days` to 1, then wait for a retention pass more than a day after a run finished. | The pass logs runs_purged at least 1, and that run can no longer be opened. |
 
 ## Section J: the crons

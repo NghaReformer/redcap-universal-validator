@@ -924,7 +924,9 @@ re-checks three things.
   holds for the screen and the file alike.
 - **Every instrument the scan reads.** A rule that reads an instrument the
   user cannot open refuses the whole report rather than narrowing it, so no
-  finding, count or label from that instrument is shown.
+  finding, count or label from that instrument is shown. Stop asks only for
+  the instruments the rules sit on, so a user barred from an instrument that
+  another field's rule reads can still stop a run.
 
 A user in a Data Access Group scans that group only. A group whose name cannot
 be resolved is refused, because a scan of zero records is not a clean project.
@@ -994,10 +996,13 @@ certified. It never reads it as clean, or as a sign that something was found.
 
 An incomplete report says so three ways. The banner "INCOMPLETE SCAN - this
 report does NOT certify the project as clean" opens it, on the page and in the
-file. A terminal row labelled `INCOMPLETE SCAN` closes its rows; in the file
-it is a data row, so it survives deleting the comment lines or sorting the
-sheet. The download's filename carries a suffix, so a copy forwarded by name
-still says it. An incomplete run's suffix starts with `_INCOMPLETE` and adds
+file. A terminal row, saying the scan did not cover the whole project, closes
+its rows; in the file it is a data row whose first cell is `INCOMPLETE SCAN`,
+so it survives deleting the comment lines or sorting the sheet. The
+download's file name carries a suffix, which the page states beside the
+download link, so a copy forwarded under its own name still says it.
+Renaming the file removes that mark and leaves the other two. An incomplete
+run's suffix starts with `_INCOMPLETE` and adds
 `_CANCELLED`, `_FAILED`, `_EXPIRED`, `_MANIFEST_ONLY`, `_NO_RECORDS` or
 `_TRUNCATED` as they apply. A complete run that may not be called clean gets
 `_NOT-CERTIFIED` and no banner.
@@ -1023,23 +1028,43 @@ project.
 
 ### The findings page
 
-A finished run's findings are shown a page at a time, in the order they were
-stored, with Next and Previous. The page can be filtered by instrument, issue,
-check type and Data Access Group, and each filter lists the values the run's
-summary counted, with their counts. Cells are plain text. A group-scoped run
-that never confirmed its group shows no table, only the sentence saying why,
-and offers no download. The download link is offered only beside a table.
+Under the panel, the page shows the findings of the newest finished run in
+the reader's own scope. For a user outside any group that is the newest
+whole-project run; for a group user, the newest run of their group. The
+findings appear when no run of the reader's is going, and open by themselves
+when a run the tab is watching finishes. Earlier runs are not listed.
+
+Findings come 50 to a page, in the order they were stored, with "Next page"
+and "Previous page". The table's caption gives the page, and a line above it
+gives how many findings the whole report holds. Four filters narrow the table:
+Instrument, Reason, Check and Data Access Group. Each lists "All" and then the
+values the run's summary counted, with their counts; a filter with nothing to
+offer is not shown, and changing one starts again on page 1. A page can come
+back empty while later pages still hold matches. The page then reads up to
+four more pages, saying it is looking further, and says "No findings match
+these filters." only when nothing more matches. Every cell is plain text.
+
+An incomplete report shows its banner above the table and its terminal row
+below it, and beside the download it says that the file name ends in the
+run's suffix. A group-scoped run that never confirmed its group
+shows only the sentence saying why, with no table, filters or download. The
+link "Download these findings as a CSV file" is offered only beside a report
+the page has just read.
 
 The columns are Issue, Record, Data Access Group, Event, Instrument, Instance,
 Field, Field label, Value, Check, Reason code, Rule, Rule name, What is wrong
 and Wording from. A column that does not apply to the project's shape is
 absent. A classic project has no Event column, and a project without groups
 has no Data Access Group column. When the event map cannot be read the Event
-column stays, with raw event ids, and the report says why. The wording comes
-from `php/messages/catalog.json`, which the browser and the server both read.
-Instruments, fields and events are named as they were when the run was
-planned, from a snapshot kept with the run. A run planned before snapshots
-were kept shows today's names and says so.
+column stays, with raw event ids, and the report says why. The What is wrong
+sentence comes from `php/messages/catalog.json`, which only the server reads.
+The form words its own messages in `js/engine.js`, often with live values, so
+for most checks the form's sentence and the report's differ.
+`tests/messages_fixture.json` holds each pair, and its two suites fail when
+either side changes without the fixture. Instruments, fields and events are
+named as they were when the run was planned, from a snapshot kept with the
+run. A run planned before snapshots were kept shows today's names and says
+so.
 
 ### The CSV file
 

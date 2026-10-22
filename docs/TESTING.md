@@ -360,7 +360,7 @@ production-inert `@UVUNIQUE` with every mocked test green, because the framework
 serves some methods through `__call()` and `method_exists()` answers false for
 those. This is the same class of gap, over more surface.
 
-Do the pilot on a **copy** of a real project, or on a project whose data you can
+Do the pilot on a copy of a real project, or on a project whose data you can
 afford to have read repeatedly.
 
 ### Before turning it on
@@ -380,34 +380,34 @@ afford to have read repeatedly.
       *Looking for duplicate values*, *Building the summary*, *Finished*. A
       phase that never appears is a phase that was skipped, and skipping is
       supposed to be impossible.
-- [ ] **Close the tab mid-scan.** Reopen the page. It says the scan is paused
+- [ ] Close the tab mid-scan. Reopen the page. It says the scan is paused
       and offers Continue, and continuing resumes rather than restarting: the
       record count does not go back to zero.
-- [ ] Open the page in **two tabs** and press Continue in both. The run
+- [ ] Open the page in two tabs and press Continue in both. The run
       finishes once, and its finding count equals that of a run driven from one
       tab.
-- [ ] Press **Stop**. The run reaches a terminal state within one batch, reports
+- [ ] Press Stop. The run reaches a terminal state within one batch, reports
       *cancelled*, and the project can start a new scan immediately afterwards.
-- [ ] **Time one batch.** A browser batch should take about three seconds. If it
+- [ ] Time one batch. A browser batch should take about three seconds. If it
       takes thirty, the adaptive sizing is not reading this server correctly and
       that is worth knowing before a 100,000-record project meets it.
 
 ### What it may claim
 
-- [ ] **Edit a record while the scan is running.** The run still finishes, and
+- [ ] Edit a record while the scan is running. The run still finishes, and
       the record is judged on its new values rather than reported from a
       half-read state.
-- [ ] **Create a record while the scan is running.** The run reads it during
+- [ ] Create a record while the scan is running. The run reads it during
       catch-up, and the total grows by one.
-- [ ] **Delete a record while the scan is running.** The run finishes, says how
+- [ ] Delete a record while the scan is running. The run finishes, says how
       many records were deleted during the scan, and shows no finding on the
       deleted record.
-- [ ] On a project with a duplicate value, the finding appears for **every**
+- [ ] On a project with a duplicate value, the finding appears for every
       record in the group, not just one of them.
 - [ ] As a user confined to a Data Access Group, start a scan. Only that group's
       records are counted. Confirm no other group's record id appears anywhere,
       on the page or in the file.
-- [ ] As a user **without Full Data Set export rights**, the scan refuses to
+- [ ] As a user without Full Data Set export rights, the scan refuses to
       start and says which export level it read. The same user cannot read an
       earlier run's findings or download them.
 - [ ] Revoke a user's rights while their run is going. Their next request is
@@ -426,12 +426,12 @@ unmeasured pilot is an opinion.
 No mock can prove this section. The suite stands up a fake `REDCap` class, so it
 proves the module's logic and nothing about whether the real one behaves the way
 the module assumes. Everything below has to be done on a server, on a project
-with **several instruments, at least one rule of each kind, and at least one
-Data Access Group**. The run sheet has the steps.
+with several instruments, at least one rule of each kind, and at least one
+Data Access Group. The run sheet has the steps.
 
 ### The page
 
-- [ ] The **Validation scan** link appears for a design-rights user and is absent
+- [ ] The Validation scan link appears for a design-rights user and is absent
       for one without. Open it directly by URL as a non-design user. It refuses.
 - [ ] On a project with no rules, Start is refused with "this project has
       no validation rules, so there is nothing to scan for", and no run is
@@ -442,25 +442,42 @@ Data Access Group**. The run sheet has the steps.
 - [ ] A run that did not cover the project (stop it partway) does not say
       "Every record was checked", and says "This result does not certify the
       project."
+- [ ] The same run's findings on the page show the banner above the table, the
+      row saying the scan did not cover the whole project below it, and the
+      file name's suffix beside the download link.
 - [ ] The same run's download carries `_INCOMPLETE` in the filename, the banner
       on its first line, and an `INCOMPLETE SCAN` data row after the findings.
 - [ ] As a user confined to a Data Access Group, the export header's scope line
       names that group.
+
+### The findings page
+
+- [ ] After a run finishes, its findings open under the panel without a
+      reload, 50 to a page. "Next page" and "Previous page" move through every
+      row once, and the caption names the page.
+- [ ] Each filter (Instrument, Reason, Check, Data Access Group) lists "All"
+      and then values with counts that add up to the report's total; picking
+      one shows only its rows and starts on page 1.
+- [ ] Two filters that match nothing say "No findings match these filters."
+      and no row is shown.
+- [ ] With every value shown, a value holding `<b>` or `=1+1` shows as typed,
+      as text.
+- [ ] Every control is reachable with Tab and works with Enter or Space.
 
 ### The report
 
 - [ ] The download produces a file that opens in Excel as columns, not as one
       cell of HTML. Check the first bytes are the BOM and a `# ` line, not
       `<!DOCTYPE`, and that the last line is `# export_complete=1`.
-- [ ] The Instrument column is populated on a **classic** project and on a
-      project with a **repeating event**. This is where a wrong implementation
+- [ ] The Instrument column is populated on a classic project and on a
+      project with a repeating event. This is where a wrong implementation
       shows blanks, because the context's own instrument is null in both.
 - [ ] Event column is absent on a classic project and present on a longitudinal
       one. Data Access Group column is absent when the project has no groups.
-- [ ] The **What is wrong** column reads as a sentence for every row. Any row
+- [ ] The What is wrong column reads as a sentence for every row. Any row
       whose *Wording from* column says `fallback` is a rule with no authored
       message and no catalog entry; note the reason code so one can be added.
-- [ ] Set a rule's **Rule label** in the dialog; it appears in the Rule name
+- [ ] Set a rule's Rule label in the dialog; it appears in the Rule name
       column.
 
 ### Values and redaction
@@ -474,7 +491,7 @@ Data Access Group**. The run sheet has the steps.
 - [ ] Set it to show every value and run again: values appear.
 - [ ] Put a value longer than 255 bytes in a field and confirm the report cuts
       it and says so.
-- [ ] Set **log-values** to the strict record-id mode and confirm the report's
+- [ ] Set log-values to the strict record-id mode and confirm the report's
       record ids are hashed there too. The report must not contradict the audit.
 
 ### Capability degradation
