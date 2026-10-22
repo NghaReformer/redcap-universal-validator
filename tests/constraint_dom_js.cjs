@@ -887,5 +887,84 @@ function submitEv() {
     !/Branch folded/.test(cMsg(envB, 'answer').innerHTML) && b1.getAttribute('aria-invalid') !== 'true');
 }
 
+// ---- AST-1 / AST-2 (review 2026-10-21): number fields and "exact" ------------
+{
+  // config.numberMarks names the form's number fields; the condition reads
+  // 12,5 on a comma-decimal field as 12.5, as the server does
+  const hb = makeEl('input'); hb.name = 'hb'; hb.value = '12,5';
+  const tx = makeEl('input'); tx.name = 'tx'; tx.value = '12,5';
+  const env = boot([hb, tx], { singleFields: [], pooledFields: [], numberMarks: { hb: 'comma' },
+    rules: [{ type: 'constraint', fields: ['hb'], assert: '[hb]>=5', message: 'Hb below 5', blockSave: 'hard' },
+            { type: 'constraint', fields: ['tx'], assert: '[tx]>=5', message: 'Text below 5', blockSave: 'hard' }] });
+  check('AST-1: a typed 12,5 on a comma-decimal field passes [hb]>=5',
+    !/Hb below 5/.test(cMsg(env, 'hb').innerHTML) && hb.getAttribute('aria-invalid') !== 'true');
+  check('AST-1: the same text on a field with no mark is text, as on the server',
+    /Text below 5/.test(cMsg(env, 'tx').innerHTML));
+  hb.value = '4,5'; hb.fire('change');
+  check('AST-1: a typed 4,5 fails [hb]>=5', /Hb below 5/.test(cMsg(env, 'hb').innerHTML));
+  hb.value = '2.5E1'; hb.fire('change');
+  check('AST-3: 2.5E1 on a number field is 25', !/Hb below 5/.test(cMsg(env, 'hb').innerHTML));
+
+  // "exact": = compares character for character; without it, by value
+  const a = makeEl('input'); a.name = 'pid'; a.value = '00123';
+  const c = makeEl('input'); c.name = 'pid_c'; c.value = '123';
+  const l = makeEl('input'); l.name = 'pid_l'; l.value = '123';
+  const envX = boot([a, c, l], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['pid_c'], assert: '[pid]=[pid_c]', exact: true, message: 'IDs differ', blockSave: 'hard' },
+            { type: 'constraint', fields: ['pid_l'], assert: '[pid]=[pid_l]', message: 'Loose differ', blockSave: 'hard' }] });
+  check('AST-2: "exact" holds 00123 confirmed as 123', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+  check('AST-2: without "exact", 00123 equals 123 (numbers by value)', !/Loose differ/.test(cMsg(envX, 'pid_l').innerHTML));
+  let ev = submitEv(); envX.doc.fire('submit', ev);
+  check('AST-2: the "exact" mismatch holds the save', ev._prevented === true);
+  c.value = '00123'; c.fire('change');
+  check('AST-2: the same ID typed twice passes', !/IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+  c.value = 'AB12'; a.value = 'ab12'; a.fire('change'); c.fire('change');
+  check('AST-2: "exact" counts letter case', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+}
+
+// ---- survey page shape (AST-5): placeholder texts, names kept as present only ----
+// A survey page's config carries no condition text next to a settled answer,
+// and a snapshot without its field names (ModeRegistry::clientShape). The
+// page must judge exactly as it did with the full config.
+{
+  const q = makeEl('input'); q.name = 's_q'; q.value = '1';
+  const env = boot([q], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_q'], when: '(condition)', whenAst: ['const', true],
+              assert: '(condition)', assertAst: ['cmp', '>', ['ref', 's_q', null], ['lit', '3']],
+              snapshotFields: [''], message: 'Answer it', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 's_q');
+  check('survey shape: a settled gate with a placeholder text still applies the rule', /Answer it/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('survey shape: a snapshot without names still makes the rule advisory', ev._prevented === false);
+  check('survey shape: no console error for the placeholder', env.consoleErrors.length === 0);
+  q.value = '5'; q.fire('change');
+  check('survey shape: the live test still reads the field', !/Answer it/.test(msg.innerHTML));
+}
+{
+  const q = makeEl('input'); q.name = 's_q'; q.value = '1';
+  const env = boot([q], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_q'], when: '(condition)', whenAst: ['const', false],
+              assert: '(condition)', assertAst: ['cmp', '>', ['ref', 's_q', null], ['lit', '3']],
+              message: 'Answer it', blockSave: 'hard' }],
+  });
+  check('survey shape: a gate settled false leaves the rule inert', !/Answer it/.test(cMsg(env, 's_q').innerHTML));
+}
+{
+  // A rule deferred as a whole arrives with a placeholder and a fixed constant.
+  const dose = makeEl('input'); dose.name = 's_dose'; dose.value = '55';
+  const env = boot([dose], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_dose'], assert: '(condition)', assertAst: ['const', true],
+              deferred: true, message: 'Too much', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 's_dose');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('survey shape: a rule deferred as a whole shows nothing and blocks nothing',
+    !/Too much|not set up|unavailable/.test(msg ? msg.innerHTML : '') && ev._prevented === false && env.consoleErrors.length === 0);
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -19,9 +19,12 @@
  *   - the write is itself a save, and redcap_save_record skips it
  *     (self::$returnWriting) rather than audit its own fill a second time.
  *
- * The project scan never asks for returns (ruleFindings only works them out
- * when $meta['returns'] is set, which only auditRule sets): a scan reads.
+ * The project scan never writes. For a mode whose values come from the record
+ * itself (php/modes.json "returns" "scanCompare", @UVRANGE) it asks for them
+ * too and reports a returned field that holds something else as
+ * "returned-stale" (returnsStale): an import does not run the save hook.
  */
+
 
 namespace INSPIRE\UniversalValidator;
 
@@ -223,6 +226,55 @@ trait ReturnedValues
     }
 
     /**
+     * Whether a returned field that holds $cur would be written with $text:
+     * the test applyReturns makes before it writes, and the scan makes to
+     * report a returned value out of date (returnsStale). $loose: the field
+     * compares as a number, so "7.70" is "7.7".
+     */
+    private static function returnedDiffers($cur, $text, $loose)
+    {
+        $cur = (string) $cur;
+        $text = (string) $text;
+        if ($cur === $text) return false;
+        return !($loose && $cur !== '' && $text !== '' && self::sameReturnedNumber($cur, $text));
+    }
+
+    /**
+     * Whether the scan compares what $rule returns with what the record holds
+     * (php/modes.json "returns" "scanCompare"): only for a mode whose values
+     * come from the record itself, and not where the project turned the write
+     * on save off (returnsOffOnSave), since the fields are then the project's
+     * to fill.
+     */
+    private function returnsComparedByScan(array $rule, $pid)
+    {
+        $rt = ModeRegistry::returns(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+        return $rt !== null && !empty($rt['scanCompare']) && !$this->returnsOffOnSave($rule, $pid);
+    }
+
+    /**
+     * The returned fields of one scanned context that hold something other
+     * than what the next save would write (RNG-1), as field => the text held.
+     * REDCap does not run the save hook for a Data Import Tool import, so a
+     * measurement imported or corrected that way leaves the old values. A
+     * field the context holds no value for reads as "", as in applyReturns.
+     */
+    private function returnsStale(array $rule, array $returns, array $values, $pid)
+    {
+        $dd = $this->dataDictionary($pid);
+        $loose = array_flip(self::looseReturns($rule, $returns));
+        $out = [];
+        foreach ($returns as $f => $text) {
+            $f = (string) $f;
+            if (isset($values[$f]) && is_array($values[$f])) continue;
+            $cur = isset($values[$f]) ? (string) $values[$f] : '';
+            $isLoose = isset($loose[$f]) || (is_array($dd) && isset($dd[$f]) && self::numberMarkOf($dd[$f]) !== null);
+            if (self::returnedDiffers($cur, $text, $isLoose)) $out[$f] = $cur;
+        }
+        return $out;
+    }
+
+    /**
      * Write the queued values where they differ from what the record holds.
      * Returns whether anything was written (the caller then reads the record
      * again). Never throws: a failure is logged and the audit goes on. A
@@ -282,9 +334,7 @@ trait ReturnedValues
                     $key = (string) $ctx['event_id'] . '|' . (string) $ctx['repeatKey'] . '|' . (int) $ctx['instance'];
                     foreach ($vals as $f => $text) {
                         $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
-                        if ($cur === $text) continue;
-                        $loose = isset($q['loose'][$f]) || self::numberMarkOf($dd[$f]) !== null;
-                        if ($loose && $cur !== '' && $text !== '' && self::sameReturnedNumber($cur, $text)) continue;
+                        if (!self::returnedDiffers($cur, $text, isset($q['loose'][$f]) || self::numberMarkOf($dd[$f]) !== null)) continue;
                         if (!isset($writes[$key])) {
                             $writes[$key] = ['event_id' => $ctx['event_id'], 'instance' => (int) $ctx['instance'], 'data' => []];
                         }

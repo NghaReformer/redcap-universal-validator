@@ -311,7 +311,7 @@ namespace {
     check('markLockReads: a reason field does not make a locked field hold the save', !isset($out[1]['lockReads']));
     $out = $ml->invoke(null, [['type' => 'writeonce', 'fields' => ['a']],
         ['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>[b]', 'justifyBy' => ['a' => 'why']]]);
-    check('markLockReads: another field the rule reads still does', isset($out[1]['lockReads']) && $out[1]['lockReads'] === ['a']);
+    check('markLockReads: another field the rule reads still does', isset($out[1]['lockReads']) && $out[1]['lockReads'] === ['a' => ['b']]);
 
     // ---- 2) the post-save audit ----------------------------------------------------------
     $m = save($DICT, $data(), 'visit_form');

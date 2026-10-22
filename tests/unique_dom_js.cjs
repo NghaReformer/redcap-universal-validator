@@ -56,11 +56,25 @@ function errorsDuring(fn) {
   return errs;
 }
 
+/* style.cssText = "display:block;..." sets style.display, as a browser does,
+   so a check of display sees what the engine last showed. */
+function makeStyle() {
+  const s = {};
+  Object.defineProperty(s, 'cssText', {
+    get() { return this._css || ''; },
+    set(v) {
+      this._css = String(v);
+      const m = /(?:^|;)\s*display\s*:\s*([^;]+)/.exec(this._css);
+      this.display = m ? m[1].trim() : '';
+    },
+  });
+  return s;
+}
 function makeEl(tag) {
   return {
     tagName: (tag || 'div').toUpperCase(), id: '', name: '', value: '', innerHTML: '',
     type: '', checked: false,
-    style: {}, _attrs: {}, children: [], parentNode: null, readOnly: false, disabled: false,
+    style: makeStyle(), _attrs: {}, children: [], parentNode: null, readOnly: false, disabled: false,
     _handlers: {},
     setAttribute(k, v) { this._attrs[k] = String(v); if (k === 'id') this.id = String(v); },
     getAttribute(k) { return (k in this._attrs) ? this._attrs[k] : (k === 'id' ? (this.id || null) : null); },
@@ -272,7 +286,7 @@ const JSMO = 'EMStub.UV';
   check('branches: the condition values travel as cond', stub.calls.length === 1 && stub.calls[0].payload.cond.arm === '2');
 }
 
-// ---- 3) failures FAIL OPEN ---------------------------------------------------
+// ---- 3) failures FAIL OPEN, and say so on staff forms (UNQ-3) ----------------
 {
   const stub = makeTransportStub();
   const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'X1';
@@ -281,7 +295,10 @@ const JSMO = 'EMStub.UV';
     singleFields: [], pooledFields: [], jsmoName: JSMO,
     rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }],
   }, stub);
-  check('transport error: inert (fail open)', uMsg(env, 'pid').style.display === 'none');
+  const msg = uMsg(env, 'pid');
+  check('transport error: says it could not check (no reason given)',
+    msg.style.display === 'block' && /Could not check whether this value is already recorded just now\.$/.test(msg.innerHTML));
+  check('transport error: not marked invalid', pid.getAttribute('aria-invalid') !== 'true');
   let ev = submitEv(); env.doc.fire('submit', ev);
   check('transport error: save never trapped', ev._prevented === false);
   check('transport error: console note', env.consoleErrors.some((m) => /uniqueness check failed/.test(m)));
@@ -289,9 +306,108 @@ const JSMO = 'EMStub.UV';
   stub.next = { error: 'not a checkable field' };
   pid.value = 'X2';
   pid.fire('change');
-  check('error response: inert (fail open)', uMsg(env, 'pid').style.display === 'none');
+  check('error response: says it could not check, without the server error text',
+    /Could not check/.test(msg.innerHTML) && !/checkable/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('error response: save never trapped', ev._prevented === false);
+}
+{
+  // A throttled answer holds a rule that blocks: the server answers again
+  // within the minute, and Save asks again (UNQ-3).
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'TH1';
+  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
+  const env = boot([pid], {
+    singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }],
+  }, stub);
+  const msg = uMsg(env, 'pid');
+  check('throttled: says it could not check, why, and that the save waits',
+    msg.style.display === 'block'
+    && /Could not check whether this value is already recorded just now \(too many checks in the last minute — wait a moment\)\. The save waits until it can be checked\./.test(msg.innerHTML));
+  check('throttled: not marked invalid', pid.getAttribute('aria-invalid') !== 'true');
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled: the save is held, and Save asked again',
+    ev._prevented === true && stub.calls.length === 2
+    && /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
+  stub.next = { used: true, record: '4' };
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled: a duplicate found once the limit clears blocks', ev._prevented === true && /already recorded/.test(msg.innerHTML));
+  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
+  pid.value = 'TH2'; pid.fire('change');
+  stub.next = { used: false, record: null };
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled: a free answer once the limit clears lets the save through', ev._prevented === false && /Not used before/.test(msg.innerHTML));
+}
+{
+  // Any other answer the server cannot give fails open: it names its reason,
+  // never blocks, and Save does not ask the same value again.
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'UK1';
+  stub.next = { unknown: true, record: null, why: 'the saved values could not be compared just now' };
+  const env = boot([pid], {
+    singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }],
+  }, stub);
+  const msg = uMsg(env, 'pid');
+  check('unknown: says it could not check, and why',
+    /Could not check whether this value is already recorded just now \(the saved values could not be compared just now\)\.$/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('unknown: never blocks the save', ev._prevented === false);
+  check('unknown: Save asks nothing new and keeps the notice',
+    stub.calls.length === 1 && /could not be compared/.test(msg.innerHTML));
+  stub.next = { unknown: true, record: null, why: '<img src=x>' };
+  pid.value = 'UK2'; pid.fire('change');
+  check('unknown: the reason is escaped', /\(&lt;img src=x&gt;\)/.test(msg.innerHTML) && !/<img/.test(msg.innerHTML));
+  stub.next = { used: false, record: null };
+  pid.value = 'UK3'; pid.fire('change');
+  check('unknown: a later answer replaces the notice', /Not used before/.test(msg.innerHTML));
+}
+{
+  // A throttled rule that cannot block is never held.
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'TH9';
+  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
+  const env = boot([pid], {
+    singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'off' }],
+  }, stub);
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled + blockSave off: never held', ev._prevented === false && !/save waits/.test(uMsg(env, 'pid').innerHTML));
+}
+
+{
+  // On a survey the notice stays hidden: a respondent cannot act on it.
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'SV1';
+  stub.next = { unknown: true, record: null };
+  const env = boot([pid], {
+    singleFields: [], pooledFields: [], context: 'survey', jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], uniqueSurveys: true, blockSave: 'hard' }],
+  }, stub);
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('survey: an unknown answer shows nothing and never blocks',
+    uMsg(env, 'pid').style.display === 'none' && ev._prevented === false && stub.calls.length === 1);
+}
+{
+  // Typing asks nothing; change and blur ask (UNQ-3).
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = '';
+  const env = boot([pid], {
+    singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }],
+  }, stub);
+  for (const v of ['A', 'AB', 'AB1']) { pid.value = v; pid.fire('input'); }
+  check('typing: no request per keystroke', stub.calls.length === 0);
+  pid.fire('change');
+  check('typing: change asks once', stub.calls.length === 1 && stub.calls[0].payload.values.pid === 'AB1');
+  pid.fire('blur');
+  check('typing: blur on the same value asks nothing new', stub.calls.length === 1);
+  pid.value = 'AB2'; pid.fire('input');
+  check('typing: a keystroke clears the old verdict', uMsg(env, 'pid').style.display === 'none');
+  pid.fire('blur');
+  check('typing: blur asks too', stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'AB2');
+  void env;
 }
 {
   // no transport at all (jsmoName absent)
@@ -333,6 +449,7 @@ const JSMO = 'EMStub.UV';
     const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
       rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
     long.forEach((fn) => fn());
+    check('pending: no answer in time says so', /Could not check[^<]*\(no answer in time\)/.test(uMsg(env, 'pid').innerHTML));
     const ev = submitEv(); env.doc.fire('submit', ev);
     check('pending: no answer in time lets the save through', ev._prevented === false);
     check('pending: ...without asking the same value again', stub.calls.length === 1);
@@ -558,7 +675,9 @@ for (const mode of ['confirm', 'hard']) {
     rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
   const errs = errorsDuring(() => stub.answer({ unknown: true, record: null }));
   const ev = submitEv(); env.doc.fire('submit', ev);
-  check('unknown: inert, never blocks, logs nothing', !ev._prevented && uMsg(env, 'pid').style.display === 'none' && errs.length === 0);
+  check('unknown: says it could not check, never blocks, logs nothing',
+    !ev._prevented && /Could not check/.test(uMsg(env, 'pid').innerHTML) && errs.length === 0);
+
 }
 
 console.log(`unique_dom_js: ${n} checks, ${fail} failure(s)`);

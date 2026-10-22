@@ -72,7 +72,8 @@ field with integer, number or no validation, a calc or a slider. On a comma-deci
     form, whether or not anything was saved there. The tag is checked at every event
     that holds the form: an event shorthand is refused when an event it names holds the
     form more than once, and the refusal gives a reference that names the event and the
-    instance, such as <code>[visit1_arm_1][weight][last-instance]</code>. An instance
+    instance, such as <code>[previous-event-name][weight][last-instance]</code>, when one
+    works from every event. An instance
     shorthand needs the form to repeat at every event that holds it.</li>
 <li>An earlier value of <strong>0</strong> has no percent, so <code>maxPct</code> does
     not apply to it; <code>max</code> still does. For that reason

@@ -57,7 +57,7 @@ php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key gram
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, percentile, bounds and reference values written into fields on the page
-php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats; the scan reports stale ones
 php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
 php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, refusals, staff notes, page curves and tables, the pageCharts cap; --write refreshes growth_chart_fixture.json
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
@@ -70,6 +70,12 @@ node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
+node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
+node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
+php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
+php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract
@@ -487,11 +493,19 @@ inner spaces.
   the reference and expects it accepted, including across two arms (a
   relative event, never one arm's event, even when the reference named one),
   on a project of one event, and where nothing works (no suggestion, and the
-  list of what was tried). The refusal of a plain `vs` naming the field
+  list of what was tried, this event included). For the field itself it
+  suggests `[last-instance]` at another event and `[previous-instance]` only
+  at its own, and nothing where only a later visit would work; a relative
+  event as written is kept, an event of another arm as written is not (but
+  is accepted written by hand), another form's field gets its last instance
+  first, an event that always lands on this entry is left to the plain
+  reference, and no suggestion repeats another tag's `vs` and direction under
+  the same condition (review R8). The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
-  form repeats at the visits, and nothing where no other entry of the field
-  exists or the form is designated at no event. A `vs` form designated at no event is refused as such. A plain
+  form repeats at the visits, a written reference when no shorthand fits
+  (saying when it needs references on), and nothing where no other entry of
+  the field exists or the form is designated at no event. A `vs` form designated at no event is refused as such. A plain
   `vs` a save cannot read (the field is not collected in this event, or the
   read failed) is a rule problem in the evaluator. One `vs` with two directions judges both ways (the heart-rate
   recipe), and a deferral only this viewer meets is marked and still checked
@@ -507,7 +521,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 130 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 152 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
@@ -527,16 +541,35 @@ inner spaces.
   applies the event filter and refuses SQL without it; with `$looseEvent` it
   returns every event's rows and the reader must pass over the others); rows
   newest first in pages; a whole-record `DELETE` ending the history in a
-  project of one arm, while a `DELETE` of a form, an event or an arm, and any
-  `DELETE` with several arms, make it unknown; a save with no event that names
-  a kept field; another record of the same name in a loose collation; the cap
-  counted per event, with a history of exactly the cap read in full; a failed
-  read; save times turned into the project's clock; and `parseRow` (a notes
-  value over several lines, checkbox lines, a field written twice, a stray
-  line, and a row out of the data dictionary's order). `RoleBook::read` runs
+  project of one arm, while a `DELETE` of this event's data or of an arm, and
+  any whole-record `DELETE` with several arms, make it unknown, and one of
+  one form or one event of another event's data is passed over while another
+  description there makes it unknown; an erase of the project's records
+  starting every history after it (asked once per reader, a failed read making
+  the history unknown, the project id compared as bytes, part of a record
+  named like the project no erase, an erase placed after the record was made
+  leaving its history unknown); the record's start (an INSERT with a trusted
+  record id line, read at any event, even one naming another record id; a
+  history without one unknown; an UPDATE that writes the record id, and a
+  record id line typed into a notes value, change nothing; "recordXid" and
+  "prev_record_id" lines not read); a save with no event that names a kept
+  field, on any instance; another record of the same name in a loose
+  collation, also past the cap; the cap counted per event over that event's
+  rows, deletes and rows with no event, with a history of exactly the cap read
+  in full and `MAX_ROWS_READ` rows of any kind; a
+  failed read; save times turned into the project's clock; and `parseRow` (a
+  notes value over several lines, 130,000 lines in under a second, checkbox
+  lines, a field written twice, a stray line, an instance line that is not the
+  first, and a row out of the data dictionary's order, read up to the first
+  Text or Notes value before the break). `RoleBook::read` runs
   over a mock database: both names of each role, users by lowercase name, the
   project and today bound as parameters, and a REDCap with no unique role
-  names. The SQL of both runs on a real server in `tests/mysql/cases/history.php`.
+  names, and role names kept as `Logic::roleKey` (letter case in any alphabet,
+  spaces folded, a no-break space at either end trimmed). The SQL of both runs
+  on a real server in `tests/mysql/cases/history.php`, with two erases, rows
+  that are no erase (a record "730 " or "７３０", one form of a record "730",
+  another object type, one that names an event), the record's start through
+  both LIKE patterns, a `DELETE` of one event and one that names an arm.
 - `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
   read-only with the note under it, in the rule's own words when it has a
   message; radio buttons are disabled and the "reset" link hidden, and the
@@ -548,24 +581,36 @@ inner spaces.
   while the date box stays enabled; a change made anyway (an event, a jQuery
   change, a script with no event) is undone and the note says so; a value that
   cannot be put back holds the save; another mode's item on a locked field
-  never holds the save unless its rule reads another field (`lockReads`), in
-  either order of binding, while a field REDCap made read-only (`@READONLY`)
-  still never holds it; roles that could not be read lock the field and the
-  note says so; a configuration error locks nothing; and every guard item
-  names a mode the registry knows.
+  never holds the save unless its rule reads another field (`lockReads`) and
+  that field has changed since the page opened, in either order of binding
+  and for every mode, while a field REDCap made read-only (`@READONLY`) or
+  disabled still never holds it; a violation saved before the page opened and
+  two locked fields that read each other never hold it, also with the engine
+  loaded before the form, as REDCap prints it; a checkbox read option by
+  option; a read field the page does not carry is never compared; the lock
+  leaves an
+  embedded field's enhanced choices, reset link and Today button alone; the
+  date picker is set once; roles that could not be read lock the field and the
+  note says so; saved values that could not be read lock nothing and staff see
+  a note; a configuration error locks nothing; and every guard item names a
+  mode the registry knows.
 - `writeonce_module_php.php` covers the server side: calc and checkbox fields
   and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
-  `@RICHTEXT` and BioPortal fields refused; a field given the tag twice
-  refused; each role checked against the project, by name or unique role name,
-  in any letter case, and refused once by name; a lock on a field another rule
+  `@DOWNLOAD-COUNT`, `@RICHTEXT` and ontology fields of any service refused; a field given the
+  tag twice refused; each role checked against the project, by name or unique
+  role name, in any letter case of any alphabet, and refused once by name; a lock on a field another rule
   returns to refused, split off its group with each refusal in field order,
   while a returning rule refused for another reason leaves the lock alone; the
   grammar; the page (only fields holding a value, never for a member of a
   role, the user name compared without letter case, a survey respondent holds
   none, roles that cannot be read lock every rule that names roles and say so,
   never on a new record, not before "since", roles and "since" kept off the
-  page, `lockReads` on a rule that reads another field); what the log reader
-  is told of the project (the data dictionary's order, one arm or several);
+  page, `lockReads` naming only fields of the form that are not locked, a
+  checkbox once per option, and a calc only when a field it is worked out
+  from may be changed there, through other calcs too, saved
+  values that cannot be read flagged, the saved code sent for dropdown and SQL
+  fields); what the log reader is told of the project (the data dictionary's
+  order, its Text and Notes fields, the record id field, one arm or several);
   the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
   saved over a locked value, "since", the lock times kept whatever the log
   mode, and each rule problem, with the reason a history could not be read);
@@ -584,11 +629,12 @@ inner spaces.
   autocomplete box, a notes box, a slider), and checks each lock, each note,
   each undone change and each save. A refused tag on a dropdown shows its
   error under the field.
-- `writeonce_mutations.py` applies 119 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Three mutate
-  the role book's SQL and are killed only by `tests/mysql/run.php`; they run
-  when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are
-  reported as skipped otherwise.
+- `writeonce_mutations.py` applies 190 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Twelve mutate
+  the SQL (three the role book's, six the erase search, three the search for
+  the record's start) and are killed only by
+  `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
+  variables name a server, and are reported as skipped otherwise.
 
 ## `growth_*` — growth references (z-scores)
 
@@ -794,8 +840,23 @@ explicitly or the suite fails. Covered: both configuration channels, all four
 log-privacy modes on the success AND exception paths, keyed-HMAC hashing and
 key persistence, event scoping (a value under another event is never audited),
 instrument scoping, repeat instances, duplicate-field skips, per-rule
-isolation, `uvalidate-unconfigurable` logging, non-ASCII fail-open, the
-non-text field rejection, and the save-time `validateSettings` gate.
+isolation, `uvalidate-unconfigurable` logging, non-ASCII values (checked, or
+reported when the regex engines may disagree), the non-text field rejection,
+and the save-time `validateSettings` gate.
+
+## `value_parity_fixture.json` — the browser/server value contract
+
+One value typed into an `@UVALIDATE` field must get the same answer from the
+browser and from the save-time audit. Each row holds a rule, a value, what the
+browser shows (`blank`, `valid`, `invalid`) and what the server says (`skip`,
+`valid`, `not-checked` or the finding's reason). `value_parity_dom_js.cjs` runs
+the rows through the real engine on a stub page; `value_parity_php.php` runs
+them through `CheckCharacter` with the config `findingsCheck` builds, checks
+that the two columns of every row agree, and locks `browserTrim`, `jsLength`
+and `dialectSplits`. The rows cover edge whitespace (VAL-3), characters outside
+printable ASCII (VAL-1), the regex constructs that JavaScript and PCRE read
+differently (`.`, `\s`, `\S`, negated classes, astral characters) and the
+512-unit length cap (VAL-12).
 
 ## CI
 

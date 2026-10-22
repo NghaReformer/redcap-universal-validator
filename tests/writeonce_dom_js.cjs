@@ -80,8 +80,10 @@ global.Event = function (type) { this.type = type; };
 
 /* Boot the engine over els (each in its own holder; els with a row id share
    a row) and return the page. opts.jQuery installs a jQuery stub that
-   records the widget calls. Interval callbacks are kept, so a test can run
-   the silent-change poll by hand (poll()). */
+   records the widget calls. opts.late loads the engine on a page still
+   loading, before els exist, then adds them and fires DOMContentLoaded, as
+   REDCap does: it prints the engine above the form. Interval callbacks are
+   kept, so a test can run the silent-change poll by hand (poll()). */
 function boot(els, config, opts) {
   opts = opts || {};
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
@@ -90,21 +92,23 @@ function boot(els, config, opts) {
   const body = makeEl('body');
   const holders = {};
   const rows = {};
+  const later = [];
+  const place = (el) => { if (opts.late) later.push(el); else allEls.push(el); };
   for (const el of els) {
     let holder = el._row ? rows[el._row] : null;
     if (!holder) {
       holder = makeEl('div');
       if (el._row) { holder.id = el._row; rows[el._row] = holder; }
-      body.appendChild(holder);
-      allEls.push(holder);
+      if (!opts.late) body.appendChild(holder);
+      place(holder);
     }
     holder.appendChild(el);
-    allEls.push(el);
-    for (const k of el.children) allEls.push(k);
+    place(el);
+    for (const k of el.children) place(k);
     if (el.name && !holders[el.name]) holders[el.name] = holder;
   }
   const doc = {
-    body, readyState: 'complete', _handlers: {}, activeElement: null,
+    body, readyState: opts.late ? 'loading' : 'complete', _handlers: {}, activeElement: null,
     createElement(t) { const e = makeEl(t); allEls.push(e); return e; },
     getElementById(id) { return allEls.find((e) => e.id === id) || null; },
     getElementsByName(name) { return allEls.filter((e) => e.name === name); },
@@ -118,6 +122,7 @@ function boot(els, config, opts) {
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
     INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
+  if (opts.stub) win.EMStub = { UV: opts.stub.obj };
   if (opts.jQuery) {
     const jq = function (sel) {
       const el = typeof sel === 'string' ? (sel[0] === '#' ? doc.getElementById(sel.slice(1)) : null) : sel;
@@ -146,6 +151,13 @@ function boot(els, config, opts) {
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
   require(enginePath);
+  if (opts.late) {
+    // the form below the engine, then DOMContentLoaded
+    if (opts.beforeForm) opts.beforeForm(win);
+    for (const el of later) { allEls.push(el); if (el.tagName === 'DIV' && !el.parentNode) body.appendChild(el); }
+    doc.readyState = 'interactive';
+    doc.fire('DOMContentLoaded', {});
+  }
   return { doc, win, holders, allEls, calls, NS: win.INSPIREUniversalValidator, poll() { intervals.forEach((f) => f()); } };
 }
 function region(env, field, suffix) {
@@ -322,7 +334,7 @@ for (const order of ['lock first', 'lock last']) {
 for (const order of ['lock first', 'lock last']) {
   const locked = text('weight', '70'), open = text('height', '150');
   const lock = WO(['weight']);
-  const rule = { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] };
+  const rule = { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } };
   const env = boot([locked, open], { rules: order === 'lock first' ? [lock, rule] : [rule, lock] });
   check(order + ': the locked field is read-only', locked.readOnly === true);
   check(order + ': a rule on a locked field that reads another field: the save goes through while it holds', save(env) === 'saved');
@@ -335,33 +347,143 @@ for (const order of ['lock first', 'lock last']) {
   const locked = text('weight', '70'), open = text('height', '50');
   locked.readOnly = true;
   const env = boot([locked, open], { rules: [WO(['weight']),
-    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] }] });
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } }] });
+  open.value = '40'; open.fire('change');
   check('a field REDCap made read-only (@READONLY) never holds the save, even with the lock reading it', save(env) === 'saved', env.win._alerts);
+}
+{
+  // a violation saved before the page opened does not trap the form (review W2-2)
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } }] });
+  check('a violation already saved when the page opened does not hold the save', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  check('... a change of the other field that still breaks it does', save(env) === 'held');
+  open.value = '50'; open.fire('change');
+  check('... and the other field put back as it was lets the save through again', save(env) === 'saved');
+  open.value = '40';
+  check('... a change no event announced counts too', save(env) === 'held');
+}
+{
+  // two locked fields that read each other: the server marks neither (no field left to change), so nothing traps the form
+  const a = text('wa', '70'), b = text('wb', '60');
+  const env = boot([a, b], { rules: [WO(['wa', 'wb']),
+    { type: 'constraint', fields: ['wa'], assert: '[wa]<[wb]', blockSave: 'hard' },
+    { type: 'constraint', fields: ['wb'], assert: '[wb]>[wa]', blockSave: 'hard' }] });
+  check('two locked fields that read each other never hold the save', save(env) === 'saved', env.win._alerts);
+}
+{
+  // a box the lock made read-only that REDCap then disables (form locking) counts as one the person cannot edit (review W2-13)
+  const k = text('kk', '70'); k.disabled = true;
+  const h = text('kh', '150');
+  const env = boot([k, h], { rules: [WO(['kk']),
+    { type: 'constraint', fields: ['kk'], assert: '[kk]<[kh]', blockSave: 'hard', lockReads: { kk: ['kh'] } }] });
+  check('a locked box REDCap disabled: read-only by the lock, and marked so', k.readOnly === true && k.__qridLockSetRO === true);
+  check('... and no other rule on it gets a guard item, the disabled state being REDCap\'s', !env.NS.guard.items.some((it) => it.__qridFieldName === 'kk' && it.__qridMode === 'constraint'),
+    env.NS.guard.items.map((it) => it.__qridFieldName + ':' + it.__qridMode));
 }
 {
   // a radio: the lock disables the buttons, which must not count as @READONLY for the choices filter
   const r = radioField('grp', ['1', '2', '9'], '9');
-  const legacy = text('legacy', '0');
+  const legacy = text('legacy', '1');
   const env = boot(r.els.concat([legacy]), { rules: [WO(['grp']),
-    { type: 'choices', fields: ['grp'], choicesHide: ['9'], choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard', lockReads: ['grp'] }] });
+    { type: 'choices', fields: ['grp'], choicesHide: ['9'], choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard', lockReads: { grp: ['legacy'] } }] });
   check('a radio the lock disabled still gets the choices filter\'s guard item', env.NS.guard.items.some((it) => it.__qridFieldName === 'grp' && it.__qridMode === 'choices'),
     env.NS.guard.items.map((it) => it.__qridMode));
-  check('... which holds the save while the other field hides the saved code', save(env) === 'held');
+  check('... the save goes through while the saved code is shown', save(env) === 'saved', env.win._alerts);
+  legacy.value = '0'; legacy.fire('change');
+  check('... it holds the save once the other field hides the saved code', save(env) === 'held');
   legacy.value = '1'; legacy.fire('change');
-  check('... and lets it through once the other field changes', save(env) === 'saved', env.win._alerts);
+  check('... and lets it through once the other field changes back', save(env) === 'saved', env.win._alerts);
 }
 {
   const locked = text('weight', '70');
   const open = text('height', '200');
   const env = boot([locked, open], { rules: [WO(['weight']),
-    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] }] });
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } }] });
   // a lookup still running for a rule that reads the locked field alone does not hold
   env.NS.guard.items.push({ __qridFieldName: 'weight', __qridMode: 'unique', __qridPending: true, __qridInvalid: false,
     __qridBlockMode: 'hard', __qridFieldLabel: 'weight', focus() {} });
   check('a lookup still running on a locked field, for a rule that reads it alone, does not hold the save', save(env) === 'saved', env.win._alerts);
   env.NS.guard.items.push({ __qridFieldName: 'weight', __qridMode: 'constraint', __qridPending: true, __qridInvalid: false,
     __qridBlockMode: 'hard', __qridFieldLabel: 'weight', focus() {} });
-  check('... one for a rule that reads another field does', save(env) === 'held');
+  check('... nor one for a rule that reads another field, while that field is as the page opened', save(env) === 'saved');
+  open.value = '201'; open.fire('change');
+  check('... which holds the save once that field has changed', save(env) === 'held');
+}
+
+for (const order of ['lock first', 'lock last']) {
+  // a dropdown with an autocomplete box: the box the lock made read-only is not @READONLY's,
+  // so a rule on the dropdown that reads another field keeps its guard item (QRID_fieldLocked)
+  const s = select('grp', ['', '1', '2', '9'], '9');
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_grp'; ac.value = '9';
+  const legacy = text('legacy', '1');
+  const lock = WO(['grp']);
+  const rule = { type: 'choices', fields: ['grp'], choicesHide: ['9'], choicesAll: ['1', '2', '9'], when: "[legacy]='0'",
+    blockSave: 'hard', lockReads: { grp: ['legacy'] } };
+  const env = boot([s, ac, legacy], { rules: order === 'lock first' ? [lock, rule] : [rule, lock] });
+  check(order + ': the autocomplete box the lock made read-only is marked so', ac.readOnly === true && ac.__qridLockSetRO === true);
+  check(order + ': ... the save goes through while the saved code is allowed', save(env) === 'saved', env.win._alerts);
+  legacy.value = '0'; legacy.fire('change');
+  check(order + ': ... and is held once the other field hides the saved code', save(env) === 'held', env.win._alerts);
+}
+{
+  // an autocomplete box REDCap made read-only (@READONLY) before the lock still counts
+  const s = select('grp', ['', '1', '2', '9'], '9');
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_grp'; ac.value = '9'; ac.readOnly = true;
+  const legacy = text('legacy', '1');
+  const env = boot([s, ac, legacy], { rules: [WO(['grp']), { type: 'choices', fields: ['grp'], choicesHide: ['9'],
+    choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard', lockReads: { grp: ['legacy'] } }] });
+  check('an autocomplete box already read-only is not marked as the lock\'s', ac.__qridLockSetRO !== true);
+  legacy.value = '0'; legacy.fire('change');
+  check('... and the dropdown never holds the save (UX-003)', save(env) === 'saved', env.win._alerts);
+}
+
+{
+  // REDCap prints the engine above the form: the base of each field the rule reads is taken
+  // once the form exists, not before (review W3-1)
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } }] },
+    { late: true });
+  check('engine above the form: the locked field is read-only once the form exists', locked.readOnly === true);
+  check('... a violation already saved when the page opened does not hold the save', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  check('... a change of the other field that still breaks it does', save(env) === 'held');
+}
+{
+  // a rule that reads a checkbox: each option is read by its code (review W3-6)
+  const locked = text('weight', '120');
+  const mirror = makeEl('input'); mirror.name = '__chk__pregnant_RC_1'; mirror.type = 'hidden'; mirror.value = '';
+  const box = makeEl('input'); box.id = 'id-__chk__pregnant_RC_1'; box.name = '__chkn__pregnant'; box.type = 'checkbox';
+  const env = boot([locked, mirror, box], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: "[weight]<100 or [pregnant(1)]='0'", blockSave: 'hard', lockReads: { weight: ['pregnant(1)', 'pregnant(2)'] } }] });
+  check('checkbox read: nothing ticked since the page opened, the save goes through', save(env) === 'saved', env.win._alerts);
+  mirror.value = '1'; box.checked = true; box.fire('click'); mirror.fire('change');
+  check('checkbox read: ... ticking the option that breaks the rule holds it', save(env) === 'held', env.win._alerts);
+  mirror.value = ''; box.checked = false; box.fire('click'); mirror.fire('change');
+  check('checkbox read: ... and unticking it lets the save through', save(env) === 'saved', env.win._alerts);
+}
+{
+  // a field the rule reads that this page does not carry (another page of a survey) is never compared
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', lockReads: { weight: ['height', 'elsewhere'] } }] });
+  check('a read field this page does not carry does not hold the save', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  check('... while one it carries still does once changed', save(env) === 'held');
+}
+{
+  // an input added after the form opened has no value to compare with; one removed has none to compare
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<50', blockSave: 'hard', lockReads: { weight: ['height', 'later'] } }] });
+  const later = text('later', 'x');
+  env.allEls.push(later);
+  check('a read field whose input appears after the form opened is not compared', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  env.allEls.splice(env.allEls.indexOf(open), 1);
+  check('a read field whose input is gone at the save is not compared', save(env) === 'saved', env.win._alerts);
 }
 
 // ---- 10) roles that could not be read (review M8) --------------------------------------
@@ -384,9 +506,20 @@ for (const order of ['lock first', 'lock last']) {
 // ---- 12) the widgets REDCap builds around a field (review L10, live sheet) -------------
 {
   const r = radioField('grp', ['1', '2'], '1');
+  r.buttons.forEach((b, i) => { b.id = 'opt-grp_' + (i + 1); });
   const enh = makeEl('div'); enh.className = 'enhancedchoice'; enh._row = 'grp-tr';
-  boot(r.els.concat([enh]), { rules: [WO(['grp'])] });
-  check('the enhanced radio buttons take no clicks', enh.style.pointerEvents === 'none');
+  const lab = makeEl('label'); lab.setAttribute('for', 'opt-grp_1'); enh.appendChild(lab);
+  const enh2 = makeEl('div'); enh2.className = 'enhancedchoice'; enh2._row = 'grp-tr';
+  const lab2 = makeEl('label'); lab2.setAttribute('comps', 'grp,code,2'); enh2.appendChild(lab2);
+  // an embedded field in the same row keeps its own enhanced choices and buttons (review W2-7)
+  const other = makeEl('div'); other.className = 'enhancedchoice'; other._row = 'grp-tr';
+  const lab3 = makeEl('label'); lab3.setAttribute('for', 'opt-emb_1'); other.appendChild(lab3);
+  const embReset = makeEl('a'); embReset.setAttribute('onclick', "radioResetVal('emb','form');return false;"); embReset._row = 'grp-tr'; embReset.style.display = 'inline';
+  const embToday = makeEl('button'); embToday.setAttribute('onclick', "setToday('emb_date','ymd');"); embToday._row = 'grp-tr'; embToday.style.display = 'inline';
+  boot(r.els.concat([enh, enh2, other, embReset, embToday]), { rules: [WO(['grp'])] });
+  check('the enhanced radio buttons take no clicks', enh.style.pointerEvents === 'none' && enh2.style.pointerEvents === 'none');
+  check('... an embedded field\'s enhanced choice in the same row still does', other.style.pointerEvents !== 'none');
+  check('... and its reset link and Today button stay', embReset.style.display === 'inline' && embToday.style.display === 'inline');
 }
 {
   const s = select('site2', ['', '1', '2'], '2');
@@ -401,6 +534,60 @@ for (const order of ['lock first', 'lock last']) {
   const now = makeEl('button'); now.setAttribute('onclick', "setNowTime('vd');"); now._row = 'vd-tr'; now.style.display = 'inline';
   boot([d, today, now], { rules: [WO(['vd'])] });
   check("REDCap's Today and Now buttons are hidden", today.style.display === 'none' && now.style.display === 'none');
+}
+
+// ---- 12b) the date picker is set once, not at every undo (review W2-16) ---------------
+{
+  const dt = text('vd2', '01-03-2026'); dt.className = 'x hasDatepicker';
+  const env = boot([dt], { rules: [WO(['vd2'])] }, { jQuery: true });
+  for (const v of ['02-03-2026', '03-03-2026', '04-03-2026']) { dt.value = v; dt.fire('change'); }
+  save(env);
+  const opts = env.calls.filter((c) => c[0] === 'datepicker' && c[2] === 'option').length;
+  check('the date picker\'s option is set once, whatever the undos (got ' + opts + ')', opts === 1 && dt.value === '01-03-2026');
+}
+
+// ---- 12c) saved values that could not be read (review W2-11) ---------------------------
+{
+  const f = text('vu', 'x');
+  const env = boot([f], { rules: [WO(['vu'], { writeonceValuesUnread: true })] });
+  check('saved values that could not be read lock nothing', f.readOnly === false);
+  check('... and the note says so', /could not be read, so this field is not locked here/.test(note(env, 'vu')), note(env, 'vu'));
+  f.value = 'y'; f.fire('change');
+  check('... a change stays, and the save goes through', f.value === 'y' && save(env) === 'saved');
+  const g = text('vs', 'x');
+  const e2 = boot([g], { context: 'survey', rules: [WO(['vs'], { writeonceValuesUnread: true })] });
+  check('... a survey respondent sees no note', note(e2, 'vs') === '' && g.readOnly === false);
+}
+
+// ---- 12d) every mode's item on a locked field exists whichever binds first (review W2-15) ---
+{
+  const stub = { obj: { ajax() { return { then() {} }; } } };
+  const cases = [
+    ['check', { type: 'single', fields: ['f'], algorithm: 'luhn', blockSave: 'hard' }],
+    ['window', { type: 'window', fields: ['f'], windowFrom: '[g]', windowFromOp: ['ref', 'g', null], windowLo: 0, windowHi: 1, windowUnit: 'days',
+                 dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }],
+    ['range', { type: 'range', fields: ['f'], rangeHardLo: '0', rangeHardHi: '1' }],
+    ['delta', { type: 'delta', fields: ['f'], deltaVs: '[g]', deltaVsOp: ['ref', 'g', null], deltaVsLabel: '[g]', deltaMax: '1',
+                deltaText: 'a change of at most 1', deltaGroup: '[g] both', blockSave: 'hard' }],
+    ['required', { type: 'required', fields: ['f'], when: "[g]='x'", blockSave: 'hard' }],
+    ['unique', { type: 'unique', fields: ['f'], blockSave: 'hard' }],
+    ['exists', { type: 'exists', fields: ['f'], blockSave: 'hard' }],
+  ];
+  for (const [mode, rule] of cases) {
+    const f = text('f', '2026-01-05'), g = text('g', '2026-01-01');
+    const env = boot([f, g], { jsmoName: 'EMStub.UV', rules: [WO(['f']), Object.assign({ lockReads: { f: ['g'] } }, rule)] }, { stub });
+    check(mode + ': a rule on a box the lock made read-only still gets its guard item', f.readOnly === true
+      && env.NS.guard.items.some((it) => it.__qridFieldName === 'f' && it.__qridMode === mode), env.NS.guard.items.map((it) => it.__qridMode));
+  }
+}
+{
+  // a check rule with a "when" on another field: lockReads keyed by the mode ("check"), not the type ("single") (J1)
+  const code = text('code', '1234'), flag = text('flag', '0');
+  const env = boot([code, flag], { rules: [WO(['code']),
+    { type: 'single', fields: ['code'], algorithm: 'luhn', when: "[flag]='1'", blockSave: 'hard', lockReads: { code: ['flag'] } }] });
+  check('check mode: the save goes through while the rule is off', save(env) === 'saved', env.win._alerts);
+  flag.value = '1'; flag.fire('change');
+  check('check mode: ... and is held once the other field turns it on', save(env) === 'held', env.win._alerts);
 }
 
 // ---- 13) every guard item names its mode --------------------------------------------

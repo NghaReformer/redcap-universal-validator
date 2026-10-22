@@ -167,7 +167,11 @@ namespace {
         $db = new FakeHistoryLog();
         $db->rows = $LOG;
         $utc = new \DateTimeZone('UTC');
-        setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $WO, $utc, $utc));
+        // the reader told what the module tells it: the dictionary's order, its free-text
+        // fields, the record id field and the arms (review W2-4: the order check runs here too)
+        $vo = new \ReflectionMethod(get_class($m), 'valueHistoryOptions');
+        $vo->setAccessible(true);
+        setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $WO, $utc, $utc, $vo->invoke($m, 149)));
         setPrivate($m, 'roleBookOverride', $roles);
         setPrivate($m, 'clockOverride', \INSPIRE\UniversalValidator\UniversalValidator::clockStamp(new \DateTimeImmutable('2026-10-23 10:00:00', $utc)));
         return $m;
@@ -265,6 +269,9 @@ namespace {
     };
 
     $D = ['XE-3' => [351 => ['record_id' => 'XE-3'], 380 => []]];
+    // the fixture import made the records: REDCap logs each as an INSERT with its record id line
+    logSave('20261020090000', ['record_id' => 'XE-3'], 'tester', 'XE-3', 351, 1, 'INSERT');
+    logSave('20261020090000', ['record_id' => 'XE-4'], 'tester', 'XE-4', 351, 1, 'INSERT');
 
     // ---- Section A: configuration, before and after the role exists --------------------------
     $p = $opened('a1', $D, $NO_ROLE);
@@ -306,6 +313,9 @@ namespace {
         lockedOn($p) === ['uw_arm', 'uw_consent', 'uw_notes', 'uw_pain', 'uw_yn'], lockedOn($p));
     check('B2: the roles and "since" never reach the page', strpos($p['html'], 'UV Data manager') === false && stripos($p['html'], 'u-149uvdm') === false
         && strpos($p['html'], '2099') === false && strpos($p['html'], 'writeonceRoles') === false);
+    // B2d: Enter saves the form with every value as it was, so REDCap logs nothing
+    $m = save($D, $ROLE_OUT);
+    check('B2d: an Enter save with the date put back: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     $D['XE-3'][380]['uw_site'] = '1';
     logSave('20261023090500', ['uw_site' => '1']);
     $m = save($D, $ROLE_OUT);
@@ -320,6 +330,27 @@ namespace {
     $m = save($D, $ROLE_OUT);
     check('B5: the weight changes before its lock starts: no finding', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     check('B5: and is still not locked on the page', !in_array('uw_weight', lockedOn(page(mod($D, $ROLE_OUT))), true));
+    // B6: the rule on the locked note reads the free text, which the person may change
+    $p = $opened('b6', $D, $ROLE_OUT);
+    $assertOn = function ($p, $f) {
+        foreach ($p['cfg']['rules'] ?? [] as $r) if (($r['type'] ?? '') === 'constraint' && in_array($f, $r['fields'] ?? [], true)) return $r;
+        return null;
+    };
+    check('B6/B7: the rule on the locked note names the free text it reads', ($assertOn($p, 'uw_notes')['lockReads'] ?? null) === ['uw_notes' => ['uw_free']], $assertOn($p, 'uw_notes'));
+    $D['XE-3'][380]['uw_free'] = 'ok';
+    logSave('20261023091100', ['uw_free' => 'ok']);
+    $m = save($D, $ROLE_OUT);
+    check('B6: the free text put right saves: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    // B7: an import breaks the rule before the page opens
+    $D['XE-3'][380]['uw_free'] = 'stop';
+    logSave('20261023091200', ['uw_free' => 'stop']);
+    $opened('b7', $D, $ROLE_OUT);
+    $m = save($D, $ROLE_OUT);
+    check('B7: the Enter save logs no write-once finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    $D['XE-3'][380]['uw_free'] = 'ok';
+    logSave('20261023091300', ['uw_free' => 'ok']);
+    $m = save($D, $ROLE_OUT);
+    check('B7b: the free text put right: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
 
     // ---- Section C: the Data Import Tool, which the page never sees ---------------------------
     $D['XE-3'][380] = array_merge($D['XE-3'][380], ['uw_consent' => '2026-10-02', 'uw_site' => '2', 'uw_notes' => '']);
@@ -388,6 +419,10 @@ namespace {
         lockedOn($ps) === ['uw_arm', 'uw_consent'], lockedOn($ps));
     check('G3: the survey page names no role', stripos($ps['html'], 'data manager') === false && stripos($ps['html'], 'u-149uvdm') === false);
     check('G3: a respondent holds no role, even on a login that holds one', lockedOn(surveyPage(mod($D, $ROLE_IN), 'XE-4')) === ['uw_arm', 'uw_consent']);
+    // Submit saves the second page: REDCap logs only the form status, which changed
+    logSave('20261023100500', ['uv_writeonce_test_complete' => '2'], '[survey respondent]', 'XE-4');
+    $m = save($D, $ROLE_OUT, 'XE-4');
+    check('G4: Submit saves the second page: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
 
     // ---- Section H: a deletion of the form's data, which the check cannot place -------------------
     logSave('20261023101000', ['uw_consent' => '', 'uw_arm' => '', 'uw_free' => ''], 'tester', 'XE-4', 380, 1, 'DELETE', 'Delete all record data for single form');

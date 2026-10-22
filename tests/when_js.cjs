@@ -59,17 +59,22 @@ for (const c of fx.eval) {
     /* 'expect'/'expectGate' are the EXACT verdicts; the Ci twins are the module
        default. Defaults resolve exactly as in tests/when_php.php. */
     const has = (k) => Object.prototype.hasOwnProperty.call(c, k);
+    const nums = c.numbers || undefined;
     check('eval verdict (assert): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, true) === c.expect);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, true, nums) === c.expect);
     const wantGate = has('expectGate') ? c.expectGate : c.expect;
     check('eval verdict (gate): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, true) === wantGate);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, true, nums) === wantGate);
     const wantCi = has('expectCi') ? c.expectCi : c.expect;
     check('eval verdict (assert, case-insensitive): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, false) === wantCi);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, false, nums) === wantCi);
     const wantGateCi = has('expectGateCi') ? c.expectGateCi : (has('expectGate') ? c.expectGate : wantCi);
     check('eval verdict (gate, case-insensitive): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, false) === wantGateCi);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, false, nums) === wantGateCi);
+    /* 'expectExact': the test under "exact" (AST-2), defaulting to 'expect'. */
+    const wantExact = has('expectExact') ? c.expectExact : c.expect;
+    check('eval verdict (assert, exact): ' + c.name,
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, W.EXACT, nums) === wantExact);
   }
 }
 

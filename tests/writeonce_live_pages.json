@@ -38,6 +38,28 @@
                 "configError": "@UVWRITEONCE on \"uw_yn\": \"uv data MANAGER\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
             },
             {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ]
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -72,7 +94,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "a1_values": {},
     "b1": {
@@ -93,6 +120,28 @@
         "context": "form",
         "rules": [
             {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ]
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -127,7 +176,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b1_values": {},
     "errors": {
@@ -175,6 +229,33 @@
                 ]
             },
             {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ],
+                "lockReads": {
+                    "uw_notes": [
+                        "uw_free"
+                    ]
+                }
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -209,7 +290,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b2_values": {
         "uw_arm": "1",
@@ -268,6 +354,33 @@
                 ]
             },
             {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ],
+                "lockReads": {
+                    "uw_notes": [
+                        "uw_free"
+                    ]
+                }
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -302,7 +415,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b4_values": {
         "uw_arm": "1",
@@ -312,6 +430,258 @@
         "uw_pain": "50",
         "uw_site": "1",
         "uw_weight": "70.0",
+        "uw_yn": "1"
+    },
+    "b6": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_notes",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "message": "Ask the data manager to change the site.",
+                "fields": [
+                    "uw_site"
+                ],
+                "writeonceSaved": {
+                    "uw_site": "1"
+                }
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ],
+                "lockReads": {
+                    "uw_notes": [
+                        "uw_free"
+                    ]
+                }
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
+    },
+    "b6_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-01",
+        "uw_free": "a",
+        "uw_notes": "First note\nsecond line",
+        "uw_pain": "50",
+        "uw_site": "1",
+        "uw_weight": "71.0",
+        "uw_yn": "1"
+    },
+    "b7": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_notes",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "message": "Ask the data manager to change the site.",
+                "fields": [
+                    "uw_site"
+                ],
+                "writeonceSaved": {
+                    "uw_site": "1"
+                }
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ],
+                "lockReads": {
+                    "uw_notes": [
+                        "uw_free"
+                    ]
+                }
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
+    },
+    "b7_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-01",
+        "uw_free": "stop",
+        "uw_notes": "First note\nsecond line",
+        "uw_pain": "50",
+        "uw_site": "1",
+        "uw_weight": "71.0",
         "uw_yn": "1"
     },
     "c2": {
@@ -361,73 +731,25 @@
                 ]
             },
             {
-                "type": "single",
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
                 "fields": [
-                    "uw_bad_role"
+                    "uw_notes"
                 ],
-                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
-            },
-            {
-                "type": "single",
-                "fields": [
-                    "uw_bad_calc"
-                ],
-                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
-            },
-            {
-                "type": "single",
-                "fields": [
-                    "uw_bad_setvalue"
-                ],
-                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
-            },
-            {
-                "type": "single",
-                "fields": [
-                    "uw_bad_when"
-                ],
-                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
-            },
-            {
-                "type": "single",
-                "fields": [
-                    "uw_bad_value"
-                ],
-                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
-            }
-        ]
-    },
-    "c2_values": {
-        "uw_arm": "1",
-        "uw_consent": "2026-10-02",
-        "uw_free": "a",
-        "uw_pain": "50",
-        "uw_site": "2",
-        "uw_weight": "71.0",
-        "uw_yn": "1"
-    },
-    "d1": {
-        "algorithm": "iso7064_mod37_36",
-        "idPattern": null,
-        "alternates": null,
-        "source": "normalized_id",
-        "strip": "-/ _|\\",
-        "suggestFix": false,
-        "keepChars": "",
-        "idLengths": null,
-        "idMinLen": 8,
-        "idMaxLen": 14,
-        "expectedIds": null,
-        "blockSave": "off",
-        "singleFields": [],
-        "pooledFields": [],
-        "context": "form",
-        "rules": [
-            {
-                "type": "writeonce",
-                "fields": [
-                    "uw_consent",
-                    "uw_pain"
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
                 ]
             },
             {
@@ -465,12 +787,114 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
+    },
+    "c2_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-02",
+        "uw_free": "ok",
+        "uw_pain": "50",
+        "uw_site": "2",
+        "uw_weight": "71.0",
+        "uw_yn": "1"
+    },
+    "d1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "d1_values": {
         "uw_arm": "1",
         "uw_consent": "2026-10-02",
-        "uw_free": "a",
+        "uw_free": "ok",
         "uw_pain": "50",
         "uw_site": "2",
         "uw_weight": "71.0",
@@ -523,6 +947,28 @@
                 ]
             },
             {
+                "type": "constraint",
+                "assert": "[uw_free]<>'stop'",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ]
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -557,12 +1003,17 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "d4_values": {
         "uw_arm": "2",
         "uw_consent": "2026-10-02",
-        "uw_free": "a",
+        "uw_free": "ok",
         "uw_pain": "50",
         "uw_site": "2",
         "uw_weight": "71.0",
@@ -598,6 +1049,28 @@
                 ]
             },
             {
+                "type": "constraint",
+                "assert": "(condition)",
+                "message": "The free text says stop.",
+                "blockSave": "hard",
+                "fields": [
+                    "uw_notes"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<>",
+                    [
+                        "ref",
+                        "uw_free",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "stop"
+                    ]
+                ]
+            },
+            {
                 "type": "single",
                 "fields": [
                     "uw_bad_role"
@@ -632,7 +1105,12 @@
                 ],
                 "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "labels": {
         "uw_consent": "Consent date",

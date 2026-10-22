@@ -342,7 +342,8 @@ NASK, Not asked";
     $err = logs($m, 'uvalidate-audit-error');
     check('a write REDCap refuses is logged as an audit error, the save is not disturbed', count($err) === 1
         && $err[0]['stage'] === 'return values');
-    // the scan asks ruleFindings without "returns": it reads
+    // ruleFindings works the values out only when its meta asks: the audit
+    // always does, the scan for a mode that compares them (5b)
     $m = mod(dict(), ['2' => [EVT => row()]]);
     $rf = new \ReflectionMethod($m, 'ruleFindings');
     $rf->setAccessible(true);
@@ -356,9 +357,52 @@ NASK, Not asked";
     $vals = ['sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6'];
     $res = [];
     $r1 = $rf->invoke($m, $rule, 0, $vals, [], null, PID, '2', EVT, null, $res, []);
-    check('the scan path (no "returns" in meta) works nothing out', !isset($r1['returns']));
+    check('no "returns" in meta: nothing worked out', !isset($r1['returns']));
     $r2 = $rf->invoke($m, $rule, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true]);
     check('the audit path does', isset($r2['returns']) && $r2['returns'] === $want);
+
+    // ---- 5b) the scan reports a returned value out of date (RNG-1) ---------------------------------------
+    // REDCap does not run the save hook for a Data Import Tool import, so an
+    // imported weight leaves the z-score of the old one. The scan compares what
+    // the next save would write with what the fields hold, and writes nothing.
+    $staleOf = function ($res) {
+        return array_values(array_filter($res['violations'], function ($v) { return $v['reason'] === 'returned-stale'; }));
+    };
+    $fieldsOf = function (array $st) { $f = array_map(function ($v) { return $v['field']; }, $st); sort($f); return $f; };
+    $old = wantFields(expected(9.6));
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => '7.7']) + $old]]);
+    $res = $m->scanProject(PID);
+    $st = $staleOf($res);
+    check('scan: an imported weight leaves the old z-score, reported out of date (got ' . json_encode($st) . ')',
+        count($st) === 1 && $st[0]['field'] === 'wfa_z' && $st[0]['type'] === 'range' && (string) $st[0]['record'] === '2'
+        && $st[0]['instrument'] === 'anthro_form' && (int) $st[0]['rule'] >= 1);
+    check('scan: ... the weight itself is judged as before', (bool) array_filter($res['violations'], function ($v) {
+        return $v['field'] === 'weight' && $v['reason'] !== 'returned-stale';
+    }));
+    check('scan: ... and nothing is written', !\REDCap::$saves);
+    $m = mod(dict(), ['2' => [EVT => row() + $old]]);
+    check('scan: returned values that match the saved inputs are not reported', !$staleOf($m->scanProject(PID)));
+    $spelled = $old;
+    $spelled['wfa_lo'] = $old['wfa_lo'] . '0';
+    $spelled['wfa_z'] = $old['wfa_z'] . '0';
+    $m = mod(dict(), ['2' => [EVT => row() + $spelled]]);
+    check('scan: the same number spelled another way is not out of date, as the save would not write it',
+        !$staleOf($m->scanProject(PID)));
+    $m = mod(dict(), ['2' => [EVT => row()]]);
+    check('scan: a record imported without its returned values is reported once per field',
+        $fieldsOf($staleOf($m->scanProject(PID))) === ['wfa_hi', 'wfa_lo', 'wfa_rng', 'wfa_z']);
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => '']) + $old]]);
+    check('scan: a weight emptied by an import leaves a z-score the save would empty; the bounds need no weight',
+        $fieldsOf($staleOf($m->scanProject(PID))) === ['wfa_z']);
+    $m = mod(dict(), ['2' => [EVT => row(['sex' => '']) + $old]]);
+    check('scan: with the sex emptied every returned field is out of date',
+        $fieldsOf($staleOf($m->scanProject(PID))) === ['wfa_hi', 'wfa_lo', 'wfa_rng', 'wfa_z']);
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => '7.7']) + $old]], ['range-return-no-save' => true]);
+    check('scan: with "range-return-no-save" the fields are the project\'s to fill and are not compared',
+        !$staleOf($m->scanProject(PID)));
+    $label = \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'returned-stale');
+    check('scan: the finding has a label of its own (got ' . json_encode($label) . ')', $label === 'Returned value out of date');
+
 
     // ---- 6) branches own the fields of every branch ---------------------------------------------------------
     $both = tag('"when":"[sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' ' . tag('"when":"[sex]=\'2\'","return":{"range":"[wfa_rng]"}');

@@ -897,7 +897,11 @@ field invalid unless a condition holds — checked live, enforceable with a real
 ```
 
 Put this on `end_date`. While the condition is false, the field is invalid and shows a
-generic message. ISO dates and numbers compare correctly.
+generic message. ISO dates and numbers compare correctly. A field validated as a number
+(an integer, a number with any decimals, comma decimals included), a calc and a slider
+are read as the number they hold: a saved `12,5` is 12.5 and `2.5E1` is 25. Two numbers
+compare by value, so `=` treats `02` and `2` as equal; for an ID or a phone number, use
+`"exact":true` (Level 2).
 
 A bare `@UVASSERT` with no condition is a configuration error — there is nothing to
 assert.
@@ -909,10 +913,13 @@ or the next action tag, as for [`@UVREQUIRED`](#level-4--compound-conditions):
 ### Level 2 — confirm-a-value
 
 ```text
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}
 ```
 
-"Type it twice" needs no special feature; it is an assertion like any other.
+"Type it twice" is an assertion like any other, with one option. Without `"exact":true`,
+`=` compares numbers by value, so `00123` confirmed as `123`, `1002` as `1002.0` and
+`+237677123456` as `237677123456` would all pass. With it, `=` and `<>` compare the two
+entries character for character (spaces around them aside), letter case included.
 
 ### Level 3 — your own message
 
@@ -1081,8 +1088,9 @@ note, is not read.
 ## `@UVUNIQUE` — no duplicates across records
 
 REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value against every
-other record **as it is typed**, over a CSRF-protected module AJAX call — no page
-reload.
+other record when it is entered or changed, over a CSRF-protected module AJAX call, with
+no page reload. Typing clears the old answer; the page asks when the field loses focus,
+and again at Save.
 
 ### Level 1 — unique across the project
 
@@ -1098,7 +1106,9 @@ reload.
 @UVUNIQUE=event        unique within the same event of a longitudinal project
 ```
 
-Any other bare value is a configuration error naming the three valid scopes.
+Any other bare value is a configuration error naming the three valid scopes. Under `dag`,
+records in no group form one group of their own, and a new record made by a user in no
+group is compared with them.
 
 ### Level 3 — message and enforcement
 
@@ -1118,7 +1128,10 @@ unique. A specimen ID may repeat across sites but not within one.
 
 Constraints on `with`: a JSON list of real REDCap field names, at most **5** entries, no
 duplicates, and each must exist in the data dictionary and be a scalar field. Names are
-lowercased automatically.
+lowercased automatically. A `with` value is read from the same entry as the tagged field,
+so each `with` field must be collected in an event that also collects the tagged field,
+and must not sit on a repeating instrument the tagged field is not on. The rule is refused
+otherwise.
 
 ### Level 5 — surveys (explicit opt-in)
 
@@ -1323,9 +1336,8 @@ branch stays visible and is marked invalid; `blockSave:"hard"` challenges the br
 save until it is corrected. Dropdowns keep that stale option greyed and marked
 `data-uv-stale`, never disabled, so the answer on screen is the answer REDCap
 receives; autocomplete keeps the entered text but excludes it from new suggestions.
-On a multi-page survey, put the controlling field on the same page as the filtered
-field: a field answered on an earlier page is not in the page's form, so the filter
-cannot read it there and only the post-save audit checks that answer. Clearing or correcting
+On a survey shown one section per page, the controlling field may sit on an earlier
+page: the page is drawn with the condition settled from the saved answer. Clearing or correcting
 the answer releases the choice-filter block. Off-page/extended conditions remain
 advisory even if `hard` was authored. Audits and scans detect saved hidden choices.
 
@@ -3181,8 +3193,11 @@ no `soft` or `hard`: none of the four is made from a limit.
   form as changed. After a change REDCap hears an input and a change event, so
   its calculations and branching logic that read the field run. On save: the
   post-save audit works out the same values from the saved record and writes
-  those that differ, for a form, a survey, an import and the API, with one
-  save per entry (event and instance), the entry being saved first. An entry
+  those that differ, for a save of a form or a survey, with one save per entry
+  (event and instance), the entry being saved first. An import or an API write
+  leaves the fields as they were, because REDCap does not run the save hook for
+  a Data Import Tool import; the Validation scan reports such a field as
+  "Returned value out of date". An entry
   REDCap refuses to write (a locked form) is logged, and the others are still
   written. The write appears in the record's log as an update by the user who
   saved. It is not audited again. The rules that return values are checked
@@ -4239,8 +4254,9 @@ instance:
   - An event shorthand is refused when an event it names holds the form more
     than once (the form repeats there, or the whole event repeats): it does not
     say which instance to compare with. The refusal gives a reference that
-    names the event and the instance, such as
-    `[visit1_arm_1][weight][last-instance]`. A form that repeats only at the
+    names the event and the instance and works from every event, such as
+    `[previous-event-name][weight][last-instance]`, when there is one. A form
+    that repeats only at the
     last visit is fine, because no shorthand names that visit.
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
@@ -4264,10 +4280,16 @@ instance:
 - A refusal ends with a reference to write instead only when that reference
   passes the same check from every event where the field is entered. Where
   the field's form is entered in two arms it suggests a relative event such
-  as `[first-event-name][w_enrol]`, never an event of one arm, which would
-  read nothing from the other arm, even when the reference as written named
-  that event. When nothing works it lists what it tried and says none of it
-  can be read.
+  as `[first-event-name][w_enrol]`, never an event of one arm, which holds a
+  value from the other arm only for a record entered in both, even when the
+  reference as written named that event (written by hand, such an event is
+  accepted). It never suggests the next event, nor, on the field's own form,
+  the last event or a later visit named outright, which compare with a later
+  entry, nor a reference with the `vs` and direction of another `@UVDELTA`
+  tag on the field under the same condition. For the field itself it suggests
+  `[previous-instance]` only at the field's own event and `[last-instance]`
+  only at another. When nothing works it lists the events and instances it
+  tried and says none of them can be read.
 - The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
   is refused when `w_rep`'s form is not designated at visit 1, and a plain
   `[w_enrol]` is refused on a visit form when only enrolment collects it; the
@@ -4399,8 +4421,9 @@ locked. It cannot be changed here."
 ```
 
 - `roles` names user roles by the name the User Rights page shows or by the
-  unique role name, in any letter case, up to 20. Each must be a role of the
-  project, or the field shows a configuration error.
+  unique role name, up to 20. Letter case does not matter in any alphabet, and
+  a run of spaces counts as one. Each must be a role of the project, or the
+  field shows a configuration error.
 - A member of a role sees the field open. A change by a member moves the lock
   to the new value; a member who clears it releases the lock, and the next
   value saved locks it again.
@@ -4434,36 +4457,63 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 - The lock is the browser's only. A change made with the Data Import Tool or
   the API is not stopped. It is found afterwards, from REDCap's log, by the
-  next form save's audit and by the Validation scan.
+  audit of the next save of the form that holds the field and by the
+  Validation scan.
 - A text box is made read-only, the radio buttons are disabled and their
   "reset" link hidden, the enhanced radio buttons take no clicks, the slider is
   disabled, and the date picker is kept from opening, with its button and
   REDCap's Today and Now buttons hidden. Nothing the form posts is disabled,
   since REDCap would save the field blank: a dropdown takes no clicks instead,
   and a change made with the keyboard or a script is undone, and the note says
-  so. A dropdown whose saved code is no longer one of its choices gets that
-  code back as an option.
+  so. A dropdown or SQL field whose saved code is no longer one of its
+  choices gets that code back as an option. The lock touches only the field's
+  own controls: a field embedded in its row keeps its own buttons.
+- When the saved value cannot be read, the field is not locked. Staff see a
+  note saying so, and the audit still checks a change.
 - A person's own first answer is locked as soon as it is saved: after Save &
   Stay, or Next on a multi-page survey, going back finds it locked.
 - Another tag on a locked field still shows its note. It holds the save only
-  when it also reads another field, which the person can still change; a tag
-  that reads the locked field alone never holds it.
+  when it also reads a field of this form that is not locked (a calc counts
+  only when a field it is worked out from is such a field), and only once
+  that field has changed on the page, a checkbox option by option. The value
+  each field opened with is read once the form exists. A tag that reads the
+  locked field alone, a violation already saved when the page opened, and one
+  between two locked fields never hold it, on Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
 - Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
-  `@SETVALUE` or `@PREFILL`, or a field another rule returns a value to
+  `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
   (`@UVEXISTS` or `@UVRANGE` "return"): each of those is written again by
-  itself. Not on a field with `@RICHTEXT` or a BioPortal ontology search
-  either, whose widget keeps its own copy of the text.
+  itself. Not on a field with `@RICHTEXT` or an ontology search (BioPortal,
+  FHIR or any other service) either, whose widget keeps its own copy of the
+  text.
 - A field given `@UVWRITEONCE` twice is refused: the tag takes no `when`, so
   there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
-  `locked_at` and `changed_at`. Each record and event is read on its own, and a
-  deletion of the whole record starts a new history. A log that holds more
-  rows of the record and event than are read (5,000), any other deletion (and
-  in a project of several arms, every deletion), a save the log names no event
+  `locked_at` and `changed_at`. Each record and event is read on its own,
+  back to the row REDCap writes when it makes the record. A deletion of the
+  whole record starts a new history, and so does an erase of all the
+  project's records; a deletion of one form or one event at another event
+  changes nothing. A log that holds more rows of the record and event than
+  are read (5,000), a deletion of this event's data or of one arm, a deletion
+  at another event the log does not describe as one form or one event (and in
+  a project of several arms, every deletion of the record), a record whose log
+  does not show it being made (renamed while its saves stay under the old
+  name, or brought in with a copied project), a save the log names no event
   for, a save the log does not spell out, a value the log never shows saved,
   and roles that cannot be read when a change needs them are rule problems,
   never a pass.
+- The log lists a save's fields in the data dictionary's order, and a line out
+  of that order is how a Notes value typed to look like another field's line
+  shows. From the first Text or Notes value before such a line, the save reads
+  as not spelled out. A save written before a field was moved breaks the order
+  too, so its later fields are rule problems for that save.
+- A forged line that keeps the order reads as a save of its field. After the
+  lock, a save by a person with no role moves nothing, so the line gives at
+  worst a false finding or a rule problem. Before the lock, or before
+  `since`, it can stand for a first value that was never saved; the next real
+  save of another value is then reported as a change. Anyone could have saved
+  that value first, so the line gives no one a value they could not have
+  saved, and the forged row stays in the log.
 
 ```text invalid
 # refused: takes no value
@@ -4482,9 +4532,9 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 Once the data dictionary and the user roles are read, the module also refuses a
 role the project does not have, a calc or checkbox field, a field with
-`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, a BioPortal
-field, a field given the tag twice, and a field another rule returns a value
-to.
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, a field
+that searches an ontology, a field given the tag twice, and a field another
+rule returns a value to.
 
 ---
 
@@ -4507,13 +4557,13 @@ Another common pairing — an ID typed twice, format-checked, and unique:
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
-The confirmation ignores letter case, so `tb-000123` confirms `TB-000123`. If the two
-entries must match character for character, add `"caseSensitive":true` to the
-`@UVASSERT`.
+`"exact":true` makes the two entries match character for character: `TB-000123` does
+not confirm `tb-000123`, and a dropped leading zero is caught. Leave it out only when
+letter case should not matter and the value is never a number.
 
 ---
 
@@ -4727,7 +4777,7 @@ Text in a condition is compared without regard to the case of A-Z. So are the va
 Set `"caseSensitive":true` when case is part of the value:
 
 ```text
-@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","caseSensitive":true,"message":"Lot codes must match exactly"}
+@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","exact":true,"message":"Lot codes must match exactly"}
 @UVREQUIRED={"when":"[grade]='A'","caseSensitive":true}
 @UVUNIQUE={"caseSensitive":true,"message":"This code is taken (codes are case-sensitive)"}
 @UVEXISTS={"in":"[lot_code]","caseSensitive":true}
@@ -5241,14 +5291,17 @@ it looks: the tag validates the field it sits on, and that is where the message 
 ```text
 # on: participant_id_confirm — put the tag on the CONFIRM field, so the message
 # lands next to the box the typist should re-check
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"IDs do not match - re-type","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"IDs do not match - re-type","blockSave":"hard"}
 
 # on: phone_confirm
-@UVASSERT={"assert":"[phone_number]=[phone_confirm]","message":"Phone numbers do not match"}
+@UVASSERT={"assert":"[phone_number]=[phone_confirm]","exact":true,"message":"Phone numbers do not match"}
 
 # on: specimen_id_confirm
-@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","message":"Specimen ID confirmation mismatch - re-scan"}
+@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","exact":true,"message":"Specimen ID confirmation mismatch - re-scan"}
 ```
+
+`"exact":true` is what makes these checks work: without it `=` compares numbers by
+value, and `0677123456` would confirm `677123456`.
 
 #### Specimen and lab workflow
 
@@ -5739,7 +5792,7 @@ the required notice fires; once filled, the value checks take over.
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
@@ -6014,6 +6067,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
 | `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
 | `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
+| `exact`         | boolean | `false`      | `=` and `<>` in `assert` compare character for character: `00123` is not `123` |
 
 ### `@UVREQUIRED`
 
@@ -6125,7 +6179,7 @@ number keeps. `blockSave` is refused.
 
 | Key       | Type          | Default         | Notes                                                                              |
 | --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
-| `roles`   | list          | *(none)*        | User roles that may still change or clear the value; by name or unique role name, any letter case, 1 to 20 |
+| `roles`   | list          | *(none)*        | User roles that may still change or clear the value; by name or unique role name, any letter case, spaces folded, 1 to 20 |
 | `since`   | string        | *(none)*        | YYYY-MM-DD, from 00:00 project time: saves before it lock nothing; the value held then is locked |
 | `message` | string or map | generic line    | The note under a locked field and the scan's detail line                            |
 
@@ -6262,7 +6316,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── @UVASSERT — cross-field constraint ───────────────────────────────────────
 @UVASSERT="[end_date]>=[start_date]"
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}   type it twice
 @UVASSERT={"assert":"[dose]<=[max_dose]","message":"Dose exceeds the protocol maximum","blockSave":"hard"}
 @UVASSERT={"assert":"[sex]='2'","when":"[pregnant]='1'","message":"Pregnant participants must be recorded female"}
 
@@ -6337,6 +6391,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}
+@UVASSERT={"assert":"[code]=[code_confirm]","exact":true}              also 007 is not 7
 @UVUNIQUE={"caseSensitive":true}                       "AB12" and "ab12" are different codes
 
 # ── Composing several kinds on ONE field ─────────────────────────────────────

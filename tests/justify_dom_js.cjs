@@ -292,14 +292,15 @@ for (const order of ['reason first', 'reason last']) {
 }
 {
   // a locked write-once field stays locked; a rule on it that reads another field is released
-  const wt = text('wt', '30'), ht = text('ht', '40'), why = text('wt_why', '');
+  const wt = text('wt', '30'), ht = text('ht', '20'), why = text('wt_why', '');
   const env = boot([wt, ht, why], { rules: [
     { type: 'writeonce', fields: ['wt'] },
-    { type: 'constraint', fields: ['wt'], assert: '[wt]>[ht]', blockSave: 'hard', message: 'Too light for the height', lockReads: ['wt'] },
+    { type: 'constraint', fields: ['wt'], assert: '[wt]>[ht]', blockSave: 'hard', message: 'Too light for the height', lockReads: { wt: ['ht'] } },
     J(['wt'], 'wt_why'),
   ] });
   check('a locked field stays read-only beside a reason', wt.readOnly === true);
-  check('the rule on it that reads another field holds the save, offering a reason', save(env) === 'held' && /or give a reason in/.test(said(env)), said(env));
+  type(env, ht, '40');
+  check('the rule on it that reads another field holds the save once that field breaks it, offering a reason', save(env) === 'held' && /or give a reason in/.test(said(env)), said(env));
   type(env, why, 'height entered in the wrong unit');
   check('... a reason releases that rule', save(env) === 'saved');
   check('... and the field is still read-only', wt.readOnly === true);
