@@ -15,11 +15,14 @@
  *     DELETE of this event's data (or any DELETE where the record has more
  *     than one arm) making it unknown, and one of another event's data left
  *     out;
- *   - an UPDATE that writes the record id field (a rename) read whatever its
- *     event, through the LIKE on data_values;
+ *   - the record's start: an INSERT with the record id field's line read
+ *     whatever its event, through the two LIKE patterns on data_values (at the
+ *     start of a line, "_" escaped with ESCAPE '!'), and a history without
+ *     one unknown;
  *   - the keyset cursor on log_event_id across a page boundary;
  *   - every history starting after the newest project-wide erase row (pk =
- *     the project id, no event, not described as a record's own DELETE).
+ *     the project id compared as bytes, no event, object type redcap_data,
+ *     not described as a record's own DELETE or one of its forms or events).
  *
  * RoleBook (php/RoleBook.php):
  *   - roles joined to rights by role_id, not by project;
@@ -110,14 +113,37 @@ $h = $reader()->saves('D-3', 41, 1, 'consent');
 check('history: a DELETE that names an arm makes every event\'s history unknown (got ' . json_encode($h) . ')',
     $h['state'] === 'unknown' && ($h['why'] ?? null) === 'delete');
 
-// ---- a renamed record --------------------------------------------------------
+// ---- the record's start --------------------------------------------------------
+$START = ['recordIdField' => 'record_id'];
 $log(240, 'B-1', "record_id = 'B-1',\nconsent = 'x'", ['event' => 'INSERT']);
 $log(241, 'B-1', "record_id = 'B-1'", ['eventId' => 42]);
-$h = $reader(['recordIdField' => 'record_id'])->saves('B-1', 41, 1, 'consent');
-check('history: an UPDATE at another event that writes the record id is a rename (got ' . json_encode($h) . ')',
-    $h['state'] === 'unknown' && ($h['why'] ?? null) === 'rename');
-$h = $reader()->saves('B-1', 41, 1, 'consent');
-check('history: ... which a reader not told the record id field does not see', $h['state'] === 'read' && $values($h) === ['x']);
+$h = $reader($START)->saves('B-1', 41, 1, 'consent');
+check('start: an UPDATE at another event that writes the record id is no rename (got ' . json_encode($h) . ')',
+    $h['state'] === 'read' && $values($h) === ['x']);
+// a renamed record whose first saves stay under its old name: its new name's log starts with the rename
+$log(242, 'B-2', "record_id = 'B-2'", ['eventId' => 42]);
+$log(243, 'B-2', "consent = 'y'");
+$h = $reader($START)->saves('B-2', 41, 1, 'consent');
+check('start: a history with no INSERT of the record is unknown (got ' . json_encode($h) . ')',
+    $h['state'] === 'unknown' && ($h['why'] ?? null) === 'start');
+$h = $reader()->saves('B-2', 41, 1, 'consent');
+check('start: ... which a reader not told the record id field does not ask', $h['state'] === 'read' && $values($h) === ['y']);
+// the INSERT at another event, found by the LIKE: at the start of the row, or after the instance line
+$log(244, 'S-1', "record_id = 'S-1'", ['event' => 'INSERT', 'eventId' => 42]);
+$log(245, 'S-1', "consent = 's1'");
+$log(246, 'S-2', "[instance = 2],\nrecord_id = 'S-2'", ['event' => 'INSERT', 'eventId' => 42]);
+$log(247, 'S-2', "consent = 's2'");
+$h = $reader($START)->saves('S-1', 41, 1, 'consent');
+check('start: an INSERT at another event starts the history (got ' . json_encode($h) . ')', $h['state'] === 'read' && $values($h) === ['s1']);
+$h = $reader($START)->saves('S-2', 41, 1, 'consent');
+check('start: ... after an instance line too (got ' . json_encode($h) . ')', $h['state'] === 'read' && $values($h) === ['s2']);
+// lines that only look like the record id field's are not read: "_" is no wildcard, and the name starts the line
+$log(248, 'S-3', "recordXid = 'S-3'", ['event' => 'INSERT', 'eventId' => 42]);
+$log(249, 'S-3', "prev_record_id = 'S-3'", ['event' => 'INSERT', 'eventId' => 42]);
+$log(250, 'S-3', "consent = 's3'");
+$h = $reader($START)->saves('S-3', 41, 1, 'consent');
+check('start: "recordXid" and "prev_record_id" lines at another event are not the start (got ' . json_encode($h) . ')',
+    $h['state'] === 'unknown' && ($h['why'] ?? null) === 'start');
 
 // ---- rows with no event ----------------------------------------------------
 $log(220, 'N-1', "consent = 'a'", ['event' => 'INSERT']);
@@ -147,11 +173,25 @@ $log(1003, (string) $NB, '', ['event' => 'DELETE', 'descr' => 'Erase all data', 
 $h = $reader()->saves('R-7', 41, 1, 'consent');
 check('erase: a record named like the project, deleted whole or in part, is no erase, nor is another project\'s (got ' . json_encode($h) . ')',
     $h['state'] === 'read' && $values($h) === ['dev']);
+// an older erase, before R-7 was first made: only the newest counts
+$log(900, (string) $PID, 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => 'Erase all data', 'eventId' => null, 'user' => 'builder']);
 $log(1004, (string) $PID, 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => null, 'eventId' => null, 'user' => 'builder']);
 $log(1005, 'R-7', "consent = 'prod'", ['event' => 'INSERT']);
 $h = $reader()->saves('R-7', 41, 1, 'consent');
 check('erase: a record made again after the erase starts a new history (got ' . json_encode($h) . ')', $h['state'] === 'read' && $values($h) === ['prod']);
 check('erase: a record whose saves all came before it has none', $reader()->saves('XE-1', 41, 1, 'consent')['state'] === 'none');
+// rows after it that are no erase: a record "730 " or "７３０" (equal to "730" under the column's
+// collation, not as bytes), one form of a record "730" deleted with no event, another object type,
+// and a DELETE that names an event
+$log(1006, 'R-8', "consent = 'r8'", ['event' => 'INSERT']);
+$log(1007, $PID . ' ', 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => 'Erase all data', 'eventId' => null]);
+$log(1008, "\u{FF17}\u{FF13}\u{FF10}", 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => 'Erase all data', 'eventId' => null]);
+$log(1009, (string) $PID, '', ['event' => 'DELETE', 'descr' => 'Delete all record data for single form', 'eventId' => null]);
+$log(1010, (string) $PID, 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => 'Erase all data', 'eventId' => null, 'type' => 'redcap_user_rights']);
+$log(1011, (string) $PID, 'project_id = ' . $PID, ['event' => 'DELETE', 'descr' => 'Erase all data', 'eventId' => 41]);
+$h = $reader()->saves('R-8', 41, 1, 'consent');
+check('erase: the project id compared as bytes, one form of a record "730", another object type and a named event are no erase (got ' . json_encode($h) . ')',
+    $h['state'] === 'read' && $values($h) === ['r8']);
 
 // ---- RoleBook ------------------------------------------------------------------
 $A->query('CREATE TABLE redcap_user_roles (role_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NULL,

@@ -183,6 +183,26 @@ $db = $erase([]);
 $db->rows[1][3] = 380;
 $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
 check('erase: a DELETE that names an event is no erase of the project', count($h->saves('1', 380, 1, 'dob')['saves']) === 2);
+foreach (['Delete all record data for single form', 'Delete all record data for single event', 'Delete all data on event'] as $part) {
+    $db = $erase([], $part);
+    $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
+    check('erase: part of a record "149" deleted with no event is no erase (review W3-4): ' . $part, count($h->saves('1', 380, 1, 'dob')['saves']) === 2, $h->saves('1', 380, 1, 'dob'));
+}
+$db = $erase([]);
+$db->rows[1][2] = '149 ';
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
+check('erase: the project id compared as bytes: a record "149 " is not the project', count($h->saves('1', 380, 1, 'dob')['saves']) === 2, $h->saves('1', 380, 1, 'dob'));
+// An erase placed after a record was made, so that its creation is not read: the history is
+// unknown, never read from the erase on (review W3-4).
+$db = new FakeHistoryLog();
+$db->rows = [
+    $row(1, '1', 380, '20250105090000', "record_id = '1',
+dob = '2025-01-05'", 'builder', 'INSERT'),
+    $row(2, '149', null, '20250201090000', '', 'mallory', 'DELETE', 'redcap_data', 149, 'Something the reader takes for an erase'),
+    $row(3, '1', 380, '20250301090000', "dob = '2025-03-03'", 'mallory'),
+];
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, ['recordIdField' => 'record_id']);
+check('erase: a floor after the record was made leaves its history unknown', $h->saves('1', 380, 1, 'dob') === ['state' => 'unknown', 'saves' => [], 'why' => 'start'], $h->saves('1', 380, 1, 'dob'));
 $db = $erase([]);
 $db->rows[1][1] = 150;
 $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
@@ -193,27 +213,86 @@ $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
 check('erase: a floor that cannot be read makes every history unknown', $h->saves('1', 380, 1, 'dob') === ['state' => 'unknown', 'saves' => [], 'why' => 'read']);
 check('... the next record too', $h->saves('2', 380, 1, 'dob')['state'] === 'unknown');
 
-// A renamed record (review W2-6): the saves made under its old name are not read.
-$ren = function (array $rows, array $opts = ['recordIdField' => 'record_id']) use ($utc) {
+// The record's start (reviews W2-6, W3-3, W3-5): told the record id field, the reader reads a
+// history only when it holds the INSERT that made the record, with a line for that field.
+$START = ['recordIdField' => 'record_id', 'order' => ['record_id' => 0, 'dob' => 1, 'notes' => 2, 'wt' => 3], 'freeText' => ['notes' => true]];
+$ren = function (array $rows, array $opts = null) use ($utc, $START) {
     $db = new FakeHistoryLog();
     $db->rows = $rows;
-    return ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $opts)->saves('B1', 380, 1, 'dob');
+    return ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $opts === null ? $START : $opts)->saves('B1', 380, 1, 'dob');
 };
+$UNSTARTED = ['state' => 'unknown', 'saves' => [], 'why' => 'start'];
+// A renamed record whose saves under its old name stay under that name: the new name's log
+// starts with the rename, an UPDATE that writes the record id field.
 $rows = [
     $row(1, 'A1', 380, '20260105090000', "record_id = 'A1',\ndob = '2026-01-05'", 'nurse', 'INSERT'),
     $row(2, 'B1', 380, '20260201090000', "record_id = 'B1'", 'nurse'),
     $row(3, 'B1', 380, '20260301090000', "dob = '2026-02-02'", 'nurse'),
 ];
-check('rename: an UPDATE that writes the record id makes the history unknown', $ren($rows) === ['state' => 'unknown', 'saves' => [], 'why' => 'rename'], $ren($rows));
-$rows[1][3] = 381;
-check('rename: whatever event it names', $ren($rows) === ['state' => 'unknown', 'saves' => [], 'why' => 'rename'], $ren($rows));
+check('start: a renamed record whose first saves are logged under its old name is unknown', $ren($rows) === $UNSTARTED, $ren($rows));
 $rows[1][3] = null;
-check('rename: or none', $ren($rows) === ['state' => 'unknown', 'saves' => [], 'why' => 'rename']);
-check('rename: not told the record id field, the reader cannot see one', $ren($rows, [])['state'] === 'read');
+check('start: ... whatever event the rename names', $ren($rows) === $UNSTARTED);
+check('start: not told the record id field, the reader does not ask for the start', $ren($rows, [])['state'] === 'read');
+// The same rename where the old rows were moved to the new name: the INSERT names the old one,
+// and the history is whole.
+$rows[0][2] = 'B1';
+check('start: an INSERT under this name whose record id line names another record still starts it',
+    $values($ren($rows)) === [['20260105090000', 'nurse', '2026-01-05'], ['20260301090000', 'nurse', '2026-02-02']], $ren($rows));
+$made = [
+    $row(1, 'B1', 381, '20260105090000', "record_id = 'B1',\nwt = '3'", 'nurse', 'INSERT'),
+    $row(2, 'B1', 380, '20260106090000', "record_id = 'B1',\ndob = '2026-01-06'", 'nurse'),
+    $row(3, 'B1', 380, '20260107090000', "dob = '2026-01-07'", 'nurse'),
+];
+check('start: the INSERT is read whatever event it names, and an UPDATE that writes the record id, as a first save at another event may, is no rename',
+    $values($ren($made)) === [['20260106090000', 'nurse', '2026-01-06'], ['20260107090000', 'nurse', '2026-01-07']], $ren($made));
+$made[] = $row(4, 'B1', 381, '20260108090000', "notes = 'x',\nrecord_id = 'R9'", 'mallory');
+check('start: a record id line typed into a notes value at any event changes nothing', $values($ren($made)) === [['20260106090000', 'nurse', '2026-01-06'], ['20260107090000', 'nurse', '2026-01-07']], $ren($made));
+$typed = [
+    $row(1, 'B1', 380, '20260105090000', "dob = '2026-01-05',\nnotes = 'x',\nrecord_id = 'B1'", 'mallory', 'INSERT'),
+    $row(2, 'B1', 380, '20260106090000', "dob = '2026-01-06'", 'nurse'),
+];
+check('start: an INSERT whose record id line could have been typed is no start', $ren($typed) === $UNSTARTED, $ren($typed));
+$typed[0][7] = 'UPDATE';
+$typed[0][5] = "record_id = 'B1',\ndob = '2026-01-05'";
+check('start: an UPDATE with the record id line is no start either', $ren($typed) === $UNSTARTED, $ren($typed));
 $made = [$row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT')];
-check('rename: the INSERT that makes the record is no rename', $values($ren($made)) === [['20260105090000', 'nurse', '2026-01-05']]);
-$made[] = $row(2, 'B1', 380, '20260106090000', "record_id_x = 'B1',\ndob = '2026-01-06'", 'nurse');
-check('rename: a field whose name only starts like the record id field is no rename', $ren($made)['state'] === 'read', $ren($made));
+check('start: the INSERT that makes the record', $values($ren($made)) === [['20260105090000', 'nurse', '2026-01-05']]);
+// A record deleted, then another renamed to its name: the rows after the DELETE hold no INSERT.
+$onto = [
+    $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT'),
+    $row(2, 'B1', null, '20260106090000', '', 'nurse', 'DELETE', 'redcap_data', 149, 'Delete record'),
+    $row(3, 'B1', 380, '20260107090000', "record_id = 'B1'", 'nurse'),
+    $row(4, 'B1', 380, '20260108090000', "dob = '2026-01-08'", 'nurse'),
+];
+check('start: a whole-record DELETE with no INSERT after it starts no history', $ren($onto) === $UNSTARTED, $ren($onto));
+$onto[2] = $row(3, 'B1', 380, '20260107090000', "record_id = 'B1',\ndob = '2026-01-07'", 'nurse', 'INSERT');
+check('start: ... while a record made again after it does', $values($ren($onto)) === [['20260107090000', 'nurse', '2026-01-07'], ['20260108090000', 'nurse', '2026-01-08']], $ren($onto));
+$made = [
+    $row(1, 'B1', 380, '20260105090000', "recordXid = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT'),
+    $row(2, 'B1', 381, '20260106090000', "prev_record_id = 'B1'", 'nurse', 'INSERT'),
+];
+check('start: a field whose name only looks like the record id field is no start', $ren($made) === $UNSTARTED, $ren($made));
+// Rows of other events that only look like the record id line are not read at all (review W3-8).
+$db = new FakeHistoryLog();
+$db->rows[] = $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT');
+for ($i = 0; $i < 1200; $i++) $db->rows[] = $row(2 + $i, 'B1', 381, '20260106090000', "wt = '1',\n" . ($i % 2 ? 'prev_record_id' : 'recordXid') . " = 'B$i'", 'nurse');
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $START)->saves('B1', 380, 1, 'dob');
+check('like: "prev_record_id" and "recordXid" lines at another event are not read', $values($h) === [['20260105090000', 'nurse', '2026-01-05']] && $db->queries <= 3, [$h, $db->queries]);
+// More rows of other events than MAX_ROWS_READ before the start: capped, not read on for ever.
+$db = new FakeHistoryLog();
+$db->rows[] = $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT');
+for ($i = 0; $i < ValueHistory::MAX_ROWS_READ; $i++) $db->rows[] = $row(2 + $i, 'B1', 381, '20260106090000', "record_id = 'B1',\nwt = '$i'", 'nurse');
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $START)->saves('B1', 380, 1, 'dob');
+check('cap: more rows of other events than MAX_ROWS_READ before the start is capped', $h['state'] === 'capped', $h['state']);
+array_pop($db->rows);
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $START)->saves('B1', 380, 1, 'dob');
+check('cap: ... one fewer, and the start is reached', $h['state'] === 'read', $h['state']);
+// They do not count toward MAX_ROWS_PER_RECORD.
+$db = new FakeHistoryLog();
+$db->rows[] = $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT');
+for ($i = 0; $i < ValueHistory::MAX_ROWS_PER_RECORD + 10; $i++) $db->rows[] = $row(2 + $i, 'B1', 381, '20260106090000', "record_id = 'B1',\nwt = '$i'", 'nurse');
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $START)->saves('B1', 380, 1, 'dob');
+check('cap: rows of another event do not count toward MAX_ROWS_PER_RECORD', $values($h) === [['20260105090000', 'nurse', '2026-01-05']], $h['state']);
 
 // Deletes of another event's data (review W2-8): no part of this event's history.
 $evdel = function ($descr, $event = 381, array $opts = []) use ($row, $utc) {
@@ -233,6 +312,13 @@ check('event delete: a whole-record DELETE that names an event still ends the hi
     $values($evdel('Delete record')->saves('R1', 380, 1, 'dob')) === [['20261003090000', 'dan', '1990-09-09']]);
 check('event delete: ... unless the project has several arms', $evdel('Delete record', 381, ['multiArm' => true])->saves('R1', 380, 1, 'dob')['why'] === 'delete');
 check('event delete: this event\'s own form data deleted cannot be placed', $evdel('Delete all record data for single form', 380)->saves('R1', 380, 1, 'dob')['why'] === 'delete');
+check('event delete: one event\'s data deleted at another event is passed over too',
+    $evdel('Delete all record data for single event (API)')->saves('R1', 380, 1, 'dob')['state'] === 'read'
+    && $evdel('Delete all data on event')->saves('R1', 380, 1, 'dob')['state'] === 'read');
+// A DELETE at another event described neither as one form nor as one event may have removed the
+// whole record (an import, the mobile app, a newer wording): it cannot be placed (review W3-7).
+check('event delete: another description at another event cannot be placed', $evdel('Delete record via mobile app')->saves('R1', 380, 1, 'dob')['why'] === 'delete');
+check('event delete: ... nor one with an empty description', $evdel('')->saves('R1', 380, 1, 'dob')['why'] === 'delete');
 
 // The record compared as bytes before a DELETE is read (review W2-15 V2, V4), and a whole-record
 // DELETE past the cap of a project of several arms (V3).
@@ -246,13 +332,19 @@ check('bytes: a DELETE of another record whose name differs only in letter case 
     $values($h->saves('R1', 380, 1, 'dob')) === [['20261001090000', 'ann', '2000-01-01']], $h->saves('R1', 380, 1, 'dob'));
 $cap = function ($pk, array $opts = []) use ($row, $utc) {
     $db = new FakeHistoryLog();
-    $db->rows[] = $row(1, $pk, null, '20261001090000', '', 'x', 'DELETE');
-    for ($i = 1; $i <= ValueHistory::MAX_ROWS_PER_RECORD; $i++) $db->rows[] = $row(1 + $i, 'R5', 380, '20261001090000', "wt = '$i'");
+    $db->rows[] = $row(1, 'R5', 380, '20261001090000', "wt = '0'");
+    $db->rows[] = $row(2, $pk, null, '20261001090000', '', 'x', 'DELETE');
+    for ($i = 1; $i <= ValueHistory::MAX_ROWS_PER_RECORD; $i++) $db->rows[] = $row(2 + $i, 'R5', 380, '20261001090000', "wt = '$i'");
     return ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $opts)->saves('R5', 380, 1, 'dob')['state'];
 };
 check('cap: a whole-record DELETE just past the cap of a project of several arms cannot be placed', $cap('R5', ['multiArm' => true]) === 'capped');
 check('cap: a DELETE of another record just past the cap is no start', $cap('r5') === 'capped');
 check('cap: ... while its own is', $cap('R5') === 'read');
+$db = new FakeHistoryLog();
+for ($i = 1; $i <= ValueHistory::MAX_ROWS_PER_RECORD; $i++) $db->rows[] = $row(1 + $i, 'R5', 380, '20261001090000', "wt = '$i'");
+check('cap: a history of exactly the cap where the log ends is read', ValueHistory::forProject($db, 149, ['dob'], $utc, $utc)->saves('R5', 380, 1, 'dob')['state'] === 'read');
+$db->rows[] = $row(1, 'R5', 380, '20261001090000', "wt = '0'");
+check('cap: ... one more row of its own, and it is capped', ValueHistory::forProject($db, 149, ['dob'], $utc, $utc)->saves('R5', 380, 1, 'dob')['state'] === 'capped');
 // A row with no event that names a kept field on another instance (V5).
 $db = new FakeHistoryLog();
 $db->rows = [
@@ -406,6 +498,7 @@ check('roles: tables that cannot be read give null', RoleBook::read($rdb, 149, '
 // Role names in any script's letter case, spaces folded (review W2-9).
 check('roleKey: letter case in any script', Logic::roleKey('Équipe Médicale') === 'équipe médicale' && Logic::roleKey('ÉQUIPE MÉDICALE') === 'équipe médicale');
 check('roleKey: spaces trimmed and folded, tabs too', Logic::roleKey("  Data \t  manager ") === 'data manager');
+check('roleKey: a no-break or ideographic space at either end goes too (review W3-9)', Logic::roleKey("\u{A0}Data manager\u{3000}") === 'data manager' && Logic::roleKey("Data\u{A0}\u{A0}manager\u{A0}") === 'data manager');
 check('roleKey: a name that is not UTF-8 is lowercased byte by byte', Logic::roleKey("Caf\xE9  Team") === "caf\xE9 team");
 $rdb = new FakeRoleDb();
 $rdb->intl = true;

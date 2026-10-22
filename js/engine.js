@@ -789,7 +789,8 @@
      that reads other fields the person may change here
      (UniversalValidator::markLockReads, the rule's lockReads): its guard item
      holds the save once one of them differs from its value as the page
-     opened (base), since that change is what makes it fail. */
+     opened (base, QRID_lockReadsBase), since that change is what makes it
+     fail. others holds [field, code], code null but for a checkbox option. */
   var UV_LOCK_READS = Object.create(null);
   var UV_lastPooled = null;
 
@@ -3560,10 +3561,36 @@ function QRID_guardSpeaks(el){
   var lr = UV_LOCK_READS[el.__qridFieldName + "\x1F" + el.__qridMode];
   if(!lr) return false;
   for(var i = 0; i < lr.others.length; i++){
-    var now = QRID_WHEN.readRef(lr.others[i], null);
-    if(String(now === null || now === undefined ? "" : now) !== lr.base[i]) return true;
+    var now = QRID_lockReadValue(lr.others[i]);
+    /* a field with no input when the form opened, or none now, is not compared */
+    if(lr.base[i] !== undefined && now !== undefined && now !== lr.base[i]) return true;
   }
   return false;
+}
+/* A lockReads entry as [field, code]: "field(code)" is one checkbox option. */
+function QRID_lockReadRef(x){
+  var m = /^([a-z][a-z0-9_]*)\(([^()]*)\)$/.exec(x);
+  return m ? [m[1], m[2]] : [x, null];
+}
+/* What a lockReads entry holds on the page now, or undefined when the page
+   has no input for it (a field on another page of a survey). */
+function QRID_lockReadValue(ref){
+  if(!QRID_WHEN.has(ref[0], ref[1])) return undefined;
+  var v = QRID_WHEN.readRef(ref[0], ref[1]);
+  return String(v === null || v === undefined ? "" : v);
+}
+/* Each lockReads entry's value as the form opened. REDCap prints the engine
+   above the form, so the base is read at DOMContentLoaded, once the inputs
+   exist and REDCap's own start-up has worked out its calcs; on a page that
+   has its inputs already it is read at once. An entry with no input then
+   keeps none and is never compared. */
+function QRID_lockReadsBase(){
+  for(var k in UV_LOCK_READS){
+    var lr = UV_LOCK_READS[k];
+    for(var i = 0; i < lr.others.length; i++){
+      if(lr.base[i] === undefined) lr.base[i] = QRID_lockReadValue(lr.others[i]);
+    }
+  }
 }
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
@@ -9185,20 +9212,23 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
   /* lockReads: locked field => the other fields the rule reads that the
-     person may change here, kept with their values as the page opened
-     (QRID_guardSpeaks) */
+     person may change here, kept with their values as the form opened
+     (QRID_lockReadsBase, QRID_guardSpeaks) */
+  var anyLockReads = false;
   rules.forEach(function(rule){
     if(rule.configError || !rule.lockReads || typeof rule.lockReads !== "object" || Array.isArray(rule.lockReads)) return;
     for(var lf in rule.lockReads){
       if(!own(rule.lockReads, lf) || !Array.isArray(rule.lockReads[lf])) continue;
       var others = rule.lockReads[lf].filter(function(x){ return typeof x === "string"; });
       if(!others.length) continue;
-      UV_LOCK_READS[lf + "\x1F" + modeOfType(rule.type)] = { others: others, base: others.map(function(x){
-        var v = QRID_WHEN.readRef(x, null);
-        return String(v === null || v === undefined ? "" : v);
-      }) };
+      UV_LOCK_READS[lf + "\x1F" + modeOfType(rule.type)] = { others: others.map(QRID_lockReadRef), base: others.map(function(){ return undefined; }) };
+      anyLockReads = true;
     }
   });
+  if(anyLockReads){
+    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsBase);
+    else QRID_lockReadsBase();
+  }
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
     /* config-error rules keep their fields as-is (their message is shown once in

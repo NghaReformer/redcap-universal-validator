@@ -1141,12 +1141,16 @@ user of the project is locked out too. When the roles cannot be read, the page
 locks the field for everyone and says so; when the saved value cannot be
 read, it locks nothing and tells staff so. Another rule on a locked field holds
 the save only once a field it reads, other than the locked one, has changed on
-the page. An erase of all the project's records starts every history again. A
-record whose log runs past 5,000 rows for the event, holds a deletion of this
-event's data or of an arm (in a project of several arms, any deletion of the
-record), or was renamed, is reported as not checked rather than passed, and so
-is a save written before a field was moved, from the first Text or Notes field
-of that save on.
+the page since the form opened. An erase of all the project's records starts
+every history again. A record whose log runs past 5,000 rows for the event,
+holds a deletion of this event's data or of an arm (in a project of several
+arms, any deletion of the record), or does not show the record being made (a
+record renamed while its saves stay under the old name, or one that came with
+a copied project), is reported as not checked rather than passed, and so is a
+save written before a field was moved, from the first Text or Notes field of
+that save on. A Notes value typed to look like a save of the field, before
+its first real save, can set the lock; the next real save is then reported as
+a change.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
 

@@ -39,8 +39,8 @@ form holds.</p>
 <p>Text and Notes fields (dates included), <strong>dropdown</strong>,
 <strong>radio</strong>, <strong>yes/no</strong>, <strong>true/false</strong>,
 <strong>slider</strong> and <strong>SQL</strong> fields. Not a calc or a checkbox field,
-nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@SETVALUE</code>
-or <code>@PREFILL</code>, whose value REDCap writes again by itself, nor a field with
+nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@SETVALUE</code>,
+<code>@PREFILL</code> or <code>@DOWNLOAD-COUNT</code>, whose value REDCap writes again by itself, nor a field with
 <code>@RICHTEXT</code> or an ontology search (BioPortal, FHIR or any other service),
 whose widget keeps its own copy of the text and saves it over the field. A field that another
 rule returns a value to (<code>@UVEXISTS</code> or <code>@UVRANGE</code>
@@ -79,9 +79,10 @@ every save.</p>
 <li>A person's own first answer is locked as soon as it is saved. After Save &amp; Stay,
     or Next on a multi-page survey, going back finds it locked.</li>
 <li>Another rule on a locked field still shows its note. It holds the save only when it
-    also reads a field of this form that is not locked, and only once that field has
-    changed on the page. A violation already saved when the page opened, or one between
-    two locked fields, never holds it.</li>
+    also reads a field of this form that is not locked (a calc counts only when a field it
+    is worked out from is such a field), and only once that field has changed on the page,
+    a checkbox option by option. A violation already saved when the page opened, or one
+    between two locked fields, never holds it, on Save or on Enter.</li>
 <li>The lock lives in the browser only. A change made through the API, the Data Import
     Tool or a script that bypasses the form is found afterwards, from REDCap's log, by
     the audit of the next save of the form that holds the field and by the scan.</li>
@@ -93,18 +94,21 @@ every save.</p>
 changed or cleared after the lock as <code>type: writeonce</code> with reason
 <code>changed</code> or <code>cleared</code>, plus <code>locked_at</code> (when the lock
 was set) and <code>changed_at</code> (when the current value was saved). The Validation
-scan reports it with the day it was locked. Each record and event is read on its own.
-A deletion of the whole record starts a new history, and so does an erase of all the
-project's records (Erase all data, or deleting every record when the project moves to
-production). A deletion of another event's data changes nothing.</p>
+scan reports it with the day it was locked. Each record and event is read on its own,
+back to the row REDCap writes when it makes the record. A deletion of the whole record
+starts a new history, and so does an erase of all the project's records (Erase all data,
+or deleting every record when the project moves to production). A deletion of one form or
+one event at another event changes nothing.</p>
 
 <p>These are reported as rule problems, never as a pass:</p>
 
 <ul>
 <li>a log that holds more rows of the record and event than the audit reads (5,000);</li>
-<li>a deletion of this event's data or of one arm, and in a project of several arms
-    every deletion of the record, since the check cannot tell what it removed;</li>
-<li>a record renamed since its saves, which REDCap logs under the old name;</li>
+<li>a deletion of this event's data or of one arm, a deletion at another event the log
+    does not describe as one form or one event, and in a project of several arms every
+    deletion of the record, since the check cannot tell what it removed;</li>
+<li>a record whose log does not show it being made: one renamed while its saves stay
+    logged under the old name, or one that came with a copied project;</li>
 <li>a save the log names no event for;</li>
 <li>a save the log does not spell out. The log lists a save's fields in the data
     dictionary's order, and a line out of that order is how a Notes value typed to look
@@ -114,3 +118,10 @@ production). A deletion of another event's data changes nothing.</p>
 <li>a value the log never shows saved;</li>
 <li>user roles that cannot be read when a change needs them.</li>
 </ul>
+
+<p>A forged line that keeps the data dictionary's order reads as a save of its field.
+After the lock, a save by a person with no role moves nothing, so such a line gives at
+worst a false finding or a rule problem. Before the lock, or before <code>since</code>, it
+can stand for a first value that was never saved; the next real save of another value is
+then reported as a change. Anyone could have saved that value first, so the line gives no
+one a value they could not have saved, and the forged row stays in the log.</p>

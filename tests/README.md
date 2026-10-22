@@ -543,12 +543,20 @@ inner spaces.
   newest first in pages; a whole-record `DELETE` ending the history in a
   project of one arm, while a `DELETE` of this event's data or of an arm, and
   any whole-record `DELETE` with several arms, make it unknown, and one of
-  another event's data is passed over; an erase of the project's records
+  one form or one event of another event's data is passed over while another
+  description there makes it unknown; an erase of the project's records
   starting every history after it (asked once per reader, a failed read making
-  the history unknown); a save that writes the record id field making it
-  unknown; a save with no event that names a kept field, on any instance;
-  another record of the same name in a loose collation, also past the cap; the
-  cap counted per event, with a history of exactly the cap read in full; a
+  the history unknown, the project id compared as bytes, part of a record
+  named like the project no erase, an erase placed after the record was made
+  leaving its history unknown); the record's start (an INSERT with a trusted
+  record id line, read at any event, even one naming another record id; a
+  history without one unknown; an UPDATE that writes the record id, and a
+  record id line typed into a notes value, change nothing; "recordXid" and
+  "prev_record_id" lines not read); a save with no event that names a kept
+  field, on any instance; another record of the same name in a loose
+  collation, also past the cap; the cap counted per event over that event's
+  rows, deletes and rows with no event, with a history of exactly the cap read
+  in full and `MAX_ROWS_READ` rows of any kind; a
   failed read; save times turned into the project's clock; and `parseRow` (a
   notes value over several lines, 130,000 lines in under a second, checkbox
   lines, a field written twice, a stray line, an instance line that is not the
@@ -557,9 +565,11 @@ inner spaces.
   over a mock database: both names of each role, users by lowercase name, the
   project and today bound as parameters, and a REDCap with no unique role
   names, and role names kept as `Logic::roleKey` (letter case in any alphabet,
-  spaces folded). The SQL of both runs on a real server in
-  `tests/mysql/cases/history.php`, with an erase, a rename, a `DELETE` of one
-  event and one that names an arm.
+  spaces folded, a no-break space at either end trimmed). The SQL of both runs
+  on a real server in `tests/mysql/cases/history.php`, with two erases, rows
+  that are no erase (a record "730 " or "７３０", one form of a record "730",
+  another object type, one that names an event), the record's start through
+  both LIKE patterns, a `DELETE` of one event and one that names an arm.
 - `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
   read-only with the note under it, in the rule's own words when it has a
   message; radio buttons are disabled and the "reset" link hidden, and the
@@ -575,7 +585,10 @@ inner spaces.
   that field has changed since the page opened, in either order of binding
   and for every mode, while a field REDCap made read-only (`@READONLY`) or
   disabled still never holds it; a violation saved before the page opened and
-  two locked fields that read each other never hold it; the lock leaves an
+  two locked fields that read each other never hold it, also with the engine
+  loaded before the form, as REDCap prints it; a checkbox read option by
+  option; a read field the page does not carry is never compared; the lock
+  leaves an
   embedded field's enhanced choices, reset link and Today button alone; the
   date picker is set once; roles that could not be read lock the field and the
   note says so; saved values that could not be read lock nothing and staff see
@@ -583,7 +596,7 @@ inner spaces.
   mode the registry knows.
 - `writeonce_module_php.php` covers the server side: calc and checkbox fields
   and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
-  `@RICHTEXT` and ontology fields of any service refused; a field given the
+  `@DOWNLOAD-COUNT`, `@RICHTEXT` and ontology fields of any service refused; a field given the
   tag twice refused; each role checked against the project, by name or unique
   role name, in any letter case of any alphabet, and refused once by name; a lock on a field another rule
   returns to refused, split off its group with each refusal in field order,
@@ -592,7 +605,9 @@ inner spaces.
   role, the user name compared without letter case, a survey respondent holds
   none, roles that cannot be read lock every rule that names roles and say so,
   never on a new record, not before "since", roles and "since" kept off the
-  page, `lockReads` naming only fields of the form that are not locked, saved
+  page, `lockReads` naming only fields of the form that are not locked, a
+  checkbox once per option, and a calc only when a field it is worked out
+  from may be changed there, through other calcs too, saved
   values that cannot be read flagged, the saved code sent for dropdown and SQL
   fields); what the log reader is told of the project (the data dictionary's
   order, its Text and Notes fields, the record id field, one arm or several);
@@ -614,9 +629,10 @@ inner spaces.
   autocomplete box, a notes box, a slider), and checks each lock, each note,
   each undone change and each save. A refused tag on a dropdown shows its
   error under the field.
-- `writeonce_mutations.py` applies 165 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Five mutate
-  the SQL (three the role book's, two the erase search) and are killed only by
+- `writeonce_mutations.py` applies 190 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Twelve mutate
+  the SQL (three the role book's, six the erase search, three the search for
+  the record's start) and are killed only by
   `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
   variables name a server, and are reported as skipped otherwise.
 

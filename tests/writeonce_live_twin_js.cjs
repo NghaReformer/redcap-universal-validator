@@ -222,6 +222,25 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
   check('B3 the site takes its first value and the record saves', env.ctl.uw_site.el.value === '1' && save(env) === 'saved');
 }
 
+// ---- Section B6 and B7: a rule on the locked note that reads the free text (lockReads) -------------
+{
+  const env = boot(PAGES.b6, PAGES.b6_values);
+  type(env, 'uw_free', 'stop');
+  const held = save(env);
+  check('B6 the rule on the locked note holds the save once the free text it reads breaks it, naming the note',
+    /Cannot save yet/.test(held) && /Screening note/.test(held), held);
+  type(env, 'uw_free', 'ok');
+  check('B6 ... and the save goes through once it is put right', save(env) === 'saved');
+}
+{
+  const env = boot(PAGES.b7, PAGES.b7_values);
+  check('B7 the free text broke the rule before the page opened: Enter saves', pressEnter(env, 'uw_weight') === 'redcap-save' && env.submits.length === 1,
+    env.win._alerts);
+  check('B7 ... and so does Save', save(env) === 'saved');
+  type(env, 'uw_free', 'ok');
+  check('B7b the free text put right saves', save(env) === 'saved');
+}
+
 // ---- Section B4: the site is locked, with its own message; a keyboard change is undone ------------
 {
   const env = boot(PAGES.b4, PAGES.b4_values);

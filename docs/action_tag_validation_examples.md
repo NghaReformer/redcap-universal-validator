@@ -4473,13 +4473,15 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 - A person's own first answer is locked as soon as it is saved: after Save &
   Stay, or Next on a multi-page survey, going back finds it locked.
 - Another tag on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked, and only once
-  that field has changed on the page. A tag that reads the locked field alone,
-  a violation already saved when the page opened, and one between two locked
-  fields never hold it.
+  when it also reads a field of this form that is not locked (a calc counts
+  only when a field it is worked out from is such a field), and only once
+  that field has changed on the page, a checkbox option by option. The value
+  each field opened with is read once the form exists. A tag that reads the
+  locked field alone, a violation already saved when the page opened, and one
+  between two locked fields never hold it, on Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
 - Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
-  `@SETVALUE` or `@PREFILL`, or a field another rule returns a value to
+  `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
   (`@UVEXISTS` or `@UVRANGE` "return"): each of those is written again by
   itself. Not on a field with `@RICHTEXT` or an ontology search (BioPortal,
   FHIR or any other service) either, whose widget keeps its own copy of the
@@ -4487,20 +4489,31 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 - A field given `@UVWRITEONCE` twice is refused: the tag takes no `when`, so
   there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
-  `locked_at` and `changed_at`. Each record and event is read on its own. A
-  deletion of the whole record starts a new history, and so does an erase of
-  all the project's records; a deletion of another event's data changes
-  nothing. A log that holds more rows of the record and event than are read
-  (5,000), a deletion of this event's data or of one arm (and in a project of
-  several arms, every deletion of the record), a renamed record, a save the
-  log names no event for, a save the log does not spell out, a value the log
-  never shows saved, and roles that cannot be read when a change needs them
-  are rule problems, never a pass.
+  `locked_at` and `changed_at`. Each record and event is read on its own,
+  back to the row REDCap writes when it makes the record. A deletion of the
+  whole record starts a new history, and so does an erase of all the
+  project's records; a deletion of one form or one event at another event
+  changes nothing. A log that holds more rows of the record and event than
+  are read (5,000), a deletion of this event's data or of one arm, a deletion
+  at another event the log does not describe as one form or one event (and in
+  a project of several arms, every deletion of the record), a record whose log
+  does not show it being made (renamed while its saves stay under the old
+  name, or brought in with a copied project), a save the log names no event
+  for, a save the log does not spell out, a value the log never shows saved,
+  and roles that cannot be read when a change needs them are rule problems,
+  never a pass.
 - The log lists a save's fields in the data dictionary's order, and a line out
   of that order is how a Notes value typed to look like another field's line
   shows. From the first Text or Notes value before such a line, the save reads
   as not spelled out. A save written before a field was moved breaks the order
   too, so its later fields are rule problems for that save.
+- A forged line that keeps the order reads as a save of its field. After the
+  lock, a save by a person with no role moves nothing, so the line gives at
+  worst a false finding or a rule problem. Before the lock, or before
+  `since`, it can stand for a first value that was never saved; the next real
+  save of another value is then reported as a change. Anyone could have saved
+  that value first, so the line gives no one a value they could not have
+  saved, and the forged row stays in the log.
 
 ```text invalid
 # refused: takes no value

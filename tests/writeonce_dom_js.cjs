@@ -80,8 +80,10 @@ global.Event = function (type) { this.type = type; };
 
 /* Boot the engine over els (each in its own holder; els with a row id share
    a row) and return the page. opts.jQuery installs a jQuery stub that
-   records the widget calls. Interval callbacks are kept, so a test can run
-   the silent-change poll by hand (poll()). */
+   records the widget calls. opts.late loads the engine on a page still
+   loading, before els exist, then adds them and fires DOMContentLoaded, as
+   REDCap does: it prints the engine above the form. Interval callbacks are
+   kept, so a test can run the silent-change poll by hand (poll()). */
 function boot(els, config, opts) {
   opts = opts || {};
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
@@ -90,21 +92,23 @@ function boot(els, config, opts) {
   const body = makeEl('body');
   const holders = {};
   const rows = {};
+  const later = [];
+  const place = (el) => { if (opts.late) later.push(el); else allEls.push(el); };
   for (const el of els) {
     let holder = el._row ? rows[el._row] : null;
     if (!holder) {
       holder = makeEl('div');
       if (el._row) { holder.id = el._row; rows[el._row] = holder; }
-      body.appendChild(holder);
-      allEls.push(holder);
+      if (!opts.late) body.appendChild(holder);
+      place(holder);
     }
     holder.appendChild(el);
-    allEls.push(el);
-    for (const k of el.children) allEls.push(k);
+    place(el);
+    for (const k of el.children) place(k);
     if (el.name && !holders[el.name]) holders[el.name] = holder;
   }
   const doc = {
-    body, readyState: 'complete', _handlers: {}, activeElement: null,
+    body, readyState: opts.late ? 'loading' : 'complete', _handlers: {}, activeElement: null,
     createElement(t) { const e = makeEl(t); allEls.push(e); return e; },
     getElementById(id) { return allEls.find((e) => e.id === id) || null; },
     getElementsByName(name) { return allEls.filter((e) => e.name === name); },
@@ -147,6 +151,13 @@ function boot(els, config, opts) {
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
   require(enginePath);
+  if (opts.late) {
+    // the form below the engine, then DOMContentLoaded
+    if (opts.beforeForm) opts.beforeForm(win);
+    for (const el of later) { allEls.push(el); if (el.tagName === 'DIV' && !el.parentNode) body.appendChild(el); }
+    doc.readyState = 'interactive';
+    doc.fire('DOMContentLoaded', {});
+  }
   return { doc, win, holders, allEls, calls, NS: win.INSPIREUniversalValidator, poll() { intervals.forEach((f) => f()); } };
 }
 function region(env, field, suffix) {
@@ -426,6 +437,53 @@ for (const order of ['lock first', 'lock last']) {
   check('an autocomplete box already read-only is not marked as the lock\'s', ac.__qridLockSetRO !== true);
   legacy.value = '0'; legacy.fire('change');
   check('... and the dropdown never holds the save (UX-003)', save(env) === 'saved', env.win._alerts);
+}
+
+{
+  // REDCap prints the engine above the form: the base of each field the rule reads is taken
+  // once the form exists, not before (review W3-1)
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: { weight: ['height'] } }] },
+    { late: true });
+  check('engine above the form: the locked field is read-only once the form exists', locked.readOnly === true);
+  check('... a violation already saved when the page opened does not hold the save', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  check('... a change of the other field that still breaks it does', save(env) === 'held');
+}
+{
+  // a rule that reads a checkbox: each option is read by its code (review W3-6)
+  const locked = text('weight', '120');
+  const mirror = makeEl('input'); mirror.name = '__chk__pregnant_RC_1'; mirror.type = 'hidden'; mirror.value = '';
+  const box = makeEl('input'); box.id = 'id-__chk__pregnant_RC_1'; box.name = '__chkn__pregnant'; box.type = 'checkbox';
+  const env = boot([locked, mirror, box], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: "[weight]<100 or [pregnant(1)]='0'", blockSave: 'hard', lockReads: { weight: ['pregnant(1)', 'pregnant(2)'] } }] });
+  check('checkbox read: nothing ticked since the page opened, the save goes through', save(env) === 'saved', env.win._alerts);
+  mirror.value = '1'; box.checked = true; box.fire('click'); mirror.fire('change');
+  check('checkbox read: ... ticking the option that breaks the rule holds it', save(env) === 'held', env.win._alerts);
+  mirror.value = ''; box.checked = false; box.fire('click'); mirror.fire('change');
+  check('checkbox read: ... and unticking it lets the save through', save(env) === 'saved', env.win._alerts);
+}
+{
+  // a field the rule reads that this page does not carry (another page of a survey) is never compared
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', lockReads: { weight: ['height', 'elsewhere'] } }] });
+  check('a read field this page does not carry does not hold the save', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  check('... while one it carries still does once changed', save(env) === 'held');
+}
+{
+  // an input added after the form opened has no value to compare with; one removed has none to compare
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<50', blockSave: 'hard', lockReads: { weight: ['height', 'later'] } }] });
+  const later = text('later', 'x');
+  env.allEls.push(later);
+  check('a read field whose input appears after the form opened is not compared', save(env) === 'saved', env.win._alerts);
+  open.value = '40'; open.fire('change');
+  env.allEls.splice(env.allEls.indexOf(open), 1);
+  check('a read field whose input is gone at the save is not compared', save(env) === 'saved', env.win._alerts);
 }
 
 // ---- 10) roles that could not be read (review M8) --------------------------------------

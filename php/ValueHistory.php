@@ -23,19 +23,34 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * deleted from one arm only), that row and any DELETE that names an arm make
  * the history "unknown". So does a DELETE of this event's own data, or one
  * that names no event: the reader cannot tell what it removed. A DELETE of
- * another event's data is no part of this event's history.
+ * another event's data is no part of this event's history when its
+ * description says it removed one form or one event ("Delete all record data
+ * for single form", "... single event", "Delete all data on event"); a DELETE
+ * of another event described
+ * any other way may have removed the whole record, so it makes the history
+ * "unknown" too.
  *
  * ERASED DATA. "Erase all data" (and deleting every record when a project
  * moves to production) writes one DELETE row for the whole project, with the
  * project id as its pk and no event, rather than one per record. Every
  * history starts after the newest such row (eraseFloor): a record made again
  * under a name the erased data used does not inherit its saves. A row of a
- * record named like the project id that deletes the whole record says so in
- * its description and is not taken for an erase.
+ * record named like the project id that deletes the whole record, or one
+ * form or event of it, says so in its description and is not taken for an
+ * erase; the project id is compared as bytes, so "１４９" is not "149".
  *
- * A RENAMED RECORD. An UPDATE row that writes the record id field names the
- * record's new name. The saves made under its old name are not read, so the
- * history is "unknown". Such a row is read whatever event it names.
+ * THE START OF A RECORD. When it is told the record id field, the reader
+ * reads a history only when it holds the record's own beginning: an INSERT
+ * row with a line for the record id field (REDCap's "Create record" in any of
+ * its forms). Such a row is read whatever event it names; the rows read for
+ * it match the record id field's line at the start of a line, so a field
+ * named "prev_record_id" does not. A history without that row is "unknown"
+ * ("start"): the record was renamed and its first saves are logged under its
+ * old name, or it came with a copied project and has no log before the copy,
+ * or an erase was placed after its creation. An UPDATE that writes the
+ * record id field, as the first save of a record at another event may, is no
+ * rename. A line for the record id field typed into a free-text value is not
+ * plain (parseRow), so it counts for nothing.
  *
  * A ROW WITH NO EVENT that names a kept field makes the history "unknown"
  * too: it may hold the first save, and it cannot be placed.
@@ -44,14 +59,19 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * oldest row, so a record and event whose log runs past MAX_ROWS_PER_RECORD
  * rows before its start (or its last whole-record DELETE) answers "capped",
  * and the caller does not judge it. A history of exactly that many rows is
- * read in full. Only the fields named when the reader is made are kept.
+ * read in full. Only this event's rows, DELETE rows and rows with no event
+ * count toward that cap; a record whose log holds more than MAX_ROWS_READ
+ * rows of any kind before its start is "capped" too. Only the fields named
+ * when the reader is made are kept.
  *
  * PHP 7.4.
  */
 final class ValueHistory
 {
-    /** Rows read for one record at most. */
+    /** Rows of this event (with DELETE rows and rows with no event) read for one record at most. */
     const MAX_ROWS_PER_RECORD = 5000;
+    /** Rows of any kind read for one record and event at most. */
+    const MAX_ROWS_READ = 20000;
     /** Rows per query. */
     const PAGE = 500;
     /** Histories (one record and event each) kept in memory; a scan asks record by record. */
@@ -74,7 +94,7 @@ final class ValueHistory
     private $multiArm;
     /** @var array<string,true> the Text and Notes fields of the project, whose value may hold a line break */
     private $freeText;
-    /** @var string|null the record id field, whose line in an UPDATE row is a rename */
+    /** @var string|null the record id field, whose line in an INSERT row is the record's start */
     private $idField;
     /** @var string|null|false the id of the newest project-wide erase row: null for none, false when it could not be read; unset until read */
     private $eraseFloor;
@@ -86,7 +106,7 @@ final class ValueHistory
     private $saves = [];
     /** history key => true, in the order the histories were first read */
     private $kept = [];
-    /** history key => why it is "unknown": read (the log could not be read), delete, noevent */
+    /** history key => why it is "unknown": read (the log could not be read), delete, noevent, start */
     private $why = [];
 
     private function __construct(ScanDb $db, $pid, $table, array $fields, \DateTimeZone $logZone, \DateTimeZone $clockZone, array $opts)
@@ -110,7 +130,8 @@ final class ValueHistory
      * order = every field of the project => its place in the data dictionary,
      * and freeText = its Text and Notes fields => true (parseRow refuses a
      * line out of that order after a free-text value); multiArm = the project
-     * has more than one arm; recordIdField = the record id field (a rename).
+     * has more than one arm; recordIdField = the record id field (THE START OF
+     * A RECORD).
      */
     public static function forProject(ScanDb $db, $pid, array $fields, \DateTimeZone $logZone, \DateTimeZone $clockZone, array $opts = [])
     {
@@ -131,8 +152,9 @@ final class ValueHistory
      *   MAX_ROWS_PER_RECORD rows; "none" when the log holds no row for them;
      *   "unknown" when the log could not be read, holds a DELETE the reader
      *   cannot place or a row with no event that names a kept field, or the
-     *   field was not named when the reader was made, or the record was
-     *   renamed. "why" says which: read, delete, noevent, unnamed or rename.
+     *   field was not named when the reader was made, or the log does not
+     *   hold the record's start. "why" says which: read, delete, noevent,
+     *   unnamed or start.
      *   saves is empty unless the state is "read". value is null for a value
      *   the log does not say plainly (parseRow); at is ts as 'Y-m-d H:i:s' in
      *   the clock zone, or null when ts is not a time.
@@ -187,16 +209,24 @@ final class ValueHistory
 
     /**
      * One page of the record's rows for $eventId, newest first, after the
-     * newest project-wide erase: deletes, rows with no event, and rows that
-     * may write the record id field (a rename) included.
+     * newest project-wide erase: deletes, rows with no event, and rows with a
+     * line for the record id field (the record's start) included. That line
+     * is matched at the start of data_values or after a line break, with the
+     * field name's "_" escaped, so "prev_record_id" and "recordXid" do not
+     * match.
      */
     private function page($record, $eventId, $cursor, $limit)
     {
         $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p, `user`, event, description FROM ' . $this->table
              . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\', \'DELETE\')'
-             . ' AND (event = \'DELETE\' OR event_id = ? OR event_id IS NULL' . ($this->idField !== null ? ' OR data_values LIKE ?' : '') . ')';
+             . ' AND (event = \'DELETE\' OR event_id = ? OR event_id IS NULL'
+             . ($this->idField !== null ? ' OR data_values LIKE ? ESCAPE \'!\' OR data_values LIKE ? ESCAPE \'!\'' : '') . ')';
         $params = [$this->pid, $record, (int) $eventId];
-        if ($this->idField !== null) $params[] = '%' . $this->idField . " = '%";
+        if ($this->idField !== null) {
+            $line = str_replace('_', '!_', $this->idField) . " = '%";
+            $params[] = $line;
+            $params[] = "%\n" . $line;
+        }
         if ($this->eraseFloor !== null && $this->eraseFloor !== false) {
             $sql .= ' AND log_event_id > ?';
             $params[] = $this->eraseFloor;
@@ -215,10 +245,11 @@ final class ValueHistory
         return (bool) preg_match('/^delete record(?: \(api\))?$/iD', $d);
     }
 
-    /** Whether a DELETE row's description names an arm. */
-    private static function armDelete(array $row)
+    /** Whether a DELETE row's description says it removed one form or one event of the record. */
+    private static function partDelete(array $row)
     {
-        return (bool) preg_match('/\barm\b/i', isset($row[7]) ? (string) $row[7] : '');
+        $d = isset($row[7]) ? trim((string) $row[7]) : '';
+        return (bool) preg_match('/^delete all (?:record data for single (?:form|event)|data on event)(?: \(api\))?$/iD', $d);
     }
 
     /**
@@ -231,9 +262,9 @@ final class ValueHistory
         $this->eraseRead = true;
         try {
             $rows = $this->db->select('SELECT log_event_id FROM ' . $this->table
-                . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event = \'DELETE\' AND event_id IS NULL'
-                . ' AND (description IS NULL OR description NOT LIKE \'Delete record%\')'
-                . ' ORDER BY log_event_id DESC LIMIT 1', [$this->pid, (string) $this->pid]);
+                . ' WHERE project_id = ? AND pk = ? AND CAST(pk AS BINARY) = ? AND object_type = \'redcap_data\' AND event = \'DELETE\' AND event_id IS NULL'
+                . ' AND (description IS NULL OR (description NOT LIKE \'Delete record%\' AND description NOT LIKE \'Delete all record data for single%\' AND description NOT LIKE \'Delete all data on event%\'))'
+                . ' ORDER BY log_event_id DESC LIMIT 1', [$this->pid, (string) $this->pid, (string) $this->pid]);
         } catch (\Throwable $e) {
             return $this->eraseFloor = false;
         }
@@ -246,12 +277,13 @@ final class ValueHistory
     /**
      * Read one row into $saves[$key]. Returns null to read on, or what ends
      * the read: "read" at a whole-record DELETE; "delete" at a DELETE of this
-     * event, of no event or of an arm (and at any whole-record DELETE in a
-     * project of several arms); "rename" at an UPDATE that writes the record
-     * id field; "noevent" at a row with no event that names a kept field,
-     * which the reader cannot place.
+     * event, of no event or of an arm, at one of another event described as
+     * neither one form nor one event, and at any whole-record DELETE in a
+     * project of several arms; "noevent" at a row with no event that names a
+     * kept field, which the reader cannot place. $started turns true at the
+     * record's start (THE START OF A RECORD).
      */
-    private function take($key, $record, $eventId, array $row)
+    private function take($key, $record, $eventId, array $row, &$started)
     {
         // pk compared as bytes: the column's collation may match "abc" for "ABC".
         if (!isset($row[4]) || (string) $row[4] !== $record) return null;
@@ -259,13 +291,14 @@ final class ValueHistory
         $verb = isset($row[6]) ? strtoupper((string) $row[6]) : '';
         if ($verb === 'DELETE') {
             $whole = self::wholeRecordDelete($row);
-            // another event's form data: not this event's history
-            if ($event !== null && $event !== $eventId && !$whole && !self::armDelete($row)) return null;
+            // another event's form or event data: not this event's history
+            if ($event !== null && $event !== $eventId && !$whole && self::partDelete($row)) return null;
             return !$this->multiArm && $whole ? 'read' : 'delete';
         }
         $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText);
-        if ($verb === 'UPDATE' && $this->idField !== null) {
-            foreach ($parsed as $values) if (array_key_exists($this->idField, $values)) return 'rename';
+        // a line parseRow does not trust is null, so a typed one counts for nothing
+        if ($verb === 'INSERT' && $this->idField !== null) {
+            foreach ($parsed as $values) if (isset($values[$this->idField])) $started = true;
         }
         if ($event === null) {
             foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) return 'noevent';
@@ -283,6 +316,23 @@ final class ValueHistory
         return null;
     }
 
+    /** Whether a row counts toward MAX_ROWS_PER_RECORD: a DELETE, a row of $eventId, or one with no event. */
+    private static function counted(array $row, $eventId)
+    {
+        if (isset($row[6]) && strtoupper((string) $row[6]) === 'DELETE') return true;
+        if (!isset($row[2]) || $row[2] === null || $row[2] === '') return true;
+        return (string) (int) $row[2] === $eventId;
+    }
+
+    /** "read", or "unknown" ("start") when the reader knows the record id field and met no start. */
+    private function started($key, $started)
+    {
+        if ($this->idField === null || $started) return 'read';
+        $this->saves[$key] = [];
+        $this->why[$key] = 'start';
+        return 'unknown';
+    }
+
     /** Read the log of one record and event, newest first, into $saves. Returns its state. */
     private function read($key, $record, $eventId)
     {
@@ -290,7 +340,9 @@ final class ValueHistory
         if ($this->eraseFloor() === false) return 'unknown';
         $cursor = null;
         $rows = 0;
+        $fetched = 0;
         $any = false;
+        $started = false;
         while (true) {
             try {
                 $page = $this->page($record, $eventId, $cursor, self::PAGE);
@@ -311,33 +363,34 @@ final class ValueHistory
                     return 'unknown';
                 }
                 $cursor = $id;
-                if (isset($row[4]) && (string) $row[4] === $record) $any = true;
-                $end = $this->take($key, $record, $eventId, $row);
-                if ($end === 'read') return 'read';
+                if (++$fetched > self::MAX_ROWS_READ) {
+                    $this->saves[$key] = [];
+                    return 'capped';
+                }
+                $mine = isset($row[4]) && (string) $row[4] === $record;
+                if ($mine) $any = true;
+                if ($mine && self::counted($row, $eventId)) {
+                    if ($rows >= self::MAX_ROWS_PER_RECORD) {
+                        // A history of exactly the cap is whole: what lies
+                        // just past it decides, a whole-record DELETE (or
+                        // nothing at all, when the log ends here).
+                        if (isset($row[6]) && strtoupper((string) $row[6]) === 'DELETE' && !$this->multiArm && self::wholeRecordDelete($row)) {
+                            return $this->started($key, $started);
+                        }
+                        $this->saves[$key] = [];
+                        return 'capped';
+                    }
+                    $rows++;
+                }
+                $end = $this->take($key, $record, $eventId, $row, $started);
+                if ($end === 'read') return $this->started($key, $started);
                 if ($end !== null) {
                     $this->saves[$key] = [];
                     $this->why[$key] = $end;
                     return 'unknown';
                 }
             }
-            $rows += $n;
-            if ($n < self::PAGE) return $any ? 'read' : 'none';
-            if ($rows >= self::MAX_ROWS_PER_RECORD) {
-                // A history of exactly the cap is whole: what lies just past
-                // it decides, a whole-record DELETE or nothing at all.
-                try {
-                    $next = $this->page($record, $eventId, $cursor, 1);
-                } catch (\Throwable $e) {
-                    $next = null;
-                }
-                if (is_array($next) && !$next) return 'read';
-                if (is_array($next) && isset($next[0]) && is_array($next[0]) && isset($next[0][4]) && (string) $next[0][4] === $record
-                        && isset($next[0][6]) && strtoupper((string) $next[0][6]) === 'DELETE' && !$this->multiArm && self::wholeRecordDelete($next[0])) {
-                    return 'read';
-                }
-                $this->saves[$key] = [];
-                return 'capped';
-            }
+            if ($n < self::PAGE) return $any ? $this->started($key, $started) : 'none';
         }
     }
 

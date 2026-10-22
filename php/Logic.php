@@ -1244,16 +1244,19 @@ class Logic
     }
 
     /**
-     * A user role name as @UVWRITEONCE compares it: trimmed, every run of
-     * spaces folded to one, in lowercase in any script ("Équipe  Médicale"
-     * and "équipe médicale" are one role). Text that is not UTF-8 is
-     * lowercased byte by byte.
+     * A user role name as @UVWRITEONCE compares it: every run of spaces (a
+     * no-break space or an ideographic space too) folded to one, then
+     * trimmed, in lowercase in any script ("Équipe  Médicale" and "équipe
+     * médicale" are one role, and so are "Data manager" and "Data manager"
+     * with a no-break space pasted after it). Text that is not UTF-8 has its
+     * ASCII spaces folded and is lowercased byte by byte.
      */
     public static function roleKey($name)
     {
-        $s = trim((string) $name);
+        $s = (string) $name;
         $folded = preg_replace('/\s+/u', ' ', $s);
-        if ($folded === null) return strtolower(preg_replace('/\s+/', ' ', $s));
+        if ($folded === null) return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+        $folded = trim($folded);
         return function_exists('mb_strtolower') ? mb_strtolower($folded, 'UTF-8') : strtolower($folded);
     }
 

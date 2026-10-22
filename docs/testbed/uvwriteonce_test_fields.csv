@@ -3,7 +3,7 @@ uw_consent,uv_writeonce_test,A. Locked after the first save,text,Consent date,,L
 uw_arm,uv_writeonce_test,,radio,Study arm,"1, Arm A | 2, Arm B",A named role may change it.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""]}"
 uw_site,uv_writeonce_test,,dropdown,Site,"1, Douala | 2, Yaounde | 3, Bamenda",A named role may change it. Own message. Autocomplete.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""],""message"":""Ask the data manager to change the site.""} @AUTOCOMPLETE"
 uw_yn,uv_writeonce_test,,yesno,Eligible,,The role named in other letters.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""uv data MANAGER""]}"
-uw_notes,uv_writeonce_test,,notes,Screening note,,Locked for everyone once saved.,,,,,,,,,,,@UVWRITEONCE
+uw_notes,uv_writeonce_test,,notes,Screening note,,Locked for everyone once saved. A rule on it reads the free text.,,,,,,,,,,,"@UVWRITEONCE @UVASSERT={""assert"":""[uw_free]<>'stop'"",""blockSave"":""hard"",""message"":""The free text says stop.""}"
 uw_pain,uv_writeonce_test,,slider,Pain at screening,No pain | Some | Worst pain,Locked for everyone once saved.,number,,,,,,,,,,@UVWRITEONCE
 uw_weight,uv_writeonce_test,,text,Baseline weight (kg),,The lock starts on a day far ahead.,number_1dp,,,,,,,,,,"@UVWRITEONCE={""since"":""2099-01-01""}"
 uw_free,uv_writeonce_test,,text,Free text (no tag),,Never locked.,,,,,,,,,,,

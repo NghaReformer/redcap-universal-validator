@@ -3634,7 +3634,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($h['state'] === 'capped' || $h['state'] === 'unknown') {
                 $unknown = ['delete' => 'the project log holds a deletion this check cannot place (part of the record, or one arm of it)',
                             'noevent' => 'the project log holds a save of this field that names no event',
-                            'rename' => 'the record was renamed, and the saves made under its old name are not read',
+                            'start' => 'the project log does not show the record being made (it was renamed, or came with a copied project), so its first saves are not read',
                             'unnamed' => 'the log reader was not told to keep this field',
                             'read' => 'the project log could not be read'];
                 $why = isset($h['why'], $unknown[$h['why']]) ? $unknown[$h['why']] : $unknown['read'];
@@ -3756,7 +3756,8 @@ class UniversalValidator extends AbstractExternalModule
      * @UVWRITEONCE "field" hook: a field whose value REDCap computes
      * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, and one with
      * @SETVALUE (or its alias @PREFILL) is written again each time its form or
-     * survey page opens, so neither can be locked. Nor can a field whose
+     * survey page opens, and one with @DOWNLOAD-COUNT each time its file is
+     * downloaded, so none of them can be locked. Nor can a field whose
      * widget keeps its own copy of the text: the rich text editor (@RICHTEXT)
      * writes its copy into the field when the form is saved, after the save
      * guard has run, and an ontology search box (BioPortal, FHIR) does the
@@ -3776,6 +3777,10 @@ class UniversalValidator extends AbstractExternalModule
         if (preg_match('/@RICHTEXT\b/i', $ann)) {
             return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @RICHTEXT'
                 . ' — the rich text editor keeps its own copy of the text and saves it over the field.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@DOWNLOAD-COUNT\b/i', $ann)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @DOWNLOAD-COUNT'
+                . ' — REDCap adds one to it each time someone downloads the file it counts.', '_tag' => AnnotationRules::TAG_WRITEONCE];
         }
         // A Text field's choices hold "SERVICE:CATEGORY" when it searches an
         // ontology (BIOPORTAL:, FHIR: and any other service REDCap adds).
@@ -3871,8 +3876,8 @@ class UniversalValidator extends AbstractExternalModule
      * What ValueHistory needs to know of the project: the data dictionary's
      * order, in which the log writes a save's fields, and its Text and Notes
      * fields, whose typed value may look like more lines
-     * (ValueHistory::parseRow); the record id field, whose line in an UPDATE
-     * is a rename; and whether a DELETE may cover one arm only: a project of
+     * (ValueHistory::parseRow); the record id field, whose line in an INSERT
+     * is the record's start; and whether a DELETE may cover one arm only: a project of
      * several arms, or one whose arms cannot be read.
      */
     private function valueHistoryOptions($pid)
@@ -4461,7 +4466,7 @@ class UniversalValidator extends AbstractExternalModule
             $hook = ModeRegistry::hook($m['mode'], 'page');
             if ($hook !== null) $config['rules'] = $this->$hook($config['rules'], $pid, $context, $record, $instrument, $event_id, $repeat_instance);
         }
-        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument));
+        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: []);
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -5720,8 +5725,13 @@ class UniversalValidator extends AbstractExternalModule
      * on the page (UV_LOCK_READS in js/engine.js): a violation saved before
      * the page opened does not trap the form, and two locked fields that read
      * each other hold nothing. A rule that reads no such field is not marked.
+     * A checkbox is named once per option, as "field(code)", the way the page
+     * reads it. A calc, @CALCTEXT or @CALCDATE field is named only when a
+     * field its value is worked out from may be changed here (lockReadsCalc):
+     * REDCap works it out again as the page opens, and the person cannot
+     * change it back. $dd is the data dictionary (field => metadata).
      */
-    private static function markLockReads(array $rules, $onPage = null)
+    private static function markLockReads(array $rules, $onPage = null, array $dd = [])
     {
         $locked = [];
         foreach ($rules as $r) {
@@ -5729,12 +5739,28 @@ class UniversalValidator extends AbstractExternalModule
             foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $locked[(string) $f] = true;
         }
         if (!$locked) return $rules;
+        $memo = [];
+        $changeable = function ($x) use (&$changeable, &$memo, $locked, $onPage, $dd) {
+            if (array_key_exists($x, $memo)) return $memo[$x];
+            $memo[$x] = false;   // a calc that reads itself, however far round, changes nothing
+            if (isset($locked[$x]) || (is_array($onPage) && !isset($onPage[$x]))) return false;
+            $from = self::lockReadsCalc(isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : []);
+            if ($from === null) return $memo[$x] = true;
+            foreach ($from as $y) if ($changeable($y)) return $memo[$x] = true;
+            return false;
+        };
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError']) || ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
             $reads = array_map('strval', ModeRegistry::refFields($r));
             $others = [];
             foreach ($reads as $x) {
-                if (isset($locked[$x]) || (is_array($onPage) && !isset($onPage[$x]))) continue;
+                if (!$changeable($x)) continue;
+                $meta = isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : [];
+                if ((isset($meta['field_type']) ? $meta['field_type'] : '') === 'checkbox') {
+                    $codes = Logic::parseChoiceCodes(isset($meta['select_choices_or_calculations']) ? $meta['select_choices_or_calculations'] : '');
+                    foreach ($codes as $code) $others[] = $x . '(' . $code . ')';
+                    continue;
+                }
                 $others[] = $x;
             }
             $marks = [];
@@ -5744,6 +5770,25 @@ class UniversalValidator extends AbstractExternalModule
             if ($marks) $rules[$i]['lockReads'] = $marks;
         }
         return $rules;
+    }
+
+    /**
+     * The fields a calc, @CALCTEXT or @CALCDATE field's value is worked out
+     * from on this event, or null for a field of any other kind. A reference
+     * that names an event ("[event][field]") reads another event's value,
+     * which no one changes on this page, so it is left out.
+     */
+    private static function lockReadsCalc(array $meta)
+    {
+        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
+        $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+        $tagged = (bool) preg_match('/@CALC(?:TEXT|DATE)\b/i', $ann);
+        if ($type !== 'calc' && !$tagged) return null;
+        $text = ($type === 'calc' && isset($meta['select_choices_or_calculations']) ? (string) $meta['select_choices_or_calculations'] : '')
+              . ' ' . ($tagged ? $ann : '');
+        // a reference right after "]" is the field of an "[event][field]" pair
+        preg_match_all('/(?<!\])\[([a-z][a-z0-9_]*)(?:\([^)]*\))?\]/', $text, $m);
+        return array_keys(array_fill_keys($m[1], true));
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */

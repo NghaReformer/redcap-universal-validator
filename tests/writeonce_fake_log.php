@@ -10,8 +10,9 @@ use INSPIRE\UniversalValidator\Scan\ScanDb;
  * "Update record" otherwise; an explicit null is a NULL description). It
  * answers the projects lookup (the log table's name), the newest
  * project-wide erase row, and the paged read of one record's rows for one
- * event (deletes, rows with no event and rows matching the rename pattern
- * included), after the erase floor, newest first; $fail and $failOn make a
+ * event (deletes, rows with no event and rows matching either LIKE pattern
+ * of the record id field's line included, read with the ESCAPE character
+ * '!'), after the erase floor, newest first; $fail and $failOn make a
  * read fail. With $looseEvent it returns the rows of every event, as a
  * server that ignored the event filter would: the reader checks each row's
  * event again.
@@ -34,13 +35,16 @@ final class FakeHistoryLog implements ScanDb
         if (strpos($sql, 'FROM ' . $this->table . ' ') === false) throw new \RuntimeException('wrong table');
         preg_match('/LIMIT (\d+)$/', $sql, $m);
         $limit = (int) $m[1];
-        if (strpos($sql, "AND event = 'DELETE' AND event_id IS NULL AND (description IS NULL OR description NOT LIKE 'Delete record%')") !== false) {
-            list($pid, $pk) = $params;
+        if (strpos($sql, "AND pk = ? AND CAST(pk AS BINARY) = ? AND object_type = 'redcap_data' AND event = 'DELETE' AND event_id IS NULL"
+                . " AND (description IS NULL OR (description NOT LIKE 'Delete record%' AND description NOT LIKE 'Delete all record data for single%' AND description NOT LIKE 'Delete all data on event%'))") !== false) {
+            list($pid, $pk, $bytes) = $params;
             $out = [];
             foreach ($this->rows as $r) {
-                if ($r[1] !== $pid || strtolower($r[2]) !== strtolower($pk) || $r[6] !== 'redcap_data' || strtoupper($r[7]) !== 'DELETE' || $r[3] !== null) continue;
+                // the collation ignores letter case and trailing spaces; CAST AS BINARY does not
+                if ($r[1] !== $pid || strtolower(rtrim($r[2])) !== strtolower(rtrim($pk)) || $r[2] !== $bytes || $r[6] !== 'redcap_data' || strtoupper($r[7]) !== 'DELETE' || $r[3] !== null) continue;
                 $descr = $this->descr($r);
-                if ($descr !== null && stripos($descr, 'delete record') === 0) continue;
+                if ($descr !== null && (stripos($descr, 'delete record') === 0 || stripos($descr, 'delete all record data for single') === 0
+                        || stripos($descr, 'delete all data on event') === 0)) continue;
                 $out[] = [(string) $r[0]];
             }
             usort($out, function ($a, $b) { return (int) $b[0] - (int) $a[0]; });
@@ -51,23 +55,39 @@ final class FakeHistoryLog implements ScanDb
         $pid = $params[$i++];
         $pk = $params[$i++];
         $event = $params[$i++];
-        $like = strpos($sql, 'OR data_values LIKE ?') !== false ? $params[$i++] : null;
+        $likes = [];
+        if (strpos($sql, "OR data_values LIKE ? ESCAPE '!' OR data_values LIKE ? ESCAPE '!'") !== false) {
+            $likes[] = self::likeRegex($params[$i++]);
+            $likes[] = self::likeRegex($params[$i++]);
+        }
         $after = strpos($sql, 'AND log_event_id > ?') !== false ? (int) $params[$i++] : 0;
         $before = strpos($sql, 'AND log_event_id < ?') !== false ? (int) $params[$i++] : PHP_INT_MAX;
-        // LIKE '%x%': x as plain text (an underscore matching itself is enough here)
-        $needle = $like === null ? null : trim($like, '%');
         $out = [];
         foreach ($this->rows as $r) {
             // the collation matches letter case loosely, as MySQL's may, and so does IN
             if ($r[1] !== $pid || strtolower($r[2]) !== strtolower($pk) || $r[0] >= $before || $r[0] <= $after) continue;
             if ($r[6] !== 'redcap_data' || !in_array(strtoupper($r[7]), ['INSERT', 'UPDATE', 'DELETE'], true)) continue;
-            $match = strtoupper($r[7]) === 'DELETE' || $r[3] === null || (int) $r[3] === (int) $event
-                || ($needle !== null && strpos((string) $r[5], $needle) !== false);
+            $match = strtoupper($r[7]) === 'DELETE' || $r[3] === null || (int) $r[3] === (int) $event;
+            foreach ($likes as $re) $match = $match || preg_match($re, (string) $r[5]);
             if (!$this->looseEvent && !$match) continue;
             $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2], $r[8], $r[7], $this->descr($r)];
         }
         usort($out, function ($a, $b) { return (int) $b[0] - (int) $a[0]; });
         return array_slice($out, 0, $limit);
+    }
+    /** A LIKE pattern with ESCAPE '!' as a regex: % any run, _ any one character, !x the character x. */
+    private static function likeRegex($like)
+    {
+        $re = '';
+        $n = strlen($like);
+        for ($k = 0; $k < $n; $k++) {
+            $c = $like[$k];
+            if ($c === '!' && $k + 1 < $n) $re .= preg_quote($like[++$k], '/');
+            elseif ($c === '%') $re .= '.*';
+            elseif ($c === '_') $re .= '.';
+            else $re .= preg_quote($c, '/');
+        }
+        return '/^' . $re . '$/sD';
     }
     private function descr(array $r)
     {

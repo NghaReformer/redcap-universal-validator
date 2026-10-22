@@ -1086,8 +1086,8 @@ first save of a value and locks it from then on:
   Use it when the tag is added to a project that already holds data.
 - **Field types.** Text and Notes fields (dates included), dropdown, radio,
   yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
-  nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE` or `@PREFILL`, whose
-  value REDCap writes again by itself, nor a field with `@RICHTEXT` or an
+  nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or
+  `@DOWNLOAD-COUNT`, whose value REDCap writes again by itself, nor a field with `@RICHTEXT` or an
   ontology search (BioPortal, FHIR or any other service), whose widget keeps
   its own copy of the text, nor a field another rule returns a value to.
 - **On the page.** For everyone outside the roles the field keeps the value it
@@ -1105,9 +1105,12 @@ first save of a value and locks it from then on:
   role could not be checked. When the saved value cannot be read the field is
   not locked; staff see a note saying so, and the audit still checks a change.
   Another rule on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked, and only once
-  that field has been changed on the page, so a violation already saved when
-  the page opened, or one between two locked fields, never holds it. A person's own
+  when it also reads a field of this form that is not locked (a calc counts
+  only when a field it is worked out from is such a field), and only once that
+  field has been changed on the page, a checkbox option by option. The value
+  each field opened with is read once the form exists. So a violation already
+  saved when the page opened, or one between two locked fields, never holds
+  it, whether the person clicks Save or presses Enter. A person's own
   first answer is locked as soon as it is saved, so after Save & Stay, or Next
   on a multi-page survey, going back finds it locked. The roles and `since`
   never reach the page.
@@ -1117,16 +1120,21 @@ first save of a value and locks it from then on:
 - **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
   or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
   as "Changed after it was locked" or "Cleared after it was locked" and names
-  when the value was locked. Each record and event is read on its own. A
-  deletion of the whole record starts a new history, and so does an erase of
-  all the project's records (Erase all data, or deleting every record when the
-  project moves to production): every history starts after the newest one. A
-  deletion of another event's data changes nothing. These are rule problems,
-  never a pass: a log that holds more rows of the record and event than are
-  read (5,000); a deletion of this event's data or of one arm, and in a
-  project of several arms every deletion of the record, since the check cannot
-  tell what it removed; a record renamed since its saves, since REDCap logs
-  them under the old name; a save the log names no event for; a save the log
+  when the value was locked. Each record and event is read on its own, back to
+  the row REDCap writes when it makes the record, which names the record id
+  field. A deletion of the whole record starts a new history, and so does an
+  erase of all the project's records (Erase all data, or deleting every record
+  when the project moves to production): every history starts after the
+  newest one. A deletion of one form or one event at another event changes
+  nothing. The check reports a rule problem, never a pass, for each of the
+  following. A log that holds more rows
+  of the record and event than are read (5,000); a deletion of this event's
+  data or of one arm, a deletion at another event that the log does not
+  describe as one form or one event, and in a project of several arms every
+  deletion of the record, since the check cannot tell what it removed; a
+  record whose log does not show it being made (one renamed while its saves
+  stay logged under the old name, or one that came with a copied project); a
+  save the log names no event for; a save the log
   does not spell out; a value the log never shows saved; and roles that cannot
   be read when a change needs them. The log lists a save's fields in the data
   dictionary's order. A Notes value typed to look like the log line of another
@@ -1134,9 +1142,17 @@ first save of a value and locks it from then on:
   the first Text or Notes value before the line out of order, the row's values
   read as not spelled out. A row written before a field was moved breaks the
   order in the same way, and so may an import whose columns are in another
-  order, so the fields after that point are rule problems for that save. A
-  forged line that keeps the order can read as a save of that field, which
-  gives at worst a false finding or a rule problem, never a pass. The tag takes no `when`,
+  order, so the fields after that point are rule problems for that save.
+  Moving a locked field above a Text or Notes field it used to follow does
+  this to every older save that wrote both. A forged line that keeps the
+  order can read as a save of that field. After the lock, a save by a person
+  with no role moves nothing, so such a line gives at worst a false finding or
+  a rule problem. Before the lock, or before `since`, it can stand for a first
+  value that was never saved: the lock holds that value, and the next real
+  save of another value is reported as a change. A person with no role could
+  reach the same lock by saving that value first, so the line gives no one a
+  value they could not have saved; the finding falls on whoever saved next,
+  and the forged row stays in the log. The tag takes no `when`,
   `caseSensitive` or `blockSave`. Configure via field annotation only.
 
 ## The Validation scan — checking data that is already saved

@@ -373,7 +373,8 @@ namespace {
     // a history the reader could not finish says why
     foreach (['delete' => 'holds a deletion this check cannot place (part of the record, or one arm of it)', 'noevent' => 'holds a save of this field that names no event',
               'unnamed' => 'the log reader was not told to keep this field', 'read' => 'the project log could not be read',
-              'rename' => 'the record was renamed, and the saves made under its old name are not read',
+              'start' => 'the project log does not show the record being made (it was renamed, or came with a copied project), so its first saves are not read',
+              'rename' => 'the project log could not be read',
               'other' => 'the project log could not be read'] as $why => $says) {
         $unk = new class($why) {
             private $why;
@@ -444,6 +445,18 @@ namespace {
         'vt'        => f('visit_form', '', 'number'),
     ];
     $XDATA = ['2' => [351 => $LDATA['2'][351] + ['la' => '1', 'lb' => '2', 'lx' => '3', 'ly' => '4', 'vt' => '9']]];
+    // review W3-6 and W3-1: a checkbox read, and calcs the person cannot change
+    $CDICT = $LDICT + [
+        'preg'      => ['field_type' => 'checkbox', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '1, Yes | 2, Not sure'],
+        'lc'        => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lc]<100 or [preg(1)]=\'0\'"', 'number'),
+        'bmi_l'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[wt2]*2'],
+        'bmi_o'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[ht]/2'],
+        'bmi_n'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[bmi_o]+[wt2]'],
+        'bmi_e'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[event_1_arm_1][ht]+1'],
+        'txt_c'     => f('enrol_form', '@CALCTEXT(if([wt2]>10, "big", "small"))'),
+        'lcalc'     => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lcalc]<[bmi_l] or [lcalc]<[bmi_o] or [lcalc]<[bmi_n] or [lcalc]<[bmi_e] or [lcalc]<>[txt_c]"', 'number'),
+    ];
+    $CDATA = ['2' => [351 => $LDATA['2'][351] + ['lc' => '120', 'lcalc' => '5']]];
     $ruleOf = function ($p, $type, $f) {
         foreach ($p['cfg']['rules'] ?? [] as $r) if (($r['type'] ?? '') === $type && in_array($f, $r['fields'] ?? [], true)) return $r;
         return null;
@@ -464,6 +477,12 @@ namespace {
         !isset($ruleOf($px, 'constraint', 'la')['lockReads']) && !isset($ruleOf($px, 'constraint', 'lb')['lockReads']));
     check('lockReads: nor one that reads only a field of another form', !isset($ruleOf($px, 'constraint', 'lx')['lockReads']));
     check('lockReads: only the fields the person can change here are named', ($ruleOf($px, 'constraint', 'ly')['lockReads'] ?? null) === ['ly' => ['ht']]);
+    $pc = page(mod($CDICT, $CDATA), 'form', '2', 'enrol_form');
+    check('lockReads: a checkbox is named once per option, as the page reads it (review W3-6) (got ' . json_encode($ruleOf($pc, 'constraint', 'lc')['lockReads'] ?? null) . ')',
+        ($ruleOf($pc, 'constraint', 'lc')['lockReads'] ?? null) === ['lc' => ['preg(1)', 'preg(2)']]);
+    check('lockReads: a calc worked out only from locked fields or other events, or from such calcs, is left out; one worked out from a field the person may change is kept, through other calcs too (review W3-1) (got '
+        . json_encode($ruleOf($pc, 'constraint', 'lcalc')['lockReads'] ?? null) . ')',
+        ($ruleOf($pc, 'constraint', 'lcalc')['lockReads'] ?? null) === ['lcalc' => ['bmi_o', 'bmi_n']]);
 
     // what the log reader is told of the project: the dictionary's order and whether a DELETE may cover one arm
     $opts = function ($m) {
@@ -564,10 +583,11 @@ namespace {
         'low'       => f('enrol_form', "@UVWRITEONCE @setvalue='x'"),
         'low2'      => f('enrol_form', '@UVWRITEONCE @prefill="x"'),
         'rich'      => f('enrol_form', '@UVWRITEONCE @richtext', '', 'notes'),
+        'dlc'       => f('enrol_form', '@UVWRITEONCE @DOWNLOAD-COUNT(consent_file)'),
         'onto'      => array_merge(f('enrol_form', '@UVWRITEONCE'), ['select_choices_or_calculations' => ' BIOPORTAL:ICD10']),
         'onto2'     => array_merge(f('enrol_form', '@UVWRITEONCE'), ['select_choices_or_calculations' => 'FHIR:snomed-ct']),
     ];
-    $RDATA = ['2' => [351 => ['record_id' => '2', 'src1' => '', 'src2' => '', 'lk' => '', 'r1' => 'a', 'r2' => 'b', 'lk_a' => '', 'lk_b' => '', 'r3' => 'c', 'low' => 'x', 'low2' => 'x', 'rich' => 'x', 'onto' => 'x', 'onto2' => 'x']]];
+    $RDATA = ['2' => [351 => ['record_id' => '2', 'src1' => '', 'src2' => '', 'lk' => '', 'r1' => 'a', 'r2' => 'b', 'lk_a' => '', 'lk_b' => '', 'r3' => 'c', 'low' => 'x', 'low2' => 'x', 'rich' => 'x', 'dlc' => '3', 'onto' => 'x', 'onto2' => 'x']]];
     $p = page(mod($RDICT, $RDATA), 'form', '2', 'enrol_form');
     $at = function ($p, $f) {
         foreach ($p['cfg']['rules'] ?? [] as $i => $r) if (($r['type'] ?? '') === 'writeonce' && in_array($f, $r['fields'] ?? [], true)) return $i;
@@ -587,6 +607,8 @@ namespace {
         errOf($pdup, 'dup') !== '' && strpos(errOf($pdup, 'dup'), '@UVWRITEONCE 2 times — this tag takes no "when" condition, so keep one.') !== false
         && lockedOn($pdup) === []);
     check('@RICHTEXT refused (got ' . errOf($p, 'rich') . ')', strpos(errOf($p, 'rich'), 'cannot lock a field with @RICHTEXT') !== false);
+    check('@DOWNLOAD-COUNT refused (review W3-10) (got ' . errOf($p, 'dlc') . ')', strpos(errOf($p, 'dlc'), 'cannot lock a field with @DOWNLOAD-COUNT') !== false
+        && !in_array('dlc', lockedOn($p), true));
     check('a BioPortal ontology search refused (got ' . errOf($p, 'onto') . ')', strpos(errOf($p, 'onto'), 'cannot lock a field that searches an ontology') !== false);
     check('... and any other ontology service (review W2-14) (got ' . errOf($p, 'onto2') . ')', strpos(errOf($p, 'onto2'), 'cannot lock a field that searches an ontology') !== false);
 
