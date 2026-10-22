@@ -4251,6 +4251,105 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv11a1-3 (control): the same run read by an unconfined reader is withheld the same way',
         $wvPage($m3, $s3, 203, $w3, null)['report'] === $pg3['report']);
 
+    /* rv11a1-5 / rv11a2-1  A REPORT ANOTHER RUN HAS REPLACED IS REFUSED,
+     * AND A FILE EARNS ITS TRAILER AT THE END. Run A over the whole
+     * project, then B: once B completes, A's findings are closed a page at
+     * a time and A read as an empty finished report; a download under way
+     * when that happened, or when retention began removing the run, ended
+     * on export_complete=1 over the rows it happened to read. */
+    $all10 = ['R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R09', 'R10'];
+    list($s5, $m5) = $wv($all10);
+    $a5 = $wvRun($m5, $s5, 204, null);
+    $before5 = $wvPage($m5, $s5, 204, $a5, null, ['limit' => 100]);
+    $m5->user->rights['group_id'] = null;
+    $openA = (new ScanService($m5, $s5))->exportOpen(204, $a5);
+    $b5 = $wvRun($m5, $s5, 204, null);
+    $refusedA = $wvPage($m5, $s5, 204, $a5, null);
+    check('rv11a1-5: before a later run completes, A is a report of its ten findings',
+        count($before5['rows']) === 10 && $before5['report']['expectedRows'] === 10 && !empty($openA['ok']));
+    check('rv11a1-5: once B has completed, A is refused, final, naming the run that replaced it',
+        $s5->run(204, $b5)['terminal'] === ScanOutcome::COMPLETE
+        && $refusedA === ['ok' => false, 'why' => sprintf(ScanService::SUPERSEDED_BY, $b5), 'final' => true]);
+    check('rv11a1-5: and so is its file, before a byte is written',
+        $wvCsv($m5, $s5, 204, $a5, null) === ['ok' => false, 'http' => 403, 'why' => sprintf(ScanService::SUPERSEDED_BY, $b5)]);
+    $lostOf = function ($x) {
+        $buf = '';
+        $res = $x['stream'](function ($t) use (&$buf) { $buf .= $t; }, function () {});
+        return ['res' => $res, 'text' => $buf, 'lost' => strpos($buf, '"# ' . ScanService::ROWS_LOST . '"') !== false
+            && strpos($buf, 'export_complete') === false && strpos($buf, '"' . ScanService::LOST_LABEL . '"') !== false];
+    };
+    $midA = $lostOf($openA);
+    check('rv11a2-1: a download of A opened before B completed ends as a file that lost rows, not a whole one',
+        $midA['res']['ok'] === false && $midA['lost']);
+    do { $sp5 = $s5->supersedePrevious(204, $b5, 100); } while (!$sp5['done']);
+    check('rv11a1-5: after the supersede has closed A\'s rows, A is still refused the same way',
+        $wvPage($m5, $s5, 204, $a5, null) === $refusedA);
+    $wholeB = $wvCsv($m5, $s5, 204, $b5, null);
+    check('rv11a1-5 (control): the run that replaced it is the report, and its file earns the trailer',
+        !empty($wvPage($m5, $s5, 204, $b5, null)['ok']) && $wholeB['result']['ok'] === true
+        && strpos($wholeB['text'], '"# export_complete=1","rows=10"') !== false);
+
+    // A GROUP RUN replaced by a whole-project run: its own reader is refused
+    // without the id of a run they may not read.
+    list($s6, $m6) = $wv($all10);
+    $g6 = $wvRun($m6, $s6, 205, 31);
+    $w6 = $wvRun($m6, $s6, 205, null);
+    check('rv11a1-5: a group run replaced by a whole-project run is refused to its reader, naming no run',
+        $wvPage($m6, $s6, 205, $g6, 31) === ['ok' => false, 'why' => ScanService::SUPERSEDED, 'final' => true]
+        && $wvCsv($m6, $s6, 205, $g6, 31) === ['ok' => false, 'http' => 403, 'why' => ScanService::SUPERSEDED]
+        && strpos(ScanService::SUPERSEDED, (string) $w6) === false);
+    check('rv11a1-5: and an unconfined reader is told which run replaced it',
+        $wvPage($m6, $s6, 205, $g6, null)['why'] === sprintf(ScanService::SUPERSEDED_BY, $w6));
+    check('rv11a1-5 (control): another group\'s reader is still told it is no run',
+        $wvPage($m6, $s6, 205, $g6, 7) === ['ok' => false, 'why' => ScanService::NO_RUN, 'final' => true]);
+
+    // THE RECHECK, EACH HALF ON ITS OWN. A stopped run promises no count, so
+    // only the run read again can tell that B replaced it during its download;
+    // a run retention begins removing mid-download still has every row; and
+    // a store that hands back one row fewer than the summary counted is caught
+    // by the count alone.
+    list($s7, $m7) = $wv($all10);
+    $m7->user->rights['group_id'] = null;
+    $c7 = (int) (new ScanService($m7, $s7))->start(206)['run_id'];
+    $m7->readSleep = 3.2;
+    (new ScanService($m7, $s7))->work(206, $c7);
+    (new ScanService($m7, $s7))->cancel(206, $c7);
+    $openC = (new ScanService($m7, $s7))->exportOpen(206, $c7);
+    $d7 = $wvRun($m7, $s7, 206, null);
+    $midC = $lostOf($openC);
+    check('rv11a2-1: a stopped run replaced while it downloads, which promised no count, still ends as lost',
+        $s7->run(206, $c7)['terminal'] === ScanOutcome::CANCELLED && strpos($midC['text'], '"# expected_rows","unknown"') !== false
+        && $midC['res']['rows'] > 0 && $midC['res']['ok'] === false && $midC['lost']
+        && strpos($midC['text'], '"' . ScanService::INCOMPLETE_LABEL . '"') !== false);
+    $e7 = $wvRun($m7, $s7, 207, null);
+    $m7->user->rights['group_id'] = null;
+    $openE = (new ScanService($m7, $s7))->exportOpen(207, $e7);
+    \Closure::bind(function () use ($e7) {
+        $this->runs[$e7]['terminal_reason'] = ScanStore::REMOVING_WHY;
+    }, $s7, ArrayScanStore::class)();
+    $midE = $lostOf($openE);
+    check('rv11a2-1: a run retention begins removing while it downloads ends as lost, though every row was read',
+        $s7->run(207, $e7) === null && $midE['res']['rows'] === 10 && $midE['res']['ok'] === false && $midE['lost']);
+    $f7 = $wvRun($m7, $s7, 208, null);
+    $short = new class($s7) extends FaultyStore {
+        public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                                 &$through = null)
+        {
+            $rows = parent::findings($projectId, $generationId, $scope, $filter, $afterId, $limit, $through);
+            if ((int) $afterId === 0) array_shift($rows);
+            return $rows;
+        }
+    };
+    $m7->user->rights['group_id'] = null;
+    $midF = $lostOf((new ScanService($m7, $short))->exportOpen(208, $f7));
+    check('rv11a2-1: a file that wrote fewer rows than its head promised ends as lost',
+        $midF['res']['rows'] === 9 && strpos($midF['text'], '"# expected_rows","10"') !== false
+        && $midF['res']['ok'] === false && $midF['lost']);
+    $okF = $lostOf((new ScanService($m7, $s7))->exportOpen(208, $f7));
+    check('rv11a2-1 (control): the same run read whole earns the trailer',
+        $okF['res']['ok'] === true && $okF['res']['rows'] === 10 && !$okF['lost']
+        && strpos($okF['text'], '"# export_complete=1","rows=10"') !== false);
+
     \REDCap::$groupNames = $keptNames;
 }
 

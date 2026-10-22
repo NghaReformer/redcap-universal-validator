@@ -1219,8 +1219,21 @@ final class ScanService
         if ($run['terminal'] === null || $run['terminal'] === '') {
             return $no('this scan has not finished, so it has no report yet', false);
         }
-
         $reader = $this->readerScope($pid);
+        // A REPORT A LATER RUN HAS REPLACED IS NOT SHOWN (reviews rv11a1-5,
+        // rv11a2-1). A later whole-project run that completes closes this
+        // run's findings a page at a time (supersedePrevious()), and the
+        // report read nothing but active rows: in between it was a finished
+        // report missing rows, and after it an empty one, with `expected_rows`
+        // and the coverage sentence of the whole run above `rows=0`. Asked
+        // after the reader's entitlement, so no run a reader may not touch
+        // answers anything but NO_RUN; and a group reader is not told the id
+        // of a whole-project run, which they may not read.
+        $by = $store->supersededBy($pid, (int) $run['run_id']);
+        if ($by !== null) {
+            return $no($reader['dag'] === null ? sprintf(self::SUPERSEDED_BY, $by) : self::SUPERSEDED, true);
+        }
+
         // The reader's group as a finding stores it: its unique name, which is
         // what readerScope() resolved the group id to. A group reader whose
         // group has no name was refused there.
@@ -1371,6 +1384,14 @@ final class ScanService
     /** The line a file that stopped early ends on, in place of the trailer. */
     const ROWS_LOST = 'ROWS WERE LOST: the report could not be read to the end, so this file is not the whole report';
 
+    /** Why a report a later whole-project run replaced is not shown, to a reader who may read that run. */
+    const SUPERSEDED_BY = 'scan %1$d, a later scan of the whole project, has replaced this one, so the '
+        . 'findings of this scan are closed and it is no longer shown as a report. Open scan %1$d instead.';
+
+    /** The same, to a group reader, who is not told the id of a run they may not read. */
+    const SUPERSEDED = 'a later scan of the whole project has replaced this one, so the findings of this '
+        . 'scan are closed and it is no longer shown as a report. Run a new scan to see them as they are now.';
+
     /**
      * The CSV of a finished run's findings for THIS reader, or why not.
      *
@@ -1429,7 +1450,8 @@ final class ScanService
         return ['ok' => true, 'filename' => $filename,
                 'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head, $marks) {
                     $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
-                                                $r['scope'], $head, $marks, $write, $flush);
+                                                $r['scope'], $head, $marks, $write, $flush,
+                                                ['run' => (int) $run['run_id'], 'expected' => $r['expected']]);
                     if ($out['error'] instanceof ScanStoreUnavailable) {
                         $this->storageFailed($pid, $runId, $out['error']);
                     }
@@ -1484,14 +1506,27 @@ final class ScanService
      * sorting the sheet; the third mark, the filename suffix, is the caller's.
      * A file that lost rows says so in a data row too, for the same reason.
      *
+     * AND THE TRAILER IS EARNED AT THE END, NOT ASSUMED (reviews rv11a1-5,
+     * rv11a2-1). A file is read a page at a time over minutes, and in that
+     * time a later whole-project run can close this run's rows, or retention
+     * can begin removing it: each page then read fewer rows, the walk ended
+     * early, and the file still closed on `export_complete=1`. With $whole,
+     * the run is read again after the last page, and the file earns the
+     * trailer only when the run is still there, nothing has replaced it, and
+     * it wrote the number of rows its head promised; otherwise it ends as a
+     * file that lost rows. A recheck that cannot be read is not a yes.
+     *
      * @param array $head  [[key, value], ...] the lines about the report
      * @param array $marks incompleteMarks() of the run: `banner` and `row`, each
      *                     null when the run needs none
+     * @param array $whole ['run' => int, 'expected' => ?int]: the run to read
+     *                     again at the end and the rows its head promised (null:
+     *                     not known, so not compared); [] asks nothing
      * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
      */
     public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
                                           array $scope, array $head, array $marks, callable $write,
-                                          callable $flush)
+                                          callable $flush, array $whole = [])
     {
         $banner = isset($marks['banner']) ? $marks['banner'] : null;
         $terminal = isset($marks['row']) ? $marks['row'] : null;
@@ -1520,6 +1555,16 @@ final class ScanService
                 }
                 $after = $through;
             } while ($after !== null);
+            if (isset($whole['run'])) {
+                $runId = (int) $whole['run'];
+                $expected = array_key_exists('expected', $whole) ? $whole['expected'] : null;
+                if ($store->run($pid, $runId) === null || $store->supersededBy($pid, $runId) !== null) {
+                    throw new \RuntimeException('the run was replaced or removed while it was exported');
+                }
+                if ($expected !== null && $rows !== (int) $expected) {
+                    throw new \RuntimeException('the export wrote ' . $rows . ' rows of ' . (int) $expected);
+                }
+            }
         } catch (\Throwable $e) {
             // THE RUN'S OWN ROW TOO (review rv11a2-4). A file that lost rows
             // carried only INCOMPLETE EXPORT, so once its comment lines were

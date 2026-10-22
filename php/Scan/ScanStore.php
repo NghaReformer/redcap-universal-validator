@@ -904,6 +904,25 @@ interface ScanStore
      */
     public function supersedePrevious($pid, $runId, $limit);
 
+    /**
+     * The run whose completion replaces this run's report, or null (reviews
+     * rv11a1-5, rv11a2-1): the earliest run of the same project, in a later
+     * generation, that ended `complete` over the whole project. Such a run
+     * closes this run's generation through supersedePrevious(), at once or at
+     * the next cron pass, so from the moment it exists this run's report is
+     * losing its rows, and read later it is empty. A group-scoped run
+     * supersedes nothing and is never the answer. A run being removed by
+     * retention still counts: what it closed stays closed.
+     *
+     * Read through the project's own run keys, as olderGeneration() is: a
+     * handful of runs per project, never the findings.
+     *
+     * @return int|null the replacing run's id; null when $runId is not a run of
+     *         $pid, or nothing has replaced it
+     * @throws ScanStoreUnavailable when the storage failed
+     */
+    public function supersededBy($pid, $runId);
+
     /** Why a scan of one data access group closed nothing. See supersedePrevious(). */
     const SUPERSEDE_SCOPED = 'this scan covered one data access group, so it supersedes nothing: the '
                            . 'previous reports stay current until a scan of the whole project completes';

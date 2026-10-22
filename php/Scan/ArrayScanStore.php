@@ -1213,6 +1213,22 @@ final class ArrayScanStore implements ScanStore
         return $out($after === null, $rows, $to, null);
     }
 
+    /** See ScanStore::supersededBy(): the same runs, in the same order, as the SQL store. */
+    public function supersededBy($pid, $runId)
+    {
+        $o = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($o === null || (int) $o['project_id'] !== (int) $pid) return null;
+        $best = null;
+        foreach ($this->runs as $id => $n) {
+            if ((int) $n['project_id'] !== (int) $pid || (int) $n['generation_id'] <= (int) $o['generation_id']) continue;
+            if ($n['terminal'] !== ScanOutcome::COMPLETE || $n['scope_dag'] !== null) continue;
+            if ($best === null || [(int) $n['generation_id'], (int) $id] < [(int) $this->runs[$best]['generation_id'], $best]) {
+                $best = (int) $id;
+            }
+        }
+        return $best;
+    }
+
     /** The lowest generation of this project's runs in [$from, $gen), or null. */
     private function olderGeneration($pid, $from, $gen)
     {
