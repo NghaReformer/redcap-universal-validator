@@ -5972,7 +5972,9 @@ class UniversalValidator extends AbstractExternalModule
                     continue;
                 }
                 $hook = ModeRegistry::hook($mode, 'field');
-                if ($hook !== null) $frags[$k] = $this->$hook($frag, $name, $meta, $pid);
+                // $k, the tag's place in $frags, lets a hook tell the tags
+                // before it apart (@UVDELTA, review R9-7); the others ignore it
+                if ($hook !== null) $frags[$k] = $this->$hook($frag, $name, $meta, $pid, $k);
             }
             $perField[$name] = $frags;
         }
@@ -6010,7 +6012,7 @@ class UniversalValidator extends AbstractExternalModule
                     $types = $this->projectFieldTypes($pid);
                     $choices = $this->projectFieldChoices($pid);
                 }
-                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices, $pid);
+                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices, $pid, $k);
             }
         }
         return AnnotationRules::groupMulti($perField);
@@ -7277,9 +7279,11 @@ class UniversalValidator extends AbstractExternalModule
      * rule's branch group follows it. A "vs" that names the field itself on
      * this entry is refused: it would compare the value with itself. The
      * limits travel as words (deltaText) and "vs" as a name (deltaVsLabel),
-     * for the message and the scan report.
+     * for the message and the scan report. $at is the tag's place in the
+     * field's parseAllTags list, so the advice can tell the tags before it
+     * apart (deltaGroupsTaken).
      */
-    private function annotateDeltaField(array $frag, $name, array $meta, $pid)
+    private function annotateDeltaField(array $frag, $name, array $meta, $pid, $at = null)
     {
         $tag = AnnotationRules::TAG_DELTA;
         $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
@@ -7301,8 +7305,10 @@ class UniversalValidator extends AbstractExternalModule
         } else {
             $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
             if ($op !== null && $op[0] === 'ref' && $op[1] === $name) {
+                $advice = $this->deltaSelfAdvice($op, $name, $meta, $pid, $frag, $at);
                 return ['error' => '"vs" names this field itself — compare it with another entry'
-                    . $this->deltaSelfAdvice($op, $name, $meta, $pid, $frag) . '.', '_tag' => $tag];
+                    . ($advice !== null ? $advice['text'] : '') . '.', '_tag' => $tag]
+                    + self::deltaAdvisedGroup($advice !== null ? $advice['vs'] : null, $name, $frag);
             }
         }
         $frag['deltaGroup'] = AnnotationRules::deltaGroup($frag['deltaVs'], isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both');
@@ -7315,53 +7321,124 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * What to write instead of a plain "vs" that names the field itself, as
-     * text to append (", as ..."), or "". A shorthand comes first, the first
-     * that the field's events accept (deltaShorthandProblem, on a layout it
-     * could read), then a written reference (deltaSuggestion), each checked
-     * as the dictionary hook will check it, and none that repeats the branch
-     * group of another @UVDELTA tag on the field (deltaGroupsTaken); either
-     * needs event and instance references on.
+     * ['vs' => the shorthand or reference, 'text' => ", as ..." to append],
+     * or null. A shorthand comes first, the first that the field's events
+     * accept (deltaShorthandProblem, on a layout it could read), then a
+     * written reference (deltaSuggestion), each checked as the dictionary
+     * hook will check it, and none that repeats the branch group of another
+     * @UVDELTA tag on the field (deltaGroupsTaken, with the tag's place $at);
+     * either needs event and instance references on.
      */
-    private function deltaSelfAdvice(array $op, $name, array $meta, $pid, array $frag)
+    private function deltaSelfAdvice(array $op, $name, array $meta, $pid, array $frag, $at = null)
     {
         $form = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
-        if ($form === '' || $pid === null) return '';
+        if ($form === '' || $pid === null) return null;
         $shape = $this->temporalShape($pid);
         $needs = empty($this->temporalOptions($pid)['qualified']) ? self::DELTA_NEEDS_REFS : '';
         $direction = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
-        $taken = $this->deltaGroupsTaken($frag, $name, isset($meta['field_annotation']) ? $meta['field_annotation'] : '', $pid);
+        $taken = $this->deltaGroupsTaken($frag, $name, isset($meta['field_annotation']) ? $meta['field_annotation'] : '', $pid, $at);
         foreach (array_keys(AnnotationRules::DELTA_SHORTHANDS) as $short) {
             if (isset($taken[AnnotationRules::deltaGroup(sprintf(AnnotationRules::DELTA_SHORTHANDS[$short], $name), $direction)])) continue;
             $readable = true;
             if (self::deltaShorthandProblem($shape, $short, $form, $name, [], $direction, false, $readable) === null && $readable) {
-                return ', as "vs":"' . $short . '"' . $needs;
+                return ['vs' => $short, 'text' => ', as "vs":"' . $short . '"' . $needs];
             }
         }
         $c = self::deltaSuggestion($shape, $op, $name, $form, $form, $name, false, $taken, $direction);
-        return $c !== null ? ', as "vs":"' . $c['ref'] . '"' . ($c['qualified'] ? $needs : '') : '';
+        return $c !== null ? ['vs' => $c['ref'], 'text' => ', as "vs":"' . $c['ref'] . '"' . ($c['qualified'] ? $needs : '')] : null;
+    }
+
+    /**
+     * The key a refused tag ($frag) of field $name carries for
+     * deltaHeldGroup: the branch group of $vs, the shorthand or reference
+     * its refusal suggests, with the tag's direction; nothing when it
+     * suggests none. Error fragments keep only "error" and "_tag" in the
+     * rules (AnnotationRules::groupMulti), so the key goes no further.
+     */
+    private static function deltaAdvisedGroup($vs, $name, array $frag)
+    {
+        if ($vs === null) return [];
+        $ref = isset(AnnotationRules::DELTA_SHORTHANDS[$vs]) ? sprintf(AnnotationRules::DELTA_SHORTHANDS[$vs], $name) : $vs;
+        return ['_deltaAdvised' => AnnotationRules::deltaGroup($ref, isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both')];
     }
 
     /**
      * The branch groups (AnnotationRules::deltaGroup) that the field's
-     * @UVDELTA tags hold under the same "when" as $frag, none counting as one
-     * condition. A suggestion in one of them would be refused once written
-     * back: Branching allows one rule per group and condition (review R8-4).
-     * $frag's own tag is among them; its "vs" is never suggested back.
+     * @UVDELTA tags will hold under the same "when" as $frag. A suggestion in
+     * one of them would be refused once written back: Branching allows one
+     * rule per group and condition (review R8-4), and two conditions are the
+     * same when Branching::whenKeys says so (spacing, quote style,
+     * parentheses, keyword case, and letter case unless caseSensitive;
+     * review R9-1), none counting as one condition.
+     *
+     * A tag before $frag's own ($at, its place in the field's parseAllTags
+     * list) that is refused with a suggestion holds the group of that
+     * suggestion, which is what will be written in its place
+     * (deltaHeldGroup); every other tag holds its own. A tag that failed to
+     * parse holds the group its JSON names (AnnotationRules::deltaBranchAsWritten),
+     * since fixing the key it failed on brings it back (review R9-7).
+     * parseAllTags reads each tag's values in order, so its n-th @UVDELTA
+     * entry is the n-th value extractTagsDetailed reads. $frag's own tag is
+     * among them; its "vs" is never suggested back.
+     *
+     * Each hook asks this only once a suggestion is searched for, so an
+     * accepted tag never pays for it (review R9-8).
      */
-    private function deltaGroupsTaken(array $frag, $name, $annotation, $pid)
+    private function deltaGroupsTaken(array $frag, $name, $annotation, $pid, $at = null)
     {
-        $when = isset($frag['when']) ? trim((string) $frag['when']) : '';
+        $own = Branching::whenKeys($frag);
         $taken = [];
-        $frags = AnnotationRules::parseAllTags((string) $annotation, $this->temporalOptions($pid));
-        foreach (is_array($frags) ? $frags : [] as $f) {
-            if (!is_array($f) || isset($f['error']) || !isset($f['type']) || $f['type'] !== 'delta') continue;
-            if ((isset($f['when']) ? trim((string) $f['when']) : '') !== $when) continue;
-            $vs = isset($f['deltaVsName'], AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']])
-                ? sprintf(AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']], $name)
-                : (isset($f['deltaVs']) ? $f['deltaVs'] : null);
-            if (is_string($vs)) $taken[AnnotationRules::deltaGroup($vs, isset($f['deltaDirection']) ? $f['deltaDirection'] : 'both')] = true;
+        $annotation = (string) $annotation;
+        $frags = AnnotationRules::parseAllTags($annotation, $this->temporalOptions($pid));
+        $reads = AnnotationRules::extractTagsDetailed($annotation, AnnotationRules::TAG_DELTA, ModeRegistry::bareValue('delta'));
+        $n = 0;
+        foreach (is_array($frags) ? $frags : [] as $i => $f) {
+            if (!is_array($f)) continue;
+            $failed = isset($f['error']);
+            if ($failed ? (!isset($f['_tag']) || $f['_tag'] !== AnnotationRules::TAG_DELTA) : (!isset($f['type']) || $f['type'] !== 'delta')) continue;
+            $read = isset($reads[$n]) ? $reads[$n] : null;
+            $n++;
+            if ($failed) $f = $read !== null && $read['error'] === null ? AnnotationRules::deltaBranchAsWritten($read['value']) : null;
+            if ($f === null || !isset($f['deltaVs']) || !is_string($f['deltaVs'])) continue;
+            $keys = Branching::whenKeys($f);
+            if ($own === [] ? $keys !== [] : !array_intersect($own, $keys)) continue;
+            $group = !$failed && $at !== null && $i < $at ? $this->deltaHeldGroup($f, $i, $name, $pid) : null;
+            if ($group === null) {
+                $vs = isset($f['deltaVsName'], AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']])
+                    ? sprintf(AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']], $name) : $f['deltaVs'];
+                $group = AnnotationRules::deltaGroup($vs, isset($f['deltaDirection']) ? $f['deltaDirection'] : 'both');
+            }
+            $taken[$group] = true;
         }
         return $taken;
+    }
+
+    /** deltaHeldGroup's answers, by project, field, place and annotation. */
+    private $deltaHeldMemo = [];
+
+    /**
+     * The branch group tag $f (at place $i of field $name's parseAllTags
+     * list) will hold: that of the reference its refusal suggests when the
+     * field or the dictionary hook refuses it with one (the "_deltaAdvised"
+     * key, deltaAdvisedGroup), else its own; null for a tag refused with no
+     * suggestion, for which deltaGroupsTaken counts the group as written.
+     * The hooks run as getAnnotationRules runs them, without the check of
+     * the fields a "when" names (Logic::checkRefs): the "vs" holds its group
+     * once that is fixed. Each refused tag asks this of every tag before it,
+     * which asks it of every tag before that, so each answer is remembered
+     * for the request.
+     */
+    private function deltaHeldGroup(array $f, $i, $name, $pid)
+    {
+        $dd = $this->dataDictionary($pid);
+        $meta = is_array($dd) && isset($dd[$name]) && is_array($dd[$name]) ? $dd[$name] : [];
+        $key = serialize([$pid, $name, $i, isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '']);
+        if (array_key_exists($key, $this->deltaHeldMemo)) return $this->deltaHeldMemo[$key];
+        $r = $this->annotateDeltaField($f, $name, $meta, $pid, $i);
+        if (!isset($r['error'])) $r = $this->annotateDeltaDictionary($r, $name, null, null, $pid, $i);
+        $group = isset($r['error']) ? (isset($r['_deltaAdvised']) ? $r['_deltaAdvised'] : null)
+            : (isset($r['deltaGroup']) ? $r['deltaGroup'] : null);
+        return $this->deltaHeldMemo[$key] = $group;
     }
 
     /**
@@ -7374,12 +7451,16 @@ class UniversalValidator extends AbstractExternalModule
      * [weight][current-instance], and the one event the form is on, by its
      * name or as [first-event-name] or [last-event-name] (deltaNamesItself).
      * A shorthand must name something in every entry it can:
-     * deltaShorthandProblem.
+     * deltaShorthandProblem. A refusal that suggests a reference carries its
+     * branch group for the tags after this one (deltaAdvisedGroup); $at is
+     * the tag's place in the field's parseAllTags list.
      */
-    private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null)
+    private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null, $at = null)
     {
         $tag = AnnotationRules::TAG_DELTA;
-        $refuse = function ($why) use ($tag) { return ['error' => $why, '_tag' => $tag]; };
+        $refuse = function ($why, $advised = null) use ($tag, $name, $frag) {
+            return ['error' => $why, '_tag' => $tag] + self::deltaAdvisedGroup($advised, $name, $frag);
+        };
         if (!isset($frag['deltaVs']) || !is_string($frag['deltaVs'])) return $frag;
         $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
         if ($op === null) return $frag;   // refused already by AnnotationRules::checkDelta
@@ -7399,21 +7480,26 @@ class UniversalValidator extends AbstractExternalModule
         $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
         $shape = $this->temporalShape($pid, $dd);
         $direction = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
-        $taken = $this->deltaGroupsTaken($frag, $name, isset($dd[$name]['field_annotation']) ? $dd[$name]['field_annotation'] : '', $pid);
+        $annotation = isset($dd[$name]['field_annotation']) ? $dd[$name]['field_annotation'] : '';
+        // worked out only once a suggestion is searched for (review R9-8)
+        $taken = function () use ($frag, $name, $annotation, $pid, $at) { return $this->deltaGroupsTaken($frag, $name, $annotation, $pid, $at); };
+        $advised = null;
         if ($short === null) {
             $vsForm = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
             $refsOn = !empty($this->temporalOptions($pid)['qualified']);
-            $dead = self::deltaDeadReference($shape, $op, $f, $form, $vsForm, $refsOn, $name, $taken, $direction);
-            if ($dead !== null) return $refuse($dead);
+            $dead = self::deltaDeadReference($shape, $op, $f, $form, $vsForm, $refsOn, $name, $taken, $direction, $advised);
+            if ($dead !== null) return $refuse($dead, $advised);
             if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {
                 $c = self::deltaSuggestion($shape, $op, $f, $form, $vsForm, $name, false, $taken, $direction);
                 return $refuse('"vs" names this field in this same entry, so the change would always be 0 — compare it with another entry'
-                    . ($c !== null ? ', as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') : '') . '.');
+                    . ($c !== null ? ', as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') : '') . '.',
+                    $c !== null ? $c['ref'] : null);
             }
             return $frag;
         }
-        $why = self::deltaShorthandProblem($shape, $short, $form, $name, $taken, $direction);
-        return $why === null ? $frag : $refuse($why);
+        $readable = null;
+        $why = self::deltaShorthandProblem($shape, $short, $form, $name, $taken, $direction, true, $readable, $advised);
+        return $why === null ? $frag : $refuse($why, $advised);
     }
 
     /**
@@ -7513,11 +7599,13 @@ class UniversalValidator extends AbstractExternalModule
      * some save of some entry (deltaReferenceProblem), as a refusal, or null.
      * The refusal quotes the reference as it was written and ends with one
      * that works (deltaSuggestion, outside the branch groups in $taken), or
-     * says what the search tried. $refsOn says whether that reference can be
-     * used as the settings stand.
+     * says what the search tried; $advised is set to the reference it
+     * suggests. $refsOn says whether that reference can be used as the
+     * settings stand.
      */
-    private static function deltaDeadReference(ProjectShape $shape, array $op, $f, $form, $vsForm, $refsOn, $name, array $taken = [], $direction = 'both')
+    private static function deltaDeadReference(ProjectShape $shape, array $op, $f, $form, $vsForm, $refsOn, $name, $taken = [], $direction = 'both', &$advised = null)
     {
+        $advised = null;
         $p = self::deltaReferenceProblem($shape, $op, $form, $vsForm);
         if ($p === null) return null;
         $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
@@ -7556,8 +7644,11 @@ class UniversalValidator extends AbstractExternalModule
         }
         $tried = '';
         $c = self::deltaSuggestion($shape, $op, $f, $form, $vsForm, $name, in_array($p['kind'], ['flat', 'own', 'ambiguous'], true), $taken, $direction, $tried);
-        if ($c !== null) return $why . ' — write it as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') . '.';
-        return $why . ' — and none of the references to "[' . $f . ']" this check tried (' . $tried . ') can be read'
+        if ($c !== null) {
+            $advised = $c['ref'];
+            return $why . ' — write it as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') . '.';
+        }
+        return $why . ' — and none of the references to "[' . $f . ']" this check tried (' . $tried . ') works'
             . ($many ? ' from every event where this field is entered' : '') . '.';
     }
 
@@ -7576,22 +7667,18 @@ class UniversalValidator extends AbstractExternalModule
      *    first, previous and last events;
      *  - then this event (a plain reference).
      * The next event is never offered, nor, on the field's own form, the last
-     * event or a later one named outright: each is a later visit from every
-     * event but one, blank at first entry, where "direction" would read
-     * backwards against "an earlier value" (review R8-7). Each event goes
-     * with the instance as written, then none, then [last-instance] and
-     * [previous-instance]. For a reference to $name itself the instance has
-     * to fit where the event lands (deltaSelfInstanceFits): from this
-     * entry's own event, where the form repeats, [previous-instance] is the
-     * entry before and [last-instance] the newest, perhaps this one or a
-     * later one; from another event [previous-instance] counts back from
-     * this entry's instance number, so the first instance of every visit
-     * would be compared with nothing, and [last-instance] is that visit's
-     * newest. So from this entry's own event only [previous-instance] is
-     * offered, and from another event only [last-instance] (review R8-1,
-     * R8-2). A reference to $name itself must not name the same entry either
-     * (deltaNamesItself). A token that lands on the event it is read from,
-     * wherever it lands, is left to the plain reference, which says the same.
+     * event or a later one named outright, and the event as written goes by
+     * the same rule (review R9-4): each is a later visit from every event but
+     * one, blank at first entry, where "direction" would read backwards
+     * against "an earlier value" (review R8-7). Each event goes with the
+     * instance as written, then none, then [last-instance] and
+     * [previous-instance], and for a reference to $name itself
+     * [first-instance] last (review R9-6). Each candidate is checked by
+     * deltaCandidate, which also keeps a reference to $name itself off this
+     * same entry and off an instance that does not fit where its event
+     * lands. A token that lands on the event it is read from, from every
+     * event of $form, means this event and is left to the plain reference
+     * (deltaLandsOwn); the event as written is tried even so.
      *
      * An event is named outright, the one as written included, only when
      * every event of $form is in its arm: from another arm it holds a value
@@ -7607,7 +7694,7 @@ class UniversalValidator extends AbstractExternalModule
      * request, so this runs for each refused reference on every data entry
      * page, survey page and save that reads the rules.
      */
-    private static function deltaSuggestion(ProjectShape $shape, array $op, $f, $form, $vsForm, $name, $keepEvent, array $taken = [], $direction = 'both', &$tried = null)
+    private static function deltaSuggestion(ProjectShape $shape, array $op, $f, $form, $vsForm, $name, $keepEvent, $taken = [], $direction = 'both', &$tried = null)
     {
         $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
         $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
@@ -7625,11 +7712,16 @@ class UniversalValidator extends AbstractExternalModule
         if (!$arms) return null;    // $form at no event: no event can check a candidate
         $inArm = $token === null || $token === 'event-name' || in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true)
             || (count($arms) === 1 && isset($armOf[$token]) && isset($arms[$armOf[$token]]));
-        $kept = $keepEvent && $inArm;
+        // on its own form a later event is a later visit: of the events named outright only
+        // the arm's first holder is offered, and the event as written goes by the same rule
+        $first = null;
+        foreach ($holders as $h) if ($first === null && isset($arms[$h[0]])) $first = $h[1];
+        $later = $token === 'next-event-name'
+            || ($vsForm === $form && !in_array($token, [null, 'event-name', 'previous-event-name', 'first-event-name', $first], true));
+        $kept = $keepEvent && $inArm && !$later;
         $tokens = $kept ? [$token] : [];
         $named = [];
         $many = count($shape->events()) > 1;
-        // on its own form a later event is a later visit: the first holder is the one event named
         $relatives = $vsForm === $form ? ['previous-event-name', 'first-event-name'] : ['first-event-name', 'previous-event-name', 'last-event-name'];
         if ($many) {
             if (count($arms) === 1) foreach ($holders as $h) if (isset($arms[$h[0]]) && count($named) < ($vsForm === $form ? 1 : 5)) $named[] = $h[1];
@@ -7637,26 +7729,25 @@ class UniversalValidator extends AbstractExternalModule
         } else {
             $tokens[] = null;
         }
+        // for the field itself [first-instance] comes last: it fits where neither [last-instance]
+        // nor [previous-instance] does, as at a first visit that alone repeats (review R9-6)
+        $try = [null, 'last-instance', 'previous-instance'];
+        if ($f === $name) $try[] = 'first-instance';
         $seen = [serialize([$token, $sel]) => true];
         $instances = [];
         foreach ($tokens as $t) {
-            // a token that lands on the event it is read from, wherever it lands, means this
-            // event: the plain reference, tried last, says so in fewer words
+            // a token that lands on the event it is read from, from every event of $form,
+            // means this event: the plain reference, tried last, says so in fewer words
             if ($t !== null && !($kept && $t === $token) && self::deltaLandsOwn($shape, $t, $form, $vsForm)) continue;
             $sels = [$sel];
-            foreach ([null, 'last-instance', 'previous-instance'] as $s) if (!in_array($s, $sels, true)) $sels[] = $s;
+            foreach ($try as $s) if (!in_array($s, $sels, true)) $sels[] = $s;
             foreach ($sels as $s) {
                 $instances[$s === null ? '' : $s] = true;
                 $key = serialize([$t, $s]);
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
-                $cop = $t === null && $s === null ? ['ref', $f, null] : ['qref', $f, null, $t, $s];
-                if (self::deltaReferenceProblem($shape, $cop, $form, $vsForm) !== null) continue;
-                if ($f === $name && ($cop[0] === 'ref' || self::deltaNamesItself($shape, $cop, $form)
-                        || !self::deltaSelfInstanceFits($shape, $t, $s, $form))) continue;
-                $ref = ($t !== null ? '[' . $t . ']' : '') . '[' . $f . ']' . ($s !== null ? '[' . $s . ']' : '');
-                if (isset($taken[AnnotationRules::deltaGroup($ref, $direction)])) continue;
-                return ['ref' => $ref, 'qualified' => $t !== null || $s !== null];
+                $ref = self::deltaCandidate($shape, $t, $f, $s, $form, $vsForm, $name, $taken, $direction);
+                if ($ref !== null) return ['ref' => $ref, 'qualified' => $t !== null || $s !== null];
             }
         }
         $tried = self::deltaTriedText($many, $kept ? $token : false, $relatives, $named, $sel, $instances);
@@ -7664,9 +7755,34 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Event token $t (or none), field $f and instance $s (or none) written
+     * as a reference, when it can be suggested to field $name of $form, else
+     * null. deltaReferenceProblem must accept it at every event of $form. A
+     * reference to $name itself must not be the plain one or name this same
+     * entry (deltaNamesItself), and its instance must fit where the event
+     * lands (deltaSelfInstanceFits). Its branch group, with $direction, must
+     * not be in $taken. $taken may be a function that returns those groups:
+     * it is called the first time a candidate gets that far, and its answer
+     * replaces it (review R9-8).
+     */
+    private static function deltaCandidate(ProjectShape $shape, $t, $f, $s, $form, $vsForm, $name, &$taken, $direction)
+    {
+        $cop = $t === null && $s === null ? ['ref', $f, null] : ['qref', $f, null, $t, $s];
+        if (self::deltaReferenceProblem($shape, $cop, $form, $vsForm) !== null) return null;
+        if ($f === $name && ($cop[0] === 'ref' || self::deltaNamesItself($shape, $cop, $form)
+                || !self::deltaSelfInstanceFits($shape, $t, $s, $form))) return null;
+        $ref = ($t !== null ? '[' . $t . ']' : '') . '[' . $f . ']' . ($s !== null ? '[' . $s . ']' : '');
+        if ($taken instanceof \Closure) $taken = $taken();
+        if (isset($taken[AnnotationRules::deltaGroup($ref, $direction)])) return null;
+        return $ref;
+    }
+
+    /**
      * Whether event token $t, read for $vsForm, lands from every event of
-     * $form where it finds one on that same event: no token and [event-name]
-     * always do.
+     * $form on that same event, and so says what the plain reference says:
+     * no token and [event-name] always do. A token that finds no event from
+     * one of them does not: there it reads nothing, where the plain
+     * reference reads this event (review R9-2).
      */
     private static function deltaLandsOwn(ProjectShape $shape, $t, $form, $vsForm)
     {
@@ -7674,7 +7790,7 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($shape->events() as $id => $e) {
             if (!isset($e['forms']) || !is_array($e['forms']) || !in_array($form, $e['forms'], true)) continue;
             $r = $shape->eventId($t, $id, $vsForm);
-            if (isset($r['state']) && $r['state'] === 'ok' && (string) $r['event'] !== (string) $id) return false;
+            if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $id) return false;
         }
         return true;
     }
@@ -7682,16 +7798,23 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * Whether instance $s of a reference to the field itself fits each event
      * that token $t lands on from an event of $form, where the form repeats
-     * there: [last-instance] not from the event itself, where it is the
-     * newest entry, perhaps this one or a later one (review R8-2), and
-     * [previous-instance] not from another event, where it counts back from
-     * this entry's instance number (review R8-1). Where the form does not
-     * repeat, deltaReferenceProblem decides; a layout it cannot read is left
-     * to the resolver.
+     * there. [next-instance] fits nowhere: at this entry's own event it is a
+     * later entry of the same visit, and at another event it counts from this
+     * entry's instance number (review R9-5). At this entry's own event
+     * [last-instance] is the newest entry, perhaps this one or a later one
+     * (review R8-2), and so is a numbered instance after the first. At
+     * another event [previous-instance] and [current-instance] count from this
+     * entry's instance number (review R8-1, R9-5). [first-instance] and
+     * instance 1 fit anywhere: at this entry's own event they are an earlier
+     * entry, or this one at instance 1. Where the form does not repeat,
+     * deltaReferenceProblem decides; a layout it cannot read is left to the
+     * resolver.
      */
     private static function deltaSelfInstanceFits(ProjectShape $shape, $t, $s, $form)
     {
-        if ($s !== 'last-instance' && $s !== 'previous-instance') return true;
+        if ($s === 'next-instance') return false;
+        $numbered = is_string($s) && ctype_digit($s) && (int) $s > 1;
+        if (!$numbered && !in_array($s, ['last-instance', 'previous-instance', 'current-instance'], true)) return true;
         foreach ($shape->events() as $id => $e) {
             if (!isset($e['forms']) || !is_array($e['forms']) || !in_array($form, $e['forms'], true)) continue;
             $r = $shape->eventId($t, $id, $form);
@@ -7699,16 +7822,16 @@ class UniversalValidator extends AbstractExternalModule
             $b = $shape->bucket($r['event'], $form);
             if (!isset($b['state']) || $b['state'] !== 'ok' || $b['bucket'] === null) continue;
             $own = (string) $r['event'] === (string) $id;
-            if ($own === ($s === 'last-instance')) return false;
+            if (($s === 'last-instance' || $numbered) ? $own : !$own) return false;
         }
         return true;
     }
 
     /**
      * What deltaSuggestion tried, in words, for the refusal that says none of
-     * it can be read: the events (when the project has more than one) and
-     * the instances. $kept is the event token kept as written, false when
-     * none was; $relatives the relative event tokens tried; $instances the
+     * it works: the events (when the project has more than one) and the
+     * instances. $kept is the event token kept as written, false when none
+     * was; $relatives the relative event tokens tried; $instances the
      * instance selectors met ('' for none).
      */
     private static function deltaTriedText($many, $kept, array $relatives, array $named, $sel, array $instances)
@@ -7730,8 +7853,9 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($instances[''])) $words[] = $words ? 'none' : 'no instance';
         if (isset($instances['last-instance']) && $sel !== 'last-instance') $words[] = 'the last';
         if (isset($instances['previous-instance']) && $sel !== 'previous-instance') $words[] = 'the previous';
+        if (isset($instances['first-instance']) && $sel !== 'first-instance') $words[] = 'the first';
         $last = end($words);
-        if ($last === 'the last' || $last === 'the previous') $words[count($words) - 1] .= ' one';
+        if ($last === 'the last' || $last === 'the previous' || $last === 'the first') $words[count($words) - 1] .= ' one';
         return ($events ? $join($events, ', or ') . ', ' : '') . 'with ' . $join($words, ' or ');
     }
 
@@ -7749,14 +7873,17 @@ class UniversalValidator extends AbstractExternalModule
      * A layout that cannot be read answers null, and sets $readable false;
      * the resolver then reports what it cannot resolve, on each save. The
      * refusal of a shorthand that names a repeating event ends with a
-     * written reference that works there ($example; deltaSuggestion on the
-     * shorthand written out, outside the branch groups in $taken), never an
-     * event named outright, which in a project of several arms or visits
-     * would mean another entry than the shorthand did (review R8-5).
+     * written reference that works there ($example), and sets $advised to
+     * it: the shorthand's own event token with [last-instance], else with
+     * [first-instance], each checked by deltaCandidate outside the branch
+     * groups in $taken. Any other event, named outright or relative, would
+     * mean another entry than the shorthand did in some project (review
+     * R8-5, R9-3), so when neither instance works there is no example.
      */
-    private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name, array $taken = [], $direction = 'both', $example = true, &$readable = null)
+    private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
     {
         $readable = false;
+        $advised = null;
         $hosts = [];
         foreach ($shape->events() as $id => $event) {
             if (!isset($event['forms']) || !is_array($event['forms'])) return null;
@@ -7802,9 +7929,14 @@ class UniversalValidator extends AbstractExternalModule
                 . (count($hosts) === 1 ? 'one event' : 'no two events of the same arm') . ' in this project.';
         }
         if ($repeating) {
-            $c = $example ? self::deltaSuggestion($shape, ['qref', $name, null, $token, null], $name, $form, $form, $name, true, $taken, $direction) : null;
+            $c = null;
+            if ($example) foreach (['last-instance', 'first-instance'] as $s) {
+                $c = self::deltaCandidate($shape, $token, $name, $s, $form, $form, $name, $taken, $direction);
+                if ($c !== null) break;
+            }
+            $advised = $c;
             return '"vs": "' . $short . '" names ' . $list(array_values($repeating)) . ', where "' . $form . '" repeats, and does not say which '
-                . 'instance to compare with — name the event and the instance' . ($c !== null ? ', as "vs":"' . $c['ref'] . '"' : '') . '.';
+                . 'instance to compare with — name the event and the instance' . ($c !== null ? ', as "vs":"' . $c . '"' : '') . '.';
         }
         return null;
     }

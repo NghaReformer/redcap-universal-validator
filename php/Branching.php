@@ -257,6 +257,26 @@ class Branching
     }
 
     /**
+     * The keys under which a rule's "when" counts as one condition, [] for a
+     * rule without one. Two conditions that say the same thing in other
+     * words (keyword case, spacing, quote style, parentheses, member order:
+     * Logic::canonicalKey) could never be told apart, so they share the 'x'
+     * key; nor could 'Yes' and 'yes' when both rules ignore case, so a rule
+     * that does has the 'f' key too, with the values' letter case folded.
+     * Two rules of one group whose keys meet conflict. Public so the
+     * @UVDELTA suggestions compare conditions as this does
+     * (UniversalValidator::deltaGroupsTaken, review R9-1).
+     */
+    public static function whenKeys(array $rule)
+    {
+        $w = self::whenOf($rule);
+        if ($w === null) return [];
+        $keys = ['x' . Logic::canonicalKey($w)];
+        if (empty($rule['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
+        return $keys;
+    }
+
+    /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
      * fixed priority order: two-unconditional, identical-when, mixed-type,
@@ -274,14 +294,7 @@ class Branching
         foreach ($idxs as $i) {
             $g = self::groupOf($rules[$i], $groupKey);
             $w = self::whenOf($rules[$i]);
-            // two conditions that say the same thing in other words (keyword
-            // case, parentheses, member order) could never be told apart
-            // either; nor could 'Yes' and 'yes' when both rules ignore case
-            $keys = [];
-            if ($w !== null) {
-                $keys[] = 'x' . Logic::canonicalKey($w);
-                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
-            }
+            $keys = self::whenKeys($rules[$i]);
             $seen = null;
             foreach ($keys as $k) if ($seen === null && isset($whens[$g][$k])) $seen = $whens[$g][$k];
             if ($w === null) {

@@ -490,12 +490,27 @@ inner spaces.
   on a project of one event, and where nothing works (no suggestion, and the
   list of what was tried, this event included). For the field itself it
   suggests `[last-instance]` at another event and `[previous-instance]` only
-  at its own, and nothing where only a later visit would work; a relative
-  event as written is kept, an event of another arm as written is not (but
-  is accepted written by hand), another form's field gets its last instance
-  first, an event that always lands on this entry is left to the plain
-  reference, and no suggestion repeats another tag's `vs` and direction under
-  the same condition (review R8). The refusal of a plain `vs` naming the field
+  at its own, and the first visit's `[first-instance]` where only that visit
+  repeats; a relative event as written is kept, an event of another arm as
+  written is not (but is accepted written by hand), another form's field
+  gets its last instance first, a token that lands on its own event from
+  every event where the field is entered is left to the plain reference, and
+  no suggestion repeats another tag's `vs` and direction under the same
+  condition (review R8). For review R9 it checks that the same condition in
+  other words (spacing, a leading space, quote style, parentheses, letter
+  case, keyword case) holds a group, and letter case does not for a
+  `caseSensitive` tag; that a token finding no event from an event of
+  another arm is offered; that the shorthand refusal's example keeps its own
+  event, with `[first-instance]` for `first-event`, or gives none; that the
+  next event, the last event and a later visit as written are not kept; that
+  for the field itself `[next-instance]`, `[current-instance]` at another
+  event and an instance after the first at its own event are not offered;
+  that two refused tags, in either order, and a tag next to one that failed
+  to parse get suggestions accepted when written back together; that every
+  path that suggests a reference passes over the groups other tags hold, in
+  the tag's direction; and that another form's field gets the second event
+  that holds it, named outright, when the first lands on the field's own
+  event. The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
   form repeats at the visits, a written reference when no shorthand fits
@@ -516,7 +531,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 152 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 179 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral

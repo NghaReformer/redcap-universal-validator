@@ -4251,10 +4251,12 @@ instance:
   - An event shorthand needs, in some arm, two or more events with the form.
   - An event shorthand is refused when an event it names holds the form more
     than once (the form repeats there, or the whole event repeats): it does not
-    say which instance to compare with. The refusal gives a reference that
-    names the event and the instance and works from every event, such as
-    `[previous-event-name][weight][last-instance]`, when there is one. A form
-    that repeats only at the
+    say which instance to compare with. The refusal gives the shorthand's own
+    event with an instance that works from every event,
+    `[previous-event-name][weight][last-instance]` or
+    `[first-event-name][weight][first-instance]`, when there is one, and no
+    example otherwise, since another event would compare with another entry.
+    A form that repeats only at the
     last visit is fine, because no shorthand names that visit.
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
@@ -4283,11 +4285,21 @@ instance:
   reference as written named that event (written by hand, such an event is
   accepted). It never suggests the next event, nor, on the field's own form,
   the last event or a later visit named outright, which compare with a later
-  entry, nor a reference with the `vs` and direction of another `@UVDELTA`
-  tag on the field under the same condition. For the field itself it suggests
-  `[previous-instance]` only at the field's own event and `[last-instance]`
-  only at another. When nothing works it lists the events and instances it
-  tried and says none of them can be read.
+  entry, even when the reference as written named one. Nor does it suggest a
+  reference with the `vs` and direction of another `@UVDELTA` tag on the
+  field under the same condition. Conditions that differ only in spacing,
+  quote style, parentheses or keyword case are the same, and so are
+  conditions that differ in letter case unless a tag is `caseSensitive`. A
+  refused tag earlier on the field counts with the reference its own refusal
+  suggests, and a tag that failed to parse with the `vs` its JSON names, so
+  the suggestions for one field can be written back together. For the field
+  itself the instance must read an earlier entry where the event lands:
+  `[previous-instance]` only at the field's own event, `[last-instance]` and
+  an instance numbered after the first only at another, `[first-instance]`
+  at either, and never `[next-instance]`, nor `[current-instance]` at another
+  event. Where only the first visit repeats, that gives
+  `[first-event-name][weight][first-instance]`. When nothing works it lists
+  the events and instances it tried and says none of them works.
 - The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
   is refused when `w_rep`'s form is not designated at visit 1, and a plain
   `[w_enrol]` is refused on a visit form when only enrolment collects it; the

@@ -1203,6 +1203,30 @@ class AnnotationRules
     }
 
     /**
+     * The keys a @UVDELTA value ($val) that failed to parse would give its
+     * branch, read from its JSON as parseDeltaValue reads them: deltaVs
+     * (and deltaVsName for a shorthand), deltaDirection, "when" and
+     * "caseSensitive"; null when the JSON does not decode or "vs" is not a
+     * text. Fixing the key the tag failed on brings the branch back, so the
+     * @UVDELTA suggestions leave its group alone
+     * (UniversalValidator::deltaGroupsTaken, review R9-7).
+     */
+    public static function deltaBranchAsWritten($val)
+    {
+        $cfg = json_decode(trim((string) $val), true, 512, JSON_BIGINT_AS_STRING);
+        if (!is_array($cfg) || !isset($cfg['vs']) || !is_string($cfg['vs']) || trim($cfg['vs']) === '') return null;
+        $out = ['deltaVs' => trim($cfg['vs'])];
+        $kw = strtolower($out['deltaVs']);
+        if (isset(self::DELTA_SHORTHANDS[$kw])) $out = ['deltaVs' => $kw, 'deltaVsName' => $kw];
+        if (isset($cfg['direction']) && is_string($cfg['direction']) && strtolower(trim($cfg['direction'])) !== 'both') {
+            $out['deltaDirection'] = strtolower(trim($cfg['direction']));
+        }
+        if (isset($cfg['when']) && is_string($cfg['when'])) $out['when'] = $cfg['when'];
+        if (array_key_exists('caseSensitive', $cfg) && $cfg['caseSensitive'] !== false) $out['caseSensitive'] = $cfg['caseSensitive'];
+        return $out;
+    }
+
+    /**
      * The branch group of a delta rule (php/modes.json branchGroup): the value
      * it compares with, without spaces and letter case, and the way it limits.
      * Two tags on one field that differ in either both apply.

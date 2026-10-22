@@ -6586,7 +6586,7 @@ function QRIDDeltaInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
        time: the note waits for the field to be left, the guard does not. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,

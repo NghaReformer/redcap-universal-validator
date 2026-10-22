@@ -1004,9 +1004,10 @@ and flags a change larger than its limit:
   the tag is checked at every event that holds the form, arm by arm. An event
   shorthand is refused when no arm has two events with the form, or when an
   event it names holds the form more than once (the form repeats there, or the
-  whole event repeats); the refusal gives a reference that names the event and
-  the instance, such as `[previous-event-name][weight][last-instance]`, when
-  one works from every event. An instance shorthand is refused unless the form repeats at
+  whole event repeats); the refusal gives the shorthand's own event with an
+  instance, `[previous-event-name][weight][last-instance]` or
+  `[first-event-name][weight][first-instance]`, when one works from every
+  event, and no example otherwise. An instance shorthand is refused unless the form repeats at
   every event that holds it. A reference that always names this same entry,
   such as `[event-name][weight]`, is refused. So is one that could not be read
   on any save of some entry: an event, named or not, that does not hold the
@@ -1019,15 +1020,23 @@ and flags a change larger than its limit:
   the field is entered. The refusal quotes the reference as written. When a
   reference is found that every event where the field is entered can read,
   the refusal ends with it; otherwise it lists the events and instances it
-  tried and says none of those can be read. The search tries the event as
+  tried and says none of those works. The search tries the event as
   written, the previous and first events (with another form, also the last),
   events named outright, and this event. It never offers the next event, nor,
   on the field's own form, the last event or a later visit named outright,
-  since each compares with a later entry. For the field itself it offers
-  `[previous-instance]` only at the field's own event and `[last-instance]`
-  only at another, and it offers nothing with the `vs` and direction of
-  another `@UVDELTA` tag on the field under the same condition, which would
-  be refused once written back. An event is named outright only when every
+  since each compares with a later entry; this holds for the event as written
+  too. For the field itself the instance must read an earlier entry where the
+  event lands: `[previous-instance]` only at the field's own event,
+  `[last-instance]` and an instance numbered after the first only at another,
+  `[first-instance]` at either (tried last), and never `[next-instance]`, nor
+  `[current-instance]` at another event. It offers nothing with the `vs` and
+  direction of another `@UVDELTA` tag on the field under the same condition,
+  which would be refused once written back. Two conditions are the same when
+  they differ only in spacing, quote style, parentheses or keyword case, or in
+  letter case when neither tag is `caseSensitive`. A refused tag earlier on
+  the field counts with the reference its own refusal suggests, and a tag
+  that failed to parse with the `vs` its JSON names, so the suggestions for
+  one field can be written back together. An event is named outright only when every
   event of the field's form is in its arm: an event of another arm holds a
   value only for a record entered in both arms. Written by hand, such an
   event is accepted. A `vs` form designated at no event is said to be so.
