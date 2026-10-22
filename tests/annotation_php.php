@@ -1247,5 +1247,36 @@ $ex = AnnotationRules::parseAllTags('@UVEXISTS = ');
 check('VAL-2: ...so a tag that needs a value still says so', isset($ex[0]['error']) && strpos($ex[0]['error'], 'where to look') !== false);
 check('VAL-2: a word after a bare tag is not read as its value', AnnotationRules::parseAllTags('@UVALIDATE luhn') === [[]]);
 
+// ---- AST-6: a module tag inside REDCap's @IF(...) is refused ----
+// The module does not read @IF, so the rule applied whatever the condition
+// said: a hard block at the sites the rule was not meant for.
+$ifErr = function ($frags, $tag) {
+    if (!is_array($frags)) return false;
+    foreach ($frags as $f) {
+        if (($f['_tag'] ?? '') === $tag && strpos($f['error'] ?? '', 'sits inside @IF(...)') === 0 + strlen($tag) + 1
+            && strpos($f['error'], '"when"') !== false) return true;
+    }
+    return false;
+};
+$r = AnnotationRules::parseAllTags("@IF([site]='1', @UVASSERT={\"assert\":\"[a]>10\",\"message\":\"Site (1) can't go below 10\",\"blockSave\":\"hard\"}, '')");
+check('AST-6: @UVASSERT inside @IF is a configuration error that points to "when"', is_array($r) && count($r) === 1 && $ifErr($r, '@UVASSERT'));
+$r = AnnotationRules::parseAllTags('@IF([s]="1", @UVALIDATE=luhn, @UVALIDATE=verhoeff)');
+check('AST-6: both branches of @IF are refused', is_array($r) && count($r) === 2 && !isset($r[0]['algorithm']) && !isset($r[1]['algorithm']) && $ifErr($r, '@UVALIDATE'));
+$r = AnnotationRules::parseAllTags('@IF([s]=1, @UVREQUIRED, @UVUNIQUE)');
+check('AST-6: a bare tag ended by "," or ")" inside @IF is found and refused',
+    is_array($r) && count($r) === 2 && $ifErr($r, '@UVREQUIRED') && $ifErr($r, '@UVUNIQUE'));
+check('AST-6: lower-case @if and a space before "(" are @IF too',
+    $ifErr(AnnotationRules::parseAllTags('@if ([s]=1, @UVREQUIRED, @HIDDEN)'), '@UVREQUIRED'));
+check('AST-6: a tag after the closing parenthesis is an ordinary rule',
+    AnnotationRules::parseAllTags("@IF([s]=')', @HIDDEN, '') @UVREQUIRED") === [['type' => 'required']]);
+check('AST-6: an @IF that is never closed covers the rest of the annotation',
+    $ifErr(AnnotationRules::parseAllTags('@IF([s]=1, @HIDDEN, @UVREQUIRED'), '@UVREQUIRED'));
+check('AST-6: the word @IF in a message, with no parenthesis, changes nothing',
+    AnnotationRules::parseAllTags('@UVREQUIRED={"message":"answer @IF you can"}') === [['type' => 'required', 'message' => 'answer @IF you can']]);
+check('AST-6: outside @IF a comma after a tag still does not end it, as before',
+    AnnotationRules::parseAllTags('@UVREQUIRED, @HIDDEN') === null);
+check('AST-6: the compatibility parser refuses it too',
+    isset(AnnotationRules::parseFieldAll('@IF([s]=1, @UVALIDATE=luhn, @HIDDEN)')[0]['error']));
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

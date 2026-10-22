@@ -56,7 +56,7 @@ MUTATIONS = [
      '$hit = self::recordWhereHit($spec, $more, $rows, $filtered);',
      '$hit = null;', WHERE),
     ('no kind check of "where" comparisons', UV,
-     "$why = self::existsWhereKindProblem($p['ast'], $ddThere);",
+     "$why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);",
      '$why = null;', WHERE),
     ('no placement check of "where" fields', UV,
      "'Test', 'test',\n                $f !== $pkThere);\n            if ($why !== null) return $hide($why);",

@@ -213,7 +213,9 @@ logic**:
 | `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
 | `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes, unless extended references are on |
 | `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (write `and`, `or`, `not`) |
+| dates as `'2026-03-01'`, times as `'08:30'`, numbers with a decimal point | a date, time or number written another way (`'01-01-2000'`, `'12,5'`), and two compared fields of different kinds (a date and a datetime) |
 | | arithmetic and piping |
+| | a module tag inside REDCap's `@IF(...)`: the module does not read `@IF`, so put the condition in `when` |
 
 One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`,
 then `or`, as in REDCap; parentheses change the grouping. An unquoted

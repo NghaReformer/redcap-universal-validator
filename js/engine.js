@@ -673,7 +673,11 @@
   })();
   function QRID_isMissingCode(value){
     if(value === null || value === undefined) return false;
-    var t = String(value).replace(/^[ \t\r\n\0\x0B]+|[ \t\r\n\0\x0B]+$/g, "");
+    /* PHP trim()'s set (space, tab, CR, LF, NUL, vertical tab), by index (AST-8) */
+    var t = String(value), i = 0, j = t.length, c;
+    while(i < j && ((c = t.charCodeAt(i)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) i++;
+    while(j > i && ((c = t.charCodeAt(j - 1)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) j--;
+    t = t.slice(i, j);
     return t !== "" && QRID_MISSING_CODES[t] === true;
   }
   /* The date and datetime fields of this form shown day- or month-first
@@ -2349,7 +2353,17 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
   }
   return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
-function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
+/* Space, tab, CR and LF off both ends, as PHP's trim($v, " \t\r\n") in Logic::compare.
+   An index scan from each end (AST-8): the regex it replaces retried its end
+   alternative from every character of a long inner run of spaces, so one
+   check of a Notes value with 80,000 inner spaces took 3.8 s. */
+function QRID_whenSpace(c){ return c === 32 || c === 9 || c === 13 || c === 10; }
+function QRID_whenTrim(v){
+  var s = String(v), i = 0, j = s.length;
+  while(i < j && QRID_whenSpace(s.charCodeAt(i))) i++;
+  while(j > i && QRID_whenSpace(s.charCodeAt(j - 1))) j--;
+  return (i === 0 && j === s.length) ? s : s.slice(i, j);
+}
 /* Numeric compare (exact decimal) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
    else string compare (ASCII-identical to PHP strcmp): A-Z folded to a-z first
    by default, exact when caseSensitive is true (see Logic::compare). */
@@ -6411,7 +6425,7 @@ function QRIDRequiredInit(QRID_CONFIG){
         }
         QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
-      var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === "";
+      var blank = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null)) === "";
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
@@ -6445,7 +6459,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     UV_validators[f] = { type: "required", mode: { required: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1 || QRID_fieldHidden(QRID_findAnchor(f))) return null;
-        return String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") !== ""; } };
+        return QRID_whenTrim(QRID_WHEN.readRef(f, null)) !== ""; } };
   });
   function boot(){
     if(configError){
@@ -6784,7 +6798,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
            option's .checked cannot be read off the hidden mirror on REDCap 17. */
         var selected = isCheckbox
           ? (QRID_readCheckbox(fieldName, code) === "1")
-          : (String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === code);
+          : (QRID_whenTrim(QRID_WHEN.readRef(fieldName, null)) === code);
         var hide = !!hiddenSet[code] && !selected;
         var els = optionWrappers(code);
         for(var j = 0; j < els.length; j++) QRID_choiceDisplay(els[j].parentNode, hide);
@@ -6800,7 +6814,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     function staleCodes(V){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
-        var v = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        var v = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
         if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
         return out;
       }
@@ -6926,7 +6940,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     UV_validators[f] = { type: "choices", mode: { choices: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
-        var v = String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        var v = QRID_whenTrim(QRID_WHEN.readRef(f, null));
         if(v !== "") return !a[0].hiddenSet[v];
         for(var i = 0; i < a[0].hiddenList.length; i++){
           if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;

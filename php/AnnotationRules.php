@@ -231,14 +231,25 @@ class AnnotationRules
         $len = strlen($ann);
         $out = [];
         $offset = 0;
+        $ifSpans = null;   // REDCap @IF(...) spans, read when the first tag is found (AST-6)
         while ($offset < $len) {
             $pos = stripos($ann, $tag, $offset);
+            $inIf = null;
             while ($pos !== false) {
                 $after = $pos + strlen($tag);
                 $ch = $after < $len ? $ann[$after] : '';
+                // A tag inside REDCap's @IF(...) is refused (AST-6): the module
+                // does not read @IF, so the rule would apply whatever the
+                // condition says. There a bare tag may also end at "," or ")".
+                if ($ifSpans === null) $ifSpans = self::ifSpans($ann);
+                $inIf = null;
+                foreach ($ifSpans as $sp) {
+                    if ($pos > $sp[0] && $pos < $sp[1]) { $inIf = self::IF_ERROR; break; }
+                }
                 // a real tag ends at '=', whitespace, or end-of-string;
                 // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
                 if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
+                if ($inIf !== null && ($ch === ',' || $ch === ')')) break;
                 $pos = stripos($ann, $tag, $after);
             }
             if ($pos === false) break;
@@ -249,7 +260,7 @@ class AnnotationRules
             $eq = $after;
             while ($eq < $len && ($ann[$eq] === ' ' || $ann[$eq] === "\t")) $eq++;
             if ($eq >= $len || $ann[$eq] !== '=') {
-                $out[] = ['value' => '', 'error' => null];
+                $out[] = ['value' => '', 'error' => $inIf];
                 $offset = $after;
                 continue;
             }
@@ -258,19 +269,19 @@ class AnnotationRules
             // "=" with nothing after it, or only the next tag: an empty value,
             // which each tag's parser judges as it always has
             if ($start >= $len || $ann[$start] === '@') {
-                $out[] = ['value' => '', 'error' => null];
+                $out[] = ['value' => '', 'error' => $inIf];
                 $offset = $start;
                 continue;
             }
             $after = $start - 1;
             $read = self::readValue(substr($ann, $start), $bare);
             $eg = $tag . '="[a]=\'1\' and [b]=\'2\'".';
-            $out[] = ['value' => $read['value'], 'error' => !$read['continues'] ? null
+            $out[] = ['value' => $read['value'], 'error' => $inIf !== null ? $inIf : (!$read['continues'] ? null
                 : (isset($read['hint'])
                     ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
                         . ' Then put the whole condition in quotes, e.g. ' . $eg
                     : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                        . $eg)];
+                        . $eg))];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -279,8 +290,48 @@ class AnnotationRules
         return $out;
     }
 
+    /** Why a module tag inside REDCap's @IF(...) is refused (AST-6). */
+    const IF_ERROR = 'sits inside @IF(...). The module does not read @IF, so the rule would apply whatever the '
+        . 'condition says. Move the tag out of @IF and put the condition in the rule\'s "when" instead.';
+
+    /**
+     * The spans of REDCap's @IF(...) action tags in an annotation, as
+     * [start, end) byte pairs: from "@IF" to its closing parenthesis, with
+     * parentheses inside quoted text skipped (a backslash escapes the next
+     * character there, as in a JSON value). An @IF that is never closed runs
+     * to the end of the annotation.
+     */
+    private static function ifSpans($ann)
+    {
+        $spans = [];
+        $len = strlen($ann);
+        $offset = 0;
+        while ($offset < $len && ($p = stripos($ann, '@IF', $offset)) !== false) {
+            $i = $p + 3;
+            while ($i < $len && ($ann[$i] === ' ' || $ann[$i] === "\t")) $i++;
+            if ($i >= $len || $ann[$i] !== '(') { $offset = $p + 3; continue; }
+            $depth = 0;
+            $quote = null;
+            for (; $i < $len; $i++) {
+                $c = $ann[$i];
+                if ($quote !== null) {
+                    if ($c === '\\') $i++;
+                    elseif ($c === $quote) $quote = null;
+                    continue;
+                }
+                if ($c === '"' || $c === "'") $quote = $c;
+                elseif ($c === '(') $depth++;
+                elseif ($c === ')' && --$depth === 0) break;
+            }
+            $spans[] = [$p, min($i + 1, $len)];
+            $offset = $i + 1;
+        }
+        return $spans;
+    }
+
     /**
      * Read one tag value: {json} (brace-balanced), quoted text, or a bare
+
      * value — one token, or with $bare 'condition' the longest condition.
      * Returns ['value', 'length' => bytes consumed, 'continues' => bool], plus
      * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!".

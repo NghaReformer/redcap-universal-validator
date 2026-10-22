@@ -311,6 +311,10 @@ Rules for the annotation form:
 - Spaces may stand around the `=`, and a long JSON value may start on the next
   line: `@UVALIDATE = {"blockSave":"hard"}` reads the same as
   `@UVALIDATE={"blockSave":"hard"}`. This holds for every tag of the module.
+- The module does not read REDCap's `@IF(...)`. A module tag inside it would
+  apply whatever the condition says, so it is refused with a configuration
+  error. Put the tag outside `@IF` and give the rule a `"when"` with the
+  condition instead.
 - `algorithm` accepts case-insensitive **shorthands** (`3736`, `9710`, `mod10`,
   `gs1`, `isbn`, `regex`, …) — see [Appendix B](#appendix-b-algorithm-shorthands).
 - **Fields with identical tags are grouped into one rule** automatically. Tag 50

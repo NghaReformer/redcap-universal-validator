@@ -237,6 +237,13 @@ for (const after of ['UNK', '']) {
   const t = env.win.INSPIREUniversalValidator.validators.study_id;
   check('check: the field test answers null for a code', t.test('UNK') === null && t.test(' NASK ') === null);
   check('check: the field test still judges a bad ID', t.test('BAD-ID-1') !== null && t.test('BAD-ID-1').ok === false);
+  // PHP trim()'s set comes off both ends: NUL and vertical tab too (AST-8).
+  check('check: a code inside NUL, vertical tab, tab and LF is still a code', t.test('\0\x0B\tUNK\n') === null);
+  // The trim is an index scan: the regex it replaced retried from every
+  // character of a long inner run of spaces.
+  const t0 = Date.now();
+  t.test('A' + ' '.repeat(80000) + 'B');
+  check('check: a value with 80,000 inner spaces is read in well under a second (AST-8)', Date.now() - t0 < 250);
 }
 {
   const sex = input('sex', '1');

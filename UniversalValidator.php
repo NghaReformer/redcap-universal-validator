@@ -5467,9 +5467,10 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($rule[$condKey]) && $types !== null) {
                     $w = Logic::parse($rule[$condKey], $opts);
                     if (!empty($w['ok'])) {
-                        foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey) as $e) {
-                            $errors[] = $e;
-                        }
+                        $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey);
+                        foreach ($refErrs as $e) $errors[] = $e;
+                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false) : null;
+                        if ($why !== null) $errors[] = $why;
                     }
                 }
             }
@@ -5623,9 +5624,10 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($rule['when']) && $types !== null) {
             $w = Logic::parse($rule['when'], $opts);
             if (!empty($w['ok'])) {
-                foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
-                    $errors[] = $e;
-                }
+                $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []);
+                foreach ($refErrs as $e) $errors[] = $e;
+                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false) : null;
+                if ($why !== null) $errors[] = $why;
             }
         }
 
@@ -5895,6 +5897,11 @@ class UniversalValidator extends AbstractExternalModule
                         $choices = $this->projectFieldChoices($pid);
                     }
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices, $condKey);
+                    if (!$errs && $types !== null) {
+                        $ddNow = $this->dataDictionary($pid);
+                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false) : null;
+                        if ($why !== null) $errs = [$why];
+                    }
                     if ($errs) {
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
                             '_tag' => ModeRegistry::tag($mode)];
@@ -6285,7 +6292,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $errs = Logic::checkRefs($p['ast'], $types, $choices, 'where');
         if ($errs) return $hide(implode(' ', $errs));
-        $why = self::existsWhereKindProblem($p['ast'], $ddThere);
+        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);
         if ($why !== null) return $hide($why);
         $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"where"', 'tested');
         if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
@@ -6299,32 +6306,42 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The first comparison of a parsed "where" that cannot answer as meant
-     * against the fields of $dd (existsWhereProblem), or null.
+     * The first comparison of a parsed condition that cannot answer as meant
+     * against the fields of $dd, or null. $key names the condition in the
+     * message ("where", "assert", "when"). Values are compared as REDCap
+     * stores them, so two fields must hold the same kind of date or time, and
+     * a literal compared with a date, a time or a number must be written the
+     * stored way (AST-4: '01-01-2000' against a D-M-Y field compared as text
+     * and passed every date before 2000). $sameMark also asks two number
+     * fields for the same decimal mark: a "where" compares stored text, while
+     * "assert" and "when" read each number by its own mark (AST-1).
      */
-    private static function existsWhereKindProblem(array $n, array $dd)
+    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark)
     {
         if ($n[0] === 'and' || $n[0] === 'or') {
             foreach ($n[1] as $c) {
-                $why = self::existsWhereKindProblem($c, $dd);
+                $why = self::conditionKindProblem($c, $dd, $key, $sameMark);
                 if ($why !== null) return $why;
             }
             return null;
         }
-        if ($n[0] === 'not') return self::existsWhereKindProblem($n[1], $dd);
+        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark);
         if ($n[0] !== 'cmp') return null;
+        $label = '"' . $key . '"';
         // A checkbox box ([cb(code)]) reads "1" or "0": no kind to compare.
-        $field = function ($op) { return ($op[0] === 'ref' && $op[2] === null) ? $op[1] : null; };
+        $field = function ($op) {
+            return (($op[0] === 'ref' || $op[0] === 'qref') && $op[2] === null) ? $op[1] : null;
+        };
         $kind = function ($f) use ($dd) { return self::storedKindOf(isset($dd[$f]) ? self::validationOf($dd[$f]) : ''); };
         $mark = function ($f) use ($dd) { return self::numberMarkOf(isset($dd[$f]) ? $dd[$f] : null); };
         $a = $field($n[2]);
         $b = $field($n[3]);
         if ($a !== null && $b !== null) {
             if ($kind($a) !== $kind($b)) {
-                return '"where" compares "[' . $a . ']", which holds ' . $kind($a) . ', with "[' . $b . ']", which holds '
+                return $label . ' compares "[' . $a . ']", which holds ' . $kind($a) . ', with "[' . $b . ']", which holds '
                     . $kind($b) . ' — values are compared as REDCap stores them, so both must be the same kind.';
             }
-            return self::markMismatch($a, $mark($a), $b, $mark($b), '');
+            return $sameMark ? self::markMismatch($a, $mark($a), $b, $mark($b), '') : null;
         }
         $f = $a !== null ? $a : $b;
         $lit = $n[2][0] === 'lit' ? $n[2] : ($n[3][0] === 'lit' ? $n[3] : null);
@@ -6333,17 +6350,17 @@ class UniversalValidator extends AbstractExternalModule
         $v = (string) $lit[1];
         $shown = '"[' . $f . ']"';
         if (strpos($k, 'dates') === 0 && !preg_match(AnnotationRules::WINDOW_LITERAL_RE, $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
                 . 'stores them, so write it as Y-M-D, such as \'2026-03-01\'' . ($k === 'dates' ? '' : ' or \'2026-03-01 08:30\'') . '.';
         }
         if (strpos($k, 'times') === 0 && !preg_match('/^\d{2}:\d{2}(?::\d{2})?$/D', $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
         }
         if ($k === 'minutes and seconds' && !preg_match('/^\d{2}:\d{2}$/D', $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write it as REDCap stores it, such as \'02:30\'.';
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write it as REDCap stores it, such as \'02:30\'.';
         }
         if ($mark($f) !== null && strpos($v, ',') !== false) {
-            return '"where" compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in "where" with a '
+            return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in ' . $label . ' with a '
                 . 'decimal point, such as \'' . str_replace(',', '.', $v) . '\'.';
         }
         return null;

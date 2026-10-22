@@ -4761,7 +4761,11 @@ it looks: the tag validates the field it sits on, and that is where the message 
 > compares that stored form on the page, in the post-save audit and in the scan, so
 > `[discharge_date]>=[admission_date]` orders by year, month and day even when the
 > fields show D-M-Y or M-D-Y. Write a date in a condition as Y-M-D (`'2026-03-01'`),
-> as REDCap's own logic does. A date that is still being typed is compared as typed
+> as REDCap's own logic does. A rule that writes it otherwise (`[dob]>='01-01-2000'`
+> on a D-M-Y field) is refused when it is saved, with the same check `where` has: a
+> time literal is written `'08:30'`, a number compared with a number field takes a
+> decimal point, and two fields compared hold the same kind (two dates, not a date
+> and a datetime). A date that is still being typed is compared as typed
 > until it is a whole date. Up to 2.1.0 the page compared the text as shown, so a
 > D-M-Y comparison could order by day on the page.
 

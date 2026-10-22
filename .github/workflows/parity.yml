@@ -261,6 +261,8 @@ jobs:
         run: php tests/unique_scope_php.php
       - name: PHP survey page config (no rule detail, only this page's configuration errors)
         run: php tests/survey_shape_php.php
+      - name: PHP condition kinds (an "assert" or "when" literal written as REDCap stores it, fields of one kind)
+        run: php tests/condition_kinds_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)
         run: php tests/crossform_php.php
       - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)
