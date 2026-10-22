@@ -984,8 +984,11 @@ final class Schema
                 }
             }
             try {
+                // UTC, as every store write is (W7-N13). date() wrote the
+                // server's zone, so on a server away from Greenwich the
+                // version row disagreed with every other stamp by hours.
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')
-                    . ' (version, applied_at) VALUES (?, ?)', [$v, date('Y-m-d H:i:s')]);
+                    . ' (version, applied_at) VALUES (?, ?)', [$v, gmdate('Y-m-d H:i:s')]);
             } catch (\Throwable $e) {
                 return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                         'why' => 'version ' . $v . ' installed but could not be recorded ('
@@ -1227,13 +1230,16 @@ final class Schema
         // them - and none can be resumed: its manifest describes a generation
         // that no longer means anything. Expired is what this module already
         // says for a run whose evidence has gone, and it releases the slot.
+        // updated_at in UTC (W7-N13): progressOf() reads every run stamp as
+        // UTC, and date() put a retired run hours off on a server east or
+        // west of Greenwich.
         $module->query('UPDATE ' . self::table('scan_run') . '
             SET active_slot = NULL, phase = ?, terminal = ?, coverage = ?, clean = NULL,
                 terminal_reason = ?, updated_at = ?
             WHERE active_slot = 1 OR terminal IS NULL',
             [ScanPhase::TERMINAL, ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
              'ended by the upgrade to schema version 2, which changed what a finding is named',
-             date('Y-m-d H:i:s')]);
+             gmdate('Y-m-d H:i:s')]);
 
         // SEED THE SEQUENCE SO NO PROJECT REUSES A GENERATION. The retired runs
         // are gone as reports, but their generation numbers were real and a new

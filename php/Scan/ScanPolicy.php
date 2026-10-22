@@ -161,11 +161,18 @@ final class ScanPolicy
         return false;
     }
 
-    /** When a value preview stored now must stop being readable. */
+    /**
+     * When a value preview stored now must stop being readable, in UTC.
+     *
+     * UTC because the purge and the report compare it with
+     * ScanRetention::now() and the mapper's `now`, both gmdate() (W7-R6).
+     * date() wrote the server's zone: east of Greenwich a preview stayed
+     * readable hours past its window, west of it it expired hours early.
+     */
     public static function valueExpiry(array $policy, $now)
     {
         $days = (int) self::get($policy, 'valueDays', self::D_VALUE_DAYS);
-        return date('Y-m-d H:i:s', ((int) $now) + ($days * 86400));
+        return gmdate('Y-m-d H:i:s', ((int) $now) + ($days * 86400));
     }
 
     /** Has the detail budget been spent? Either limit alone is enough. */

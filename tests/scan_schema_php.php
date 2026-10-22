@@ -120,9 +120,18 @@ namespace {
             }
         }
 
+        /**
+         * Every statement with its parameters, for the checks that read a
+         * bound value; kept only when asked for, because the stubborn-rows
+         * scenario sends hundreds of thousands of statements.
+         */
+        public $recordCalls = false;
+        public $calls = [];
+
         public function query($sql, $params = []) {
             if ($this->noQuery) throw new \RuntimeException('no query()');
             $this->sql[] = $sql;
+            if ($this->recordCalls) $this->calls[] = [$sql, $params];
             $this->applyDdl($sql);
             if (strpos($sql, 'DELETE FROM uv_') === 0 && !$this->stubbornRows) {
                 $this->unattributed = 0;
@@ -863,6 +872,44 @@ namespace INSPIRE\UniversalValidator\Scan {
             empty($h['ok']));
         check('v2: and the diagnostic names the version it expected',
             strpos(strtolower((string) $h['why']), 'version') !== false);
+    }
+
+    /* =====================================================================
+     * W7-N13  the stamps migrate() writes are UTC, whatever the server's zone
+     * ===================================================================== */
+    {
+        // Every store write is gmdate() and progressOf() reads run stamps as
+        // UTC. The version row and the run the version-2 data step retires
+        // were written with date(), hours off on a server east or west of
+        // Greenwich. CI runs in UTC, where the two agree, so the zone is set.
+        $zone = date_default_timezone_get();
+        foreach (['Pacific/Auckland', 'America/Los_Angeles'] as $tz) {
+            date_default_timezone_set($tz);
+            $m = new \FakeModule();
+            $m->version = '1';
+            $m->recordCalls = true;
+            $before = time();
+            $r = Schema::migrate($m);
+            $after = time();
+            $stamps = [];
+            foreach ($m->calls as $c) {
+                if (strpos($c[0], 'INSERT IGNORE INTO uv_schema_version') === 0) {
+                    $stamps['version ' . $c[1][0]] = $c[1][1];
+                } elseif (strpos($c[0], 'UPDATE uv_scan_run') === 0 && strpos($c[0], 'terminal_reason') !== false) {
+                    $stamps['retired run'] = $c[1][count($c[1]) - 1];
+                }
+            }
+            $inUtc = function ($s) use ($before, $after) {
+                $d = \DateTime::createFromFormat('Y-m-d H:i:s', (string) $s, new \DateTimeZone('UTC'));
+                return $d !== false && $d->getTimestamp() >= $before && $d->getTimestamp() <= $after;
+            };
+            check('W7-N13 (' . $tz . '): an upgrade from version 1 writes every version row and retires the old runs',
+                // Versions 2 to VERSION, one row each, and the retired runs.
+                $r['ok'] === true && isset($stamps['retired run']) && count($stamps) === (Schema::VERSION - 1) + 1);
+            check('W7-N13 (' . $tz . '): every one of those stamps is the time of the write in UTC',
+                $stamps !== [] && count(array_filter($stamps, $inUtc)) === count($stamps));
+        }
+        date_default_timezone_set($zone);
     }
 
     echo "scan_schema_php: $n checks, $fail failure(s)\n";
