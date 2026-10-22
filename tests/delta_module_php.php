@@ -311,6 +311,15 @@ namespace {
     $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
         'delta', ['weight' => $long . '0', 'w_screen' => '1'], [], null, PID, '2', 351, []);
     check('a budget left: a long change is judged', ($res['invalid'][0]['reason'] ?? null) === 'up');
+    // One budget per save: what the last record spent is not this one's (round 2).
+    $LONGDATA = $DATA;
+    $LONGDATA['2'][351]['weight'] = $long . '0';
+    $LONGDATA['2'][351]['w_screen'] = $long;
+    $mb = mod($DICT, $LONGDATA, $FULL);
+    $bp->setValue($mb, new \INSPIRE\UniversalValidator\ReferenceBudget(10));
+    $mb->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
+    check('a save starts its own budget: the record before spent it, this one is judged (got ' . json_encode(problems($mb, 'weight')) . ')',
+        (deltaBy($mb)['weight']['reason'] ?? null) === 'up' && !problems($mb, 'weight'));
     $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
         'delta', ['weight' => '1' . str_repeat('0', 4096), 'w_screen' => '1'], [], null, PID, '2', 351, []);
     check('a value too long to compare: a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
@@ -658,14 +667,26 @@ namespace {
         's_evt'  => f('visit_form', '@UVDELTA={"vs":"[event-name][s_evt]","max":1}', 'number'),
         's_both' => f('visit_form', '@UVDELTA={"vs":"[event-name][s_both][current-instance]","max":1}', 'number'),
         's_one'  => f('enrol_form', '@UVDELTA={"vs":"[enrol_arm_1][s_one]","max":1}', 'number'),
+        's_fe'   => f('enrol_form', '@UVDELTA={"vs":"[first-event-name][s_fe]","max":1}', 'number'),
+        's_le'   => f('enrol_form', '@UVDELTA={"vs":"[last-event-name][s_le]","max":1}', 'number'),
+        's_fi'   => f('enrol_form', '@UVDELTA={"vs":"[s_fi][first-instance]","max":1}', 'number'),
+        's_li'   => f('enrol_form', '@UVDELTA={"vs":"[s_li][last-instance]","max":1}', 'number'),
+        's_vfe'  => f('visit_form', '@UVDELTA={"vs":"[first-event-name][s_vfe]","max":1}', 'number'),
         's_ok'   => f('visit_form', '@UVDELTA={"vs":"[visit1_arm_1][s_ok]","max":1}', 'number')];
     $p = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
     $pe = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
-    foreach (['s_inst' => $p, 's_evt' => $p, 's_both' => $p, 's_one' => $pe] as $sf => $pg) {
+    foreach (['s_inst' => $p, 's_evt' => $p, 's_both' => $p, 's_one' => $pe, 's_fe' => $pe, 's_le' => $pe, 's_fi' => $pe, 's_li' => $pe] as $sf => $pg) {
         $e = ruleFor($pg, $sf)['configError'] ?? '';
         check('"vs" ' . $sf . ' names this same entry: refused (got ' . $e . ')', strpos($e, '"vs" names this field in this same entry') !== false);
     }
     check('... a named event on a form at several events is another entry there: accepted', empty(ruleFor($p, 's_ok')['configError']));
+    check('... and so is the first event of a form at several events, which is this entry at the first one only',
+        empty(ruleFor($p, 's_vfe')['configError']));
+    longitudinal([1 => ['enrol_form' => '']]);
+    $pr = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
+    check('... the first instance of a form that repeats is another entry: accepted (got ' . json_encode(ruleFor($pr, 's_fi')['configError'] ?? null) . ')',
+        empty(ruleFor($pr, 's_fi')['configError']) && empty(ruleFor($pr, 's_li')['configError']));
+    longitudinal();
 
     // ============================================================================
     // A "vs" that cannot be read is a rule problem, never a blank.

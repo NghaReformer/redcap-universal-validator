@@ -154,6 +154,10 @@ class UniversalValidator extends AbstractExternalModule
         // of this request shows this record as it was before this save.
         $this->existsLookupMemo = [];
         $this->refreshExistsReads($project_id, $record);
+        // One evaluation budget per record: findingsDelta starts one when the
+        // event/instance audit did not, and the next record of an import must
+        // not inherit what this one spent.
+        $this->temporalBudget = null;
         try {
             // $project_id comes straight from the hook and is reliable in every
             // save context (form, survey, API, import, cron); $this->getProjectId()
@@ -7163,22 +7167,35 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Whether a written-out "vs" reference to the field itself ($op, a qref)
-     * names the entry being judged in every entry of $form: its event is this
-     * one ([event-name] or none, or the one event the form is on) and its
-     * instance this one ([current-instance] or none).
+     * names the entry being judged in every entry of $form. At each event
+     * that holds the form, its event token must resolve to that same event
+     * (none, [event-name], [first-event-name] where no earlier event of the
+     * arm holds the form, or the one event's name), and its instance must be
+     * this one: none, [current-instance], or [first-instance] or
+     * [last-instance] where the form is held once. A layout that cannot be
+     * read answers false; the resolver reports it on each save.
      */
     private static function deltaNamesItself(ProjectShape $shape, array $op, $form)
     {
-        $instance = isset($op[4]) ? $op[4] : null;
-        if ($instance !== null && $instance !== 'current-instance') return false;
         $event = isset($op[3]) ? $op[3] : null;
-        if ($event === null || $event === 'event-name') return true;
+        $instance = isset($op[4]) ? $op[4] : null;
+        if ($instance !== null && !in_array($instance, ['current-instance', 'first-instance', 'last-instance'], true)) return false;
         $hosts = [];
         foreach ($shape->events() as $id => $e) {
             if (!isset($e['forms']) || !is_array($e['forms'])) return false;
-            if (in_array($form, $e['forms'], true)) $hosts[] = isset($e['name']) ? (string) $e['name'] : '';
+            if (in_array($form, $e['forms'], true)) $hosts[] = $id;
         }
-        return count($hosts) === 1 && $hosts[0] === $event;
+        if (!$hosts) return false;
+        foreach ($hosts as $h) {
+            $r = $shape->eventId($event, $h, $form);
+            if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $h) return false;
+            // the first or last instance is this one only where the form is held once
+            if ($instance !== null && $instance !== 'current-instance') {
+                $b = $shape->bucket($h, $form);
+                if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b) || $b['bucket'] !== null) return false;
+            }
+        }
+        return true;
     }
 
     /**

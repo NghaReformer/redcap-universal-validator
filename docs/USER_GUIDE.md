@@ -1096,8 +1096,8 @@ shorthands and a reference to another event or instance need event and
 instance references on. The change is exact, with no rounding. A blank value,
 a blank earlier value and a missing data code check nothing, and so does the
 first visit. A `vs` field on the same page blocks as `blockSave` says; an
-earlier value read from another form, event or instance only warns, since it
-was read when the page opened. The post-save audit logs `type: delta` with
+earlier value read from another form, event or instance shows a red note but
+never blocks, since it was read when the page opened. The post-save audit logs `type: delta` with
 reason `up` or `down`, and the scan labels them "Rose more than allowed" or
 "Fell more than allowed". Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvdelta--how-far-a-number-may-change).

@@ -4239,12 +4239,14 @@ instance:
     say which instance to compare with. The refusal gives a reference that
     names the event and the instance, such as
     `[visit1_arm_1][weight][last-instance]`. A form that repeats only at the
-    last visit is fine: no shorthand names that visit.
+    last visit is fine, because no shorthand names that visit.
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
-- A reference that always names this same entry (`[event-name][weight]`,
-  `[weight][current-instance]`, or the one event the form is on) is refused:
-  the change would always be 0.
+- A reference that always names this same entry is refused, since the change
+  would always be 0: `[event-name][weight]`, `[weight][current-instance]`, the
+  one event the form is on by name or as `[first-event-name]` or
+  `[last-event-name]`, and `[weight][first-instance]` or
+  `[weight][last-instance]` on a form that does not repeat.
 - An earlier value from another event or instance is read when the page opens.
   That check shows a red note but never blocks, and its note says it is
   re-checked after the save.
@@ -4279,7 +4281,7 @@ and direction branch like other tags, so each needs its own `when`:
 @UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg","blockSave":"confirm","message":"Weight changed by more than 5 kg since screening. Re-weigh before saving."}
 ```
 
-`blockSave` is `off` by default: the note shows and the save goes ahead. Only
+By default `blockSave` is `off`, so the note shows and the save goes ahead. Only
 a `vs` field on the same page can block. A `vs` on another form, event or
 instance is a saved value read when the page opened, so that check never
 blocks, and a calc field never blocks.
@@ -5951,7 +5953,7 @@ number keeps. `blockSave` is refused.
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
 | `vs`            | string          | *(none)*     | Required. `previous-event`, `previous-instance`, `first-event`, `first-instance` (this field there), or one field reference such as `[weight_screening]` or `[baseline_arm_1][weight]`. The shorthands and another event or instance need event and instance references |
 | `max`           | number          | *(none)*     | The largest change allowed, in the field's unit, 0 or more             |
-| `maxPct`        | number          | *(none)*     | The largest change allowed as a percent of the earlier value, 0 or more; not applied to an earlier 0. At least one of `max` and `maxPct` |
+| `maxPct`        | number          | *(none)*     | The largest change allowed as a percent of the earlier value, more than 0; not applied to an earlier 0. At least one of `max` and `maxPct` |
 | `direction`     | string          | `both`       | `both`, `up`, `down`: the changes the limits apply to                  |
 | `unit`          | string          | *(none)*     | Label shown after the numbers in the note, up to 20 characters         |
 | `when`          | string          | *(none)*     | Check only while true                                                  |

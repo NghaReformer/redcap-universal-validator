@@ -477,9 +477,16 @@ inner spaces.
   its detail lines. It keeps the page configs in `delta_live_pages.json`
   (`--write` after a change) for `delta_live_twin_js.cjs`, which replays the
   sheet's typing through the engine and checks each note, each save and the
-  label the save dialog names.
-- `delta_mutations.py` applies 61 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them.
+  label the save dialog names. The pages B, C2 and D1 open with the values
+  the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
+  `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
+  word, and section F checks each configuration error under its own field.
+- `delta_mutations.py` applies 83 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Besides
+  @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
+  (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
+  notes, the registry entry of a field with two modes), so those suites are
+  named too.
 
 ## `growth_*` — growth references (z-scores)
 

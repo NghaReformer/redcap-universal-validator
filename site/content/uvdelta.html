@@ -18,7 +18,7 @@ and <code>maxPct</code>.</p>
 
 @UVDELTA={"vs":"previous-event","max":0,"direction":"down"}</code></pre>
 
-<p>The last one says a height may not fall: any fall is more than 0, and a rise is not
+<p>The last one says a height may not fall. Any fall is more than 0, and a rise is not
 limited.</p>
 
 <div class="scroll">
@@ -33,7 +33,7 @@ limited.</p>
 <tr><td><code>max</code></td><td>The most the value may change, in its own unit. A
     number of 0 or more</td></tr>
 <tr><td><code>maxPct</code></td><td>The most the value may change, as a percent of the
-    earlier value. A number of 0 or more</td></tr>
+    earlier value. A number more than 0</td></tr>
 <tr><td><code>direction</code></td><td><code>both</code> (default), <code>up</code> or
     <code>down</code>: the changes the limits apply to. A change the other way always
     passes</td></tr>
@@ -55,8 +55,9 @@ digits written out is reported as too long to compare.</p>
 
 <p>Text fields with <strong>integer</strong> or <strong>number</strong> validation (any
 number of decimals, comma decimals included) or with no validation, <strong>calc</strong>
-fields and <strong>sliders</strong>. A <code>vs</code> field must hold numbers the same
-way. On a comma-decimal field <code>72,5</code> reads as 72.5.</p>
+fields and <strong>sliders</strong>. A <code>vs</code> field must hold numbers too: a Text
+field with integer, number or no validation, a calc or a slider. On a comma-decimal field
+<code>72,5</code> reads as 72.5.</p>
 
 <h2>What is checked, and when</h2>
 
@@ -82,9 +83,9 @@ way. On a comma-decimal field <code>72,5</code> reads as 72.5.</p>
     typed, and the rule blocks as <code>blockSave</code> says. A calc field never blocks.
     A note waits while the person is still typing in a field the rule reads.</li>
 <li>A survey is never sent a value of another form, event or instance, so on a survey
-    the rule checks only a <code>vs</code> field on the same page, and the page source
-    does not name the field it compares with. The audit and the scan check the
-    rest.</li>
+    the rule checks only a <code>vs</code> field on the same page, which the page reads by
+    name. Of a <code>vs</code> on another form, event or instance, the page source names
+    neither the field nor the event. The audit and the scan check the rest.</li>
 <li>The note appears when the field is left and names the change, its percent, the
     earlier value and the limit. A change within the limits shows nothing.</li>
 <li>Tags that compare with <strong>different values</strong>, or limit

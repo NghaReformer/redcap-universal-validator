@@ -75,6 +75,15 @@ $r = Logic::deltaVerdict(['maxPct' => '10'], $long . '0', $long, $tight);
 check('a refused product is unknown, reason "limit", and keeps the change',
     $r['verdict'] === 'unknown' && $r['reason'] === 'limit' && $r['change'] === '9' . str_repeat('0', 3000));
 check('no budget given: nothing is refused', Logic::deltaVerdict(['max' => '1'], $long, $long)['verdict'] === 'ok');
+$paid = [];
+$huge = '1' . str_repeat('0', Logic::MAX_PLAIN);
+$r = Logic::deltaVerdict(['max' => '1'], $huge, '1', $wallet);
+check('a plain number past MAX_PLAIN is too long to compare, and pays nothing (round 2)',
+    $r['verdict'] === 'unknown' && $r['reason'] === 'too-long' && $paid === []);
+check('... the same as one written with an exponent', Logic::deltaVerdict(['max' => '1'], '1e' . (Logic::MAX_PLAIN + 1), '1', $wallet)['reason'] === 'too-long'
+    && $paid === []);
+check('... and one exactly MAX_PLAIN long is worked out', Logic::deltaNumber(str_repeat('9', Logic::MAX_PLAIN)) === str_repeat('9', Logic::MAX_PLAIN)
+    && Logic::deltaNumber(str_repeat('9', Logic::MAX_PLAIN + 1)) === false);
 
 // ---- 2. the grammar ---------------------------------------------------------
 

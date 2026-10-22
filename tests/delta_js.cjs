@@ -39,5 +39,9 @@ for (const [label, v, e] of [['the value', '5' + ' '.repeat(100000) + '5', '1'],
   check('100,000 inner spaces in ' + label + ' are judged in under 250 ms (took ' + ms + ' ms)', ms < 250 && r.verdict === 'unknown');
 }
 
+// a plain number past QRID_MAX_PLAIN (4,096) is too long, as Logic::deltaNumber says
+check('a plain number of 4,096 digits is read', L.number('9'.repeat(4096)) === '9'.repeat(4096));
+check('one of 4,097 is too long (false)', L.number('9'.repeat(4097)) === false);
+
 console.log('delta_js: ' + n + ' checks, ' + fails + ' failure(s)');
 process.exit(fails ? 1 : 0);

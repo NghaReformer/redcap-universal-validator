@@ -943,8 +943,9 @@ and flags a change larger than its limit:
   the person is still typing in a field the rule reads. An earlier value from
   another form, event or instance is read when the page opens, so that check
   shows a red note but never blocks. A calc never blocks. A survey gets only a
-  `vs` on its own page, and the page source does not name the field it
-  compares with.
+  `vs` on its own page, which the page reads by name. Of a `vs` on another
+  form, event or instance, a survey's page source names neither the field nor
+  the event, not even in a configuration error.
 - **Several comparisons.** Tags with different `vs` or different directions on
   one field all apply (5% from the previous visit and 15% from baseline). Tags
   with the same `vs` and direction need different `when` conditions.
@@ -1171,7 +1172,10 @@ check-character primitive, but the full runtime path the module actually uses:
   the browser rule (a live `vs` blocks, a saved one and a calc never do, two
   comparisons on one field) and `tests/delta_module_php.php` the server side:
   the hooks, the page fold, the audit on a classic project, across events and
-  across instances, and the scan.
+  across instances, and the scan. `tests/delta_live_twin_php.php` and
+  `tests/delta_live_twin_js.cjs` check every answer of the live run sheet
+  (`docs/testbed/DELTA_LIVE_ACCEPTANCE.md`), and `tests/delta_mutations.py`
+  fails when a suite lets a broken copy of the code through.
 - `tests/growth_js.cjs` / `tests/growth_php.php` — growth references: the
   z-score in both runtimes from one fixture (`tests/growth_fixture.json`),
   2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
@@ -1263,6 +1267,9 @@ node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
 php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
 node tests/delta_dom_js.cjs      # @UVDELTA DOM contract (live vs blocks, saved vs and calc never block)
 php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
+php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
+node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
+python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named suite fail
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file

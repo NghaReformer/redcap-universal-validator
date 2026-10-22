@@ -711,9 +711,11 @@
      entry per field. Modes compose on one field (@UVRANGE and @UVDELTA on a
      weight), and each used to overwrite the entry the last one wrote, so
      validators.weight answered for the delta rule while the range rule held
-     the save. A second mode turns the entry into a composite: it keeps the
-     first entry's keys, byMode holds each mode's own entry, types lists them,
-     and test() is false when any mode says false, else null when any cannot
+     the save. A second mode turns the entry into a composite: it carries
+     every mode's own keys (parse, clean, branches...; the first mode's on a
+     clash, type among them), byMode holds each mode's own entry, types lists
+     them, and test(v) asks every mode with the same arguments: false when any
+     says false (an ID check answers {ok: false}), else null when any cannot
      answer, else true. The same mode again (a branch rebuilt) replaces its
      own entry. */
   function QRID_registerValidator(f, entry){
@@ -721,17 +723,21 @@
     if(!prev || (!prev.byMode && prev.type === entry.type)){ UV_validators[f] = entry; return; }
     var byMode = prev.byMode || (function(){ var m = Object.create(null); m[prev.type] = prev; return m; })();
     byMode[entry.type] = entry;
-    var first = byMode[(prev.types || [prev.type])[0]], out = {}, k;
-    for(k in first) if(Object.prototype.hasOwnProperty.call(first, k)) out[k] = first[k];
+    var out = {}, k, t;
+    for(t in byMode){
+      for(k in byMode[t]) if(Object.prototype.hasOwnProperty.call(byMode[t], k) && !Object.prototype.hasOwnProperty.call(out, k)) out[k] = byMode[t][k];
+    }
     out.byMode = byMode;
     out.types = [];
-    for(k in byMode) out.types.push(k);
+    for(t in byMode) out.types.push(t);
     out.test = function(){
-      var open = false, any = false;
-      for(var t in byMode){
-        if(typeof byMode[t].test !== "function") continue;
+      var open = false, any = false, args = arguments;
+      for(var m in byMode){
+        if(typeof byMode[m].test !== "function") continue;
         any = true;
-        var r = byMode[t].test();
+        var r;
+        try { r = byMode[m].test.apply(byMode[m], args); } catch(e){ r = null; }   /* a mode that cannot answer leaves it open */
+        if(r && typeof r === "object" && typeof r.ok === "boolean") r = r.ok;
         if(r === false) return false;
         if(r !== true) open = true;
       }
@@ -2296,7 +2302,7 @@ function QRID_deltaNumber(value, decimalComma){
   var v = QRID_whenTrim(value == null ? "" : String(value));
   if(v === "") return "";
   if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
-  if(QRID_WHEN_NUM_RE.test(v)) return v;
+  if(QRID_WHEN_NUM_RE.test(v)) return v.length > QRID_MAX_PLAIN ? false : v;
   if(QRID_exponentParts(v) === null) return null;
   var plain = QRID_plainDecimal(v);
   return plain === null ? false : plain;
@@ -3129,8 +3135,9 @@ var QRID_WHEN = (function(){
   function fire(f){
     var cbs = hooks[f];
     if(!cbs) return;
+    /* the field that changed goes along (QRID_afterTyping reads it) */
     for(var i = 0; i < cbs.length; i++){
-      try { cbs[i](); } catch(e){}
+      try { cbs[i](f); } catch(e){}
     }
   }
   /* A value REDCap writes from script raises no event at all on 17.x: a calc
@@ -3629,20 +3636,23 @@ function QRID_configErrorNotice(message){
    tests/branching_php.php and tests/hook_php.php lock server-side. */
 /* The callback a factory hands to a "when" gate or a watched field, which
    fire on every keystroke in the field they read. While the person is typing
-   in a text box the check waits, and it runs once they leave the box: a
+   that field into a text box the check waits, and it runs once they leave
+   the box: a
    number half typed ("7" on the way to "70") is not judged, and the live
    region does not announce an error per key. The save guard re-judges every
    field before it reads them (__qridRecheck), so a save never waits for a
    blur. */
 function QRID_afterTyping(check){
   var waiting = null;
-  return function(){
+  return function(field){
     var a = typeof document !== "undefined" ? document.activeElement : null;
     var tag = a ? (a.tagName || "").toLowerCase() : "";
     var ty = a ? (a.type || "").toLowerCase() : "";
     var text = tag === "textarea" || (tag === "input" && ty !== "radio" && ty !== "checkbox"
       && ty !== "button" && ty !== "submit" && ty !== "hidden");
-    if(!text || typeof a.addEventListener !== "function"){ check(); return; }
+    /* only the box the changed field is typed into: a value a script wrote,
+       or a field picked from a list, is judged at once wherever focus is */
+    if(!text || typeof a.addEventListener !== "function" || typeof field !== "string" || a.name !== field){ check(); return; }
     if(waiting === a) return;
     waiting = a;
     a.addEventListener("blur", function left(){
@@ -6283,8 +6293,10 @@ function QRIDDeltaInit(QRID_CONFIG){
   function verdictOf(V, fieldName, typed){
     var e = earlierOf(V, fieldName);
     if(e === null) return { verdict: "withheld" };
-    var r = QRID_deltaVerdict(V.spec, (typed == null || typeof typed === "object") ? "" : String(typed), e);
+    var t = (typed == null || typeof typed === "object") ? "" : String(typed);
+    var r = QRID_deltaVerdict(V.spec, t, e);
     r.earlier = e;
+    r.typed = t;
     return r;
   }
   /* A number as the field shows it: its own decimal mark. */
@@ -6309,7 +6321,16 @@ function QRIDDeltaInit(QRID_CONFIG){
     var p = c / e * 100;
     if(!isFinite(p) || p >= 1e6) return "";
     var one = Math.round(p * 10) / 10;
-    if(r.reason === "maxPct" && V.spec.maxPct !== null && QRID_whenDecCmp(String(one), V.spec.maxPct) <= 0){
+    /* the percent limit broken, whichever limit the verdict names first */
+    var broke = r.reason === "maxPct";
+    if(!broke && V.spec.maxPct !== null){
+      try {
+        var pv = QRID_deltaVerdict({ max: null, maxPct: V.spec.maxPct, direction: V.spec.direction,
+          decimalComma: V.spec.decimalComma, earlierComma: V.spec.earlierComma }, r.typed, r.earlier);
+        broke = pv.verdict === "up" || pv.verdict === "down";
+      } catch(e){}
+    }
+    if(broke && V.spec.maxPct !== null && QRID_whenDecCmp(String(one), V.spec.maxPct) <= 0){
       return " (more than " + shown(QRID_numberKey(V.spec.maxPct, "point"), comma) + "%)";
     }
     if(one === 0) return " (under " + shown("0.1", comma) + "%)";
@@ -6568,7 +6589,7 @@ function QRIDRequiredInit(QRID_CONFIG){
         }
         QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
-      var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === "";
+      var blank = QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === "";
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
@@ -6600,7 +6621,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     QRID_registerValidator(f, { type: "required", mode: { required: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
-        return String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") !== ""; } });
+        return QRID_whenTrim(String(QRID_WHEN.readRef(f, null))) !== ""; } });
   });
   function boot(){
     if(configError){
@@ -6950,7 +6971,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
            option's .checked cannot be read off the hidden mirror on REDCap 17. */
         var selected = isCheckbox
           ? (QRID_readCheckbox(fieldName, code) === "1")
-          : (String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === code);
+          : (QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === code);
         var hide = !!hiddenSet[code] && !selected;
         var els = optionWrappers(code);
         for(var j = 0; j < els.length; j++){
@@ -6967,7 +6988,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     function staleCodes(V){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
-        var v = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        var v = QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null)));
         if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
         return out;
       }
@@ -7087,7 +7108,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     QRID_registerValidator(f, { type: "choices", mode: { choices: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
-        var v = String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        var v = QRID_whenTrim(String(QRID_WHEN.readRef(f, null)));
         if(v !== "") return !a[0].hiddenSet[v];
         for(var i = 0; i < a[0].hiddenList.length; i++){
           if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;
@@ -8619,8 +8640,9 @@ window.INSPIREUniversalValidator = {
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
   },
-  deltaLogic: {                              /* @UVDELTA twin, locked by tests/delta_js.cjs */
-    verdict: QRID_deltaVerdict
+  deltaLogic: {                              /* @UVDELTA twins, locked by tests/delta_js.cjs */
+    verdict: QRID_deltaVerdict,
+    number: QRID_deltaNumber
   },
   returnWriter: {                            /* the one writer of returned values, locked by tests/growth_return_dom_js.cjs */
     write: QRID_writeReturned

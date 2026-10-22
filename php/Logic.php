@@ -922,7 +922,7 @@ class Logic
         $v = trim((string) $value, " \t\r\n");
         if ($v === '') return '';
         if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
-        if (preg_match(self::NUM_RE, $v)) return $v;
+        if (preg_match(self::NUM_RE, $v)) return strlen($v) > self::MAX_PLAIN ? false : $v;
         if (self::exponentParts($v) === null) return null;
         $plain = self::plainDecimal($v);
         return $plain === null ? false : $plain;

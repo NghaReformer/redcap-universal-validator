@@ -145,18 +145,26 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   check('A12 saves', save(env) === 'saved', save(env));
 }
 
-// ---- Section B: another form of this event (a snapshot) ---------------------------
+/* The save dialog's "save anyway?" text, as the sheet's B2 and C3 meet it. */
+function asked(env) { const c = env.win._confirms; return c.length ? c[c.length - 1].replace(/\s+/g, ' ') : ''; }
+const SBP2 = PAGES.labels.ud_sbp2;
+
+// ---- Section B: another form of this event (a snapshot), opened as A left it ---------
 {
-  const env = boot(PAGES.visit1_off);
+  const env = boot(PAGES.sheet_b1, PAGES.sheet_b1_values);
+  check('B: the page opens with what A saved (ud_sbp2 145)', env.els.ud_sbp2.value === '145', env.els.ud_sbp2.value);
   set(env, 'ud_snap', '74');
   check('B1 note with the snapshot sentence', note(env, 'ud_snap') === '✗ This value rose by 2 kg (2.8%) from 72 kg ([xv_weight]). Allowed: a change of at most 1 kg.'
     + SNAP.replace('saved event/instance values', 'xv_weight'), note(env, 'ud_snap'));
-  check('B1 saves', save(env) === 'saved');
+  check('B2 the save asks "save anyway?" for ud_sbp2 alone', save(env) === 'asked'
+    && asked(env) === 'Validation FAILED for: • ' + SBP2 + ' Save anyway?', asked(env));
+  env.win.confirmAnswer = true;
+  check('B2 answered yes, the record saves', save(env) === 'asked' && env.win._confirms.length === 2);
 }
 
-// ---- Section C: other events -------------------------------------------------------
+// ---- Section C: other events, visit 1 opened as A, B and C1 left it --------------------
 {
-  const env = boot(PAGES.visit1_on_after_baseline);
+  const env = boot(PAGES.sheet_c2, PAGES.sheet_c2_values);
   set(env, 'ud_wt', '78');
   check('C2 previous event', note(env, 'ud_wt') === '✗ This value rose by 8 kg (11.4%) from 70 kg (the previous event). Allowed: a change of at most 10%.' + SNAP, note(env, 'ud_wt'));
   set(env, 'ud_height', '169.4');
@@ -165,7 +173,8 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   check('C2 named event', note(env, 'ud_bl') === '✗ This value rose by 15 (21.4%) from 70 ([baseline_arm_1][xv_weight]). Allowed: a change of at most 20%.' + SNAP, note(env, 'ud_bl'));
   set(env, 'ud_twoev', '74');
   check('C2 two comparisons, one failing', note(env, 'ud_twoev') === '✗ This value rose by 4 (5.7%) from 70 (the previous event). Allowed: a change of at most 5%.' + SNAP, note(env, 'ud_twoev'));
-  check('C2 never blocks, though ud_wt says hard', save(env) === 'saved', save(env));
+  check('C3 the save asks "save anyway?" for ud_sbp2 alone: the event rules never block, though ud_wt says hard',
+    save(env) === 'asked' && asked(env) === 'Validation FAILED for: • ' + SBP2 + ' Save anyway?', asked(env));
 }
 {
   const env = boot(PAGES.visit2_on);
@@ -179,11 +188,19 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
 }
 {
   const env = boot(PAGES.baseline_on);
-  set(env, 'ud_wt', '90');
-  check('C1 baseline: nothing earlier, no note', note(env, 'ud_wt') === '', note(env, 'ud_wt'));
+  set(env, 'ud_wt', '70'); set(env, 'ud_height', '170.0'); set(env, 'ud_bl', '70'); set(env, 'ud_twoev', '70');
+  for (const f of ['ud_wt', 'ud_height', 'ud_twoev']) check('C1 baseline: nothing earlier, no note under ' + f, note(env, f) === '', note(env, f));
+  check('C1 baseline: ud_bl 70 against xv_weight 70, no note', note(env, 'ud_bl') === '', note(env, 'ud_bl'));
+  check('C1 the record saves', save(env) === 'saved', save(env));
 }
 
 // ---- Section D: repeating instances ---------------------------------------------------
+{
+  const env = boot(PAGES.sheet_d1, PAGES.sheet_d1_values);
+  set(env, 'ud_rep', '10.0');
+  check('D1 the first instance: nothing earlier, no note', note(env, 'ud_rep') === '', note(env, 'ud_rep'));
+  check('D1 the record saves', save(env) === 'saved', save(env));
+}
 {
   const env = boot(PAGES.specimen2_on);
   set(env, 'ud_rep', '7.5');
@@ -193,10 +210,22 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   check('D3 8.0: exactly 20%, no note', note(env, 'ud_rep') === '');
 }
 
-// ---- Section F: configuration errors are shown, never a block -------------------------
+// ---- Section F: configuration errors are shown under each field, never a block --------
+function cfgErr(env, f) {
+  const kids = env.holders[f].children;
+  for (let i = 1; i < kids.length; i++) if (kids[i].id && /-cfg$/.test(kids[i].id) && kids[i].style.display !== 'none') {
+    return kids[i].innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  }
+  return '';
+}
 {
   const env = boot(PAGES.visit1_on);
-  for (const f of ['ud_bad_email', 'ud_bad_self', 'ud_bad_vs', 'ud_bad_nofield', 'ud_bad_inst', 'ud_bad_nolimit']) set(env, f, '5');
+  for (const f of ['ud_bad_email', 'ud_bad_self', 'ud_bad_vs', 'ud_bad_nofield', 'ud_bad_inst', 'ud_bad_nolimit']) {
+    const want = (PAGES.visit1_on.rules.find((r) => (r.fields || []).indexOf(f) >= 0) || {}).configError || '';
+    check('F ' + f + ': its error is shown under the field (got ' + cfgErr(env, f) + ')',
+      want !== '' && cfgErr(env, f).indexOf(want) >= 0 && cfgErr(env, f).indexOf('@UVDELTA on "' + f + '": ') >= 0);
+    set(env, f, '5');
+  }
   check('F the bad fields never block', save(env) === 'saved', save(env));
 }
 

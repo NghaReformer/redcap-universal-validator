@@ -282,5 +282,17 @@ function submitEv() {
   check('active branch blockSave=off: no block', ev._prevented === false);
 }
 
+// A saved value with a long run of inner spaces is read in linear time: the
+// trim used to retry its end-anchored pattern from every space (1.6 seconds
+// for this value, on every check and save).
+{
+  const notes = makeEl('textarea'); notes.name = 'notes'; notes.value = 'a' + ' '.repeat(50000) + 'a';
+  const t0 = Date.now();
+  const env = boot([notes], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['notes'], blockSave: 'hard' }] });
+  const filled = env.NS.validators.notes.test();
+  const ms = Date.now() - t0;
+  check('50,000 inner spaces: the page checks and test() answers in under 250 ms (took ' + ms + ' ms)', ms < 250 && filled === true);
+}
+
 console.log(`required_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

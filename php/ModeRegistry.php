@@ -325,9 +325,11 @@ final class ModeRegistry
     /**
      * A rule as the page may see it: every server key removed, on the rule and
      * on each branch. On a survey page ($survey) the configuration error of a
-     * mode that has server keys is replaced by a generic one: its text names
-     * the fields the rule reads, which the page must not learn; and the staff-
-     * only keys go too, with their languages under "i18n".
+     * mode that has server keys or staff-only keys is replaced by a generic
+     * one: its text names the fields the rule reads, which the page must not
+     * learn; the staff-only keys go too, with their languages under "i18n";
+     * and so does every deferral text ("deferredWhy"), which names what the
+     * rule could not read and which a survey page never shows.
      */
     public static function clientShape(array $r, $survey = false)
     {
@@ -335,7 +337,7 @@ final class ModeRegistry
             // A refused tag carries no mode of its own (it falls back to the
             // default type), so its error is recognised by the tag it starts with.
             foreach (self::all() as $def) {
-                if (empty($def['serverKeys'])) continue;
+                if (empty($def['serverKeys']) && empty($def['staffOnlyKeys'])) continue;
                 $m = self::modeOfType(isset($r['type']) ? $r['type'] : '');
                 if ($m === $def['mode'] || strpos($r['configError'], $def['tag'] . ' ') === 0) {
                     $r['configError'] = 'this check is not set up correctly; the study team can see the details on the data entry form.';
@@ -343,7 +345,7 @@ final class ModeRegistry
                 }
             }
         }
-        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys()) : self::serverKeys();
+        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys(), ['deferredWhy']) : self::serverKeys();
         $strip = function (array $x) use ($drop, $survey) {
             foreach ($drop as $k) unset($x[$k]);
             if ($survey && isset($x['i18n']) && is_array($x['i18n'])) {

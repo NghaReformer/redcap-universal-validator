@@ -782,5 +782,20 @@ const PL = { rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: 
   check('a plausible limit that is not a number: a configuration error', !!cfgErr(env4, 'weight') && /rangePlausibleLo is not a number/.test(cfgErr(env4, 'weight').innerHTML));
 }
 
-console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
-process.exit(fail ? 1 : 0);
+// Typing into an input the growth rule reads: judged once the person leaves
+// it, not per keystroke (QRID_afterTyping, round-2 review N5).
+{
+  const age = el('age_days', '3'), w = el('weight', '13.5');
+  const env = boot([age, w], { growth: GROWTH, rules: [rule({ rangeSexOp: ['lit', '1'], rangeAgeDaysOp: ['ref', 'age_days', null] })] });
+  const msg = nMsg(env, 'weight');
+  check('typing: 13.5 kg on day 3 is usual', !shown(msg));
+  env.doc.activeElement = age;
+  age.value = '2'; age.fire('input'); age.fire('keyup');
+  check('typing "2" into the age the rule reads: nothing judged while typing', !shown(msg));
+  env.doc.activeElement = null; age.fire('blur');
+  setTimeout(() => {
+    check('... leaving the age judges it: day 2, z 3.50 (got ' + msg.innerHTML + ')', /z-score 3\.50/.test(msg.innerHTML));
+    console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
+    process.exit(fail ? 1 : 0);
+  }, 10);
+}

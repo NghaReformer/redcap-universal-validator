@@ -401,6 +401,18 @@ $sv = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs'
                    ['deltaGroup' => '[enrol_arm_1][w0] both', 'when' => '[x]=1']]], true);
 check('survey: delta groups are opaque, in order, the same group the same id', !isset($sv['deltaVs']) && !isset($sv['deltaVsLabel'])
     && array_column($sv['branches'], 'deltaGroup') === ['g1', 'g2', 'g1'] && strpos(json_encode($sv), 'enrol_arm_1') === false);
+$se = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'configError' => '"vs" field "zz_src" is not a number field.'], true);
+check('survey: a @UVDELTA configuration error is told in general words, naming no field (round 2)',
+    strpos($se['configError'], 'zz_src') === false && strpos($se['configError'], 'not set up correctly') !== false);
+$sr = ModeRegistry::clientShape(['type' => 'single', 'fields' => ['w'], 'configError' => '@UVDELTA on "w": "vs" names "[zz_missing]".'], true);
+check('survey: a refused @UVDELTA tag (type single) too', strpos($sr['configError'], 'zz_missing') === false);
+$sd = ModeRegistry::clientShape(['type' => 'constraint', 'fields' => ['w'], 'deferred' => true,
+    'deferredWhy' => ['references "[w_enrol]", which is not collected in this event'],
+    'branches' => [['deferred' => true, 'deferredWhy' => ['references "[w_enrol]"'], 'when' => null]]], true);
+check('survey: no deferral text, on the rule or a branch, in any mode (a survey page never shows one)',
+    !isset($sd['deferredWhy']) && !isset($sd['branches'][0]['deferredWhy']) && $sd['deferred'] === true && strpos(json_encode($sd), 'w_enrol') === false);
+$sk = ModeRegistry::clientShape(['type' => 'constraint', 'fields' => ['w'], 'deferred' => true, 'deferredWhy' => ['x']], false);
+check('staff: the deferral text stays', $sk['deferredWhy'] === ['x']);
 $st = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs' => '[w0]', 'deltaGroup' => '[w0] both'], false);
 check('staff: the group and the "vs" travel as written', $st['deltaGroup'] === '[w0] both' && $st['deltaVs'] === '[w0]');
 $rg = ModeRegistry::clientShape(['type' => 'range', 'fields' => ['w'], 'branches' => [['rangeReference' => 'who-weight', 'when' => null]]], true);

@@ -527,6 +527,86 @@ for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0
   check('... true once both pass', reg.test() === true);
 }
 
+// The shared entry asks every mode with the value it is handed, reads an ID
+// check's {ok} answer, and keeps every mode's own keys (round-2 review N1).
+{
+  const w0 = numEl('w0', ''), sid = numEl('sid', 'FC1-0589C');
+  const env = boot([w0, sid], { singleFields: ['sid'], rules: [W({ fields: ['sid'] })] });
+  const reg = env.NS.validators.sid;
+  check('an ID check and a delta rule on one field: both listed (got ' + JSON.stringify(reg.types) + ')',
+    Array.isArray(reg.types) && reg.types.indexOf('single') >= 0 && reg.types.indexOf('delta') >= 0);
+  check('... test(v) hands the value to the ID check: a wrong check character is false', reg.test('FC1-0589D') === false);
+  check('... a right one leaves the answer to the delta rule, which has nothing to compare (null)', reg.test('FC1-0589C') === null);
+  check('... the ID check answers on its own entry', reg.byMode.single.test('FC1-0589D').ok === false);
+}
+{
+  const w0 = numEl('w0', '70'), ids = numEl('ids', '');
+  const env = boot([w0, ids], { pooledFields: ['ids'], rules: [W({ fields: ['ids'] })] });
+  const reg = env.NS.validators.ids;
+  check('a pooled list and a delta rule on one field: the pooled parse and clean are kept',
+    typeof reg.parse === 'function' && typeof reg.clean === 'function');
+}
+{
+  const w0 = numEl('w0', 'n/a'), w = numEl('weight', '80');
+  const env = boot([w0, w], { rules: [{ type: 'range', fields: ['weight'], rangeHardLo: '20', rangeHardHi: '250', rangeHardBlock: 'hard',
+    rangeHardText: '20 to 250 kg' }, W()] });
+  const reg = env.NS.validators.weight;
+  check('a mode that cannot answer leaves the shared answer open, though the other passes',
+    reg.byMode.range.test() === true && reg.byMode.delta.test() === null && reg.test() === null);
+}
+
+// "more than" the percent limit whenever the change broke it, though the
+// verdict names "max" first (round-2 review N2).
+{
+  const w0 = numEl('w0', '100'), w = numEl('weight', '110.0001');
+  const env = boot([w0, w], { rules: [W()] });
+  check('max and maxPct both broken: the percent reads "more than 10%" (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /rose by 10\.0001 kg \(more than 10%\) from 100 kg/.test(dMsg(env, 'weight').innerHTML));
+  w.value = '106'; w.fire('change');
+  check('... max broken, the percent kept: "6%" as it is', /rose by 6 kg \(6%\) from 100 kg/.test(dMsg(env, 'weight').innerHTML));
+}
+
+// The earlier value keeps its own decimal mark: a comma field compared with a
+// field that writes a point (round-2 review N5).
+{
+  const w0 = numEl('w0', '70.5'), w = numEl('weight', '80,5');
+  const env = boot([w0, w], { rules: [W({ decimalComma: true, deltaVsComma: false, deltaMax: '5', deltaMaxPct: undefined })] });
+  check('a comma field against a point "vs": the change with a comma, the earlier value with its point (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /rose by 10 kg \(14,2%\) from 70\.5 kg/.test(dMsg(env, 'weight').innerHTML));
+}
+
+// Every mode says a deferral only this viewer meets is checked on save, at
+// the rule and on a branch; and that one nobody can resolve is not (round-2 N5).
+{
+  const MODES = [
+    { type: 'constraint', region: 'c', extra: { assert: "[f]<>''" } },
+    { type: 'window', region: 'w', extra: { windowNotFuture: true } },
+    { type: 'required', region: 'r', extra: {} },
+    { type: 'exists', region: 'x', extra: {} },
+  ];
+  function region(env, suffix) {
+    const kids = env.holders.f.children;
+    for (let i = 1; i < kids.length; i++) if (kids[i].id && new RegExp('-' + suffix + '$').test(kids[i].id)) return kids[i];
+    return null;
+  }
+  for (const m of MODES) {
+    for (const checked of [true, false]) {
+      const said = checked ? /It is checked after the record is saved\./ : /It is not checked after saving either/;
+      const rule = Object.assign({ type: m.type, fields: ['f'], deferred: true, deferredWhy: ['A value it reads is on a form you cannot view.'] },
+        m.extra, checked ? { deferredChecked: true } : {});
+      const env = boot([numEl('f', 'x')], { rules: [rule] });
+      const r = region(env, m.region);
+      check(m.type + ': a rule-level deferral ' + (checked ? 'this viewer meets says the save checks it' : 'says nobody checks it') + ' (got ' + (r && r.innerHTML) + ')',
+        !!r && said.test(r.innerHTML));
+      const branch = Object.assign({ deferred: true, deferredWhy: ['A value it reads is on a form you cannot view.'] }, m.extra, checked ? { deferredChecked: true } : {});
+      const envB = boot([numEl('f', 'x')], { rules: [{ type: m.type, fields: ['f'], branches: [branch] }] });
+      const rb = region(envB, m.region);
+      check(m.type + ': a branch deferral ' + (checked ? 'this viewer meets says the save checks it' : 'says nobody checks it') + ' (got ' + (rb && rb.innerHTML) + ')',
+        !!rb && said.test(rb.innerHTML));
+    }
+  }
+}
+
 // ---- 11) what the page hears from scripts and while typing (async) --------------
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
@@ -564,6 +644,28 @@ const tick = (ms) => new Promise((r) => setTimeout(r, ms));
     env.doc.activeElement = null; w.fire('blur');
     await tick(10);
     check('... and nothing to say once "72" is left', !shown(dMsg(env, 'weight')));
+  }
+  {
+    /* Focus in a box the rule does not read: a value a script writes into the
+       "vs" field is judged at once, not when that box is left (round-2 N3). */
+    const w0 = numEl('w0', '70'), w = numEl('weight', '74'), notes = makeEl('textarea');
+    notes.name = 'notes';
+    const env = boot([w0, w, notes], { rules: [W()] });
+    env.doc.activeElement = notes;
+    w0.value = '50';
+    await tick(900);
+    check('typing elsewhere: a vs value written by a script is judged at once (got ' + dMsg(env, 'weight').innerHTML + ')',
+      /rose by 24 kg/.test(dMsg(env, 'weight').innerHTML));
+  }
+  {
+    /* A "vs" picked from a list: judged at once, focus still on the list. */
+    const w0 = makeEl('select'), w = numEl('weight', '74');
+    w0.name = 'w0'; w0.value = '70';
+    const env = boot([w0, w], { rules: [W()] });
+    env.doc.activeElement = w0;
+    w0.value = '50'; w0.fire('change');
+    check('a vs picked from a dropdown is judged at once, focus still on it (got ' + dMsg(env, 'weight').innerHTML + ')',
+      /rose by 24 kg/.test(dMsg(env, 'weight').innerHTML));
   }
   console.log('delta_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
   process.exit(fail ? 1 : 0);

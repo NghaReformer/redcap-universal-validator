@@ -249,7 +249,6 @@ namespace {
         [hits($m), logs($m, 'uvalidate-unconfigurable')]);
     $pages['baseline_on'] = page(mod($C, true), 379, 'uv_delta_test');
     $C['XE-1'][380] += ['ud_wt' => '78', 'ud_height' => '169.4', 'ud_bl' => '85', 'ud_twoev' => '74'];
-    $pages['visit1_on_after_baseline'] = page(mod($C, true), 380, 'uv_delta_test');
     $m = save($C, true, 380, 'uv_delta_test');
     check('C3: visit_1 against baseline', hits($m) === ['ud_bl@380#1:up [baseline_arm_1][xv_weight]',
         'ud_height@380#1:down [first-event-name][ud_height]', 'ud_twoev@380#1:up [previous-event-name][ud_twoev]',
@@ -313,6 +312,15 @@ namespace {
     $S = $SEED;
     $S['XE-1'][380] += ['ud_w1' => '70.5', 'ud_w2' => '70.3', 'ud_sbp1' => '120', 'ud_sbp2' => '125', 'ud_ht0' => '150.0', 'ud_ht' => '152.0', 'ud_htcalc' => '152'];
     $step = function ($label, $m, array $want) { check('sheet ' . $label . ': every log entry', hits($m) === $want, hits($m)); };
+    // A page the sheet opens, and the values of its form saved by then (the JS twin fills the inputs with them).
+    $opened = function ($key, array $data, $refs, $evt, $form, $inst = 1) use (&$pages, $dict) {
+        $pages[$key] = page(mod($data, $refs), $evt, $form, $inst);
+        $row = $inst > 1 ? ($data['XE-1']['repeat_instances'][$evt][$form][$inst] ?? []) : ($data['XE-1'][$evt] ?? []);
+        $vals = [];
+        foreach ($row as $f => $v) if (isset($dict[$f]) && $dict[$f]['form_name'] === $form && (string) $v !== '') $vals[$f] = (string) $v;
+        ksort($vals);
+        $pages[$key . '_values'] = (object) $vals;
+    };
     $step('A6', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]']);
     $S['XE-1'][380] += ['ud_pct0' => '0', 'ud_c0' => '70,0', 'ud_c' => '72,5', 'ud_pain0' => '2', 'ud_pain' => '4', 'ud_two' => '130'];
     $step('A11', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_two@380#1:up [ud_w1]']);
@@ -320,6 +328,7 @@ namespace {
     $step('A12b', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]']);
     $S['XE-1'][380]['ud_sbp2'] = '145';
     $step('A13', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]']);
+    $opened('sheet_b1', $S, false, 380, 'uv_delta_test');
     $S['XE-1'][380]['ud_snap'] = '74';
     $step('B2', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]', 'ud_snap@380#1:up [xv_weight]']);
     $S['XE-1'][380]['xv_weight'] = '73.5';
@@ -328,6 +337,7 @@ namespace {
     $step('B3 (72)', save($S, false, 380, 'xe_visit'), ['ud_snap@380#1:up [xv_weight]']);
     $S['XE-1'][379] += ['ud_wt' => '70', 'ud_height' => '170.0', 'ud_bl' => '70', 'ud_twoev' => '70'];
     $step('C1', save($S, true, 379, 'uv_delta_test'), []);
+    $opened('sheet_c2', $S, true, 380, 'uv_delta_test');
     $S['XE-1'][380] += ['ud_wt' => '78', 'ud_height' => '169.4', 'ud_bl' => '85', 'ud_twoev' => '74'];
     $step('C3', save($S, true, 380, 'uv_delta_test'), ['ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
         'ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]', 'ud_snap@380#1:up [xv_weight]',
@@ -340,6 +350,7 @@ namespace {
     $step('C5', save($S, true, 379, 'uv_delta_test'), ['ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
         'ud_twoev@380#1:up [previous-event-name][ud_twoev]', 'ud_twoev@381#1:up [first-event-name][ud_twoev]',
         'ud_twoev@381#1:up [previous-event-name][ud_twoev]']);
+    $opened('sheet_d1', $S, true, 379, 'xr_specimen', 1);
     $S['XE-1']['repeat_instances'][379]['xr_specimen'][1]['ud_rep'] = '10.0';
     $step('D1', save($S, true, 379, 'xr_specimen', 1), []);
     $S['XE-1']['repeat_instances'][379]['xr_specimen'][2]['ud_rep'] = '7.5';
