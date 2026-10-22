@@ -356,12 +356,19 @@ class ScanPageView
      *
      * Null only for a run that is still going, and for a finished one whose
      * stored decision is exactly 1. js/scan.js decides the same way.
+     *
+     * NO DECISION IS "NOT CERTIFIED", AND ITS COUNTS ARE NOT COUNTS (W7-N10).
+     * A run the reaper expired, and every run finished before the decision
+     * was stored, has `clean` NULL and a rule-problem count of 0 that nobody
+     * measured. The count is read only beside a stored 0; a run with no
+     * decision gets the plain sentence whatever its counters hold.
      */
     public static function verdictText($status)
     {
         if (!is_array($status) || empty($status['terminal'])) return null;
         $c = array_key_exists('clean', $status) ? $status['clean'] : null;
         if ($c === 1 || $c === '1' || $c === true) return null;
+        if (!($c === 0 || $c === '0' || $c === false)) return self::NOT_CERTIFIED;
         $n = isset($status['ruleProblems']) ? (int) $status['ruleProblems'] : 0;
         if ($n === 1) return self::RULE_PROBLEM;
         if ($n > 1) return str_replace('{n}', (string) $n, self::RULE_PROBLEMS);
@@ -441,6 +448,43 @@ class ScanPageView
     const STORED        = 'Stored: {rows}';
     const STORED_VALUES = 'Stored: {rows}, with {size} of values';
 
+    /**
+     * THE FINDINGS PANEL (B5): a finished run's report, a keyset page at a
+     * time. The rows' own words are the report's (ScanReport through
+     * scan-findings); these are the panel's. No apostrophes, for the reason
+     * given at STALLED.
+     *
+     * {page} counts the pages this reader has turned, not a position in the
+     * report: a keyset page has no number of its own.
+     */
+    const REPORT_CAPTION   = 'Findings of this scan, page {page}';
+    const REPORT_LOADING   = 'Loading the findings.';
+    /** {findings} is "1 finding" or "1,234 findings": the reader's whole report, unfiltered. */
+    const REPORT_COUNT     = 'This report holds {findings}.';
+    const REPORT_NONE      = 'This scan stored no findings.';
+    const REPORT_EMPTY     = 'No findings match these filters.';
+    const REPORT_NO_MORE   = 'No further findings match these filters.';
+    /**
+     * A page can come back empty while later pages hold matches (review
+     * rv11a2-6): with two filters the server reads the first filter's key a
+     * window at a time. The panel reads on a few pages, saying REPORT_LOOKING,
+     * and then says REPORT_SEARCHING and leaves the next press to the reader.
+     * Neither is ever "no findings".
+     */
+    const REPORT_LOOKING   = 'Looking further for findings that match these filters.';
+    const REPORT_SEARCHING = 'Still looking: the pages read so far held no finding that matches these '
+                           . 'filters, and there are more to read. Press Next page to keep looking.';
+    const REPORT_RETRY     = 'Trying again shortly.';
+    const REPORT_FAILED    = 'The findings of this scan could not be read just now.';
+    const FILTER_ALL       = 'All';
+    /**
+     * The third of README's three marks of an incomplete report, said beside
+     * the download (item 10): the banner and the terminal row are on the page
+     * and in the file, and the suffix is in the file's name. {suffix} is the
+     * run's (ScanService::incompleteMarks()), e.g. _INCOMPLETE_CANCELLED.
+     */
+    const REPORT_SUFFIX    = 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -469,6 +513,18 @@ class ScanPageView
             'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
             'none'            => self::COUNT_NONE,
             'asOf'            => self::JUDGED_AS_OF,
+            'reportCaption'   => self::REPORT_CAPTION,
+            'reportLoading'   => self::REPORT_LOADING,
+            'reportCount'     => self::REPORT_COUNT,
+            'reportNone'      => self::REPORT_NONE,
+            'reportEmpty'     => self::REPORT_EMPTY,
+            'reportNoMore'    => self::REPORT_NO_MORE,
+            'reportLooking'   => self::REPORT_LOOKING,
+            'reportSearching' => self::REPORT_SEARCHING,
+            'reportRetry'     => self::REPORT_RETRY,
+            'reportFailed'    => self::REPORT_FAILED,
+            'filterAll'       => self::FILTER_ALL,
+            'reportSuffix'    => self::REPORT_SUFFIX,
         ];
     }
 

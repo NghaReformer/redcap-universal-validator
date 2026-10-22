@@ -139,10 +139,21 @@ final class ScanReport
      * decision was stored, whose row says NULL, which means NOT CERTIFIED and
      * not "found something".
      *
+     * THE COVERAGE SENTENCE IS THE PANEL'S (review rvf1-2). It was built from
+     * the run row alone, so the header of a group-scoped run whose records
+     * all moved to another group said every one "was deleted while it ran",
+     * which none was, while the panel above the same report said they moved.
+     * How an empty scope emptied is in the run's census, not its row, so the
+     * caller passes the two counts it read there, and the sentence is chosen
+     * by the one chooser the panel uses (ScanPageView::endedSentence()).
+     *
      * @param int|null $expectedRows how many findings the caller is about to
      *        write, so a reader of a cut-off file can tell that it was cut off
+     * @param array|null $emptied ['departed' => int, 'removed' => int]: the
+     *        records that left the group and the records deleted while it ran,
+     *        from the run's census; null when the caller did not read it
      */
-    public function runFacts($expectedRows = null)
+    public function runFacts($expectedRows = null, ?array $emptied = null)
     {
         $outcome = [
             'terminal' => $this->run['terminal'],
@@ -150,13 +161,21 @@ final class ScanReport
             'detail'   => $this->run['detail'],
             'clean'    => ($this->run['clean'] !== null && (int) $this->run['clean'] === 1),
         ];
+        $count = function ($k) use ($emptied) {
+            return (is_array($emptied) && isset($emptied[$k])) ? max(0, (int) $emptied[$k]) : 0;
+        };
         return [
             'schema'           => self::SCHEMA,
             'columns'          => ScanColumns::headers($this->cols),
             'legend'           => ScanColumns::keyLegend($this->cols),
             'coverage'         => (string) $outcome['coverage'],
             'detail'           => (string) $outcome['detail'],
-            'coverageSentence' => ScanPageView::coverageSentence($outcome['coverage'], $outcome['detail']),
+            'coverageSentence' => ScanPageView::endedSentence([
+                'coverage'  => $outcome['coverage'],
+                'detail'    => $outcome['detail'],
+                'leftGroup' => $count('departed') > 0,
+                'removed'   => $count('removed'),
+            ]),
             'mayCertify'       => ScanOutcome::mayClaimClean($outcome),
             'suffix'           => ScanOutcome::suffix($outcome),
             'valuesState'      => (string) $this->run['values_state'],
