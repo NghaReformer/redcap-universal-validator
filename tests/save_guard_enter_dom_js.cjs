@@ -317,6 +317,65 @@ const pending = [];
   check('7 a warn-only rule leaves dataEntrySubmit alone', env.win.dataEntrySubmit.__qridGuarded !== true);
 }
 
+// ---- 8) survey saves that do not finish the response (REQ-7) ---------------
+// Previous Page and Save & Return Later save the page without finishing the
+// response. A blank @UVREQUIRED field (its mode waits for a complete
+// response, php/modes.json "surveySave") does not hold them; a value check
+// still does, because the value is saved either way. The server sends the
+// button names and the waiting types on a survey page only.
+{
+  const PARTIAL = { buttons: ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], types: ['required'] };
+  const surveyCfg = (extra) => Object.assign({ singleFields: [], pooledFields: [], context: 'survey', partialSave: PARTIAL,
+    rules: [{ type: 'required', fields: ['phone'], blockSave: 'hard' },
+            { type: 'single', fields: ['study_id'], algorithm: 'iso7064_mod37_36', blockSave: 'hard' }] }, extra || {});
+  const phoneInput = () => { const el = makeEl('input'); el.name = 'phone'; el.type = 'text'; return el; };
+
+  const phone = phoneInput(), id = idInput();
+  const env = boot([phone, id], surveyCfg());
+  id.value = validId(env.NS); id.fire('change');
+  phone.fire('change');
+  for (const nm of ['submit-btn-saveprevpage', 'submit-btn-savereturnlater']) {
+    const btn = saveButton(nm);
+    const ev = clickEv(btn);
+    env.doc.fire('click', ev);
+    check('8 ' + nm + ': a blank required field does not hold the click', ev._prevented === false);
+    const before = env.calls.length;
+    env.win.dataEntrySubmit(btn);
+    check('8 ' + nm + ': ...nor REDCap\'s dataEntrySubmit called with that button', env.calls.length === before + 1);
+    env.win.dataEntrySubmit({ jquery: '3.6.0', 0: btn, length: 1 });
+    check('8 ' + nm + ': ...nor a jQuery object holding it', env.calls.length === before + 2);
+  }
+  const subEv = clickEv(null); subEv.submitter = saveButton('submit-btn-savereturnlater');
+  env.doc.fire('submit', subEv);
+  check('8 a form submit from Save & Return Later is not held', subEv._prevented === false);
+  check('8 no alert so far', env.win._alerts.length === 0);
+  const next = clickEv(saveButton('submit-btn-saverecord'));
+  env.doc.fire('click', next);
+  check('8 Next / Submit is still held by the blank required field',
+    next._prevented === true && env.win._alerts.length === 1 && /phone/.test(env.win._alerts[0]));
+  // after the task: the pass a let-through click leaves for its own onclick has ended
+  pending.push(new Promise((resolve) => setTimeout(() => {
+    check('8 dataEntrySubmit with no button is a full save, held', env.win.dataEntrySubmit() === false);
+    resolve();
+  }, 5)));
+
+  id.value = '0ABC00001X'; id.fire('change');
+  const back = clickEv(saveButton('submit-btn-saveprevpage'));
+  env.doc.fire('click', back);
+  check('8 a wrong ID still holds Previous Page (the value is saved either way)',
+    back._prevented === true && /Participant Study ID/.test(env.win._alerts[env.win._alerts.length - 1])
+    && !/phone/.test(env.win._alerts[env.win._alerts.length - 1]));
+}
+{
+  // a data-entry form: no partialSave in the config, every save button holds
+  const phone = makeEl('input'); phone.name = 'phone'; phone.type = 'text';
+  const env = boot([phone], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['phone'], blockSave: 'hard' }] });
+  phone.fire('change');
+  const ev = clickEv(saveButton('submit-btn-saveprevpage'));
+  env.doc.fire('click', ev);
+  check('8 without partialSave in the config, the same button name holds as before', ev._prevented === true);
+}
+
 Promise.all(pending).then(() => {
   console.log((fail ? 'FAIL' : 'OK') + ': save guard in front of dataEntrySubmit (' + (n - fail) + '/' + n + ' checks)');
   process.exit(fail ? 1 : 0);

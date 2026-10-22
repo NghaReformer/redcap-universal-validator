@@ -26,7 +26,10 @@
     "Multi-Language Management show) and puts the other languages under \"i18n\" (AnnotationRules::takeTexts), so a",
     "mode that lists textKeys must also list \"i18n\" in its branchKeys and clientKeys.",
     "bareValue (optional): how an unquoted, non-JSON tag value ends: token (the first space, the default) or condition",
-    "(the tag's bare value is a condition, read whole up to the end of the line or the next action tag; see Logic::parsePrefix)."
+    "(the tag's bare value is a condition, read whole up to the end of the line or the next action tag; see Logic::parsePrefix).",
+    "surveySave (optional): complete = a survey response is judged only once it is complete. The save audit skips the",
+    "mode's rules on a survey save whose response is still open (a page turn, Previous Page, Save & Return Later), and",
+    "on a survey page the buttons of common.partialSaveButtons, which save without finishing, do not wait for them."
   ],
   "common": {
     "refKeys": [
@@ -44,7 +47,8 @@
       "presence": ["snapshotFields", "growthChartWhy"],
       "conditionText": "(condition)",
       "configErrorText": "this check is not set up correctly; the study team can see the details on the data entry form."
-    }
+    },
+    "partialSaveButtons": ["submit-btn-saveprevpage", "submit-btn-savereturnlater"]
   },
   "modes": [
     {
@@ -123,6 +127,7 @@
       "hooks": {},
       "evaluator": "findingsRequired",
       "missingCodes": "answer",
+      "surveySave": "complete",
       "refKeys": [],
       "branchKeys": ["blockSave", "caseSensitive", "message", "references", "i18n"],
       "clientKeys": ["blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields", "i18n"],

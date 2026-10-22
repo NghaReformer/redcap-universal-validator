@@ -519,5 +519,14 @@ $threw = false;
 try { ModeRegistry::mode('nope'); } catch (\InvalidArgumentException $e) { $threw = true; }
 check('an unknown mode name throws', $threw);
 
+// REQ-5, REQ-7: the modes that judge a survey response only once it is complete
+check('surveySave: @UVREQUIRED waits for a complete survey response', ModeRegistry::waitsForCompleteSurvey('required') === true);
+$allTypes = []; foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) $allTypes[] = $t;
+$waiting = array_values(array_filter($allTypes, function ($t) { return ModeRegistry::waitsForCompleteSurvey($t); }));
+check('surveySave: no other mode waits (got ' . json_encode($waiting) . ')', $waiting === ['required']);
+check('surveySave: an unknown type does not wait', ModeRegistry::waitsForCompleteSurvey('nope') === false);
+check('partialSave: the two survey buttons and the waiting types',
+    ModeRegistry::partialSave() === ['buttons' => ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], 'types' => ['required']]);
+
 echo "registry_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

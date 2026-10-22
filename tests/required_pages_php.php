@@ -276,6 +276,52 @@ namespace {
     check('data entry form: not paged, the condition stays live',
         (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
     unset($_GET['__page__']);
+    check('data entry form: no partialSave in the config (REQ-7)', $cfg !== null && !isset($cfg['partialSave']));
+
+    // ---- 5) REQ-7: a survey page names the saves that do not finish the response ---
+    $cfg = pageCfg(mod($resp('1')), '5', '1');
+    check('survey page: partialSave names Previous Page and Save & Return Later, and the required type (got '
+        . json_encode($cfg['partialSave'] ?? null) . ')',
+        ($cfg['partialSave'] ?? null) === ['buttons' => ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], 'types' => ['required']]);
+
+    // ---- 6) REQ-5: a survey response still open is not judged for @UVREQUIRED ------
+    // REDCap saves each page a respondent leaves; phone (page 2) is blank while
+    // the response is open. The instrument's status says when it is complete.
+    $open = function ($status) {
+        $row = ['record_id' => '5', 'consent' => '1', 'age' => '30', 'phone' => '', 'phone_alt' => '', 'mix' => ''];
+        if ($status !== null) $row['enrol_complete'] = $status;
+        return ['5' => [351 => $row]];
+    };
+    $reqLogs = function ($m) { return fieldsOf(array_filter(logged($m, 'invalid-id-saved'), function ($e) { return ($e['type'] ?? '') === 'required'; })); };
+    $_GET['__page__'] = '1';
+    $m = mod($open('0'));
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, 'surveyhash', '55', 1);
+    check('survey, page 1 submitted (status 0): page 2\'s blank phone is not logged (got ' . json_encode($reqLogs($m)) . ')', $reqLogs($m) === []);
+    $read = array_merge([], ...\REDCap::$readFields);
+    check('survey: the instrument\'s status is read with the rule\'s fields', in_array('enrol_complete', $read, true));
+    unset($_GET['__page__']);
+    $m = mod($open('2'));
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, 'surveyhash', '55', 1);
+    check('survey completed (status 2): the blank phone is logged (got ' . json_encode($reqLogs($m)) . ')', in_array('phone', $reqLogs($m), true));
+    $m = mod($open(null));
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, 'surveyhash', '55', 1);
+    check('survey, status not readable: judged, as before', in_array('phone', $reqLogs($m), true));
+    $m = mod($open('0'));
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, null, null, 1);
+    check('a data entry save of an incomplete form is judged: staff saved it', in_array('phone', $reqLogs($m), true));
+    $m = mod($open('0'));
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, null, null, 1);
+    check('a data entry save does not read the status for this', !in_array('enrol_complete', array_merge([], ...\REDCap::$readFields), true));
+
+    // ---- 7) REQ-8: one blank test, the rows of tests/blank_fixture.json -----------
+    $bf = json_decode(file_get_contents(__DIR__ . '/blank_fixture.json'), true);
+    foreach ($bf['rows'] as $brow) {
+        $m = mod(['1' => [351 => $row(['sex' => '1', 'sym' => ['1' => '0', '2' => '0'], 'preg' => 'x', 'fever_c' => 'x',
+                                       'adult_q' => 'x', 'odd' => 'x', 'plain' => $brow['value']])]]);
+        $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+        $isFinding = in_array('plain', fieldsOf(logged($m, 'invalid-id-saved')), true);
+        check('audit, blank fixture "' . $brow['name'] . '": ' . ($brow['blank'] ? 'a finding' : 'an answer'), $isFinding === $brow['blank']);
+    }
 
     echo "required_pages_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

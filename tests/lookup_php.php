@@ -64,5 +64,16 @@ check('the trim keeps a long run of space inside a value', Logic::lookupTrim('A'
 check('the trim leaves nothing of a value that is all space', Logic::lookupTrim($sp . $nb) === '');
 check('the trim keeps a lone C2 or A0 byte at an end', Logic::lookupTrim("\xA0x\xC2") === "\xA0x\xC2");
 
+// REQ-8: the one blank test of @UVREQUIRED, row by row (tests/blank_fixture.json;
+// required_dom_js.cjs runs the same rows through the page).
+$bf = json_decode(file_get_contents(__DIR__ . '/blank_fixture.json'), true);
+check('blank_fixture.json has rows', is_array($bf) && !empty($bf['rows']));
+foreach ((array) ($bf['rows'] ?? []) as $row) {
+    check('isBlank "' . $row['name'] . '"', Logic::isBlank($row['value']) === $row['blank']);
+}
+check('isBlank: a value that is not valid UTF-8 holds something', Logic::isBlank("\xA0") === false && Logic::isBlank("\xC2") === false);
+check('isBlank: a long run of spaces with one letter is an answer, quickly',
+    (function () { $t = microtime(true); $r = Logic::isBlank(str_repeat(' ', 200000) . 'x'); return $r === false && microtime(true) - $t < 0.5; })());
+
 echo "lookup_php: $n checks, $fail failure(s)\n";
 exit($fail ? 1 : 0);

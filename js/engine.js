@@ -2358,6 +2358,22 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
    alternative from every character of a long inner run of spaces, so one
    check of a Notes value with 80,000 inner spaces took 3.8 s. */
 function QRID_whenSpace(c){ return c === 32 || c === 9 || c === 13 || c === 10; }
+/* Whether a value holds nothing a person could read: only spaces, tabs, line
+   breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode spaces
+   U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and paragraph
+   separators, and the invisible U+200B to U+200F, U+2060 and U+FEFF (REQ-8).
+   @UVREQUIRED asks it, so a no-break space pasted into a field is no answer.
+   Twin of Logic::isBlank; tests/blank_fixture.json pins both. */
+function QRID_isBlank(v){
+  var s = (v === null || v === undefined) ? "" : String(v);
+  for(var i = 0; i < s.length; i++){
+    var c = s.charCodeAt(i);
+    if(c === 0 || (c >= 9 && c <= 13) || c === 32 || c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200F)
+       || c === 0x2028 || c === 0x2029 || c === 0x202F || c === 0x205F || c === 0x2060 || c === 0x3000 || c === 0xFEFF) continue;
+    return false;
+  }
+  return true;
+}
 function QRID_whenTrim(v){
   var s = String(v), i = 0, j = s.length;
   while(i < j && QRID_whenSpace(s.charCodeAt(i))) i++;
@@ -3511,8 +3527,13 @@ function QRID_registerBlocker(input, fieldName, blockMode){
   UV_guard.items.push(input);
   if(UV_guard.armed) return;
   UV_guard.armed = true;
-  /* true when the save may go on, false when the guard held it */
-  function guard(e){
+  /* true when the save may go on, false when the guard held it. $by is the
+     button or element that asked for the save, when known: on a survey,
+     Previous Page and Save & Return Later save without finishing the
+     response, and the rules that wait for a complete response (REQ-7,
+     php/modes.json "surveySave") do not hold them. */
+  function guard(e, by){
+    var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice */
     if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return true;
@@ -3535,6 +3556,7 @@ function QRID_registerBlocker(input, fieldName, blockMode){
        the save. The notice stays; the server audit still sees the value. */
     var bad = UV_guard.items.filter(function(el){
       if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;
+      if(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0) return false;
       var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
       return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
     });
@@ -3544,7 +3566,9 @@ function QRID_registerBlocker(input, fieldName, blockMode){
        active rule can block, or fills fields from the answer (@UVEXISTS
        "return"), set __qridPending, and they drop it when the answer comes
        or after QRID_PENDING_MS. */
-    var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
+    var pend = UV_guard.items.filter(function(el){
+      return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
+    });
     if(!bad.length && !pend.length) return true;
     var label = QRID_guardLabel;
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
@@ -3569,7 +3593,7 @@ function QRID_registerBlocker(input, fieldName, blockMode){
     if(e.stopImmediatePropagation) e.stopImmediatePropagation();
     return false;
   }
-  document.addEventListener("submit", guard, true);
+  document.addEventListener("submit", function(e){ return guard(e, e && e.submitter); }, true);
   document.addEventListener("click", function(e){
     var t = e.target;
     while(t && t.getAttribute){
@@ -3579,7 +3603,7 @@ function QRID_registerBlocker(input, fieldName, blockMode){
            button's own onclick, dataEntrySubmit(this). The verdict cannot
            change in between, so the wrapper does not judge again; a re-run
            would repeat every recheck. */
-        if(guard(e)){
+        if(guard(e, t)){
           UV_guard.clickPass = true;
           setTimeout(function(){ UV_guard.clickPass = false; }, 0);
         }
@@ -3589,6 +3613,22 @@ function QRID_registerBlocker(input, fieldName, blockMode){
     }
   }, true);
   QRID_guardDataEntrySubmit(guard);
+}
+/* The survey buttons that save a response without finishing it, and the rule
+   types that do not hold them (REQ-7). The server sends both on a survey page
+   from php/modes.json (common.partialSaveButtons, "surveySave"). */
+var QRID_PARTIAL_SAVE = (function(){
+  var p = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.partialSave;
+  return {
+    buttons: (p && Array.isArray(p.buttons)) ? p.buttons : [],
+    types: (p && Array.isArray(p.types)) ? p.types : []
+  };
+})();
+/* Whether the element that asked for a save is one of those buttons. */
+function QRID_partialSave(by){
+  if(!QRID_PARTIAL_SAVE.buttons.length || !by) return false;
+  var nm = (by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || ""));
+  return typeof nm === "string" && QRID_PARTIAL_SAVE.buttons.indexOf(nm) >= 0;
 }
 /* REDCap's own way into a data-entry save (LIVE-1). Pressing Enter in a text
    field runs a keydown handler that blurs the field and then calls
@@ -3610,10 +3650,10 @@ function QRID_guardDataEntrySubmit(guard){
     var orig = window.dataEntrySubmit;
     if(typeof orig !== "function") return false;
     if(orig.__qridGuarded) return true;
-    var guarded = function(){
+    var guarded = function(ob){
       if(!UV_guard.clickPass){
         var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){} };
-        if(!guard(ev)) return false;
+        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)) return false;
       }
       return orig.apply(this, arguments);
     };
@@ -6380,7 +6420,7 @@ function QRIDRequiredInit(QRID_CONFIG){
        so required composes with any other mode on the same input. */
     var GITEM = null;
     if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
-      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridType: QRID_CONFIG.type,
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} },
@@ -6425,7 +6465,7 @@ function QRIDRequiredInit(QRID_CONFIG){
         }
         QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
-      var blank = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null)) === "";
+      var blank = QRID_isBlank(QRID_WHEN.readRef(fieldName, null));
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
@@ -6459,7 +6499,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     UV_validators[f] = { type: "required", mode: { required: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1 || QRID_fieldHidden(QRID_findAnchor(f))) return null;
-        return QRID_whenTrim(QRID_WHEN.readRef(f, null)) !== ""; } };
+        return !QRID_isBlank(QRID_WHEN.readRef(f, null)); } };
   });
   function boot(){
     if(configError){
@@ -8472,6 +8512,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         cfg.branches.push(bc);
       }
       cfg.fields = rule.fields || [];
+      cfg.type = rule.type;                 /* the guard asks a rule's type (QRID_PARTIAL_SAVE) */
       /* branches split by this key resolve per group (QRID_buildVariants) */
       cfg.branchGroup = (typeof rule.type === "string" && own(BRANCH_GROUP_OF_TYPE, rule.type)) ? BRANCH_GROUP_OF_TYPE[rule.type] : null;
       if(rule.configError) cfg.configErrorOverride = rule.configError;
@@ -8484,6 +8525,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
              : C[k];
     }
     cfg.fields = rule.fields || [];
+    cfg.type = rule.type;                   /* the guard asks a rule's type (QRID_PARTIAL_SAVE) */
     /* a rule the server flagged as mis-configured (e.g. a non-integer expected
        count or bad id-lengths) surfaces as a field-level config error, never as
        silent wrong validation. */

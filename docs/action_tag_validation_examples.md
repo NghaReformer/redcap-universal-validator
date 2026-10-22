@@ -1003,7 +1003,7 @@ things it lacks: a **condition** and a **real block**.
 @UVREQUIRED
 ```
 
-A blank (or whitespace-only) field shows the notice. Filling it clears the notice —
+A blank field (empty, or only spaces, no-break spaces or other invisible characters) shows the notice. Filling it clears the notice —
 deliberately no green "OK", because required mode never judges the *value*.
 
 ### Level 2 — required only while a condition is true

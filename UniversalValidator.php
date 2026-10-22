@@ -324,6 +324,24 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
 
+        // A survey response that is still open (REQ-5). REDCap saves each page
+        // a respondent leaves (Next, Previous Page, Save & Return Later), so a
+        // blank on a page not reached yet, or left for later, is no finding.
+        // The rules of a mode with "surveySave": "complete" (@UVREQUIRED) are
+        // judged once the instrument's status is Complete (2), which REDCap
+        // sets when the respondent finishes. A status it could not read
+        // leaves them judged, as before; the scan still covers open responses.
+        $statusField = null;
+        if ($this->surveySave && is_string($instrument) && $instrument !== '') {
+            foreach ($rules as $i => $r) {
+                if (empty($r['configError']) && !isset($dependents[$i]) && ModeRegistry::waitsForCompleteSurvey($r['type'] ?? '')) {
+                    $statusField = $instrument . '_complete';
+                    $readSet[$statusField] = true;
+                    break;
+                }
+            }
+        }
+
         // Read every audited + condition-referenced field for this exact
         // record/event/instance in ONE getData call instead of one call per
         // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
@@ -344,6 +362,8 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
+        $surveyOpen = $statusField !== null && isset($values[$statusField]) && is_scalar($values[$statusField])
+            && trim((string) $values[$statusField]) !== '' && trim((string) $values[$statusField]) !== '2';
 
         // HOST CONTEXTS for reverse dependencies (H-03). A dependant's field
         // lives on a DIFFERENT instrument, which may repeat while the form
@@ -366,6 +386,7 @@ class UniversalValidator extends AbstractExternalModule
         $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
             if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
+            if ($surveyOpen && !isset($dependents[$ruleIndex]) && ModeRegistry::waitsForCompleteSurvey($rule['type'] ?? '')) continue;
             // Each rule is isolated: one rule blowing up must not silently
             // abort the audit of every later rule (COR-002).
             try {
@@ -2988,7 +3009,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
-            if ($value !== null && trim((string) $value) !== '') continue;
+            if ($value !== null && !Logic::isBlank((string) $value)) continue;
             $shown = $this->branchingShows($project_id, $field, $values, $resolution);
             if ($shown === false) continue;
             if (is_string($shown)) {
@@ -4055,6 +4076,17 @@ class UniversalValidator extends AbstractExternalModule
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
         if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
+        // On a survey, Previous Page and Save & Return Later save without
+        // finishing the response; a rule that waits for a complete response
+        // does not hold them (REQ-7).
+        if ($context === 'survey' && $config['rules']) {
+            $partial = ModeRegistry::partialSave();
+            if ($partial !== null) {
+                foreach ($config['rules'] as $r) {
+                    if (is_array($r) && in_array($r['type'] ?? '', $partial['types'], true)) { $config['partialSave'] = $partial; break; }
+                }
+            }
+        }
         // The project's Missing Data Codes (codes only, never their labels): a
         // field marked with one holds the code, which the checks leave alone.
         if ($config['rules']) {

@@ -71,6 +71,9 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['surveySave']) && $m['surveySave'] !== 'complete') {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a surveySave that is not complete');
+            }
             if (isset($m['bareValue']) && !in_array($m['bareValue'], ['token', 'condition'], true)) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a bareValue that is not token or condition');
             }
@@ -469,6 +472,39 @@ final class ModeRegistry
     public static function missingCodes($mode)
     {
         return self::mode($mode)['missingCodes'];
+    }
+
+    /**
+     * Whether rules of $type judge a survey response only once it is complete
+     * (php/modes.json "surveySave": "complete"; REQ-5, REQ-7).
+     */
+    public static function waitsForCompleteSurvey($type)
+    {
+        $m = self::mode(self::modeOfType((string) $type));
+        return isset($m['surveySave']) && $m['surveySave'] === 'complete';
+    }
+
+    /**
+     * What a survey page needs to let a save that does not finish the response
+     * through (REQ-7): the names of those buttons (common.partialSaveButtons)
+     * and the rule types that wait for a complete response. Null when no type
+     * waits.
+     *
+     * @return array{buttons: string[], types: string[]}|null
+     */
+    public static function partialSave()
+    {
+        return self::memo('partialSave', function () {
+            $c = isset(self::data()['common']['partialSaveButtons']) && is_array(self::data()['common']['partialSaveButtons'])
+                ? array_values(array_filter(self::data()['common']['partialSaveButtons'], 'is_string')) : [];
+            $types = [];
+            foreach (self::data()['modes'] as $m) {
+                if (isset($m['surveySave']) && $m['surveySave'] === 'complete') {
+                    foreach ($m['types'] as $t) $types[] = $t;
+                }
+            }
+            return ($c && $types) ? ['buttons' => $c, 'types' => $types] : null;
+        });
     }
 
     /** Whether the mode needs a runtime service ('transport', 'clock'). */

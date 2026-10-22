@@ -440,8 +440,11 @@ the two things it lacks: a **condition** and a **real block**:
 @UVREQUIRED={"when":"[consent]='1'","message":"Phone needed for consented participants","blockSave":"hard"}
 ```
 
-- A blank (or whitespace-only) field shows the notice while the requirement is
-  in force; the requirement turns on and off **live** as referenced fields
+- A blank field shows the notice while the requirement is in force. Blank
+  means empty or holding only spaces, tabs, line breaks, no-break spaces, other
+  Unicode spaces (U+2000 to U+200A, U+3000) or invisible characters (a
+  zero-width space, a byte-order mark): the page, the audit and the scan use
+  one test, pinned by `tests/blank_fixture.json`. The requirement turns on and off **live** as referenced fields
   change. Filling the field clears the notice — deliberately no green "OK",
   because required mode never judges the *value*. Pair it with `@UVALIDATE`
   or `@UVASSERT` for that (modes compose, each with its own save-block state:
@@ -465,6 +468,15 @@ the two things it lacks: a **condition** and a **real block**:
 - The server audit logs a blank-while-required save as `type: required`,
   `reason: required-blank` (a blank carries nothing identifying, so this entry
   is safe in every privacy mode).
+- **A survey response is judged once it is complete.** REDCap saves each page
+  a respondent leaves, so the audit does not log a page not reached yet, or a
+  field left for Save & Return Later: on a survey save it judges `@UVREQUIRED`
+  only when the instrument's status is Complete. The scan still lists blank
+  fields of open responses. On the page, Previous Page and Save & Return Later
+  are not held by a blank required field, as with REDCap's own required flag;
+  a value check (`@UVALIDATE`, `@UVASSERT`, ...) still holds them, because the
+  page's values are saved either way. The button names and the modes that wait
+  are listed in `php/modes.json` (`partialSaveButtons`, `"surveySave"`).
 
 ## No duplicates across records — the `@UVUNIQUE` tag
 
