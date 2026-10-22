@@ -7913,7 +7913,16 @@ class UniversalValidator extends AbstractExternalModule
                 return 'the scan tables are not ready; nothing was done';
             }
             $key = 'scan-cron-state-' . $what;
-            $save = function (array $state) use ($key) {
+            $began = time();
+            $save = function (array $state) use ($key, $began) {
+                // NOT OVER A DISABLE THAT CAME AFTER THE PASS BEGAN (review
+                // rv10a2-4). A disable that drops the tables empties this
+                // cursor with them; a pass that read its census before the
+                // drop wrote its own back over it. The marker is read here
+                // every time, not every few seconds as `stopped` reads it,
+                // since a save is the last thing a pass does.
+                $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
+                if (is_numeric($at) && (int) $at >= $began) return;
                 $this->setSystemSetting($key, json_encode($state));
             };
             $sys = $this->scanSystemPolicy();
@@ -7923,7 +7932,7 @@ class UniversalValidator extends AbstractExternalModule
                     $this->log($event, array_merge(['what' => (string) $what], $context));
                 },
                 'save'   => $save,
-                'stopped' => $this->scanStopMarker(time()),
+                'stopped' => $this->scanStopMarker($began),
                 // A FRESH START FOR EVERY PROJECT (MEMO LIFETIME). The passes
                 // build no ScanService: every statement goes through the store
                 // or ScanRetention, which keep nothing between calls. What

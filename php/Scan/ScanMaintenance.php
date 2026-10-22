@@ -41,11 +41,14 @@ namespace INSPIRE\UniversalValidator\Scan;
  * A PASS CAN BE TOLD TO STOP. `stopped` is asked before every unit, beside the
  * budget. The module answers it from the marker its disable hook writes, so a
  * pass running in another process when the module is switched off stops at
- * its next unit (M17).
+ * its next unit (M17). The marker is read every few seconds, so a pass also
+ * stops at the first statement that finds a table missing: a disable that
+ * dropped the tables in between would otherwise fail every project left in
+ * the page, one log entry each (review rv10a2-4).
  *
- * SWITCHING THE MODULE OFF is here too: disable() frees every worker slot and
- * stops every active run, deleting nothing; dropTables() is the opt-in that
- * deletes.
+ * SWITCHING THE MODULE OFF is here too: disable() stops every active run and
+ * then frees every worker slot, deleting nothing; dropTables() is the opt-in
+ * that deletes.
  *
  * PHP 7.4.
  */
@@ -307,6 +310,10 @@ final class ScanMaintenance
         if (!isset($this->state['revoke']) || !is_array($this->state['revoke'])) $this->state['revoke'] = [];
 
         foreach (array_keys($this->state['revoke']) as $pid) {
+            if ($this->gone) {
+                $out['stopped'] = 1;
+                break;
+            }
             // revokeMore() asks the budget itself, after a bump still owed.
             try {
                 call_user_func($this->enter, (int) $pid);
@@ -657,9 +664,17 @@ final class ScanMaintenance
     /** @var ?array the installation's policy, read once per pass */
     private $sys = null;
 
+    /**
+     * @var bool a statement of this pass found a table missing
+     *      (DbError::isMissingTable()): the tables went while it ran, and it
+     *      stops at its next unit (review rv10a2-4)
+     */
+    private $gone = false;
+
     private function begin($what, array $state)
     {
         $this->sys = null;
+        $this->gone = false;
         $this->what = $what;
         $this->state = $state;
         $this->started = (float) call_user_func($this->clock);
@@ -680,10 +695,10 @@ final class ScanMaintenance
         call_user_func($this->save, $this->state);
     }
 
-    /** Out of budget, or switched off: either stops the pass here. */
+    /** Out of budget, switched off, or its tables gone: any stops the pass here. */
     private function halted($until, array &$out)
     {
-        if (call_user_func($this->stopped)) {
+        if ($this->gone || call_user_func($this->stopped)) {
             $out['stopped'] = 1;
             return true;
         }
@@ -718,9 +733,15 @@ final class ScanMaintenance
                 try {
                     $finished = $each($row);
                 } catch (\Throwable $e) {
-                    // Logged; the next lap comes back to it.
+                    // Logged; the next lap comes back to it. With the tables
+                    // gone, the project is not passed over: the pass stops
+                    // before it, and nothing after it is tried.
                     $this->failed('project', $row['pid'], $e);
                     $out['failed']++;
+                    if ($this->gone) {
+                        $out['stopped'] = 1;
+                        return $after;
+                    }
                     $finished = true;
                 }
                 if (!$finished) return $row['pid'] - 1;
@@ -789,6 +810,7 @@ final class ScanMaintenance
 
     private function failed($step, $pid, \Throwable $e)
     {
+        if (DbError::isMissingTable($e)) $this->gone = true;
         call_user_func($this->log, 'scan-cron-step-failed', [
             'pass' => $this->what, 'step' => (string) $step, 'project_id' => $pid === null ? null : (int) $pid,
             // The class and what DbError keeps of the server's text, which is

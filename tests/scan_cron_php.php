@@ -359,6 +359,27 @@ $stopped = (new ScanMaintenance($db, ['policy' => $policy, 'clock' => $clock,
     'stopped' => function () { return true; }]))->reap([], 100.0);
 check('stop: a pass told to stop does no project work', $stopped['out']['stopped'] === 1
     && $stopped['out']['projects'] === 0);
+// rv10a2-4: a project whose statement finds its table gone is not passed
+// over. The pass stops before it, and hands back the project before it.
+$gdb = new ScriptDb(function ($sql, $params) use ($census, $RUN) {
+    if (strpos($sql, 'SELECT run_id FROM ' . $RUN) !== false && $params[0] === 9) {
+        throw new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist");
+    }
+    return call_user_func($census([[5, 1, 0, null, ''], [9, 1, 0, null, ''], [12, 1, 0, null, '']]), $sql, $params);
+});
+$gone = (new ScanMaintenance($gdb, ['policy' => $policy]))->reap([], 100.0);
+check('gone: a pass that finds a table missing stops, and resumes at that project, not after it',
+    $gone['out']['stopped'] === 1 && $gone['out']['failed'] === 1 && $gone['state']['after'] === 5);
+$gdb = new ScriptDb(function ($sql, $params) {
+    throw new \RuntimeException("Table 'redcap.uv_finding' doesn't exist");
+});
+$owed = ['revoke' => [5 => ['revision' => 2], 9 => ['revision' => 3]], 'after' => 0];
+$gone = (new ScanMaintenance($gdb, ['policy' => $policy]))->retain($owed, 100.0);
+check('gone: and tries no revocation it still owes after the first, nor any project',
+    $gone['out']['stopped'] === 1 && $gone['out']['failed'] === 1
+    && array_filter($gdb->log, function ($l) { return in_array(9, $l[1], true)
+        || strpos($l[0], 'GROUP_CONCAT(DISTINCT values_state)') !== false; }) === []
+    && array_keys($gone['state']['revoke']) === [5, 9]);
 
 // ---- 9) the module switched off (M17) ---------------------------------------
 $SLOT = Schema::table('scan_worker_slot');
@@ -478,6 +499,52 @@ $m->uvScanReapCron();
 $cl = $m->logged('scan-cron');
 check('stop marker: an earlier disable stops no pass of the enable after it',
     count($cl) === 1 && $cl[0]['stopped'] === 0 && $cl[0]['projects'] === 1);
+
+// rv10a2-4: a disable that drops the tables lands while a pass works the
+// first of 300 projects in its census page (the reviewer's
+// temporal_rv10a2_drop_race.php). The pass read the marker a moment before,
+// so only the missing table can tell it. It stops at the first failure, not
+// one log entry for each project left, and leaves the cursor the drop emptied.
+$rows = [];
+for ($p = 1; $p <= 300; $p++) $rows[] = [$p, 1, 0, null, ''];
+$m = new UniversalValidator();
+$m->systemSettings = $on + [UniversalValidator::SCAN_DROP_ON_DISABLE => '1',
+    'scan-cron-state-reap' => json_encode(['after' => 0])];
+$m->tables = $tables;
+$dropped = false;
+$emptied = null;
+$m->responder = function ($sql, $params) use (&$dropped, &$emptied, $rows, $RUN, $m) {
+    if ($dropped && strpos($sql, 'uv_') !== false) {
+        throw new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist");
+    }
+    if (strpos($sql, 'GROUP_CONCAT(DISTINCT values_state)') !== false) {
+        $out = [];
+        foreach ($rows as $r) if ($r[0] > (int) end($params)) $out[] = $r;
+        return $out;
+    }
+    if (strpos($sql, 'SELECT run_id FROM ' . $RUN) !== false && $params[0] === 1 && !$dropped) {
+        // Another request: the administrator disables the module, opted in to the drop.
+        $m->redcap_module_system_disable('9.9.9');
+        $emptied = $m->getSystemSetting('scan-cron-state-reap');
+        $dropped = true;
+        return [];
+    }
+    if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) return [];
+    return null;
+};
+$m->uvScanReapCron(['cron_max_run_time' => '300']);
+$cl = $m->logged('scan-cron');
+check('drop race: a pass whose tables went stops at the first statement that finds one missing',
+    count($m->logged('scan-cron-step-failed')) === 1 && count($cl) === 1 && $cl[0]['stopped'] === 1);
+check('drop race: and leaves the cursor the drop emptied, not its own over it',
+    $emptied === '' && $m->getSystemSetting('scan-cron-state-reap') === '');
+check('a missing table is known by the server\'s sentence, through the store\'s wrapper too',
+    \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist"))
+    && \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException('query failed', 1146))
+    && \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable('x',
+        new \RuntimeException(str_repeat('x', 5000) . " Table 'redcap.uv_finding' doesn't exist")))
+    && !\INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException("Unknown column 'x' in 'field list'"))
+    && !\INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException('Lock wait timeout exceeded', 1205)));
 
 // ---- 10) memo lifetime: one module instance, many projects (W8-N10) ---------
 //
