@@ -379,7 +379,11 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
-check('only "whereMessage" is kept off survey pages', ModeRegistry::staffOnlyKeys() === ['whereMessage']);
+check('survey pages lose the window diagnostics and "whereMessage"',
+    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage']);
+check('survey shape: reasons dropped, snapshot and chart reasons kept as present',
+    ModeRegistry::surveyShape()['drop'] === ['deferredWhy'] && ModeRegistry::surveyShape()['presence'] === ['snapshotFields', 'growthChartWhy']
+    && ModeRegistry::surveyShape()['conditionText'] === '(condition)');
 check('exists explains a filtered finding with "whereMessage"', ModeRegistry::reasonMessageKeys('exists') === ['filtered' => 'whereMessage']
     && ModeRegistry::reasonMessageKeys('range') === []);
 check('exists issue labels', ModeRegistry::issueLabel('exists', 'filtered') === 'Saved, but not where its conditions hold'

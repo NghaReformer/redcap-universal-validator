@@ -4028,7 +4028,8 @@ class UniversalValidator extends AbstractExternalModule
         // EVERY form, so a single DOM mutation fans out to all of them and freezes
         // the tab (PER-003, the 1.5.1 known perf issue). The post-save audit and the
         // Validation scan still cover every rule on every form.
-        $rules = $this->rulesOnInstrument($rules, $pid, $instrument);
+        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey');
+
         $config = array_merge($this->defaults(), [
             'singleFields' => [],
             'pooledFields' => [],
@@ -7465,13 +7466,35 @@ class UniversalValidator extends AbstractExternalModule
      * conservative choice for contexts where the form is not identifiable, matching
      * fieldsOnInstrument()'s null contract elsewhere in the audit.
      */
-    private function rulesOnInstrument(array $rules, $pid, $instrument)
+    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false)
     {
         $onForm = $this->fieldsOnInstrument($pid, $instrument);
-        if ($onForm === null) return $rules;   // cannot identify the form's fields: leave the set as-is
+        if ($onForm === null) {
+            // A survey page carries no configuration error it cannot place:
+            // the notice is muted there, and the rule names other forms (LIVE-2).
+            if (!$survey) return $rules;
+            return array_values(array_filter($rules, function ($r) { return empty($r['configError']); }));
+        }
+        // A survey shown one section per page renders only this page's fields.
+        $onPage = $survey ? $this->surveyPageFields($pid, $instrument) : null;
         $out = [];
         foreach ($rules as $r) {
-            if (!empty($r['configError'])) { $out[] = $r; continue; }   // keep config-error notices
+            if (!empty($r['configError'])) {
+                // Staff see every configuration error, on any form. A survey
+                // page keeps only those of its own fields, as "not available"
+                // under the field (ModeRegistry::clientShape): it showed none of
+                // the others, and its source carried them all (LIVE-2, CHO-6).
+                if ($survey) {
+                    $own = [];
+                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                        if (isset($onForm[$f]) && ($onPage === null || isset($onPage[$f]))) $own[] = $f;
+                    }
+                    if (!$own) continue;
+                    $r['fields'] = $own;
+                }
+                $out[] = $r;
+                continue;
+            }
             if (empty($r['fields']) || !is_array($r['fields'])) continue;
             $onFields = [];
             foreach ($r['fields'] as $f) {

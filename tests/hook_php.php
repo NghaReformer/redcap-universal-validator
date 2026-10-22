@@ -447,8 +447,16 @@ namespace {
     check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
     check('form hook injects context=form', $cfg && isset($cfg['context']) && $cfg['context'] === 'form');
 
-    // survey hook injects context=survey (client uses it to mute technical notices)
+    // A survey page carries no configuration error of fields it does not
+    // show: the notice is muted there, and the rule names other forms (LIVE-2).
     $m = newModule($csvRule, $dd, [], 149);
+    ob_start();
+    $m->redcap_survey_page_top(149, '1', 'id_validation_test', 351, null, 'hash', null, 1);
+    $html = ob_get_clean();
+    check('survey: a configuration error of fields not on the page is not sent (LIVE-2)',
+        strpos($html, 'studyid') === false && strpos($html, 'not in this project') === false);
+    // survey hook injects context=survey (client uses it to mute technical notices)
+    $m = newModule($dialogRules, $dictionary, [], 149);
     ob_start();
     $m->redcap_survey_page_top(149, '1', 'id_validation_test', 351, null, 'hash', null, 1);
     $html = ob_get_clean();

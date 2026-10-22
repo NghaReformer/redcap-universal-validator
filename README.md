@@ -411,6 +411,16 @@ enforced with the same message/confirm/block modes as everything else:
   happened, and the Validation scan can find it later. Deferring buys privacy at
   the cost of both live feedback and the block — someone has to read the log or
   run the scan.
+- **A survey page's source carries no rule detail.** The link is public, so the
+  page config of a survey states no condition text, no field a value was read
+  from and no reason a rule is not checked: a comparison settled on the server
+  arrives as its answer only, next to the placeholder `(condition)`, and a rule
+  deferred as a whole arrives with a fixed constant. Of the configuration
+  errors, a survey page gets only those of its own fields (of the current page,
+  on a survey shown one section per page), each without its text. Up to
+  2.3.0-rc.2 the page source stated, for example, `"when":"[hiv]='1'"` next to
+  `"whenAst":["const",true]`, and every configuration error of the project.
+  Staff forms keep the full config.
 - **A reference the module cannot resolve is refused** (1.6.0) — a field on a
   different repeating instrument, a field not collected in this event, or a read
   that failed. The rule stops checking, and the reason names the field instead of
@@ -1264,6 +1274,7 @@ node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mod
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 php  tests/required_pages_php.php    # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
 php  tests/unique_scope_php.php      # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/survey_shape_php.php      # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

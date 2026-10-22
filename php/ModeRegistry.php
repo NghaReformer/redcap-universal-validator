@@ -157,6 +157,15 @@ final class ModeRegistry
         if (!isset($byMode['check'])) throw new \RuntimeException('mode registry has no "check" mode');
         $j['byMode'] = $byMode;
         if (!isset($j['common']['refKeys']) || !is_array($j['common']['refKeys'])) $j['common']['refKeys'] = [];
+        if (isset($j['common']['surveyShape'])) {
+            $ss = $j['common']['surveyShape'];
+            $isList = function ($v) { return is_array($v) && array_values($v) === $v && !array_filter($v, function ($k) { return !is_string($k) || $k === ''; }); };
+            if (!is_array($ss) || (isset($ss['drop']) && !$isList($ss['drop'])) || (isset($ss['presence']) && !$isList($ss['presence']))
+                    || (isset($ss['conditionText']) && (!is_string($ss['conditionText']) || $ss['conditionText'] === ''))
+                    || (isset($ss['configErrorText']) && (!is_string($ss['configErrorText']) || $ss['configErrorText'] === ''))) {
+                throw new \RuntimeException('common.surveyShape is not lists of key names (drop, presence) and texts (conditionText, configErrorText)');
+            }
+        }
         self::$data = $j;
         return self::$data;
     }
@@ -322,32 +331,87 @@ final class ModeRegistry
     }
 
     /**
+     * What a survey page's config keeps of a rule (php/modes.json
+     * common.surveyShape): the keys dropped, the keys kept only as present,
+     * the text that replaces a condition whose AST is sent, and the text of a
+     * configuration error.
+     *
+     * @return array{drop: string[], presence: string[], conditionText: string, configErrorText: string}
+     */
+    public static function surveyShape()
+    {
+        return self::memo('surveyShape', function () {
+            $s = isset(self::data()['common']['surveyShape']) && is_array(self::data()['common']['surveyShape'])
+                ? self::data()['common']['surveyShape'] : [];
+            $list = function ($k) use ($s) {
+                return (isset($s[$k]) && is_array($s[$k])) ? array_values(array_filter($s[$k], 'is_string')) : [];
+            };
+            $text = function ($k, $fallback) use ($s) {
+                return (isset($s[$k]) && is_string($s[$k]) && $s[$k] !== '') ? $s[$k] : $fallback;
+            };
+            return [
+                'drop' => $list('drop'),
+                'presence' => $list('presence'),
+                'conditionText' => $text('conditionText', '(condition)'),
+                'configErrorText' => $text('configErrorText', 'this check is not set up correctly.'),
+            ];
+        });
+    }
+
+    /**
      * A rule as the page may see it: every server key removed, on the rule and
-     * on each branch. On a survey page ($survey) the configuration error of a
-     * mode that has server keys is replaced by a generic one: its text names
-     * the fields the rule reads, which the page must not learn; and the staff-
-     * only keys go too, with their languages under "i18n".
+     * on each branch. On a survey page ($survey) the page is public and shows a
+     * respondent no rule detail, so its config carries none either (LIVE-2,
+     * AST-5, CHO-6, WIN-3):
+     *   - a rule with a configuration error keeps only its type, its fields
+     *     and a generic text: the error names fields, codes and conditions;
+     *   - the staff-only keys go, with their languages under "i18n", and so do
+     *     surveyShape's "drop" keys (the reasons a rule is not checked);
+     *   - surveyShape's "presence" keys keep only that they are there: the
+     *     fields read when the page was built make a rule advisory, and their
+     *     names are shown on staff forms only;
+     *   - a condition whose AST is sent loses its text, which next to a
+     *     settled ["const", true] states a saved value of another form; a rule
+     *     deferred as a whole, whose conditions are never read
+     *     (QRID_activeVariants), sends the placeholder with ["const", true]
+     *     in place of its AST, a constant no saved value chose.
      */
     public static function clientShape(array $r, $survey = false)
     {
         if ($survey && isset($r['configError']) && is_string($r['configError']) && $r['configError'] !== '') {
-            // A refused tag carries no mode of its own (it falls back to the
-            // default type), so its error is recognised by the tag it starts with.
-            foreach (self::all() as $def) {
-                if (empty($def['serverKeys'])) continue;
-                $m = self::modeOfType(isset($r['type']) ? $r['type'] : '');
-                if ($m === $def['mode'] || strpos($r['configError'], $def['tag'] . ' ') === 0) {
-                    $r['configError'] = 'this check is not set up correctly; the study team can see the details on the data entry form.';
-                    break;
-                }
-            }
+            return [
+                'type' => isset($r['type']) && is_string($r['type']) ? $r['type'] : 'single',
+                'fields' => (isset($r['fields']) && is_array($r['fields'])) ? array_values($r['fields']) : [],
+                'configError' => self::surveyShape()['configErrorText'],
+            ];
         }
-        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys()) : self::serverKeys();
-        $strip = function (array $x) use ($drop, $survey) {
+        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys(), self::surveyShape()['drop']) : self::serverKeys();
+        $whole = $survey && !empty($r['deferred']) && empty($r['deferredOnSave']);
+        $strip = function (array $x) use ($drop, $survey, $whole) {
             foreach ($drop as $k) unset($x[$k]);
-            if ($survey && isset($x['i18n']) && is_array($x['i18n'])) {
+            if (!$survey) return $x;
+            if (isset($x['i18n']) && is_array($x['i18n'])) {
                 foreach (self::staffOnlyKeys() as $k) unset($x['i18n'][$k]);
                 if (!$x['i18n']) unset($x['i18n']);
+            }
+            $shape = self::surveyShape();
+            foreach ($shape['presence'] as $k) {
+                if (!isset($x[$k]) || !is_array($x[$k]) || !$x[$k]) continue;
+                $x[$k] = array_values($x[$k]) === $x[$k] ? [''] : array_fill_keys(array_keys($x[$k]), '');
+            }
+            foreach (self::refKeys('cond') as $rk) {
+                if (!isset($rk['ast'])) continue;
+                $tk = $rk['key'];
+                $ak = $rk['ast'];
+                if (!isset($x[$tk]) || !is_string($x[$tk]) || $x[$tk] === '') continue;
+                if ($whole) {
+                    // never read, so a fixed constant: the page still sees a
+                    // condition (a constraint without one is a set-up error)
+                    $x[$tk] = $shape['conditionText'];
+                    $x[$ak] = ['const', true];
+                } elseif (isset($x[$ak]) && is_array($x[$ak]) && $x[$ak]) {
+                    $x[$tk] = $shape['conditionText'];
+                }
             }
             return $x;
         };
@@ -359,6 +423,7 @@ final class ModeRegistry
         }
         return $r;
     }
+
 
     /** Field-type eligibility of a mode: fieldTypes plus the refusal wording. */
     public static function eligibility($mode)

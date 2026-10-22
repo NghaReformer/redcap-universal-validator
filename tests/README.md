@@ -64,6 +64,7 @@ node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.j
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
 php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract

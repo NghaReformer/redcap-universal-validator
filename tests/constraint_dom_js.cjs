@@ -922,5 +922,49 @@ function submitEv() {
   check('AST-2: "exact" counts letter case', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
 }
 
+// ---- survey page shape (AST-5): placeholder texts, names kept as present only ----
+// A survey page's config carries no condition text next to a settled answer,
+// and a snapshot without its field names (ModeRegistry::clientShape). The
+// page must judge exactly as it did with the full config.
+{
+  const q = makeEl('input'); q.name = 's_q'; q.value = '1';
+  const env = boot([q], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_q'], when: '(condition)', whenAst: ['const', true],
+              assert: '(condition)', assertAst: ['cmp', '>', ['ref', 's_q', null], ['lit', '3']],
+              snapshotFields: [''], message: 'Answer it', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 's_q');
+  check('survey shape: a settled gate with a placeholder text still applies the rule', /Answer it/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('survey shape: a snapshot without names still makes the rule advisory', ev._prevented === false);
+  check('survey shape: no console error for the placeholder', env.consoleErrors.length === 0);
+  q.value = '5'; q.fire('change');
+  check('survey shape: the live test still reads the field', !/Answer it/.test(msg.innerHTML));
+}
+{
+  const q = makeEl('input'); q.name = 's_q'; q.value = '1';
+  const env = boot([q], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_q'], when: '(condition)', whenAst: ['const', false],
+              assert: '(condition)', assertAst: ['cmp', '>', ['ref', 's_q', null], ['lit', '3']],
+              message: 'Answer it', blockSave: 'hard' }],
+  });
+  check('survey shape: a gate settled false leaves the rule inert', !/Answer it/.test(cMsg(env, 's_q').innerHTML));
+}
+{
+  // A rule deferred as a whole arrives with a placeholder and a fixed constant.
+  const dose = makeEl('input'); dose.name = 's_dose'; dose.value = '55';
+  const env = boot([dose], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['s_dose'], assert: '(condition)', assertAst: ['const', true],
+              deferred: true, message: 'Too much', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 's_dose');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('survey shape: a rule deferred as a whole shows nothing and blocks nothing',
+    !/Too much|not set up|unavailable/.test(msg ? msg.innerHTML : '') && ev._prevented === false && env.consoleErrors.length === 0);
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);
