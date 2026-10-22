@@ -1905,6 +1905,31 @@ namespace {
             $V::countsText(['ok' => true, 'withheld' => true, 'terminal' => 'cancelled'])
             === $AZ::WITHHELD_ENDED);
 
+        // review rvf1-2. A group whose every record moved to another group is
+        // an empty scope, and was told its records had been deleted, under a
+        // counts line that said the run was still preparing.
+        $leftOf = function (array $over) {
+            return array_merge(['ok' => true, 'phase' => 'terminal', 'terminal' => 'partial',
+                'coverage' => 'empty-scope', 'detail' => 'complete', 'total' => 0, 'done' => 0,
+                'settled' => 0, 'removed' => 0, 'findings' => 0, 'active' => false, 'clean' => 0,
+                'leftGroup' => true], $over);
+        };
+        $pfL = $V::panelPrefill($leftOf([]));
+        check('PREFILL rvf1-2: an empty scope its records left says they moved to another group',
+            strpos($pfL['done'], $V::EMPTY_SCOPE_LEFT) === 0 && strpos($pfL['done'], 'deleted') === false);
+        check('PREFILL rvf1-2: and a finished run with no record in its total shows 0 records, not Preparing',
+            $pfL['counts'] === $V::COUNT_NONE && $V::COUNT_NONE === '0 records');
+        check('PREFILL rvf1-2: some moved and the rest were deleted, and it says so',
+            strpos($V::panelPrefill($leftOf(['total' => 2, 'removed' => 2, 'settled' => 2]))['done'],
+                   $V::EMPTY_SCOPE_LEFT_DELETED) === 0);
+        check('PREFILL rvf1-2: a truncated one still says findings were not kept',
+            $V::endedSentence($leftOf(['detail' => 'truncated']))
+            === $V::EMPTY_SCOPE_LEFT . ' ' . $V::DETAIL_TRUNCATED);
+        check('PREFILL rvf1-2 control: an empty scope no record left keeps the empty-scope sentence',
+            $V::endedSentence($leftOf(['leftGroup' => false])) === $V::coverageSentence('empty-scope'));
+        check('PREFILL rvf1-2 control: and a run still listing its records is still preparing',
+            $V::countsText($leftOf(['terminal' => null, 'phase' => 'planning'])) === 'Preparing');
+
         $end = $V::panelPrefill(['ok' => true, 'phase' => 'terminal', 'terminal' => 'complete',
             'coverage' => 'manifest-complete', 'detail' => 'complete', 'total' => 10,
             'done' => 10, 'findings' => 0, 'active' => false]);
@@ -2061,7 +2086,7 @@ namespace {
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
-                      'withheldEnded', 'stoppedWithheld'];
+                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2072,7 +2097,7 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld', 'withheldEnded', 'stoppedWithheld'] as $k) {
+                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

@@ -797,6 +797,10 @@ final class ScanService
             'done'      => $progress['done'],
             'excluded'  => $progress['excluded'],
             'removed'   => $progress['removed'],
+            // Whether any record left the group, and not how many (review
+            // rvf1-2): a run whose every record moved away was told they had
+            // been deleted, and the page needs to know which happened.
+            'leftGroup' => $progress['departed'] > 0,
             'settled'   => $progress['settled'],
             'stalled'   => $progress['stalled'],
             'paused'    => $progress['paused'],

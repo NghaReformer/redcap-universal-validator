@@ -517,6 +517,12 @@ final class ScanPromotion
             // true, and the reader needs to see the correction next to the
             // thing it corrects.
             'emptyScope' => ($examined === 0 && $pending === 0 && !$blocked),
+            // HOW IT EMPTIED, for the sentence and nothing else (review
+            // rvf1-2). A group-scoped run whose every record moved to another
+            // group is an empty scope too, and the stored reason said its
+            // records had been deleted.
+            'departed' => $n(ScanStore::REC_DEPARTED),
+            'removed' => $n(ScanStore::REC_TOMBSTONE),
             // Unread and unstable records, undecidable duplicate groups, and
             // anything an aggregate marked blocking. A TOMBSTONE IS ABSENT FROM
             // THIS LIST on purpose - see the class note.

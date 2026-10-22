@@ -145,6 +145,13 @@ UV.labels = {
                + 'records belong to that group, so its counts cannot be shown.',
   stoppedWithheld: 'This scan was stopped before it confirmed which records belong to this Data '
                  + 'Access Group, so it is not a complete picture of the group.',
+  emptyLeft: 'This scan has no record left to report on: every record it listed moved to another '
+           + 'Data Access Group while it ran. Any findings it counted are on records no longer in '
+           + 'the group. This result says nothing about the group.',
+  emptyLeftDeleted: 'This scan has no record left to report on: every record it listed moved to '
+                  + 'another Data Access Group or was deleted while it ran. Any findings it counted '
+                  + 'are on records no longer in the group. This result says nothing about the group.',
+  none: '0 records',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -557,6 +564,34 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     && els['uv-scan-done'].textContent.toLowerCase().indexOf('nothing was checked') === -1
     && els['uv-scan-done'].textContent.indexOf('whether or not it had been checked') !== -1
     && els['uv-scan-done'].textContent.indexOf('Any findings it counted are on deleted records') !== -1);
+  // rvf1-2. A group whose every record moved away is an empty scope too, and
+  // was told its records had been deleted, under "Preparing".
+  const leftEmpty = (over) => Object.assign(finished('empty-scope'),
+    { terminal: 'partial', total: 0, done: 0, settled: 0, removed: 0, findings: 0, clean: 0, leftGroup: true },
+    over || {});
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty() }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: an empty scope its records left says they moved, not that they were deleted',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.emptyLeft) === 0
+    && els['uv-scan-done'].textContent.indexOf('deleted') === -1);
+  check('client rvf1-2: and a finished run with no record in its total shows 0 records, not Preparing',
+    els['uv-scan-counts'].textContent === '0 records');
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty({ total: 2, removed: 2, settled: 2 }) }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: some moved and the rest were deleted, and it says so',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.emptyLeftDeleted) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty({ leftGroup: false }) }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2 control: an empty scope no record left keeps the empty-scope sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage['empty-scope']) === 0);
+  const keptLeftLabels = UV.labels;
+  UV.labels = Object.assign({}, keptLeftLabels, { emptyLeft: undefined, none: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty() }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: and without the page\'s labels its own words are the server\'s',
+    els['uv-scan-done'].textContent.indexOf(keptLeftLabels.emptyLeft) === 0
+    && els['uv-scan-counts'].textContent === keptLeftLabels.none);
+  UV.labels = keptLeftLabels;
 
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.

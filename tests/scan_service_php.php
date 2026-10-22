@@ -3487,6 +3487,63 @@ namespace INSPIRE\UniversalValidator\Scan {
         && strpos((string) $inCu['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === 0);
 
     /* -----------------------------------------------------------------
+     * rvf1-2  A GROUP THAT LEFT IS NOT A GROUP THAT WAS DELETED
+     *
+     * The reviewer's repro: every record of the group moved to another
+     * group after the run read it. The run ends as an empty scope, which
+     * is right, and said its records had been deleted, under "Preparing".
+     * ----------------------------------------------------------------- */
+    $leftRun = function ($pid, array $moved, array $deleted) use ($groupModule) {
+        $ls = new ArrayScanStore();
+        $lm = $groupModule($ls);
+        $lm->flagged['R02'] = true;
+        $rid = (int) (new ScanService($lm, $ls))->start($pid)['run_id'];
+        $lm->readSleep = 3.2;
+        (new ScanService($lm, $ls))->work($pid, $rid);
+        foreach ($moved as $id) {
+            $lm->dagOf[$id] = '31';
+            $lm->version[$id] = '110';
+            $lm->changes[$id] = '110';
+        }
+        foreach ($deleted as $id) {
+            $lm->records = array_values(array_diff($lm->records, [$id]));
+            $lm->changes[$id] = '111';
+        }
+        $lm->top = '120';
+        for ($i = 0; $i < 15 && $ls->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($lm, $ls))->work($pid, $rid);
+        }
+        $st = (new ScanService($lm, $ls))->status($pid, $rid);
+        return ['row' => $ls->run($pid, $rid), 'states' => $ls->recordStates($rid), 'status' => $st,
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    $V = '\INSPIRE\UniversalValidator\ScanPageView';
+    $gone = $leftRun(194, ['R01', 'R02', 'R03', 'R04', 'R05'], []);
+    check('rvf1-2: a run whose whole group moved away ends as an empty scope',
+        $gone['row']['terminal'] === ScanOutcome::PARTIAL && $gone['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && isset($gone['states'][ScanStore::REC_DEPARTED]) && $gone['states'][ScanStore::REC_DEPARTED] === 5);
+    check('rvf1-2: and its stored reason says they moved, not that they were deleted',
+        strpos((string) $gone['row']['terminal_reason'], 'moved to another Data Access Group while it ran') !== false
+        && strpos((string) $gone['row']['terminal_reason'], 'deleted') === false);
+    check('rvf1-2: the status says records left the group, and counts none of them',
+        $gone['status']['leftGroup'] === true && $gone['status']['total'] === 0
+        && $gone['status']['removed'] === 0);
+    check('rvf1-2: the panel says every record moved to another group, and 0 records, not Preparing',
+        strpos((string) $gone['pf']['done'], $V::EMPTY_SCOPE_LEFT) === 0
+        && strpos((string) $gone['pf']['done'], 'deleted') === false
+        && $gone['pf']['counts'] === $V::COUNT_NONE);
+    $mixed = $leftRun(195, ['R01', 'R02', 'R03'], ['R04', 'R05']);
+    check('rvf1-2: a group that partly moved and was partly deleted says both',
+        $mixed['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && strpos((string) $mixed['row']['terminal_reason'], 'moved to another Data Access Group or was deleted') !== false
+        && strpos((string) $mixed['pf']['done'], $V::EMPTY_SCOPE_LEFT_DELETED) === 0
+        && $mixed['status']['removed'] === 2);
+    $kept = $leftRun(196, ['R03'], []);
+    check('rvf1-2 control: a group one record left still finishes on the records it kept',
+        $kept['row']['coverage'] === ScanOutcome::FENCED && $kept['status']['leftGroup'] === true
+        && strpos((string) $kept['pf']['done'], $V::coverageSentence(ScanOutcome::FENCED)) === 0);
+
+    /* -----------------------------------------------------------------
      * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
      * WORD, IN STATUS, WORK AND CANCEL
      *
