@@ -32,6 +32,7 @@ REQUIRED_DOM = 'tests/required_dom_js.cjs'
 CHOICES_DOM = 'tests/choices_dom_js.cjs'
 GROWTH_DOM = 'tests/growth_dom_js.cjs'
 GROWTH_MODULE = 'tests/growth_module_php.php'
+TEMPORAL_INT = 'tests/temporal_integration_php.php'
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -273,14 +274,36 @@ MUTATIONS = [
      "|| !array_key_exists('bucket', $b) || $b['bucket'] !== null) continue;\n            $t = $shape->event($r['event']);",
      "|| !array_key_exists('bucket', $b)) continue;\n            $t = $shape->event($r['event']);", MODULE),
     ('the one event of a classic project named in the refusal', UV,
-     "(count($shape->events()) > 1 ? ' at", "(true ? ' at", MODULE),
+     "            $many = count($shape->events()) > 1;", "            $many = true;", MODULE),
+    ('a relative instance from a form that does not repeat accepted', UV,
+     '                if ($own) {', '                if (false) {', MODULE),
+    ('a form that repeats read as held once for a relative instance', UV,
+     "            if ($b['bucket'] !== null) continue;\n", '', MODULE),
+    ('an event that does not hold the "vs" form accepted', UV,
+     "if ($b !== null && isset($b['state']) && $b['state'] === 'missing') {", 'if (false) {', MODULE),
+    ('a repeating "vs" with no instance accepted', UV,
+     '            if ($amb) {', '            if (false) {', MODULE),
+    ("the field's own repeating row read as naming no instance", UV,
+     "            if ((string) $r['event'] === (string) $id && $s['bucket'] === $b['bucket']) continue;   // this field's own row\n", '', MODULE),
+    ('the encoding stub tells a survey why', UV,
+     '$rules[$i] = $survey ? ModeRegistry::withoutSurveyTexts($stub) : $stub;', '$rules[$i] = $stub;', TEMPORAL_INT),
     ('test(v) asks the modes that read the page', ENGINE,
-     'if(typeof e.test !== "function" || (given && e.takesValue !== true)) continue;',
-     'if(typeof e.test !== "function") continue;', DOM),
+     'if(given && e.takesValue !== true) continue;', 'if(false) continue;', DOM),
+    ('a pooled list in a shared entry read as passing', ENGINE,
+     'if(typeof e.test !== "function"){ open = true; continue; }', 'if(typeof e.test !== "function") continue;', DOM),
     ("test() hands an ID check no value", ENGINE,
-     '(e.takesValue === true ? e.test(QRID_WHEN.readRef(f, null)) : e.test())', 'e.test()', DOM),
+     'function given(args){ return args.length > 0 ? args[0] : QRID_WHEN.readRef(f, null); }', 'function given(args){ return args[0]; }', DOM),
     ("an ID check not marked as taking a value", ENGINE,
      'QRID_registerValidator(f, { type: "single", takesValue: true,', 'QRID_registerValidator(f, { type: "single",', DOM),
+    ("a branched ID check not marked as taking a value", ENGINE,
+     'QRID_registerValidator(f, { type: "single", branch: true, takesValue: true,', 'QRID_registerValidator(f, { type: "single", branch: true,', DOM),
+    ('a branched ID check answers with no branch active', ENGINE,
+     'return (configError || act.length !== 1) ? null : judge(act[0], given(arguments), isFinal);',
+     'return configError ? null : judge(act[0] || VS.all[0], given(arguments), isFinal);', DOM),
+    ('a blank ID field judged', ENGINE,
+     '    if(!v || QRID_isMissingCode(v)) return null;\n    if(v.length > QRID_MAX_SINGLE_LEN)', '    if(QRID_isMissingCode(v)) return null;\n    if(v.length > QRID_MAX_SINGLE_LEN)', DOM),
+    ('a value too long for an ID field judged by its format', ENGINE,
+     '    if(v.length > QRID_MAX_SINGLE_LEN) return { ok: false };\n', '', DOM),
     ('the slow trim back in the Missing Data Code check', ENGINE,
      '    var s = String(value), i = 0, j = s.length;\n    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }\n'
      '    while(i < j && ws(s.charCodeAt(i))) i++;\n    while(j > i && ws(s.charCodeAt(j - 1))) j--;\n    var t = s.slice(i, j);',

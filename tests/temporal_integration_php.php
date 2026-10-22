@@ -376,6 +376,19 @@ namespace {
     check('invalid UTF-8 snapshot: only the affected rule is given up, visibly',!empty(ruleOf($p,'a_val')['deferred'])&&(ruleOf($p,'a_val')['blockSave']??null)==='off');
     check('invalid UTF-8 snapshot: the unrelated rule stays live',empty(ruleOf($p,'key_a')['deferred'])&&ruleOf($p,'key_a')['type']==='required');
     check('invalid UTF-8 snapshot: the bad bytes never reach the page',strpos($p['raw'],"caf")===false);
+    check('invalid UTF-8 snapshot: a staff page says why the rule is not checked',strpos(json_encode(ruleOf($p,'a_val')['deferredWhy']??null),'not valid UTF-8')!==false);
+    // A survey withholds such a value before it is encoded; the stub step runs
+    // after the survey pass all the same, so it says nothing of why there
+    // either (round-4 review 4).
+    $enc=new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class,'encodableRules');
+    $enc->setAccessible(true);
+    $bad=[['type'=>'constraint','fields'=>['a_val'],'assert'=>"[a_val]='caf\xe9'"]];
+    $fl=JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_UNESCAPED_UNICODE;
+    $st=$enc->invoke(null,$bad,$fl,false)[0];
+    $ss=$enc->invoke(null,$bad,$fl,true)[0];
+    check('the encoding stub: a staff page is told why',!empty($st['deferred'])&&isset($st['deferredWhy']));
+    check('the encoding stub on a survey: given up, saying nothing of why',!empty($ss['deferred'])&&$ss['blockSave']==='off'
+        &&$ss['fields']===['a_val']&&!array_key_exists('deferredWhy',$ss));
 
     // The rule's own caseSensitive flag governs its "when"; record scope must not force it on.
     $m=temporal('',null,'UVUNIQUE');

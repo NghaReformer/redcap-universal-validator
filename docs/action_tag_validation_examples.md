@@ -4248,7 +4248,16 @@ instance:
   `[first-event-name]` or `[last-event-name]`.
 - A reference that names an instance (`[weight][1]`, `[weight][first-instance]`)
   is refused where the form does not repeat at an event it lands on: there is
-  only one entry there, and the refusal names those events.
+  only one entry there, and on a project with events the refusal names them.
+- `[current-instance]`, `[previous-instance]` and `[next-instance]` count from
+  the instance of the field that carries the tag, so they are refused on a
+  field whose own form does not repeat (`[w_rep][previous-instance]` on an
+  enrolment form). Name the instance instead: `[w_rep][last-instance]`.
+- A reference with no instance is refused where its form repeats, unless it
+  is the tagged field's own form in its own event: `[w_rep]` read from a form
+  held once does not say which instance it means.
+- An event named outright must hold the `vs` form: `[visit1_arm_1][w_rep]` is
+  refused when `w_rep`'s form is not designated at visit 1.
 - An earlier value from another event or instance is read when the page opens.
   That check shows a red note but never blocks, and its note says it is
   re-checked after the save.
@@ -4338,9 +4347,11 @@ These are refused, with a configuration error under the field:
 
 Once the data dictionary is read, the module also refuses a field that does not
 hold numbers, a `vs` that is not a field, does not hold numbers, always names
-this same entry or names an instance of a form that does not repeat, and a
-shorthand that cannot name an earlier entry at every event that holds the form
-(see Level 3).
+this same entry, or could not be read on any save of some entry (an instance
+of a form that does not repeat, a relative instance on a form that does not
+repeat, no instance of a form that repeats, an event that does not hold the
+form), and a shorthand that cannot name an earlier entry at every event that
+holds the form (see Level 3).
 
 ---
 

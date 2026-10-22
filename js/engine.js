@@ -723,11 +723,12 @@
      every mode's own keys (parse, clean, branches...; the first mode's on a
      clash, type among them), byMode holds each mode's own entry, and types
      lists them. test() judges the field as the page holds it: every mode
-     answers, and a mode that judges a value it is handed (takesValue: an ID
-     check) is handed the field's value. test(v) judges the value v: only a
-     mode that takes a value answers, since the others read the page. Either
-     way the answer is false when any mode says false (an ID check answers
-     {ok: false}), else null when any cannot answer, else true. The same mode
+     answers (an ID check reads the field itself), and a mode with no test of
+     its own (a pooled list, which is judged across its fields) cannot answer.
+     test(v) judges the value v: only a mode that takes a value (takesValue:
+     an ID check) answers, since the others read the page. Either way the
+     answer is false when any mode says false (an ID check answers {ok:
+     false}), else null when any cannot answer, else true. The same mode
      again (a branch rebuilt) replaces its own entry. */
   function QRID_registerValidator(f, entry){
     var prev = UV_validators[f];
@@ -745,12 +746,11 @@
       var open = false, any = false, args = arguments, given = arguments.length > 0;
       for(var m in byMode){
         var e = byMode[m];
-        if(typeof e.test !== "function" || (given && e.takesValue !== true)) continue;
+        if(given && e.takesValue !== true) continue;
         any = true;
+        if(typeof e.test !== "function"){ open = true; continue; }
         var r;
-        try {
-          r = given ? e.test.apply(e, args) : (e.takesValue === true ? e.test(QRID_WHEN.readRef(f, null)) : e.test());
-        } catch(x){ r = null; }   /* a mode that cannot answer leaves it open */
+        try { r = given ? e.test.apply(e, args) : e.test(); } catch(x){ r = null; }   /* a mode that cannot answer leaves it open */
         if(r && typeof r === "object" && typeof r.ok === "boolean") r = r.ok;
         if(r === false) return false;
         if(r !== true) open = true;
@@ -4209,20 +4209,35 @@ function QRIDSingleInit(QRID_CONFIG){
     check(true);
     return true;
   }
-  /* per-field registry (namespace .validators — testing / power users) */
+  /* per-field registry (namespace .validators — testing / power users).
+     test(v) judges v, test() the value the field holds, as check() does: a
+     blank value or a Missing Data Code is nothing to judge (null), a value
+     past QRID_MAX_SINGLE_LEN fails, and a branched rule answers by its one
+     active branch (null when none is, or more than one). */
+  function judge(V, v, isFinal){
+    v = String(v == null ? "" : v).trim();
+    if(!v || QRID_isMissingCode(v)) return null;
+    if(v.length > QRID_MAX_SINGLE_LEN) return { ok: false };
+    return V.verdict(v, isFinal !== false);
+  }
   (QRID_CONFIG.fields || []).forEach(function(f){
+    function given(args){ return args.length > 0 ? args[0] : QRID_WHEN.readRef(f, null); }
     if(IS_BRANCH){
-      QRID_registerValidator(f, { type: "single", branch: true,
+      QRID_registerValidator(f, { type: "single", branch: true, takesValue: true,
         branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode,
-          test: function(v, isFinal){ return QRID_isMissingCode(v) ? null : V.verdict(v, isFinal); } }; }),
-        active: function(){ return QRID_activeVariants(VS); } });
+          test: function(v, isFinal){ return judge(V, v, isFinal); } }; }),
+        active: function(){ return QRID_activeVariants(VS); },
+        test: function(v, isFinal){
+          var act = QRID_activeVariants(VS);
+          return (configError || act.length !== 1) ? null : judge(act[0], given(arguments), isFinal);
+        } });
       return;
     }
     var V0 = VS.all[0];
     QRID_registerValidator(f, { type: "single", takesValue: true,
       mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError,
               guidance: V0.mode.guidance, blockSave: V0.blockSave },
-      test: function(v, isFinal){ return (configError || QRID_isMissingCode(v)) ? null : V0.verdict(v, isFinal !== false); } });
+      test: function(v, isFinal){ return configError ? null : judge(V0, given(arguments), isFinal); } });
   });
   function boot(){
     if(configError){

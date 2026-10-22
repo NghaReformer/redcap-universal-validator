@@ -552,6 +552,57 @@ for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0
   code.value = '7x';
   check('... and false when the field no longer fits the format', reg.test() === false);
 }
+// The ID check judges as the page does: a blank field is nothing to judge, a
+// field with only an ID check reads the field itself, a branched check answers
+// by its active branch, and a pooled list (judged across fields) leaves the
+// shared answer open (round-4 review 1 to 3).
+{
+  const sid = numEl('sid', '');
+  const env = boot([sid], { rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36' },
+    { type: 'constraint', fields: ['sid'], assert: "[sid]<>'x'", blockSave: 'hard' }] });
+  const reg = env.NS.validators.sid;
+  check('a blank ID field: the ID check does not answer false (got ' + JSON.stringify(reg.byMode.single.test()) + ')', reg.byMode.single.test() === null && reg.test() !== false);
+  check('... nor for spaces or a value handed in blank', reg.byMode.single.test('   ') === null && reg.test('') === null);
+  check('... and the save goes through', save(env) === 'saved');
+  sid.value = 'x'.repeat(513);
+  check('... a value past 512 characters fails, as the page says', reg.byMode.single.test().ok === false && reg.test() === false);
+}
+{
+  const sid = numEl('sid', 'FC1-0589C');
+  const env = boot([sid], { rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36' }] });
+  const reg = env.NS.validators.sid;
+  check('an ID check alone: test() reads the field, a right ID is ok', reg.test().ok === true);
+  sid.value = 'FC1-0589D';
+  check('... a wrong one is not', reg.test().ok === false);
+}
+{
+  const code = numEl('code', '1'.repeat(513));
+  const env = boot([code], { rules: [{ type: 'single', fields: ['code'], algorithm: 'none', idPattern: '^[0-9]+$' }] });
+  check('a format check alone: 513 digits fit the pattern but are too long, as the page says', env.NS.validators.code.test().ok === false
+    && code.__qridInvalid === true);
+}
+{
+  const sid = numEl('sid', 'FC1-0589D'), stype = numEl('stype', '1');
+  const env = boot([sid, stype], { rules: [{ type: 'single', fields: ['sid'], branches: [
+      { algorithm: 'iso7064_mod37_36', when: "[stype]='1'" },
+      { algorithm: 'none', idPattern: '^FC1-[0-9]{4}[A-Z]$', when: "[stype]='2'" }] },
+    { type: 'required', fields: ['sid'] }] });
+  const reg = env.NS.validators.sid;
+  check('a branched ID check and @UVREQUIRED: test() is false while the active branch fails', sid.__qridInvalid === true && reg.test() === false);
+  check('... test(v) hands v to the active branch', reg.test('FC1-0589C') === true && reg.test('FC1-0589D') === false);
+  stype.value = '2'; stype.fire('change');
+  check('... the format branch passes it', reg.test() === true);
+  stype.value = '9'; stype.fire('change');
+  check('... no branch active: the ID check does not answer', reg.byMode.single.test() === null && reg.test() === null);
+}
+{
+  const ids = numEl('ids', 'FC1-0589D');
+  const env = boot([ids], { pooledFields: ['ids'], rules: [{ type: 'required', fields: ['ids'] }] });
+  const reg = env.NS.validators.ids;
+  check('a pooled list and @UVREQUIRED: the pooled list cannot answer, so test() is open', Array.isArray(reg.types) && reg.types.indexOf('pooled') >= 0 && reg.test() === null);
+  ids.value = '';
+  check('... while the requirement still says false', reg.test() === false);
+}
 // A Missing Data Code is read in linear time (round-3 review F2).
 {
   const w0 = numEl('w0', '70' + ' '.repeat(50000) + '1'), w = numEl('weight', '72');
