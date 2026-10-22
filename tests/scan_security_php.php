@@ -866,6 +866,20 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 10, 0) === true
             && ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 0, 1000) === true
             && ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 9, 999) === false);
+
+        // W7-R6: the expiry is compared with ScanRetention::now() and the
+        // mapper's `now`, both UTC. Written in the server's zone, a preview
+        // outlived its window east of Greenwich and lost it early to the west.
+        // The suite's own zone is UTC on CI, which is why the zone is set here.
+        $zone = date_default_timezone_get();
+        $jan1 = 1767225600;   // 2026-01-01 00:00:00 UTC
+        foreach (['Pacific/Auckland', 'America/Los_Angeles'] as $tz) {
+            date_default_timezone_set($tz);
+            check('W7-R6 (' . $tz . '): a value preview expires its window after the write, in UTC',
+                ScanPolicy::valueExpiry(['valueDays' => 7], $jan1) === '2026-01-08 00:00:00'
+                && ScanPolicy::valueExpiry([], $jan1) === '2026-01-31 00:00:00');
+        }
+        date_default_timezone_set($zone);
     }
 
     /* =====================================================================

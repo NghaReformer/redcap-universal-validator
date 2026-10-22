@@ -1,6 +1,6 @@
 # Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
-**Current release candidate: `v2.1.0-rc.1`.** See the [changelog](CHANGELOG.md) for features, case-comparison migration guidance, scan-storage changes, and verification limits.
+**Current release candidate: `v2.3.0-rc.2`.** See the [changelog](CHANGELOG.md) for features, case-comparison migration guidance, scan-storage changes, and verification limits.
 
 **Opt-in event and repeat validation:** see [Event and instance references](docs/EVENT-INSTANCE-REFERENCES.md) for qualified references, matching, collections, dates, record-local uniqueness, activation and rollback.
 
@@ -895,96 +895,233 @@ slip:
 
 ## The Validation scan — checking data that is already saved
 
-Live validation guards the form; it cannot reach values that arrived through
-the **Data Import Tool** or the **API** (where the save-hook audit is
-version-dependent), or records entered **before a rule existed**. The
-**Validation scan** project page closes that gap: it runs every configured
-rule — check-character/format, constraint, required, unique, and choice
-filtering — over every saved record and lists each violation with a CSV export.
+> **Off until an administrator and the project both turn it on.** The scan
+> runs only while the system setting `scan-system-enable-durable` and the
+> project setting `scan-enable-durable` are both on. Both are off by default.
+> Until then the page shows a notice and reads no record. Live form validation,
+> the save-time audit and the live uniqueness check run either way.
 
-- **Where:** the "Validation scan" link on the project's left menu (visible to
-  users with design rights; the page re-checks). Records are read in chunks, and
-  since 1.7.0 findings are handed to the writer as they are produced rather than
-  collected into one array first.
-- **It is still bounded by the project, and that is not yet fixed.** Three things
-  still grow with the data and are held until the scan ends: the record-id list,
-  the unique-rule candidates, and one note per record that could not be read. The
-  export additionally spools the whole report to a temporary file before sending
-  a byte, so it needs disk for the full report and produces no output until the
-  scan finishes. On a project large enough for that to matter the request will
-  reach a proxy timeout first. Removing these is the durable-scan work, not
-  something this release did. The scan takes a **budget** — 75% of the server's execution
-  limit, 70% of its memory limit — and stops rather than being killed: both
-  limits are uncatchable fatals that would otherwise render a blank page with
-  nothing recording that the project was not examined. A stopped scan reports
-  `incomplete`, counts the records it did not reach, and says plainly that
-  duplicates are under-reported, because uniqueness is the one check that needs
-  the whole project.
-> **The project-wide scan is temporarily withdrawn (1.8.9).** The page explains
-> this and starts nothing; the CSV route answers 503. It is being rebuilt as a
-> resumable background job that can cover a project of any size and record
-> exactly what it covered, per `reports/scan-rebuild-plan-2026-08-17.md`. The
-> description below is what it does when it returns. **Live form validation, the
-> save-time audit and the uniqueness check are unaffected and continue to run.**
+Live validation guards the form. It cannot reach values that arrived through
+the Data Import Tool or the API (where the save-hook audit is
+version-dependent), or records entered before a rule existed. The Validation
+scan project page closes that gap. It runs every configured rule, of every tag
+and every settings rule kind, over every saved record and lists each
+violation, with a CSV export.
 
-- **What the report says.** Record, Data Access Group, event, instrument,
-  instance, field and field label; the **offending value**; the rule number, the
-  rule's own name, and **what is wrong in plain English** rather than a reason
-  code. Columns that do not apply to a project's shape are absent rather than
-  empty: a classic project has no Event column, a project without groups has no
-  DAG column. Dropping the Event column is a claim that every finding is in the
-  same event, so it is kept whenever the event map cannot be read — showing raw
-  event ids, and saying why. The wording comes from `php/messages/catalog.json`, which the
-  browser and the server both read, so the sentence a respondent saw and the
-  sentence in the report cannot drift apart.
-- **Values are a policy choice.** *Validation scan report* in the module's
-  project settings: show locations only (the default), redact the fields REDCap
-  marks as an **Identifier**, or show every value. Whatever the project chooses
-  is capped by the reader's own export rights: raw values reach a user with Full
-  Data Set export rights, and a user with no export rights never sees one.
-  Redaction **fails closed** — an unreadable data dictionary withholds every
-  value, because a dictionary that cannot be read cannot clear a field, and an
-  unreadable setting falls back to locations rather than to disclosure. A report
-  is readable by anyone with design rights, which is a wider audience than
-  REDCap's record-level access control, so choose accordingly. A finding with no
-  value to show, such as a blank required field, renders an empty cell — it never
-  claims something was withheld.
-- **Scope must be knowable.** A user confined to a Data Access Group whose
-  group name cannot be resolved is **refused**, not silently scoped to
-  nothing: a scan of zero records is not a clean project. Inside a group-scoped
-  scan, a record whose group cannot be established is left out rather than
-  admitted, the count of such records is stated, and the scan reports
-  `incomplete` — a group that cannot be read is not this group.
-- **Nothing is skipped in silence.** A rule the scan cannot evaluate is listed
-  as a rule problem with the reason: a broken configuration, a field that cannot
-  be located on any instrument, a project-scope uniqueness rule under a
-  group-scoped scan, an instrument designated to no event (which collects
-  nothing, so the rules on it can never fire), or an instrument **you** do not
-  have access to.
-- **Design rights are not instrument rights.** The scan reads through REDCap's
-  export API with no user attached, so REDCap's own per-instrument access
-  control never runs on it. A rule that reads an instrument you cannot open is
-  therefore skipped **before** it is evaluated, and named as a rule problem — no
-  finding, no count and no label from that instrument reaches the report, which
-  filtering the rows afterwards could not promise. A rule spanning several
-  instruments is still checked on the ones you can open; a rule whose *condition*
-  reads a barred instrument is skipped outright, because the condition decides
-  every verdict. Rights that cannot be read clear nothing.
-- **The download needs export rights.** A user REDCap bars from its data export
-  tool can read the scan on screen, at whatever their value ceiling allows, and
-  cannot download the file.
-- **Same engine, same verdicts.** The scan evaluates through the exact
-  dispatch the save-hook audit uses (`ruleFindings`), so the two can never
-  disagree about what a violation is. Unique rules are checked in one
-  aggregate pass over the scanned data (project/DAG/event scopes honored).
-- **A file that cannot certify says so three ways.** The download is a real CSV
-  from its own page, so REDCap's page chrome can never precede it. An incomplete
-  scan is marked by a banner at the top, by a terminal data row that survives
-  deleting the comment lines or sorting the sheet, and by `_INCOMPLETE` in the
-  filename, which survives the file being renamed and forwarded. A refused
-  export is not offered as a download at all. CSV cells are quoted and
-  formula-defused, and record ids follow the same privacy mode the audit log
-  uses.
+Operators: [`docs/INSTALL.md`](docs/INSTALL.md) covers the tables, the upgrade,
+the crons and switching the module off.
+
+### Who may use it
+
+The page is the "Validation scan" link on the project's left menu, shown to
+users with design rights. Every request from it, from Start to the download,
+re-checks three things.
+
+- **Design rights** on the project.
+- **Full Data Set export rights.** A run stores record values, so a user with
+  a lower export level cannot start a scan, follow one, read its findings on
+  screen or download them. The refusal names the export level it read. This
+  holds for the screen and the file alike.
+- **Every instrument the scan reads.** A rule that reads an instrument the
+  user cannot open refuses the whole report rather than narrowing it, so no
+  finding, count or label from that instrument is shown. Stop asks only for
+  the instruments the rules sit on, so a user barred from an instrument that
+  another field's rule reads can still stop a run.
+
+A user in a Data Access Group scans that group only. A group whose name cannot
+be resolved is refused, because a scan of zero records is not a clean project.
+A group-scoped run shows no counts until it has confirmed which records belong
+to the group, and a group user is never shown a whole-project run.
+
+### How a run proceeds
+
+Start lists the records, then checks them in batches of about three seconds,
+one request per batch, sent by the open page. The open page is what drives a
+scan. Closing it pauses the run, and Continue on a later visit carries on from
+the last batch saved. The page names each phase.
+
+1. *Listing the records to check*. The record list is frozen a few seconds per
+   request, so no request has to outlast PHP's time limit, however large the
+   project.
+2. *Checking records*. Every rule runs over every listed record, through the
+   same dispatch the save-time audit uses (`ruleFindings`), so the two agree on
+   what a violation is.
+3. *Checking what changed while it ran*. Records created, edited or deleted
+   during the scan are found in REDCap's log, up to a fixed point, and read
+   again. An edited record is judged on its new values, and a deleted record
+   leaves the run with its findings.
+4. *Looking for duplicate values*. `@UVUNIQUE` needs every record, so
+   duplicates are decided once all of them are read, within each rule's scope
+   (project, group or event).
+5. *Building the summary*. The counts by rule, instrument, issue and group
+   that the findings page filters on.
+
+The run then reads *Finished*. Stop asks it to end, and the page reads
+*Stopping* until it has, after which the run is reported as cancelled. A
+project has one active run at a time. A second tab opened on it watches, and
+its Continue button makes that tab the one driving the scan; the run's lease
+lets only one tab work it at a time. The server scans at most
+`scan-system-max-concurrent-projects` projects at once (2 by default), and a
+batch refused because the server is full is retried at growing intervals, up
+to 30 seconds.
+
+When the project has an `@UVWINDOW` rule, the run freezes the date and time it
+was planned, in the time zone of `window-timezone`, and every record of the
+run is judged by that clock, catch-up included. A record read after midnight
+is judged as of the same day as the rest. The page, the findings page and the
+file say "Dates were judged as of" that day.
+
+### What a finished run says
+
+Five sentences say how much of the project a finished run covered. Each is a
+different claim.
+
+| The page says | It means |
+|---|---|
+| "Every record was checked, including changes made while it ran." | The run read every record, and every change up to a fixed point in REDCap's log. |
+| "Every record on the opening list was checked. This server cannot prove the project did not change during the scan." | The run read its whole list, but could not prove nothing changed after it, or records changed that `@UVEXISTS` answers depend on. |
+| "Some records could not be checked. This is not a complete picture of the project." | The run stopped early, or a record could not be read, held still, or examined in full. |
+| "This scan has no record left to report on: ..." | Nothing was in scope, or every record was deleted or left the group while it ran. |
+| "The scan failed, so it describes nothing." | The run failed. |
+
+A run ends as `complete`, `partial`, `cancelled`, `failed` or `expired`. Only a
+complete run can certify the project: every record checked through the fixed
+point, every finding kept, nothing found, and every rule evaluated. A run that
+reached the limit on stored detail adds "Some findings were not kept, because
+the scan reached the limit this project allows." Every finished run that does
+not certify the project carries "This result does not certify the project." or
+says how many rules could not be evaluated. A run that failed, was cancelled
+or expired reached no decision at all, and the page reads that as not
+certified. It never reads it as clean, or as a sign that something was found.
+
+An incomplete report says so three ways. The banner "INCOMPLETE SCAN - this
+report does NOT certify the project as clean" opens it, on the page and in the
+file. A terminal row, saying the scan did not cover the whole project, closes
+its rows; in the file it is a data row whose first cell is `INCOMPLETE SCAN`,
+so it survives deleting the comment lines or sorting the sheet. The
+download's file name carries a suffix, which the page states beside the
+download link, so a copy forwarded under its own name still says it.
+Renaming the file removes that mark and leaves the other two. An incomplete
+run's suffix starts with `_INCOMPLETE` and adds
+`_CANCELLED`, `_FAILED`, `_EXPIRED`, `_MANIFEST_ONLY`, `_NO_RECORDS` or
+`_TRUNCATED` as they apply. A complete run that may not be called clean gets
+`_NOT-CERTIFIED` and no banner.
+
+**The finding count.** For each record, a run counts the findings of the
+reading it holds for that record, the stored ones and any the detail limit
+left out. A record read again during catch-up counts once, from its new
+reading. A record deleted while the run went on, or moved out of the run's
+group, counts nothing, and its findings are closed with it. Duplicate values
+are counted when the run finishes, so the count shown while a run works can
+rise at the end.
+
+**The detail limit.** A run stores at most `scan-max-detail-findings` findings
+and `scan-max-detail-bytes` bytes of detail (1,000,000 and 512 MiB by default,
+never more than `scan-system-max-detail-findings` and
+`scan-system-max-detail-bytes`). Past either limit it keeps counting and stops
+storing, labels itself truncated, and cannot certify the project. Duplicate
+values are not held to the limit.
+
+**Rule problems.** A rule the scan cannot evaluate is counted as a rule
+problem, with its reason, and a run with a rule problem does not certify the
+project.
+
+### The findings page
+
+Under the panel, the page shows the findings of the newest finished run in
+the reader's own scope. For a user outside any group that is the newest
+whole-project run; for a group user, the newest run of their group. The
+findings appear when no run of the reader's is going, and open by themselves
+when a run the tab is watching finishes. Earlier runs are not listed.
+
+Findings come 50 to a page, in the order they were stored, with "Next page"
+and "Previous page". The table's caption gives the page, and a line above it
+gives how many findings the whole report holds. Four filters narrow the table:
+Instrument, Reason, Check and Data Access Group. Each lists "All" and then the
+values the run's summary counted, with their counts; a filter with nothing to
+offer is not shown, and changing one starts again on page 1. A page can come
+back empty while later pages still hold matches. The page then reads up to
+four more pages, saying it is looking further, and says "No findings match
+these filters." only when nothing more matches. Every cell is plain text.
+
+An incomplete report shows its banner above the table and its terminal row
+below it, and beside the download it says that the file name ends in the
+run's suffix. A group-scoped run that never confirmed its group
+shows only the sentence saying why, with no table, filters or download. The
+link "Download these findings as a CSV file" is offered only beside a report
+the page has just read.
+
+The columns are Issue, Record, Data Access Group, Event, Instrument, Instance,
+Field, Field label, Value, Check, Reason code, Rule, Rule name, What is wrong
+and Wording from. A column that does not apply to the project's shape is
+absent. A classic project has no Event column, and a project without groups
+has no Data Access Group column. When the event map cannot be read the Event
+column stays, with raw event ids, and the report says why. The What is wrong
+sentence comes from `php/messages/catalog.json`, which only the server reads.
+The form words its own messages in `js/engine.js`, often with live values, so
+for most checks the form's sentence and the report's differ.
+`tests/messages_fixture.json` holds each pair, and its two suites fail when
+either side changes without the fixture. Instruments, fields and events are
+named as they were when the run was planned, from a snapshot kept with the
+run. A run planned before snapshots were kept shows today's names and says
+so.
+
+### The CSV file
+
+The download is `pages/export.php`, which streams the stored run a page at a
+time and runs no scan of its own. It asks the same questions as the findings
+page. The file is UTF-8 with a byte-order mark. It opens with `# ` lines about
+the report (schema, project, run, when it was generated, scope, coverage,
+whether it certifies, values, labels, a column legend and how many rows to
+expect), then a header row of column keys, then the findings. It ends on
+`# export_complete=1` with the row count. A download cut off partway has no
+such line, and one whose rows could not all be read ends on a row saying rows
+were lost. Cells are quoted and formula-defused, and record ids follow the
+privacy mode the audit log uses (`log-values`). A refused export is plain text
+that starts `# EXPORT REFUSED`, and is never offered as a file.
+
+### Values
+
+Whether a finding shows the offending value is the project's choice in
+`scan-value-storage`. The choices are locations only (the default), values
+with the fields REDCap marks as an Identifier withheld, and every value. The
+choice in force when a run is planned decides what the run stores. The choice
+in force when the report is read decides what is shown, so a tighter setting
+hides values at once. Redaction fails closed. A data dictionary that cannot be
+read withholds every value, and a field flagged as an Identifier when the run
+was planned, or flagged since, is withheld. A stored value keeps at most its
+first 255 bytes, marked when cut, for at most `scan-value-retention-days` days
+(30 by default, never more than `scan-system-max-value-retention-days`). A
+finding with no value to show, such as a blank required field, shows an empty
+cell.
+
+### Upkeep and retention
+
+Two crons keep the scan's tables bounded. Each pass works in slices for a
+quarter of its run-time limit, carries on where the last pass stopped, and
+writes a `scan-cron` entry to the module log.
+
+- `uv_scan_reap_abandoned` runs every 15 minutes. It ends a run that has made
+  no progress for `scan-system-stale-run-hours` hours (24 by default) as
+  expired, removes worker places above the concurrency limit, and closes the
+  previous findings of each project whose latest whole-project run finished
+  complete. Pressing Start ends an abandoned run of its own project at once.
+- `uv_scan_expire_values` runs every hour. It clears stored values that a
+  tightened privacy setting revoked, deletes finished runs older than
+  `scan-run-retention-days` days (90 by default, never more than
+  `scan-system-max-run-retention-days`), and clears stored values past their
+  retention window.
+
+### Switching the module off
+
+Disabling the module on the server stops every scan in progress and frees
+every worker place. Each stopped run finishes as cancelled, says the module was
+disabled, and keeps what it had examined. Nothing is deleted unless
+`scan-system-drop-tables-on-disable` is on; with it on, every `uv_` table is
+dropped, with every stored scan, finding and audit row. Disabling the module
+for one project stops that project's run the same way. With
+`scan-system-enable-durable` off, a disable stops nothing, since no scan can
+run then.
 
 ## Methods supported
 
@@ -1204,6 +1341,7 @@ php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, en
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
+php  tests/docs_claims_php.php # scan docs name only settings, tables, crons, pages and actions that exist
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
 node tests/config_notice_js.cjs     # page-level config-error notice
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing

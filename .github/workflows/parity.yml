@@ -301,6 +301,8 @@ jobs:
         run: php tests/scan_cron_php.php
       - name: Durable scan worker (phases, stable reads, catch-up, promotion)
         run: php tests/scan_worker_php.php
+      - name: Scan docs name only settings, tables, crons, pages and actions that exist
+        run: php tests/docs_claims_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 
