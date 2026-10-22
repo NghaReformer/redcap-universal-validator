@@ -33,9 +33,10 @@ namespace INSPIRE\UniversalValidator\Scan;
  *   NEW      not on the manifest -> added, if it is in scope. A DAG-scoped run
  *            must not quietly widen itself, so scope is asked, never assumed.
  *   EDITED   on the manifest, changed after we scanned it -> requeued.
- *   GONE     on the manifest, no longer in the project -> tombstoned. Not
- *            requeued: a deleted record can never be read, so requeueing it
- *            would hold the run open forever (C3's mirror case).
+ *   GONE     on the manifest, no longer in the project -> tombstoned, its
+ *            findings in the run closed (W5F-N4). Not requeued: a deleted
+ *            record can never be read, so requeueing it would hold the run
+ *            open forever (C3's mirror case).
  *   SETTLED  changed within the window but before we scanned it, so the reading
  *            already includes it -> nothing to do. This is the case that makes
  *            the second round cheap and is why the pass converges.

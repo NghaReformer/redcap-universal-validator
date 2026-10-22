@@ -449,7 +449,8 @@ final class ScanPromotion
         // NOT "NOTHING WAS EXAMINED", which is what this note and the stored
         // sentence used to say (review R2O-1). CatchUp::step() tombstones a
         // record that was deleted after it was examined, so `done` drops to
-        // zero while the findings that examination produced stay active. The
+        // zero. Its findings are closed with it now (W5F-N4); before that they
+        // stayed active, and a run stored then counts them. The
         // classification is right - no record remains for the run to vouch
         // for, so it must never be clean - but the census cannot say whether a
         // tombstone was read first, and ScanOutcome's sentence now claims only

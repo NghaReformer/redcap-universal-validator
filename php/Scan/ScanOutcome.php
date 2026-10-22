@@ -160,11 +160,14 @@ final class ScanOutcome
         // record was deleted while it ran. It then said "no record was
         // examined", which is false of the commonest of those runs (review
         // R2O-1): catch-up tombstones a record it had already examined, its
-        // findings stay active, and the run was stored as having examined
-        // nothing beside a count of what that examination found. What is true
-        // of all of them is that no record is LEFT: none was listed, or every
-        // one listed was deleted, checked or not - and whatever it found is
-        // about records the project no longer has.
+        // findings stayed active (until W5F-N4 closed them with it), and the
+        // run was stored as having examined nothing beside a count of what
+        // that examination found. What is true of all of them is that no
+        // record is LEFT: none was listed, or every one listed was deleted,
+        // checked or not - and whatever it found is about records the project
+        // no longer has. A run that ends so now keeps none of those records'
+        // own findings (W5F-N4); the sentence has to hold for runs stored
+        // before that as well.
         if ($b('emptyScope')) {
             return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
                 'no record is left for it to report on - none was in scope, or every one was '

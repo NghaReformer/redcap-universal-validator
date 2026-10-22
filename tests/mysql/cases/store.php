@@ -1384,6 +1384,47 @@ $SUPER = 787;
         $nrec->matching('select', ['record_id_bin IN']) === []
         && $nrec->matching('exec', ['record_id_bin IN']) === []);
     echo '  plan catch-up: ' . implode(' ', $nSel) . ' ' . implode(' ', $nUpd) . "\n";
+
+    // A CATCH-UP TOMBSTONE CLOSES THE DELETED RECORD'S FINDINGS (W5F-N4), as
+    // depart() does: by a key that begins (project, generation, record), at
+    // the run's sequence, and never a duplicate-value (staged) finding, which
+    // is the finalizer's. DP12 was tombstoned above; DP13's finding is made a
+    // published duplicate here, and DP13 and DP14 are deleted together.
+    $ft = Schema::table('finding');
+    $activeOf = function ($id) use ($dbA, $ft, $DPID, $dgen) {
+        $r = $dbA->select('SELECT COUNT(*) FROM ' . $ft . ' WHERE project_id = ? AND generation_id = ?
+            AND record_id_bin = ? AND active_slot = 1', [$DPID, $dgen, $id]);
+        return (int) $r[0][0];
+    };
+    $endedAt = $dbA->select('SELECT MIN(valid_to_seq), MAX(valid_to_seq) FROM ' . $ft
+        . ' WHERE project_id = ? AND generation_id = ? AND record_id_bin = ?', [$DPID, $dgen, 'DP12']);
+    check('W5F-N4 tombstone: the deleted record\'s finding is closed, at the run\'s sequence',
+        $activeOf('DP12') === 0 && (int) $endedAt[0][0] === $dseq && (int) $endedAt[0][1] === $dseq);
+    check('W5F-N4 tombstone: and the records beside it keep theirs',
+        $activeOf('DP11') === 1 && $activeOf('DP13') === 1 && $activeOf('DP14') === 1);
+    $A->query('UPDATE ' . $ft . " SET stage_epoch = 1 WHERE project_id = $DPID AND record_id_bin = 'DP13'");
+    $trec = new UvRecordingDb($dbA);
+    $tn = (new SqlScanStore($trec))->tombstone($drid, $dep, [$nh('DP13'), $nh('DP14'), $nh('DP12')]);
+    check('W5F-N4 tombstone: two more records deleted, the one already a tombstone not moved again',
+        $tn === 2);
+    check('W5F-N4 tombstone: the plain finding is closed, the duplicate-value one left to the finalizer',
+        $activeOf('DP14') === 0 && $activeOf('DP13') === 1 && $activeOf('DP11') === 1);
+    $tSel = $trec->matching('select', ['FROM ' . $rt, 'record_hash IN', 'FOR UPDATE']);
+    $tFind = $trec->matching('exec', ['UPDATE ' . $ft, 'record_hash IN']);
+    $tFindKey = $tFind ? uv_explain_key($A, $tFind[0][1], $tFind[0][2]) : '';
+    check('W5F-N4 tombstone: the rows that move are chosen through uq_run_record, under their locks',
+        count($tSel) === 1
+        && $viaHash([uv_explain_key($A, str_replace('FOR UPDATE', '', $tSel[0][1]), $tSel[0][2])], 1));
+    check('W5F-N4 tombstone: and the findings are closed through a key that begins (project, generation, record)',
+        count($tFind) === 1 && $tFindKey !== ''
+        && array_slice(uv_index_columns($A, $ft, $tFindKey), 0, 3)
+            === ['project_id', 'generation_id', 'record_hash']);
+    // A requeue closes nothing: the record is read again, and its next
+    // commit supersedes what it had. Of the requeue and the tombstone above,
+    // only the tombstone sent a close.
+    check('W5F-N4 tombstone: a requeue sends no finding close',
+        count($nrec->matching('exec', ['UPDATE ' . $ft])) === 1);
+    echo '  plan tombstone: ' . $tFindKey . "\n";
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

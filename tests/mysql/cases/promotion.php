@@ -204,7 +204,8 @@ $NEIGHBOUR = uv_neighbour($PID);
             // empty scope, and the one the stored sentence denied. Each record
             // is read and stored DONE with a finding, then catch-up finds it
             // gone and tombstones it through the store path CatchUp::step()
-            // takes. The findings stay active, so the summary counts them.
+            // takes. Since W5F-N4 that closes the findings, so the summary
+            // has none of them to count.
             $claimed = $store->claim($rid, 'w', $epoch, 5);
             $batch = array('bytes' => 0, 'records' => array(), 'findings' => array());
             foreach ($claimed as $c) {
@@ -345,8 +346,14 @@ $NEIGHBOUR = uv_neighbour($PID);
     $run957 = $store->run(957, $rid957);
     check('R2O-1: the fixture examined both records, stored a finding for each, then deleted both',
         $states === array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_TOMBSTONE => 2)
-        && (int) $run957['detail_rows'] === 2
-        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run957) === 2);
+        && (int) $run957['detail_rows'] === 2);
+    // W5F-N4: deleting them closed both findings, so the summary the real
+    // rollup built counts none, and nothing of theirs is still active.
+    $active957 = $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = 957 AND active_slot = 1')->fetch_row()[0];
+    check('W5F-N4: the tombstones closed both findings, and the finished run counts none of them',
+        (int) $active957 === 0
+        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run957) === 0);
     check('R2O-1: it is an empty scope, partial, stored NOT clean',
         $p['promoted'] === true && $raw[0] === 'partial' && $raw[1] === 'empty-scope'
         && (int) $raw[2] === 0 && (int) $raw[3] === 0);

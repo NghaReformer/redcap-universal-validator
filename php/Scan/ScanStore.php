@@ -857,7 +857,15 @@ interface ScanStore
      * its own it would hold the run incomplete forever - the mirror of the
      * false-complete case, and the reason C3 called it worse.
      *
+     * ITS FINDINGS GO WITH IT (W5F-N4). In one transaction, each row not
+     * already a tombstone becomes one, and the record's active findings in
+     * this run's generation are closed at the run's sequence, as depart()
+     * and a worker's tombstone commit close them: the run reports on records
+     * the project holds, and counts a deleted one as removed. Duplicate-value
+     * findings (staged) are the finalizer's and are not touched.
+     *
      * @param string[] $hashes raw record hashes, as requeue() takes them
+     * @return int rows that became tombstones
      */
     public function tombstone($runId, $epoch, array $hashes);
 

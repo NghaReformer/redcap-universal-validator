@@ -1607,13 +1607,25 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && $sd->recordStates($rd) === [ScanStore::REC_DONE => 4]);
     $C('W5F-N3: by record hash, the tombstone moves its one row',
         $sd->tombstone($rd, $epD, [$hD('L3')]) === 1);
-    $nD =$sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
+    // W5F-N4. A record deleted during the run has its findings in the run
+    // closed with it, as depart() closes a departed one's: the run reports
+    // on records the project holds, and counts this one as removed.
+    $C('W5F-N4: a tombstone closes the deleted record\'s findings in the run, and no other record\'s',
+        $activeD() === ['L1', 'L2', 'L4']);
+    $stN4 = $sd->recordStates($rd);
+    ksort($stN4);
+    $C('W5F-N4: the run counts it removed and finished, not done',
+        $stN4 === [ScanStore::REC_DONE => 3, ScanStore::REC_TOMBSTONE => 1]
+        && (int) $sd->run(746, $rd)['manifest_done'] === 4);
+    $C('W5F-N4: tombstoning it again moves nothing and closes nothing',
+        $sd->tombstone($rd, $epD, [$hD('L3')]) === 0 && $activeD() === ['L1', 'L2', 'L4']);
+    $nD = $sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
     $stD = $sd->recordStates($rd);
     $C('depart: a record that left the group departs, and a deleted one stays a tombstone',
         $nD === 1 && isset($stD[ScanStore::REC_DEPARTED]) && $stD[ScanStore::REC_DEPARTED] === 1
         && $stD[ScanStore::REC_TOMBSTONE] === 1 && $stD[ScanStore::REC_DONE] === 2);
     $C('depart: its findings in the run are closed, and no other record\'s',
-        $activeD() === ['L1', 'L3', 'L4']);
+        $activeD() === ['L1', 'L4']);
     $C('depart: the run counts it finished, so it holds nothing open',
         (int) $sd->run(746, $rd)['manifest_done'] === 4 && $sd->manifestComplete($rd) === true);
     $C('depart: departedOf() names it, and no other',
@@ -1628,7 +1640,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
             'state' => ScanStore::REC_DEPARTED, 'version' => null, 'claim' => $cD4[0]['claim']]],
          'findings' => []]) === true;
     $C('depart: a batch that commits a record departed closes its findings with it',
-        $okD4 && $activeD() === ['L1', 'L3']
+        $okD4 && $activeD() === ['L1']
         && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------

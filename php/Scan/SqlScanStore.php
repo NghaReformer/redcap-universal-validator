@@ -2273,6 +2273,8 @@ final class SqlScanStore implements ScanStore
      * Without this a deleted record can never reach a terminal state and holds
      * the run incomplete forever, which C3 called the worse half of the frozen-
      * manifest problem: the false-complete case at least finishes.
+     *
+     * Its findings in the run are closed with it (W5F-N4): see reState().
      */
     public function tombstone($runId, $epoch, array $hashes)
     {
@@ -2306,8 +2308,8 @@ final class SqlScanStore implements ScanStore
             $marks = implode(',', array_fill(0, count($hashes), '?'));
             // WHICH ROWS MOVE, decided first and under the row locks, so the
             // findings closed below are those of the records that departed
-            // here and of no other. A tombstone's findings are left as
-            // catch-up leaves them (ScanPromotion::facts, R2O-1).
+            // here and of no other. A tombstone already closed its findings
+            // when it became one (reState(), W5F-N4).
             $left = [];
             foreach ($this->db->select('SELECT record_hash FROM ' . $t
                     . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state NOT IN (?, ?)
@@ -2372,28 +2374,60 @@ final class SqlScanStore implements ScanStore
     {
         $this->db->begin();
         try {
-            $r = $this->db->select('SELECT phase, lease_epoch FROM ' . Schema::table('scan_run')
-                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            $r = $this->db->select('SELECT phase, lease_epoch, project_id, generation_id, run_seq FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
                     || (int) $r[0][1] !== (int) $epoch) {
                 $this->db->rollback();
                 return 0;
             }
+            $t = Schema::table('scan_record');
             $marks = implode(',', array_fill(0, count($hashes), '?'));
+            // A TOMBSTONE CLOSES THE RECORD'S FINDINGS (W5F-N4), as depart()
+            // and a worker's own tombstone commit do. Which rows move is
+            // decided first, under the row locks, so the findings closed below
+            // are those of records that became tombstones here, on this run's
+            // manifest, and of no other.
+            $closing = ($state === self::REC_TOMBSTONE);
+            if ($closing) {
+                $moving = [];
+                foreach ($this->db->select('SELECT record_hash FROM ' . $t
+                        . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state <> ?
+                        FOR UPDATE',
+                        array_merge([$runId], array_values($hashes), [self::REC_TOMBSTONE])) as $row) {
+                    $moving[] = $row[0];
+                }
+                if (!$moving) {
+                    $this->db->commit();
+                    return 0;
+                }
+                $hashes = $moving;
+                $marks = implode(',', array_fill(0, count($hashes), '?'));
+            }
             $params = [$state, self::now(), $runId];
             foreach ($hashes as $h) $params[] = $h;
             // THE CLAIM GOES WITH THE STATE. A record sent back to pending
             // while still carrying its token could be committed by the worker
             // that was holding it when catch-up requeued it - and that reading's
             // staleness is the entire reason the record was requeued.
-            $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+            $this->db->exec('UPDATE ' . $t . '
                 SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '')
                 . 'claim_owner = NULL, claim_seq = 0, updated_at = ?
                 WHERE run_id = ? AND record_hash IN (' . $marks . ')', $params);
             $n = $this->db->affected();
+            if ($closing) {
+                // commitBatch()'s close: ix_record_v2, at the run's sequence,
+                // duplicate-value (staged) findings left to the finalizer.
+                $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
+                    SET active_slot = NULL, valid_to_seq = ?
+                    WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                      AND stage_epoch IS NULL
+                      AND record_hash IN (' . $marks . ')',
+                    array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $hashes));
+            }
             // manifest_done is a counter and this moved rows out of (or into) a
             // terminal state, so it is recounted rather than adjusted.
-            $d = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+            $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
                 . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',

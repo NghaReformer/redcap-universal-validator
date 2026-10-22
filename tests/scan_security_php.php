@@ -36,6 +36,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
+    // W5F-N4 reads the active findings back, which findings() shapes.
+    require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -625,9 +627,10 @@ namespace INSPIRE\UniversalValidator\Scan {
      * R2O-1  EVERY RECORD DELETED, CHECKED OR NOT
      *
      * Since OC-1 an empty scope means no record is left `done`. Catch-up
-     * tombstones a record deleted after it was EXAMINED, and its findings stay
-     * active - so the commonest way in stored "no record was examined" beside a
-     * findings count that examination produced. Both shapes are driven through
+     * tombstones a record deleted after it was EXAMINED, and its findings
+     * stayed active (until W5F-N4 closed them with it) - so the commonest way
+     * in stored "no record was examined" beside a findings count that
+     * examination produced. Both shapes are driven through
      * the real store and the real promotion: records examined (with a finding
      * each) and then deleted, and records deleted before anything read them.
      * The classification must be the same - never clean, never complete - and
@@ -663,18 +666,15 @@ namespace INSPIRE\UniversalValidator\Scan {
             // longer has, whatever state it is in.
             $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
             $gone = $store->tombstone($runId, $epoch, [$h('A'), $h('B')]);
-            // What the rollup would have summarised: one active finding per
-            // examined record, on every axis.
-            if ($examineFirst) {
-                foreach (RollupBuilder::KINDS as $k) {
-                    $store->addAggregate($runId, $k, 'x', '', 2);
-                }
-            }
+            // The rollup summarises ACTIVE findings, and since W5F-N4 the
+            // tombstone closed the examined records' findings with them, so
+            // it has none to summarise and adds no row.
+            $active = count($store->findings($pid, $gen, [], 0, 100));
             $p = ScanPromotion::promote($store, $pid, $runId,
                 ['uniqueDone' => true, 'rollupDone' => true]);
             $run = $store->run($pid, $runId);
             return ['p' => $p, 'run' => $run, 'gone' => $gone, 'detail' => (int) $run['detail_rows'],
-                    'found' => ScanPromotion::findingsOf($store, $run)];
+                    'active' => $active, 'found' => ScanPromotion::findingsOf($store, $run)];
         };
         foreach (['examined, then deleted' => true, 'deleted before it was read' => false] as $how => $first) {
             $s = $shape($first);
@@ -697,7 +697,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
         $ex = $shape(true);
         check('R2O-1: the examined shape really did examine and find - this is the case the sentence lied about',
-            $ex['detail'] === 2 && $ex['found'] === 2);
+            $ex['detail'] === 2);
+        check('W5F-N4: and the tombstones closed both findings, so the finished run counts none of them',
+            $ex['active'] === 0 && $ex['found'] === 0);
         check('R2O-1: and its reason accounts for those findings instead of denying the examination',
             strpos($ex['run']['terminal_reason'], 'any findings it kept are on deleted records') !== false);
     }

@@ -211,10 +211,12 @@ class ScanPageView
             // scope, which is false of a run whose records were all deleted.
             // It then opened "Nothing was checked", which is false of the
             // commonest of those (review R2O-1): records checked and THEN
-            // deleted, whose findings stay counted - so the panel said nothing
+            // deleted, whose findings stayed counted - so the panel said nothing
             // was checked above "2 findings so far". No record being left is
             // true of all three, and the findings line is accounted for in the
-            // sentence that sits beside it.
+            // sentence that sits beside it. Since W5F-N4 a deleted record's
+            // findings are closed with it, and the sentence still has to read
+            // true over a run stored before that.
             Scan\ScanOutcome::EMPTY_SCOPE => 'This scan has no record left to report on: none was in '
                                            . 'scope, or every one was deleted while it ran, whether '
                                            . 'or not it had been checked. Any findings it counted '

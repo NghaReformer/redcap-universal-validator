@@ -1207,9 +1207,11 @@ final class ArrayScanStore implements ScanStore
         }
         $want = array_fill_keys(array_map('strval', $hashes), true);
         $n = 0;
+        $moved = [];
         foreach ($this->records[$runId] as $o => $row) {
             if (!isset($want[(string) $row['hash']])) continue;
             if ((int) $row['state'] === (int) $state) continue;
+            $moved[(string) $row['hash']] = true;
             $this->records[$runId][$o]['state'] = $state;
             // Attempts survive on purpose: see the SQL store's note. A record
             // being edited constantly must still reach its limit.
@@ -1222,6 +1224,19 @@ final class ArrayScanStore implements ScanStore
             $this->records[$runId][$o]['claim_owner'] = null;
             $this->records[$runId][$o]['claim_seq'] = 0;
             $n++;
+        }
+        // A TOMBSTONE CLOSES THE RECORD'S FINDINGS in the run's generation
+        // (W5F-N4), the SQL store's statement, for the rows that moved here.
+        if ((int) $state === ScanStore::REC_TOMBSTONE && $moved) {
+            foreach ($this->findings as $i => $f) {
+                if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
+                if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
+                if ((int) $f['project_id'] !== (int) $r['project_id']) continue;
+                if ((int) $f['generation_id'] !== (int) $r['generation_id']) continue;
+                if (!isset($f['record_hash']) || !isset($moved[(string) $f['record_hash']])) continue;
+                $this->findings[$i]['active_slot'] = null;
+                $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
+            }
         }
         $done = 0;
         foreach ($this->records[$runId] as $row) {
