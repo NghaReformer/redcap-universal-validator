@@ -196,22 +196,48 @@ const JSMO = 'EMStub.UV';
   check('free: green note', /Not used before/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('free: save allowed', ev._prevented === false);
-  check('free: a cached "free" is not asked again', stub.calls.length === 4);
+  check('free: a fresh cached "free" is not asked again', stub.calls.length === 4);
+  // An older "free" is asked again too (UNQ-4): the value may have been saved
+  // in another record since this one was typed.
+  stub.next = { used: true, record: '9' };
+  clockShift += 31000;
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('free: an older "free" is asked again at Save, and the value saved since then blocks it',
+    stub.calls.length === 5 && stub.calls[4].payload.values.pid === 'FRESH1' && ev._prevented === true
+    && /already recorded/.test(msg.innerHTML));
 
   pid.value = '';
   pid.fire('change');
   check('empty: inert', msg.style.display === 'none');
-  check('empty: no request sent', stub.calls.length === 4);
+  check('empty: no request sent', stub.calls.length === 5);
 
   // The server trims the same characters, no more and no less.
   pid.value = '\u00A0AB200\0';
   pid.fire('change');
   check('trim: no-break spaces and NUL are trimmed before asking',
-    stub.calls.length === 5 && stub.calls[4].payload.values.pid === 'AB200');
+    stub.calls.length === 6 && stub.calls[5].payload.values.pid === 'AB200');
   pid.value = '\u2003AB300';
   pid.fire('change');
   check('trim: an em space is kept, as the server keeps it',
-    stub.calls.length === 6 && stub.calls[5].payload.values.pid === '\u2003AB300');
+    stub.calls.length === 7 && stub.calls[6].payload.values.pid === '\u2003AB300');
+}
+
+// ---- 1a) UNQ-6: a page drawn for a record not saved yet says so -------------
+{
+  const ask = (extra) => {
+    const stub = makeTransportStub();
+    stub.next = { used: false, record: null };
+    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'NR-1';
+    boot([pid], Object.assign({ singleFields: [], pooledFields: [], jsmoName: JSMO,
+      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, extra), stub);
+    return stub.calls[0] && stub.calls[0].payload;
+  };
+  let p = ask({ newRecord: true });
+  check('new record: the request says the record is not saved yet', p && p.newRecord === true);
+  p = ask({});
+  check('saved record: the request carries no newRecord', p && !('newRecord' in p));
+  p = ask({ newRecord: 'yes' });
+  check('newRecord other than true is not sent', p && !('newRecord' in p));
 }
 
 // ---- 1b) @UVUNIQUE "also": the server names the field the value was found in --
@@ -665,6 +691,27 @@ for (const mode of ['confirm', 'hard']) {
     check('async: a re-ask with no answer in time keeps the known duplicate',
       ev._prevented && stub.calls.length === 2 && /already recorded/.test(uMsg(env, 'pid').innerHTML)
       && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  } finally { global.setTimeout = realST; }
+}
+// An older "free" asked again with no answer in time keeps "free": the save goes through (UNQ-4).
+{
+  const realST = global.setTimeout;
+  const long = [];
+  global.setTimeout = (fn, ms) => { if ((ms || 0) >= 5000) { long.push(fn); return 0; } return realST(fn, ms); };
+  try {
+    const stub = makeDeferredStub();
+    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'FREE77';
+    const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
+    stub.answer({ used: false, record: null });
+    clockShift += 31000;
+    let ev = submitEv(); env.doc.fire('submit', ev);
+    check('async: an older "free" is asked again, and the click waits for it',
+      ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+    long.forEach((fn) => fn()); long.length = 0;
+    ev = submitEv(); env.doc.fire('submit', ev);
+    check('async: ...with no answer in time it keeps "free" and the next click saves',
+      !ev._prevented && stub.calls.length === 2 && /Not used before/.test(uMsg(env, 'pid').innerHTML));
   } finally { global.setTimeout = realST; }
 }
 // A first answer of "unknown" (the server's read budget) is no error either.

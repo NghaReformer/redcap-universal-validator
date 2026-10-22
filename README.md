@@ -539,6 +539,20 @@ enforcement:
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
+- **A new record is compared with every saved one.** On a new-record page with
+  auto-numbering, the record id is REDCap's guess until the save. When another
+  user saves a record under that id first, REDCap saves this page under the
+  next id, so the page check compares the value with that record too. Up to
+  2.3.0-rc.2 the page check skipped it as "this record" and said *not used
+  before*.
+- **What the check reads.** The page check and the save audit read the tagged
+  field's rows (and the `also` fields' rows) from the project's data table, then
+  build only the records that hold the value. A value no other record holds
+  needs no further read. Up to 2.3.0-rc.2 every *not used before* answer and
+  every save exported those fields for every record, about 115 MB at 100,000
+  records. Where the data table cannot be read, the module falls back to that
+  export. On a survey page, a value another record holds is still settled by a
+  filtered read first, which costs nothing from the survey's read budget.
 - **What counts as the same value.** Stored values, trimmed, with letter case
   ignored (`SP-1` duplicates `sp-1`) unless the rule sets `"caseSensitive":true`.
   In a field that holds numbers (an integer or number Text field, or a slider)
@@ -555,7 +569,10 @@ enforcement:
   a warning to be read. The same refusal applies when a `with` or `also` field
   is an Identifier, and with `also` every `also` field must sit on the tagged
   field's own instrument, so a respondent is only told about fields of the
-  survey they are filling in. Reasonable use: a non-identifying response token, to
+  survey they are filling in. The tagged field itself must be on that survey
+  too: up to 2.3.0-rc.2, anyone with the link to one survey could ask about an
+  opted-in field of another instrument, such as the token of an
+  invitation-only survey. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
 - **Asked on change, not per keystroke.** The page asks when the value is
@@ -563,17 +580,22 @@ enforcement:
   again first. Typing clears the previous answer. The answer is *not used
   before* (green), *already recorded* (red, enforced per `blockSave`) or *could
   not check* (amber, staff forms only).
-- **The race is audited, not denied.** Two near-simultaneous saves can both
-  pass the live check; the post-save audit re-checks the saved value against
-  every other record and logs a collision (`type: unique`,
-  `reason: duplicate-value`) — review the module log for races. A failed check
+- **The live check is advisory, and the race is audited.** An answer is as old
+  as the check that gave it. Save asks again about any answer 30 seconds old or
+  more, *already recorded* or *not used before*, and holds the save until the
+  server answers. Up to 2.3.0-rc.2 Save never asked again about *not used
+  before*, so a value another record saved while the page stayed open passed at
+  Save. Two saves within 30 seconds of their last checks can still both pass;
+  the post-save audit re-checks the saved value against every other record and
+  logs a collision (`type: unique`, `reason: duplicate-value`), so review the
+  module log for races. A failed check
   fails **open** with *could not check* and its reason, so a network error on a
   first check never traps a save. The exception is the lookup limit (60 lookups
   a minute per session, shared with `@UVEXISTS`): a rule that can block holds the
   save until the server answers again, which takes at most a minute, and Save
-  asks again. When Save asks again about an "already used" the page has held
-  for 30 seconds or more and gets no answer, that earlier answer stands and is
-  enforced. Surveys never show *could not check* and are never held: there a
+  asks again. When Save asks again and gets no answer, the earlier answer
+  stands: an *already recorded* is enforced, and a *not used before* lets the
+  save through. Surveys never show *could not check* and are never held: there a
   failed check simply lets the save through, and the audit is the net.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
@@ -764,7 +786,12 @@ the specimen ID on the collection form.
   be read. A *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
-  check*, which a survey shows as nothing.
+  check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
+  and `@UVEXISTS` together, also counts in the survey throttle: 30 a minute per
+  browser session, and per project 600 a minute for callers with no session or
+  a session less than a minute old, and 6,000 for older sessions. Up to
+  2.3.0-rc.2 a caller who dropped the session cookie on every request was
+  counted in the 6,000.
 - **Audited.** The post-save audit logs `type: exists`, reason `not-found`
   (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The

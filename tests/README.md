@@ -63,7 +63,7 @@ node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEn
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
-php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
 ```
@@ -303,6 +303,13 @@ location's form, and the re-read finds instance 1 of a repeating instrument in
 field's form does not re-audit an extended rule. `missing_codes_php.php` checks
 that a code saved in an `also` field matches nothing. The SQL (the `lookup`
 column, discovery and emit) is in `tests/mysql/cases/uniqueness.php`.
+
+The live check and the save audit first ask the data table which records hold
+the value (`Scan\FieldValues`). `unique_scope_php.php` answers that read from
+its `REDCap::$data` and runs every check twice: with the table, and in a second
+process (`--no-table`) without it, where the export answers instead.
+`tests/mysql/cases/field_values.php` runs the reader on a real server over a
+table with REDCap's own indexes and asserts each statement's plan.
 
 `exists_cross_php.php` covers `"project"`, a lookup in another project. Its
 mocks keep settings, dictionaries, data, rights and `\Project` per project id,

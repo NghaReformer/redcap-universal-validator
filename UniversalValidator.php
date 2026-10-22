@@ -57,6 +57,7 @@ require_once __DIR__ . '/php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
 require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
+require_once __DIR__ . '/php/Scan/FieldValues.php';
 require_once __DIR__ . '/php/Scan/SourceFence.php';
 require_once __DIR__ . '/php/Scan/ScanPlanner.php';
 require_once __DIR__ . '/php/Scan/WorkBudget.php';
@@ -4087,6 +4088,18 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
+        // A record not saved yet carries REDCap's guess at its id. The live
+        // uniqueness check must not skip a record another user saves under that
+        // id meanwhile (UNQ-6), so the page says so. Unknown counts as saved:
+        // the check then skips the record, as it always did.
+        if ($record !== null && $record !== '' && $pid !== null) {
+            foreach ($config['rules'] as $r) {
+                if (!is_array($r) || ($r['type'] ?? '') !== 'unique') continue;
+                $rd = $this->recordDagOf($pid, $record);
+                if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
+                break;
+            }
+        }
         // The project's Missing Data Codes (codes only, never their labels): a
         // field marked with one holds the code, which the checks leave alone.
         if ($config['rules']) {
@@ -5985,6 +5998,18 @@ class UniversalValidator extends AbstractExternalModule
      * so the opt-in is refused for them. A dictionary that cannot place the
      * fields refuses too.
      */
+    /**
+     * Whether $field is on $instrument, the survey an unauthenticated caller is
+     * taking. A field the dictionary cannot place, or a request with no
+     * instrument, is not (fail closed).
+     */
+    private static function onSurveyInstrument($dd, $field, $instrument)
+    {
+        if ($instrument === null || $instrument === '') return false;
+        $home = (is_array($dd) && isset($dd[$field]['form_name'])) ? (string) $dd[$field]['form_name'] : '';
+        return $home !== '' && $home === (string) $instrument;
+    }
+
     private static function surveyAlsoProblem($dd, $field, array $also)
     {
         if (!$also) return null;
@@ -10779,6 +10804,12 @@ class UniversalValidator extends AbstractExternalModule
                 if (self::surveyAlsoProblem($this->dataDictionary($project_id), $field, $alsoFields) !== null) {
                     return ['error' => 'not enabled on surveys'];
                 }
+                // ...nor about a tagged field of another instrument (UNQ-5):
+                // the link to a public screening survey must not test the
+                // tokens of an invitation-only one.
+                if (!self::onSurveyInstrument($this->dataDictionary($project_id), $field, $instrument)) {
+                    return ['error' => 'not enabled on surveys'];
+                }
                 // ...and never faster than the throttle allows.
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
@@ -10866,7 +10897,12 @@ class UniversalValidator extends AbstractExternalModule
             // post-save audit's findCollision call keeps the full, authoritative scan.
             $mayFullRead = $isAuthenticated ? null
                 : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
-            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,
+            // A record the page drew as new is not left out (UNQ-6): its id is
+            // REDCap's guess, and another user may have saved a record under
+            // it since. A forged flag only widens the comparison.
+            $nr = isset($payload['newRecord']) ? $payload['newRecord'] : null;
+            $exclude = ($nr === true || $nr === 1 || $nr === '1' || $nr === 'true') ? null : $record;
+            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $exclude, $event_id, $group_id, true,
                                         empty($rule['caseSensitive']), $mayFullRead, $also);
             // Not settled (the read budget refused the read it needed, or the
             // read failed): not "free", which would let a known duplicate
@@ -11247,13 +11283,22 @@ class UniversalValidator extends AbstractExternalModule
      * Per-project windows, which are keyed on something the caller does not.
      *
      * The sessionless cap is the older number and keeps its meaning: a
-     * cookieless enumerator gets 600 a minute for the whole project. The
+     * cookieless enumerator gets 600 a minute for the whole project, so a
+     * six-digit space takes 1,000,000 / 600 minutes, about 28 hours. The
      * sessioned cap has to sit above what a busy public survey really spends -
      * tier 1 allows each session 30 a minute, so 600 would be twenty people
-     * typing at once - while still being a bound rather than none.
+     * typing at once - while still being a bound rather than none. Only a
+     * session with history spends it (SESSION_HISTORY).
      */
     const THROTTLE_PROJECT_ANON = 600;
     const THROTTLE_PROJECT_SESSIONED = 6000;
+    /**
+     * Seconds a session must have been checking before its checks count in the
+     * sessioned bucket (UNQ-8). A fresh session costs nothing to make: a
+     * caller who drops the cookie on every request got the 6,000 cap and
+     * never met tier 1. Its first minute is charged to the 600 bucket.
+     */
+    const SESSION_HISTORY = 60;
     /**
      * Whole-field reads an unauthenticated @UVEXISTS caller may cause per
      * project per minute (surveyFullReadAllowed). Over it, a lookup that needs
@@ -11324,7 +11369,15 @@ class UniversalValidator extends AbstractExternalModule
         $sessioned = false;
         try {
             if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-                $sessioned = true;
+                // The sessioned bucket only for a session with history: the
+                // first check it made is SESSION_HISTORY seconds old or more.
+                // The time lives on the server, so a caller cannot forge it,
+                // only wait for it.
+                $sinceKey = 'uvalidate_unique_since';
+                $since = (isset($_SESSION[$sinceKey]) && is_int($_SESSION[$sinceKey]) && $_SESSION[$sinceKey] <= $now)
+                    ? $_SESSION[$sinceKey] : null;
+                if ($since === null) { $since = $now; $_SESSION[$sinceKey] = $now; }
+                $sessioned = ($now - $since) >= self::SESSION_HISTORY;
                 $key = 'uvalidate_unique_hits';
                 $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
                 $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
@@ -11367,9 +11420,11 @@ class UniversalValidator extends AbstractExternalModule
             // have turned this hardening change into an outage for exactly the
             // projects that use the feature most. Separate buckets mean the
             // sessionless cap keeps the value it was chosen for, and the
-            // sessioned cap only has to be low enough to bound enumeration -
-            // which it is: it converts "unbounded" into "a day and a half for a
-            // six-digit space", on an endpoint whose real defences are the
+            // sessioned cap only has to be low enough to bound enumeration.
+            // A caller who rotates the cookie stays in the 600 bucket (about
+            // 28 hours for a six-digit space). One who keeps two hundred
+            // sessions open past their first minute reaches the 6,000 cap
+            // (about 2.8 hours), on an endpoint whose real defences are the
             // per-rule opt-in and the Identifier refusal.
             //
             // NOT SETTINGS. Every other tunable in this module is a setting,
@@ -11666,6 +11721,27 @@ class UniversalValidator extends AbstractExternalModule
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
 
+        // The records that hold the value, from the data table (UNQ-7,
+        // PRF-2): getData then builds those records only, and a miss needs no
+        // export at all. [false] when the table cannot be read, and the
+        // export below answers instead.
+        $fromTable = function () use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+            $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
+                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null);
+            if ($cand === null) return [false];
+            if (!$cand) return [true, null];
+            $data = \REDCap::getData($params + ['records' => $cand]);
+            if (!is_array($data)) return [true, false];
+            return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
+        };
+        // Signed-in callers and the save audit start there. A survey keeps
+        // its order: the narrowed read below settles a hit without spending
+        // the read budget, and the budget pays for the table read of a miss.
+        if ($mayFullRead === null) {
+            $t = $fromTable();
+            if ($t[0]) return $t[1];
+        }
+
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
         // matches with a filterLogic, so REDCap returns only the few records that
@@ -11695,7 +11771,11 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
-        if ($mayFullRead !== null && !call_user_func($mayFullRead)) return false;
+        if ($mayFullRead !== null) {
+            if (!call_user_func($mayFullRead)) return false;
+            $t = $fromTable();
+            if ($t[0]) return $t[1];
+        }
         $shared = $this->sharedCollisionRead($params);
         if ($shared !== null) {
             if ($shared === false) return false;
@@ -11704,6 +11784,41 @@ class UniversalValidator extends AbstractExternalModule
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
         return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The records other than $excludeRecord with a row of $fields whose value
+     * has the lookup key of $value under that field's number mark, read from
+     * the data table (Scan\FieldValues); or null when it cannot be read. A
+     * superset of the records collisionIn can match: a context takes its
+     * values from these rows only.
+     */
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId)
+    {
+        $keyOf = [];
+        foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
+        $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId,
+            function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+                if (!isset($keyOf[$f])) return false;
+                if ($v === $value) return true;
+                $k = $keyOf[$f];
+                // A text key is the trimmed, folded value: a shorter stored
+                // value cannot reach it.
+                if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
+                return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+            });
+        if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
+        $skip = (string) $excludeRecord;
+        return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
+    }
+
+    /** @var Scan\FieldValues|null */
+    private $fieldValuesReader = null;
+
+    private function fieldValues()
+    {
+        if ($this->fieldValuesReader === null) $this->fieldValuesReader = new Scan\FieldValues($this);
+        return $this->fieldValuesReader;
     }
 
     /**

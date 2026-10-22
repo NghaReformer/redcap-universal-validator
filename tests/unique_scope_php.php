@@ -47,6 +47,14 @@ namespace ExternalModules {
         public static $rateBuckets = [];
         public $lastInsertId = 0;
         public function query($sql, $params = []) {
+            // The data table (Scan\FieldValues), unless this run leaves it out.
+            if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) {
+                return empty($GLOBALS['__NO_TABLE']) ? [['redcap_data']] : [];
+            }
+            if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
+                $GLOBALS['__TABLE_READS'][] = $sql;
+                return \REDCap::tableRows($sql, $params);
+            }
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
             if (strpos($sql, 'uv_rate_bucket') !== false && strpos(ltrim($sql), 'INSERT') === 0) {
@@ -89,11 +97,38 @@ namespace {
         public static $mappings = null;
         public static $longitudinal = false;
         public static $repeating = null;     // getRepeatingFormsEvents answer, or null (not offered)
+        public static $recordReads = [];     // the records list of each getData that named records
+        /** The data table's rows of $data: (record, field, value), non-blank values only, as REDCap stores them. */
+        public static function tableRows($sql, array $params) {
+            $event = strpos($sql, 'AND event_id = ?') !== false ? (int) array_pop($params) : null;
+            array_shift($params);
+            $fields = array_flip($params);
+            $out = [];
+            $put = function ($rec, $row) use (&$out, $fields) {
+                foreach ((array) $row as $f => $v) {
+                    if (isset($fields[$f]) && !is_array($v) && (string) $v !== '') $out[] = [(string) $rec, $f, (string) $v];
+                }
+            };
+            foreach (self::$data as $rec => $node) {
+                foreach ($node as $ek => $row) {
+                    if ($ek !== 'repeat_instances') {
+                        if ($event === null || (int) $ek === $event) $put($rec, $row);
+                        continue;
+                    }
+                    foreach ((array) $row as $evt => $byInstr) {
+                        if ($event !== null && (int) $evt !== $event) continue;
+                        foreach ((array) $byInstr as $byInst) foreach ((array) $byInst as $irow) $put($rec, $irow);
+                    }
+                }
+            }
+            return $out;
+        }
         public static function getData($p) {
             $filtered = isset($p['filterLogic']) && $p['filterLogic'] !== '';
             if ($filtered) self::$calls['filtered']++;
             elseif (!empty($p['records'])) self::$calls['record']++;
             else self::$calls['full']++;
+            if (!empty($p['records'])) self::$recordReads[] = array_map('strval', $p['records']);
             $clauses = [];
             if ($filtered) {
                 foreach (preg_split('/ and /', $p['filterLogic']) as $part) {
@@ -165,9 +200,13 @@ namespace {
     use INSPIRE\UniversalValidator\UniversalValidator;
 
     $n = 0; $fail = 0;
+    // Every check runs twice: with the data table (the lookup's first read)
+    // and, in a second process, without it (the export it falls back to).
+    $TABLE = !in_array('--no-table', isset($argv) ? $argv : [], true);
+    $GLOBALS['__NO_TABLE'] = !$TABLE;
     function check($label, $cond) {
-        global $n, $fail; $n++;
-        if (!$cond) { $fail++; fwrite(STDERR, "FAIL: $label\n"); }
+        global $n, $fail, $TABLE; $n++;
+        if (!$cond) { $fail++; fwrite(STDERR, 'FAIL' . ($TABLE ? '' : ' (no data table)') . ": $label\n"); }
     }
     function uvf($form, $ann = '') {
         return ['field_type' => 'text', 'form_name' => $form, 'field_annotation' => $ann,
@@ -182,6 +221,8 @@ namespace {
         $GLOBALS['__TEST_USER'] = $user;
         \REDCap::$data = $data;
         \REDCap::$calls = ['full' => 0, 'filtered' => 0, 'record' => 0];
+        \REDCap::$recordReads = [];
+        $GLOBALS['__TABLE_READS'] = [];
         $m = new UniversalValidator();
         $m->projectSettings = ['log-values' => 'raw'];
         $m->projectIdReturn = 149;
@@ -225,7 +266,8 @@ namespace {
     $m = mk($DAG);
     ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
     check('dag live: the group is read on its own, so the lookup narrows (a filtered read, no full one)',
-        \REDCap::$calls['filtered'] === 1 && \REDCap::$calls['full'] === 0);
+        \REDCap::$calls['full'] === 0
+        && ($TABLE ? \REDCap::$calls['filtered'] === 0 && count($GLOBALS['__TABLE_READS']) === 1 : \REDCap::$calls['filtered'] === 1));
 
     $saved = function ($rec, $group) use ($DAG) {
         $m = mk($DAG);
@@ -345,7 +387,8 @@ namespace {
     $m->redcap_save_record(149, '3', 'reg', 351, null, null, null, 1);
     $bad = array_map(function ($e) { return $e['field']; }, logged($m, 'invalid-id-saved'));
     sort($bad);
-    check('shared read: one full read for four unique fields (got ' . json_encode(\REDCap::$calls) . ')', \REDCap::$calls['full'] === 1);
+    check('shared read: one full read for four unique fields, or none with the data table (got ' . json_encode(\REDCap::$calls) . ')',
+        \REDCap::$calls['full'] === ($TABLE ? 0 : 1));
     check('shared read: the verdicts separate reads gave (got ' . json_encode($bad) . ')',
         $bad === ['u_also', 'u_case', 'u_plain', 'u_with']);
     $m = mk($SH, 'nurse');
@@ -361,6 +404,103 @@ namespace {
     $r = ask($m, 'u_plain', ['u_plain' => 'NEW-1'], '5', 'reg', 351, 'nurse', null);
     check('shared read: dropped after the save (a value saved since is found)', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '4');
 
-    echo "unique_scope_php: $n checks, $fail failure(s)\n";
+    // ---- UNQ-6: a new record's tentative id is not "this record" ------------------
+    // Auto-numbering drew the page as record 5. Another user saved record 5
+    // with the same value meanwhile; REDCap will save this page as record 6.
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'u_plain' => uvf('reg', '@UVUNIQUE')];
+    $NEW = [
+        '1' => [351 => ['record_id' => '1', 'u_plain' => 'OLD-1']],
+        '5' => [351 => ['record_id' => '5', 'u_plain' => 'RACE-1']],
+    ];
+    $askNew = function ($m, array $extra) {
+        $GLOBALS['__TEST_USER'] = 'nurse';
+        return $m->redcap_module_ajax('unique-check', ['field' => 'u_plain', 'values' => ['u_plain' => 'RACE-1']] + $extra,
+            149, '5', 'reg', 351, 1, null, null, null, '', '', 'nurse', null);
+    };
+    $r = $askNew(mk($NEW, 'nurse'), ['newRecord' => true]);
+    check('UNQ-6: a page drawn as new compares with the record saved under its tentative id (got ' . json_encode($r) . ')',
+        ($r['used'] ?? null) === true && ($r['record'] ?? null) === '5');
+    $r = $askNew(mk($NEW, 'nurse'), ['newRecord' => '1']);
+    check('UNQ-6: the flag sent as a form string counts too', ($r['used'] ?? null) === true);
+    $r = $askNew(mk($NEW, 'nurse'), []);
+    check('UNQ-6: with no flag the record is left out, as before (an older page)', ($r['used'] ?? null) === false);
+    $r = $askNew(mk($NEW, 'nurse'), ['newRecord' => false]);
+    check('UNQ-6: a false flag leaves the record out', ($r['used'] ?? null) === false);
+
+    // The page says whether the record existed when it was drawn.
+    $pageOf = function ($m, $record) {
+        ob_start();
+        $m->redcap_data_entry_form_top(149, $record, 'reg', 351, null, 1);
+        $html = ob_get_clean();
+        preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
+        return json_decode($mm[1] ?? 'null', true);
+    };
+    $cfg = $pageOf(mk($NEW, 'nurse'), '7');
+    check('UNQ-6: a page for a record not saved yet carries newRecord (got ' . json_encode($cfg['newRecord'] ?? null) . ')',
+        is_array($cfg) && ($cfg['newRecord'] ?? null) === true);
+    $cfg = $pageOf(mk($NEW, 'nurse'), '1');
+    check('UNQ-6: a page for a saved record does not', is_array($cfg) && !array_key_exists('newRecord', $cfg));
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'u_plain' => uvf('reg', '@UVREQUIRED')];
+    $cfg = $pageOf(mk($NEW, 'nurse'), '7');
+    check('UNQ-6: nor a page with no uniqueness rule (no read is made for it)',
+        is_array($cfg) && !array_key_exists('newRecord', $cfg) && \REDCap::$calls['record'] === 0);
+
+    // ---- UNQ-7, PRF-2: the data table finds the records, getData builds only those --
+    \REDCap::$dictionary = [
+        'record_id' => uvf('reg'),
+        'site'      => uvf('reg'),
+        'u_plain'   => uvf('reg', '@UVUNIQUE'),
+        'u_num'     => ['field_type' => 'text', 'form_name' => 'reg', 'identifier' => '',
+                        'field_annotation' => '@UVUNIQUE', 'select_choices_or_calculations' => '',
+                        'text_validation_type_or_show_slider_number' => 'integer'],
+        'u_also'    => uvf('reg', '@UVUNIQUE={"also":["scan_id"]}'),
+        'u_ev'      => uvf('reg', '@UVUNIQUE={"scope":"event"}'),
+        'scan_id'   => uvf('reg'),
+    ];
+    $TB = [
+        '1' => [351 => ['record_id' => '1', 'u_plain' => 'T-1', 'u_num' => '007', 'u_also' => '', 'scan_id' => 'SC-9', 'u_ev' => 'E-1']],
+        '2' => [351 => ['record_id' => '2', 'u_plain' => ' t-2 ', 'u_num' => '8', 'u_also' => 'A-2', 'scan_id' => '']],
+        '3' => [351 => ['record_id' => '3', 'u_plain' => 'OTHER', 'u_num' => '9'], 352 => ['u_ev' => 'E-2']],
+    ];
+    \REDCap::$events = [351 => 'enrolment_arm_1', 352 => 'visit_arm_1'];
+    $m = mk($TB, 'nurse');
+    $r = ask($m, 'u_plain', ['u_plain' => 'NEW-7'], '9', 'reg', 351, 'nurse', null);
+    check('table: a miss is "free"', ($r['used'] ?? null) === false);
+    check('table: ...and builds no record at all (got ' . json_encode(\REDCap::$calls) . ')',
+        $TABLE ? \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0] : \REDCap::$calls['full'] === 1);
+    $m = mk($TB, 'nurse');
+    $r = ask($m, 'u_plain', ['u_plain' => 'T-2'], '9', 'reg', 351, 'nurse', null);
+    check('table: a saved " t-2 " is found for "T-2" (trimmed, case ignored)', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '2');
+    check('table: ...building record 2 only (got ' . json_encode(\REDCap::$recordReads) . ')',
+        !$TABLE || (\REDCap::$recordReads === [['2']] && \REDCap::$calls['full'] === 0 && \REDCap::$calls['filtered'] === 0));
+    $r = ask(mk($TB, 'nurse'), 'u_num', ['u_num' => '7'], '9', 'reg', 351, 'nurse', null);
+    check('table: in an integer field "7" finds the saved "007"', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '1');
+    $r = ask(mk($TB, 'nurse'), 'u_also', ['u_also' => 'sc-9'], '9', 'reg', 351, 'nurse', null);
+    check('table: an "also" field is searched too', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '1' && ($r['field'] ?? null) === 'scan_id');
+    $m = mk($TB, 'nurse');
+    $r = ask($m, 'u_plain', ['u_plain' => 'T-1'], '1', 'reg', 351, 'nurse', null);
+    check('table: the record being checked is not compared with itself', ($r['used'] ?? null) === false);
+    check('table: ...and is not even built', !$TABLE || \REDCap::$recordReads === []);
+    $m = mk($TB, 'nurse');
+    $r = ask($m, 'u_ev', ['u_ev' => 'E-2'], '9', 'reg', 351, 'nurse', null);
+    check('table: under "scope":"event", a value saved in another event is no duplicate', ($r['used'] ?? null) === false);
+    check('table: ...and the table is read for this event only',
+        !$TABLE || (count($GLOBALS['__TABLE_READS']) === 1 && strpos($GLOBALS['__TABLE_READS'][0], 'AND event_id = ?') !== false));
+    $r = ask(mk($TB, 'nurse'), 'u_ev', ['u_ev' => 'E-2'], '9', 'reg', 352, 'nurse', null);
+    check('table: ...while in its own event it is one', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '3');
+    // The save audit takes the same road: no export of the project.
+    $TB['4'] = [351 => ['record_id' => '4', 'u_plain' => 't-1']];
+    $m = mk($TB, 'nurse');
+    $m->redcap_save_record(149, '4', 'reg', 351, null, null, null, 1);
+    $bad = array_map(function ($e) { return $e['field'] . '@' . ($e['record'] ?? ''); }, logged($m, 'invalid-id-saved'));
+    check('table: the save audit finds the duplicate (got ' . json_encode($bad) . ')', in_array('u_plain@4', $bad, true));
+    check('table: ...with no export of the project (got ' . json_encode(\REDCap::$calls) . ')', !$TABLE || \REDCap::$calls['full'] === 0);
+    \REDCap::$events = [351 => 'enrolment_arm_1'];
+
+    echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? '' : ' without the data table') . "\n";
+    if ($TABLE) {
+        passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --no-table', $rc);
+        if ($rc !== 0) $fail++;
+    }
     exit($fail ? 1 : 0);
 }

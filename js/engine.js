@@ -7224,6 +7224,10 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
+      /* A record not saved when the page was drawn: its id is REDCap's guess
+         (auto-numbering), and a record another user saved under that id since
+         is not "this record" (UNQ-6). */
+      if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.newRecord === true) payload.newRecord = true;
       for(var wi = 0; wi < V.uniqueWith.length; wi++){
         var w = V.uniqueWith[wi];
         /* A "with" field this page does not carry is left out: the server
@@ -7233,10 +7237,12 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      /* Save asks again about a cached "used" older than QRID_RECHECK_MS: the
-         other record may have changed since. The guard holds the save
-         meanwhile. A re-ask that gets no usable answer keeps the old one. */
-      var prior = (cached && saving === true && cached.used === true && QRID_answerStale(cached)) ? cached : null;
+      /* Save asks again about a cached answer older than QRID_RECHECK_MS,
+         "used" or "free": another record may have changed since, and a
+         "free" given twenty minutes ago let a value saved meanwhile through
+         (UNQ-4). The guard holds the save meanwhile. A re-ask that gets no
+         usable answer keeps the old one. */
+      var prior = (cached && saving === true && typeof cached.used === "boolean" && QRID_answerStale(cached)) ? cached : null;
       if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
