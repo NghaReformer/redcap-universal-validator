@@ -200,7 +200,7 @@ final class ScanService
                 . 'so the durable scan cannot run here');
         }
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
-            return self::no('the durable validation scan is not enabled here');
+            return self::no(self::NOT_ENABLED);
         }
         $off = $this->disabling($pid);
         if ($off !== null) return self::no($off === 'project' ? self::OFF_PROJECT : self::OFF_SERVER);
@@ -747,8 +747,42 @@ final class ScanService
      */
     public function status($pid, $runId)
     {
+        $off = $this->readGate($pid);
+        if ($off !== null) return $off;
         return $this->statusOf($pid, $runId, []);
     }
+
+    /**
+     * May a stored run be READ here at all: the two switches, and nothing
+     * else available() asks (review rv11a1, observation (a)).
+     *
+     * SWITCHED OFF IS OFF FOR READING TOO. Start and work asked available(),
+     * and status, scan-findings and the export asked nothing, so a scan an
+     * administrator had switched off - for the installation or for one
+     * project - still answered its counts, its findings and its file to
+     * anyone who held a run id, while the page showed only the notice that
+     * the scan is unavailable. A switch is how an installation withdraws a
+     * feature, and a stored report is part of the feature. The records stay
+     * in their tables, under retention, and read again once it is back on.
+     *
+     * NOT the rest of available(): whether records can be enumerated and
+     * whether the tables are healthy are questions about running a scan, and
+     * a table that cannot be read fails as storage. Not the switch-off
+     * window either (disabling()), which only stops new work. And not
+     * cancel(): stopping a run is what switching off asks for, and a run
+     * nobody may stop holds the project's slot until the reaper ends it.
+     * Asked first, before the reader: it says nothing about a run.
+     *
+     * @return ?array the refusal, or null when reading is on
+     */
+    private function readGate($pid)
+    {
+        if ($this->flag(self::SYS_FLAG, null) && $this->flag(self::PROJ_FLAG, $pid)) return null;
+        return ['ok' => false, 'why' => self::NOT_ENABLED, 'final' => true];
+    }
+
+    /** What available() and the read verbs say while either switch is off. */
+    const NOT_ENABLED = 'the durable validation scan is not enabled here';
 
     /**
      * status(), with what this request has already read about the run.
@@ -1226,6 +1260,8 @@ final class ScanService
     private function reportOf($pid, $runId)
     {
         $no = function ($why, $final) { return ['ok' => false, 'answer' => ['ok' => false, 'why' => $why, 'final' => $final]]; };
+        $off = $this->readGate($pid);
+        if ($off !== null) return ['ok' => false, 'answer' => $off];
         $refused = $this->readerRefusal($pid);
         if ($refused !== null) return ['ok' => false, 'answer' => $refused];
         $store = $this->store();

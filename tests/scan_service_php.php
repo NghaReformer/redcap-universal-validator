@@ -4657,6 +4657,35 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv11a2-8 (M5): a snapshot row of a kind this revision does not know marks the report\'s labels degraded',
         $kp['ok'] === true && $kp['report']['labelsDegraded'] === true
         && $kp['rows'][0]['cells']['instrument'] === 'Form A');
+    /* rv11a1 observation (a)  SWITCHED OFF IS OFF FOR READING TOO. Start
+     * and work asked available(); status, scan-findings and the export asked
+     * nothing, so a scan switched off still answered its run to anyone who
+     * held its id. The two switches now gate the read verbs; cancel stays
+     * open, so a run can still be stopped. */
+    $offAnswer = ['ok' => false, 'why' => ScanService::NOT_ENABLED, 'final' => true];
+    $m12->proj[ScanService::PROJ_FLAG] = '0';
+    check('rv11a1 (a): with the project switch off, status and the findings page are refused, final',
+        (new ScanService($m12, $s12))->status(214, $g12) === $offAnswer
+        && (new ScanService($m12, $s12))->findings(214, $g12) === $offAnswer);
+    check('rv11a1 (a): and so is the file',
+        (new ScanService($m12, $s12))->exportOpen(214, $g12)
+            === ['ok' => false, 'http' => 403, 'why' => ScanService::NOT_ENABLED]);
+    $m12->proj[ScanService::PROJ_FLAG] = '1';
+    $keptSys = $m12->sys[ScanService::SYS_FLAG];
+    $m12->sys[ScanService::SYS_FLAG] = '0';
+    check('rv11a1 (a): the installation switch off refuses them the same way',
+        (new ScanService($m12, $s12))->findings(214, $g12) === $offAnswer);
+    $m12->sys[ScanService::SYS_FLAG] = $keptSys;
+    check('rv11a1 (a) (control): switched back on, the run reads as it did',
+        (new ScanService($m12, $s12))->findings(214, $g12)['ok'] === true
+        && (new ScanService($m12, $s12))->status(214, $g12)['ok'] === true);
+    $live12 = (int) (new ScanService($m12, $s12))->start(218)['run_id'];
+    $m12->proj[ScanService::PROJ_FLAG] = '0';
+    $stop12 = (new ScanService($m12, $s12))->cancel(218, $live12);
+    $m12->proj[ScanService::PROJ_FLAG] = '1';
+    check('rv11a1 (a): a run started before the switch went off can still be stopped',
+        $live12 > 0 && !empty($stop12['ok']) && $s12->run(218, $live12)['terminal'] === ScanOutcome::CANCELLED);
+
     check('rv11a2-8 (control): runs whose snapshot holds only known kinds are not degraded',
         (new ScanService($bm, $bs))->findings(216, $brid)['report']['labelsDegraded'] === false
         && (new ScanService($lm, $ls))->findings(215, $lrid)['report']['labelsDegraded'] === false);
