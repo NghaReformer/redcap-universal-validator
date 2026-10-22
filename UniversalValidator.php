@@ -7959,7 +7959,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Free what is stuck: abandoned runs, worker slots above the limit, and
-     * the previous reports of every project whose latest scan completed.
+     * the previous reports of every project whose latest whole-project run
+     * finished complete.
      *
      * php/Scan/ScanRetention.php held the reaper for releases before anything
      * called it (H-2): a run whose browser closed kept its project's one scan

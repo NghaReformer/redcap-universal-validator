@@ -126,17 +126,23 @@ class ScanPageView
      * before it is a performance one, and no amount of guarding inside the loop
      * changes the shape.
      *
-     * The rebuild plan's Task 1 requires exactly this: disable the production
+     * The rebuild plan's Task 1 required exactly this: disable the production
      * synchronous scan and the export-by-rerun control, and say plainly that the
      * durable scan is unavailable until the worker exists. A notice is the
      * honest interface for a feature that cannot keep its promise; a scan that
      * sometimes finishes is worse, because the times it does teach people to
      * trust the times it does not.
+     *
+     * THE WORKER EXISTS NOW (wave 12 review). The notice still said the scan
+     * was being rebuilt and would come "when that lands", which was no longer
+     * true of any build that shows it. It is shown whenever
+     * Scan\ScanService::available() refuses, and both of its switches are off
+     * by default, so it says what turns the scan on; the page prints the
+     * refusal itself below it.
      */
-    const UNAVAILABLE = 'The project-wide validation scan is temporarily unavailable. It is being '
-        . 'rebuilt to run as a resumable background job that can cover a project of any size and '
-        . 'record exactly what it covered; until that lands, this page will not start a scan. '
-        . 'Live form validation and the post-save audit are unaffected and continue to run.';
+    const UNAVAILABLE = 'The project-wide validation scan cannot be started here. It stays switched off '
+        . 'until it is turned on for the server and for this project, and the reason below says what '
+        . 'stops it now. Live form validation and the post-save audit are unaffected and continue to run.';
 
     // WHETHER A RESULT MAY BE CALLED CLEAN IS NOT DECIDED HERE ANY MORE. This
     // class held verdict(), a second implementation of that question written

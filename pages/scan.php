@@ -175,7 +175,7 @@ $finishedRun = ($available['ok'] && $activeRun === null) ? $svc->finishedRun($pi
 <?php } ?>
 
 <p style="max-width:760px">
-When it returns, this page runs <b>every configured rule</b> (check-character / format,
+Once it can run, this page runs <b>every configured rule</b> (check-character / format,
 constraint, required, unique, choice filter) over <b>every saved record</b>, and reports each
 violation with the instrument, the value, and what is wrong in plain words. That covers what
 live form validation cannot: values imported through the Data Import Tool or the API, and

@@ -174,7 +174,8 @@ final class ScanMaintenance
 
     /**
      * Free what is stuck: abandoned runs, slots above the limit, and the
-     * previous reports of every project whose latest scan completed.
+     * previous reports of every project whose latest whole-project run
+     * finished complete.
      *
      * THE SLOTS FIRST (W1-N1). Lowering scan-system-max-concurrent-projects
      * takes effect in acquire() at once; the free rows above it are removed

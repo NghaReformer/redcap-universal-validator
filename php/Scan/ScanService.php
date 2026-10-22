@@ -1393,7 +1393,8 @@ final class ScanService
     /**
      * README's three ways of saying a report is incomplete, from the run row:
      * a banner above it, a terminal row inside it that survives sorting and
-     * deleting comment lines, and a filename suffix that survives renaming.
+     * deleting comment lines, and a filename suffix that survives the file
+     * being forwarded or attached elsewhere (renaming the file removes it).
      * The page and the export both take them from here.
      *
      * Incomplete is a run that did not finish complete, or that finished

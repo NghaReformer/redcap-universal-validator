@@ -794,7 +794,13 @@ namespace {
             check("TASK1: $what reads no record at all", \REDCap::$reads === 0);
             check("TASK1: $what renders the unavailable notice",
                 strpos($html, 'Scan unavailable') !== false
-                && strpos($html, 'temporarily unavailable') !== false);
+                && strpos($html, \INSPIRE\UniversalValidator\ScanPageView::h(
+                    \INSPIRE\UniversalValidator\ScanPageView::UNAVAILABLE)) !== false);
+            // Wave 12 leftovers: the notice says what turns the scan on, and
+            // no longer that it is being rebuilt.
+            check("TASK1: $what says the scan is switched off until both switches are on",
+                strpos($html, 'switched off until it is turned on for the server and for this project') !== false
+                && strpos($html, 'being rebuilt') === false && strpos($html, 'When it returns') === false);
             check("TASK1: $what renders no findings table",
                 strpos($html, '<th>') === false && strpos($html, 'violation(s)') === false);
         }
