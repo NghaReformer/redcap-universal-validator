@@ -27,8 +27,12 @@ interface DuplicateFinalizer
      * `read` in the answer is how many records the step re-read, so the caller
      * can measure that step as a batch of records rather than of groups.
      *
+     * `revisited` is how many of `verified` an earlier epoch of their group had
+     * verified already (review rv10b2-1): work the step did, and no ground the
+     * run gained. Absent is none.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, read:int, why:?string}
+     *               collisions:int, read:int, revisited:int, why:?string}
      */
     public function step($generationId, $limit = 500, $readLimit = null);
 }
@@ -131,6 +135,16 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
 
     /** The most of one value the representative tuple keeps. */
     const REP_BYTES = 255;
+
+    /**
+     * How many times one group may start again because a record in it
+     * changed (review rv10b2-1). Each restart is a real edit - restart()
+     * takes the changed records' versions as the ones it checks against -
+     * so this is reached only by a group whose records keep changing while
+     * it is decided, and such a group is blocked as undecidable: the run
+     * ends partial instead of checking it for ever.
+     */
+    const MAX_RESTARTS = 3;
 
     /**
      * Groups written per INSERT by discover().
@@ -245,7 +259,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $limit = max(1, min(5000, (int) $limit));
         $readLimit = $readLimit === null ? $limit : max(1, min(5000, (int) $readLimit));
         $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+                'published' => 0, 'collisions' => 0, 'read' => 0, 'revisited' => 0, 'why' => null];
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
@@ -264,6 +278,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             // A verify page re-reads records, so the RECORDS limit bounds it.
             $r = $this->verify($generationId, $g, $readLimit);
             $out['verified'] += $r['checked'];
+            $out['revisited'] += isset($r['revisited']) ? $r['revisited'] : 0;
             $out['read'] += $r['read'];
             $out['collisions'] += $r['collision'] ? 1 : 0;
             $out['why'] = $r['why'];
@@ -452,7 +467,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     public function verify($generationId, array $g, $limit)
     {
         $rows = $this->db->select('SELECT candidate_id, record_id_bin, event_id, instance, field,
-            version_scanned, host_form FROM ' . Schema::table('unique_candidate') . '
+            version_scanned, host_form, record_hash FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
             ORDER BY candidate_id LIMIT ' . max(1, (int) $limit),
             [$this->pid, $generationId, $g['group_hmac'], $g['verify_cursor']]);
@@ -475,7 +490,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $locs[] = ['record' => $r[1], 'event_id' => self::eventOrNull($r[2]),
                        'instance' => (int) $r[3], 'field' => $r[4],
                        'candidate_id' => (int) $r[0], 'version' => $r[5],
-                       'form' => isset($r[6]) ? (string) $r[6] : null];
+                       'form' => isset($r[6]) ? (string) $r[6] : null,
+                       'hash' => isset($r[7]) ? $r[7] : null];
             $records[(string) $r[1]] = true;
         }
 
@@ -505,22 +521,50 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // the group: its value may no longer belong to this group at all, so the
         // group starts again at a new epoch rather than being finished against a
         // reading half of which is stale.
+        //
+        // AGAINST THE VERSION IT HAS NOW (review rv10b2-1). restart() reset the
+        // group and left each candidate's version_scanned as the scan wrote it,
+        // so every later verify of the edited record met the same mismatch and
+        // restarted again: a group with one record edited after it was scanned
+        // never finished, and the run never left this phase. The changed
+        // records' candidates now take the version just read, so the group
+        // starts again only on a new edit. The values are still re-read and
+        // compared on every page, so a record whose edit changed its value no
+        // longer matches the group and blocks it as undecidable. A group whose
+        // records keep changing is blocked after MAX_RESTARTS.
         $fence = isset($this->deps['versions']) ? $this->deps['versions'] : null;
         if ($fence instanceof RecordVersions) {
             $ids = [];
             foreach ($locs as $l) $ids[] = $l['record'];
             $now = $fence->versions($ids);
+            $changed = [];   // record hash => the version it has now
+            $unhashed = false;
             foreach ($locs as $l) {
                 $was = $l['version'];
                 $is  = isset($now[$l['record']]) ? $now[$l['record']] : null;
-                if ($was !== $is) {
-                    $this->restart($g);
-                    return ['checked' => 0, 'collision' => false, 'read' => $n,
-                            'why' => 'a record in this duplicate group changed while it was being '
-                                   . 'checked, so the group is being checked again'];
+                if ($was === $is) continue;
+                if ($l['hash'] === null) $unhashed = true;
+                else $changed[(string) $l['hash']] = $is;
+            }
+            if ($changed || $unhashed) {
+                if ((int) $g['candidate_epoch'] > self::MAX_RESTARTS || $unhashed) {
+                    $this->block($g, 'records in this duplicate group kept changing while it was being '
+                        . 'checked, so it was not decided');
+                    return ['checked' => 0, 'collision' => true, 'read' => $n, 'revisited' => 0, 'why' => null];
                 }
+                $this->restart($generationId, $g, $changed);
+                return ['checked' => 0, 'collision' => false, 'read' => $n, 'revisited' => 0,
+                        'why' => 'a record in this duplicate group changed while it was being '
+                               . 'checked, so the group is being checked again'];
             }
         }
+        // GROUND AN EARLIER EPOCH ALREADY COVERED (review rv10b2-1). While a
+        // group is new or verifying, its emit cursor has nothing to point at
+        // (this method zeroes it on the way to emitting), so restart() keeps
+        // there the furthest candidate any epoch verified. A candidate at or
+        // below it is verified again: work, and no step nearer the end.
+        $highWater = isset($g['emit_cursor']) ? (int) $g['emit_cursor'] : 0;
+        $revisited = 0;
 
         $rep = $g['representative'];
         $checked = 0;
@@ -534,7 +578,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                 // singleton with nothing said.
                 $this->block($g, 'part of this duplicate group could not be re-read, so it was '
                     . 'not decided');
-                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'revisited' => $revisited,
+                        'why' => null];
             }
             $tuple = self::canonicalTuple($values[$key]);
             if ($rep === null) {
@@ -549,17 +594,20 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                 // coverage and says so.
                 $this->block($g, 'two different values in this project share a hash, so this '
                     . 'group\'s duplicates could not be decided');
-                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'revisited' => $revisited,
+                        'why' => null];
             }
             $cursor = $l['candidate_id'];
             $checked++;
+            if ($l['candidate_id'] <= $highWater) $revisited++;
         }
 
         $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, verify_cursor = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_VERIFYING, $cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return ['checked' => $checked, 'collision' => false, 'read' => $n, 'why' => null];
+        return ['checked' => $checked, 'collision' => false, 'read' => $n, 'revisited' => $revisited,
+                'why' => null];
     }
 
     /**
@@ -735,11 +783,41 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * unreachable: publication only ever activates rows whose stage epoch is the
      * group's current one. Deleting them here would put an unbounded delete
      * inside a bounded step; sweep() removes them in pages instead.
+     *
+     * THE CHANGED RECORDS' CANDIDATES TAKE THE VERSION THEY HAVE NOW (review
+     * rv10b2-1), every candidate of each in this group: $changed is record
+     * hash => that version. One statement, an equality on the first four
+     * columns of uq_candidate_v2 per record, so it reads exactly those rows
+     * however large the group. Without it the next verify met the same
+     * mismatch and the group restarted for ever.
+     *
+     * AND THE EMIT CURSOR KEEPS THE FURTHEST CANDIDATE VERIFIED. It points at
+     * nothing until the group is emitting (verify() zeroes it then), so it
+     * holds how far any epoch got, which is how verify() tells a candidate
+     * verified again from new ground. It is assigned FIRST: both servers
+     * assign a single-table UPDATE left to right, so after verify_cursor = 0
+     * it would read 0.
      */
-    private function restart(array $g)
+    private function restart($generationId, array $g, array $changed = [])
     {
+        if ($changed) {
+            $case = '';
+            $args = [];
+            foreach ($changed as $hash => $version) {
+                $case .= ' WHEN ? THEN ?';
+                $args[] = (string) $hash;
+                $args[] = $version;
+            }
+            $hashes = array_map('strval', array_keys($changed));
+            $this->db->execNoCount('UPDATE ' . Schema::table('unique_candidate') . '
+                SET version_scanned = CASE record_hash' . $case . ' ELSE version_scanned END
+                WHERE project_id = ? AND generation_id = ? AND group_hmac = ?
+                  AND record_hash IN (' . implode(',', array_fill(0, count($hashes), '?')) . ')',
+                array_merge($args, [$this->pid, $generationId, $g['group_hmac']], $hashes));
+        }
         $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-            SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
+            SET emit_cursor = GREATEST(emit_cursor, verify_cursor),
+                candidate_epoch = candidate_epoch + 1, verify_cursor = 0,
                 representative = NULL, phase = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_NEW, $this->pid, $g['group_id'], $g['candidate_epoch']]);

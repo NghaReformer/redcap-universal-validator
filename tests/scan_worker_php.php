@@ -4025,6 +4025,21 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('R3S-N4: and is not a refusal: the next step is taken',
             $res['ok'] === true && $f->calls === 2 && $res['stop'] !== 'finalizer');
 
+        // VERIFYING AGAIN WHAT AN EARLIER EPOCH VERIFIED IS NOT NEW GROUND
+        // (review rv10b2-1). A group restarted on a later page went back over
+        // page 1, and each candidate of it moved the clock: the reaper never
+        // saw a run whose group restarted for ever.
+        list($store, $runId) = $inUnique(845);
+        $f = new ScriptedFinalizer([['verified' => 3, 'revisited' => 3, 'read' => 3], ['done' => true]]);
+        $res = $drive($store, 845, $runId, $f);
+        check('rv10b2-1: a page verified again below the group\'s furthest point leaves progress_at where it was',
+            $res['ok'] === true && $f->calls === 2 && $store->run(845, $runId)['progress_at'] === $OLD);
+        list($store, $runId) = $inUnique(846);
+        $f = new ScriptedFinalizer([['verified' => 3, 'revisited' => 2, 'read' => 3], ['done' => true]]);
+        $drive($store, 846, $runId, $f);
+        check('rv10b2-1: one candidate past it is new ground, and moves it',
+            $store->run(846, $runId)['progress_at'] !== $OLD);
+
         // A step that did nothing and said why ends the request with that why.
         list($store, $runId) = $inUnique(842);
         $f = new ScriptedFinalizer([['why' => UniqueFinalizer::NO_SEQ]]);

@@ -467,7 +467,18 @@ final class ScanWorker
                 // undecidable: the run nearer its end. A step that only re-read
                 // records (a group restarted because a record changed) did
                 // work and moved nothing forward.
-                $forward = max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                //
+                // NOR DID VERIFYING AGAIN WHAT AN EARLIER EPOCH VERIFIED
+                // (review rv10b2-1). A group restarted on a later page went
+                // back over page 1, every candidate of it counted as verified,
+                // and the clock moved on every request while the group
+                // restarted for ever: the reaper never saw the run as idle, and
+                // the browser, told something moved, asked again at once.
+                // `revisited` is the part of `verified` below the group's
+                // furthest point; only what lies past it is new ground.
+                $revisited = isset($r['revisited']) ? max(0, (int) $r['revisited']) : 0;
+                $forward = max(0, (int) $r['groups'])
+                         + max(0, max(0, (int) $r['verified']) - $revisited)
                          + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
                          + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
                 $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;

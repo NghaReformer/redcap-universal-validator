@@ -712,3 +712,105 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query('DELETE FROM ' . Schema::table($t));
     }
 }
+
+// -- a record edited during the duplicate phase (review rv10b2-1) -------------
+//
+// restart() reset the group and never refreshed the edited record's
+// version_scanned, so every later verify met the same mismatch: a group with
+// one record edited after it was scanned restarted for ever and the run never
+// left unique-finalize. With the record on a later page, page 1 was verified
+// again on every cycle and counted as progress.
+{
+    $KEY = 'rv10b2-livelock-key';
+    $plant = function ($gen, $group, $rec, $ver) use ($A, $KEY, $PID) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $PID . ", " . $gen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', '" . $ver . "')");
+    };
+    $same = function ($locs) {
+        $out = array();
+        foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('SAME');
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    $groupRow = function ($gen) use ($dbA, $PID) {
+        return $dbA->select('SELECT phase, candidate_epoch, verify_cursor, emit_cursor, collision_state FROM '
+            . Schema::table('unique_group') . ' WHERE project_id = ? AND generation_id = ?', array($PID, $gen));
+    };
+
+    // Six records, pages of two; R6 (page 3) was edited after it was scanned.
+    $GENL = uv_generation('edited-on-a-later-page');
+    foreach (array('L1', 'L2', 'L3', 'L4', 'L5', 'L6') as $rec) $plant($GENL, 'SAME', $rec, '100');
+    $ver = new MovingVersions();
+    $ver->v = array('L1' => '100', 'L2' => '100', 'L3' => '100', 'L4' => '100', 'L5' => '100', 'L6' => '101');
+    $recL = new UvRecordingDb($dbA);
+    $finL = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($recL, array('pid' => $PID, 'seq' => 41,
+        'hmacKey' => $KEY, 'read' => $same, 'versions' => $ver));
+    $stepsL = array();
+    for ($i = 0; $i < 30; $i++) {
+        $s = $finL->step($GENL, 10, 2);
+        $stepsL[] = $s;
+        if ($s['done']) break;
+    }
+    $stL = $finL->status($GENL);
+    $rowL = $groupRow($GENL);
+    check('rv10b2-1: a group whose record was edited after the scan is decided, not restarted for ever',
+        $stL['done'] === true && $stL['published'] === 1 && $stL['blocking'] === 0 && count($stepsL) < 30);
+    check('rv10b2-1: it started again once, and the edited record now carries the version it has',
+        (int) $rowL[0][1] === 2 && $dbA->select('SELECT version_scanned FROM ' . Schema::table('unique_candidate')
+            . " WHERE project_id = ? AND generation_id = ? AND record_id_bin = 'L6'", array($PID, $GENL))[0][0] === '101');
+    $revisited = 0;
+    $restarts = 0;
+    foreach ($stepsL as $s) {
+        $revisited += (int) $s['revisited'];
+        if ($s['verified'] === 0 && $s['read'] > 0 && $s['why'] !== null) $restarts++;
+    }
+    check('rv10b2-1: the two pages it had verified before the edit are told apart as verified again',
+        $restarts === 1 && $revisited === 4);
+    $dupes = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . " WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND check_type = 'unique'",
+        array($PID, $GENL));
+    check('rv10b2-1: and all six duplicates are written', (int) $dupes[0][0] === 6);
+    // The refresh is one statement, through the candidate key: an equality on
+    // its first four columns, so it reads the edited record's rows and no
+    // others however large the group.
+    $refresh = $recL->matching('exec', array('SET version_scanned = CASE record_hash'));
+    $refreshKeys = $refresh ? uv_explain_keys($A, $refresh[0][1], $refresh[0][2]) : array();
+    check('rv10b2-1: the version refresh is one statement through uq_candidate_v2 ('
+        . implode(',', $refreshKeys) . ')', count($refresh) === 1 && $refreshKeys === array('uq_candidate_v2'));
+
+    // A record edited on every look: the group is blocked as undecidable after
+    // MAX_RESTARTS, so the run ends partial instead of never.
+    $GENM = uv_generation('edited-on-every-look');
+    foreach (array('M1', 'M2') as $rec) $plant($GENM, 'MOVING', $rec, '1');
+    $every = new class implements \INSPIRE\UniversalValidator\Scan\RecordVersions {
+        public $n = 1;
+        public function versions(array $ids)
+        {
+            $this->n++;
+            $out = array();
+            foreach ($ids as $id) $out[(string) $id] = (string) $this->n;
+            return $out;
+        }
+    };
+    $finM = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41,
+        'hmacKey' => $KEY, 'read' => $same, 'versions' => $every));
+    $nM = 0;
+    while ($nM++ < 30) { if ($finM->step($GENM, 10, 2)['done']) break; }
+    $stM = $finM->status($GENM);
+    $rowM = $groupRow($GENM);
+    check('rv10b2-1: a group whose records keep changing is blocked after '
+        . \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::MAX_RESTARTS . ' restarts',
+        $stM['done'] === true && $stM['blocking'] === 1 && $rowM[0][0] === 'collision'
+        && (int) $rowM[0][1] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::MAX_RESTARTS + 1 && $nM < 30);
+    $dupesM = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GENM));
+    check('rv10b2-1: and nothing is reported about it', (int) $dupesM[0][0] === 0);
+
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
