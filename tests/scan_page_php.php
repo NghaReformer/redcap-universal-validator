@@ -1997,6 +1997,29 @@ namespace {
         check('PREFILL rv5b-2 control: a stopped run that is not withheld keeps its coverage sentence',
             $V::endedSentence(['ok' => true, 'terminal' => 'cancelled', 'coverage' => 'partial'])
             === $V::coverageSentence('partial'));
+        // rvfix-N2. A group-scoped run stopped AFTER it proved its scope shows
+        // its counts, and was told under them that records could not be
+        // checked and that the result was no picture of the project.
+        $proved = function (array $over) {
+            return array_merge(['ok' => true, 'phase' => 'terminal', 'terminal' => 'cancelled',
+                'coverage' => 'partial', 'detail' => 'complete', 'scope' => 'group', 'withheld' => false,
+                'total' => 5, 'done' => 5, 'settled' => 5, 'findings' => 1, 'active' => false], $over);
+        };
+        foreach (['cancelled', 'expired'] as $t) {
+            check("PREFILL rvfix-N2: a group run $t after it proved its scope says its counts are the group's",
+                strpos($V::panelPrefill($proved(['terminal' => $t]))['done'], $V::STOPPED_PROVED) === 0
+                && strpos($V::panelPrefill($proved(['terminal' => $t]))['done'], 'could not be checked') === false);
+        }
+        check('PREFILL rvfix-N2: a truncated one still says findings were not kept',
+            $V::endedSentence($proved(['detail' => 'truncated'])) === $V::STOPPED_PROVED . ' ' . $V::DETAIL_TRUNCATED);
+        check('PREFILL rvfix-N2 control: a stopped whole-project run keeps the partial sentence',
+            $V::endedSentence($proved(['scope' => 'project'])) === $V::coverageSentence('partial'));
+        check('PREFILL rvfix-N2 control: and so does a group run that finished partial on its own',
+            $V::endedSentence($proved(['terminal' => 'partial'])) === $V::coverageSentence('partial'));
+        check('PREFILL rvfix-N2 control: a withheld one keeps the withheld sentence',
+            $V::endedSentence($proved(['withheld' => true])) === $V::STOPPED_WITHHELD);
+        check('PREFILL rvfix-N2: the sentence carries no apostrophe into the script block',
+            strpos($V::STOPPED_PROVED, "'") === false);
         check('PREFILL rv5b-2: a withheld status with no sentence that has ended is not promised its counts',
             $V::countsText(['ok' => true, 'withheld' => true, 'terminal' => 'cancelled'])
             === $AZ::WITHHELD_ENDED);
@@ -2194,8 +2217,8 @@ namespace {
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
-                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf',
-                      'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
+                      'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'emptyLeft', 'emptyLeftDeleted',
+                      'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
                       'filterAll', 'reportSuffix'];
         $all = '';
@@ -2208,7 +2231,8 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf',
+                  'withheld', 'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'emptyLeft', 'emptyLeftDeleted',
+                  'none', 'asOf',
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
                   'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
                   'reportSuffix'] as $k) {

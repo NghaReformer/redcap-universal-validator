@@ -294,6 +294,19 @@ class ScanPageView
                            . 'this Data Access Group, so it is not a complete picture of the group.';
 
     /**
+     * The coverage sentence of a group-scoped run that was stopped (or
+     * expired) AFTER it proved its scope (review rvfix-N2). It shows its
+     * counts (rvf1-1), and the `partial` sentence under them spoke of the
+     * project and said records could not be checked, which is false of a
+     * run stopped while it looked for duplicates after checking every one.
+     * This says the counts are the group's, as confirmed, and why the
+     * result is not the whole picture. No apostrophes.
+     */
+    const STOPPED_PROVED = 'This scan was stopped after it confirmed which records belong to this '
+                         . 'Data Access Group, so its counts are for the group. It ended before every '
+                         . 'check had run, so it is not a complete picture of the group.';
+
+    /**
      * The empty-scope sentence of a group-scoped run whose records left the
      * group while it ran (review rvf1-2). EMPTY_SCOPE says none was in scope
      * or every one was deleted, and of a run whose whole group moved to
@@ -310,19 +323,26 @@ class ScanPageView
 
     /**
      * The coverage half of a finished run's sentence: STOPPED_WITHHELD for a
-     * withheld run that was stopped or expired, EMPTY_SCOPE_LEFT or
-     * EMPTY_SCOPE_LEFT_DELETED for an empty scope that records left,
-     * coverageSentence() for every other. js/scan.js decides the same way.
+     * withheld run that was stopped or expired, STOPPED_PROVED for a
+     * group-scoped one that was stopped or expired with its counts shown,
+     * EMPTY_SCOPE_LEFT or EMPTY_SCOPE_LEFT_DELETED for an empty scope that
+     * records left, coverageSentence() for every other. js/scan.js decides
+     * the same way.
      */
     public static function endedSentence($status)
     {
         $t = (is_array($status) && isset($status['terminal'])) ? (string) $status['terminal'] : '';
-        if (!empty($status['withheld'])
-                && ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED)) {
+        $stopped = ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED);
+        if (!empty($status['withheld']) && $stopped) {
             return self::STOPPED_WITHHELD;
         }
         $coverage = isset($status['coverage']) ? $status['coverage'] : '';
         $detail = isset($status['detail']) ? $status['detail'] : null;
+        if ($stopped && isset($status['scope']) && $status['scope'] === 'group'
+                && $coverage === Scan\ScanOutcome::COV_PARTIAL) {
+            return (string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED
+                ? self::STOPPED_PROVED . ' ' . self::DETAIL_TRUNCATED : self::STOPPED_PROVED;
+        }
         if ($coverage === Scan\ScanOutcome::EMPTY_SCOPE && !empty($status['leftGroup'])) {
             $s = (isset($status['removed']) && (int) $status['removed'] > 0)
                 ? self::EMPTY_SCOPE_LEFT_DELETED : self::EMPTY_SCOPE_LEFT;
@@ -509,6 +529,7 @@ class ScanPageView
             'withheld'        => Scan\ScanAuthorization::WITHHELD,
             'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
             'stoppedWithheld' => self::STOPPED_WITHHELD,
+            'stoppedProved'   => self::STOPPED_PROVED,
             'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
             'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
             'none'            => self::COUNT_NONE,

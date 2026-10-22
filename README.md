@@ -991,6 +991,15 @@ different claim.
 | "This scan has no record left to report on: ..." | Nothing was in scope, or every record was deleted or left the group while it ran. |
 | "The scan failed, so it describes nothing." | The run failed. |
 
+A group-scoped run that was stopped, or expired, says so in its own words in
+place of the third sentence. Before it confirmed which records belong to the
+group it shows no counts and says "This scan was stopped before it confirmed
+which records belong to this Data Access Group, so it is not a complete
+picture of the group." After that it shows its counts and says "This scan was
+stopped after it confirmed which records belong to this Data Access Group, so
+its counts are for the group. It ended before every check had run, so it is
+not a complete picture of the group."
+
 A run ends as `complete`, `partial`, `cancelled`, `failed` or `expired`. Only a
 complete run can certify the project: every record checked through the fixed
 point, every finding kept, nothing found, and every rule evaluated. A run that

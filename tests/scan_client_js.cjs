@@ -145,6 +145,9 @@ UV.labels = {
                + 'records belong to that group, so its counts cannot be shown.',
   stoppedWithheld: 'This scan was stopped before it confirmed which records belong to this Data '
                  + 'Access Group, so it is not a complete picture of the group.',
+  stoppedProved: 'This scan was stopped after it confirmed which records belong to this Data Access '
+               + 'Group, so its counts are for the group. It ended before every check had run, so it '
+               + 'is not a complete picture of the group.',
   emptyLeft: 'This scan has no record left to report on: every record it listed moved to another '
            + 'Data Access Group while it ran. Any findings it counted are on records no longer in '
            + 'the group. This result says nothing about the group.',
@@ -1183,6 +1186,35 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('rv5b-2 client: and without the page\'s labels its own words are the server\'s',
     els['uv-scan-counts'].textContent === keptEndedLabels.withheldEnded
     && els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedWithheld) === 0);
+  UV.labels = keptEndedLabels;
+
+  // rvfix-N2. A group run stopped AFTER it proved its scope shows its counts,
+  // and its ending says they are the group's, as ScanPageView::endedSentence()
+  // does; it is not told that records could not be checked.
+  const endedP = (terminal, over) => withheld(Object.assign({ phase: 'terminal', terminal: terminal,
+    coverage: 'partial', active: false, mayCancel: false, clean: false, withheld: false, withheldWhy: null,
+    total: 5, done: 5, settled: 5, findings: 1 }, over || {}));
+  for (const t of ['cancelled', 'expired']) {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP(t) }]);
+    UV.start(); await ticks(6);
+    check('rvfix-N2 client: a group run ' + t + ' after it proved its scope says its counts are for the group',
+      els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved) === 0
+      && els['uv-scan-done'].textContent.indexOf('could not be checked') === -1
+      && els['uv-scan-counts'].textContent.indexOf('5 of 5 records') === 0);
+  }
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { scope: 'project' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client control: a stopped whole-project run keeps the partial sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.partial) === 0);
+  UV.labels = Object.assign({}, keptEndedLabels, { stoppedProved: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('expired') }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedProved) === 0);
   UV.labels = keptEndedLabels;
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');

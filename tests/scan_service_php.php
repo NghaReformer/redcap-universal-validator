@@ -4148,9 +4148,13 @@ namespace INSPIRE\UniversalValidator\Scan {
             && strpos($af['pf']['counts'], '5 of 5 records') === 0);
         check('rvf1-1: with no word of a group it never confirmed (' . $end . ')',
             strpos($af['pf']['counts'], ScanAuthorization::WITHHELD_ENDED) === false
-            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false
-            && strpos((string) $af['pf']['done'],
-                      \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($af['row']['coverage'])) === 0);
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false);
+        // rvfix-N2: and in words that say the counts are the group's, as
+        // confirmed, not the partial sentence that spoke of the project.
+        check('rvfix-N2: its ending says its counts are for the group (' . $end . ')',
+            $af['row']['coverage'] === ScanOutcome::COV_PARTIAL && $af['status']['scope'] === 'group'
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_PROVED) === 0
+            && strpos((string) $af['pf']['done'], 'could not be checked') === false);
     }
     $inCu = $afterFence(193, false, 'stopped');
     check('rvf1-1 control: a group run stopped inside catch-up is still not shown its counts',
