@@ -454,9 +454,10 @@ namespace {
 
         $f = $map->toFinding(row());
         // asOf, z and reference are the sink's optional note keys (a
-        // @UVWINDOW day, a growth z-score and its reference).
+        // @UVWINDOW day, a growth z-score and its reference); branch is the
+        // sink's optional judging branch (R3G-2).
         $sink = ['record', 'dag', 'event_id', 'instrument', 'instance', 'field', 'value', 'valueWithheld', 'type', 'reason', 'rule',
-                 'asOf', 'z', 'reference'];
+                 'asOf', 'z', 'reference', 'branch'];
         check('contract: the output is the sink shape the renderers already take, plus three',
             array_diff($sink, array_keys($f)) === []
             && array_values(array_diff(array_keys($f), $sink)) === ['valueState', 'ruleSource', 'findingId']);

@@ -9041,7 +9041,9 @@ class UniversalValidator extends AbstractExternalModule
                 'rule_ord' => (int) $v['rule'],
                 'check_type' => (string) $v['type'],
                 'reason_code' => $reason['code'],
-                'reason_bits' => Scan\ReasonCode::bits($reason),
+                // And the branch that judged it (R3G-2), so the report speaks
+                // with that branch's message and limits. See ReasonCode::bits().
+                'reason_bits' => Scan\ReasonCode::bits($reason, isset($v['branch']) ? $v['branch'] : null),
                 'dag_key' => isset($v['dag']) ? $v['dag'] : null,
                 'value_bin' => $blob,
                 'value_len' => ($val === null) ? null : strlen((string) $val),

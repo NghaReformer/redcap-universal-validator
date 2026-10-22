@@ -108,10 +108,13 @@ namespace {
         'weight'    => f('labs_form', '@UVRANGE={"hard":[0.5,250],"message":"Check the scale."}', 'number'),
         'ids'       => f('labs_form', '@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}","idLengths":[3],"expectedIds":3}'),
         'ids_one'   => f('labs_form', '@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}","idLengths":[3]}'),
+        // A branched POOLED rule: its branch has to go above the mask.
+        'ids_br'    => f('labs_form', '@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}","idLengths":[3],"when":"[sex]=\'2\'"} '
+                         . '@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}","idLengths":[3],"expectedIds":2,"note":"Male form IDs","when":"[sex]=\'1\'"}'),
     ];
     $DATA = ['2' => [351 => [
         'record_id' => '2', 'sex' => '1', 'hb' => '18.2', 'dose' => '12', 'weight' => '0.4',
-        'ids' => 'ABC ABC 12', 'ids_one' => '12 34',
+        'ids' => 'ABC ABC 12', 'ids_one' => '12 34', 'ids_br' => 'ABC 9',
     ]]];
     $FULL = ['nurse' => ['forms' => ['enrol_form' => '1', 'labs_form' => '1']]];
 
@@ -209,6 +212,60 @@ namespace {
             check('RB-2: the identity of the ' . $fld . ' finding is the one it had before',
                 isset($r['identity']) && bin2hex($r['identity']) === $hex);
         }
+    }
+
+    /* =====================================================================
+     * RB-3  the branch that judged a finding speaks for it in a stored run
+     *
+     * The reviewer's comparison (R3G-2, tools/temporal_R3G_s2.php on the r3b
+     * tree), committed: the legacy scan and the durable scan of one record,
+     * each finding's "What is wrong" cell rendered by ScanColumns from the
+     * same labels, and required equal. Before the branch was kept, the hb cell
+     * lost the male branch's "Repeat the male Hb." and its 13.5-17.5 limits,
+     * and the dose cell's "The rule requires" went empty.
+     * ===================================================================== */
+    {
+        $RC = '\INSPIRE\UniversalValidator\Scan\ReasonCode';
+        $mR = mod($DICT, $DATA, $FULL, 'nurse');
+        $res = $mR->scanProject(149);
+        $dims = $mR->scanDimensions(149, isset($res['rules']) ? $res['rules'] : null);
+        $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+        check('RB-3: the legacy findings name their branch (the fixture is the case)',
+            isset($legacy['hb']['branch']) && $legacy['hb']['branch'] === 1
+            && isset($legacy['dose']['branch']) && $legacy['dose']['branch'] === 1
+            && isset($legacy['ids_br']['branch']) && $legacy['ids_br']['branch'] === 1
+            && !isset($legacy['weight']['branch']));
+        check('RB-3: the durable rows keep it: branch + 1, and above the mask for a pooled one',
+            $one('hb')['reason_bits'] === 2 && $one('dose')['reason_bits'] === 2
+            && $RC::branchOf('pooled', $one('ids_br')['reason_bits']) === 1
+            && $RC::maskOf('pooled', $one('ids_br')['reason_bits']) > 0
+            && $one('weight')['reason_bits'] === 0 && $one('ids')['reason_bits'] === $RC::maskOf('pooled', $one('ids')['reason_bits']));
+        $mapper = rbMapper();
+        $id = 10;
+        foreach (['hb', 'dose', 'weight', 'ids', 'ids_one', 'ids_br'] as $fld) {
+            $was = \INSPIRE\UniversalValidator\ScanColumns::row($legacy[$fld], $dims, $cols);
+            $back = $mapper->toFinding(storedRow($one($fld), $id++));
+            $is = \INSPIRE\UniversalValidator\ScanColumns::row($back, $dims, $cols);
+            check('RB-3: the ' . $fld . ' finding reads the same in the stored report as in the legacy one',
+                $was['problem'] === $is['problem'] && $was['wording'] === $is['wording']
+                && $was['rule_label'] === $is['rule_label']);
+            if ($was['problem'] !== $is['problem']) {
+                fwrite(STDERR, "  legacy:  " . $was['problem'] . "\n  durable: " . $is['problem'] . "\n");
+            }
+        }
+        check('RB-3: the branch reaches the wording (the cells name the male branch)',
+            strpos(\INSPIRE\UniversalValidator\ScanColumns::row($mapper->toFinding(storedRow($one('hb'), 30)), $dims, $cols)['problem'],
+                   'Repeat the male Hb.') !== false
+            && strpos(\INSPIRE\UniversalValidator\ScanColumns::row($mapper->toFinding(storedRow($one('dose'), 31)), $dims, $cols)['problem'],
+                      '[dose] <= 9') !== false
+            && \INSPIRE\UniversalValidator\ScanColumns::row($mapper->toFinding(storedRow($one('ids_br'), 34)), $dims, $cols)['rule_label']
+                === 'Male form IDs');
+        check('RB-3: a row with no branch reads back with none',
+            $mapper->toFinding(storedRow($one('weight'), 32))['branch'] === null
+            && $mapper->toFinding(storedRow($one('ids'), 33))['branch'] === null);
+        check('RB-3: a branch past what fits above the mask is stored as none, not as another branch',
+            $RC::bits(['code' => 'pooled', 'bits' => 3], 255) === 3 && $RC::bits(['code' => 'x', 'bits' => 0], 254) === 255
+            && $RC::bits(['code' => 'x', 'bits' => 0], 'b') === 0 && $RC::branchOf('x', 0) === null);
     }
 
     echo "scan_reason_bits_php: $n checks, $fail failure(s)\n";

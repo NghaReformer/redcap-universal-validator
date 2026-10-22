@@ -145,11 +145,44 @@ final class ReasonCode
     }
 
     /**
-     * What reason_bits holds for one split reason: the mask, if it has one.
+     * What reason_bits holds for one split reason and the branch that judged
+     * it (R3G-2).
+     *
+     * A durable finding did not carry its branch, so the report could not
+     * speak for it: a branched @UVRANGE or @UVWINDOW finding in a stored run
+     * lost its branch's limits and custom message, an @UVASSERT branch's "The
+     * rule requires" went empty, and the stored and legacy reports disagreed.
+     * There is no column for it and the plan allows no DDL, but reason_bits is
+     * read as a mask only under the code `pooled`, so everywhere else it is
+     * free: it holds branch + 1, and 0 is "no branch". Under `pooled` the
+     * branch + 1 goes above the mask, at BRANCH_SHIFT; the mask's names fit
+     * well below it. The identity does not read reason_bits, so no finding is
+     * renamed. A branch index that is not a whole number from 0 to
+     * BRANCH_MAX - 1 is stored as none: the rule's own wording is then shown,
+     * as it was before.
+     *
+     * @param mixed $branch the finding's `branch`, or null
      */
-    public static function bits(array $split)
+    public static function bits(array $split, $branch = null)
     {
-        return isset($split['bits']) ? max(0, (int) $split['bits']) : 0;
+        $mask = isset($split['bits']) ? max(0, (int) $split['bits']) : 0;
+        $b = 0;
+        if (is_int($branch) || (is_string($branch) && ctype_digit($branch))) {
+            $b = (int) $branch + 1;
+            if ($b > self::BRANCH_MAX) $b = 0;
+        }
+        if (isset($split['code']) && $split['code'] === 'pooled') {
+            return $mask | ($b << self::BRANCH_SHIFT);
+        }
+        return $b;
+    }
+
+    /** The branch a stored row's reason_bits names, or null for none. See bits(). */
+    public static function branchOf($code, $bits)
+    {
+        $bits = max(0, (int) $bits);
+        $b = ((string) $code === 'pooled') ? ($bits >> self::BRANCH_SHIFT) : $bits;
+        return ($b >= 1 && $b <= self::BRANCH_MAX) ? $b - 1 : null;
     }
 
     /** The mask a stored row's reason_bits carries: only under the code `pooled`. */

@@ -275,8 +275,8 @@ final class FindingRowMapper
 
     /**
      * @param array $stored one row, keyed by INPUT_KEYS
-     * @return array the finding ScanColumns renders, plus valueState, ruleSource
-     *               and findingId
+     * @return array the finding ScanColumns renders, plus valueState, ruleSource,
+     *               branch and findingId
      * @throws \InvalidArgumentException when a key is missing
      * @throws \RuntimeException         when the row belongs to another project
      */
@@ -315,6 +315,10 @@ final class FindingRowMapper
             'reason'        => self::reasonOf($stored),
             'rule'          => (int) $stored['rule_ord'],
             'ruleSource'    => (string) $stored['rule_source_id'],
+            // The branch that judged it, which ScanDimensions::ruleOf() speaks
+            // for (R3G-2); null on a rule without branches and on every row
+            // stored before the branch was kept.
+            'branch'        => ReasonCode::branchOf($stored['reason_code'], $stored['reason_bits']),
             'findingId'     => $stored['finding_id'],
             // The sink's own names for MessageCatalog's notes. A z-score gives
             // the measurement back, so it goes wherever the value cell may not
