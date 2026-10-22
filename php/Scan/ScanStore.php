@@ -841,8 +841,14 @@ interface ScanStore
      * The attempt counter is NOT reset: a record that keeps being edited must
      * still reach its attempt limit and become a blocking exclusion, or a
      * project someone is actively working in could hold a run open forever.
+     *
+     * By RECORD HASH (W5F-N3), as depart() is: uq_run_record (run_id,
+     * record_hash) finds the rows, where record_id_bin has no index and a
+     * filter on it reads every row of the run.
+     *
+     * @param string[] $hashes raw record hashes
      */
-    public function requeue($runId, $epoch, array $recordIds);
+    public function requeue($runId, $epoch, array $hashes);
 
     /**
      * Mark records that no longer exist in the project.
@@ -850,8 +856,10 @@ interface ScanStore
      * A deleted record can never reach `done`, so without a terminal state of
      * its own it would hold the run incomplete forever - the mirror of the
      * false-complete case, and the reason C3 called it worse.
+     *
+     * @param string[] $hashes raw record hashes, as requeue() takes them
      */
-    public function tombstone($runId, $epoch, array $recordIds);
+    public function tombstone($runId, $epoch, array $hashes);
 
     /**
      * Take records that left the run's group out of the run (review rv5b-1).
@@ -888,8 +896,16 @@ interface ScanStore
     /** How many manifest rows are in each state. The input to the coverage predicate. */
     public function recordStates($runId);
 
-    /** The source version each named record was last scanned at, keyed by id. */
-    public function scannedVersions($runId, array $recordIds);
+    /**
+     * The source version and state of each named record, keyed by raw hash.
+     *
+     * By record hash for the reason requeue() gives (W5F-N3). A hash the
+     * run's manifest does not hold is absent from the answer.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return array<string,array{version:?string,state:int}>
+     */
+    public function scannedVersions($runId, array $hashes);
 
     /** Where reconciliation and rollup had reached. Survives the request. */
     public function progressState($runId);

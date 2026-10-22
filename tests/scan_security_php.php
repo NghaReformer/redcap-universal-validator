@@ -662,7 +662,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             // The store path CatchUp::step() takes for a record the project no
             // longer has, whatever state it is in.
             $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
-            $gone = $store->tombstone($runId, $epoch, ['A', 'B']);
+            $gone = $store->tombstone($runId, $epoch, [$h('A'), $h('B')]);
             // What the rollup would have summarised: one active finding per
             // examined record, on every axis.
             if ($examineFirst) {

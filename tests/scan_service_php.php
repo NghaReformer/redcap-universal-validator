@@ -1835,7 +1835,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $stopRun->invoke($svc, $store, 825, $runId, 'alice', $before, $NOW)['stopped'] === true
         && $isOver($store, 825, $runId));
     check('R2O-5: and catch-up coming back cannot tombstone or requeue into it',
-        $store->tombstone($runId, $epoch, ['A']) === 0 && $store->requeue($runId, $epoch, ['B']) === 0
+        $store->tombstone($runId, $epoch, [$h('A')]) === 0 && $store->requeue($runId, $epoch, [$h('B')]) === 0
         && $store->advancePhase($runId, $epoch, ScanPhase::UNIQUE) === false);
 
     // R2O-3's run: planning died. Stop alone now ends it and frees the slot,

@@ -2261,10 +2261,10 @@ final class SqlScanStore implements ScanStore
      * keeps resetting, and the run would never end - so the limit that turns it
      * into a reported exclusion has to survive reconciliation.
      */
-    public function requeue($runId, $epoch, array $recordIds)
+    public function requeue($runId, $epoch, array $hashes)
     {
-        if (!$recordIds) return 0;
-        return $this->reState($runId, $epoch, $recordIds, self::REC_PENDING, true);
+        if (!$hashes) return 0;
+        return $this->reState($runId, $epoch, $hashes, self::REC_PENDING, true);
     }
 
     /**
@@ -2274,10 +2274,10 @@ final class SqlScanStore implements ScanStore
      * the run incomplete forever, which C3 called the worse half of the frozen-
      * manifest problem: the false-complete case at least finishes.
      */
-    public function tombstone($runId, $epoch, array $recordIds)
+    public function tombstone($runId, $epoch, array $hashes)
     {
-        if (!$recordIds) return 0;
-        return $this->reState($runId, $epoch, $recordIds, self::REC_TOMBSTONE, false);
+        if (!$hashes) return 0;
+        return $this->reState($runId, $epoch, $hashes, self::REC_TOMBSTONE, false);
     }
 
     /**
@@ -2363,7 +2363,12 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
-    private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
+    /**
+     * BY RECORD HASH (W5F-N3). This filtered `record_id_bin IN (...)`, a
+     * column no index holds, so every call read the run's whole primary-key
+     * range; uq_run_record (run_id, record_hash) reads the rows asked about.
+     */
+    private function reState($runId, $epoch, array $hashes, $state, $clearScan)
     {
         $this->db->begin();
         try {
@@ -2374,10 +2379,9 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return 0;
             }
-            $marks = implode(',', array_fill(0, count($recordIds), '?'));
-            $params = [$state, self::now()];
-            foreach ($recordIds as $id) $params[] = $id;
-            $params[] = $runId;
+            $marks = implode(',', array_fill(0, count($hashes), '?'));
+            $params = [$state, self::now(), $runId];
+            foreach ($hashes as $h) $params[] = $h;
             // THE CLAIM GOES WITH THE STATE. A record sent back to pending
             // while still carrying its token could be committed by the worker
             // that was holding it when catch-up requeued it - and that reading's
@@ -2385,7 +2389,7 @@ final class SqlScanStore implements ScanStore
             $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
                 SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '')
                 . 'claim_owner = NULL, claim_seq = 0, updated_at = ?
-                WHERE record_id_bin IN (' . $marks . ') AND run_id = ?', $params);
+                WHERE run_id = ? AND record_hash IN (' . $marks . ')', $params);
             $n = $this->db->affected();
             // manifest_done is a counter and this moved rows out of (or into) a
             // terminal state, so it is recounted rather than adjusted.
@@ -2412,15 +2416,16 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
-    public function scannedVersions($runId, array $recordIds)
+    /** By record hash, through uq_run_record, for the reason reState() gives (W5F-N3). */
+    public function scannedVersions($runId, array $hashes)
     {
-        if (!$recordIds) return [];
-        $marks = implode(',', array_fill(0, count($recordIds), '?'));
+        if (!$hashes) return [];
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
         $params = [$runId];
-        foreach ($recordIds as $id) $params[] = $id;
+        foreach ($hashes as $h) $params[] = $h;
         $out = [];
-        foreach ($this->db->select('SELECT record_id_bin, version_scanned, state FROM '
-                . Schema::table('scan_record') . ' WHERE run_id = ? AND record_id_bin IN ('
+        foreach ($this->db->select('SELECT record_hash, version_scanned, state FROM '
+                . Schema::table('scan_record') . ' WHERE run_id = ? AND record_hash IN ('
                 . $marks . ')', $params) as $r) {
             $out[(string) $r[0]] = ['version' => $r[1], 'state' => (int) $r[2]];
         }

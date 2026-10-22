@@ -1136,14 +1136,14 @@ final class ArrayScanStore implements ScanStore
         return $added;
     }
 
-    public function requeue($runId, $epoch, array $recordIds)
+    public function requeue($runId, $epoch, array $hashes)
     {
-        return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_PENDING, true);
+        return $this->reState($runId, $epoch, $hashes, ScanStore::REC_PENDING, true);
     }
 
-    public function tombstone($runId, $epoch, array $recordIds)
+    public function tombstone($runId, $epoch, array $hashes)
     {
-        return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_TOMBSTONE, false);
+        return $this->reState($runId, $epoch, $hashes, ScanStore::REC_TOMBSTONE, false);
     }
 
     public function depart($runId, $epoch, array $hashes)
@@ -1197,17 +1197,18 @@ final class ArrayScanStore implements ScanStore
         return $out;
     }
 
-    private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
+    /** By record hash, as the SQL store's uq_run_record reads them (W5F-N3). */
+    private function reState($runId, $epoch, array $hashes, $state, $clearScan)
     {
         if (!isset($this->runs[$runId])) return 0;
         $r = $this->runs[$runId];
         if ($r['phase'] !== ScanPhase::CATCH_UP || (int) $r['lease_epoch'] !== (int) $epoch) {
             return 0;
         }
-        $want = array_fill_keys(array_map('strval', $recordIds), true);
+        $want = array_fill_keys(array_map('strval', $hashes), true);
         $n = 0;
         foreach ($this->records[$runId] as $o => $row) {
-            if (!isset($want[(string) $row['id_bin']])) continue;
+            if (!isset($want[(string) $row['hash']])) continue;
             if ((int) $row['state'] === (int) $state) continue;
             $this->records[$runId][$o]['state'] = $state;
             // Attempts survive on purpose: see the SQL store's note. A record
@@ -1241,15 +1242,15 @@ final class ArrayScanStore implements ScanStore
         return $out;
     }
 
-    public function scannedVersions($runId, array $recordIds)
+    public function scannedVersions($runId, array $hashes)
     {
-        $want = array_fill_keys(array_map('strval', $recordIds), true);
+        $want = array_fill_keys(array_map('strval', $hashes), true);
         $out = [];
         if (!isset($this->records[$runId])) return $out;
         foreach ($this->records[$runId] as $row) {
-            if (!isset($want[(string) $row['id_bin']])) continue;
-            $out[(string) $row['id_bin']] = ['version' => $row['version'],
-                                             'state' => (int) $row['state']];
+            if (!isset($want[(string) $row['hash']])) continue;
+            $out[(string) $row['hash']] = ['version' => $row['version'],
+                                           'state' => (int) $row['state']];
         }
         return $out;
     }

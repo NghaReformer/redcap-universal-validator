@@ -221,7 +221,7 @@ $NEIGHBOUR = uv_neighbour($PID);
             }
             $store->commitBatch($rid, 'w', $epoch, $batch);
             $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
-            $store->tombstone($rid, $epoch, array('G1', 'G2'));
+            $store->tombstone($rid, $epoch, array(hash('sha256', 'G1', true), hash('sha256', 'G2', true)));
         } else {
             $A->query('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ' . $rid);
         }

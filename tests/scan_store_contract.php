@@ -157,13 +157,20 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $batch['records'][$i]['version'] = '700';
     }
     $C('a fenced batch commits', $s->commitBatch($runId, 'w1', $epoch, $batch) === true);
-    $seen = $s->scannedVersions($runId, ['REC-1', 'REC-2']);
+    $hR = function ($id) { return hash('sha256', $id, true); };
+    $seen = $s->scannedVersions($runId, [$hR('REC-1'), $hR('REC-2')]);
     $C('and each record remembers the version it was examined at',
-        isset($seen['REC-1']['version']) && $seen['REC-1']['version'] === '700');
+        isset($seen[$hR('REC-1')]['version']) && $seen[$hR('REC-1')]['version'] === '700');
     $C('with its terminal state beside it',
-        (int) $seen['REC-1']['state'] === ScanStore::REC_DONE);
+        (int) $seen[$hR('REC-1')]['state'] === ScanStore::REC_DONE);
     $C('a record nobody has reached yet reports no version',
-        $s->scannedVersions($runId, ['REC-5'])['REC-5']['version'] === null);
+        $s->scannedVersions($runId, [$hR('REC-5')])[$hR('REC-5')]['version'] === null);
+    // W5F-N3. Asked by RECORD HASH, which is what uq_run_record (run_id,
+    // record_hash) finds a row by; the record id has no index, and naming a
+    // record by it finds nothing in either store.
+    $C('W5F-N3: the versions are asked for and answered by record hash, and a record id names nothing',
+        array_keys($seen) === [$hR('REC-1'), $hR('REC-2')]
+        && $s->scannedVersions($runId, ['REC-1', 'REC-2']) === []);
 
     // The state census is what the coverage predicate reads. Counted from the
     // rows, never accumulated: a counter can be incremented twice.
@@ -180,7 +187,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $s->reconcileAdd($runId, $epoch, [['id_bin' => 'REC-9',
             'hash' => hash('sha256', 'REC-9', true), 'dag' => null]]) === 0);
     $C('nor may a finished record be requeued from outside catch-up',
-        $s->requeue($runId, $epoch, ['REC-1']) === 0);
+        $s->requeue($runId, $epoch, [$hR('REC-1')]) === 0);
 
     // Aggregates ADD. A page that set the value would report only its own page.
     $s->addAggregate($runId, 'collection-gap', 'chest_xray', null, 3860);
@@ -1595,8 +1602,12 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && $activeD() === ['L1', 'L2', 'L3', 'L4']);
     $sd->advancePhase($rd, $epD, ScanPhase::CATCH_UP);
     $C('depart: refused at another lease epoch', $sd->depart($rd, $epD + 1, [$hD('L2')]) === 0);
-    $sd->tombstone($rd, $epD, ['L3']);
-    $nD = $sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
+    $C('W5F-N3: in catch-up, a tombstone or a requeue that names records by id moves nothing',
+        $sd->tombstone($rd, $epD, ['L3']) === 0 && $sd->requeue($rd, $epD, ['L4']) === 0
+        && $sd->recordStates($rd) === [ScanStore::REC_DONE => 4]);
+    $C('W5F-N3: by record hash, the tombstone moves its one row',
+        $sd->tombstone($rd, $epD, [$hD('L3')]) === 1);
+    $nD =$sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
     $stD = $sd->recordStates($rd);
     $C('depart: a record that left the group departs, and a deleted one stays a tombstone',
         $nD === 1 && isset($stD[ScanStore::REC_DEPARTED]) && $stD[ScanStore::REC_DEPARTED] === 1
@@ -1610,7 +1621,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('depart: departing it again moves nothing', $sd->depart($rd, $epD, [$hD('L2')]) === 0);
     // The worker's half: a record it finds in another group is committed
     // departed, and the commit closes its findings as a re-examination would.
-    $sd->requeue($rd, $epD, ['L4']);
+    $sd->requeue($rd, $epD, [$hD('L4')]);
     $cD4 = $sd->claimPending($rd, 'w2', $epD, 10);
     $okD4 = is_array($cD4) && count($cD4) === 1 && $sd->commitBatch($rd, 'w2', $epD,
         ['bytes' => 0, 'records' => [['ordinal' => $cD4[0]['ordinal'], 'record_hash' => $cD4[0]['hash'],

@@ -334,7 +334,7 @@ $REEXAMINED = 730;
     // frozen manifest, so the requeue only exists inside that phase.
     check('store: the run may enter catch-up', $s->advancePhase($rid, $ep, ScanPhase::CATCH_UP));
     check('store: where a finished record may be sent back to pending',
-        $s->requeue($rid, $ep, ['X-1']) === 1);
+        $s->requeue($rid, $ep, [$hash]) === 1);
     $back = $s->claimPending($rid, 'w', $ep, 1);
     check('store: and the straggler sweep offers it again', is_array($back) && count($back) === 1);
 
@@ -1340,6 +1340,50 @@ $SUPER = 787;
         $kFind !== '' && array_slice(uv_index_columns($A, Schema::table('finding'), $kFind), 0, 3)
             === ['project_id', 'generation_id', 'record_hash']);
     echo '  plan depart: ' . $kSel . ' ' . $kUpd . ' ' . $kOf . ' ' . $kFind . "\n";
+
+    // CATCH-UP'S OTHER READS AND WRITES BY RECORD HASH (W5F-N3).
+    // scannedVersions(), requeue() and tombstone() filtered
+    // `record_id_bin IN (...)`, a column no index holds, so each read the
+    // run's whole primary-key range. Asked by hash, each goes through
+    // uq_run_record, as depart() does above.
+    $nrec = new UvRecordingDb($dbA);
+    $nsr = new SqlScanStore($nrec);
+    $nh = function ($id) { return hash('sha256', $id, true); };
+    $nsv = $nsr->scannedVersions($drid, [$nh('DP11'), $nh('DP12'), $nh('NOT-ON-IT')]);
+    $nrq = $nsr->requeue($drid, $dep, [$nh('DP11')]);
+    $ntb = $nsr->tombstone($drid, $dep, [$nh('DP12')]);
+    $nst = $ds->scannedVersions($drid, [$nh('DP11'), $nh('DP12')]);
+    check('W5F-N3 catch-up by hash: the versions come back keyed by hash, the record not on the run left out',
+        array_keys($nsv) === [$nh('DP11'), $nh('DP12')] && $nsv[$nh('DP11')]['version'] === '5');
+    check('W5F-N3 catch-up by hash: requeue and tombstone move the one row each was given',
+        $nrq === 1 && $ntb === 1
+        && $nst[$nh('DP11')]['state'] === ScanStore::REC_PENDING && $nst[$nh('DP11')]['version'] === null
+        && $nst[$nh('DP12')]['state'] === ScanStore::REC_TOMBSTONE);
+    $nKey = function ($kind, array $needles) use ($nrec, $A) {
+        $out = [];
+        foreach ($nrec->matching($kind, $needles) as $q) $out[] = uv_explain_key($A, $q[1], $q[2]);
+        return $out;
+    };
+    $nSel = $nKey('select', ['SELECT record_hash, version_scanned, state FROM ' . $rt]);
+    $nUpd = $nKey('exec', ['UPDATE ' . $rt, 'record_hash IN']);
+    // A one-row UPDATE may be planned as an index merge of uq_run_record
+    // with PRIMARY (MySQL 8.0 says "uq_run_record,PRIMARY"): the unique key
+    // is in it either way, and a filter on record_id_bin plans PRIMARY alone.
+    $viaHash = function (array $keys, $n) {
+        if (count($keys) !== $n) return false;
+        foreach ($keys as $k) {
+            if (!in_array('uq_run_record', explode(',', $k), true)) return false;
+        }
+        return true;
+    };
+    check('W5F-N3 catch-up by hash: scannedVersions() reads through uq_run_record',
+        $viaHash($nSel, 1));
+    check('W5F-N3 catch-up by hash: and requeue() and tombstone() write through it',
+        $viaHash($nUpd, 2));
+    check('W5F-N3 catch-up by hash: no statement filters on the unindexed record id',
+        $nrec->matching('select', ['record_id_bin IN']) === []
+        && $nrec->matching('exec', ['record_id_bin IN']) === []);
+    echo '  plan catch-up: ' . implode(' ', $nSel) . ' ' . implode(' ', $nUpd) . "\n";
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two
