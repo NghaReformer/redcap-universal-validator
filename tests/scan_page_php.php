@@ -2043,6 +2043,18 @@ namespace {
             && strpos($V::panelPrefill($fin([]))['done'], $V::NOT_CERTIFIED) !== false);
         check('PREFILL: and a run still going owes no verdict yet',
             $V::verdictText($status(['clean' => 0, 'ruleProblems' => 2])) === null);
+        // W7-N10. A run with no stored decision is NOT CERTIFIED, and the
+        // counters beside it are not measurements: the reaper and the v2 data
+        // migration leave them at whatever they were.
+        $expired = $fin(['terminal' => 'expired', 'coverage' => 'partial', 'clean' => null, 'ruleProblems' => 3]);
+        check('PREFILL W7-N10: a run with no decision is not certified, whatever its rule count says',
+            $V::verdictText($expired) === $V::NOT_CERTIFIED
+            && strpos($V::panelPrefill($expired)['done'], 'could not be evaluated') === false
+            && $V::verdictText($fin(['clean' => '', 'ruleProblems' => 1])) === $V::NOT_CERTIFIED
+            && $V::verdictText($fin(['ruleProblems' => 2])) === $V::NOT_CERTIFIED);
+        check('PREFILL W7-N10 control: beside a stored 0 the count is said',
+            $V::verdictText($fin(['clean' => 0, 'ruleProblems' => 3])) === str_replace('{n}', '3', $V::RULE_PROBLEMS)
+            && $V::verdictText($fin(['clean' => '0', 'ruleProblems' => 1])) === $V::RULE_PROBLEM);
 
         // OC-4. A run that ended before its findings could be counted reports
         // NULL, and the line must say so rather than cast it to "Nothing found".

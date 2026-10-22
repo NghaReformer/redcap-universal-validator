@@ -156,10 +156,15 @@
      * status without the field (an older server) is not certified, because the
      * missing answer is never the reassuring one. ScanPageView::verdictText()
      * decides the same way, from the same sentences.
+     *
+     * A run with NO decision (`clean` null: expired by the reaper, or finished
+     * before the decision was stored) is not certified, and its counters are
+     * not measurements (W7-N10): the rule count is read only beside a stored 0.
      */
     function verdictText(st) {
         if (!st.terminal || st.clean === 1) return null;
         var L = labels(), n = st.ruleProblems | 0, tpl;
+        if (st.clean !== 0) return L.notCertified || 'This result does not certify the project.';
         if (n === 1) {
             return L.ruleProblem
                 || '1 rule could not be evaluated, so this result does not certify the project.';

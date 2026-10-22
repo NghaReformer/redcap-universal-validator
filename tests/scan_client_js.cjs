@@ -995,6 +995,14 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await show(finished('complete-through-fence'));
   check('verdict: and a status that never said is not read as certified',
     els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  // W7-N10. No decision is not certified, and its counters are not counts.
+  await show(Object.assign(finished('partial'), { terminal: 'expired', clean: null, ruleProblems: 2 }));
+  check('verdict W7-N10: a run with no decision says it is not certified, whatever its rule count says',
+    els['uv-scan-done'].textContent.slice(-UV.labels.notCertified.length) === UV.labels.notCertified
+    && els['uv-scan-done'].textContent.indexOf('could not be evaluated') === -1);
+  await show(decided({ clean: 0, ruleProblems: 2 }));
+  check('verdict W7-N10 control: beside a stored 0 the count is said',
+    els['uv-scan-done'].textContent === fencedText + ' 2 rules could not be evaluated, so this result does not certify the project.');
   const keptLabelsForVerdict = UV.labels;
   UV.labels = {};
   await show(decided({ clean: 0, ruleProblems: 1 }));

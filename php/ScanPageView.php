@@ -338,12 +338,19 @@ class ScanPageView
      *
      * Null only for a run that is still going, and for a finished one whose
      * stored decision is exactly 1. js/scan.js decides the same way.
+     *
+     * NO DECISION IS "NOT CERTIFIED", AND ITS COUNTS ARE NOT COUNTS (W7-N10).
+     * A run the reaper expired, and every run finished before the decision
+     * was stored, has `clean` NULL and a rule-problem count of 0 that nobody
+     * measured. The count is read only beside a stored 0; a run with no
+     * decision gets the plain sentence whatever its counters hold.
      */
     public static function verdictText($status)
     {
         if (!is_array($status) || empty($status['terminal'])) return null;
         $c = array_key_exists('clean', $status) ? $status['clean'] : null;
         if ($c === 1 || $c === '1' || $c === true) return null;
+        if (!($c === 0 || $c === '0' || $c === false)) return self::NOT_CERTIFIED;
         $n = isset($status['ruleProblems']) ? (int) $status['ruleProblems'] : 0;
         if ($n === 1) return self::RULE_PROBLEM;
         if ($n > 1) return str_replace('{n}', (string) $n, self::RULE_PROBLEMS);
