@@ -969,7 +969,11 @@ When the project has an `@UVWINDOW` rule, the run freezes the date and time it
 was planned, in the time zone of `window-timezone`, and every record of the
 run is judged by that clock, catch-up included. A record read after midnight
 is judged as of the same day as the rest. The page, the findings page and the
-file say "Dates were judged as of" that day.
+file say "Dates were judged as of" that day. On a record changed since the run
+was planned, a `notFuture` date whose save the project log cannot show may have
+been saved after that day. If it is later than that day but not in the future
+when the record is read, it is reported as not checked ("the day this value was
+saved is not known"), not as a date in the future.
 
 ### What a finished run says
 
