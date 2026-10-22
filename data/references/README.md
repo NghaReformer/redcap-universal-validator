@@ -127,6 +127,12 @@ one built from a mean and an SD per week of gestation. The numbers in
 | `lookup` | How a position on the axis finds its row: `round` to the nearest row (WHO 0 to 5 years, by day), `floor` to the row at or below (CDC half months, after the offset), `linear` between the two rows around it (WHO weight-for-length and weight-for-height, WHO 5 to 19 years) |
 | `valid` | `min`, and `max` (inclusive) or `below` (exclusive), in the axis unit, as text, within -1000000 to 1000000. Outside it nothing is checked |
 | `adjust` | `who-restricted` measures a z beyond ±3 in units of the distance between 2 and 3 SD, as WHO does for weight-based indicators; `none` uses the LMS formula throughout |
+| `position` | Optional: the correction a rule's `"measured"` makes for how the child was measured. `corrects` is `measurement` (the value is corrected) or `axis` (the length or height in `by`, on a reference by length or height). `lying` and `standing`, at least one, each `add` a number in a string (in the reference's unit, or in cm), and on a reference by age may hold one of `from` and `below`, an age in the axis unit: the correction applies at or above it, or below it. Without `position` a rule with `"measured"` is a configuration error |
+
+WHO's `who-lhfa` has `"position": {"corrects": "measurement", "lying":
+{"add": "-0.7", "from": "731"}, "standing": {"add": "0.7", "below": "731"}}`,
+`who-wfl` has `{"corrects": "axis", "standing": {"add": "0.7"}}` and `who-wfh`
+has `{"corrects": "axis", "lying": {"add": "-0.7"}}`.
 
 An age given in days and a reference by months (or the other way round) are
 converted with 30.4375 days to the month, as WHO does.

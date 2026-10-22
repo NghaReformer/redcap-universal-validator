@@ -2602,6 +2602,7 @@ abc with sex=1, dob=2025-01-10, visit_date=2026-01-10    => not-a-number
 | `male`, `female` | The codes that field stores for male and for female. Letter case is ignored unless `caseSensitive` is true |
 | `age` | `{"dob":"[dob]","at":"[visit_date]"}` (two date fields), `{"days":"[age_days]"}` or `{"months":"[age_months]"}` |
 | `by` | For a reference by length or height: the field holding it, in cm |
+| `measured` | `{"field":"[measured]","lying":"1","standing":"2"}`: the field that says how the child was measured, and the code it stores for each way. Length/height-for-age, weight-for-length and weight-for-height then make WHO's 0.7 cm correction ([below](#length-or-height-measured-the-other-way-measured)) |
 | `soft`, `hard` | z-score limits, from -20 to 20 |
 | `plausible` | `[low, high]` in the reference's unit, judged when no z-score can be worked out (see below) |
 | `measureScale` | A number the typed value is multiplied by before the z-score, from 0.000001 to 1000000 (0.001 for grams typed into a reference in kg) |
@@ -2627,7 +2628,12 @@ The z-score is the one WHO's own software (the `anthro` and `anthroplus` R
 packages) computes: the same tables, the same restricted method beyond 3 SD for
 the weight, BMI, arm circumference and skinfold indicators, and the same
 rounding to two decimals (half away from zero). The module's tests compare 2,880 points with WHO's
-code. An administrator can add other references, such as CDC 2000 or a national
+code. WHO's software also corrects a length measured standing, or a height
+measured lying, by 0.7 cm before it scores length/height-for-age,
+weight-for-length and weight-for-height. The module makes the same correction
+when the rule names the field that says how the child was measured
+(`measured`, [below](#length-or-height-measured-the-other-way-measured));
+without it, the value is scored as typed. An administrator can add other references, such as CDC 2000 or a national
 one ([Level 7](#level-7--a-growth-reference-of-your-own) shows how, step by step).
 
 #### WHO's limits for each indicator
@@ -2779,26 +2785,83 @@ So a Text field with integer validation is refused as `months` on a
 reference read by day; give `dob` and `at`, days, or a number field or calc
 that keeps the part month.
 
+#### Length or height measured the other way (`measured`)
+
+WHO's tables use length, measured lying, under 2 years (731 days), and
+height, measured standing, from 2 years. A child under 2 measured standing
+is 0.7 cm shorter than their length, and a child of 2 or more measured lying
+is 0.7 cm longer than their height. WHO's software corrects for this, and so
+does the module when the rule names the field that says how the child was
+measured and the code it stores for each way:
+
+| Field | Kind | Value |
+| ----- | ---- | ----- |
+| `measured` | radio | `1, Lying` and `2, Standing` |
+| `height_cm` | Text, number | the length or height as measured |
+| `age_days` | calc | `datediff([dob], [visit_date], "d")` |
+
+```text
+# on: height_cm — length/height-for-age, corrected for how the child was measured
+@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"measured":{"field":"[measured]","lying":"1","standing":"2"},"soft":[-3,3],"hard":[-6,6]}
+```
+
+```text expect
+73.0 with sex=2, age_days=600, measured=2    => ok, z -2.91
+73.0 with sex=2, age_days=600, measured=1    => soft-low, z -3.14
+73.0 with sex=2, age_days=600                => soft-low, z -3.14
+83.3 with sex=1, age_days=1000, measured=1   => soft-low, z -3.20
+```
+
+A girl of 600 days measured standing at 73.0 cm has a length of 73.7 cm and
+a length-for-age z-score of -2.91: moderately, not severely, stunted. Scored
+as typed, the same 73.0 cm gives -3.14, past WHO's cut-off of -3 for severe
+stunting. A boy of 1000 days measured lying at 83.3 cm is scored at 82.6 cm.
+
+What the correction changes:
+
+- `who-lhfa` corrects the measurement: 0.7 cm more for a child measured
+  standing under 731 days, 0.7 cm less for one measured lying from 731 days.
+- `who-wfl` and `who-wfh` correct the length or height in `by`:
+  weight-for-length adds 0.7 cm for a child measured standing, and
+  weight-for-height takes 0.7 cm off for one measured lying. The reference's
+  range (45 to 110 cm, 65 to 120 cm) judges the corrected length.
+- A blank position, or a code that is neither (such as `9, Not known`),
+  corrects nothing, as in WHO's software. Codes match without regard to
+  letter case unless `caseSensitive` is true, and on a radio or a dropdown
+  both must be choices of the field.
+- The z-score, the percentile and the point on a growth chart use the
+  corrected value. The returned `lower`, `upper` and `range`, and the values
+  at a z-score or percentile, are the reference's at that age or length, so
+  they do not change with the position; a page table's `value` column shows
+  the value as typed.
+- Every other reference refuses `measured`. BMI-for-age scores a BMI, which
+  the module cannot correct, so correct the length or height in the calc
+  that works out the BMI:
+
+```text
+# calc bmi: the BMI from the corrected length or height
+round([weight_kg] / ((([height_cm] + if([age_days] < 731 and [measured] = '2', 0.7, if([age_days] >= 731 and [measured] = '1', -0.7, 0))) / 100) ^ 2), 2)
+```
+
+A reference of your own takes `measured` when its index entry has a
+`position` (`data/references/README.md`).
+
 #### Weight-for-length, weight-for-height and weight-for-age on one field
 
-WHO uses length, measured lying, under 2 years (731 days), and height,
-measured standing, from 2 years. WHO's software adds 0.7 cm to a length
-measured standing under 2 years and takes 0.7 cm from a height measured
-lying from 2 years. The module does not know how the child was measured, so
-two calcs make the correction:
+Under 2 years (731 days) a weight is judged against length, and from 2 years
+against height. With `measured`, one field holding the length or height as
+measured serves both references:
 
 | Field | Kind | Value |
 | ----- | ---- | ----- |
 | `measured` | radio | `1, Lying` and `2, Standing` |
 | `length_cm` | Text, number | the length or height as measured |
 | `age_days` | calc | `datediff([dob], [visit_date], "d")` |
-| `len_wfl` | calc | `if([measured] = '2', [length_cm] + 0.7, [length_cm])` |
-| `ht_wfh` | calc | `if([measured] = '1', [length_cm] - 0.7, [length_cm])` |
 
 ```text
 # on: weight_kg — weight-for-length under 2 years, weight-for-height from 2 years, weight-for-age at every age
-@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[len_wfl]","soft":[-3,3],"hard":[-5,5],"when":"[age_days] < 731"}
-@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[ht_wfh]","soft":[-3,3],"hard":[-5,5],"when":"[age_days] >= 731"}
+@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[length_cm]","measured":{"field":"[measured]","lying":"1","standing":"2"},"soft":[-3,3],"hard":[-5,5],"when":"[age_days] < 731"}
+@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[length_cm]","measured":{"field":"[measured]","lying":"1","standing":"2"},"soft":[-3,3],"hard":[-5,5],"when":"[age_days] >= 731"}
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"soft":[-3,3],"hard":[-6,5]}
 ```
 
@@ -2826,14 +2889,16 @@ than usual. Without the correction it would be -2.98.
 
 ```text
 # on: weight_kg — weight-for-length by the corrected length
-@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[len_wfl]","soft":[-3,3],"hard":[-5,5]}
+@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[length_cm]","measured":{"field":"[measured]","lying":"1","standing":"2"},"soft":[-3,3],"hard":[-5,5]}
 ```
 
 ```text expect
-7.5 with sex=1, len_wfl=75.7    => soft-low, z -3.16
-7.5 with sex=1, len_wfl=75      => ok, z -2.98
-9.5 with sex=1, len_wfl=75      => ok, z 0.00
-7.5 with sex=1, len_wfl=40      => not evaluated
+7.5 with sex=1, length_cm=75.0, measured=2   => soft-low, z -3.16
+7.5 with sex=1, length_cm=75.0, measured=1   => ok, z -2.98
+7.5 with sex=1, length_cm=75.0               => ok, z -2.98
+9.5 with sex=1, length_cm=75, measured=1     => ok, z 0.00
+2.4 with sex=1, length_cm=44.5, measured=2   => ok, z -0.33
+7.5 with sex=1, length_cm=40, measured=2     => not evaluated
 ```
 
 WHO gives no weight-based z-score for a child with oedema; skip those rules
@@ -3493,7 +3558,8 @@ A reference by length or height takes `by` in place of `age`:
 
 A reference by height, measured standing, is the same with `"axis":
 "height"`. WHO's 0.7 cm correction between length and height is shown under
-Level 5.
+Level 5; a reference of your own makes it when its index entry has a
+`position` (`data/references/README.md`).
 
 #### Example 3 — a mean and an SD per week of gestation
 
@@ -3954,7 +4020,7 @@ bundled reference.
 
 `soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
 `caseSensitive`, and for a growth reference `reference`, `sex`, `male`,
-`female`, `age`, `by`, `plausible`, `measureScale`, `return`, `returnLimits`,
+`female`, `age`, `by`, `measured`, `plausible`, `measureScale`, `return`, `returnLimits`,
 `decimals`, `percentileDecimals` and `show`. A rule needs `soft` or `hard` limits,
 unless every value it returns is `z`, `percentile`, `valueAtZ:<z-score>` or
 `valueAtPercentile:<percentile>`, or it returns nothing and has a `show`; a
@@ -4090,6 +4156,14 @@ These are refused when the rule is saved:
 # Sex codes are matched without regard to letter case.
 # refused: differ only in letter case
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"a","female":"A","age":{"days":"[age_days]"},"hard":[-5,5]}
+
+# "measured" names the field and the code it stores for each way.
+# refused: "measured" must be {"field":"[measured]","lying":"1","standing":"2"}
+@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"measured":"[measured]","hard":[-6,6]}
+
+# Lying and standing need two codes.
+# refused: "measured" "lying" and "standing" are the same code
+@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"measured":{"field":"[measured]","lying":"1","standing":"1"},"hard":[-6,6]}
 
 # "plausible" and "measureScale" are for growth references. Fixed limits are already in the field's unit.
 # refused: only apply with a "reference"
@@ -5725,6 +5799,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `male`, `female` | string         | *(none)*     | With `reference`: the codes that field stores for male and for female  |
 | `age`           | object          | *(none)*     | With a reference read by age: `{"dob":"[dob]","at":"[visit_date]"}`, `{"days":"[age_days]"}` or `{"months":"[age_months]"}` |
 | `by`            | string          | *(none)*     | With a reference read by length or height: the field holding it, in cm |
+| `measured`      | object          | *(none)*     | With `who-lhfa`, `who-wfl`, `who-wfh` or a reference whose index has a `position`: `{"field":"[measured]","lying":"1","standing":"2"}`, how the child was measured, for WHO's 0.7 cm correction |
 | `plausible`     | list of two     | *(none)*     | With `reference`: `[low, high]` in the reference's unit, judged when no z-score can be worked out |
 | `measureScale`  | number          | *(none)*     | With `reference`: multiplies the typed value before the z-score, 0.000001 to 1000000 |
 | `return`        | object          | *(none)*     | With `reference`: `{"z":"[wfa_z]"}`, a value to a field of this form, up to 16. The values are `z`, `lower`, `upper`, `range`, `percentile`, `valueAtZ:<z-score>` and `valueAtPercentile:<percentile>` |

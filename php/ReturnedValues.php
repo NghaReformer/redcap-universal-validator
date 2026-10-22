@@ -94,7 +94,9 @@ trait ReturnedValues
         $pctDecimals = isset($rule['rangePercentileDecimals']) ? (int) $rule['rangePercentileDecimals']
             : GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
         $marks = (isset($rule['rangeReturnComma']) && is_array($rule['rangeReturnComma'])) ? $rule['rangeReturnComma'] : [];
-        $y = $m['state'] === 'ok' ? $m['y'] : null;
+        // the z-score and percentile score the measurement with WHO's correction
+        // for how the child was measured (yAdd); the bounds are the reference's
+        $y = $m['state'] === 'ok' ? $m['y'] + $g['yAdd'] : null;
         $o = GrowthReference::outputs($g['entry'], $g['table'], $g['sex'], $g['x'], $y,
             $limits, $decimals, !empty($marks['range']), $scale,
             (isset($rule['rangeUnit']) && is_string($rule['rangeUnit']) && $rule['rangeUnit'] !== '') ? $rule['rangeUnit'] : null);

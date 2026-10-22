@@ -969,7 +969,8 @@ class AnnotationRules
      *             "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-6,5]}
      * "sex", "age" (one of {"dob","at"}, {"days"} or {"months"}) and "by" become
      * the operand keys rangeSex, rangeAgeDob/rangeAgeAt, rangeAgeDays,
-     * rangeAgeMonths and rangeBy; checkGrowth refuses a wrong combination.
+     * rangeAgeMonths, rangeBy and rangeMeasured (with rangeLying and
+     * rangeStanding); checkGrowth refuses a wrong combination.
      *
      * "return" writes values worked out from the reference to Text fields of
      * the same form, and the rule then needs no limits when none of the values
@@ -1007,7 +1008,7 @@ class AnnotationRules
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
         $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive',
-                    'reference', 'sex', 'male', 'female', 'age', 'by', 'plausible', 'measureScale',
+                    'reference', 'sex', 'male', 'female', 'age', 'by', 'measured', 'plausible', 'measureScale',
                     'return', 'returnLimits', 'decimals', 'percentileDecimals', 'show'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
@@ -1088,6 +1089,27 @@ class AnnotationRules
             foreach ($a as $k => $v) {
                 if (!is_string($v)) return ['error' => '"age" "' . $k . '" must be one field reference, such as "[' . ($k === 'at' ? 'visit_date' : $k) . ']".'];
                 $out['rangeAge' . ucfirst($k)] = $v;
+            }
+        }
+        // How the child was measured, for WHO's 0.7 cm correction between a
+        // length (lying) and a height (standing): the field and its two codes.
+        if (array_key_exists('measured', $cfg)) {
+            $ms = $cfg['measured'];
+            $keys = is_array($ms) ? array_keys($ms) : [];
+            sort($keys);
+            if ($keys !== ['field', 'lying', 'standing']) {
+                return ['error' => '"measured" must be {"field":"[measured]","lying":"1","standing":"2"}: the field that says '
+                    . 'how the child was measured, and the code it stores for each way.'];
+            }
+            if (!is_string($ms['field'])) return ['error' => '"measured" "field" must be one field reference, such as "[measured]".'];
+            $out['rangeMeasured'] = $ms['field'];
+            foreach (['lying' => 'rangeLying', 'standing' => 'rangeStanding'] as $k => $key) {
+                $v = is_int($ms[$k]) ? (string) $ms[$k] : $ms[$k];
+                if (!is_string($v) || trim($v) === '') {
+                    return ['error' => '"measured" "' . $k . '" must be the code the field stores for a child measured ' . $k
+                        . ', such as "' . ($k === 'lying' ? '1' : '2') . '".'];
+                }
+                $out[$key] = trim($v);
             }
         }
         // Values worked out from the reference, written to Text fields of the
@@ -2985,11 +3007,12 @@ class AnnotationRules
     {
         $errors = [];
         $inputs = ['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
-                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'];
+                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"',
+                   'rangeMeasured' => '"measured" "field"'];
         if (!array_key_exists('rangeReference', $frag)) {
-            foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale']) as $k) {
+            foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale', 'rangeLying', 'rangeStanding']) as $k) {
                 if (array_key_exists($k, $frag)) {
-                    return ['"sex", "male", "female", "age" and "by" only apply with a "reference", such as "reference":"who-wfa".'];
+                    return ['"sex", "male", "female", "age", "by" and "measured" only apply with a "reference", such as "reference":"who-wfa".'];
                 }
             }
             foreach (['rangePlausibleLo', 'rangePlausibleHi', 'rangeMeasureScale'] as $k) {
@@ -3041,6 +3064,18 @@ class AnnotationRules
                 // sex codes are matched with letter case ignored (GrowthReference::sexOf)
                 $errors[] = '"male" "' . $frag['rangeMale'] . '" and "female" "' . $frag['rangeFemale'] . '" differ only in letter case, '
                     . 'which this rule ignores. Add "caseSensitive": true to tell them apart.';
+            }
+        }
+        // the codes of "measured", matched as the sex codes are
+        $measured = array_key_exists('rangeMeasured', $frag);
+        if ($measured !== (array_key_exists('rangeLying', $frag) && array_key_exists('rangeStanding', $frag))) {
+            $errors[] = '"measured" needs "field", "lying" and "standing" together.';
+        } elseif ($measured && is_string($frag['rangeLying']) && is_string($frag['rangeStanding'])) {
+            if ($frag['rangeLying'] === $frag['rangeStanding']) {
+                $errors[] = '"measured" "lying" and "standing" are the same code ("' . $frag['rangeLying'] . '").';
+            } elseif (empty($frag['caseSensitive']) && Logic::foldAscii($frag['rangeLying']) === Logic::foldAscii($frag['rangeStanding'])) {
+                $errors[] = '"measured" "lying" "' . $frag['rangeLying'] . '" and "standing" "' . $frag['rangeStanding'] . '" differ only '
+                    . 'in letter case, which this rule ignores. Add "caseSensitive": true to tell them apart.';
             }
         }
         $age = array_key_exists('rangeAgeDob', $frag) || array_key_exists('rangeAgeAt', $frag)
@@ -3181,7 +3216,7 @@ class AnnotationRules
     private static function growthExample($key)
     {
         $ex = ['rangeSex' => 'sex', 'rangeAgeDob' => 'dob', 'rangeAgeAt' => 'visit_date', 'rangeAgeDays' => 'age_days',
-               'rangeAgeMonths' => 'age_months', 'rangeBy' => 'height_cm'];
+               'rangeAgeMonths' => 'age_months', 'rangeBy' => 'height_cm', 'rangeMeasured' => 'measured'];
         return $ex[$key];
     }
 

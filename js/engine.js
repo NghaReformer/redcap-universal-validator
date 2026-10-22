@@ -2546,7 +2546,7 @@ function QRID_rangeVerdict(spec, value){
    rows ("scale", "first", "male", "female"). */
 var QRID_GROWTH_DAYS_PER_MONTH = 30.4375, QRID_GROWTH_MAX_Z_TEXT = 999.99;
 /* The inputs a growth rule reads, as the suffix of its "range<Input>Op" keys. */
-var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"];
+var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By", "Measured"];
 /* What a growth rule can return to fields ("return"): php/growth_outputs.json,
    read on the server by GrowthOutputs. */
 /* @generated growth-outputs BEGIN — written from php/growth_outputs.json by tests/gen_mode_registry.cjs.
@@ -2563,10 +2563,25 @@ var QRID_GROWTH_OUTPUTS = {
   "value": {"written":"number","needs":"measurement","places":"typed","integer":false,"shapes":["column"],"unit":"measure","label":"{measure}"}
 };
 /* @generated growth-outputs END */
+/* What WHO's correction for how the child was measured adds: to the
+   measurement (corrects "measurement") or to the length or height (corrects
+   "axis"), as the reference's "position" says. 0 when it corrects the other
+   one, has nothing for this position (or position is null), or a "from" or
+   "below" age excludes axis position x (null: not known). Server twin:
+   GrowthReference::positionAdd. */
+function QRID_growthPositionAdd(ref, position, x, corrects){
+  var p = ref && ref.position;
+  if(!p || position === null || !Object.prototype.hasOwnProperty.call(p, position) || p.corrects !== corrects) return 0;
+  var s = p[position];
+  if(s.from !== undefined && !(x !== null && x >= parseFloat(s.from))) return 0;
+  if(s.below !== undefined && !(x !== null && x < parseFloat(s.below))) return 0;
+  return parseFloat(s.add);
+}
 /* Where on the reference's axis a measurement sits. `input` holds what the
    rule supplied: days or months (a number as text), dobDays and atDays (whole
    days since 1970-01-01, null for a blank date), or by (cm, as text); comma
-   reads a decimal comma in days, months or by.
+   reads a decimal comma in days, months or by. byAdd is added to by first
+   (QRID_growthPositionAdd), so the "valid" range judges the corrected length.
    Returns { state: "ok", x } or { state: "blank"|"outside"|"invalid", why }. */
 function QRID_growthAxis(ref, input){
   var comma = !!input.comma;
@@ -2583,7 +2598,7 @@ function QRID_growthAxis(ref, input){
     if(by === "") return { state: "blank", why: "the " + ref.axis + " is blank" };
     n = QRID_rangeNumber(by, comma);
     if(n === null || n === "") return { state: "invalid", why: "the " + ref.axis + " is not a number" };
-    return inRange(parseFloat(n), ref.axis);
+    return inRange(input.byAdd ? parseFloat(n) + input.byAdd : parseFloat(n), ref.axis);
   }
   var x;
   if(input.hasOwnProperty("dobDays") || input.hasOwnProperty("atDays")){
@@ -5268,7 +5283,9 @@ function QRID_growthColumnLabel(V, of){
    point (growthPoint) and the typed value: { state, why, sex, x, yRef (in
    the reference's unit, for the z-score), y (in the field's unit, for the
    chart), z, pct, typed, measure (QRID_growthMeasure's state) }, each null
-   when there is none; null when an input is not on this page. */
+   when there is none; null when an input is not on this page. yRef and y
+   carry the point's correction for how the child was measured, so the
+   point sits at its z-score among the curves; typed stays as typed. */
 function QRID_growthChartPoint(V, point, typed){
   if(!point || point.state === "withheld") return null;
   var ref = V.growth.ref, out = { state: point.state, why: point.why || null, sex: point.sex || null,
@@ -5276,8 +5293,9 @@ function QRID_growthChartPoint(V, point, typed){
   var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
   out.measure = m.state;
   if(m.state === "ok"){
-    out.yRef = m.y;
-    out.y = parseFloat(QRID_rangeNumber(typed, V.spec.decimalComma));
+    var add = (point.state === "ok" && point.yAdd) ? point.yAdd : 0;
+    out.yRef = m.y + add;
+    out.y = parseFloat(QRID_rangeNumber(typed, V.spec.decimalComma)) + (add && V.scale !== null ? add / parseFloat(V.scale) : add);
   }
   if(out.sex && out.x !== null && out.yRef !== null){
     var z = QRID_growthZScore(ref, out.sex, out.x, out.yRef);
@@ -5813,6 +5831,8 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       /* sex codes: letter case ignored unless caseSensitive (twin: GrowthReference::sexOf) */
       growth = { ref: gref, ops: ops, male: String(cfg.rangeMale), female: String(cfg.rangeFemale),
+                 lying: cfg.rangeLying === undefined ? null : String(cfg.rangeLying),
+                 standing: cfg.rangeStanding === undefined ? null : String(cfg.rangeStanding),
                  fold: cfg.caseSensitive !== true,
                  dobType: cfg.rangeDobType || "date", dobFormat: cfg.rangeDobFormat || "ymd",
                  atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
@@ -5961,7 +5981,9 @@ function QRIDRangeInit(QRID_CONFIG){
     var p = QRID_temporalDate(v, type, op[0] === "ref" ? format : "ymd");
     return p ? Math.floor(p.seconds / 86400) : undefined;
   }
-  /* Where a growth rule's inputs place the child: { state: "ok", sex, x },
+  /* Where a growth rule's inputs place the child: { state: "ok", sex, x,
+     yAdd } (yAdd: what the measurement gets added before it is scored, WHO's
+     correction for how the child was measured; one of the length is in x),
      { state: "withheld" } when an input was not sent to this page,
      { state: "typing" } while a date on this page is not yet a whole date,
      or { state: "inert", why } (a blank or unreadable input, a sex code that
@@ -5984,7 +6006,14 @@ function QRIDRangeInit(QRID_CONFIG){
       return { state: "inert", why: ins.Sex === "" ? "the sex is blank"
         : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };
     }
-    var input = { comma: g.comma };
+    /* "measured": a blank value or a code that is neither corrects nothing
+       (twin: GrowthReference::positionOf) */
+    var position = null;
+    if(g.ops.Measured && ins.Measured !== ""){
+      if(g.lying !== null && sexKey(ins.Measured) === sexKey(g.lying)) position = "lying";
+      else if(g.standing !== null && sexKey(ins.Measured) === sexKey(g.standing)) position = "standing";
+    }
+    var input = { comma: g.comma, byAdd: QRID_growthPositionAdd(g.ref, position, null, "axis") };
     if(g.ops.AgeDob){
       input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
       input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
@@ -6004,7 +6033,7 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     var a = QRID_growthAxis(g.ref, input);
     if(a.state !== "ok") return { state: "inert", why: a.why, sex: sex };
-    return { state: "ok", sex: sex, x: a.x };
+    return { state: "ok", sex: sex, x: a.x, yAdd: QRID_growthPositionAdd(g.ref, position, a.x, "measurement") };
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
@@ -6026,7 +6055,7 @@ function QRIDRangeInit(QRID_CONFIG){
     if(p.state === "withheld") return { tier: "withheld" };
     if(p.state === "typing") return { tier: "inert", why: null };
     if(p.state !== "ok") return noZ(p.why);
-    var z = QRID_growthZScore(g.ref, p.sex, p.x, m.y);
+    var z = QRID_growthZScore(g.ref, p.sex, p.x, m.y + p.yAdd);
     /* only "outside" (no row there): a server-sent table covers its "valid"
        range (GrowthReference::table), so this is a damaged reference */
     if(z.state !== "ok") return { tier: "inert", why: "the reference has no row at this " + (g.ref.axis === "age" ? "age" : g.ref.axis) };
@@ -6048,7 +6077,9 @@ function QRIDRangeInit(QRID_CONFIG){
     if(p.state === "ok"){
       var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
       var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
-      y = m.state === "ok" ? m.y : null;
+      /* the z-score and percentile score the corrected measurement; the
+         bounds are the reference's (twin: returnsRange) */
+      y = m.state === "ok" ? m.y + p.yAdd : null;
       o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, y,
         { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
         V.decimals, V.returnComma.range === true, V.scale, V.returnUnit);
@@ -8477,14 +8508,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",
                       "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
                       "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
-                      "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
-                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
-                      "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
-                      "rangeReturn", "rangeReturnLimits", "rangeDecimals",
-                      "rangePercentileDecimals", "rangeReturnComma", "deferredOnSave",
-                      "extendedAdvisory", "growthIdle", "selectorBlocked", "rangeShow",
-                      "growthCurveKey", "growthTableKey", "growthChartWhy",
-                      "growthChartSource"];
+                      "rangeAgeMonthsOp", "rangeByOp", "rangeMeasuredOp", "rangeLying",
+                      "rangeStanding", "rangeDobType", "rangeDobFormat", "rangeAtType",
+                      "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo", "rangePlausibleHi",
+                      "rangePlausibleText", "rangeMeasureScale", "rangeReturn",
+                      "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals",
+                      "rangeReturnComma", "deferredOnSave", "extendedAdvisory", "growthIdle",
+                      "selectorBlocked", "rangeShow", "growthCurveKey", "growthTableKey",
+                      "growthChartWhy", "growthChartSource"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -8698,7 +8729,7 @@ window.INSPIREUniversalValidator = {
     percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
     normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
     roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED,
-    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ
+    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd
   },
   chartLogic: {                              /* @UVRANGE "show", locked by tests/growth_chart_dom_js.cjs */
     geometry: QRID_CHART, step: QRID_chartStep, ticks: QRID_chartTicks, xUnit: QRID_chartXUnit, span: QRID_growthSpan,

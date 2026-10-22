@@ -3664,7 +3664,9 @@ class UniversalValidator extends AbstractExternalModule
                     $out['unevaluated'][] = ['field' => $field, 'why' => $growth['why']] + $extra;
                     continue;
                 }
-                $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y']);
+                // WHO's correction for how the child was measured (yAdd) is
+                // added to the measurement before it is scored
+                $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y'] + $growth['yAdd']);
                 if ($z['state'] !== 'ok') {
                     // only "outside": table() refuses rows that do not cover "valid"
                     $out['unconfigurable'][] = ['fields' => [$field],
@@ -3685,7 +3687,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The inputs of a growth-reference range rule, read for one entry:
-     * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
+     * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x',
+     * 'yAdd' (added to the measurement before it is scored)], or
      * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
      * Code) or unreadable, the sex code is neither "male" nor "female", or the
      * age, length or height is outside the reference, or ['problem' => why]
@@ -3728,7 +3731,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $in = GrowthReference::inputsFor($rule, $read, $entry);
         if ($in['state'] !== 'ok') return $in;
-        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x']];
+        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x'], 'yAdd' => $in['yAdd']];
     }
 
     /**
@@ -4537,6 +4540,13 @@ class UniversalValidator extends AbstractExternalModule
             $out['sexes'] = ['male' => $which === 'male', 'female' => $which === 'female'];
         }
         $in = ['comma' => !empty($n['rangeAxisComma'])];
+        // A correction of the length or height for how the child was measured
+        // moves the axis value: one typed on this page can be either.
+        if (isset($n['rangeMeasuredOp']) && isset($entry['position']) && $entry['position']['corrects'] === 'axis') {
+            $how = $lit('rangeMeasuredOp');
+            if ($how === null) return $out;
+            $in['byAdd'] = GrowthReference::positionAdd($entry, GrowthReference::positionOf($how, $n), null, 'axis');
+        }
         if (isset($n['rangeAgeDobOp']) || isset($n['rangeAgeAtOp'])) {
             foreach (['dob' => 'rangeAgeDobOp', 'at' => 'rangeAgeAtOp'] as $w => $k) {
                 $v = $lit($k);
@@ -7244,12 +7254,22 @@ class UniversalValidator extends AbstractExternalModule
             return $refuse('"' . $id . '" is read by ' . $entry['axis'] . ' — give "by", the field holding the '
                 . $entry['axis'] . ' in cm, instead of "age".');
         }
+        // The index says which references WHO corrects for how the child was
+        // measured ("position", GrowthReference::positionProblem).
+        if (isset($frag['rangeMeasured']) && !isset($entry['position'])) {
+            return $refuse('"' . $id . '" has no correction for how the child was measured, so "measured" does not apply. '
+                . 'Where a value needs one, such as a BMI, correct the length or height in the calc that works the value out.');
+        }
         $dd = $this->dataDictionary($pid);
         $opts = $this->temporalOptions($pid);
         $comma = false;
         $inputFields = [];
+        // an input that holds one code of a few, and the rule's name for each
+        $coded = ['rangeSex' => ['what' => '"sex"', 'codes' => ['rangeMale' => '"male"', 'rangeFemale' => '"female"']],
+                  'rangeMeasured' => ['what' => '"measured"', 'codes' => ['rangeLying' => '"measured" "lying"', 'rangeStanding' => '"measured" "standing"']]];
         foreach (['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
-                  'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'] as $k => $label) {
+                  'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"',
+                  'rangeMeasured' => '"measured" "field"'] as $k => $label) {
             if (!isset($frag[$k])) continue;
             $op = ModeRegistry::operandRef($frag[$k], $opts);
             if ($op === null) return $frag;   // refused already by AnnotationRules::checkRange
@@ -7258,28 +7278,29 @@ class UniversalValidator extends AbstractExternalModule
             if ($f === $name) return $refuse($label . ' names the measured field itself.');
             $meta = $dd[$f];
             $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
-            if ($k === 'rangeSex') {
+            if (isset($coded[$k])) {
+                $what = $coded[$k]['what'];
                 if (!in_array($ftype, ['radio', 'dropdown', 'yesno', 'truefalse', 'text', 'calc', 'sql'], true)) {
-                    return $refuse('"sex" field "' . $f . '" is a ' . $ftype . ' field — it must hold one code (a radio, '
+                    return $refuse($what . ' field "' . $f . '" is a ' . $ftype . ' field — it must hold one code (a radio, '
                         . 'a dropdown or a Text field).');
                 }
                 $codes = in_array($ftype, ['yesno', 'truefalse'], true) ? ['1', '0']
                     : (isset($choices[$f]) && in_array($ftype, ['radio', 'dropdown'], true) ? $choices[$f] : null);
                 if ($codes !== null) {
                     // matched as the rule matches a value: letter case ignored
-                    // unless caseSensitive (GrowthReference::sexOf)
+                    // unless caseSensitive (GrowthReference::sexOf, positionOf)
                     $fold = empty($frag['caseSensitive']);
                     $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
-                    foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $ck => $word) {
+                    foreach ($coded[$k]['codes'] as $ck => $word) {
                         $want = $key($frag[$ck]);
                         $hits = array_values(array_filter(array_map('strval', $codes), function ($c) use ($key, $want) { return $key($c) === $want; }));
                         if ($hits === []) {
-                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which is not a choice of "sex" field "'
+                            return $refuse($word . ' is "' . $frag[$ck] . '", which is not a choice of ' . $what . ' field "'
                                 . $f . '" (its codes are ' . implode(', ', $codes) . ').');
                         }
                         if (count($hits) > 1) {
-                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which matches the codes ' . implode(' and ', $hits)
-                                . ' of "sex" field "' . $f . '" when letter case is ignored. Add "caseSensitive": true to tell them apart.');
+                            return $refuse($word . ' is "' . $frag[$ck] . '", which matches the codes ' . implode(' and ', $hits)
+                                . ' of ' . $what . ' field "' . $f . '" when letter case is ignored. Add "caseSensitive": true to tell them apart.');
                         }
                     }
                 }

@@ -37,7 +37,17 @@
               "male": [[5, 10, 0.1], [5, 10, 0.1]], "female": [[-5, 10, 0.1], [-5, 10, 0.1]]},
     "t-tie": {"title": "Test, medians that are decimal ties", "measure": "weight", "unit": "kg", "axis": "age", "axisUnit": "days",
               "lookup": "round", "valid": {"min": "0", "below": "2"}, "adjust": "none", "scale": 1, "first": 0,
-              "male": [[1, 9.165, 0.1], [1, 9.165, 0.1]], "female": [[1, 65.0075, 0.1], [1, 65.0075, 0.1]]}
+              "male": [[1, 9.165, 0.1], [1, 9.165, 0.1]], "female": [[1, 65.0075, 0.1], [1, 65.0075, 0.1]]},
+    "t-lenhei": {"title": "Test, a length or height by age", "measure": "length or height", "unit": "cm", "axis": "age", "axisUnit": "days",
+                 "lookup": "round", "valid": {"min": "0", "below": "4"}, "adjust": "none", "scale": 1, "first": 0,
+                 "position": {"corrects": "measurement", "lying": {"add": "-0.7", "from": "2"}, "standing": {"add": "0.7", "below": "2"}},
+                 "male": [[1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1]],
+                 "female": [[1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1]]},
+    "t-bylen": {"title": "Test, by length, measured lying", "measure": "weight", "unit": "kg", "axis": "length", "axisUnit": "cm",
+                "lookup": "linear", "valid": {"min": "45", "max": "45.3"}, "adjust": "who-restricted", "scale": 10, "first": 450,
+                "position": {"corrects": "axis", "standing": {"add": "0.1"}},
+                "male": [[1, 2.0, 0.1], [1, 2.2, 0.1], [1, 2.4, 0.1], [1, 2.6, 0.1]],
+                "female": [[1, 2.0, 0.1], [1, 2.2, 0.1], [1, 2.4, 0.1], [1, 2.6, 0.1]]}
   },
   "axis": [
     {"name": "whole days",                     "ref": "t-days",   "input": {"days": "3"},                  "want": {"state": "ok", "x": 3}},
@@ -63,7 +73,26 @@
     {"name": "past the top",                   "ref": "t-length", "input": {"by": "45.31"},                "want": {"state": "outside", "why": "the length is outside the reference (45 to 45.3 cm)"}},
     {"name": "a decimal comma",                "ref": "t-length", "input": {"by": "45,1", "comma": true},  "want": {"state": "ok", "x": 45.1}},
     {"name": "a comma without the comma flag", "ref": "t-length", "input": {"by": "45,1"},                 "want": {"state": "invalid", "why": "the length is not a number"}},
-    {"name": "a blank length",                 "ref": "t-length", "input": {"by": " "},                    "want": {"state": "blank", "why": "the length is blank"}}
+    {"name": "a blank length",                 "ref": "t-length", "input": {"by": " "},                    "want": {"state": "blank", "why": "the length is blank"}},
+    {"name": "byAdd moves the length",         "ref": "t-length", "input": {"by": "45", "byAdd": 0.1},     "want": {"state": "ok", "x": 45.1}},
+    {"name": "byAdd 0 keeps it",               "ref": "t-length", "input": {"by": "45.2", "byAdd": 0},     "want": {"state": "ok", "x": 45.2}},
+    {"name": "byAdd past the top",             "ref": "t-length", "input": {"by": "45.3", "byAdd": 0.1},   "want": {"state": "outside", "why": "the length is outside the reference (45 to 45.3 cm)"}},
+    {"name": "byAdd below the bottom",         "ref": "t-length", "input": {"by": "45", "byAdd": -0.1},    "want": {"state": "outside", "why": "the length is outside the reference (45 to 45.3 cm)"}},
+    {"name": "byAdd on a blank length",        "ref": "t-length", "input": {"by": "", "byAdd": 0.1},       "want": {"state": "blank", "why": "the length is blank"}},
+    {"name": "byAdd on an age is not read",    "ref": "t-days",   "input": {"days": "3", "byAdd": 0.5},    "want": {"state": "ok", "x": 3}}
+  ],
+  "position": [
+    {"name": "standing below the age",         "ref": "t-lenhei", "position": "standing", "x": 1,    "corrects": "measurement", "want": 0.7},
+    {"name": "standing at the age",            "ref": "t-lenhei", "position": "standing", "x": 2,    "corrects": "measurement", "want": 0},
+    {"name": "lying at the age",               "ref": "t-lenhei", "position": "lying",    "x": 2,    "corrects": "measurement", "want": -0.7},
+    {"name": "lying just under the age",       "ref": "t-lenhei", "position": "lying",    "x": 1.99, "corrects": "measurement", "want": 0},
+    {"name": "an age not known",               "ref": "t-lenhei", "position": "lying",    "x": null, "corrects": "measurement", "want": 0},
+    {"name": "no position",                    "ref": "t-lenhei", "position": null,       "x": 1,    "corrects": "measurement", "want": 0},
+    {"name": "the other one corrected",        "ref": "t-lenhei", "position": "standing", "x": 1,    "corrects": "axis",        "want": 0},
+    {"name": "the length, standing",           "ref": "t-bylen",  "position": "standing", "x": null, "corrects": "axis",        "want": 0.1},
+    {"name": "the length, lying",              "ref": "t-bylen",  "position": "lying",    "x": null, "corrects": "axis",        "want": 0},
+    {"name": "the length, not the weight",     "ref": "t-bylen",  "position": "standing", "x": null, "corrects": "measurement", "want": 0},
+    {"name": "a reference without one",        "ref": "t-days",   "position": "standing", "x": 1,    "corrects": "measurement", "want": 0}
   ],
   "lms": [
     {"name": "round: a half rounds up",         "ref": "t-days",   "sex": "male",   "x": 2.5,    "want": [0.5, 12, 0.2]},

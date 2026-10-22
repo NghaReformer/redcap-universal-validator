@@ -277,6 +277,22 @@ namespace {
         check('audit: compound "when" ' . json_encode($case[0]) . ($case[1] ? ' applies' : ' does not apply'), $hit === $case[1]);
     }
 
+    // RNG-2: a "when" on a comma-decimal field reads 4,5 as 4.5 (the numbers map
+    // of AST-1). The guide's resp_rate recipe: the child range when
+    // [age_years]<5, the adult range as the fallback.
+    $DR = $DICT + ['age_years' => f('labs_form', '', 'number_comma_decimal'),
+        'resp_rate' => f('labs_form', '@UVRANGE={"soft":[20,40],"hard":[5,100],"when":"[age_years]<5"} @UVRANGE={"soft":[12,24],"hard":[5,70]}', 'integer')];
+    foreach ([['4,5', '30', null], ['4,5', '80', 'soft-high'], ['12,0', '80', 'hard-high'], ['4.5', '30', null]] as list($age, $rr, $want)) {
+        $V = $DATA; $V['2'][351] = array_merge($V['2'][351], ['age_years' => $age, 'resp_rate' => $rr]);
+        $m = mod($DR, $V, $FULL, 'nurse');
+        $m->redcap_save_record(149, '2', 'labs_form', 351, null, null, null, 1);
+        $got = array_values(array_filter(findings($m), function ($e) { return ($e['field'] ?? '') === 'resp_rate'; }));
+        check("RNG-2 audit: age_years $age, resp_rate $rr is " . json_encode($want) . ' (got ' . json_encode($got ? $got[0]['reason'] : null) . ')',
+            $want === null ? !$got : ($got && $got[0]['reason'] === $want));
+    }
+    $pr = page(mod($DR, $DATA, $FULL, 'nurse'), 'form', '2', 'labs_form');
+    check('RNG-2 page: the comma mark of the field the "when" reads is sent', ($pr['cfg']['numberMarks']['age_years'] ?? null) === 'comma');
+
     // ---- 4) the scan ---------------------------------------------------------------
     $m = mod($DICT, $DATA, $FULL, 'nurse');
     $res = $m->scanProject(149);

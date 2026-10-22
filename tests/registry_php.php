@@ -92,7 +92,10 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
     // 2.6.0 @UVRANGE growth references
     'rangeReference', 'rangeSex', 'rangeMale', 'rangeFemale', 'rangeAgeDob', 'rangeAgeAt',
-    'rangeAgeDays', 'rangeAgeMonths', 'rangeBy', 'rangeDobType', 'rangeDobFormat',
+    'rangeAgeDays', 'rangeAgeMonths', 'rangeBy',
+    // @UVRANGE "measured": the field, and its codes for lying and standing (RNG-3)
+    'rangeMeasured', 'rangeLying', 'rangeStanding',
+    'rangeDobType', 'rangeDobFormat',
     'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
     // @UVRANGE "plausible" and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
@@ -134,7 +137,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // 2.6.0 @UVRANGE growth references (the inputs travel folded, as ops;
     // deferredOnSave marks a rule the page could not carry but the save checks)
     'rangeReference', 'rangeSexOp', 'rangeMale', 'rangeFemale', 'rangeAgeDobOp', 'rangeAgeAtOp',
-    'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp', 'rangeDobType', 'rangeDobFormat',
+    'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp',
+    // @UVRANGE "measured" (RNG-3)
+    'rangeMeasuredOp', 'rangeLying', 'rangeStanding',
+    'rangeDobType', 'rangeDobFormat',
     'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
     // "plausible" (its text in the reference's unit) and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
@@ -322,7 +328,8 @@ check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], 
     === [['windowFrom', 'windowFromOp', 'windowFromValue'],
          ['rangeSex', 'rangeSexOp', 'rangeSexValue'], ['rangeAgeDob', 'rangeAgeDobOp', 'rangeAgeDobValue'],
          ['rangeAgeAt', 'rangeAgeAtOp', 'rangeAgeAtValue'], ['rangeAgeDays', 'rangeAgeDaysOp', 'rangeAgeDaysValue'],
-         ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue']]);
+         ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue'],
+         ['rangeMeasured', 'rangeMeasuredOp', 'rangeMeasuredValue']]);
 check('an operand is not a condition key', !in_array('windowFrom', ModeRegistry::condKeys(), true));
 foreach ([
     '[visit_date]' => ['ref', 'visit_date', null],

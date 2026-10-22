@@ -50,7 +50,12 @@
         "min": "0",
         "below": "1826.25"
       },
-      "adjust": "none"
+      "adjust": "none",
+      "position": {
+        "corrects": "measurement",
+        "lying": {"add": "-0.7", "from": "731"},
+        "standing": {"add": "0.7", "below": "731"}
+      }
     },
     "who-bfa": {
       "source": "who2006",
@@ -146,7 +151,11 @@
         "min": "45",
         "max": "110"
       },
-      "adjust": "who-restricted"
+      "adjust": "who-restricted",
+      "position": {
+        "corrects": "axis",
+        "standing": {"add": "0.7"}
+      }
     },
     "who-wfh": {
       "source": "who2006",
@@ -162,7 +171,11 @@
         "min": "65",
         "max": "120"
       },
-      "adjust": "who-restricted"
+      "adjust": "who-restricted",
+      "position": {
+        "corrects": "axis",
+        "lying": {"add": "-0.7"}
+      }
     },
     "who2007-wfa": {
       "source": "who2007",

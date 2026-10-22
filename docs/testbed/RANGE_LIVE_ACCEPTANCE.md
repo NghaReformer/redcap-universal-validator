@@ -147,10 +147,10 @@ has none, and remove it afterwards.
 
 ## Section I: growth references (WHO z-scores)
 
-Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 34
-fields on two new instruments. `uv_growth_test` (24 fields) holds the inputs
-(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`, `ug_sex_txt`), eleven growth
-rules and eight broken `ug_bad_*` tags. `uv_growth_more` (10 fields) holds rules that read sex
+Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 37
+fields on two new instruments. `uv_growth_test` (27 fields) holds the inputs
+(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`, `ug_sex_txt`, `ug_measured`),
+thirteen growth rules and eight broken `ug_bad_*` tags. `uv_growth_more` (10 fields) holds rules that read sex
 and date of birth from `uv_growth_test`. On a data entry form their z-score
 notes do not block, while a value that is not a number or is 0 or below
 still does; on a survey (I30, I31) the page holds only such a value, and the
@@ -161,8 +161,8 @@ to H.
 
 Setup:
 
-1. Append the 34 rows of the CSV to the dictionary, as in setup step 2. The
-   diff must report two new instruments and 34 new fields.
+1. Append the 37 rows of the CSV to the dictionary, as in setup step 2. The
+   diff must report two new instruments and 37 new fields.
 2. Designate `uv_growth_test` on `event_1_arm_1` (351) and `visit_1_arm_1`
    (380). Designate `uv_growth_more` on `event_1_arm_1` (351) only.
 3. Steps I22 to I25 and I48 need the project setting for event and instance references
@@ -237,6 +237,9 @@ with the setup values (`ug_sex` = Male, `ug_dob` = 10-01-2025,
 | I46 | Set the audit log setting to "Keyed hash of the value + raw record ID" (the default). On `uv_growth_test`, `ug_weight` = 7.5, Save (answer "save anyway") | Module log: `invalid-id-saved`, `field: ug_weight`, `reason: soft-low`, `reference: who-wfa` and a `value_hmac`; no `z` and no `value`. Set the setting back to the value noted in setup step 5 |
 | I47 | Open `uv_growth_more` for XE-1 (a boy). `ug_wt_mix` = 6.6, then 50.0, then `abc`, leaving each time | No configuration error box at any point: the weight-for-age rule applies to girls only and is marked `growthIdle` in the page config, which has no `who-wfa` table, while the fixed limits judge. 6.6: no note. 50.0: red "This value is above the plausible range (allowed 1 to 40 kg)."; Save is blocked. `abc`: red "This is not a number."; Save is blocked. Clear it |
 | I48 | `uv_growth_test` for XE-1 on `visit_1_arm_1` (380), `ug_visit` = 2026-01-10. `ug_xev_mix` = 50.0, then 4.0, leaving each time | 50.0: red, two lines, "above the plausible range (z-score 29.99 on Weight-for-age ..." followed by "(worked out with saved event/instance values ...)", and "above the plausible range (allowed 1 to 40 kg)". Save is blocked, because the fixed limits read only this page. In the page config only the `who-wfa` branch carries `extendedAdvisory`. 4.0: red, one line, z-score -6.59 on Weight-for-age; Save is not blocked. Clear it. Then on event 351 (the event the rule names), `ug_xev_mix` = 4.0: the same red line, and Save is still not blocked; 50.0: two red lines, Save is blocked. Clear it |
+| I49 | On `uv_growth_test` for XE-1, event 351 (the boy of 365 days): `ug_measured` = Standing. `ug_len_m` = 68.5, leave. Then `ug_measured` = Lying, then clear `ug_measured`, then Not known | Standing: no note (68.5 cm is scored as 69.2 cm, z-score -2.75). Lying: amber "This value is lower than usual (z-score -3.05 on Length/height-for-age, WHO 2006 (birth to 5 years), in cm; expected z-score -3 to 3)." Blank and Not known: the same amber line, since neither corrects anything (RNG-3) |
+| I50 | `ug_measured` = Standing, `ug_len_m` = 75.0, `ug_wfl_m` = 7.5, leave. Then `ug_measured` = Lying | Standing: amber "This value is lower than usual (z-score -3.16 on Weight-for-length, WHO 2006 (45 to 110 cm, lying), in kg; expected z-score -3 to 3)." (the length is 75.7 cm). Lying: no note (z-score -2.98) |
+| I51 | `ug_measured` = Standing, Save (answer "save anyway") | Module log: `ug_wfl_m` `soft-low`, `z: -3.16`, `reference: who-wfl`; no entry for `ug_len_m`. Clear `ug_measured`, `ug_len_m` and `ug_wfl_m` and save |
 
 ---
 

@@ -1156,9 +1156,14 @@ module's system settings. Level 7 of `@UVRANGE` in the guide of examples
 walks through it with three worked tables (by month, by length, and from a
 mean and an SD per week of gestation), `data/references/README.md` in the
 module describes the formats, and `convert.php --check` prints a z-score from
-the new table to compare with the source. WHO's 0.7 cm correction for a length measured standing, or a
-height measured lying, is not applied by the module; a calc field can apply it,
-as the guide of examples shows.
+the new table to compare with the source. For WHO's 0.7 cm correction of a length measured standing, or a
+height measured lying, name the field that says how the child was measured:
+`"measured":{"field":"[measured]","lying":"1","standing":"2"}`.
+Length/height-for-age corrects the measurement, and weight-for-length and
+weight-for-height correct the length or height in `by`, as WHO's software
+does; a blank position corrects nothing. BMI-for-age scores a BMI, so correct
+the height in the calc that works out the BMI, as the guide of examples
+shows.
 
 **Can one weight field be checked against weight-for-age and weight-for-height?**
 Yes. Several `@UVRANGE` tags that name different references on one field all

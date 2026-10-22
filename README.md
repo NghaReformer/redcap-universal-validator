@@ -950,7 +950,11 @@ slip:
   reference check nothing; staff see why, and the post-save audit logs it as
   not evaluated. `"plausible":[0.5,30]` judges the value in the reference's
   unit when there is no z-score, and `"measureScale":0.001` reads grams
-  against a reference in kg. Sex codes match without regard to letter case
+  against a reference in kg.
+  `"measured":{"field":"[measured]","lying":"1","standing":"2"}` makes
+  WHO's 0.7 cm correction for a length measured standing or a height
+  measured lying, on length/height-for-age, weight-for-length and
+  weight-for-height, as WHO's software does. Sex codes match without regard to letter case
   unless `caseSensitive` is true. A limit the reference can never pass
   (some rows give no z-score beyond a point: a CDC-style BMI row with L -2 and
   S 0.13 gives none above 3.85) is a configuration error that says which value
