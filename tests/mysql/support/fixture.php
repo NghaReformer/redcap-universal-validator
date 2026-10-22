@@ -49,10 +49,11 @@ function uv_neighbour($pid) { return ((int) $pid) + 1; }
 /**
  * The run sequence number a run was allocated.
  *
- * SqlScanStore::run() does not return run_seq - ArrayScanStore's does, and the
- * shared contract reads it - so a case that has to stamp valid_from_seq on a
- * finding the way a worker does has to read the column. That asymmetry is
- * reported rather than papered over; see the notes accompanying this wave.
+ * Read from the column by run id alone, for a case that has to stamp
+ * valid_from_seq on a finding the way a worker does. Both stores' run() return
+ * run_seq as well (ScanStore::RUN_COLUMNS) and need the project id with it. An
+ * earlier note here said SqlScanStore::run() left run_seq out; it does not
+ * (W8-N6).
  */
 function uv_run_seq($db, $runId) {
     $r = $db->select('SELECT run_seq FROM ' . Schema::table('scan_run')
