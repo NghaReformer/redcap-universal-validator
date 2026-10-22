@@ -294,7 +294,7 @@
                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked", "i18n",
                      "rangeShow", "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource"],
       "textKeys": ["message", "show.chart.labels.*", "show.table.labels.*"],
-      "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always"},
+      "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always", "scanCompare": true},
       "needs": [],
       "dialog": false,
       "js": {"factories": {"range": "QRIDRangeInit"}},
@@ -302,6 +302,7 @@
                                "hard-low": "Implausible value", "hard-high": "Implausible value",
                                "not-a-number": "Not a number", "not-positive": "Not a positive measurement",
                                "plausible-low": "Implausible value", "plausible-high": "Implausible value",
+                               "returned-stale": "Returned value out of date",
                                "*": "Implausible value"},
                "detailKeys": ["rangeSoftText", "rangeHardText", "rangePlausibleText"]}
     }

@@ -108,8 +108,9 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns that is not a method name and one of its branchKeys');
                 }
                 if ((isset($rt['noSave']) && (!is_string($rt['noSave']) || $rt['noSave'] === ''))
-                        || (isset($rt['noSurveySave']) && !is_bool($rt['noSurveySave']))) {
-                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns whose noSave is not a setting name or whose noSurveySave is not true or false');
+                        || (isset($rt['noSurveySave']) && !is_bool($rt['noSurveySave']))
+                        || (isset($rt['scanCompare']) && !is_bool($rt['scanCompare']))) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns whose noSave is not a setting name, or whose noSurveySave or scanCompare is not true or false');
                 }
             }
             if (isset($m['uniformBranchKeys'])) {

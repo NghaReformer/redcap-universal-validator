@@ -119,6 +119,10 @@
     "staff":  "The measurement is 0 or below.",
     "survey": "Please enter a measurement above 0."
   },
+  "range/returned-stale": {
+    "staff":  "This field holds a value its growth rule returned for an earlier measurement or input. An import does not refill it; open the form and save it to write the current value.",
+    "survey": "This value is out of date."
+  },
   "range/*": {
     "staff":  "The value is outside its plausible range.",
     "survey": "This value is not allowed here.",

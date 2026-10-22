@@ -3188,8 +3188,11 @@ no `soft` or `hard`: none of the four is made from a limit.
   form as changed. After a change REDCap hears an input and a change event, so
   its calculations and branching logic that read the field run. On save: the
   post-save audit works out the same values from the saved record and writes
-  those that differ, for a form, a survey, an import and the API, with one
-  save per entry (event and instance), the entry being saved first. An entry
+  those that differ, for a save of a form or a survey, with one save per entry
+  (event and instance), the entry being saved first. An import or an API write
+  leaves the fields as they were, because REDCap does not run the save hook for
+  a Data Import Tool import; the Validation scan reports such a field as
+  "Returned value out of date". An entry
   REDCap refuses to write (a locked form) is logged, and the others are still
   written. The write appears in the record's log as an update by the user who
   saved. It is not audited again. The rules that return values are checked

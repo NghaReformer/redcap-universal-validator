@@ -9439,6 +9439,10 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($r['fields'] as $f) $readSet[$f] = true;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
             foreach ($this->requiredBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
+            // the fields a rule returns to, when the scan compares them (RNG-1)
+            if ($this->returnsComparedByScan($r, $pid)) {
+                foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
+            }
         }
         // A project-scope unique rule cannot be evaluated from a DAG-confined
         // scan: the scan reads one group, so a value duplicated ACROSS groups is
@@ -9855,6 +9859,9 @@ class UniversalValidator extends AbstractExternalModule
             // add findings the same report says it cannot vouch for.
             if (isset($plan['skip'][$i])) continue;
             $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
+            // What the next save would write to the rule's returned fields,
+            // compared with what they hold (returnsStale).
+            $cmpReturns = $this->returnsComparedByScan($r, $pid);
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
                 // Only where the host was STARTED (R2O-2), and only for a pair
@@ -9916,7 +9923,19 @@ class UniversalValidator extends AbstractExternalModule
                     // A scan request answers @UVEXISTS from one index per rule, not one
                     // whole-project read per record (findingsExists).
                     $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck],
-                        ['dag' => $recDag, 'existsIndex' => true, 'instance' => $ctx['instance']]);
+                        ['dag' => $recDag, 'existsIndex' => true, 'instance' => $ctx['instance']] + ($cmpReturns ? ['returns' => true] : []));
+                    // A returned value out of date: REDCap does not run the save
+                    // hook for a Data Import Tool import, so an imported or
+                    // corrected measurement leaves the old z-score (RNG-1).
+                    // Reported on the returned field; opening the form and
+                    // saving it writes the current values.
+                    if ($cmpReturns && isset($f['returns']) && is_array($f['returns'])) {
+                        foreach ($this->returnsStale($evaluatedRule, $f['returns'], $ctx['values'], $pid) as $rf => $held) {
+                            $f['invalid'][] = ['field' => $rf, 'value' => $held,
+                                'type' => isset($evaluatedRule['type']) ? (string) $evaluatedRule['type'] : 'range', 'reason' => 'returned-stale'];
+                        }
+                    }
+
                     if ($preparedBranch !== null) {
                         foreach ($f['invalid'] as $k => $v) if (!isset($v['branch'])) $f['invalid'][$k]['branch'] = $preparedBranch;
                     }

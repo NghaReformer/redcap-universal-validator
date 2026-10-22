@@ -46,7 +46,7 @@ php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key gram
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, percentile, bounds and reference values written into fields on the page
-php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats; the scan reports stale ones
 php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
 php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, refusals, staff notes, page curves and tables, the pageCharts cap; --write refreshes growth_chart_fixture.json
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM

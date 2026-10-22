@@ -905,13 +905,18 @@ slip:
   `percentile` and values at a z-score or percentile needs no limits, and
   `decimals`, `returnLimits` or `percentileDecimals` on a rule that neither
   returns nor shows in a page table anything they shape is refused. The page fills the fields as it opens and after each
-  change; the save fills them again, also for an API or import save, writes
-  only the fields that differ, and judges every other rule after that write.
+  change; a save of the form or the survey fills them again, writes only the
+  fields that differ, and judges every other rule after that write. An import
+  or an API write does not: REDCap does not run the module's save hook for a
+  Data Import Tool import (REDCap 17.0.6), so the fields keep what they held.
+  The Validation scan reports a returned field that holds something other than
+  the saved inputs give as "Returned value out of date"; open the form and save
+  it to write the current values.
   A field with nothing to report (sex blank, age outside the reference) is
   emptied. The rule owns its fields, so mark them `@READONLY`. Two references
   on one field each fill their own fields, and a rule that returns values may
   not read a returned field. The project setting "@UVRANGE returned values"
-  turns the save-time write off.
+  turns the save-time write off, and the scan's comparison with it.
 - **A growth chart and a table on the form.** `show` draws the reference's
   curves with this visit's point under the field, and a table under them,
   on the page only:
@@ -951,8 +956,9 @@ slip:
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
-the **Data Import Tool** or the **API** (where the save-hook audit is
-version-dependent), or records entered **before a rule existed**. The
+the **Data Import Tool** or the **API** (the save-hook audit did not run for a
+Data Import Tool import on REDCap 17.0.6, and may not run for the API), or
+records entered **before a rule existed**. The
 **Validation scan** project page closes that gap: it runs every configured
 rule — check-character/format, constraint, required, unique, and choice
 filtering — over every saved record and lists each violation with a CSV export.
@@ -1250,7 +1256,7 @@ php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key gram
 node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes, withheld, no block)
 php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": values written into fields on the page
-php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches; the scan reports stale ones
 php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
 php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, page curves and cap; --write refreshes growth_chart_fixture.json
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM

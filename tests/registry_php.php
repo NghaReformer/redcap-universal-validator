@@ -273,10 +273,11 @@ check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check
 // @UVRANGE "return" (2.7.0): a mode that writes values names the method that
 // works them out, the rule key holding value name => field name, the project
 // setting that turns the write on save off, and whether every returned field
-// is compared as a number ("7.80" is "7.8") whatever its validation.
+// is compared as a number ("7.80" is "7.8") whatever its validation, and
+// whether the scan compares them with what the record holds (RNG-1).
 check('range returns values through returnsRange, from rangeReturn',
     ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn',
-                                        'noSave' => 'range-return-no-save', 'sameNumber' => 'always']);
+                                        'noSave' => 'range-return-no-save', 'sameNumber' => 'always', 'scanCompare' => true]);
 // @UVEXISTS "return": values of the entry found. A Text field holding "007"
 // is not "7", so only fields that hold numbers compare as numbers. They come
 // from other records, so a survey respondent's save writes none.
