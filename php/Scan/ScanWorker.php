@@ -97,6 +97,10 @@ final class ScanWorker
      *   scope:          ?callable(string[] $ids): array<string,?bool>  a
      *                                 group-scoped run's question: is each
      *                                 record in the run's group (review rv5b-1)
+     *   planProblems:   ?array        the rule problems of the context `evaluate`
+     *                                 was built from, {rule, fields, why}; marked
+     *                                 with every batch that evaluated a record
+     *                                 (review rv10b1-2)
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -1015,6 +1019,18 @@ final class ScanWorker
         $got = null;
         if ($cut === 'retry' && $budget !== null) $budget->reclaim();
 
+        // THE CONTEXT'S OWN PROBLEMS GO WITH EVERY BATCH IT EVALUATED (review
+        // rv10b1-2). start() noted the problems of the plan it was built from
+        // and nothing else did, so a rule this request's context could not
+        // evaluate was left out of these records with nothing written to say
+        // so, and the run could finish clean. Behind the record fences, like
+        // the records' own problems; a mark is a presence, so a problem start()
+        // already noted adds nothing.
+        if ($worked > 0) {
+            foreach ($this->planMarks() as $k => $m) {
+                if (!isset($this->marked[$runId][$k])) $marks[$k] = $m;
+            }
+        }
         $batch['marks'] = array_values($marks);
         // null when the store does not say how many records it still held (a
         // store written before the out-parameter existed); 0 when it held none.
@@ -1258,6 +1274,16 @@ final class ScanWorker
     private function owner()
     {
         return isset($this->deps['owner']) ? (string) $this->deps['owner'] : 'worker';
+    }
+
+    /** The context's rule problems as marks, keyed as batch() keys its own. */
+    private function planMarks()
+    {
+        $p = (isset($this->deps['planProblems']) && is_array($this->deps['planProblems']))
+           ? $this->deps['planProblems'] : [];
+        $out = [];
+        foreach (ScanPromotion::marksFor($p) as $m) $out[$m['axis1'] . "\0" . $m['axis2']] = $m;
+        return $out;
     }
 
     private static function stop($why)

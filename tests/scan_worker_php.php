@@ -3339,6 +3339,46 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('problems: and it is recorded once the next batch commits what it holds',
             ScanPromotion::tally($inner5->aggregates($run5))['ruleProblems'] === 1);
 
+        // THE CONTEXT'S OWN PROBLEMS (review rv10b1-2). A rule the plan of this
+        // request could not evaluate is met by no record - evaluate() never
+        // runs it - so only the worker's `planProblems` can put it on the run.
+        // Written with the first batch that examined a record, once per worker.
+        list($inner7, $run7) = $fixture(['A', 'B', 'C', 'D'], 821);
+        $seen7 = new class($inner7) extends FaultyStore {
+            public $offered = [];
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                        &$heldOrdinals = null) {
+                $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount, $heldOrdinals);
+            }
+        };
+        $PP = ['rule' => 3, 'fields' => ['x'], 'why' => 'this rule looks the value up in another project, '
+              . 'but you do not have rights there, so the rule was NOT evaluated.'];
+        $w7 = new ScanWorker($seen7, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor([]), 'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 5,
+            'finalizer' => $fin(), 'planProblems' => [$PP, $PP]]);
+        $res7 = $w7->work(821, $run7);
+        $rows7 = array_values(array_filter($inner7->aggregates($run7), function ($a) {
+            return $a['kind'] === ScanPromotion::RULE_KINDS;
+        }));
+        check('rv10b1-2 worker: the plan\'s problem is recorded by the batches that examined records',
+            $res7['worked'] === 4 && count($rows7) === 1 && $rows7[0]['axis1'] === '3'
+            && ScanPromotion::tally($inner7->aggregates($run7))['ruleProblems'] === 1);
+        check('rv10b1-2 worker: once, with the first batch, and not offered again by the same worker',
+            $seen7->offered === [1, 0]);
+        // A batch that examined nothing writes nothing: every record of this
+        // one is gone from the project, so no rule was skipped for it.
+        list($inner8, $run8) = $fixture(['G1', 'G2'], 822);
+        $w8 = new ScanWorker($inner8, ['fence' => new Versions(),
+            'read' => function (array $ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+            'exists' => function (array $ids) { return array_fill_keys($ids, false); },
+            'evaluate' => $problemFor([]), 'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 1,
+            'finalizer' => $fin(), 'planProblems' => [$PP]]);
+        $res8 = $w8->work(822, $run8);
+        check('rv10b1-2 worker: a batch that examined no record writes no plan problem',
+            $res8['worked'] === 0
+            && ScanPromotion::tally($inner8->aggregates($run8))['ruleProblems'] === 0);
+
         // A RECORD THAT KILLS PHP. A worker killed by memory_limit or
         // max_execution_time inside the read or the evaluation runs nothing
         // after the fatal, so it counts no attempt and leaves its claims. The

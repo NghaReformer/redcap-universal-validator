@@ -624,6 +624,15 @@ namespace {
         public $crossLookups = [];
         /** @var array pid => true: the other project refuses the reader, by decision */
         public $refusedBy = [];
+        /**
+         * @var ?int[] what the reader's plan says crossRefused is; null is the
+         * module's own answer, the lookups' projects that refuse the reader
+         */
+        public $planRefused = null;
+        /** @var int how many contexts were built: the cron test asks for none */
+        public $contextsBuilt = 0;
+        /** @var int[] the part of crossRefused that rests on a failed read */
+        public $planUnread = [];
         /** @var ?string what the run's lease reads as, or null for no lease */
         public $lease = null;
         /** @var int how many reads of the change log's top fail, as a blip does (H11) */
@@ -647,8 +656,11 @@ namespace {
         }
 
         public function getUser() { return $this->user; }
+        /** @var int how many times crossLookupRefusals() was asked */
+        public $refusalAsks = 0;
         public function crossLookupRefusals($pid, array $lookups)
         {
+            $this->refusalAsks++;
             $out = [];
             foreach ($lookups as $l) {
                 if (isset($this->refusedBy[$l['pid']])) {
@@ -667,13 +679,28 @@ namespace {
             $seq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 1;
             $key = $this->sys['log-hmac-key'];
             $self = $this;
+            $this->contextsBuilt++;
+            // As buildScanPlan(): a lookup whose project refuses the reader is
+            // in crossRefused, and its rule stays in the rule list.
+            $refused = $this->planRefused;
+            if ($refused === null) {
+                $refused = [];
+                foreach ($this->crossLookups as $l) {
+                    if (isset($this->refusedBy[$l['pid']])) $refused[(int) $l['pid']] = (int) $l['pid'];
+                }
+                $refused = array_values($refused);
+            }
+            $plan = ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => $refused,
+                     'crossUnread' => $this->planUnread, 'crossLookups' => $this->crossLookups,
+                     'crossRecordLookups' => false];
+            // false: a plan that does not say (fails closed in ScanService).
+            if ($refused === false) unset($plan['crossRefused']);
             return ['ok' => true, 'why' => null,
                 'rules' => [['type' => 'required', 'fields' => ['a_val']]],
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
                 'verifyFingerprint' => $this->verifyFingerprint,
-                'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
-                           'crossLookups' => $this->crossLookups, 'crossRecordLookups' => false],
+                'plan' => $plan,
                 'read' => function (array $ids) use ($self) {
                     $d = [];
                     foreach ($ids as $id) {
@@ -2138,16 +2165,43 @@ namespace INSPIRE\UniversalValidator\Scan {
     $km = new \E2eModule($ks);
     $kl = ['pid' => 300, 'fields' => ['specimen_id']];
     $km->crossLookups = [$kl];
-    // The person who starts it is one project 300 refuses: the lookup is the
-    // rules', not the starter's, so it is recorded all the same.
+    // review rv10b1-2: a starter project 300 refuses is refused the start.
+    // Their plan skips the lookup and keeps the rule, so the run would have
+    // been evaluated without it on their passes and with it on others'.
     $km->refusedBy = [300 => true];
-    $k = $drive($km, $ks, 152);
+    $k0 = (new ScanService($km, $ks))->start(152);
+    check('rv10b1-2 E2E: a starter project 300 refuses is refused the start, in words that name it',
+        empty($k0['ok']) && $k0['run_id'] === null && $ks->run(152, 1) === null
+        && $k0['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                        . 'so you cannot start this scan');
+    // A starter it answers starts it, and the lookup is the rules', recorded
+    // for whoever reads the run later.
+    $km->refusedBy = [];
+    $kRefusedWork = null;
+    $k = $drive($km, $ks, 152, function ($svc, $runId) use ($km, $ks, &$kRefusedWork) {
+        // review rv5b-5 / rv10b1-2: before any pass, a reader 300 refuses
+        // asks to continue the run. Nothing is examined and nothing counted.
+        $km->refusedBy = [300 => true];
+        $kRefusedWork = (new ScanService($km, $ks))->work(152, $runId);
+        $kRefusedWork['_done'] = (int) $ks->run(152, $runId)['manifest_done'];
+        $km->refusedBy = [];
+    });
     check('E2E cross: no verb threw' . ($k['threw'] ? ' (' . $k['threw'] . ')' : ''), $k['threw'] === null);
     $kp = is_array($k['row']) ? json_decode($k['row']['policy_json'], true) : null;
-    check('E2E cross: the run keeps every lookup its rules make, whoever started it',
+    check('E2E cross: the run keeps every lookup its rules make',
         is_array($kp) && isset($kp['crossLookups']) && $kp['crossLookups'] === [$kl]);
     check('E2E cross: and they are not part of the fingerprint, so every pass matched it and the run finished',
         is_array($k['row']) && $k['row']['terminal'] === ScanOutcome::COMPLETE);
+    check('rv5b-5 E2E: a reader project 300 refuses is refused the work, final, and in words that name it',
+        is_array($kRefusedWork) && $kRefusedWork['ok'] === false && $kRefusedWork['final'] === true
+        && $kRefusedWork['why'] === 'this scan looks values up in project 300, which does not answer your '
+                                  . 'lookups, so you cannot continue this scan');
+    check('rv5b-5 E2E: and the refused work answer carries no counter and no status, and examined nothing',
+        is_array($kRefusedWork) && !array_intersect(['worked', 'requeued', 'blocked', 'findings', 'listed', 'status'],
+                                                    array_keys($kRefusedWork))
+        && $kRefusedWork['_done'] === 0);
+    $km->refusedBy = [300 => true];
+    $k['status'] = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
     check('E2E cross: a reader project 300 refuses is refused the run, for good',
         $k['status']['ok'] === false && $k['status']['final'] === true
         && strpos($k['status']['why'], 'project 300') !== false);
@@ -2159,6 +2213,109 @@ namespace INSPIRE\UniversalValidator\Scan {
     $kr = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
     check('E2E cross: removing the rule does not open the stored answers to a reader 300 refuses',
         $kr['ok'] === false && strpos($kr['why'], 'project 300') !== false);
+
+    // review rv5b-5: THE RUN'S OWN LOOKUPS, asked apart from the plan. The
+    // rule that looked in 300 is gone, so the reader's plan refuses nothing;
+    // the run still holds 300's answers, so status() refuses the reader, and
+    // the work is refused with it rather than handing over its counters.
+    $ls = new ArrayScanStore();
+    $lm = new \E2eModule($ls);
+    $lm->crossLookups = [$kl];
+    $lm->flagged = ['R002' => true];
+    $lrun = (int) (new ScanService($lm, $ls))->start(157)['run_id'];
+    $lm->crossLookups = [];
+    $lm->refusedBy = [300 => true];
+    $lw = (new ScanService($lm, $ls))->work(157, $lrun);
+    check('rv5b-5: a reader the run\'s stored lookup refuses is refused the work, though their plan refuses nothing',
+        $lrun > 0 && $lw['ok'] === false && $lw['final'] === true
+        && $lw['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                         . 'so you cannot continue this scan'
+        && !isset($lw['findings']) && !isset($lw['worked']) && (int) $ls->run(157, $lrun)['manifest_done'] === 0);
+    // One request asks the other project once: the work and the status it
+    // returns are the same reader in the same request.
+    $lm->refusedBy = [];
+    $lm->crossLookups = [$kl];
+    $asks = $lm->refusalAsks;
+    $lw = (new ScanService($lm, $ls))->work(157, $lrun);
+    check('rv5b-5: a reader it answers works the run, and the request asked the other project once',
+        $lw['ok'] === true && !empty($lw['status']['ok']) && $lm->refusalAsks === $asks + 1);
+
+    // review rv10b1-2: THE READER'S OWN PLAN, asked apart from the run's
+    // lookups. The run below stored none, so status() and the run-lookup half
+    // of the refusal let the reader through; a plan that says another project
+    // refuses them is a plan that skips a rule, and the work is refused.
+    $ps = new ArrayScanStore();
+    $pm = new \E2eModule($ps);
+    $prun = (int) (new ScanService($pm, $ps))->start(153)['run_id'];
+    $pm->planRefused = [300];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a reader whose plan another project refuses is refused the work, final, though the run stored no lookup',
+        $prun > 0 && $pw['ok'] === false && $pw['final'] === true
+        && $pw['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                         . 'so you cannot continue this scan'
+        && (int) $ps->run(153, $prun)['manifest_done'] === 0);
+    $pm->planRefused = [300, 400];
+    $pm->planUnread = [400];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: one refused by a decision and one by a failed read is not final, and names the decided one',
+        $pw['ok'] === false && $pw['final'] === false
+        && strpos($pw['why'], 'project 300, which does not answer') !== false && strpos($pw['why'], '400') === false);
+    $pm->planRefused = [400];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a refusal that rests only on a failed read says so, and says yet',
+        $pw['ok'] === false && $pw['final'] === false
+        && $pw['why'] === 'this scan looks values up in project 400, and whether it answers your lookups could '
+                         . 'not be read just now, so you cannot continue this scan yet');
+    $pm->planUnread = [];
+    $pm->planRefused = false;
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a plan that does not say which projects refuse the reader is refused, not final (fails closed)',
+        $pw['ok'] === false && $pw['final'] === false && strpos($pw['why'], 'could not be read') !== false);
+    $pm->planRefused = null;
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: the same reader with a plan that refuses nothing works the run', $pw['ok'] === true
+        && (int) $ps->run(153, $prun)['manifest_done'] > 0);
+    $pm->planRefused = false;
+    $p2 = (new ScanService($pm, new ArrayScanStore()))->start(154);
+    check('rv10b1-2: and a start on a plan that does not say is refused too',
+        empty($p2['ok']) && strpos((string) $p2['why'], 'so you cannot start this scan yet') !== false);
+    $pm->planRefused = null;
+
+    // review rv10b1-2: WHAT THIS REQUEST'S CONTEXT CANNOT EVALUATE IS WRITTEN
+    // WITH ITS WORK. The run starts on a plan with no problem; every pass after
+    // it evaluates with a context that has one. start() wrote nothing, so only
+    // the passes can, and a run that skipped a rule may not finish clean.
+    $qs = new ArrayScanStore();
+    $qm = new \E2eModule($qs);
+    $q = $drive($qm, $qs, 155, function ($svc, $runId) use ($qm) {
+        $qm->problems = [['rule' => 1, 'fields' => ['a_val'],
+                          'why' => 'this rule could not be evaluated by this request']];
+    });
+    check('rv10b1-2: a problem only the work passes met is recorded, and the run does not finish clean',
+        $q['threw'] === null && is_array($q['row']) && $q['row']['terminal'] === ScanOutcome::COMPLETE
+        && (int) $q['row']['rule_problem_count'] === 1 && (int) $q['row']['clean'] === 0);
+
+    // THE CRON PATH (review rv10b1-2). No cron in config.json does scan work:
+    // the two that exist reap abandoned runs and clear expired values, and the
+    // module's one work() call is the browser endpoint. A work request with no
+    // signed-in user - which is what a cron pass would be - is refused at the
+    // entitlement, before any plan is built, so it can skip no rule.
+    $cs2 = new ArrayScanStore();
+    $cm2 = new \E2eModule($cs2);
+    $crun = (int) (new ScanService($cm2, $cs2))->start(156)['run_id'];
+    $cm2->user = null;
+    $built = $cm2->contextsBuilt;
+    $cw = (new ScanService($cm2, $cs2))->work(156, $crun, 'cron');
+    check('rv10b1-2 cron: a work request with no signed-in user is refused before a plan is built, and examines nothing',
+        $crun > 0 && $cw['ok'] === false
+        && $cw['why'] === 'You need project design rights to run the validation scan.'
+        && $cm2->contextsBuilt === $built && (int) $cs2->run(156, $crun)['manifest_done'] === 0
+        && !array_intersect(['worked', 'findings', 'status'], array_keys($cw)));
+    $cron = json_decode(file_get_contents(__DIR__ . '/../config.json'), true);
+    $methods = array_map(function ($c) { return $c['method']; }, $cron['crons']);
+    sort($methods);
+    check('rv10b1-2 cron: the crons are the reap and the value expiry, and neither is a work pass',
+        $methods === ['uvScanExpireValuesCron', 'uvScanReapCron']);
 
     // -- a run with a finding ---------------------------------------------------
     $fs = new ArrayScanStore();
@@ -2811,7 +2968,9 @@ namespace INSPIRE\UniversalValidator\Scan {
 
     // A status that could not be read at all is no proof of the scope: the
     // answer to a request whose storage failed, for a group-scoped run, keeps
-    // no counter either, while the same answer for a whole-project run does.
+    // no counter either. Since review rv5b-5 neither does the same answer for
+    // a whole-project run: a status not given is not one the counters may
+    // stand beside.
     $disc = new \ReflectionMethod(ScanService::class, 'disclosed');
     $disc->setAccessible(true);
     $failed = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
@@ -2824,8 +2983,22 @@ namespace INSPIRE\UniversalValidator\Scan {
         ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $failed, $unread);
     check('H10: a group-scoped answer whose status could not be read withholds its counters',
         $dScoped['withheld'] === true && $dScoped['moved'] === false
-        && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage'
-        && $dWhole['worked'] === 0 && empty($dWhole['withheld']));
+        && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage');
+    check('rv5b-5: so does a whole-project answer whose status could not be read',
+        $dWhole['withheld'] === true && $dWhole['moved'] === false
+        && !array_intersect($counters, array_keys($dWhole)) && $dWhole['stop'] === 'storage');
+    // And one whose status was refused rather than unread, with counters that
+    // are not zero: the refusal is the reader's, so the counts are not theirs.
+    $busy = ['worked' => 10, 'findings' => 3] + $failed;
+    $busy['ok'] = true;
+    $busy['stop'] = null;
+    $dRefused = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $busy,
+        ['ok' => false, 'final' => true, 'why' => 'this scan looks values up in project 500, which does not '
+            . 'answer your lookups, so its results are not shown to you']);
+    check('rv5b-5: a whole-project answer whose status was refused keeps no counter, and says it moved',
+        $dRefused['withheld'] === true && $dRefused['moved'] === true
+        && !array_intersect($counters, array_keys($dRefused)));
 
     // review rv5b-3. A catch-up pass over a page of other groups' changes
     // counts nothing and still moved the run; the worker says so, and the
