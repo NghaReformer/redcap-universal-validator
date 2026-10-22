@@ -2448,12 +2448,23 @@ namespace INSPIRE\UniversalValidator\Scan {
         \Closure::bind($f, $s, ArrayScanStore::class)($rid);
     };
     list($fs, $frid, $fep) = $fenceRun();
+    // A page as long as asked for (3 of 3): the group may have more.
     $tdb = new TxEmitDb();
     $live = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
-        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 3);
     check('rv10a1-1: a page for a live run is one transaction, the hold first and then its two writes',
-        $live['emitted'] === 3 && $live['why'] === null
+        $live['emitted'] === 3 && $live['why'] === null && $live['published'] === false
         && $tdb->tx === ['begin', 'write', 'write', 'commit']);
+    // W10BF-5: a page shorter than asked for (3 of 10) is the group's last,
+    // and publishes it behind the same hold, in the same transaction: the
+    // page, the close of earlier epochs' rows, the activation and the
+    // group's pointer with its cursor.
+    $tdb = new TxEmitDb();
+    $lastPage = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('W10BF-5: the last page of a group publishes it in its own held transaction',
+        $lastPage['emitted'] === 3 && $lastPage['published'] === true && $lastPage['why'] === null
+        && $tdb->tx === ['begin', 'write', 'write', 'write', 'write', 'commit']);
     $bumpEpoch($fs, $frid);
     $tdb = new TxEmitDb();
     $late = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))

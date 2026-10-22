@@ -1186,3 +1186,87 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query('DELETE FROM ' . Schema::table($t));
     }
 }
+
+// -- what the fence costs a group of two (W10BF-5) -----------------------------
+//
+// Each emit page and each publish is one transaction that first holds the run
+// row (rv10a1-1). A group of two was emitted in one page and published by the
+// step after it, which read an empty page and took a second transaction and a
+// second hold. The last page now publishes in its own held transaction: the
+// same hold, the same atomicity, one transaction a group. Counted on 20
+// groups of two through a fenced finalizer, the store over the same recorded
+// connection, transactions included.
+{
+    $KEY = 'w10bf5-key';
+    $FPID = 974;
+    $fRec = new class($dbA) extends UvRecordingDb {
+        public $begins = 0;
+        public $commits = 0;
+        public function begin()  { $this->begins++; parent::begin(); }
+        public function commit() { $this->commits++; parent::commit(); }
+    };
+    $fStore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($fRec);
+    $fRun = $fStore->startRun($FPID, array('created_by' => 'alice', 'fence_open' => '10'));
+    $fRid = (int) $fRun['run']['run_id'];
+    $fStore->writeManifest($fRid, array(array('id_bin' => 'P1', 'hash' => hash('sha256', 'P1', true), 'dag' => null)));
+    $fRow = $fStore->run($FPID, $fRid);
+    $fEp = (int) $fRow['lease_epoch'];
+    foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::SCANNING,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE) as $to) {
+        $fStore->advancePhase($fRid, $fEp, $to);
+    }
+    $fGen = (int) $fRow['generation_id'];
+    $GROUPS = 20;
+    $fRows = array();
+    for ($i = 1; $i <= $GROUPS; $i++) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $FPID, 'V' . $i, $KEY));
+        foreach (array('a', 'b') as $side) {
+            $rec = 'P' . $i . $side;
+            $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $FPID, $rec, $KEY));
+            $fRows[] = '(' . $FPID . ', ' . $fGen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g
+                     . "'), 'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)";
+        }
+    }
+    $A->query('INSERT INTO ' . Schema::table('unique_candidate') . '
+        (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+         record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+        VALUES ' . implode(',', $fRows));
+    $fFin = (new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($fRec, array('pid' => $FPID, 'hmacKey' => $KEY,
+        'store' => $fStore,
+        'read' => function ($locs) {
+            $out = array();
+            foreach ($locs as $l) {
+                $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array(substr($l['record'], 0, -1));
+            }
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        })))->forRun((int) $fRow['run_seq'], $fRid, $fEp);
+    $fRec->log = array();
+    $fRec->begins = 0;
+    $fRec->commits = 0;
+    $fSteps = 0;
+    $fPublished = 0;
+    for ($i = 0; $i < 200; $i++) {
+        $s = $fFin->step($fGen, 10);
+        $fSteps++;
+        $fPublished += (int) $s['published'];
+        if ($s['done'] || $s['why'] !== null) break;
+    }
+    $fHolds = count($fRec->matching('select', array('SELECT lease_epoch, terminal, phase FROM', 'FOR UPDATE')));
+    $fPages = count($fRec->matching('select', array('FROM ' . Schema::table('unique_candidate'), 'AND lookup = 0')));
+    $fTotal = count($fRec->log) + $fRec->begins + $fRec->commits;
+    $fActive = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1', array($FPID, $fGen));
+    echo '  fence, ' . $GROUPS . ' groups of two: ' . $fTotal . ' statements (' . round($fTotal / $GROUPS, 2)
+        . ' a group), ' . $fHolds . ' holds, ' . $fRec->begins . ' transactions, ' . $fPages . ' emit pages, '
+        . $fSteps . " steps\n";
+    check('W10BF-5: every group of two is published, its 40 duplicates active',
+        $s['done'] === true && $fPublished === $GROUPS && (int) $fActive[0][0] === 2 * $GROUPS);
+    check('W10BF-5: one held transaction a group, its last emit page publishing it',
+        $fHolds === $GROUPS && $fRec->begins === $GROUPS && $fRec->commits === $GROUPS);
+    check('W10BF-5: and one emit page read a group, none read empty to learn it was done',
+        $fPages === $GROUPS);
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}

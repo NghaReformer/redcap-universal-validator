@@ -845,9 +845,23 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // (held(), review rv10a1-1). A refusal writes neither and reports
         // nothing read: the run has ended or been taken, so the same refusal
         // meets the next step and the worker stops on the why.
+        //
+        // THE LAST PAGE PUBLISHES THE GROUP IN THE SAME TRANSACTION (review
+        // W10BF-5). A page shorter than asked for is the group's last: no
+        // candidate is added while the duplicate check runs (catch-up is
+        // over), and a restart or a drop happens only in verify(), before a
+        // group emits. The group was published by the step after it, which
+        // read an empty page and took a second transaction and a second hold
+        // of the run; a group of two cost two of each. Now the page, the
+        // close of earlier epochs' rows, the activation and the group's
+        // pointer commit together behind the one hold: the same fence, and a
+        // group that becomes visible in the transaction that wrote it. A page
+        // exactly as long as asked for still leaves the publish to the next
+        // step, which reads the empty page as before.
         $db = $this->db;
         $pid = $this->pid;
-        $wrote = $this->held(function () use ($db, $pid, $marks, $flat, $cursor, $g) {
+        $last = count($rows) < $page;
+        $wrote = $this->held(function () use ($db, $pid, $marks, $flat, $cursor, $g, $last, $generationId) {
             $db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
                 (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
                  record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
@@ -855,6 +869,10 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                  dag_key, group_hmac, stage_epoch)
                 VALUES ' . implode(',', $marks) . '
                 ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
+            if ($last) {
+                $this->publishRows($generationId, $g, $cursor);
+                return;
+            }
             $db->execNoCount('UPDATE ' . Schema::table('unique_group')
                 . ' SET emit_cursor = ?
                    WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
@@ -863,7 +881,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         if ($wrote !== true) {
             return ['emitted' => 0, 'published' => false, 'read' => 0, 'why' => $wrote];
         }
-        return ['emitted' => count($marks), 'published' => false, 'read' => $read, 'why' => null];
+        return ['emitted' => count($marks), 'published' => $last, 'read' => $read, 'why' => null];
     }
 
     /**
@@ -889,25 +907,36 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // The three statements are one transaction held on the run (held(),
         // review rv10a1-1), so a group is published whole into a run that is
         // still running, or not at all.
-        $t = Schema::table('finding');
-        $db = $this->db;
-        $pid = $this->pid;
-        $seq = $this->seq;
-        return $this->held(function () use ($db, $t, $pid, $seq, $generationId, $g) {
-            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
-                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
-                  AND stage_epoch <> ?',
-                [$seq, $pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
-                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
-                  AND active_slot IS NULL',
-                [$pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-            $db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-                SET phase = ?, published_epoch = ?, staged_epoch = ?
-                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
-                [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
-                 $pid, $g['group_id'], $g['candidate_epoch']]);
+        return $this->held(function () use ($generationId, $g) {
+            $this->publishRows($generationId, $g, null);
         });
+    }
+
+    /**
+     * publish()'s three statements, for a caller already inside held():
+     * publish() itself, and the last emit page (review W10BF-5), which also
+     * writes its cursor in the group's UPDATE.
+     */
+    private function publishRows($generationId, array $g, $cursor)
+    {
+        $t = Schema::table('finding');
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
+              AND stage_epoch <> ?',
+            [$this->seq, $this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
+            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
+              AND active_slot IS NULL',
+            [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $set = 'phase = ?, published_epoch = ?, staged_epoch = ?';
+        $args = [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch']];
+        if ($cursor !== null) {
+            $set .= ', emit_cursor = ?';
+            $args[] = $cursor;
+        }
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . ' SET ' . $set . '
+            WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+            array_merge($args, [$this->pid, $g['group_id'], $g['candidate_epoch']]));
     }
 
     /** The group could not be decided. Terminal, and it blocks the run's coverage. */
