@@ -725,8 +725,17 @@ namespace {
                 if (strpos($sql, 'log_event_id > ?') !== false) return [];
                 if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [['1']];
                 if (strpos($s, 'SELECT MAX(log_event_id)') === 0) {
-                    // The fence's own read, not the capability probe's MAX+COUNT.
-                    if ($this->logFails > 0 && strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) {
+                    // The fence's own read, not the capability probe's. Since
+                    // W8-N11 the two send the same statement, so the caller
+                    // tells them apart.
+                    $probe = false;
+                    foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 12) as $f) {
+                        if (isset($f['class']) && $f['class'] === 'INSPIRE\\UniversalValidator\\ScanCapabilities') {
+                            $probe = true;
+                            break;
+                        }
+                    }
+                    if ($this->logFails > 0 && !$probe) {
                         $this->logFails--;
                         throw new \RuntimeException('MySQL server has gone away', 2006);
                     }
