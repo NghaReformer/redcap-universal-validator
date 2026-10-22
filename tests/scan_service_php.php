@@ -4210,6 +4210,47 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $wvPage($m1, $s1, 201, $g31, 31)['runScope'] === $p31['runScope']
         && $pAll['runScope'] === ['kind' => 'project', 'group' => null, 'label' => 'whole project']);
 
+    /* rv11a1-3  A RUN THAT NEVER PROVED ITS GROUP TELLS THE PAGE NO MORE
+     * THAN ITS STATUS DOES. The reviewer's repro: a detail limit of 2, one
+     * budgeted request, then Stop; the counts promotion would have kept are
+     * planted on the row. status() withheld detail, ruleProblems and
+     * notExamined; scan-findings handed out all three. */
+    list($s3, $m3) = $wv(['R06', 'R07', 'R08', 'R09', 'R10']);
+    $m3->proj['scan-max-detail-findings'] = '2';
+    $m3->user->rights['group_id'] = 31;
+    $w3 = (int) (new ScanService($m3, $s3))->start(203)['run_id'];
+    $m3->readSleep = 3.2;
+    (new ScanService($m3, $s3))->work(203, $w3);
+    (new ScanService($m3, $s3))->cancel(203, $w3);
+    \Closure::bind(function () use ($w3) {
+        $this->runs[$w3]['rule_problem_count'] = 2;
+        $this->runs[$w3]['not_examined'] = 3;
+    }, $s3, ArrayScanStore::class)();
+    $row3 = $s3->run(203, $w3);
+    $st3 = (new ScanService($m3, $s3))->status(203, $w3);
+    $pg3 = $wvPage($m3, $s3, 203, $w3, 31);
+    check('rv11a1-3: the fixture is a stopped group run that kept only part of its findings and never proved its group',
+        $row3['terminal'] === ScanOutcome::CANCELLED && $row3['detail'] === ScanOutcome::DETAIL_TRUNCATED
+        && !ScanAuthorization::scopeProved($row3) && $st3['withheld'] === true
+        && !array_key_exists('detail', $st3) && !array_key_exists('ruleProblems', $st3));
+    check('rv11a1-3: its findings answer is withheld and carries neither count nor its detail',
+        $pg3['ok'] === true && $pg3['withheld'] === true && $pg3['rows'] === [] && $pg3['facets'] === null
+        && !array_key_exists('ruleProblems', $pg3) && !array_key_exists('notExamined', $pg3)
+        && !array_key_exists('detail', $pg3['report']) && $pg3['clean'] === $st3['clean']);
+    check('rv11a1-3: and no sentence or suffix in it says that findings were not kept',
+        strpos($pg3['report']['coverageSentence'], $PV::DETAIL_TRUNCATED) === false
+        && strpos($pg3['marks']['row'], $PV::DETAIL_TRUNCATED) === false
+        && strpos($pg3['report']['suffix'], 'TRUNCATED') === false
+        && strpos($pg3['marks']['suffix'], 'TRUNCATED') === false
+        && strpos(json_encode($pg3), 'truncated') === false);
+    check('rv11a1-3: what it does carry is the run\'s verdict and marks, as its status keeps them',
+        $pg3['marks']['incomplete'] === true && $pg3['marks']['suffix'] === '_INCOMPLETE_CANCELLED'
+        && $pg3['report']['coverage'] === $st3['coverage'] && $pg3['runScope']['kind'] === 'group'
+        && $pg3['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+    $m3->user->rights['group_id'] = null;
+    check('rv11a1-3 (control): the same run read by an unconfined reader is withheld the same way',
+        $wvPage($m3, $s3, 203, $w3, null)['report'] === $pg3['report']);
+
     \REDCap::$groupNames = $keptNames;
 }
 

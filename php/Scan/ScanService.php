@@ -1140,14 +1140,11 @@ final class ScanService
         $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
                 'runScope' => self::runScope($run),
                 'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
-                'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($run)]
+                'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($r['shown'])]
              + self::decisionOf($run);
         // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
         // status shows no counts: a row is a count of one. No facets either.
-        if ($r['withheld'] !== null) {
-            return array_merge($out, ['withheld' => true, 'withheldWhy' => $r['withheld'],
-                                      'rows' => [], 'next' => null, 'facets' => null]);
-        }
+        if ($r['withheld'] !== null) return self::withheldAnswer($out, $r['withheld']);
         $through = null;
         $rows = $this->store()->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
                                          $after, $limit, $through);
@@ -1155,6 +1152,32 @@ final class ScanService
         $out['next'] = $through;
         $out['facets'] = $this->facetsOf($r['aggregates'], $r['dims'], $r['scope']);
         return $out;
+    }
+
+    /**
+     * The findings answer of a run that has not proved its group: what
+     * ScanAuthorization::preFenceStatus() keeps of its status, and no more
+     * (review rv11a1-3).
+     *
+     * A KEEP-LIST, for preFenceStatus()'s reason. status() withheld `detail`,
+     * `ruleProblems` and `notExamined` (rv5b-6: whether the run kept every
+     * finding is a statement about how many it made), and this answer, for the
+     * same reader and the same run, handed out all three - in `report.detail`,
+     * in the coverage sentence's "Some findings were not kept", in a
+     * `_TRUNCATED` suffix and as two counts. reportOf() builds the report and
+     * the marks of such a run with its detail unsaid, and this drops the rest.
+     */
+    private static function withheldAnswer(array $out, $why)
+    {
+        $keep = ['ok', 'run_id', 'runScope', 'columns', 'after', 'limit', 'filter', 'report', 'marks', 'clean'];
+        $reportKeeps = ['schema', 'columns', 'legend', 'coverage', 'coverageSentence', 'mayCertify', 'suffix',
+                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows'];
+        $kept = [];
+        foreach ($keep as $k) if (array_key_exists($k, $out)) $kept[$k] = $out[$k];
+        $report = [];
+        foreach ($reportKeeps as $k) if (array_key_exists($k, $out['report'])) $report[$k] = $out['report'][$k];
+        $kept['report'] = $report;
+        return $kept + ['withheld' => true, 'withheldWhy' => $why, 'rows' => [], 'next' => null, 'facets' => null];
     }
 
     /**
@@ -1175,7 +1198,7 @@ final class ScanService
      * reader's export rights floored by the project's value policy now, and
      * the record names come from the module's own posture (W7-R2).
      *
-     * @return array{ok:bool, answer?:array, run?:array, report?:ScanReport,
+     * @return array{ok:bool, answer?:array, run?:array, shown?:array, report?:ScanReport,
      *               dims?:ScanDimensions, scope?:array, withheld?:?string,
      *               columns?:array, expected?:?int, aggregates?:array}
      */
@@ -1203,8 +1226,14 @@ final class ScanService
         // group has no name was refused there.
         $scope = ['dag' => $reader['dag'] === null ? null : (string) $reader['dagName']];
         $withheld = null;
+        // `shown`: the run as its report may describe it. A run that has not
+        // proved its group does not say whether it kept every finding
+        // (review rv11a1-3, see withheldAnswer()), so its detail is unsaid in
+        // the coverage sentence, the suffix and the terminal row.
+        $shown = $run;
         if (!ScanAuthorization::scopeProved($run)) {
             $withheld = ScanAuthorization::preFenceStatus(['terminal' => $run['terminal']])['withheldWhy'];
+            $shown['detail'] = null;
         }
 
         $ctx = $ent['ctx'];
@@ -1224,7 +1253,7 @@ final class ScanService
             'readerCeiling' => ScanPolicy::floor($reader['valueCeiling'], $ent['policy']['valueMode']),
             'identifiers'   => $ids,
         ] + $posture);
-        $report = new ScanReport($mapper, $dims, $run);
+        $report = new ScanReport($mapper, $dims, $shown);
         $columns = [];
         foreach (ScanColumns::all($dims) as $c) $columns[] = ['key' => $c['key'], 'label' => $c['label']];
 
@@ -1234,8 +1263,8 @@ final class ScanService
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
         $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
             ? self::expectedRows($aggregates, $scope) : null;
-        return ['ok' => true, 'run' => $run, 'report' => $report, 'dims' => $dims, 'scope' => $scope,
-                'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
+        return ['ok' => true, 'run' => $run, 'shown' => $shown, 'report' => $report, 'dims' => $dims,
+                'scope' => $scope, 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
                 'aggregates' => $aggregates];
     }
 
