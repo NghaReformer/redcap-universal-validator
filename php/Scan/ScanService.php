@@ -1188,7 +1188,7 @@ final class ScanService
         // is then unknown rather than zero.
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
         $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
-            ? ScanPromotion::tally($aggregates)['stored'] : null;
+            ? self::expectedRows($aggregates, $scope) : null;
         return ['ok' => true, 'run' => $run, 'report' => $report, 'dims' => $dims, 'scope' => $scope,
                 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
                 'aggregates' => $aggregates];
@@ -1285,6 +1285,158 @@ final class ScanService
                 : null,
             'suffix'     => $suffix,
         ];
+    }
+
+    /**
+     * How many findings THIS reader's report holds, from the run's summary:
+     * every stored one for an unconfined reader, and for a group reader the
+     * count the summary filed under their group, because their pages hold out
+     * a row stored under another group's name. A count the file can be
+     * checked against has to be the count of the file.
+     */
+    private static function expectedRows(array $aggregates, array $scope)
+    {
+        if ($scope['dag'] === null) return ScanPromotion::tally($aggregates)['stored'];
+        $n = 0;
+        foreach ($aggregates as $a) {
+            if (isset($a['kind']) && $a['kind'] === RollupBuilder::K_DAG
+                    && (string) $a['axis1'] === $scope['dag']) {
+                $n += max(0, (int) $a['cnt']);
+            }
+        }
+        return $n;
+    }
+
+    // -- the export (B5) -------------------------------------------------------
+
+    /** Findings one export page reads: the most a store page holds. */
+    const EXPORT_PAGE = 100;
+
+    /** README: a user REDCap bars from its data export tool reads the scan on screen only. */
+    const NO_EXPORT = 'You need data export rights in this project to download the scan report.';
+
+    /** The line a file that stopped early ends on, in place of the trailer. */
+    const ROWS_LOST = 'ROWS WERE LOST: the report could not be read to the end, so this file is not the whole report';
+
+    /**
+     * The CSV of a finished run's findings for THIS reader, or why not.
+     *
+     * THE PAGE'S GATE (reportOf()), with one question more, asked before the
+     * run row so that its answer is the same for a run and for no run (L8):
+     * may this reader export at all. A run that has not proved its group is
+     * refused rather than handed over as a file with no rows, which would
+     * read as the report of a clean run.
+     *
+     * Nothing is read until the caller runs the stream, and the stream never
+     * holds more than one page: the caller sends the headers in between.
+     *
+     * @return array a refusal ['ok' => false, 'http' => 403|503, 'why' => string],
+     *               or ['ok' => true, 'filename' => string,
+     *                   'stream' => callable(callable $write, callable $flush): array]
+     *               where the stream answers streamFindings()'s array
+     */
+    public function exportOpen($pid, $runId)
+    {
+        try {
+            $no = $this->readerRefusal($pid);
+            if ($no !== null) return self::exportRefusal($no);
+            if (empty($this->readerScope($pid)['mayExport'])) {
+                return self::exportRefusal(['why' => self::NO_EXPORT, 'final' => true]);
+            }
+            $r = $this->reportOf($pid, $runId);
+            if (empty($r['ok'])) return self::exportRefusal($r['answer']);
+            if ($r['withheld'] !== null) return self::exportRefusal(['why' => $r['withheld'], 'final' => true]);
+        } catch (ScanStoreUnavailable $e) {
+            return self::exportRefusal(['why' => $this->storageFailed($pid, $runId, $e), 'final' => false]);
+        }
+        $run = $r['run'];
+        $facts = $r['report']->runFacts($r['expected']);
+        $reader = $this->readerScope($pid);
+        $head = [
+            ['schema', ScanReport::SCHEMA],
+            ['project', (string) (int) $pid],
+            ['run', (string) (int) $run['run_id']],
+            ['generated_at', gmdate('Y-m-d H:i:s') . ' UTC'],
+            ['scope', $r['scope']['dag'] === null ? 'whole project'
+                : 'Data Access Group ' . (string) $reader['dagName']],
+            ['coverage', $facts['coverageSentence']],
+            ['certified', $facts['mayCertify'] ? 'yes' : 'no'],
+            ['values', $facts['valuesState']],
+            ['labels', $facts['labelsDegraded'] ? $facts['degradedSummary']
+                : 'as the project was when this scan was planned'],
+            ['columns', $facts['legend']],
+            ['expected_rows', $facts['expectedRows'] === null ? 'unknown' : (string) $facts['expectedRows']],
+        ];
+        $filename = sprintf('uv-scan-%d-run%d-%s.csv', (int) $pid, (int) $run['run_id'], gmdate('Ymd'));
+        $store = $this->store();
+        return ['ok' => true, 'filename' => $filename,
+                'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head) {
+                    $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
+                                                $r['scope'], $head, $write, $flush);
+                    if ($out['error'] instanceof ScanStoreUnavailable) {
+                        $this->storageFailed($pid, $runId, $out['error']);
+                    }
+                    return $out;
+                }];
+    }
+
+    /** A refusal as the export page sends it: 403 when it is the answer, 503 when asking again may help. */
+    private static function exportRefusal(array $no)
+    {
+        return ['ok' => false, 'http' => !empty($no['final']) ? 403 : 503, 'why' => (string) $no['why']];
+    }
+
+    /**
+     * Write a stored run's report as CSV, a keyset page at a time.
+     *
+     * NEVER THE WHOLE REPORT IN MEMORY. One store page is read, written line by
+     * line and flushed before the next is read, so what a request holds does
+     * not grow with the run: a 50,000-finding export holds 100 rows at a time.
+     *
+     * THE FILE SAYS WHETHER IT IS WHOLE. A UTF-8 byte-order mark (spreadsheets
+     * guess the encoding without one), the `# ` lines of $head, the header,
+     * the rows, and last a `# export_complete=1` trailer with the row count.
+     * A download cut off anywhere lacks the trailer; a store that fails
+     * partway writes ROWS_LOST where the trailer would be.
+     *
+     * @param array $head [[key, value], ...] the lines about the report
+     * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
+     */
+    public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
+                                          array $scope, array $head, callable $write, callable $flush)
+    {
+        $write("\xEF\xBB\xBF");
+        foreach ($head as $h) $write($report->csvMetaLine($h[0], $h[1]) . "\r\n");
+        $write($report->csvHeaderLine() . "\r\n");
+        $flush();
+        $rows = 0;
+        $pages = 0;
+        $after = 0;
+        try {
+            do {
+                $through = null;
+                $page = $store->findings($pid, $generationId, $scope, [], $after, self::EXPORT_PAGE, $through);
+                foreach ($page as $stored) {
+                    $write($report->csvLine($stored) . "\r\n");
+                    $rows++;
+                }
+                $page = null;
+                $pages++;
+                $flush();
+                // A cursor that does not move would write the same page for ever.
+                if ($through !== null && (int) $through <= (int) $after) {
+                    throw new \RuntimeException('the findings cursor did not move');
+                }
+                $after = $through;
+            } while ($after !== null);
+        } catch (\Throwable $e) {
+            $write($report->csvMetaLine(self::ROWS_LOST, 'rows=' . $rows) . "\r\n");
+            $flush();
+            return ['ok' => false, 'rows' => $rows, 'pages' => $pages, 'error' => $e];
+        }
+        $write($report->csvMetaLine('export_complete=1', 'rows=' . $rows) . "\r\n");
+        $flush();
+        return ['ok' => true, 'rows' => $rows, 'pages' => $pages, 'error' => null];
     }
 
     /**

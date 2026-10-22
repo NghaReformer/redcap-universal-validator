@@ -31,6 +31,7 @@ require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../../../php/Scan/ArrayScanStore.php';
 // findings() zips its rows with FindingRowMapper::INPUT_KEYS (B5-N1).
 require_once __DIR__ . '/../../../php/Scan/FindingRowMapper.php';
+require_once __DIR__ . '/../../../php/Scan/ReasonCode.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
 require_once __DIR__ . '/../../../php/Scan/SourceFence.php';

@@ -210,6 +210,50 @@ foreach ([['no filter', []], ['a filter naming the other group', ['dag_key' => '
 $north = $walk($PID, $mine['gen'], ['dag' => 'north'], []);
 check('report group: and every north row', count($north['rows']) === $expect($mine['findings'], ['dag_key' => 'north']));
 
+// -- THE CSV, STREAMED OVER THE REAL STORE --------------------------------------
+//
+// ScanService::streamFindings() is what pages/export.php runs. Over this
+// server's store it must hold every row of this project in scope, none of the
+// neighbour's (whose ids sit below this project's, so every page reads on from
+// inside the neighbour's range), and for a group reader none of another group.
+$csvOf = function (array $scope) use ($dbA, $PID, $mine) {
+    $store = new SqlScanStore($dbA);
+    $d = new \INSPIRE\UniversalValidator\ScanDimensions();
+    $d->hasDags = true;
+    $d->singleEventProved = true;
+    $report = new \INSPIRE\UniversalValidator\Scan\ScanReport(new FindingRowMapper([
+        'pid' => $PID, 'now' => gmdate('Y-m-d H:i:s'), 'valuesState' => 'none', 'readerCeiling' => 'raw',
+        'identifiers' => [], 'recordIds' => FindingRowMapper::IDS_RAW, 'recordIdField' => 'record_id']),
+        $d, $store->run($PID, $mine['run']));
+    $text = '';
+    $flushes = 0;
+    $out = \INSPIRE\UniversalValidator\Scan\ScanService::streamFindings($store, $report, $PID, $mine['gen'], $scope,
+        [['schema', 'uv-scan-report/1']], function ($s) use (&$text) { $text .= $s; },
+        function () use (&$flushes) { $flushes++; });
+    $lines = explode("\r\n", rtrim(substr($text, 3), "\r\n"));
+    $at = array_search('dag', str_getcsv($lines[1]), true);
+    $groups = [];
+    foreach (array_slice($lines, 2, -1) as $l) {
+        $c = str_getcsv($l);
+        $groups[$c[$at]] = isset($groups[$c[$at]]) ? $groups[$c[$at]] + 1 : 1;
+    }
+    return ['out' => $out, 'text' => $text, 'groups' => $groups, 'flushes' => $flushes, 'last' => end($lines)];
+};
+$whole = $csvOf(['dag' => null]);
+check('report csv: the file holds every one of this project\'s 1200 findings and ends on the trailer',
+    $whole['out']['ok'] === true && $whole['out']['rows'] === 1200
+    && strpos($whole['last'], '"# export_complete=1","rows=1200"') === 0);
+check('report csv: none of the neighbour\'s records is in it', strpos($whole['text'], '"N-') === false
+    && substr_count($whole['text'], '"M-') === 1200);
+check('report csv: twelve keyset pages, a flush after each', $whole['out']['pages'] === 12
+    && $whole['flushes'] === 12 + 2);
+$northCsv = $csvOf(['dag' => 'north']);
+check('report csv group: a north reader\'s file holds north\'s rows and no other group\'s',
+    array_keys($northCsv['groups']) === ['north']
+    && $northCsv['out']['rows'] === $expect($mine['findings'], ['dag_key' => 'north'])
+    && strpos($northCsv['text'], '"N-') === false);
+check('report csv group (control): the whole file holds three groups', count($whole['groups']) === 3);
+
 // -- THE LABEL SNAPSHOT, READ BY ITS KEY (M5) -----------------------------------
 //
 // The neighbour stores a larger snapshot under the same generation number. A page

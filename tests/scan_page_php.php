@@ -282,7 +282,8 @@ namespace INSPIRE\UniversalValidator {
      */
     $GLOBALS['uv_headers'] = [];
     function header($h, $replace = true, $code = 0) {
-        $GLOBALS['uv_headers'][] = ['h' => $h, 'buffered' => ob_get_length(), 'level' => ob_get_level()];
+        $GLOBALS['uv_headers'][] = ['h' => $h, 'buffered' => ob_get_length(), 'level' => ob_get_level(),
+                                    'code' => $code];
     }
     function headers_sent(&$file = null, &$line = null) { return false; }
 }
@@ -532,8 +533,10 @@ namespace {
             $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '', 'fa_complete' => '0']]];
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
         } elseif ($caseArg === 'export') {
-            // TASK 1. pages/export.php must refuse without reading anything. It
-            // runs in a child because it sets headers and its own status code.
+            // TASK 1, then B5. pages/export.php streams a STORED run and reads no
+            // record; a request that names no run is refused before anything is
+            // read. It runs in a child because it sets headers and its own
+            // status code.
             $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             $m = new \INSPIRE\UniversalValidator\UniversalValidator();
             $m->projectIdReturn = PID;
@@ -834,14 +837,19 @@ namespace {
         check('TASK1: and reads NO record - it used to run a whole scan of its own',
             $reads === 0);
         $names = [];
-        foreach ((array) $hdr as $h) $names[] = $h['h'];
-        check('TASK1: it answers 503, not 403 - unavailable is not unauthorised',
-            (bool) preg_grep('~^Content-Type: text/plain~', $names));
-        check('TASK1: it is never offered as a download',
+        $plain = null;
+        foreach ((array) $hdr as $h) {
+            $names[] = $h['h'];
+            if (strpos($h['h'], 'Content-Type: text/plain') === 0) $plain = $h;
+        }
+        check('B5: a request that names no run is refused as plain text with 403, as no run',
+            $plain !== null && $plain['code'] === 403
+            && strpos((string) $out, \INSPIRE\UniversalValidator\Scan\ScanService::NO_RUN) !== false);
+        check('TASK1: a refusal is never offered as a download',
             !preg_grep('~^Content-Disposition~', $names));
-        check('TASK1: and says plainly that no report was produced',
-            strpos((string) $out, 'EXPORT UNAVAILABLE') !== false
-            && strpos((string) $out, 'no report was produced') !== false);
+        check('B5: and says plainly that no file was produced',
+            strpos((string) $out, 'EXPORT REFUSED') !== false
+            && strpos((string) $out, 'No file was produced') !== false);
         check('TASK1: it emits no CSV header row of its own',
             strpos((string) $out, CSV_HEADER) === false);
     }

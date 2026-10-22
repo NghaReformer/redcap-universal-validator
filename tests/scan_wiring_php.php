@@ -106,9 +106,6 @@ namespace {
         //    findings() filters on generation_id alone and generation_id was
         //    the literal 1 for every run of every project until wave 4.
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
-        'ScanReport::csvHeaderLine'              => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's

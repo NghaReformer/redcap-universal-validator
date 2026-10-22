@@ -3785,8 +3785,78 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B5: and its marks say it is incomplete, three ways',
         $held['marks']['incomplete'] === true && $held['marks']['banner'] !== null && $held['marks']['row'] !== null
         && strpos($held['marks']['suffix'], '_INCOMPLETE') === 0);
-    check('B5 (control): a certified run carries no incomplete mark',
+    check('B5 (control): a run that finished complete carries no incomplete mark, and is named not certified',
         $whole['marks']['incomplete'] === false && $whole['marks']['banner'] === null && $whole['marks']['suffix'] === '_NOT-CERTIFIED');
+
+    // THE EXPORT: the same gate, with one question more before the run row.
+    $csv = function ($rid, $group = null, $pid = 186, $store = null) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = $group;
+        $x = (new ScanService($fm, $store === null ? $fs : $store))->exportOpen($pid, $rid);
+        if (empty($x['ok'])) return $x;
+        $buf = '';
+        $flushes = 0;
+        $x['result'] = $x['stream'](function ($s) use (&$buf) { $buf .= $s; },
+                                    function () use (&$flushes) { $flushes++; });
+        $x['text'] = $buf;
+        $x['flushes'] = $flushes;
+        unset($x['stream']);
+        return $x;
+    };
+    $wholeCsv = $csv($fAll);
+    check('B5 export: a whole-project reader downloads every finding of the run, ending on the trailer',
+        !empty($wholeCsv['ok']) && $wholeCsv['result']['rows'] === 10 && $wholeCsv['result']['ok'] === true
+        && strpos($wholeCsv['text'], '"# export_complete=1","rows=10"') !== false
+        && strpos($wholeCsv['text'], '"# expected_rows","10"') !== false
+        && strpos($wholeCsv['text'], '"# scope","whole project"') !== false
+        && strpos($wholeCsv['text'], '"# run","' . $fAll . '"') !== false);
+    check('B5 export: the file is named for the project, the run and the day',
+        preg_match('/^uv-scan-186-run' . $fAll . '-\d{8}\.csv$/', $wholeCsv['filename']) === 1);
+    $mineCsv = $csv($f31, 31);
+    check('B5 export group: a group reader\'s file holds their group\'s findings and not the row filed under another group',
+        !empty($mineCsv['ok']) && $mineCsv['result']['rows'] === 4 && strpos($mineCsv['text'], '"R06"') === false
+        && strpos($mineCsv['text'], '"R07"') !== false);
+    check('B5 export group: and the count it promises is the count it holds',
+        strpos($mineCsv['text'], '"# expected_rows","4"') !== false
+        && strpos($mineCsv['text'], '"# scope","Data Access Group site_b"') !== false);
+    check('B5 group: the findings page promises a group reader the same count',
+        $read($f31, [], 31)['report']['expectedRows'] === 4 && $read($f31)['report']['expectedRows'] === 5);
+    $noneX = $csv(999, 31);
+    check('B5 export group: a whole-project run, another group\'s run and no run are refused alike, as no run',
+        $noneX === ['ok' => false, 'http' => 403, 'why' => ScanService::NO_RUN]
+        && $csv($fAll, 31) === $noneX && $csv($f7, 31) === $noneX);
+    check('B5 export: another project\'s run is no run', $csv($fAll, null, 187) === $noneX);
+    $fm->user->rights['data_export_tool'] = '0';
+    $noExport = $csv(999);
+    check('B5 export L8: a reader without export rights is told the same about a run and about no run',
+        $noExport === ['ok' => false, 'http' => 403, 'why' => ScanService::NO_EXPORT] && $csv($fAll) === $noExport);
+    check('B5 export: a stored run is read on screen only with Full Data Set rights, so the page refuses them too',
+        $read($fAll)['ok'] === false && strpos($read($fAll)['why'], 'Full Data Set') !== false);
+    $fm->user->rights['data_export_tool'] = '1';
+    $fm->user->design = false;
+    $noDesignX = $csv(999);
+    check('B5 export L8: a reader without design rights is told the same about a run and about no run',
+        $noDesignX['ok'] === false && $noDesignX['http'] === 403 && $csv($fAll) === $noDesignX
+        && $noDesignX['why'] !== ScanService::NO_RUN);
+    $fm->user->design = true;
+    $fm->user->rights['group_id'] = null;
+    $running = (int) (new ScanService($fm, $fs))->start(189)['run_id'];
+    $notYet = $csv($running, null, 189);
+    check('B5 export: an unfinished run is no download yet, and 503 says to ask again',
+        $notYet['ok'] === false && $notYet['http'] === 503 && strpos($notYet['why'], 'has not finished') !== false);
+    $heldX = $csv($stopped, 31, 188);
+    check('B5 export: a group run that never proved its group is refused, not handed over empty',
+        $heldX === ['ok' => false, 'http' => 403, 'why' => ScanAuthorization::WITHHELD_ENDED]);
+    $broken = new FaultyStore($fs);
+    $fm->user->rights['group_id'] = null;
+    $bx = (new ScanService($fm, $broken))->exportOpen(186, $fAll);
+    $broken->failFrom('findings');
+    $fm->logs = [];
+    $bbuf = '';
+    $bres = $bx['stream'](function ($s) use (&$bbuf) { $bbuf .= $s; }, function () {});
+    check('B5 export: a store that fails partway ends the file on ROWS WERE LOST, without the trailer',
+        $bres['ok'] === false && strpos($bbuf, 'ROWS WERE LOST') !== false && strpos($bbuf, 'export_complete') === false);
+    check('B5 export: and the failure is in the module log, not in the file',
+        in_array('scan storage failure', array_column($fm->logs, 0), true) && strpos($bbuf, 'Deadlock') === false);
     \REDCap::$groupNames = $keptNames;
 }
 
