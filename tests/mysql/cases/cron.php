@@ -33,6 +33,18 @@ if (!class_exists('UvCronModule', false)) {
         public function getUsername() { return 'alice'; }
     }
 
+    /** A user of the project with no design rights, who may not scan. */
+    class UvCronPlainUser
+    {
+        public function hasDesignRights() { return false; }
+        public function getRights($pid = null)
+        {
+            return array('design' => '0', 'data_export_tool' => '0', 'group_id' => null,
+                         'forms' => array('demographics' => '1'));
+        }
+        public function getUsername() { return 'mallory'; }
+    }
+
     /**
      * The framework edge: query() over the real connection, settings from two
      * arrays, and the one rule perf.php's module plans with.
@@ -43,6 +55,8 @@ if (!class_exists('UvCronModule', false)) {
         public $log = array();
         public $sys = array();
         public $proj = array();
+        /** @var object|null who is signed in; the designer when null */
+        public $user = null;
 
         public function __construct($c) { $this->c = $c; }
 
@@ -67,7 +81,7 @@ if (!class_exists('UvCronModule', false)) {
             if ($k === ScanService::PROJ_FLAG) return '1';
             return isset($this->proj[(int) $pid][$k]) ? $this->proj[(int) $pid][$k] : null;
         }
-        public function getUser() { return new UvCronUser(); }
+        public function getUser() { return $this->user !== null ? $this->user : new UvCronUser(); }
         public function log($event, $context = array()) { return 1; }
         public function durableScanContext($pid, array $opts = array(), $dag = null)
         {
@@ -151,6 +165,17 @@ $SP = 970;
         . gmdate('Y-m-d H:i:s', time() - 30 * 3600) . "', progress_at = NULL, lease_expires_at = NULL"
         . ' WHERE run_id = ' . $oldId);
     $m = new UvCronModule($A);
+    // FIRST, SOMEBODY WHO MAY NOT SCAN PRESSES START (review rv10a2-2): they
+    // are refused, and the run is left for somebody who may.
+    $m->user = new UvCronPlainUser();
+    $refused = (new ScanService($m))->start($SP);
+    $m->user = null;
+    $kept = $store->run($SP, $oldId);
+    $byMallory = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+        . ' WHERE project_id = ? AND run_id = ?', array($SP, $oldId));
+    check('start: a user without design rights is refused before the abandoned run is touched',
+        $refused['ok'] === false && $kept['terminal'] === null && (int) $kept['lease_epoch'] === $oldEpoch
+        && (int) $byMallory[0][0] === 0);
     $started = (new ScanService($m))->start($SP);
     check('start: a project held by an abandoned run starts a new scan (got ' . json_encode($started) . ')',
         $started['ok'] === true && (int) $started['run_id'] > $oldId);

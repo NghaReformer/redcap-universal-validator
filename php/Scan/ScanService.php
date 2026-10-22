@@ -227,6 +227,10 @@ final class ScanService
         // run id and the person starting a new scan does not have one.
         $this->reapCancelled($pid);
 
+        $scope = ScanPageView::scanScope($this->module, $pid);
+        if (empty($scope['ok'])) return self::noStart($scope['why']);
+        $dag = $scope['dag'];
+
         // AND ANY RUN THAT STOPPED MAKING PROGRESS (B6a). A run whose tab
         // closed or whose worker died held the slot until the reap cron came
         // round - or for ever, where the cron is not running - and Start
@@ -237,15 +241,18 @@ final class ScanService
         // cancelled, not expired. Swallowed as that reap is: a reap that fails
         // must not stop the start being attempted, and the slot check refuses
         // honestly if the run is still there.
+        //
+        // AFTER THE RIGHTS CHECK (review rv10a2-2). Asked before it, any
+        // signed-in user of the project - no design rights, confined to a
+        // group - ended the project's run by posting scan-start, and the audit
+        // named them; the refusal they were then given came after the damage.
+        // The cancelled-run reap stays first: it ends only a run somebody with
+        // the right to stop it already stopped.
         $policy = $this->policy($pid);
         try {
             $this->store()->expireAbandoned($pid, $policy['staleHours'], (string) $this->username());
         } catch (\Throwable $e) {
         }
-
-        $scope = ScanPageView::scanScope($this->module, $pid);
-        if (empty($scope['ok'])) return self::noStart($scope['why']);
-        $dag = $scope['dag'];
 
         // PLANNING CONTEXT. start() needs the rule list and the ownership map
         // to authorise and to plan; the run - and therefore its generation -
