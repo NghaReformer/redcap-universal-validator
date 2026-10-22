@@ -221,6 +221,47 @@ class Logic
     }
 
     /**
+     * The values a parsed condition ($ast) needs plain fields to equal before
+     * it can be true, as [field key => [value, ...]]: from the condition
+     * itself when it is a [field] = value or [field(code)] = value
+     * comparison (either way round), else from each such member of its top
+     * "and", nested ones included. A field with an event or an instance, a
+     * <> or an ordered comparison, and anything under "or" or "not" add
+     * nothing. Two conditions that need one field to equal values no value
+     * can equal both can never be true at once (Branching::whenExclusive).
+     */
+    public static function requiredValues(array $ast)
+    {
+        $out = [];
+        if ($ast[0] === 'and') {
+            foreach ($ast[1] as $c) foreach (self::requiredValues($c) as $k => $vs) foreach ($vs as $v) $out[$k][] = $v;
+            return $out;
+        }
+        if ($ast[0] !== 'cmp' || $ast[1] !== '=') return $out;
+        foreach ([[$ast[2], $ast[3]], [$ast[3], $ast[2]]] as $p) {
+            if ($p[0][0] === 'ref' && $p[1][0] === 'lit') $out[$p[0][1] . '(' . (string) $p[0][2] . ')'][] = $p[1][1];
+        }
+        return $out;
+    }
+
+    /**
+     * Whether no value can equal both $a and $b as compare() reads "=" with
+     * case folded ($fold) or not: once trimmed, two numbers (NUM_RE) that
+     * differ in value, a number and a text, or two texts that differ, with
+     * A-Z folded when $fold. So 1, 01, 1.0 and ' 1' are one value. The
+     * browser compares as compare() does (QRID_whenCompare).
+     */
+    public static function neverBothEqual($a, $b, $fold)
+    {
+        $a = trim((string) $a, " \t\r\n");
+        $b = trim((string) $b, " \t\r\n");
+        $number = (bool) preg_match(self::NUM_RE, $a);
+        if ($number !== (bool) preg_match(self::NUM_RE, $b)) return true;
+        if ($number) return self::decCmp($a, $b) !== 0;
+        return $fold ? self::foldAscii($a) !== self::foldAscii($b) : $a !== $b;
+    }
+
+    /**
      * The longest leading condition of an unquoted annotation value, for the
      * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
      * A value used to end at the first space, so everything after "and" was

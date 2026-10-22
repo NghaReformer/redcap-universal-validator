@@ -262,6 +262,55 @@ class Branching
     }
 
     /**
+     * The keys under which a rule's "when" counts as one condition, [] for a
+     * rule without one. Two conditions that say the same thing in other
+     * words (keyword case, spacing, quote style, parentheses, member order:
+     * Logic::canonicalKey) could never be told apart, so they share the 'x'
+     * key; nor could 'Yes' and 'yes' when both rules ignore case, so a rule
+     * that does has the 'f' key too, with the values' letter case folded.
+     * Two rules of one group whose keys meet conflict. Public so the
+     * @UVDELTA suggestions compare conditions as this does
+     * (UniversalValidator::deltaGroupsTaken, review R9-1).
+     */
+    public static function whenKeys(array $rule)
+    {
+        $w = self::whenOf($rule);
+        if ($w === null) return [];
+        $keys = ['x' . Logic::canonicalKey($w)];
+        if (empty($rule['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
+        return $keys;
+    }
+
+    /**
+     * Whether two rules' "when" conditions can never be true at once, so the
+     * two can share a branch group with no runtime conflict; false when
+     * either has none. Only what shows without doubt counts: both need one
+     * plain field to equal a value (Logic::requiredValues), and no value
+     * equals both (Logic::neverBothEqual: numbers by value, so 1, 01 and 1.0
+     * are one; text trimmed, and with its letter case folded unless both
+     * rules are caseSensitive, since a value meets each rule's own way of
+     * comparing). Any other two conditions may overlap. Public so the
+     * @UVDELTA suggestions leave a group alone where a suggestion would
+     * conflict (UniversalValidator::deltaGroupsTaken, review R10-1).
+     */
+    public static function whenExclusive(array $a, array $b)
+    {
+        $wa = self::whenOf($a);
+        $wb = self::whenOf($b);
+        if ($wa === null || $wb === null) return false;
+        $pa = Logic::parse($wa, ['qualified' => true]);
+        $pb = Logic::parse($wb, ['qualified' => true]);
+        if (empty($pa['ok']) || empty($pb['ok'])) return false;
+        $fold = empty($a['caseSensitive']) || empty($b['caseSensitive']);
+        $need = Logic::requiredValues($pb['ast']);
+        foreach (Logic::requiredValues($pa['ast']) as $key => $values) {
+            if (!isset($need[$key])) continue;
+            foreach ($values as $x) foreach ($need[$key] as $y) if (Logic::neverBothEqual($x, $y, $fold)) return true;
+        }
+        return false;
+    }
+
+    /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
      * fixed priority order: twice (a mode with no "when" never branches),
@@ -281,14 +330,7 @@ class Branching
         foreach ($idxs as $i) {
             $g = self::groupOf($rules[$i], $groupKey);
             $w = self::whenOf($rules[$i]);
-            // two conditions that say the same thing in other words (keyword
-            // case, parentheses, member order) could never be told apart
-            // either; nor could 'Yes' and 'yes' when both rules ignore case
-            $keys = [];
-            if ($w !== null) {
-                $keys[] = 'x' . Logic::canonicalKey($w);
-                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
-            }
+            $keys = self::whenKeys($rules[$i]);
             $seen = null;
             foreach ($keys as $k) if ($seen === null && isset($whens[$g][$k])) $seen = $whens[$g][$k];
             if ($w === null) {
