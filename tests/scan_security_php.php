@@ -417,6 +417,21 @@ namespace INSPIRE\UniversalValidator\Scan {
             check('proved: a group run finished ' . $t . ' with a target fence ' . ($want ? 'has' : 'has not'),
                 ScanAuthorization::scopeProved(array_merge($r, ['phase' => 'terminal', 'terminal' => $t])) === $want);
         }
+        // rvf1-1: a run that left catch-up says so in its row, and keeps its
+        // proof whatever ends it; without a target fence it has none to keep.
+        $left = array_merge($r, ['catchup_dirty' => (string) ScanStore::CAUGHT_UP]);
+        check('proved rvf1-1: a group run that left catch-up and is now stopping has',
+            ScanAuthorization::scopeProved(array_merge($left, ['phase' => 'cancelling'])) === true);
+        foreach ([ScanOutcome::CANCELLED, ScanOutcome::FAILED, ScanOutcome::EXPIRED] as $t) {
+            check('proved rvf1-1: a group run that left catch-up and then ended ' . $t . ' has',
+                ScanAuthorization::scopeProved(array_merge($left, ['phase' => 'terminal', 'terminal' => $t])) === true);
+        }
+        check('proved rvf1-1: but not without a target fence, whatever the row says of catch-up',
+            ScanAuthorization::scopeProved(array_merge($left, ['fence_target' => null, 'phase' => 'terminal',
+                'terminal' => ScanOutcome::CANCELLED])) === false);
+        check('proved rvf1-1 control: and a row still in catch-up\'s own states has not',
+            ScanAuthorization::scopeProved(array_merge($r, ['catchup_dirty' => '1', 'phase' => 'terminal',
+                'terminal' => ScanOutcome::CANCELLED])) === false);
 
         // A DAG run may only START where membership changes are provable.
         check('dag-start: refused when the server cannot prove DAG changes',

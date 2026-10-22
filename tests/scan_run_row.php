@@ -40,6 +40,7 @@ if (!function_exists('uv_run_row')) {
             'rule_problem_count' => '0', 'not_examined' => '0',
             // A run that recorded it looks nothing up in another project.
             'policy_json' => '{"crossLookups":[]}',
+            'catchup_dirty' => '0',
         ];
         $missing = array_diff($columns, array_keys($defaults));
         if ($missing) {

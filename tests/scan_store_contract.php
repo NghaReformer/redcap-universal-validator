@@ -1082,6 +1082,40 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('rv10a1-1: and a cancel takes the run away from the worker that was writing for it',
         $s13->holdRun($rid13, $ep13, $s13->run(756, $rid13)['phase']) === ScanStore::HOLD_TAKEN_OVER);
 
+    // -- A RUN THAT LEFT CATCH-UP SAYS SO, THROUGH ITS END (review rvf1-1) -----
+    //
+    // Stop and every ending overwrite the phase, so the row must keep the one
+    // fact a group-scoped run's counts hang on: it walked its window to the
+    // target fence. Written by the move out of catch-up and by nothing else.
+    $sl = $newStore();
+    $rl = (int) $sl->startRun(757, [])['run']['run_id'];
+    $sl->writeManifest($rl, [$mk5('C1')]);
+    $epL = (int) $sl->run(757, $rl)['lease_epoch'];
+    $sl->advancePhase($rl, $epL, ScanPhase::SCANNING);
+    $sl->advancePhase($rl, $epL, ScanPhase::CATCH_UP);
+    $C('rvf1-1: a run in catch-up has not left it',
+        (int) $sl->run(757, $rl)['catchup_dirty'] !== ScanStore::CAUGHT_UP);
+    $sl->advancePhase($rl, $epL, ScanPhase::UNIQUE);
+    $C('rvf1-1: the move out of catch-up writes that the run left it',
+        (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $sl->advancePhase($rl, $epL, ScanPhase::ROLLUP);
+    $sl->cancel(757, $rl, 'alice');
+    $C('rvf1-1: and the row still says so once it is stopped',
+        (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $sl->finish($rl, ScanOutcome::derive(['cancelled' => true]));
+    $C('rvf1-1: and once it has ended',
+        $sl->run(757, $rl)['phase'] === ScanPhase::TERMINAL
+        && (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $rk = (int) $sl->startRun(758, [])['run']['run_id'];
+    $sl->writeManifest($rk, [$mk5('C2')]);
+    $epK = (int) $sl->run(758, $rk)['lease_epoch'];
+    $sl->advancePhase($rk, $epK, ScanPhase::SCANNING);
+    $sl->advancePhase($rk, $epK, ScanPhase::CATCH_UP);
+    $sl->cancel(758, $rk, 'alice');
+    $sl->finish($rk, ScanOutcome::derive(['cancelled' => true]));
+    $C('rvf1-1: a run stopped inside catch-up never says it left it',
+        (int) $sl->run(758, $rk)['catchup_dirty'] !== ScanStore::CAUGHT_UP);
+
     // -- A RUN NOBODY CAN FIND IS NOT COMPLETE (W6-N1) ------------------------
     //
     // The SQL store answered true here - no unfinished row, because no row at

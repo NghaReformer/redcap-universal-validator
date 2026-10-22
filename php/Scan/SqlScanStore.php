@@ -1846,12 +1846,16 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return false;
             }
+            // LEAVING CATCH-UP IS WRITTEN WITH THE PHASE CHANGE (review rvf1-1):
+            // see ScanStore::CAUGHT_UP. The phase was read under the lock above.
+            $caught = $r[0][0] === ScanPhase::CATCH_UP && $to === ScanPhase::next(ScanPhase::CATCH_UP);
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
-                SET phase = ?, cursor_ordinal = ?, updated_at = ? WHERE run_id = ?',
+                SET phase = ?, cursor_ordinal = ?, ' . ($caught ? 'catchup_dirty = ?, ' : '')
+                . 'updated_at = ? WHERE run_id = ?',
                 // The cursor belongs to the phase that used it. Carrying it into
                 // catch-up would make the straggler sweep start part way through
                 // a manifest it walks by state rather than by position.
-                [$to, 0, self::now(), $runId]);
+                $caught ? [$to, 0, self::CAUGHT_UP, self::now(), $runId] : [$to, 0, self::now(), $runId]);
             $this->db->commit();
             return true;
         } catch (\Throwable $e) {

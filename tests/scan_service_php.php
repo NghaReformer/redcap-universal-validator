@@ -3433,6 +3433,60 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $egW['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
 
     /* -----------------------------------------------------------------
+     * rvf1-1  A GROUP-SCOPED RUN THAT PASSED ITS TARGET FENCE AND IS THEN
+     * STOPPED OR EXPIRED KEEPS ITS COUNTS
+     *
+     * The reviewer's repro: catch-up had walked the window, the run showed
+     * its counts in unique-finalize, and Stop took them away with two
+     * sentences saying it had never confirmed its group. A run stopped
+     * inside catch-up is the control: it has confirmed nothing.
+     * ----------------------------------------------------------------- */
+    $afterFence = function ($pid, $leave, $end) use ($groupModule) {
+        $ps = new ArrayScanStore();
+        $pm = $groupModule($ps);
+        $pm->flagged['R02'] = true;
+        $rid = (int) (new ScanService($pm, $ps))->start($pid)['run_id'];
+        $pm->readSleep = 3.2;
+        (new ScanService($pm, $ps))->work($pid, $rid);
+        $ep = (int) $ps->run($pid, $rid)['lease_epoch'];
+        $ps->advancePhase($rid, $ep, ScanPhase::CATCH_UP);
+        $ps->setProgressState($rid, $ep, ['fenceTarget' => '120', 'catchupCursor' => null,
+                                          'catchupRound' => 1, 'catchupDirty' => 0]);
+        if ($leave) $ps->advancePhase($rid, $ep, ScanPhase::UNIQUE);
+        $before = (new ScanService($pm, $ps))->status($pid, $rid);
+        if ($end === 'stopped') {
+            (new ScanService($pm, $ps))->cancel($pid, $rid);
+        } else {
+            $ps->expireAbandoned($pid, 1, 'cron', time() + 2 * 86400);
+        }
+        $st = (new ScanService($pm, $ps))->status($pid, $rid);
+        return ['before' => $before, 'row' => $ps->run($pid, $rid), 'status' => $st,
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    foreach (['stopped' => [191, ScanOutcome::CANCELLED], 'expired' => [192, ScanOutcome::EXPIRED]] as $end => $c) {
+        $af = $afterFence($c[0], true, $end);
+        check('rvf1-1: a group run past its target fence shows its counts in unique-finalize (' . $end . ' next)',
+            $af['before']['phase'] === ScanPhase::UNIQUE && empty($af['before']['withheld'])
+            && $af['before']['total'] === 5 && $af['before']['findings'] === 1);
+        check('rvf1-1: and still shows them once ' . $end,
+            $af['row']['terminal'] === $c[1] && !empty($af['row']['fence_target'])
+            && $af['status']['ok'] === true && empty($af['status']['withheld'])
+            && $af['status']['total'] === 5 && $af['status']['done'] === 5 && $af['status']['findings'] === 1
+            && strpos($af['pf']['counts'], '5 of 5 records') === 0);
+        check('rvf1-1: with no word of a group it never confirmed (' . $end . ')',
+            strpos($af['pf']['counts'], ScanAuthorization::WITHHELD_ENDED) === false
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false
+            && strpos((string) $af['pf']['done'],
+                      \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($af['row']['coverage'])) === 0);
+    }
+    $inCu = $afterFence(193, false, 'stopped');
+    check('rvf1-1 control: a group run stopped inside catch-up is still not shown its counts',
+        $inCu['row']['terminal'] === ScanOutcome::CANCELLED && !empty($inCu['row']['fence_target'])
+        && $inCu['status']['withheld'] === true
+        && $inCu['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED
+        && strpos((string) $inCu['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === 0);
+
+    /* -----------------------------------------------------------------
      * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
      * WORD, IN STATUS, WORK AND CANCEL
      *
