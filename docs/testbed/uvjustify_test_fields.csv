@@ -1,0 +1,45 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+uj_req,uv_justify_test,A. Rules a reason stands for,text,Required field,,Blocks while blank. A reason picked below lets it save blank.,,,,,,,,,,,"@UVREQUIRED={""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_req_why]""}"
+uj_req_why,uv_justify_test,,radio,Why it is blank,"1, Not done | 2, Refused",A radio reason.,,,,,,,,,,,
+uj_wt,uv_justify_test,,text,Weight,,30 to 250 kg. Blocks outside.,number_1dp,,,,,,,,,,"@UVRANGE={""hard"":[30,250],""hardBlock"":""hard"",""unit"":""kg""} @UVJUSTIFY={""reason"":""[uj_wt_why]""}"
+uj_wt_why,uv_justify_test,,text,Reason for change,,"A text reason. Blank, spaces or a Missing Data Code is no reason.",,,,,,,,,,,
+uj_id,uv_justify_test,,text,Lab number (Luhn check digit),,79927398713 is valid. 79927398710 is not and blocks.,,,,,,,,,,,"@UVALIDATE={""algorithm"":""luhn"",""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_id_why]""}"
+uj_id_why,uv_justify_test,,text,Why the lab number is right,,A text reason.,,,,,,,,,,,
+uj_pool,uv_justify_test,,text,Pooled lab numbers,,Several numbers in one box. One invalid number blocks.,,,,,,,,,,,"@UVALIDATE={""type"":""pooled"",""algorithm"":""luhn"",""pattern"":""[0-9]{11}"",""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_pool_why]""}"
+uj_pool_why,uv_justify_test,,notes,Why the pooled numbers are right,,A notes reason.,,,,,,,,,,,
+uj_sys,uv_justify_test,,text,Systolic pressure (mmHg),,No rule here.,integer,,,,,,,,,,
+uj_dia,uv_justify_test,,text,Diastolic pressure (mmHg),,Must be below the systolic. Blocks.,integer,,,,,,,,,,"@UVASSERT={""assert"":""[uj_dia]<[uj_sys]"",""blockSave"":""hard"",""message"":""The diastolic pressure must be below the systolic.""} @UVJUSTIFY={""reason"":""[uj_dia_why]""}"
+uj_dia_why,uv_justify_test,,dropdown,Why the pressures are right,"1, Re-measured, same result | 2, Device fault noted | 3, Other",A dropdown reason.,,,,,,,,,,,
+uj_arm,uv_justify_test,,radio,Age group,"1, Adult | 2, Child",Child hides the 500 mg dose below.,,,,,,,,,,,
+uj_dose,uv_justify_test,,dropdown,Dose,"1, 500 mg | 2, 250 mg | 3, 125 mg",500 mg picked before Child is chosen stays flagged and blocks.,,,,,,,,,,,"@UVCHOICES={""when"":""[uj_arm]='2'"",""hide"":[""1""],""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_dose_why]""}"
+uj_dose_why,uv_justify_test,,text,Why this dose,,A text reason.,,,,,,,,,,,
+uj_anchor,uv_justify_test,,text,Screening date,,No rule here. The visit date counts from it.,date_ymd,,,,,,,,,,
+uj_visit,uv_justify_test,,text,Visit date,,0 to 14 days after the screening date. Blocks outside. Its own note in two languages.,date_ymd,,,,,,,,,,"@UVWINDOW={""from"":""[uj_anchor]"",""window"":[0,14],""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_visit_why]"",""message"":{""default"":""Say why this visit date is right."",""fr"":""Dites pourquoi cette date de visite est juste.""}}"
+uj_visit_why,uv_justify_test,,notes,Why the visit date is right,,A notes reason.,,,,,,,,,,,
+uj_wt2,uv_justify_test,,text,Second weighing (kg),,At most 1 kg from the weight above. Blocks.,number_1dp,,,,,,,,,,"@UVDELTA={""vs"":""[uj_wt]"",""max"":1,""unit"":""kg"",""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_wt2_why]""}"
+uj_wt2_why,uv_justify_test,,radio,Why the two weighings differ,"1, Another scale | 2, Patient ate | 3, Other",A radio reason.,,,,,,,,,,,
+uj_mother,uv_justify_test,,text,Mother's record ID,,XE-2 is a saved record. XE-9 is not and blocks.,,,,,,,,,,,"@UVEXISTS={""in"":""record"",""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_mother_why]""}"
+uj_mother_why,uv_justify_test,,text,Why the mother has no record,,A text reason.,,,,,,,,,,,
+uj_temp,uv_justify_test,,text,Temperature (degrees C),,34 to 42. Outside asks Save anyway.,number_1dp,,,,,,,,,,"@UVRANGE={""hard"":[34,42],""hardBlock"":""confirm"",""unit"":""C""} @UVJUSTIFY={""reason"":""[uj_temp_why]""}"
+uj_temp_why,uv_justify_test,,text,Why the temperature is right,,A text reason.,,,,,,,,,,,
+uj_off,uv_justify_test,,text,Oxygen saturation (%),,Below 90 warns and never blocks.,integer,,,,,,,,,,"@UVASSERT={""assert"":""[uj_off]>=90"",""blockSave"":""off"",""message"":""Below 90%: check the probe.""} @UVJUSTIFY={""reason"":""[uj_off_why]""}"
+uj_off_why,uv_justify_test,,text,Why the saturation is right,,A text reason.,,,,,,,,,,,
+uj_hr,uv_justify_test,,text,Heart rate (bpm),,30 to 220. Blocks outside.,integer,,,,,,,,,,"@UVRANGE={""hard"":[30,220],""hardBlock"":""hard""} @UVJUSTIFY={""reason"":""[uj_hr_why]""}"
+uj_hr_show,uv_justify_test,,yesno,Explain the heart rate?,,Yes shows the reason box below.,,,,,,,,,,,
+uj_hr_why,uv_justify_test,,text,Why the heart rate is right,,Shown only while the answer above is Yes.,,,,,[uj_hr_show]='1',,,,,,
+uj_ro,uv_justify_test,,text,Weight from the device,,Read-only on the form (the sheet imports it). 30 to 250 kg. Never blocks here.,number_1dp,,,,,,,,,,"@READONLY @UVRANGE={""hard"":[30,250],""hardBlock"":""hard"",""unit"":""kg""} @UVJUSTIFY={""reason"":""[uj_ro_why]""}"
+uj_ro_why,uv_justify_test,,text,Why the device weight is right,,A text reason.,,,,,,,,,,,
+uj_rr,uv_justify_test,,text,Respiratory rate (per minute),,5 to 60. Its reason is an SQL field an administrator adds (see the sheet).,integer,,,,,,,,,,"@UVRANGE={""hard"":[5,60],""hardBlock"":""hard""} @UVJUSTIFY={""reason"":""[uj_sql_why]""}"
+uj_code,uv_justify_test,B. Rules a reason does not release,text,Participant code,,UJ- and three digits. Must be unique. A reason releases the format only.,,,,,,,,,,,"@UVALIDATE={""algorithm"":""none"",""pattern"":""UJ-[0-9]{3}"",""blockSave"":""hard""} @UVUNIQUE={""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_code_why]""}"
+uj_code_why,uv_justify_test,,text,Why the code is right,,A text reason.,,,,,,,,,,,
+uj_lock,uv_justify_test,,text,Enrolment weight (kg),,Locked once saved. 30 to 250 kg.,number_1dp,,,,,,,,,,"@UVWRITEONCE @UVRANGE={""hard"":[30,250],""hardBlock"":""hard"",""unit"":""kg""} @UVJUSTIFY={""reason"":""[uj_lock_why]""}"
+uj_lock_why,uv_justify_test,,text,Why the enrolment weight is right,,A text reason.,,,,,,,,,,,
+uj_far,uv_justify_test,C. A reason on the next survey page,text,Hours fasted,,0 to 24. Blocks outside. Its reason is in the next section.,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,24],""hardBlock"":""hard""} @UVJUSTIFY={""reason"":""[uj_far_why]""}"
+uj_far_why,uv_justify_test,D. The reason for the hours fasted,text,Why the fasting time is right,,On a page of its own in the survey.,,,,,,,,,,,
+uj_signs,uv_justify_test,E. Configuration errors,checkbox,Signs seen,"1, Rash | 2, Fever",A checkbox cannot hold a reason.,,,,,,,,,,,
+uj_bad_bare,uv_justify_test,,text,Bare tag,,,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,10]} @UVJUSTIFY"
+uj_bad_form,uv_justify_test,,text,Reason on another form,,,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,10]} @UVJUSTIFY={""reason"":""[record_id]""}"
+uj_bad_type,uv_justify_test,,text,Reason in a checkbox,,,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,10]} @UVJUSTIFY={""reason"":""[uj_signs]""}"
+uj_bad_self,uv_justify_test,,text,Reason in the field itself,,,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,10]} @UVJUSTIFY={""reason"":""[uj_bad_self]""}"
+uj_bad_none,uv_justify_test,,text,No rule to stand for,,,integer,,,,,,,,,,"@UVJUSTIFY={""reason"":""[uj_wt_why]""}"
+uj_bad_twice,uv_justify_test,,text,Two tags,,,integer,,,,,,,,,,"@UVRANGE={""hard"":[0,10]} @UVJUSTIFY={""reason"":""[uj_wt_why]""} @UVJUSTIFY={""reason"":""[uj_id_why]""}"

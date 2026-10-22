@@ -55,6 +55,8 @@ php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.j
 node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
 node tests/justify_dom_js.cjs     # @UVJUSTIFY page (a reason releases the modes it stands for, the alert names the reason field, the note)
 php  tests/justify_module_php.php # @UVJUSTIFY hooks, applyJustify, page config, audit, legacy and durable scan
+php  tests/justify_live_twin_php.php  # @UVJUSTIFY live run sheet: every answer, from the module
+node tests/justify_live_twin_js.cjs   # @UVJUSTIFY live run sheet: every note, hold and dialog line, from the engine
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -662,7 +664,9 @@ to a finding saved with a reason.
   not on the page give no reason; a radio or dropdown reason counts, even
   changed with no event; a rule with blockSave "off", a lookup still in
   flight, a duplicate and a write-once lock are never lifted; configuration
-  errors release nothing.
+  errors release nothing. A field made read-only after the engine bound it,
+  or whose row branching hides, gets no note, and the note follows each
+  branching redraw.
 - `justify_module_php.php` covers the server side: the field and dictionary
   hooks, `applyJustify` (a field no covered rule checks is an error of its
   own, split from a rule written alike on several fields; two tags on one
@@ -674,7 +678,24 @@ to a finding saved with a reason.
   the "Saved with a reason" column and sentence, the stored flag).
 - `missing_codes_php.php` adds a reason field holding a code (no reason) and
   `mlm_messages_dom_js.cjs` the note in the person's language.
-- `justify_mutations.py` applies 66 mutations to a copy of the code, one at a
+- `justify_live_twin_php.php` runs the module over the live fixture on a copy
+  of pid 149's events, with REDCap's data and log kept as each save, survey
+  page and import of `docs/testbed/JUSTIFY_LIVE_ACCEPTANCE.md` leaves them. It
+  checks every server answer of the sheet: the configuration errors word for
+  word, the justify rules each page carries, every `uvalidate-justified` and
+  `invalid-id-saved` entry (never the reason text), the lookup and duplicate
+  answers, and both scans on pid 149 and a scratch project. It writes the page
+  configs to `tests/justify_live_pages.json` with `--write`, and fails when
+  that file differs from what the module builds now.
+- `justify_live_twin_js.cjs` boots `js/engine.js` with those configs on a page
+  shaped as REDCap renders the fixture's field types: text and notes boxes,
+  radio buttons with their mirror and "reset" link, dropdowns and an SQL
+  field, a checkbox, rows hidden by branching logic, and one survey page per
+  section. It checks each note, each hold, each line of the save alert and the
+  "Save anyway?" dialog, each release once the reason is given, and each case
+  that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
+  read-only field, and a reason on another survey page.
+- `justify_mutations.py` applies 69 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Five mutate
   the stores, the rollup and the status poll of the durable scan and are
   killed only by `tests/mysql/run.php` (cases `justified` and `perf`); they run

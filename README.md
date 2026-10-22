@@ -1535,6 +1535,9 @@ php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.j
 node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
 node tests/justify_dom_js.cjs     # @UVJUSTIFY page: a reason releases the modes it stands for
 php  tests/justify_module_php.php # @UVJUSTIFY hooks, page config, audit, legacy and durable scan
+php  tests/justify_live_twin_php.php # @UVJUSTIFY live run sheet: every answer, from the module
+node tests/justify_live_twin_js.cjs  # @UVJUSTIFY live run sheet: every note, hold and dialog line, from the engine
+python3 tests/justify_mutations.py   # @UVJUSTIFY: every mutation must make a named suite fail
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file

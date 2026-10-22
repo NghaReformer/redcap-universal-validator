@@ -3626,6 +3626,18 @@ function QRID_justifiable(el){
 function QRID_justified(el){
   return QRID_justifiable(el) && UV_JUSTIFY[el.__qridFieldName].given();
 }
+/* Whether a guard item holds the save now, reason aside: it is broken, its
+   mode can block, and the person can change and see its field. REDCap may
+   apply @READONLY after the engine bound the field (REQ-2), and branching
+   logic or @HIDDEN may hide its row (REQ-1); either keeps the notice and
+   never holds. The save guard and the note asking for a reason
+   (QRIDJustifyInit) ask this one test, so the note shows only while a
+   reason would release a hold. */
+function QRID_itemHolds(el){
+  if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;
+  var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
+  return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
+}
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
      inputs (e.g. @READONLY) keep their message but are exempt from blocking
@@ -3675,11 +3687,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     /* A field whose reason is given (@UVJUSTIFY) no longer holds the save for
        the modes a reason stands for. A lookup still in flight still waits
        (pend, below), and a reason never adds a hold. */
-    var bad = live.filter(function(el){
-      if(!el.__qridInvalid || el.__qridBlockMode === "off" || QRID_justified(el)) return false;
-      var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
-      return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
-    });
+    var bad = live.filter(function(el){ return QRID_itemHolds(el) && !QRID_justified(el); });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
@@ -7063,11 +7071,13 @@ function QRIDWriteOnceInit(QRID_CONFIG){
    reason: text that is not blank and not a Missing Data Code
    (QRID_reasonGiven, twin of Logic::reasonGiven). Until then the save
    message names the reason field ("or give a reason in"), and a note under
-   the field asks for one while such a rule holds or asks. The note follows
-   the reason field and every change of the field's other modes
-   (QRID_setModeState). A reason never adds a hold: a rule with blockSave
-   "off" still only warns, a lookup still being checked still waits, and a
-   locked write-once field stays locked. Without the reason field on this
+   the field asks for one while such a rule holds or asks, by the save
+   guard's own test (QRID_itemHolds), so a field the person cannot change or
+   see gets no note. The note follows the reason field, every change of the
+   field's other modes (QRID_setModeState) and REDCap's branching. A reason
+   never adds a hold: a rule with blockSave "off" still only warns, a lookup
+   still being checked still waits, and a locked write-once field stays
+   locked. Without the reason field on this
    page (another survey page) the tag does nothing here, and a reason field
    whose row branching logic hides gives no reason. The audit and the scan
    mark the findings the same way (UniversalValidator::markJustified).
@@ -7099,8 +7109,10 @@ function QRIDJustifyInit(QRID_CONFIG){
       var holds = false;
       for(var i = 0; i < UV_guard.items.length; i++){
         var el = UV_guard.items[i];
+        /* the save guard's own test (QRID_itemHolds): no note under a field
+           the person cannot change or see, as it never holds the save */
         if(el.__qridFieldName === fieldName && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true
-           && el.__qridInvalid && el.__qridBlockMode !== "off" && QRID_guardSpeaks(el)){ holds = true; break; }
+           && QRID_guardSpeaks(el) && QRID_itemHolds(el)){ holds = true; break; }
       }
       if(!holds || given()){ msg.style.display = "none"; msg.innerHTML = ""; return; }
       msg.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
@@ -7121,6 +7133,9 @@ function QRIDJustifyInit(QRID_CONFIG){
     /* a change no event announces (a radio's hidden mirror, a script) */
     var watch = QRID_WHEN.gateFor("[" + reason + "]<>''", null);
     if(watch) watch.onChange(later);
+    /* REDCap's doBranching() shows and hides rows with no event: a hidden
+       reason row gives no reason, and a hidden field holds nothing */
+    QRID_onBranching(later);
     later();
     return true;
   }
