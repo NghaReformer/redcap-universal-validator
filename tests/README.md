@@ -59,6 +59,7 @@ node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
+node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract

@@ -3283,10 +3283,12 @@ function QRID_answerStale(entry){
 /* ---- optional save blocking (shared by both factories) ---------------------
    blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
-   the server audit is the net for those). Guards both real form submits and
-   REDCap's save buttons (which submit programmatically and never fire a
-   submit event). Native alert/confirm are used deliberately: they are modal
-   and announced by assistive tech without custom focus management. */
+   the server audit is the net for those). Guards real form submits, REDCap's
+   save buttons (which submit programmatically and never fire a submit event)
+   and every call of REDCap's dataEntrySubmit, which the Enter key in a text
+   field makes (QRID_guardDataEntrySubmit). Native alert/confirm are used
+   deliberately: they are modal and announced by assistive tech without
+   custom focus management. */
 function QRID_registerBlocker(input, fieldName, blockMode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
      inputs (e.g. @READONLY) keep their message but are exempt from blocking
@@ -3304,10 +3306,11 @@ function QRID_registerBlocker(input, fieldName, blockMode){
   UV_guard.items.push(input);
   if(UV_guard.armed) return;
   UV_guard.armed = true;
+  /* true when the save may go on, false when the guard held it */
   function guard(e){
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice */
-    if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return;
+    if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return true;
     /* Branch rules overwrite __qridBlockMode per check with the ACTIVE
        branch's mode, which may be "off" — such a field never holds the save.
        (Pre-0.9.0 configs never register "off" items, so this filter is a
@@ -3329,7 +3332,7 @@ function QRID_registerBlocker(input, fieldName, blockMode){
        "return"), set __qridPending, and they drop it when the answer comes
        or after QRID_PENDING_MS. */
     var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
-    if(!bad.length && !pend.length) return;
+    if(!bad.length && !pend.length) return true;
     var label = QRID_guardLabel;
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
        a label may hold a comma, so a list joined by ", " reads as more
@@ -3343,24 +3346,73 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s):" + names
                               : "Cannot save yet — please wait a moment and save again:" + names);
       try { (bad[0] || pend[0]).focus(); } catch(_f){}
-      return;
+      return false;
     }
     if(window.confirm("Validation FAILED for:" + names + "\n\nSave anyway?")){
       UV_guard.passUntil = new Date().getTime() + 2000;
-    } else {
-      e.preventDefault();
-      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+      return true;
     }
+    e.preventDefault();
+    if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+    return false;
   }
   document.addEventListener("submit", guard, true);
   document.addEventListener("click", function(e){
     var t = e.target;
     while(t && t.getAttribute){
       var nm = (t.getAttribute("name") || t.id || "");
-      if(nm.indexOf("submit-btn-save") === 0){ guard(e); return; }
+      if(nm.indexOf("submit-btn-save") === 0){
+        /* A click the guard let through goes on, in this same task, to the
+           button's own onclick, dataEntrySubmit(this). The verdict cannot
+           change in between, so the wrapper does not judge again; a re-run
+           would repeat every recheck. */
+        if(guard(e)){
+          UV_guard.clickPass = true;
+          setTimeout(function(){ UV_guard.clickPass = false; }, 0);
+        }
+        return;
+      }
       t = t.parentNode;
     }
   }, true);
+  QRID_guardDataEntrySubmit(guard);
+}
+/* REDCap's own way into a data-entry save (LIVE-1). Pressing Enter in a text
+   field runs a keydown handler that blurs the field and then calls
+   dataEntrySubmit($('form#form :input[name="submit-btn-saverecord"]'))
+   directly (REDCap 13 to 17). dataEntrySubmit ends in document.form.submit(),
+   so there is no click on a save button and no submit event: neither listener
+   above saw it, and a hard block saved anyway. Barcode scanners send Enter
+   after each scan. Scripts and jQuery .trigger("click") reach the same
+   function, because jQuery runs the button's inline onclick before the native
+   click.
+   The handler looks dataEntrySubmit up as a global when it runs, so replacing
+   window.dataEntrySubmit puts the guard in front of every caller. A held save
+   returns false and the original never runs. REDCap defines the function in a
+   script loaded before this one, on data-entry forms and surveys alike. On a
+   page still loading, DOMContentLoaded and load try again for a function
+   defined later; a loaded page without it is left alone. */
+function QRID_guardDataEntrySubmit(guard){
+  function wrap(){
+    var orig = window.dataEntrySubmit;
+    if(typeof orig !== "function") return false;
+    if(orig.__qridGuarded) return true;
+    var guarded = function(){
+      if(!UV_guard.clickPass){
+        var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){} };
+        if(!guard(ev)) return false;
+      }
+      return orig.apply(this, arguments);
+    };
+    guarded.__qridGuarded = true;
+    window.dataEntrySubmit = guarded;
+    return true;
+  }
+  if(wrap() || document.readyState === "complete") return;
+  if(document.readyState === "loading" && typeof document.addEventListener === "function"){
+    document.addEventListener("DOMContentLoaded", wrap);
+  }
+  if(typeof window.addEventListener === "function") window.addEventListener("load", wrap);
 }
 /* Wire one message region under one input: polite live region + programmatic
    error relationship, so dynamic verdicts are exposed to assistive technology
