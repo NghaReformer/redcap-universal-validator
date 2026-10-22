@@ -581,7 +581,7 @@ final class ScanMaintenance
             }
         }
         $left = ['runs_left' => 0, 'runs_stopped' => 0, 'failed' => 0];
-        $this->finishEach($stopped, INF, $left, self::PROJECT_DISABLED_WHY);
+        $this->finishEach($stopped, INF, $left);
         $out['runs_stopped'] = $left['runs_stopped'];
         $out['failed'] += $left['failed'];
         return $out;
@@ -665,8 +665,20 @@ final class ScanMaintenance
         }
     }
 
-    /** Finish the stopped runs, with $why, while the budget lasts; count the rest as left. */
-    private function finishEach(array $stopped, $until, array &$out, $why = self::DISABLED_WHY)
+    /**
+     * Finish the stopped runs while the budget lasts; count the rest as left.
+     *
+     * EACH WITH THE REASON ON ITS OWN ROW (review rvf2-2). The walks hand
+     * this every active run, and a run its user had already stopped is one
+     * of them: stopPage() leaves it as they stopped it, and this then passed
+     * the disable's sentence to the finisher, which beat the stored one. So a
+     * user's own Stop ended reading "the module was disabled", beside an
+     * audit naming the user. The finisher is given no sentence now: a run
+     * stopPage() moved carries the disable's on its row, and
+     * ScanPromotion::finishCancelled() keeps that, as it does when Start or
+     * the reap cron finishes the run later; any other keeps its own.
+     */
+    private function finishEach(array $stopped, $until, array &$out)
     {
         foreach ($stopped as $runId => $pid) {
             if ((float) call_user_func($this->clock) >= $until) {
@@ -676,8 +688,7 @@ final class ScanMaintenance
             try {
                 $policy = call_user_func($this->policy, $pid);
                 if (ScanPromotion::finishCancelled($this->store, $pid, $runId, [
-                        'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes'],
-                        'why' => (string) $why])) {
+                        'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']])) {
                     $out['runs_stopped']++;
                 }
             } catch (\Throwable $e) {

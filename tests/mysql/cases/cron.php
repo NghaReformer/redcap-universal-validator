@@ -1038,14 +1038,24 @@ $runRow = function ($runId) use ($dbA) {
     check('disable: the leased slot is freed, and both active runs are stopped',
         $r['slots_released'] === 1 && $r['runs_stopped'] === 2 && $r['failed'] === 0
         && $slots->census()['held'] === 0);
-    foreach (array(array(1001, $live), array(1002, $stop)) as $pair) {
+    // rvf2-2: alice's own Stop keeps its own reason. Only the run the disable
+    // stopped is told the module was disabled; hers was finished with the
+    // plain cancel sentence, beside an audit that names her.
+    $cancelWhy = ScanOutcome::derive(array('cancelled' => true))['why'];
+    foreach (array(array(1001, $live, \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY),
+                   array(1002, $stop, $cancelWhy)) as $pair) {
         $row = $store->run($pair[0], $pair[1]['run']);
         $slot = $dbA->select('SELECT active_slot FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
             array($pair[1]['run']));
-        check('disable: ' . $pair[0] . ' ends as stopped, with the reason, and leaves the project free',
+        check('disable: ' . $pair[0] . ' ends as stopped, with ' . ($pair[0] === 1001 ? 'the disable\'s reason'
+                : 'its user\'s own stop, not the disable\'s') . ', and leaves the project free',
             $row['terminal'] === ScanOutcome::CANCELLED && $slot[0][0] === null
-            && $row['terminal_reason'] === \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY);
+            && $row['terminal_reason'] === $pair[2]);
     }
+    $alice = $dbA->select('SELECT actor FROM ' . Schema::table('scan_audit')
+        . " WHERE project_id = ? AND run_id = ? AND event = 'cancel' ORDER BY audit_id", array(1002, $stop['run']));
+    check('disable rvf2-2: and her run\'s audit still names only her',
+        count($alice) === 1 && $alice[0][0] === 'alice');
     $au = $dbA->select('SELECT actor FROM ' . Schema::table('scan_audit')
         . " WHERE project_id = ? AND run_id = ? AND event = 'cancel' ORDER BY audit_id", array(1001, $live['run']));
     check('disable: the stop is audited as the system\'s', count($au) === 1 && $au[0][0] === 'system');
@@ -1105,7 +1115,18 @@ $runRow = function ($runId) use ($dbA) {
     $again = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA, array('policy' => $policyOf)))->disableProject(1004);
     check('project disable: a second one finds nothing to stop',
         $again === array('runs_stopped' => 0, 'slots_released' => 0, 'failed' => 0));
-    foreach (array(1004, 1005) as $p) uv_clear_project($dbA, $p);
+    // rvf2-2: a run its user had already stopped is finished, and keeps the
+    // user's stop rather than the project disable's sentence.
+    $byBob = $plant(1006, 1, null, false);
+    $store->cancel(1006, $byBob['run'], 'bob');
+    $dB = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA, array('policy' => $policyOf)))->disableProject(1006);
+    $rowB = $store->run(1006, $byBob['run']);
+    check('project disable rvf2-2: a run its user had stopped is finished with the user\'s stop, not the disable\'s',
+        $dB['runs_stopped'] === 1 && $rowB['terminal'] === ScanOutcome::CANCELLED
+        && $rowB['terminal_reason'] === ScanOutcome::derive(array('cancelled' => true))['why']
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id = 1006 AND event = 'cancel' AND actor = 'system'")[0][0] === 0);
+    foreach (array(1004, 1005, 1006) as $p) uv_clear_project($dbA, $p);
     $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
 }
 
