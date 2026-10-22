@@ -1101,3 +1101,82 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query('DELETE FROM ' . Schema::table($t));
     }
 }
+
+// -- departures are not restarts (review rvf2-5) -----------------------------
+//
+// MAX_RESTARTS counts the group's candidate_epoch, and dropping a departed
+// record's candidates moved it too: a group that lost four records to
+// another group was blocked as "kept changing" on the first edit to a record
+// still in it, with no restart. A drop now keeps the epoch, so the edit gets
+// its restart and the group is decided.
+{
+    $KEY = 'rvf2-5-key';
+    $DPID = 979;
+    $GEND = uv_generation('departures-then-an-edit');
+    $dRecs = array('D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8');
+    $dHash = function ($r) use ($DPID, $KEY) {
+        return \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $DPID, $r, $KEY);
+    };
+    $dGroup = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $DPID, 'SAME', $KEY));
+    foreach ($dRecs as $r) {
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $DPID . ", " . $GEND . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $dGroup . "'),
+                    'project', UNHEX('" . bin2hex($dHash($r)) . "'), '" . $r . "', 1, 1, 'f', 'hospno', '100')");
+    }
+    // D1..D4 left the run's group, one met on each verify page.
+    $dGone = array();
+    foreach (array('D1', 'D2', 'D3', 'D4') as $r) $dGone[$dHash($r)] = true;
+    $dDeparted = function (array $hashes) use (&$dGone) {
+        foreach ($hashes as $h) {
+            if (isset($dGone[$h])) {
+                unset($dGone[$h]);
+                return array($h => true);
+            }
+        }
+        return array();
+    };
+    $dVer = new MovingVersions();
+    foreach ($dRecs as $r) $dVer->v[$r] = '100';
+    $dFin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $DPID, 'seq' => 5,
+        'hmacKey' => $KEY, 'versions' => $dVer, 'departed' => $dDeparted,
+        'read' => function ($locs) {
+            $out = array();
+            foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('SAME');
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        }));
+    $dGroupRow = function () use ($dbA, $DPID, $GEND) {
+        return $dbA->select('SELECT phase, candidate_epoch, collision_state, distinct_records FROM '
+            . Schema::table('unique_group') . ' WHERE project_id = ? AND generation_id = ?', array($DPID, $GEND));
+    };
+    $dFin->step($GEND, 10, 2);
+    $dDrops = 0;
+    for ($i = 0; $i < 12 && $dGone; $i++) {
+        $s = $dFin->step($GEND, 10, 2);
+        if ($s['why'] !== null && strpos($s['why'], 'left the group') !== false) $dDrops++;
+    }
+    $afterDrops = $dGroupRow();
+    check('rvf2-5: four departures, one a verify page, leave the group at its first epoch with four records',
+        $dDrops === 4 && count($afterDrops) === 1 && (int) $afterDrops[0][1] === 1
+        && (int) $afterDrops[0][3] === 4);
+    // One edit, once, to a record still in the group (D8 is on its last page).
+    $dVer->v['D8'] = '101';
+    $dRestarts = 0;
+    $dLast = null;
+    for ($i = 0; $i < 30; $i++) {
+        $dLast = $dFin->step($GEND, 10, 2);
+        if ($dLast['why'] !== null && strpos($dLast['why'], 'changed while it was being checked') !== false) $dRestarts++;
+        if ($dLast['done']) break;
+    }
+    $afterEdit = $dGroupRow();
+    check('rvf2-5: the edit after them gets its restart, one',
+        $dRestarts === 1 && (int) $afterEdit[0][1] === 2);
+    check('rvf2-5: and the group is decided, not blocked as kept changing',
+        $dLast !== null && $dLast['done'] === true
+        && $afterEdit[0][0] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::G_PUBLISHED
+        && (int) $afterEdit[0][2] === 0);
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}

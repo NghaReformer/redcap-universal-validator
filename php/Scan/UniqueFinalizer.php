@@ -156,7 +156,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * takes the changed records' versions as the ones it checks against -
      * so this is reached only by a group whose records keep changing while
      * it is decided, and such a group is blocked as undecidable: the run
-     * ends partial instead of checking it for ever.
+     * ends partial instead of checking it for ever. Counted as the group's
+     * candidate_epoch less 1, which only restart() moves (review rvf2-5).
      */
     const MAX_RESTARTS = 3;
 
@@ -963,7 +964,16 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * one discover() makes for a group, over uq_candidate_v2's leading
      * (project_id, generation_id, group_hmac). A group left with one record,
      * or with lookups only, is a singleton, as discover() would have written
-     * it; otherwise it starts again at a new epoch, as restart() does.
+     * it; otherwise it is verified again from its first candidate.
+     *
+     * AT THE SAME EPOCH (review rvf2-5). This moved candidate_epoch as
+     * restart() does, and MAX_RESTARTS counts candidate_epoch, so a group
+     * that lost four records to another group was blocked as "kept changing"
+     * on the first edit to a record still in it, with no restart. A drop
+     * needs no new epoch: it happens in verify(), before the group has
+     * emitted anything at this epoch, so no staged row is made obsolete by
+     * it, and every later write is fenced on the epoch the group row holds.
+     * candidate_epoch - 1 is the number of restarts and nothing else.
      */
     private function dropCandidates($generationId, array $g, array $candidateIds)
     {
@@ -979,7 +989,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $phase = ($records > 1 && isset($c[0][1]) && (int) $c[0][1] === 0)
                ? self::G_NEW : self::G_SINGLETON;
         $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-            SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
+            SET verify_cursor = 0, emit_cursor = 0,
                 representative = NULL, phase = ?, distinct_records = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [$phase, $records, $this->pid, $g['group_id'], $g['candidate_epoch']]);
