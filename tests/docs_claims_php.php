@@ -324,7 +324,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('README.md: its outcome table quotes every coverage sentence', $tableQuotes === count($sentences));
     foreach ([ScanPageView::NOT_CERTIFIED, ScanPageView::DETAIL_TRUNCATED,
               str_replace(' {date}.', '', ScanPageView::JUDGED_AS_OF),
-              ScanPageView::STOPPED_WITHHELD, ScanPageView::STOPPED_PROVED] as $s) {
+              ScanPageView::STOPPED_WITHHELD, ScanPageView::STOPPED_PROVED, ScanPageView::UPGRADED] as $s) {
         check('README.md quotes "' . $s . '" as the page words it', strpos($readme, $s) !== false);
     }
 

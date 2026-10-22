@@ -307,6 +307,18 @@ class ScanPageView
                          . 'check had run, so it is not a complete picture of the group.';
 
     /**
+     * The ending of a run an upgrade of this module ended (review W12-N4).
+     * Its stored reason (Scan\ScanPromotion::ENGINE_UPGRADED) was never shown:
+     * the request that ended it said so, and every status and panel after it
+     * said only that the scan failed and describes nothing, which reads as a
+     * broken installation. The work answer is this sentence too
+     * (Scan\ScanService::ENGINE_CHANGED). No apostrophes.
+     */
+    const UPGRADED = 'This module was upgraded while this scan was running, and the new version judges '
+                   . 'some values differently, so the scan was ended rather than finished half under each '
+                   . 'version. Start a new scan.';
+
+    /**
      * The empty-scope sentence of a group-scoped run whose records left the
      * group while it ran (review rvf1-2). EMPTY_SCOPE says none was in scope
      * or every one was deleted, and of a run whose whole group moved to
@@ -322,16 +334,20 @@ class ScanPageView
                            . 'about the group.';
 
     /**
-     * The coverage half of a finished run's sentence: STOPPED_WITHHELD for a
-     * withheld run that was stopped or expired, STOPPED_PROVED for a
-     * group-scoped one that was stopped or expired with its counts shown,
-     * EMPTY_SCOPE_LEFT or EMPTY_SCOPE_LEFT_DELETED for an empty scope that
-     * records left, coverageSentence() for every other. js/scan.js decides
-     * the same way.
+     * The coverage half of a finished run's sentence: UPGRADED for a run an
+     * upgrade of the module ended, STOPPED_WITHHELD for a withheld run that
+     * was stopped or expired, STOPPED_PROVED for a group-scoped one that was
+     * stopped or expired with its counts shown, EMPTY_SCOPE_LEFT or
+     * EMPTY_SCOPE_LEFT_DELETED for an empty scope that records left,
+     * coverageSentence() for every other. js/scan.js decides the same way.
      */
     public static function endedSentence($status)
     {
         $t = (is_array($status) && isset($status['terminal'])) ? (string) $status['terminal'] : '';
+        if (!empty($status['upgraded']) && $t === Scan\ScanOutcome::FAILED) {
+            return isset($status['detail']) && (string) $status['detail'] === Scan\ScanOutcome::DETAIL_TRUNCATED
+                ? self::UPGRADED . ' ' . self::DETAIL_TRUNCATED : self::UPGRADED;
+        }
         $stopped = ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED);
         if (!empty($status['withheld']) && $stopped) {
             return self::STOPPED_WITHHELD;
@@ -530,6 +546,7 @@ class ScanPageView
             'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
             'stoppedWithheld' => self::STOPPED_WITHHELD,
             'stoppedProved'   => self::STOPPED_PROVED,
+            'upgraded'        => self::UPGRADED,
             'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
             'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
             'none'            => self::COUNT_NONE,

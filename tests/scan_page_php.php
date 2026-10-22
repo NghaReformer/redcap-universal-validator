@@ -2020,6 +2020,28 @@ namespace {
             $V::endedSentence($proved(['withheld' => true])) === $V::STOPPED_WITHHELD);
         check('PREFILL rvfix-N2: the sentence carries no apostrophe into the script block',
             strpos($V::STOPPED_PROVED, "'") === false);
+        // W12-N4. A run an upgrade of the module ended said only that it
+        // failed and describes nothing, on every status and panel after the
+        // request that ended it.
+        $up = ['ok' => true, 'phase' => 'terminal', 'terminal' => 'failed', 'coverage' => 'failed',
+               'detail' => 'complete', 'scope' => 'project', 'upgraded' => true, 'total' => 3, 'done' => 0,
+               'settled' => 0, 'active' => false];
+        check('PREFILL W12-N4: a run an upgrade ended says so, not only that it failed',
+            strpos($V::panelPrefill($up)['done'], $V::UPGRADED) === 0
+            && strpos($V::panelPrefill($up)['done'], $V::coverageSentence('failed')) === false);
+        check('PREFILL W12-N4: it is the sentence the request that ended it answered with',
+            $V::UPGRADED === \INSPIRE\UniversalValidator\Scan\ScanService::ENGINE_CHANGED
+            && strpos($V::UPGRADED, "'") === false);
+        check('PREFILL W12-N4: a truncated one still says findings were not kept',
+            $V::endedSentence(['detail' => 'truncated'] + $up) === $V::UPGRADED . ' ' . $V::DETAIL_TRUNCATED);
+        check('PREFILL W12-N4 control: a failed run nothing upgraded keeps the failed sentence',
+            $V::endedSentence(['upgraded' => false] + $up) === $V::coverageSentence('failed'));
+        check('PREFILL W12-N4 control: and the flag on a run that did not fail changes nothing',
+            $V::endedSentence(['terminal' => 'cancelled', 'coverage' => 'partial'] + $up)
+            === $V::coverageSentence('partial'));
+        check('PREFILL W12-N4: a group run before its fence keeps the flag, which counts nothing',
+            $AZ::preFenceStatus($up)['upgraded'] === true && !isset($AZ::preFenceStatus($up)['total'])
+            && strpos($V::panelPrefill($AZ::preFenceStatus($up))['done'], $V::UPGRADED) === 0);
         check('PREFILL rv5b-2: a withheld status with no sentence that has ended is not promised its counts',
             $V::countsText(['ok' => true, 'withheld' => true, 'terminal' => 'cancelled'])
             === $AZ::WITHHELD_ENDED);
@@ -2217,8 +2239,8 @@ namespace {
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
-                      'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'emptyLeft', 'emptyLeftDeleted',
-                      'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
+                      'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'upgraded', 'emptyLeft',
+                      'emptyLeftDeleted', 'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
                       'filterAll', 'reportSuffix'];
         $all = '';
@@ -2231,8 +2253,8 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld', 'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'emptyLeft', 'emptyLeftDeleted',
-                  'none', 'asOf',
+                  'withheld', 'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'upgraded', 'emptyLeft',
+                  'emptyLeftDeleted', 'none', 'asOf',
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
                   'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
                   'reportSuffix'] as $k) {

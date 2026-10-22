@@ -1000,6 +1000,13 @@ stopped after it confirmed which records belong to this Data Access Group, so
 its counts are for the group. It ended before every check had run, so it is
 not a complete picture of the group."
 
+A run that an upgrade of this module ended, because the new version judges
+some values differently, says so in place of the last sentence, on the page
+and in the answer to the request that ended it: "This module was upgraded
+while this scan was running, and the new version judges some values
+differently, so the scan was ended rather than finished half under each
+version. Start a new scan."
+
 A run ends as `complete`, `partial`, `cancelled`, `failed` or `expired`. Only a
 complete run can certify the project: every record checked through the fixed
 point, every finding kept, nothing found, and every rule evaluated. A run that

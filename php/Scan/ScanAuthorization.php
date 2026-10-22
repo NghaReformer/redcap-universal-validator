@@ -296,10 +296,12 @@ final class ScanAuthorization
         // findings were not kept, because the scan reached the limit" while
         // its counts were withheld.
         // `asOf` is the day the run's date rules are judged as of (W10BF-3): a
-        // fact of the run's configuration, counting nothing.
+        // fact of the run's configuration, counting nothing. `upgraded` says
+        // an upgrade of the module ended it (W12-N4), which counts nothing
+        // either.
         $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
                  'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why',
-                 'asOf'];
+                 'asOf', 'upgraded'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for

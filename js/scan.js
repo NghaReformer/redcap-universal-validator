@@ -303,6 +303,15 @@
      */
     function endedSentence(st) {
         var L = labels();
+        // A run an upgrade of the module ended says so (review W12-N4).
+        if (st.upgraded === true && st.terminal === 'failed') {
+            var u = L.upgraded || 'This module was upgraded while this scan was running, and the new version judges some values differently, so the scan was ended rather than finished half under each version. Start a new scan.';
+            if (st.detail === 'truncated') {
+                u += ' ' + (L.truncated || 'Some findings were not kept, because the scan reached the '
+                                         + 'limit this project allows.');
+            }
+            return u;
+        }
         var stopped = (st.terminal === 'cancelled' || st.terminal === 'expired');
         if (st.withheld && stopped) {
             return L.stoppedWithheld || 'This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group.';

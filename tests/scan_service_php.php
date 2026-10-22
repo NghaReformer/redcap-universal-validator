@@ -4870,7 +4870,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     // rv10b1-6: AN UPGRADE IS SAID TO BE ONE. A run begun under an older
     // evaluator, on a project nobody touched, is ended - and its reason names
     // the upgrade, not the project's rules or design.
-    $upgraded = function ($pid, $oldEngine) use ($b7design, $b7codes) {
+    $upgraded = function ($pid, $oldEngine, $more = false) use ($b7design, $b7codes) {
         $inner = new ArrayScanStore();
         $m = new \E2eModule($inner);
         $m->structure = $b7design;
@@ -4891,7 +4891,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $runs[$rid]['policy_json'] = json_encode($policy);
         $p->setValue($inner, $runs);
         $w = (new ScanService($m, $inner))->work($pid, $rid);
-        return [$began, $inner->run($pid, $rid), $w];
+        return $more ? [$began, $inner->run($pid, $rid), $w, $m, $inner] : [$began, $inner->run($pid, $rid), $w];
     };
     list($began, $row, $w) = $upgraded(197, 'engine-4');
     check('rv10b1-6: a run keeps the evaluator revision it began under',
@@ -4902,11 +4902,31 @@ namespace INSPIRE\UniversalValidator\Scan {
         $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED);
     check('rv10b1-6: and so does the answer to the request that ended it',
         empty($w['ok']) && $w['why'] === ScanService::ENGINE_CHANGED);
+    // W12-N4: and every status and panel after it, not only that it failed.
+    check('W12-N4: the answer that ended it carries a status that says an upgrade ended it',
+        isset($w['status']['upgraded']) && $w['status']['upgraded'] === true
+        && $w['status']['terminal'] === ScanOutcome::FAILED
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($w['status'])['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::UPGRADED) === 0);
+    list($ub, $urow, $uw, $um, $us) = $upgraded(199, 'engine-4', true);
+    $ust = (new ScanService($um, $us))->status(199, (int) $urow['run_id']);
+    $uagain = (new ScanService($um, $us))->work(199, (int) $urow['run_id']);
+    check('W12-N4: so does a later status, and the panel built from it',
+        $ust['ok'] === true && $ust['upgraded'] === true
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($ust)['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::UPGRADED) === 0);
+    check('W12-N4: and the status a later Continue answers with',
+        isset($uagain['status']['upgraded']) && $uagain['status']['upgraded'] === true);
     list(, $row, $w) = $upgraded(198, null);
     check('rv10b1-6: a run whose policy names no revision was begun by an older build, and says so too',
         $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED && $w['why'] === ScanService::ENGINE_CHANGED);
     check('rv10b1-6 (control): a run the project changed under, same evaluator, still says the project changed',
         strpos((string) $inner->run(196, $rid)['terminal_reason'], 'validation rules or design changed') !== false);
+    $cst = (new ScanService($m, $inner))->status(196, $rid);
+    check('W12-N4 (control): and its status says no upgrade ended it',
+        $cst['ok'] === true && $cst['upgraded'] === false && $cst['terminal'] === ScanOutcome::FAILED
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($cst)['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::coverageSentence('failed')) === 0);
     // A setting that decides what is stored, loosened: not a privacy stop (it
     // shows more, it does not tighten), and still a different configuration.
     list($in, $fs, $m, $rid) = $b7(194);

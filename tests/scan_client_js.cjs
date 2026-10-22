@@ -148,6 +148,9 @@ UV.labels = {
   stoppedProved: 'This scan was stopped after it confirmed which records belong to this Data Access '
                + 'Group, so its counts are for the group. It ended before every check had run, so it '
                + 'is not a complete picture of the group.',
+  upgraded: 'This module was upgraded while this scan was running, and the new version judges some '
+          + 'values differently, so the scan was ended rather than finished half under each version. '
+          + 'Start a new scan.',
   emptyLeft: 'This scan has no record left to report on: every record it listed moved to another '
            + 'Data Access Group while it ran. Any findings it counted are on records no longer in '
            + 'the group. This result says nothing about the group.',
@@ -1216,6 +1219,30 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('rvfix-N2 client: and without the labels of the page it still says so',
     els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedProved) === 0);
   UV.labels = keptEndedLabels;
+
+  // W12-N4. A run an upgrade of the module ended says so wherever its ending
+  // is shown, as ScanPageView::endedSentence() does.
+  const upgradedSt = (over) => Object.assign(finished('failed'), { terminal: 'failed', upgraded: true }, over || {});
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a run an upgrade ended says so, not only that it failed',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded) === 0
+    && els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === -1);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ upgraded: false }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client control: a failed run nothing upgraded keeps the failed sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === 0);
+  const keptUpLabels = UV.labels;
+  UV.labels = Object.assign({}, keptUpLabels, { upgraded: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptUpLabels.upgraded) === 0);
+  UV.labels = keptUpLabels;
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);
