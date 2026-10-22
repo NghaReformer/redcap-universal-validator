@@ -70,10 +70,11 @@ namespace {
         check('array-store: a finding sent with no valid_from_seq opens at the run\'s own sequence',
             $row['valid_from_seq'] === (int) $s->run(760, $rid)['run_seq'] && $row['valid_from_seq'] > 0);
         check('array-store: and the stored row has every column the schema has, defaults filled',
-            count($row) === 34 && $row['valid_to_seq'] === null && $row['active_slot'] === 1
+            count($row) === 35 && $row['valid_to_seq'] === null && $row['active_slot'] === 1
             && $row['arm_id'] === null && $row['severity'] === 0 && $row['status_key'] === null
             && $row['value_binary'] === 0 && $row['stage_epoch'] === null
-            && $row['as_of'] === null && $row['z_score'] === null && $row['growth_reference'] === null);
+            && $row['as_of'] === null && $row['z_score'] === null && $row['growth_reference'] === null
+            && $row['justified'] === 0);
     }
 
     // A growth finding's z-score, in this store's own row shape: stored with

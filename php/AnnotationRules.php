@@ -48,6 +48,7 @@ class AnnotationRules
     const TAG_RANGE = '@UVRANGE';
     const TAG_DELTA = '@UVDELTA';
     const TAG_WRITEONCE = '@UVWRITEONCE';
+    const TAG_JUSTIFY = '@UVJUSTIFY';
 
     /**
      * @UVDELTA "vs" shorthands: this same field in another entry of the
@@ -1271,6 +1272,72 @@ class AnnotationRules
         }
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVJUSTIFY value into a justify fragment:
+     *   @UVJUSTIFY={"reason":"[weight_reason]","message":"Say why this weight is right."}
+     * A broken rule of another tag on the field (a mode whose php/modes.json
+     * "justify" is true) may then be saved once the reason field holds a
+     * reason: the save guard lets the field through, and the audit and the
+     * scan report the finding as justified. "reason" is one plain field
+     * reference; whether that field exists, sits on the same form and takes
+     * text or a choice is checked with the dictionary in hand
+     * (UniversalValidator::annotateJustifyDictionary), and whether the field
+     * has a rule a reason can stand for once every rule is known
+     * (UniversalValidator::applyJustify).
+     */
+    private static function parseJustifyValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        $eg = self::TAG_JUSTIFY . '={"reason":"[weight_reason]"}';
+        if ($val === '') {
+            return ['error' => self::TAG_JUSTIFY . ' needs the field that holds the reason, e.g. ' . $eg . '.'];
+        }
+        if ($val[0] !== '{') {
+            return ['error' => self::TAG_JUSTIFY . ' takes its settings as JSON, e.g. ' . $eg . '.'];
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_JUSTIFY . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"', 'references' => '"references"'] as $k => $label) {
+            if (array_key_exists($k, $cfg)) return ['error' => self::justifyTakesNo($label)];
+        }
+        $allowed = ['reason', 'message'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_JUSTIFY . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'justify'];
+        if (array_key_exists('reason', $cfg)) {
+            if (!is_string($cfg['reason'])) return ['error' => self::JUSTIFY_REASON_SHAPE];
+            $ref = trim($cfg['reason']);
+            if (preg_match('/^\[([a-z][a-z0-9_]*)\]$/D', $ref, $m)) {
+                $out['justifyReason'] = $m[1];
+            } elseif (preg_match('/^\[[^\[\]]+\](\[[^\[\]]+\])+$/D', $ref)) {
+                return ['error' => '"reason" names one field on this form, with no event or instance — e.g. "[weight_reason]".'];
+            } else {
+                return ['error' => self::JUSTIFY_REASON_SHAPE];
+            }
+        }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+        if (isset($cfg['message'])) {
+            if (!is_string($cfg['message'])) return ['error' => '"message" must be a string.'];
+            $out['message'] = $cfg['message'];
+        }
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    const JUSTIFY_REASON_SHAPE = '"reason" must be one field reference, e.g. "[weight_reason]".';
+
+    /** The refusal of a key @UVJUSTIFY does not take. */
+    private static function justifyTakesNo($label)
+    {
+        return self::TAG_JUSTIFY . ' takes no ' . $label . ': a reason stands for the other rules on the field whenever they apply.';
     }
 
     /** The "vs" shorthands as a list in words: "previous-event, ... or first-instance". */
@@ -3152,6 +3219,26 @@ class AnnotationRules
             if (array_key_exists($k, $frag)) {
                 $errors[] = self::TAG_WRITEONCE . ' takes no ' . $label . ': a value locked after its first save stays locked.';
             }
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a justify (@UVJUSTIFY) fragment: "reason" is
+     * one field name; no "when", "caseSensitive" or "blockSave". The rest
+     * needs the data dictionary (UniversalValidator::annotateJustifyDictionary)
+     * or every rule of the project (UniversalValidator::applyJustify).
+     */
+    public static function checkJustify(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (!isset($frag['justifyReason'])) {
+            $errors[] = self::TAG_JUSTIFY . ' needs "reason", the field that holds the reason — e.g. "reason":"[weight_reason]".';
+        } elseif (!is_string($frag['justifyReason']) || !preg_match('/^[a-z][a-z0-9_]*$/D', $frag['justifyReason'])) {
+            $errors[] = self::JUSTIFY_REASON_SHAPE;
+        }
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"'] as $k => $label) {
+            if (array_key_exists($k, $frag)) $errors[] = self::justifyTakesNo($label);
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
     }

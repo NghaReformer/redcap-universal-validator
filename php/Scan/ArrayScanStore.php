@@ -758,10 +758,11 @@ final class ArrayScanStore implements ScanStore
             'value_expires_at'  => $or('value_expires_at', null),
             'group_hmac'        => $or('group_hmac', null),
             'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
-            // Schema versions 3 and 5, as SqlScanStore::findingRow().
+            // Schema versions 3, 5 and 6, as SqlScanStore::findingRow().
             'as_of'             => isset($f['as_of']) ? (string) $f['as_of'] : null,
             'z_score'           => isset($f['z_score']) ? (string) $f['z_score'] : null,
             'growth_reference'  => isset($f['growth_reference']) ? (string) $f['growth_reference'] : null,
+            'justified'         => empty($f['justified']) ? 0 : 1,
         ];
     }
 

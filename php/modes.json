@@ -37,7 +37,10 @@
     "when (optional, false only): the mode takes no condition, so its rules carry no \"when\" and no \"caseSensitive\"",
     "(ModeRegistry::takesWhen). Every other mode takes one.",
     "missingCodes: skip = a field holding a Missing Data Code is left out before the evaluator runs; answer = the",
-    "evaluator is given the code (@UVREQUIRED counts it as an answer, @UVWRITEONCE finds a code saved over a locked value)."
+    "evaluator is given the code (@UVREQUIRED counts it as an answer, @UVWRITEONCE finds a code saved over a locked value).",
+    "justify (true or false): whether a reason given under @UVJUSTIFY stands for a broken rule of the mode. The save guard",
+    "then lets the field save, and the audit and the scan report the finding as justified instead of open",
+    "(UniversalValidator::applyJustify writes justifyBy on each such rule; ModeRegistry::justifies)."
   ],
   "common": {
     "refKeys": [
@@ -61,6 +64,7 @@
       "hooks": {},
       "evaluator": "findingsCheck",
       "missingCodes": "skip",
+      "justify": true,
       "refKeys": [],
       "branchKeys": ["algorithm", "idPattern", "alternates", "source", "strip", "keepChars",
                      "idLengths", "idMinLen", "idMaxLen", "expectedIds",
@@ -90,6 +94,7 @@
       "hooks": {},
       "evaluator": "findingsConstraint",
       "missingCodes": "skip",
+      "justify": true,
       "refKeys": [
         {"key": "assert", "kind": "cond", "role": "test", "ast": "assertAst"}
       ],
@@ -121,6 +126,7 @@
       "hooks": {},
       "evaluator": "findingsRequired",
       "missingCodes": "answer",
+      "justify": true,
       "refKeys": [],
       "branchKeys": ["blockSave", "caseSensitive", "message", "references", "i18n"],
       "clientKeys": ["blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields", "i18n"],
@@ -146,6 +152,7 @@
       "hooks": {"field": "annotateUniqueField", "dictionary": "annotateUniqueDictionary"},
       "evaluator": "findingsUnique",
       "missingCodes": "skip",
+      "justify": false,
       "refKeys": [
         {"key": "uniqueWith", "kind": "fieldList", "role": "test"},
         {"key": "uniqueAlso", "kind": "fieldList", "role": "lookup"}
@@ -176,6 +183,7 @@
       "hooks": {"field": "annotateChoicesField", "dictionary": "annotateChoicesDictionary"},
       "evaluator": "findingsChoices",
       "missingCodes": "skip",
+      "justify": true,
       "refKeys": [],
       "branchKeys": ["choicesShow", "choicesHide", "choicesAll", "i18n"],
       "clientKeys": ["choicesShow", "choicesHide", "choicesAll", "i18n"],
@@ -201,6 +209,7 @@
       "hooks": {"field": "annotateWindowField", "dictionary": "annotateWindowDictionary"},
       "evaluator": "findingsWindow",
       "missingCodes": "skip",
+      "justify": true,
       "refKeys": [
         {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue",
          "withholdIf": "windowNotFuture"}
@@ -239,6 +248,7 @@
       "hooks": {"field": "annotateExistsField", "dictionary": "annotateExistsDictionary"},
       "evaluator": "findingsExists",
       "missingCodes": "skip",
+      "justify": true,
       "refKeys": [
         {"key": "existsLocal", "kind": "fieldList", "role": "test"},
         {"key": "existsTargets", "kind": "fieldList", "role": "lookup"}
@@ -277,6 +287,7 @@
       "hooks": {"field": "annotateRangeField", "dictionary": "annotateRangeDictionary"},
       "evaluator": "findingsRange",
       "missingCodes": "skip",
+      "justify": true,
       "branchGroup": {"key": "rangeReference", "name": "reference"},
       "refKeys": [
         {"key": "rangeSex", "kind": "operand", "role": "test", "op": "rangeSexOp", "value": "rangeSexValue"},
@@ -333,6 +344,7 @@
       "hooks": {"field": "annotateDeltaField", "dictionary": "annotateDeltaDictionary"},
       "evaluator": "findingsDelta",
       "missingCodes": "skip",
+      "justify": true,
       "branchGroup": {"key": "deltaGroup", "name": "vs and direction", "surveyOpaque": true},
       "refKeys": [
         {"key": "deltaVs", "kind": "operand", "role": "test", "op": "deltaVsOp", "value": "deltaVsValue"}
@@ -373,6 +385,7 @@
       "hooks": {"field": "annotateWriteonceField", "dictionary": "annotateWriteonceDictionary", "page": "pageWriteonce"},
       "evaluator": "findingsWriteonce",
       "missingCodes": "answer",
+      "justify": false,
       "refKeys": [],
       "branchKeys": ["writeonceRoles", "writeonceSince", "writeonceRolesUnread", "writeonceSaved", "message", "i18n"],
       "clientKeys": ["writeonceRolesUnread", "writeonceSaved", "message", "i18n"],
@@ -384,6 +397,34 @@
       "findingKeys": {"lockedAt": {"log": "locked_at", "scan": "asOf"}, "changedAt": {"log": "changed_at"}},
       "lock": {"returnWhy": "@UVWRITEONCE cannot lock \"[{field}]\": the rule on \"{by}\" returns a value to it, which is written again on every save."},
       "scan": {"issueLabels": {"changed": "Changed after it was locked", "cleared": "Cleared after it was locked", "*": "Changed after it was locked"}}
+    },
+    {
+      "mode": "justify",
+      "tag": "@UVJUSTIFY",
+      "types": ["justify"],
+      "defaultType": "justify",
+      "parser": "parseJustifyValue",
+      "checker": "checkJustify",
+      "when": false,
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "checkbox", "slider", "sql", "calc"],
+        "annotationWhy": "@UVJUSTIFY does not support \"{type}\" fields — no rule a reason can stand for checks one.",
+        "dialogWhy": "a Justify rule supports the fields the rules it stands for check"
+      },
+      "hooks": {"field": "annotateJustifyField", "dictionary": "annotateJustifyDictionary"},
+      "evaluator": "findingsJustify",
+      "missingCodes": "skip",
+      "justify": false,
+      "refKeys": [],
+      "branchKeys": ["justifyReason", "message", "i18n"],
+      "clientKeys": ["justifyReason", "message", "i18n"],
+      "serverKeys": ["justifyBy"],
+      "textKeys": ["message"],
+      "needs": [],
+      "dialog": false,
+      "js": {"factories": {"justify": "QRIDJustifyInit"}},
+      "scan": {"issueLabels": {"*": "Saved with a reason"}}
     }
   ]
 }

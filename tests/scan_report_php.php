@@ -163,7 +163,7 @@ namespace {
             'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => 0, 'check_type' => 'unique',
             'reason_code' => 'duplicate', 'reason_bits' => 0, 'dag_key' => null,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
-            'as_of' => null, 'z_score' => null, 'growth_reference' => null,
+            'as_of' => null, 'z_score' => null, 'growth_reference' => null, 'justified' => 0,
         ];
     }
 
@@ -175,7 +175,7 @@ namespace {
             'rule_ord' => 1, 'check_type' => 'constraint', 'reason_code' => 'assert', 'reason_bits' => 0,
             'dag_key' => null, 'value_bin' => 'NO', 'value_len' => 2, 'value_truncated' => 0,
             'value_expires_at' => LATER,
-            'as_of' => null, 'z_score' => null, 'growth_reference' => null,
+            'as_of' => null, 'z_score' => null, 'growth_reference' => null, 'justified' => 0,
         ];
         foreach ($over as $k => $v) {
             if (!array_key_exists($k, $base)) throw new \InvalidArgumentException("no stored key $k");
@@ -374,11 +374,11 @@ namespace {
      * ===================================================================== */
     {
         $map = mapper();
-        // 17 names from wave 8, and as_of, z_score and growth_reference from
-        // schema versions 3 and 5.
-        check('contract: INPUT_KEYS is the 20 names the stores must return',
-            count(FindingRowMapper::INPUT_KEYS) === 20
-            && count(array_unique(FindingRowMapper::INPUT_KEYS)) === 20);
+        // 17 names from wave 8, as_of, z_score and growth_reference from
+        // schema versions 3 and 5, and justified from version 6.
+        check('contract: INPUT_KEYS is the 21 names the stores must return',
+            count(FindingRowMapper::INPUT_KEYS) === 21
+            && count(array_unique(FindingRowMapper::INPUT_KEYS)) === 21);
         check('contract (control): a whole row maps', is_array($map->toFinding(row())));
         check('contract: a positional row throws',
             throws('InvalidArgumentException', function () use ($map) { $map->toFinding(array_values(row())); }));
@@ -413,9 +413,10 @@ namespace {
 
         $f = $map->toFinding(row());
         // asOf, z and reference are the sink's optional note keys (a
-        // @UVWINDOW day, a growth z-score and its reference).
+        // @UVWINDOW day, a growth z-score and its reference), and justified
+        // its mark of a finding a reason stands for (@UVJUSTIFY).
         $sink = ['record', 'dag', 'event_id', 'instrument', 'instance', 'field', 'value', 'valueWithheld', 'type', 'reason', 'rule',
-                 'asOf', 'z', 'reference'];
+                 'asOf', 'z', 'reference', 'justified'];
         check('contract: the output is the sink shape the renderers already take, plus three',
             array_diff($sink, array_keys($f)) === []
             && array_values(array_diff(array_keys($f), $sink)) === ['valueState', 'ruleSource', 'findingId']);
@@ -431,6 +432,12 @@ namespace {
             $gone['z'] === null && $gone['reference'] === 'who-wfa');
         $capped = mapper(['readerCeiling' => 'locations'])->toFinding(row($g));
         check('notes: a reader capped at locations is not shown the z-score', $capped['z'] === null);
+        // Schema version 6: a reason (@UVJUSTIFY) stands for the finding. The
+        // drivers return the column as a number or as text.
+        check('justified: 1 maps to true, as a number or as text',
+            $map->toFinding(row(['justified' => 1]))['justified'] === true && $map->toFinding(row(['justified' => '1']))['justified'] === true);
+        check('justified: 0 maps to false', $map->toFinding(row())['justified'] === false
+            && $map->toFinding(row(['justified' => '0']))['justified'] === false);
     }
 
     /* =====================================================================
@@ -814,7 +821,7 @@ namespace {
         check('rules: an unknown source id falls back to the ordinal',
             ScanColumns::row(mapper()->toFinding(row(['rule_source_id' => 'gone'])), $d)['rule_label'] === 'A must be OK');
         check('rules: an ordinal nobody knows keeps its number and has no name',
-            $d->ruleOf(['rule' => 12]) === ['type' => '', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '', 'fields' => [], 'detail' => [], 'ordinal' => 12]);
+            $d->ruleOf(['rule' => 12]) === ['type' => '', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '', 'fields' => [], 'detail' => [], 'justifyBy' => [], 'ordinal' => 12]);
         check('rules: a negative or non-numeric ordinal is no rule',
             $d->ruleOf(['rule' => -3])['ordinal'] === 0 && $d->ruleOf(['rule' => 'x'])['ordinal'] === 0
             && $d->ruleOf([])['ordinal'] === 0);

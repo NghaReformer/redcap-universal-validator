@@ -2087,7 +2087,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         public function commit() {}
         public function rollback() {}
     };
-    for ($i = 1; $i <= 40; $i++) $findingPage->page[] = [$i, 'f' . ($i % 3), 'required-blank', null, 'required'];
+    for ($i = 1; $i <= 40; $i++) $findingPage->page[] = [$i, 'f' . ($i % 3), 'required-blank', null, 'required', 0];
     list($store, $runId) = $fixture(['A'], 825);
     $ep = (int) $store->run(825, $runId)['lease_epoch'];
     foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP] as $p) {
@@ -3274,9 +3274,25 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('tally: axes that disagree answer with the LARGER, which cannot certify',
             $skew['violations'] === 6);
         check('tally: every rollup axis is read, so a new one cannot be forgotten here',
-            count($K) === 4 && ScanPromotion::tally([['kind' => $K[2], 'cnt' => 2]])['violations'] === 2);
-        check('tally: nothing found is three zeroes',
-            ScanPromotion::tally([]) === ['violations' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+            count($K) === 5 && ScanPromotion::tally([['kind' => $K[2], 'cnt' => 2]])['violations'] === 2
+            && ScanPromotion::tally([['kind' => $K[4], 'axis1' => 'open', 'cnt' => 2]])['violations'] === 2);
+        check('tally: nothing found is four zeroes',
+            ScanPromotion::tally([]) === ['violations' => 0, 'justified' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+        // A reason (@UVJUSTIFY) stands for some findings: they are counted apart
+        // and are no violations, so a run whose findings all have one is clean.
+        $j = ScanPromotion::tally([['kind' => $K[0], 'axis1' => 'fa', 'cnt' => 5],
+            ['kind' => RollupBuilder::K_STANDING, 'axis1' => RollupBuilder::STANDING_OPEN, 'cnt' => 2],
+            ['kind' => RollupBuilder::K_STANDING, 'axis1' => RollupBuilder::STANDING_JUSTIFIED, 'cnt' => 3]]);
+        check('tally: findings a reason stands for are counted apart from the violations (got ' . json_encode($j) . ')',
+            $j['violations'] === 2 && $j['justified'] === 3);
+        $all = ScanPromotion::tally([['kind' => $K[0], 'axis1' => 'fa', 'cnt' => 4],
+            ['kind' => RollupBuilder::K_STANDING, 'axis1' => RollupBuilder::STANDING_JUSTIFIED, 'cnt' => 4]]);
+        check('tally: every finding with its reason given leaves no violation', $all['violations'] === 0 && $all['justified'] === 4);
+        check('tally: a run summarised before the axis existed keeps every finding a violation',
+            ScanPromotion::tally([['kind' => $K[0], 'axis1' => 'fa', 'cnt' => 4]]) === ['violations' => 4, 'justified' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+        $over = ScanPromotion::tally([['kind' => $K[0], 'axis1' => 'fa', 'cnt' => 1],
+            ['kind' => RollupBuilder::K_STANDING, 'axis1' => RollupBuilder::STANDING_JUSTIFIED, 'cnt' => 7]]);
+        check('tally: a justified count never goes past the findings', $over['violations'] === 0 && $over['justified'] === 7);
 
         // The term, in facts(). A finished summary is believed over the counter
         // in BOTH directions; an unfinished one only ever raises it.

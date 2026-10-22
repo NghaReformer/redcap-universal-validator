@@ -85,6 +85,9 @@ class UniversalValidator extends AbstractExternalModule
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
 
+    /** How many findings of the running legacy scan a reason stands for (scanRecord, scanProject). */
+    private $scanJustified = 0;
+
     /** The engine's default settings; each rule may override any of them. */
     private function defaults()
     {
@@ -472,8 +475,12 @@ class UniversalValidator extends AbstractExternalModule
             foreach (ModeRegistry::findingKeys() as $fk => $to) {
                 if (isset($to['log'], $v[$fk]) && is_scalar($v[$fk])) $extra[$to['log']] = (string) $v[$fk];
             }
+            // A broken rule saved with a reason (@UVJUSTIFY): logged apart from the
+            // open ones, naming the reason field. The reason itself is never logged.
+            $justified = !empty($v['justified']) && isset($v['justifiedBy']);
+            if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
-                $extra);
+                $extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');
         }
         foreach ((isset($f['unevaluated']) ? $f['unevaluated'] : []) as $u) {
             $this->logNotEvaluated($logMode, $project_id, $record, $ruleIndex, $u, $instrument, $event_id, $repeat_instance);
@@ -642,7 +649,8 @@ class UniversalValidator extends AbstractExternalModule
                 $returns = array_merge(self::ownedReturns($rule, $meta, $held), $returns);
                 if ($returns) $out['returns'] = $returns;
             }
-            return $out;
+            // judged by the branch it picked, justified by the field's reason (justifyBy is the rule's, never a branch's)
+            return $this->markJustified($out, $rule, $values, $resolution, $project_id);
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -723,8 +731,33 @@ class UniversalValidator extends AbstractExternalModule
 
         // The mode's own verdict (php/modes.json "evaluator").
         $evaluator = ModeRegistry::evaluator($mode);
-        return $this->withReturned(
-            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret, $rule, $meta);
+        return $this->withReturned($this->markJustified(
+            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta),
+            $rule, $values, $resolution, $project_id), $ret, $rule, $meta);
+    }
+
+    /**
+     * Marks each finding in $out justified, with justifiedBy, whose field
+     * has its reason given in the same record, event and instance ($values):
+     * the reason field named in the rule's justifyBy (applyJustify) holds a
+     * reason (Logic::reasonGiven). A reason field that was not read, or could
+     * not be resolved here, leaves the finding open.
+     */
+    private function markJustified(array $out, array $rule, array $values, array $resolution, $project_id)
+    {
+        if (empty($out['invalid']) || !isset($rule['justifyBy']) || !is_array($rule['justifyBy'])) return $out;
+        $codes = null;
+        foreach ($out['invalid'] as $k => $v) {
+            $f = isset($v['field']) ? (string) $v['field'] : '';
+            $reason = isset($rule['justifyBy'][$f]) && is_string($rule['justifyBy'][$f]) ? $rule['justifyBy'][$f] : '';
+            if ($reason === '' || !array_key_exists($reason, $values)) continue;
+            if ((isset($resolution[$reason]) ? $resolution[$reason] : 'ok') !== 'ok') continue;
+            if ($codes === null) $codes = $this->missingDataCodes($project_id);
+            if (!Logic::reasonGiven($values[$reason], $codes)) continue;
+            $out['invalid'][$k]['justified'] = true;
+            $out['invalid'][$k]['justifiedBy'] = $reason;
+        }
+        return $out;
     }
 
     /**
@@ -3657,6 +3690,55 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * @UVJUSTIFY "field" hook: the reason cannot be the field itself.
+     */
+    private function annotateJustifyField(array $frag, $name, array $meta, $pid)
+    {
+        if (isset($frag['justifyReason']) && $frag['justifyReason'] === $name) {
+            return ['error' => '"reason" names this field itself — name the field where the reason is written, e.g. "[' . $name . '_reason]".',
+                '_tag' => AnnotationRules::TAG_JUSTIFY];
+        }
+        return $frag;
+    }
+
+    /**
+     * @UVJUSTIFY "dictionary" hook: the reason field must exist, sit on the
+     * same form as the field, so the reason is given where the value is, and
+     * take a reason: a Text or Notes field, a dropdown, radio or SQL field.
+     */
+    private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $reason = isset($frag['justifyReason']) ? (string) $frag['justifyReason'] : '';
+        $dd = $this->dataDictionary($pid) ?: [];
+        if ($reason === '' || !$dd) return $frag;
+        $err = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_JUSTIFY]; };
+        if (!isset($dd[$reason])) return $err('"reason" names "[' . $reason . ']", which is not a field of this project.');
+        $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
+        $there = isset($dd[$reason]['form_name']) ? (string) $dd[$reason]['form_name'] : '';
+        if ($form !== $there) {
+            return $err('"reason" names "[' . $reason . ']", which is on the form "' . $there . '", not on "' . $form
+                . '" with this field — the reason is given on the form where the value is entered.');
+        }
+        $type = isset($dd[$reason]['field_type']) ? (string) $dd[$reason]['field_type'] : '';
+        if (!in_array($type, self::JUSTIFY_REASON_TYPES, true)) {
+            return $err('"reason" names "[' . $reason . ']", a "' . $type . '" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field.');
+        }
+        return $frag;
+    }
+
+    /** The field types a @UVJUSTIFY reason may be (annotateJustifyDictionary). */
+    const JUSTIFY_REASON_TYPES = ['text', 'notes', 'dropdown', 'radio', 'sql'];
+
+    /**
+     * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the
+     * findings of the field's other rules (markJustified).
+     */
+    private function findingsJustify(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
+    {
+        return ['invalid' => [], 'unconfigurable' => []];
+    }
+
+    /**
      * Whether $user holds one of $roles in project $pid: true, false (also for
      * a user with no rights row in the project, such as a survey respondent or
      * an administrator who was never added), or null when the roles cannot be
@@ -4009,7 +4091,7 @@ class UniversalValidator extends AbstractExternalModule
      * A keyed hash is pseudonymization, not anonymity: treat the module log as
      * identifying data for access/retention purposes (see README).
      */
-    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [])
+    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [], $message = 'invalid-id-saved')
     {
         if ($mode === 'off') return; // detection logging disabled entirely
         $entry = [
@@ -4037,7 +4119,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($h !== null) $entry['value_hmac'] = $h;
             else $entry['hmac_unavailable'] = '1';
         }
-        $this->log('invalid-id-saved', $entry);
+        $this->log($message, $entry);
     }
 
     /**
@@ -5409,7 +5491,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         unset($candidate);
-        $resolved = self::markReturnClashes(Branching::resolve($out));
+        $resolved = self::applyJustify(self::markReturnClashes(Branching::resolve($out)));
         if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
         return $resolved;
     }
@@ -5538,13 +5620,83 @@ class UniversalValidator extends AbstractExternalModule
         if (!$locked) return $rules;
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError']) || ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
-            $reads = array_map('strval', ModeRegistry::refFields($r));
+            // a reason field (@UVJUSTIFY) only lets the rule's finding save: it is
+            // no field the rule judges by, so it never makes a locked field hold the save
+            $reads = array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList']));
             $marks = [];
             foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
                 if (isset($locked[(string) $f]) && array_diff($reads, [(string) $f])) $marks[] = (string) $f;
             }
             if ($marks) $rules[$i]['lockReads'] = $marks;
         }
+        return $rules;
+    }
+
+    /**
+     * @UVJUSTIFY: a reason field stands for the broken rules of the modes a
+     * reason covers (php/modes.json "justify") on the field it is written on.
+     * Each live rule of such a mode on a field with a live justify rule gets
+     * justifyBy (field => reason field), which the audit and the scan read
+     * (ruleFindings, ModeRegistry::refFields); the page pairs a field with
+     * its reason from the justify rule itself (QRIDJustifyInit). A justify
+     * rule on a field that no rule of such a mode checks is a configuration
+     * error on that field alone: a tag written alike on several fields is one
+     * rule (AnnotationRules::groupMulti), so the field is split off into a
+     * rule of its own, as markReturnClashes splits a lock.
+     */
+    private static function applyJustify(array $rules)
+    {
+        $reasonOf = [];     // field => reason field
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            if (!isset($r['justifyReason']) || !is_string($r['justifyReason'])) continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $reasonOf[(string) $f] = $r['justifyReason'];
+        }
+        if (!$reasonOf) return $rules;
+        // A field with a rule a reason covers. A rule refused for its own
+        // configuration counts: its error already says what to fix.
+        $covered = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !ModeRegistry::justifies(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            $by = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (!isset($reasonOf[(string) $f])) continue;
+                $covered[(string) $f] = true;
+                $by[(string) $f] = $reasonOf[(string) $f];
+            }
+            if ($by && empty($r['configError'])) $rules[$i]['justifyBy'] = $by;
+        }
+        $tags = [];
+        $not = [];
+        foreach (ModeRegistry::all() as $m) {
+            if ($m['mode'] === 'justify') continue;
+            if ($m['justify'] === true) $tags[] = $m['tag']; else $not[] = $m['tag'];
+        }
+        $words = function (array $list) {
+            $last = array_pop($list);
+            return $list ? implode(', ', $list) . ' or ' . $last : (string) $last;
+        };
+        $why = 'no rule a reason can stand for checks this field — give it a rule of ' . $words($tags)
+            . ($not ? ' (a reason does not stand for ' . $words($not) . ')' : '') . '.';
+        $split = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $keep = [];
+            $mine = [];
+            foreach ($fields as $f) {
+                if (isset($covered[(string) $f])) { $keep[] = $f; continue; }
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => AnnotationRules::TAG_JUSTIFY . ' on "' . $f . '": ' . $why]);
+            }
+            if (count($keep) === count($fields)) continue;
+            if ($keep) {
+                $rules[$i]['fields'] = $keep;
+            } else {
+                $rules[$i] = array_shift($mine);
+            }
+            foreach ($mine as $x) $split[] = $x;
+        }
+        foreach ($split as $r) $rules[] = $r;
         return $rules;
     }
 
@@ -8702,7 +8854,8 @@ class UniversalValidator extends AbstractExternalModule
         // only ever set at the very end of the full path.
         $result = ['violations' => [], 'unconfigurable' => [], 'incomplete' => [],
                    'status' => 'failed',
-                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0]];
+                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0, 'justified' => 0]];
+        $this->scanJustified = 0;
 
         // Violations are the only channel that grows with the DATA, so they are
         // the only thing handed out as they are found. Without a sink the
@@ -9020,7 +9173,10 @@ class UniversalValidator extends AbstractExternalModule
         // in bold, with the truth in a bullet inside a warning box, and the same
         // 400 on the export's metadata line.
         $result['stats']['records'] = $reached;
-        $result['stats']['violations'] = $sink->count();
+        // Open findings only: the ones a reason stands for (@UVJUSTIFY) are
+        // counted apart, and the sink still holds every row.
+        $result['stats']['justified'] = $this->scanJustified;
+        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);
         // COVERAGE is a separate axis from STATUS. Status says whether the sweep
         // finished; coverage says what finishing is worth on this installation.
         // A run that read every record on its opening list, on a server where no
@@ -9693,6 +9849,8 @@ class UniversalValidator extends AbstractExternalModule
                 // no one reference, so the finding carries its own.
                 'z_score' => isset($v['z']) ? (string) $v['z'] : null,
                 'growth_reference' => isset($v['reference']) ? substr((string) $v['reference'], 0, 64) : null,
+                // A reason (@UVJUSTIFY) stands for it: counted apart, and no bar to clean.
+                'justified' => empty($v['justified']) ? 0 : 1,
             ];
         }
 
@@ -10657,7 +10815,11 @@ class UniversalValidator extends AbstractExternalModule
                           // withholds as well.
                           + (isset($v['z']) && is_string($rv) && isset($plan['valueMode']) && $plan['valueMode'] === 'raw'
                               ? ['z' => (string) $v['z']] : [])
-                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : []));
+                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : [])
+                          // a broken rule saved with a reason (@UVJUSTIFY), counted apart from the open ones
+                          + (!empty($v['justified']) && isset($v['justifiedBy'])
+                              ? ['justified' => true, 'justifiedBy' => (string) $v['justifiedBy']] : []));
+                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;
                     }
                     foreach ($f['unconfigurable'] as $u) {
                         $key = $i . '|' . $u['why'];

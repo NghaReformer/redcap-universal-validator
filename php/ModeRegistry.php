@@ -25,10 +25,11 @@ final class ModeRegistry
 {
     /** Keys every audit log entry already has (UniversalValidator::logInvalid, auditRule). */
     const RESERVED_LOG_KEYS = ['field', 'type', 'algorithm', 'reason', 'instrument', 'event_id', 'instance', 'record',
-        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs'];
+        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs', 'justified_by'];
     /** Keys every scan violation already has (UniversalValidator::scanRecord, FindingRowMapper). */
     const RESERVED_SCAN_KEYS = ['record', 'event_id', 'instance', 'field', 'type', 'reason', 'rule', 'value', 'valueWithheld',
-        'valueState', 'locus', 'instrument', 'dag', 'branch', 'z', 'reference', 'ruleSource', 'findingId'];
+        'valueState', 'locus', 'instrument', 'dag', 'branch', 'z', 'reference', 'ruleSource', 'findingId',
+        'justified', 'justifiedBy'];
     /** @var array|null the decoded, checked file */
     private static $data = null;
     /** @var array derived maps, built once per request */
@@ -73,6 +74,9 @@ final class ModeRegistry
             }
             if (!isset($m['missingCodes']) || !in_array($m['missingCodes'], ['skip', 'answer'], true)) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no "missingCodes" of skip or answer');
+            }
+            if (!array_key_exists('justify', $m) || !is_bool($m['justify'])) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has no "justify" of true or false');
             }
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
@@ -508,6 +512,31 @@ final class ModeRegistry
         return isset($m['lock']);
     }
 
+    /**
+     * Whether a reason given under @UVJUSTIFY stands for a broken rule of
+     * this mode (php/modes.json "justify").
+     */
+    public static function justifies($mode)
+    {
+        return self::mode($mode)['justify'] === true;
+    }
+
+    /**
+     * The reason fields a rule reads for its fields: the values of the
+     * "justifyBy" map (field => reason field) that UniversalValidator::applyJustify
+     * writes on a rule of a mode a reason stands for.
+     *
+     * @return string[]
+     */
+    public static function justifyFields(array $r)
+    {
+        $out = [];
+        if (isset($r['justifyBy']) && is_array($r['justifyBy'])) {
+            foreach ($r['justifyBy'] as $f => $reason) if (is_string($reason) && $reason !== '') $out[$reason] = true;
+        }
+        return array_keys($out);
+    }
+
     /** A per-mode method name from the "hooks" block, or null. */
     public static function hook($mode, $phase)
     {
@@ -808,14 +837,16 @@ final class ModeRegistry
 
     /**
      * Every field a rule's own configuration reads besides its validated
-     * fields: the operands of all its conditions, its operand keys and its
-     * field lists. Strings that do not parse contribute nothing (they are
-     * config errors already). $kinds narrows the sources: the save hook's
-     * reverse dependencies follow conditions and operands only.
+     * fields: the operands of all its conditions, its operand keys, its
+     * field lists and the reason fields that stand for its findings
+     * ("reason", justifyFields). Strings that do not parse contribute nothing
+     * (they are config errors already). $kinds narrows the sources: the save
+     * hook's reverse dependencies follow conditions and operands only, and a
+     * reason field is no field a rule judges by (markLockReads).
      *
      * @return string[] field names, de-duplicated, in discovery order
      */
-    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList'], array $skipRoles = [])
+    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList', 'reason'], array $skipRoles = [])
     {
         $out = [];
         if (in_array('cond', $kinds, true)) {
@@ -833,6 +864,9 @@ final class ModeRegistry
         }
         if (in_array('fieldList', $kinds, true)) {
             foreach (self::fieldListRefs($r, $skipRoles) as $w) $out[(string) $w] = true;
+        }
+        if (in_array('reason', $kinds, true)) {
+            foreach (self::justifyFields($r) as $w) $out[$w] = true;
         }
         return array_keys($out);
     }

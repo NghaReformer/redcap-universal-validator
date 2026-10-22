@@ -452,9 +452,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     $colCount = preg_match('/\(([a-z_, \r\n]+)\)\s*VALUES/', $lastInsert, $m)
         ? count(explode(',', $m[1])) : 0;
     check('batched: every named column has exactly one placeholder',
-        $colCount === 32 && substr_count($lastInsert, '?') === $colCount);
+        $colCount === 33 && substr_count($lastInsert, '?') === $colCount);
     check('batched: a chunk stays inside the server placeholder limit',
-        SqlScanStore::FINDING_CHUNK * 29 <= 65535);
+        SqlScanStore::FINDING_CHUNK * 33 <= 65535);
 
     // A SERVER THAT STORED FEWER ROWS THAN IT WAS SENT. Nothing in MySQL does
     // this for a plain INSERT that succeeded - which is the point of asking: if
@@ -537,7 +537,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (strpos($sql, 'INSERT INTO ' . Schema::table('finding')) !== false) {
                 $this->inserts++;
                 $this->worst = max($this->worst, memory_get_usage(false) - $this->base);
-                $this->aff = intdiv(count($params), 32);
+                $this->aff = intdiv(count($params), 33);
                 return;
             }
             $this->aff = 1;
@@ -904,9 +904,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         public function commit() {}
         public function rollback() {}
     };
-    $pageDb->page = [[1, 'fa', 'required-blank', null, 'required'],
-                     [2, 'fa', 'out-of-range', 'site_a', 'assert'],
-                     [3, 'fb', 'required-blank', null, 'required']];
+    // the last column is uv_finding.justified: the second finding has its reason given (@UVJUSTIFY)
+    $pageDb->page = [[1, 'fa', 'required-blank', null, 'required', 0],
+                     [2, 'fa', 'out-of-range', 'site_a', 'assert', '1'],
+                     [3, 'fb', 'required-blank', null, 'required', 0]];
     $formTotal = function (ArrayScanStore $s, $rid) {
         $n = 0;
         foreach ($s->aggregates($rid) as $a) {
@@ -935,6 +936,11 @@ namespace INSPIRE\UniversalValidator\Scan {
         $a === ['done' => false, 'rows' => 0, 'why' => null]);
     check('rollup: and its next step reads from where the other worker got to',
         $first->step(960, $rid, $ep, $gen, 10)['done'] === true && $formTotal($s, $rid) === 3);
+    $standing = [];
+    foreach ($s->aggregates($rid) as $ag) if ($ag['kind'] === RollupBuilder::K_STANDING) $standing[$ag['axis1']] = (int) $ag['cnt'];
+    ksort($standing);
+    check('rollup: each finding is counted open or justified, once (got ' . json_encode($standing) . ')',
+        $standing === ['justified' => 1, 'open' => 2]);
 
     // A RUN THAT ENDED WHILE THE PAGE WAS READ takes nothing from it. The epoch
     // has not moved - finishing does not move it - so before the hold this page
@@ -1013,7 +1019,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('valid_from: a finding with none opens at the run\'s own sequence',
         $got === true && count($ins) === 1 && (int) $ins[0][1][3] === 9);
     check('valid_from: and one that names its own keeps it',
-        count($ins) === 1 && count($ins[0][1]) === 64 && (int) $ins[0][1][32 + 3] === 4);
+        count($ins) === 1 && count($ins[0][1]) === 66 && (int) $ins[0][1][33 + 3] === 4);
 
     // -- B5-N1: findings() answers INPUT_KEYS, zipped, or refuses -------------
     $fdb = $paramDb();

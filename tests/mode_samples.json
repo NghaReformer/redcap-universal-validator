@@ -8,6 +8,11 @@
     "to start the mode's validator with a failing value \"bad\" in field \"target\"."
   ],
   "modes": {
+    "justify": {
+      "tagForm": "@UVJUSTIFY={\"reason\":\"[why]\",%s}",
+      "fragment": {"justifyReason": "why"},
+      "client": {"justifyReason": "why"}
+    },
     "check": {
       "tagForm": "@UVALIDATE={\"algorithm\":\"luhn\",\"when\":\"[a]='x'\",%s}",
       "fragment": {},

@@ -43,6 +43,8 @@ final class TemporalRules
             if(isset($b['elapsedFrom'])&&is_string($b['elapsedFrom'])){$p=Logic::parse($b['elapsedFrom']."=''",['qualified'=>true]);if(!empty($p['ok'])){foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];}}
         }
         foreach($rule['branches']??[] as $b)$out=array_merge($out,self::fields($b,$lookups));
+        // the reason fields that stand for the rule's findings (@UVJUSTIFY)
+        $out=array_merge($out,ModeRegistry::justifyFields($rule));
         return array_values(array_unique($out));
     }
     public static function validate(array $rule)

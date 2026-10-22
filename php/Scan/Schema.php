@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 5;
+    const VERSION = 6;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -139,6 +139,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 6) return self::statementsV6();
         if ((int) $version === 5) return self::statementsV5();
         if ((int) $version === 4) return self::statementsV4();
         if ((int) $version === 3) return self::statementsV3();
@@ -702,6 +703,22 @@ final class Schema
     }
 
     /**
+     * Version 6: whether a reason (@UVJUSTIFY) stands for the finding, 1 or
+     * 0. The rollup counts the two apart and a scan whose findings all have a
+     * reason is clean (ScanPromotion::tally). 0 for every existing row, which
+     * is what every finding stored before the tag existed was. One ALTER,
+     * skipped when the column is there.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV6()
+    {
+        $f = self::table('finding');
+        return [['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $f, 'justified']]];
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -912,6 +929,11 @@ final class Schema
                             'why' => 'schema version 5 did not verify after it was applied: the finding table '
                                    . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
+            }
+            if ($v === 6 && !self::alreadyApplied($module, ['column', self::table('finding'), 'justified'])) {
+                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                        'why' => 'schema version 6 did not verify after it was applied: the finding table '
+                               . 'has no justified column. The version is NOT recorded and the scan stays disabled.'];
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

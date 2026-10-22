@@ -51,7 +51,7 @@ class Page:
 # Ordered as they appear in the nav.
 
 TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists",
-             "uvrange", "uvdelta", "uvwriteonce")
+             "uvrange", "uvdelta", "uvwriteonce", "uvjustify")
 
 PAGES = [
     Page(
@@ -204,6 +204,19 @@ PAGES = [
         keywords=("@UVWRITEONCE", "REDCap action tag", "write once", "lock field",
                   "read-only after save", "user roles", "audit trail"),
         related=("uvrequired", "uvassert", "index"),
+    ),
+    Page(
+        slug="uvjustify",
+        title="@UVJUSTIFY — save a REDCap form with a reason for a broken rule",
+        heading="@UVJUSTIFY",
+        description=(
+            "@UVJUSTIFY is a REDCap action tag that lets a form save when another rule on a field is "
+            "broken, once a reason is written in a field you name, and reports those findings apart."
+        ),
+        nav_label="@UVJUSTIFY",
+        keywords=("@UVJUSTIFY", "REDCap action tag", "justification", "reason for change",
+                  "override validation", "data quality", "audit trail"),
+        related=("uvrange", "uvdelta", "index"),
     ),
     Page(
         slug="install",

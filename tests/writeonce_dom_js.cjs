@@ -407,8 +407,10 @@ for (const order of ['lock first', 'lock last']) {
 {
   const src = require('fs').readFileSync(path.join(__dirname, '..', 'js', 'engine.js'), 'utf8');
   const used = new Set([...src.matchAll(/QRID_registerBlocker\([^;]*,\s*"([a-z]+)"\);/g)].map((m) => m[1]));
+  // @UVJUSTIFY holds no save of its own: it only lifts the hold of the rules it stands for.
   const modes = require('../php/modes.json').modes.map((m) => m.mode);
-  check('every guard item names a mode the registry knows, and every mode has one', [...used].every((m) => modes.includes(m)) && modes.every((m) => used.has(m)), [...used]);
+  const holders = modes.filter((m) => m !== 'justify');
+  check('every guard item names a mode the registry knows, and every mode that can hold a save has one', [...used].every((m) => holders.includes(m)) && holders.every((m) => used.has(m)), [...used]);
 }
 
 console.log('writeonce_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

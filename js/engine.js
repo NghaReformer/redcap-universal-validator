@@ -684,6 +684,20 @@
     var t = s.slice(i, j);
     return t !== "" && QRID_MISSING_CODES[t] === true;
   }
+  /* Whether a reason field's value gives a reason (@UVJUSTIFY): text left
+     once PHP's trim() set is taken from both ends, and not a Missing Data
+     Code ($codes: code => true, the page's own when left out). Twin of
+     Logic::reasonGiven; both read tests/justify_fixture.json. */
+  function QRID_reasonGiven(value, codes){
+    if(typeof value !== "string" && typeof value !== "number") return false;
+    var set = (codes && typeof codes === "object") ? codes : QRID_MISSING_CODES;
+    var s = String(value), i = 0, j = s.length;
+    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }
+    while(i < j && ws(s.charCodeAt(i))) i++;
+    while(j > i && ws(s.charCodeAt(j - 1))) j--;
+    var t = s.slice(i, j);
+    return t !== "" && !(Object.prototype.hasOwnProperty.call(set, t) && set[t] === true);
+  }
   /* The date and datetime fields of this form shown day- or month-first
      (config.dateFormats: field => [type, format]). REDCap stores every date as
      Y-M-D, and the server compares that, so a condition on this page compares
@@ -775,6 +789,16 @@
      its guard item keeps holding the save, since a change to that other
      field is what makes it fail. */
   var UV_LOCK_READS = Object.create(null);
+  /* Fields @UVJUSTIFY pairs with a reason field on this page: field =>
+     {reason, given(), label(), later()}, set as each pair is bound
+     (QRIDJustifyInit). The save guard drops the item of a mode a reason
+     stands for on such a field once the reason is given (QRID_justified), and
+     names the reason field while it is not. */
+  var UV_JUSTIFY = Object.create(null);
+  /* mode => true for the modes a reason stands for (php/modes.json
+     "justify"), copied from the generated JUSTIFY_OF_MODE by the dispatcher
+     before any factory runs. */
+  var QRID_JUSTIFY_OF_MODE = Object.create(null);
   var UV_lastPooled = null;
 
 function QRID_escapeHtml(t){
@@ -3420,6 +3444,24 @@ function QRID_cannotEdit(input){
   if(input.__qridLockedRO === true) return false;
   return !!(input.readOnly || input.disabled);
 }
+/* Whether a guard item speaks for its field when Save is pressed. A field a
+   lock holds (UV_LOCKED) keeps its other modes' notes, but only the lock's own
+   item (__qridLock) and the items of rules that also read another field
+   (UV_LOCK_READS) speak for it. */
+function QRID_guardSpeaks(el){
+  return el.__qridLock === true || UV_LOCKED[el.__qridFieldName] !== true
+    || UV_LOCK_READS[el.__qridFieldName + "\x1F" + el.__qridMode] === true;
+}
+/* Whether a reason (@UVJUSTIFY) can stand for a guard item: its field is
+   paired with a reason field on this page and its mode is one a reason
+   stands for. */
+function QRID_justifiable(el){
+  return !!UV_JUSTIFY[el.__qridFieldName] && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true;
+}
+/* Whether the reason that can stand for a guard item is given now. */
+function QRID_justified(el){
+  return QRID_justifiable(el) && UV_JUSTIFY[el.__qridFieldName].given();
+}
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
      inputs (e.g. @READONLY) keep their message but are exempt from blocking
@@ -3456,14 +3498,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       var item = UV_guard.items[ri];
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
-    /* A field a lock holds (UV_LOCKED) keeps its other modes' notes, but only
-       the lock's own item (__qridLock) and the items of rules that also read
-       another field (UV_LOCK_READS) speak for it here. */
-    var live = UV_guard.items.filter(function(el){
-      return el.__qridLock === true || UV_LOCKED[el.__qridFieldName] !== true
-        || UV_LOCK_READS[el.__qridFieldName + "\x1F" + el.__qridMode] === true;
-    });
-    var bad = live.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
+    var live = UV_guard.items.filter(QRID_guardSpeaks);
+    /* A field whose reason is given (@UVJUSTIFY) no longer holds the save for
+       the modes a reason stands for. A lookup still in flight still waits
+       (pend, below), and a reason never adds a hold. */
+    var bad = live.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off" && !QRID_justified(el); });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
@@ -3476,7 +3515,12 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
        a label may hold a comma, so a list joined by ", " reads as more
        fields than it names */
-    var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; }))
+    /* a field a reason can still release names the reason field */
+    function badLabel(el){
+      return QRID_justifiable(el)
+        ? label(el) + " (or give a reason in \u201C" + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
+    }
+    var names = bad.map(badLabel).concat(pend.map(function(el){ return label(el) + " (still being checked)"; }))
       .map(function(t){ return "\n• " + t; }).join("");
     var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
@@ -3580,6 +3624,10 @@ function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "warn" | "inf
     comp.style.outline = input.style.outline;
     QRID_setInvalidState(comp, bad ? true : (ok ? false : null));
   }
+  /* a field paired with a reason (@UVJUSTIFY) shows or hides its note once the
+     mode's guard item has caught up, a tick later */
+  var jf = input.__qridFieldName || input.name;
+  if(typeof jf === "string" && UV_JUSTIFY[jf]) UV_JUSTIFY[jf].later();
 }
 /* Autocomplete dropdowns: REDCap pairs the hidden <select> with a companion
    text input (id rc-ac-input_<field>) that its widget finds right NEXT TO the
@@ -6739,6 +6787,94 @@ function QRIDWriteOnceInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- a reason for a broken rule (@UVJUSTIFY) -------------------------------
+   The field's rules of a mode a reason stands for (php/modes.json "justify",
+   QRID_JUSTIFY_OF_MODE) stop holding the save once the reason field holds a
+   reason: text that is not blank and not a Missing Data Code
+   (QRID_reasonGiven, twin of Logic::reasonGiven). Until then the save
+   message names the reason field ("or give a reason in"), and a note under
+   the field asks for one while such a rule holds or asks. The note follows
+   the reason field and every change of the field's other modes
+   (QRID_setModeState). A reason never adds a hold: a rule with blockSave
+   "off" still only warns, a lookup still being checked still waits, and a
+   locked write-once field stays locked. Without the reason field on this
+   page (another survey page) the tag does nothing here, and a reason field
+   whose row branching logic hides gives no reason. The audit and the scan
+   mark the findings the same way (UniversalValidator::markJustified).
+   tests/justify_dom_js.cjs locks this contract. */
+function QRIDJustifyInit(QRID_CONFIG){
+  var configError = QRID_CONFIG.configErrorOverride || "";
+  var reason = typeof QRID_CONFIG.justifyReason === "string" ? QRID_CONFIG.justifyReason : "";
+  var V = { message: (typeof QRID_CONFIG.message === "string") ? QRID_CONFIG.message : "",
+            i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };
+  var NOTE = "Fix this value, or say why it is right in \u201C{reason}\u201D.";
+  if(!configError && !/^[a-z][a-z0-9_]*$/.test(reason)) configError = "@UVJUSTIFY needs the field that holds the reason.";
+  function given(){
+    var row = document.getElementById ? document.getElementById(reason + "-tr") : null;
+    if(row && row.style && row.style.display === "none") return false;
+    return QRID_reasonGiven(QRID_WHEN.readRef(reason, null));
+  }
+  function label(){
+    var a = QRID_findAnchor(reason);
+    return a ? QRID_fieldLabel(a, reason) : reason;
+  }
+  function attach(fieldName){
+    var anchor = QRID_findAnchor(fieldName);
+    var source = QRID_findAnchor(reason);
+    if(!anchor || !source) return false;
+    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;   /* per-mode bind marker */
+    if(anchor.setAttribute) anchor.setAttribute("data-qrid-bound-j", "1");
+    var msg = QRID_attachMsgRegion(anchor, fieldName, "j");
+    function refresh(){
+      var holds = false;
+      for(var i = 0; i < UV_guard.items.length; i++){
+        var el = UV_guard.items[i];
+        if(el.__qridFieldName === fieldName && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true
+           && el.__qridInvalid && el.__qridBlockMode !== "off" && QRID_guardSpeaks(el)){ holds = true; break; }
+      }
+      if(!holds || given()){ msg.style.display = "none"; msg.innerHTML = ""; return; }
+      msg.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
+        "font-size:12px;font-family:inherit;border:1px solid #d9c7a3;background:#fdf6e7;color:#6b4e16";
+      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", label()));
+    }
+    var queued = false;
+    function later(){
+      if(queued) return;
+      queued = true;
+      setTimeout(function(){ queued = false; refresh(); }, 0);
+    }
+    UV_JUSTIFY[fieldName] = { reason: reason, given: given, label: label, later: later };
+    if(source.addEventListener){
+      source.addEventListener("input", later);
+      source.addEventListener("change", later);
+    }
+    /* a change no event announces (a radio's hidden mirror, a script) */
+    var watch = QRID_WHEN.gateFor("[" + reason + "]<>''", null);
+    if(watch) watch.onChange(later);
+    later();
+    return true;
+  }
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- required validator (@UVREQUIRED) -------------------------------------
    The INVERSE emptiness rule: a BLANK field is the violation (every other mode
    is inert on blank). Optional "when" makes the requirement conditional —
@@ -8676,7 +8812,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
                       "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsComma", "deltaMax",
                       "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText", "deltaGroup",
-                      "deltaComputed", "writeonceRolesUnread", "writeonceSaved"];
+                      "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
+                      "justifyReason"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -8688,7 +8825,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "exists": "exists",
     "range": "range",
     "delta": "delta",
-    "writeonce": "writeonce"
+    "writeonce": "writeonce",
+    "justify": "justify"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -8701,13 +8839,27 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "exists": "QRIDExistsInit",
     "range": "QRIDRangeInit",
     "delta": "QRIDDeltaInit",
-    "writeonce": "QRIDWriteOnceInit"
+    "writeonce": "QRIDWriteOnceInit",
+    "justify": "QRIDJustifyInit"
   };
   var BRANCH_GROUP_OF_TYPE = {
     "range": "rangeReference",
     "delta": "deltaGroup"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\", \"delta\" or \"writeonce\"";
+  var JUSTIFY_OF_MODE = {
+    "check": true,
+    "constraint": true,
+    "required": true,
+    "unique": false,
+    "choices": true,
+    "window": true,
+    "exists": true,
+    "range": true,
+    "delta": true,
+    "writeonce": false,
+    "justify": false
+  };
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\", \"delta\", \"writeonce\" or \"justify\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -8723,7 +8875,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDExistsInit: QRIDExistsInit,
     QRIDRangeInit: QRIDRangeInit,
     QRIDDeltaInit: QRIDDeltaInit,
-    QRIDWriteOnceInit: QRIDWriteOnceInit
+    QRIDWriteOnceInit: QRIDWriteOnceInit,
+    QRIDJustifyInit: QRIDJustifyInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -8819,6 +8972,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
         '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
+  /* the modes a reason (@UVJUSTIFY) stands for, for the save guard */
+  for(var jm in JUSTIFY_OF_MODE) if(own(JUSTIFY_OF_MODE, jm) && JUSTIFY_OF_MODE[jm] === true) QRID_JUSTIFY_OF_MODE[jm] = true;
   rules.forEach(function(rule){
     if(!rule.configError && Array.isArray(rule.lockReads)){
       rule.lockReads.forEach(function(f){ if(typeof f === "string") UV_LOCK_READS[f + "\x1F" + modeOfType(rule.type)] = true; });
@@ -8889,6 +9044,9 @@ window.INSPIREUniversalValidator = {
     verdict: QRID_deltaVerdict,
     number: QRID_deltaNumber
   },
+  justifyLogic: {                            /* @UVJUSTIFY twin, locked by tests/justify_js.cjs */
+    reasonGiven: QRID_reasonGiven
+  },
   returnWriter: {                            /* the one writer of returned values, locked by tests/growth_return_dom_js.cjs */
     write: QRID_writeReturned
   },
@@ -8921,6 +9079,7 @@ window.INSPIREUniversalValidator = {
   rangeInit: QRIDRangeInit,             /* @UVRANGE — locked by tests/range_dom_js.cjs */
   deltaInit: QRIDDeltaInit,             /* @UVDELTA — locked by tests/delta_dom_js.cjs */
   writeOnceInit: QRIDWriteOnceInit,     /* @UVWRITEONCE — locked by tests/writeonce_dom_js.cjs */
+  justifyInit: QRIDJustifyInit,         /* @UVJUSTIFY — locked by tests/justify_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

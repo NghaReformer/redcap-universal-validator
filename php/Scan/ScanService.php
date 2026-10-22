@@ -652,6 +652,8 @@ final class ScanService
             'stopping'  => $progress['stopping'],
             'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run),
+            // apart from 'findings': the ones a reason (@UVJUSTIFY) stands for, once the run is totalled
+            'justified' => ScanPromotion::justifiedOf($store, $run),
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
@@ -1620,8 +1622,10 @@ final class ScanService
      *             where engine-2 and engine-3 had already shipped)
      *   engine-5  @UVDELTA (a rule type added)
      *   engine-6  @UVWRITEONCE (a rule type added)
+     *   engine-7  @UVJUSTIFY (a rule type added; a finding with its reason
+     *             given is justified, apart from the open ones)
      */
-    const ENGINE_REVISION = 'engine-6';
+    const ENGINE_REVISION = 'engine-7';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;

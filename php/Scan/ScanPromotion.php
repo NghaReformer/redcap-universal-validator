@@ -204,23 +204,46 @@ final class ScanPromotion
      * If they ever disagree - an axis added later, a page lost on one - the
      * larger number is the one that cannot certify a project it should not.
      *
-     * @param array $aggregates rows of {kind, cnt, ...} as ScanStore::aggregates() returns them
-     * @return array{violations:int, ruleProblems:int, gaps:int}
+     * JUSTIFIED FINDINGS ARE NOT VIOLATIONS. A finding a reason (@UVJUSTIFY)
+     * stands for is counted on RollupBuilder::K_STANDING under its own axis,
+     * reported as 'justified', and left out of 'violations', so a run whose
+     * findings all have a reason can be clean. A run summarised before that
+     * axis existed has no justified count, and every finding stays a violation.
+     *
+     * @param array $aggregates rows of {kind, axis1, cnt, ...} as ScanStore::aggregates() returns them
+     * @return array{violations:int, justified:int, ruleProblems:int, gaps:int}
      */
     public static function tally(array $aggregates)
     {
         $byKind = [];
+        $justified = 0;
         foreach ($aggregates as $a) {
             if (!isset($a['kind'])) continue;
             $k = (string) $a['kind'];
-            $byKind[$k] = (isset($byKind[$k]) ? $byKind[$k] : 0)
-                        + (isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0);
+            $n = isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0;
+            $byKind[$k] = (isset($byKind[$k]) ? $byKind[$k] : 0) + $n;
+            if ($k === RollupBuilder::K_STANDING && isset($a['axis1']) && (string) $a['axis1'] === RollupBuilder::STANDING_JUSTIFIED) $justified += $n;
         }
         $of = function ($kind) use ($byKind) { return isset($byKind[$kind]) ? $byKind[$kind] : 0; };
-        $violations = 0;
-        foreach (RollupBuilder::KINDS as $kind) $violations = max($violations, $of($kind));
-        return ['violations' => $violations, 'ruleProblems' => $of(self::RULE_KINDS),
+        $active = 0;
+        foreach (RollupBuilder::KINDS as $kind) $active = max($active, $of($kind));
+        $justified = min($justified, $active);
+        return ['violations' => $active - $justified, 'justified' => $justified, 'ruleProblems' => $of(self::RULE_KINDS),
                 'gaps' => $of(self::GAP_KINDS)];
+    }
+
+    /**
+     * How many of a run's findings a reason (@UVJUSTIFY) stands for, from its
+     * summary, as findingsOf() counts the others; null while the run is
+     * working or when it ended before it could total them.
+     *
+     * @return int|null
+     */
+    public static function justifiedOf(ScanStore $store, array $run)
+    {
+        $terminal = isset($run['terminal']) ? $run['terminal'] : null;
+        if ($terminal === null || in_array($terminal, ScanOutcome::NO_VERDICT, true)) return null;
+        return self::tally($store->aggregates((int) $run['run_id']))['justified'];
     }
 
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */

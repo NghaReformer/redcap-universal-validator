@@ -153,6 +153,10 @@
     "survey": "This answer was changed after it was first saved.",
     "asOf":   "It was locked on {asOf}."
   },
+  "justify/*": {
+    "staff":  "A reason given in another field stands for this field's broken rules.",
+    "survey": "A reason was given for this answer."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."
@@ -197,6 +201,7 @@
 
   "*/*": {
     "staff":  "Rule {rule} reported \"{reason}\" for this value. No wording is configured for this kind of finding.",
-    "survey": "This entry is not valid."
+    "survey": "This entry is not valid.",
+    "justified": "It was saved with a reason, given in [{reasonField}]."
   }
 }

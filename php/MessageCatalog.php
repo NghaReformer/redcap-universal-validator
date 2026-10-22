@@ -197,7 +197,11 @@ final class MessageCatalog
      * growth-reference finding carries its z-score as 'z' and its reference
      * as 'reference' ('z_score' and 'growth_reference' as the durable store
      * reads them back; else the rule's "rangeReference"); a "zScore" template
-     * adds a sentence with both.
+     * adds a sentence with both. A finding a reason (@UVJUSTIFY) stands for
+     * ('justified') gets a "justified" sentence naming the reason field: the
+     * finding's 'justifiedBy', else the rule's justifyBy for its field (a
+     * stored finding keeps only the flag). That sentence may come from the
+     * '*' + '/' + '*' entry, since it is the same for every type.
      */
     public static function detail(array $finding, array $rule)
     {
@@ -238,8 +242,14 @@ final class MessageCatalog
         $notes = [];
         if ($asOf !== '') $notes['asOf'] = ['asOf' => $asOf];
         if ($z !== '' && $ref !== '') $notes['zScore'] = ['z' => $z, 'reference' => $ref];
+        if (!empty($finding['justified'])) {
+            $field = isset($finding['field']) ? (string) $finding['field'] : '';
+            $by = isset($finding['justifiedBy']) && is_string($finding['justifiedBy']) ? $finding['justifiedBy']
+                : (isset($rule['justifyBy'][$field]) && is_string($rule['justifyBy'][$field]) ? $rule['justifyBy'][$field] : '');
+            if ($by !== '') $notes['justified'] = ['reasonField' => $by];
+        }
         foreach ($notes as $key => $fill) {
-            foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
+            foreach ([$type . '/' . $code, $type . '/*', '*/*'] as $ck) {
                 if (!isset($cat[$ck][$key]) || !is_string($cat[$ck][$key])) continue;
                 $note = self::fillAll($cat[$ck][$key], $fill);
                 if ($note !== null) $text = $text === '' ? $note : $text . ' ' . $note;

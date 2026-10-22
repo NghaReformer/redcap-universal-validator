@@ -37,12 +37,16 @@ final class RollupBuilder
     const K_REASON = 'rollup-reason';
     const K_DAG    = 'rollup-group';
     const K_TYPE   = 'rollup-check';
+    /** Open findings, or those a reason (@UVJUSTIFY) stands for: axis STANDING_OPEN or STANDING_JUSTIFIED. */
+    const K_STANDING = 'rollup-standing';
+    const STANDING_OPEN = 'open';
+    const STANDING_JUSTIFIED = 'justified';
     /**
      * Every axis, as a list. Each active finding is counted ONCE ON EACH, so
      * the sum over any one kind is the number of active findings - which is
      * what ScanPromotion::tally() reads. A new axis goes here and in axes().
      */
-    const KINDS = [self::K_FORM, self::K_REASON, self::K_DAG, self::K_TYPE];
+    const KINDS = [self::K_FORM, self::K_REASON, self::K_DAG, self::K_TYPE, self::K_STANDING];
 
     /** @var ScanDb */
     private $db;
@@ -72,7 +76,7 @@ final class RollupBuilder
         // Only ACTIVE findings. A closed row belongs to an earlier version of a
         // record and is kept so an "as of run N" view stays reproducible; adding
         // it to today's summary would count the same problem twice.
-        $rows = $this->db->select('SELECT finding_id, host_form, reason_code, dag_key, check_type
+        $rows = $this->db->select('SELECT finding_id, host_form, reason_code, dag_key, check_type, justified
             FROM ' . Schema::table('finding') . '
             WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND finding_id > ?
             ORDER BY finding_id LIMIT ' . $limit, [$projectId, $generationId, $after]);
@@ -148,6 +152,7 @@ final class RollupBuilder
             self::K_REASON => (string) $r[2],
             self::K_DAG    => ($r[3] === null ? '' : (string) $r[3]),
             self::K_TYPE   => (string) $r[4],
+            self::K_STANDING => (string) $r[5] === '1' ? self::STANDING_JUSTIFIED : self::STANDING_OPEN,
         ];
     }
 }

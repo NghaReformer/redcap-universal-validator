@@ -53,11 +53,12 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVRANGE'    => 'range',       // 2.5.0
     '@UVDELTA'    => 'delta',
     '@UVWRITEONCE' => 'writeonce',
+    '@UVJUSTIFY'  => 'justify',
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
           'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
           'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range', 'TAG_DELTA' => 'delta',
-          'TAG_WRITEONCE' => 'writeonce'] as $const => $mode) {
+          'TAG_WRITEONCE' => 'writeonce', 'TAG_JUSTIFY' => 'justify'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -107,6 +108,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
     // what the page hook adds: the roles could not be read, a dropdown's saved code
     'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved',
+    // @UVJUSTIFY: the field that holds the reason
+    'justifyReason',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -159,7 +162,23 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
     // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code
     'writeonceRolesUnread', 'writeonceSaved',
+    // @UVJUSTIFY: the field that holds the reason
+    'justifyReason',
 ]);
+// Which modes a reason (@UVJUSTIFY) stands for (php/modes.json "justify"). A
+// duplicate is about two records, a lock does not give a role, and a reason
+// does not stand for itself.
+$covers = [];
+foreach (ModeRegistry::all() as $m) $covers[$m['mode']] = ModeRegistry::justifies($m['mode']);
+check('a reason stands for the ID checks, assert, required, choices, window, exists, range and delta, not for unique, writeonce or justify (got ' . json_encode($covers) . ')',
+    $covers === ['check' => true, 'constraint' => true, 'required' => true, 'unique' => false, 'choices' => true, 'window' => true,
+        'exists' => true, 'range' => true, 'delta' => true, 'writeonce' => false, 'justify' => false]);
+// justifyBy, the server's map of field => reason field, never reaches the page.
+check('justifyBy is a server key', in_array('justifyBy', ModeRegistry::serverKeys(), true)
+    && !in_array('justifyBy', ModeRegistry::clientKeys(), true));
+check('the reason fields of a rule are fields it reads, except for the lock (refFields kinds)',
+    ModeRegistry::refFields(['type' => 'range', 'fields' => ['w'], 'justifyBy' => ['w' => 'w_why']]) === ['w_why']
+    && ModeRegistry::refFields(['type' => 'range', 'fields' => ['w'], 'justifyBy' => ['w' => 'w_why']], ['cond', 'operand', 'fieldList']) === []);
 
 // Branching::modeOfType.
 foreach (['constraint' => 'constraint', 'required' => 'required', 'unique' => 'unique',
@@ -554,6 +573,18 @@ $cases = [
         return json_encode($g); })($good),
     'a finding key mapped to a scan key the module writes' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['scan' => 'rule'];
+        return json_encode($g); })($good),
+    'a finding key mapped to the scan key a reason writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['scan' => 'justifiedBy'];
+        return json_encode($g); })($good),
+    'a finding key mapped to the log key a reason writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['log' => 'justified_by'];
+        return json_encode($g); })($good),
+    'a mode with no "justify"' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') unset($g['modes'][$i]['justify']);
+        return json_encode($g); })($good),
+    'a "justify" that is not true or false' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') $g['modes'][$i]['justify'] = 'yes';
         return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {

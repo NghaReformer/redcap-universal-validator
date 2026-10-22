@@ -54,7 +54,7 @@ final class SqlScanStore implements ScanStore
     const MANIFEST_CHUNK = 500;
 
     /**
-     * Findings per INSERT. 29 placeholders a row, so 14,500 a statement; about
+     * Findings per INSERT. 33 placeholders a row, so 16,500 a statement; about
      * 1.3 KB a row at worst, so a chunk stays well under the 4 MB default
      * max_allowed_packet of the oldest server in the matrix.
      */
@@ -1611,10 +1611,11 @@ final class SqlScanStore implements ScanStore
             'value_expires_at'  => isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
             'group_hmac'        => isset($f['group_hmac']) ? $f['group_hmac'] : null,
             'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
-            // Schema versions 3 (as_of) and 5 (z_score, growth_reference).
+            // Schema versions 3 (as_of), 5 (z_score, growth_reference) and 6 (justified).
             'as_of'             => isset($f['as_of']) ? (string) $f['as_of'] : null,
             'z_score'           => isset($f['z_score']) ? (string) $f['z_score'] : null,
             'growth_reference'  => isset($f['growth_reference']) ? (string) $f['growth_reference'] : null,
+            'justified'         => empty($f['justified']) ? 0 : 1,
         ];
     }
 
