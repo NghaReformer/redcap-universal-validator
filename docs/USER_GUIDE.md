@@ -779,19 +779,64 @@ entry. **Do not assume import/API writes are audited until you have verified it 
 your own instance** (the check is in [`TESTING.md`](TESTING.md)). Browser form and
 survey entry are the paths you can count on.
 
-Since 1.4.0 there is a reliable way to catch what the hook may have missed:
-the **Validation scan** page (left project menu, design rights) re-runs every
-rule over every saved record on demand — run it after bulk imports and before
-data locks/exports, and work through its CSV.
+The Validation scan page catches what the hook may have missed. Run it after
+bulk imports and before data locks or exports, and work through its findings.
 
-Two things about that page, both since 1.6.2. If you work inside a **Data Access
-Group** and the page says *"Your Data Access Group could not be resolved, so
-there is no scope to scan"*, that is deliberate and it is not a bug in your
-project: the page cannot work out which records are yours, and it will refuse
-rather than scan nothing and report the project clean. Ask an administrator to
-check your group assignment. And the on-screen table stops at **1,000 rows** on
-projects with more violations than that — the count above the table, and the
-downloaded CSV, always cover every violation found.
+### The Validation scan page
+
+The page is the "Validation scan" link on the project's left menu. It runs
+every rule over every saved record. It works only after an administrator has
+turned on `scan-system-enable-durable` and the project has turned on
+`scan-enable-durable`; until then it shows a notice and reads nothing. To start
+a scan, follow one, read its findings or download them you need design rights,
+Full Data Set export rights, and access to every instrument the scan reads.
+
+Press "Start a scan" and keep the page open. The page drives the scan in
+batches of a few seconds and names each phase as it goes. Closing the page
+pauses the scan; open the page again and press "Continue" to carry on from
+where it stopped. "Stop" ends it, and it is then reported as cancelled. A
+second tab on the same page only watches, until you press Continue there.
+
+When the project has an `@UVWINDOW` rule, every record of a run is judged as of
+the date and time the run was planned, so a scan that runs past midnight
+judges every record against the same day. The page and the file say "Dates
+were judged as of" that date.
+
+A finished scan says how much it covered. "Every record was checked,
+including changes made while it ran." is the whole project. Any other sentence
+means part of it. Whenever a finished scan does not certify the project as
+clean, the page adds "This result does not certify the project." or says how
+many rules could not be evaluated, and that includes a scan that was stopped
+or failed. The README's "What a finished run says" section
+lists every sentence and what it means.
+
+The findings count shown while a scan works is a running total, and it can
+rise at the end. Duplicate values (`@UVUNIQUE`) are counted only once every
+record has been read.
+
+### Reading the findings
+
+A finished scan's findings are shown a page at a time. Use "Next" and
+"Previous" to move through them, and the filters to show one instrument,
+issue, check type or Data Access Group; each filter lists the values the scan
+found, with how many. The page has no row cap. Every finding the scan kept is
+on some page, and in the file. A scan that reached its project's limit on
+stored detail says so, and its count still includes what it did not store.
+
+The download link saves the same findings as a CSV file, written straight from
+the stored scan. It opens in a spreadsheet, and its first lines say which
+scan it is, what it covered, whether it certifies the project, and how many
+rows to expect. A file from a scan that did not cover the whole project says
+so three ways. It has a banner on its first line, a last row that survives
+sorting the sheet, and `_INCOMPLETE` in its filename. A file whose last line is not
+`# export_complete=1` was cut off and is not the whole report.
+
+If you work inside a Data Access Group, the scan covers your group only, and
+its counts appear once it has confirmed which records belong to the group. If
+the page says *"Your Data Access Group could not be resolved, so there is no
+scope to scan"*, that is deliberate. The page cannot work out which records
+are yours, and it refuses rather than scan nothing and report the project
+clean. Ask an administrator to check your group assignment.
 
 ### Privacy modes for the log
 
