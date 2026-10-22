@@ -76,8 +76,14 @@ final class RollupBuilder
         // Only ACTIVE findings. A closed row belongs to an earlier version of a
         // record and is kept so an "as of run N" view stays reproducible; adding
         // it to today's summary would count the same problem twice.
+        //
+        // PINNED TO ix_page_v2, as SqlScanStore::findings() pins its unfiltered
+        // page: the predicate is that key's prefix and the order is its order.
+        // Left to choose, MySQL 8.0 read a page through ix_filter_form_v2 and
+        // sorted the generation, and MariaDB walked PRIMARY from the cursor past
+        // every project's findings (tests/mysql/cases/justified.php).
         $rows = $this->db->select('SELECT finding_id, host_form, reason_code, dag_key, check_type, justified
-            FROM ' . Schema::table('finding') . '
+            FROM ' . Schema::table('finding') . ' FORCE INDEX (ix_page_v2)
             WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND finding_id > ?
             ORDER BY finding_id LIMIT ' . $limit, [$projectId, $generationId, $after]);
 

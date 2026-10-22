@@ -237,13 +237,15 @@ final class ScanPromotion
      * summary, as findingsOf() counts the others; null while the run is
      * working or when it ended before it could total them.
      *
+     * @param array|null $aggregates the run's aggregates when the caller has
+     *                               already read them for findingsOf()
      * @return int|null
      */
-    public static function justifiedOf(ScanStore $store, array $run)
+    public static function justifiedOf(ScanStore $store, array $run, ?array $aggregates = null)
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         if ($terminal === null || in_array($terminal, ScanOutcome::NO_VERDICT, true)) return null;
-        return self::tally($store->aggregates((int) $run['run_id']))['justified'];
+        return self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];
     }
 
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
@@ -282,14 +284,17 @@ final class ScanPromotion
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
      *
+     * @param array|null $aggregates the run's aggregates when the caller has
+     *                               already read them, so that one read serves
+     *                               this and justifiedOf()
      * @return int|null null when the run ended before its findings could be counted
      */
-    public static function findingsOf(ScanStore $store, array $run)
+    public static function findingsOf(ScanStore $store, array $run, ?array $aggregates = null)
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
         if ($terminal === null) return $rows;
-        $summary = self::tally($store->aggregates((int) $run['run_id']))['violations'];
+        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['violations'];
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
             $floor = max($rows, $summary);
             return $floor > 0 ? $floor : null;

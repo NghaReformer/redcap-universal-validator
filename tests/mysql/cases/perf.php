@@ -363,11 +363,15 @@ $RECORDS = 6;
     // row written, the lease written, commit), the page's cursor and its
     // heartbeat written in the page's own transaction, and the plan_done gate
     // the freeze reads. A start sent 35 before them.
+    // Engine-7 (@UVJUSTIFY) put one statement on the request that finishes:
+    // the rollup writes its standing axis beside the other four. It also sent
+    // a second read of the summary with every status of a finished run, until
+    // status() read it once for both counts.
     $bounds = array(
         'start'                              => array($startCount, 44),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 76),
-        'the work request that finishes'     => array($finishCount, 77),
+        'the work request that finishes'     => array($finishCount, 78),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {
