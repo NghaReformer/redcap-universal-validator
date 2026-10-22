@@ -56,6 +56,17 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         stripos($r2['why'], 'alice') === false && preg_match('/\d/', $r2['why']) === 0);
 
     $C('a different project is unaffected', $s->startRun(701, [])['ok'] === true);
+    // WHAT THE RUN KEEPS IS WHAT THE PLANNER SAID (W11A-N1). The SQL store
+    // writes values_state from the start request; the array store dropped it
+    // and every run it held read 'none', so a stored report built over it
+    // never showed a kept value whatever the policy.
+    $kept = $s->startRun(702, ['created_by' => 'alice', 'values_state' => 'raw']);
+    $C('a run keeps the value mode it was started with',
+        $kept['ok'] === true && $kept['run']['values_state'] === 'raw'
+        && $s->run(702, (int) $kept['run']['run_id'])['values_state'] === 'raw');
+    $plain = $s->startRun(703, []);
+    $C('and a start that names none keeps none',
+        $plain['ok'] === true && $s->run(703, (int) $plain['run']['run_id'])['values_state'] === 'none');
 
     // -- the run id is a locator, never an authorisation -------------------
     $C('a run id does not resolve under another project', $s->run(701, $runId) === null);

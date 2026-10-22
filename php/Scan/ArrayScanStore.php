@@ -126,7 +126,7 @@ final class ArrayScanStore implements ScanStore
             'policy_json' => '{}',
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
-             'fence_open', 'policy_json'])));
+             'fence_open', 'policy_json', 'values_state'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }
