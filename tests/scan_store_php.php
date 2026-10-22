@@ -166,6 +166,54 @@ namespace {
             && $old->run(748, $orid)['open_findings'] === null);
     }
 
+    // W5F-N1: A RECORD WHOSE READING THE RUN NO LONGER HOLDS TAKES ITS
+    // UNIQUENESS CANDIDATES WITH IT, as the SQL store deletes them (its half,
+    // with the plan, is the MySQL store case): sent back to be read again,
+    // deleted, or out of the run's group. Another run's candidates and the
+    // other records' stay.
+    {
+        $cs = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $crow = $cs->startRun(749, ['created_by' => 'alice'])['run'];
+        $crid = (int) $crow['run_id'];
+        $cep = (int) $crow['lease_epoch'];
+        $ch = function ($id) { return hash('sha256', 'c' . $id, true); };
+        $cs->writeManifest($crid, array_map(function ($id) use ($ch) {
+            return ['id_bin' => $id, 'hash' => $ch($id), 'dag' => null];
+        }, ['C1', 'C2', 'C3', 'C4']));
+        $cand = function ($ord, $id, $gen) use ($ch) {
+            return ['ordinal' => $ord, 'project_id' => 749, 'generation_id' => $gen,
+                    'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                    'group_hmac' => hash('sha256', 'gSAME', true), 'scope_key' => 'project',
+                    'record_hash' => $ch($id), 'record_id_bin' => $id, 'event_id' => 1, 'instance' => 1,
+                    'host_form' => 'f', 'field' => 'hospno', 'version' => '100'];
+        };
+        $cb = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+        foreach ($cs->claim($crid, 'w', $cep, 4) as $c) {
+            $cb['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+                                'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'claim' => $c['claim']];
+            $cb['candidates'][] = $cand($c['ordinal'], $c['id_bin'], (int) $crow['generation_id']);
+            // The same record in another generation: not this run's.
+            $cb['candidates'][] = array_merge($cand($c['ordinal'], $c['id_bin'], 99), ['field' => 'other']);
+        }
+        $cs->commitBatch($crid, 'w', $cep, $cb);
+        $cs->advancePhase($crid, $cep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+        $ofRun = function () use ($cs, $crow) {
+            $ids = [];
+            foreach ($cs->candidates() as $c) {
+                if ((int) $c['generation_id'] === (int) $crow['generation_id']) $ids[] = (string) $c['record_id_bin'];
+            }
+            sort($ids);
+            return $ids;
+        };
+        $before = $ofRun();
+        $moved = [$cs->requeue($crid, $cep, [$ch('C1')]), $cs->tombstone($crid, $cep, [$ch('C2')]),
+                  $cs->depart($crid, $cep, [$ch('C3')])];
+        check('W5F-N1: a requeue, a tombstone and a departure each take their record\'s candidates, and only those',
+            $before === ['C1', 'C2', 'C3', 'C4'] && $moved === [1, 1, 1] && $ofRun() === ['C4']);
+        check('W5F-N1: and another generation\'s candidates of the same records stay',
+            count($cs->candidates()) === 5);
+    }
+
     echo "scan_store_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

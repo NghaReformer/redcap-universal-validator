@@ -1215,6 +1215,7 @@ final class ArrayScanStore implements ScanStore
         }
         $this->runs[$runId]['manifest_done'] = $done;
         $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
+        $this->dropCandidatesOf($r, $left);
         return count($left);
     }
 
@@ -1241,10 +1242,12 @@ final class ArrayScanStore implements ScanStore
         $want = array_fill_keys(array_map('strval', $hashes), true);
         $n = 0;
         $moved = [];
+        $matched = [];
         $withdrawn = 0;
         $withdrawnKept = 0;
         foreach ($this->records[$runId] as $o => $row) {
             if (!isset($want[(string) $row['hash']])) continue;
+            $matched[(string) $row['hash']] = true;
             // What the row's reading stored and left out is taken back whether
             // or not the row moves, as the SQL store's requeue takes it
             // (rvf1-3, W5F-N2).
@@ -1286,7 +1289,26 @@ final class ArrayScanStore implements ScanStore
         }
         $this->runs[$runId]['manifest_done'] = $done;
         $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
+        // The rows' uniqueness candidates (W5F-N1), the SQL store's rows:
+        // every row a requeue names, every row a tombstone moves.
+        $this->dropCandidatesOf($r, (int) $state === ScanStore::REC_TOMBSTONE ? $moved : $matched);
         return $n;
+    }
+
+    /**
+     * SqlScanStore::dropCandidatesOf(): the run's generation's candidates of
+     * these records, gone (W5F-N1).
+     *
+     * @param array<string,true> $hashes raw record hash => true
+     */
+    private function dropCandidatesOf(array $run, array $hashes)
+    {
+        if (!$hashes) return;
+        foreach ($this->candidates as $k => $c) {
+            if ((int) $c['project_id'] !== (int) $run['project_id']) continue;
+            if ((int) $c['generation_id'] !== (int) $run['generation_id']) continue;
+            if (isset($hashes[(string) $c['record_hash']])) unset($this->candidates[$k]);
+        }
     }
 
     /** SqlScanStore::withdrawReadings(): never below 0, and NULL stays NULL (rvf1-3, W5F-N2). */

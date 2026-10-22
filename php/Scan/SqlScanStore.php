@@ -1573,6 +1573,33 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
+     * Delete the uniqueness candidates of records whose reading the run no
+     * longer holds (W5F-N1): sent back to be read again, deleted, or out of
+     * the run's group, in the transaction that moves them.
+     *
+     * A candidate is the record's value as one reading saw it. Left in
+     * place, a record read again with a new value kept its old candidate in
+     * the old value's group beside its new one, and a deleted record kept
+     * one with no record behind it; the duplicate check then met a value
+     * that no longer matched, or nothing to re-read, and blocked the group
+     * as undecidable. The next reading writes the record's candidates
+     * afresh, in commitBatch(). Catch-up runs before the duplicate check
+     * discovers any group, so no group row counts a deleted candidate.
+     *
+     * By ix_record (project_id, generation_id, record_hash), schema version
+     * 6: record_hash is a prefix of no other candidate key.
+     *
+     * @param string[] $hashes raw record hashes
+     */
+    private function dropCandidatesOf($projectId, $generationId, array $hashes)
+    {
+        $this->db->execNoCount('DELETE FROM ' . Schema::table('unique_candidate')
+            . ' WHERE project_id = ? AND generation_id = ? AND record_hash IN ('
+            . implode(',', array_fill(0, count($hashes), '?')) . ')',
+            array_merge([(int) $projectId, (int) $generationId], array_values($hashes)));
+    }
+
+    /**
      * The project a row belongs to, or a refusal.
      *
      * project_id carries DEFAULT 0 in the schema, and permanently: the default
@@ -2377,6 +2404,8 @@ final class SqlScanStore implements ScanStore
                   AND stage_epoch IS NULL
                   AND record_hash IN (' . $lm . ')',
                 array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $left));
+            // And their uniqueness candidates (W5F-N1).
+            $this->dropCandidatesOf((int) $r[0][2], (int) $r[0][3], $left);
             $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
             // What the departed readings stored, closed above, and left out
@@ -2483,6 +2512,8 @@ final class SqlScanStore implements ScanStore
                       AND record_hash IN (' . $marks . ')',
                     array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $hashes));
             }
+            // And the rows' uniqueness candidates, either way (W5F-N1).
+            if ($moving) $this->dropCandidatesOf((int) $r[0][2], (int) $r[0][3], $moving);
             // manifest_done is a counter and this moved rows out of (or into) a
             // terminal state, so it is recounted rather than adjusted.
             $d = $this->db->select('SELECT COUNT(*) FROM ' . $t

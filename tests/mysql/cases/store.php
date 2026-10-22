@@ -1492,6 +1492,91 @@ $SUPER = 787;
         $afterTb['open_findings'] !== null && (int) $afterTb['open_findings'] === 0);
 }
 
+// A RECORD WHOSE READING THE RUN NO LONGER HOLDS TAKES ITS UNIQUENESS
+// CANDIDATES WITH IT (W5F-N1). Sent back to be read again, deleted or out of
+// the run's group, its candidates in the run's generation are deleted in the
+// transaction that moves it, through ix_record (schema version 6): a record
+// read again with a new value kept its old candidate in the old value's
+// group, and a deleted record kept one with nothing behind it, and the
+// duplicate check blocked both groups. 300 other records' candidates in the
+// same generation make the plan the one a real project gets.
+{
+    $CPID = 966;
+    $cs = new SqlScanStore($dbA);
+    $cr = $cs->startRun($CPID, ['created_by' => 'alice'])['run'];
+    $crid = (int) $cr['run_id'];
+    $cgen = (int) $cr['generation_id'];
+    $cep = (int) $cr['lease_epoch'];
+    $ch = function ($id) { return hash('sha256', 'c' . $id, true); };
+    $cs->writeManifest($crid, array_map(function ($id) use ($ch) {
+        return ['id_bin' => $id, 'hash' => $ch($id), 'dag' => null];
+    }, ['C1', 'C2', 'C3', 'C4']));
+    $ct = Schema::table('unique_candidate');
+    $cand = function ($ord, $id, $group, $version) use ($CPID, $cgen, $ch) {
+        return ['ordinal' => $ord, 'project_id' => $CPID, 'generation_id' => $cgen,
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'group_hmac' => hash('sha256', 'g' . $group, true), 'scope_key' => 'project',
+                'record_hash' => $ch($id), 'record_id_bin' => $id, 'event_id' => 1, 'instance' => 1,
+                'host_form' => 'f', 'field' => 'hospno', 'version' => $version];
+    };
+    $cb0 = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+    foreach ($cs->claim($crid, 'w', $cep, 4) as $c) {
+        $cb0['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+                             'state' => ScanStore::REC_DONE, 'claim' => $c['claim']];
+        $cb0['candidates'][] = $cand($c['ordinal'], $c['id_bin'], 'SAME', '100');
+    }
+    $okC = $cs->commitBatch($crid, 'w', $cep, $cb0) === true;
+    $fill = [];
+    for ($i = 0; $i < 300; $i++) {
+        $fill[] = '(' . $CPID . ', ' . $cgen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX(SHA2('g" . $i
+                . "', 256)), 'project', UNHEX(SHA2('f" . $i . "', 256)), 'F" . $i . "', 1, 1, 'f', 'hospno', '1')";
+    }
+    $A->query('INSERT INTO ' . $ct . ' (project_id, generation_id, rule_source_id, rule_revision, group_hmac,
+        scope_key, record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+        VALUES ' . implode(',', $fill));
+    $A->query('ANALYZE TABLE ' . $ct);
+    $candOf = function () use ($dbA, $ct, $CPID, $cgen) {
+        $out = [];
+        foreach ($dbA->select('SELECT record_id_bin, COUNT(*) FROM ' . $ct . " WHERE project_id = ?
+                AND generation_id = ? AND record_id_bin LIKE 'C%' GROUP BY record_id_bin ORDER BY record_id_bin",
+                [$CPID, $cgen]) as $row) {
+            $out[(string) $row[0]] = (int) $row[1];
+        }
+        return $out;
+    };
+    check('W5F-N1 server: the first reading wrote a candidate for each of the four records',
+        $okC && $candOf() === ['C1' => 1, 'C2' => 1, 'C3' => 1, 'C4' => 1]);
+    $cs->advancePhase($crid, $cep, ScanPhase::CATCH_UP);
+    $crec = new UvRecordingDb($dbA);
+    $csr = new SqlScanStore($crec);
+    $moved = [$csr->requeue($crid, $cep, [$ch('C1')]), $csr->tombstone($crid, $cep, [$ch('C2')]),
+              $csr->depart($crid, $cep, [$ch('C3')])];
+    check('W5F-N1 server: a requeue, a tombstone and a departure each take their record\'s candidates, and only those',
+        $moved === [1, 1, 1] && $candOf() === ['C4' => 1]
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . $ct . " WHERE project_id = ? AND generation_id = ?
+            AND record_id_bin LIKE 'F%'", [$CPID, $cgen])[0][0] === 300);
+    $cDel = $crec->matching('exec', ['DELETE FROM ' . $ct]);
+    $cKeys = [];
+    foreach ($cDel as $q) {
+        $cKeys[] = uv_explain_key($A, $q[1], $q[2]);
+    }
+    check('W5F-N1 server: each in one DELETE through ix_record (project_id, generation_id, record_hash)',
+        count($cDel) === 3 && $cKeys === ['ix_record', 'ix_record', 'ix_record']
+        && uv_index_columns($A, $ct, 'ix_record') === ['project_id', 'generation_id', 'record_hash']);
+    // The record sent back is read again with a new value: its candidate is
+    // the new reading's, in the new value's group, and no other.
+    $cc = $cs->claimPending($crid, 'w2', $cep, 10);
+    $okC2 = is_array($cc) && count($cc) === 1 && $cs->commitBatch($crid, 'w2', $cep, ['bytes' => 0,
+        'findings' => [], 'records' => [['ordinal' => $cc[0]['ordinal'], 'record_hash' => $cc[0]['hash'],
+            'version' => '101', 'state' => ScanStore::REC_DONE, 'claim' => $cc[0]['claim']]],
+        'candidates' => [$cand($cc[0]['ordinal'], 'C1', 'NEW', '101')]]) === true;
+    $c1 = $dbA->select('SELECT group_hmac, version_scanned FROM ' . $ct . " WHERE project_id = ?
+        AND generation_id = ? AND record_id_bin = 'C1'", [$CPID, $cgen]);
+    check('W5F-N1 server: read again, the record holds the new reading\'s candidate only',
+        $okC2 && count($c1) === 1 && $c1[0][0] === hash('sha256', 'gNEW', true) && (string) $c1[0][1] === '101');
+    echo '  plan candidates by record: ' . implode(' ', $cKeys) . "\n";
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

@@ -52,6 +52,7 @@ namespace {
             $m->columns[] = 'uv_scan_record.stored_findings';
             $m->columns[] = 'uv_scan_run.open_findings';
             $m->zeroDefault[] = 'uv_scan_run.open_findings';
+            $m->indexes[] = 'uv_unique_candidate.ix_record';
         }
     }
 
@@ -692,7 +693,8 @@ namespace INSPIRE\UniversalValidator\Scan {
      * uv_scan_record.unstored and .stored, 0 on every row already there; and
      * uv_scan_run.open_unstored and .open_findings, NULL on every run already
      * there (counted the old way) and 0 on every run created after (each
-     * default is set once its column exists).
+     * default is set once its column exists); and the candidate index by
+     * record that catch-up deletes through (W5F-N1).
      * ===================================================================== */
     {
         $v6 = ['ALTER TABLE uv_scan_record ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
@@ -700,14 +702,15 @@ namespace INSPIRE\UniversalValidator\Scan {
                'ALTER TABLE uv_scan_run ALTER COLUMN open_unstored SET DEFAULT 0',
                'ALTER TABLE uv_scan_record ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
                'ALTER TABLE uv_scan_run ADD COLUMN open_findings BIGINT UNSIGNED NULL',
-               'ALTER TABLE uv_scan_run ALTER COLUMN open_findings SET DEFAULT 0'];
+               'ALTER TABLE uv_scan_run ALTER COLUMN open_findings SET DEFAULT 0',
+               'ALTER TABLE uv_unique_candidate ADD KEY ix_record (project_id, generation_id, record_hash)'];
         $m = new \FakeModule();
         $m->version = '5';
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v6: an installation at version 5 moves to version 6',
             $r['ok'] === true && $r['from'] === 5 && $r['to'] === 6 && Schema::VERSION === 6);
-        check('v6: by adding each row count, its run count with no default, then that default (got '
+        check('v6: by adding each row count, its run count with no default, then that default, then the index (got '
             . json_encode($alters) . ')', $alters === $v6);
         check('v6: with no data step, and records version 6',
             !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'UPDATE uv_') === 0; })
@@ -722,6 +725,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $half->columns = ['uv_scan_record.unstored', 'uv_scan_run.open_unstored',
                           'uv_scan_record.stored_findings', 'uv_scan_run.open_findings'];
         $half->zeroDefault = ['uv_scan_run.open_unstored'];
+        $half->indexes = ['uv_unique_candidate.ix_record'];
         $rh = Schema::migrate($half);
         check('v6: interrupted after the columns, the resumed run sets the default not yet set and nothing else',
             $rh['ok'] === true && $rh['applied'] === 1
@@ -729,7 +733,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         foreach (['ADD COLUMN unstored' => 'scan_record table has no unstored column',
                   'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column',
                   'ADD COLUMN stored_findings' => 'scan_record table has no stored_findings column',
-                  'ADD COLUMN open_findings' => 'scan_run table has no open_findings column'] as $frag => $why) {
+                  'ADD COLUMN open_findings' => 'scan_run table has no open_findings column',
+                  'ADD KEY ix_record' => 'unique_candidate table has no ix_record index'] as $frag => $why) {
             $inert = new \FakeModule();
             $inert->version = '5';
             $inert->inertAlter = $frag;
@@ -739,7 +744,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                 && strpos((string) $ri['why'], $why) !== false
                 && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         }
-        check('v6: a fresh install ends with all six statements, in order',
+        check('v6: a fresh install ends with all seven statements, in order',
             strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v6)) !== false);
     }
 

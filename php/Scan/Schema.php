@@ -703,11 +703,11 @@ final class Schema
     }
 
     /**
-     * Version 6: what a run holds open (reviews rvf1-3, W5F-N2).
+     * Version 6: what a run holds open (reviews rvf1-3, W5F-N2, W5F-N1).
      *
      * uv_scan_record.unstored is how many findings the detail budget left out
-     * of the record's latest examination in the run, and uv_scan_record.stored_findings
-     * how many it stored. They are set when the record is committed done and
+     * of the record's latest examination in the run, and
+     * uv_scan_record.stored_findings how many it stored. They are set when the record is committed done and
      * zeroed when it leaves done: sent back to be read again, deleted, or out
      * of the run's group. 0 on every row that exists when they are added,
      * which is what those rows hold under the old counting too, since nothing
@@ -725,12 +725,20 @@ final class Schema
      * second not take, new runs are NULL too and are read the old way: the
      * weaker count, never a wrong one.
      *
+     * uv_unique_candidate.ix_record (project_id, generation_id, record_hash)
+     * is what lets catch-up delete the candidates of a record it sends back
+     * to be read again, deletes or takes out of the run's group (W5F-N1):
+     * record_hash is a prefix of neither uq_candidate_v2 nor ix_group_v2, so
+     * without it that DELETE reads every candidate of the generation. An
+     * index only; skipped once it exists.
+     *
      * @return array[] each ['sql' => string, 'skipIf' => ?array]
      */
     private static function statementsV6()
     {
         $run = self::table('scan_run');
         $rec = self::table('scan_record');
+        $uc  = self::table('unique_candidate');
         return [['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
                  'skipIf' => ['column', $rec, 'unstored']],
                 ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
@@ -742,7 +750,9 @@ final class Schema
                 ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_findings BIGINT UNSIGNED NULL',
                  'skipIf' => ['column', $run, 'open_findings']],
                 ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_findings SET DEFAULT 0',
-                 'skipIf' => ['zerodefault', $run, 'open_findings']]];
+                 'skipIf' => ['zerodefault', $run, 'open_findings']],
+                ['sql' => 'ALTER TABLE ' . $uc . ' ADD KEY ix_record (project_id, generation_id, record_hash)',
+                 'skipIf' => ['index', $uc, 'ix_record']]];
     }
 
     /**
@@ -965,6 +975,12 @@ final class Schema
                             'why' => 'schema version 6 did not verify after it was applied: the ' . $tc[0]
                                    . ' table has no ' . $tc[1] . ' column. The version is NOT recorded and '
                                    . 'the scan stays disabled.'];
+                }
+                if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 6 did not verify after it was applied: the unique_candidate '
+                                   . 'table has no ix_record index. The version is NOT recorded and the scan '
+                                   . 'stays disabled.'];
                 }
             }
             try {
