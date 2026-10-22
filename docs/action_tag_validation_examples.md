@@ -1325,9 +1325,8 @@ branch stays visible and is marked invalid; `blockSave:"hard"` challenges the br
 save until it is corrected. Dropdowns keep that stale option greyed and marked
 `data-uv-stale`, never disabled, so the answer on screen is the answer REDCap
 receives; autocomplete keeps the entered text but excludes it from new suggestions.
-On a multi-page survey, put the controlling field on the same page as the filtered
-field: a field answered on an earlier page is not in the page's form, so the filter
-cannot read it there and only the post-save audit checks that answer. Clearing or correcting
+On a survey shown one section per page, the controlling field may sit on an earlier
+page: the page is drawn with the condition settled from the saved answer. Clearing or correcting
 the answer releases the choice-filter block. Off-page/extended conditions remain
 advisory even if `hard` was authored. Audits and scans detect saved hidden choices.
 

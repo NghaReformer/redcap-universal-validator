@@ -16,7 +16,12 @@
  *     check still blocks,
  *   - readonly fields show the notice but never trap the save,
  *   - two required rules with different "when" branch; both true -> conflict,
- *     never blocks.
+ *     never blocks,
+ *   - a field whose row REDCap hides (branching logic, @HIDDEN) is not
+ *     required, and doBranching() showing the row brings the notice back at
+ *     once (REQ-1); an embedded field is judged by the row it sits in,
+ *   - a @READONLY radio (options disabled, mirror enabled) or autocomplete
+ *     dropdown never holds the save, asked again at save (REQ-2).
  *
  * Run:  node tests/required_dom_js.cjs
  */
@@ -28,7 +33,7 @@ function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' +
 
 function makeEl(tag) {
   return {
-    tagName: (tag || 'div').toUpperCase(), id: '', name: '', value: '', innerHTML: '',
+    tagName: (tag || 'div').toUpperCase(), nodeType: 1, id: '', name: '', value: '', innerHTML: '',
     type: '', checked: false,
     style: {}, _attrs: {}, children: [], parentNode: null, readOnly: false, disabled: false,
     _handlers: {},
@@ -54,18 +59,34 @@ function makeEl(tag) {
   };
 }
 
-function boot(els, config) {
+/* opts.rows: each field sits in a REDCap row, <tr id="<field>-tr"> (opts.rowOf
+   puts a field in another field's row), and opts.hidden lists the rows hidden
+   as REDCap's branching logic hides them. opts.before(win) runs before the
+   engine loads, where REDCap defines its own functions. */
+function boot(els, config, opts) {
+  opts = opts || {};
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const allEls = [];
   const body = makeEl('body');
   const holders = {};
   for (const el of els) {
-    const holder = makeEl('div');
+    const rowName = opts.rows ? (opts.rowOf && opts.rowOf[el.name]) || el.name : null;
+    let holder = rowName ? allEls.find((e) => e.id === rowName + '-tr') : null;
+    if (!holder) {
+      holder = makeEl(rowName ? 'tr' : 'div');
+      if (rowName) holder.id = rowName + '-tr';
+      if (rowName && (opts.hidden || []).indexOf(rowName) >= 0) holder.style.display = 'none';
+      body.appendChild(holder);
+      allEls.push(holder);
+    }
     holder.appendChild(el);
-    body.appendChild(holder);
-    allEls.push(el, holder);
-    holders[el.name] = holder;
+    allEls.push(el);
+    if (!holders[el.name]) holders[el.name] = holder;
+  }
+  for (const extra of (opts.extraRows || [])) {
+    const tr = makeEl('tr'); tr.id = extra.id; if (extra.hidden) tr.style.display = 'none';
+    body.appendChild(tr); allEls.push(tr);
   }
   const doc = {
     body, readyState: 'complete', _handlers: {},
@@ -81,6 +102,7 @@ function boot(els, config) {
     INSPIRE_VALIDATOR_CONFIG: config,
   };
   global.document = doc; global.window = win;
+  if (opts.before) opts.before(win);
   const origError = console.error;
   const consoleErrors = [];
   console.error = (m) => consoleErrors.push(String(m));
@@ -89,6 +111,7 @@ function boot(els, config) {
 }
 function rMsg(env, field) {
   const kids = env.holders[field].children;
+  for (let i = 0; i < kids.length; i++) if (kids[i].id === 'uvalidate-msg-' + field + '-r') return kids[i];
   for (let i = 1; i < kids.length; i++) if (kids[i].getAttribute && kids[i].id && /^uvalidate-msg-/.test(kids[i].id)) return kids[i];
   return kids[1];
 }
@@ -280,6 +303,107 @@ function submitEv() {
   check('single active branch: its message + mode apply', /Suggested otherwise/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('active branch blockSave=off: no block', ev._prevented === false);
+}
+
+// ---- 9) a field REDCap hides is not required (REQ-1) ------------------------
+for (const mode of ['hard', 'confirm']) {
+  const sex = makeEl('select'); sex.name = 'sex'; sex.value = '1';
+  const preg = makeEl('input'); preg.name = 'preg'; preg.value = '';
+  let branchingCalls = 0;
+  const env = boot([sex, preg], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'required', fields: ['preg'], blockSave: mode }],
+  }, { rows: true, hidden: ['preg'], before(w) { w.doBranching = function () { branchingCalls++; }; } });
+  let asked = 0;
+  env.win.confirm = () => { asked++; return false; };
+  const msg = rMsg(env, 'preg');
+  check(mode + ' hidden row: no notice', msg.style.display === 'none' && preg.getAttribute('aria-invalid') === null);
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check(mode + ' hidden row: the save goes through, nothing asked', ev._prevented === false && env.win._alerts.length === 0 && asked === 0);
+  // REDCap shows the row in doBranching(), with no event on the field
+  env.doc.getElementById('preg-tr').style.display = '';
+  env.win.doBranching('sex');
+  check(mode + ' shown by doBranching: wrapped, and REDCap\'s own still runs', branchingCalls === 1 && env.win.doBranching.__qridBranching === true);
+  check(mode + ' shown by doBranching: notice at once', /blank/.test(msg.innerHTML) && preg.getAttribute('aria-invalid') === 'true');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check(mode + ' shown: the save is held', ev._prevented === true);
+  env.doc.getElementById('preg-tr').style.display = 'none';
+  env.win.doBranching('sex');
+  check(mode + ' hidden again: notice cleared', msg.style.display === 'none' && preg.getAttribute('aria-invalid') === null);
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check(mode + ' hidden again: the save goes through', ev._prevented === false);
+  // shown with no doBranching call at all: the save-time recheck still sees it
+  env.doc.getElementById('preg-tr').style.display = '';
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check(mode + ' shown without doBranching: held at save', ev._prevented === true);
+}
+{
+  // @HIDDEN hides the row the same way
+  const ts = makeEl('input'); ts.name = 'ts'; ts.value = '';
+  const env = boot([ts], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['ts'], blockSave: 'hard' }] },
+    { rows: true, hidden: ['ts'] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('@HIDDEN row: the save goes through', ev._prevented === false && env.win._alerts.length === 0);
+}
+{
+  // an embedded field ({preg} in host's label) sits in the host's row; its own
+  // row stays hidden, and it is still required while the host row is shown
+  const preg = makeEl('input'); preg.name = 'preg'; preg.value = '';
+  const env = boot([preg], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['preg'], blockSave: 'hard' }] },
+    { rows: true, rowOf: { preg: 'host' }, extraRows: [{ id: 'preg-tr', hidden: true }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('embedded field in a shown row: still required', ev._prevented === true);
+  check('embedded field: notice shown', /blank/.test(rMsg(env, 'preg').innerHTML));
+}
+{
+  // a value rule on a hidden row never holds the save either
+  const dose = makeEl('input'); dose.name = 'dose'; dose.value = '999';
+  const env = boot([dose], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['dose'], assert: "[dose]<>'999'", blockSave: 'hard' }] },
+    { rows: true, hidden: ['dose'] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('constraint on a hidden row: the save goes through', ev._prevented === false);
+}
+
+// ---- 10) @READONLY radio: the options are locked, the mirror is not (REQ-2) --
+function radioField(name, value, disabled) {
+  const mirror = makeEl('input'); mirror.name = name; mirror.type = 'text'; mirror.value = value;
+  const o1 = makeEl('input'); o1.name = name + '___radio'; o1.type = 'radio'; o1.value = '1'; o1.disabled = disabled;
+  const o0 = makeEl('input'); o0.name = name + '___radio'; o0.type = 'radio'; o0.value = '0'; o0.disabled = disabled;
+  return [mirror, o1, o0];
+}
+{
+  const els = radioField('elig', '', true);
+  const env = boot(els, { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['elig'], blockSave: 'hard' }] });
+  check('@READONLY radio: notice still shown', /blank/.test(rMsg(env, 'elig').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('@READONLY radio: blank never holds the save', ev._prevented === false && env.win._alerts.length === 0);
+}
+{
+  // REDCap applies @READONLY after the engine bound the field
+  const els = radioField('elig', '', false);
+  const env = boot(els, { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['elig'], blockSave: 'hard' }] });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('radio, options enabled: held (control)', ev._prevented === true);
+  els[1].disabled = true; els[2].disabled = true;
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('radio locked after bind: asked again at save, not held', ev._prevented === false);
+}
+{
+  // the same test covers the other factories: a constraint on a locked radio
+  const els = radioField('sev', '1', true);
+  const env = boot(els, { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['sev'], assert: "[sev]<>'1'", blockSave: 'hard' }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('constraint on a @READONLY radio: never holds the save', ev._prevented === false);
+}
+{
+  // an autocomplete dropdown: REDCap locks the text box that stands in for it
+  const sel = makeEl('select'); sel.name = 'site'; sel.value = '';
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.disabled = true;
+  const env = boot([sel, ac], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['site'], blockSave: 'hard' }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('@READONLY autocomplete dropdown: never holds the save', ev._prevented === false);
 }
 
 console.log(`required_dom_js: ${n} checks, ${fail} failure(s)`);

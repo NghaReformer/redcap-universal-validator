@@ -255,6 +255,8 @@ jobs:
         run: php tests/hook_php.php
       - name: PHP server half of the value parity rows (trim, non-ASCII, regex dialect, length)
         run: php tests/value_parity_php.php
+      - name: PHP @UVREQUIRED and what REDCap shows (branching logic in the audit and scan, survey pages)
+        run: php tests/required_pages_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)
         run: php tests/crossform_php.php
       - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)

@@ -62,6 +62,7 @@ node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, sur
 node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
+php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract

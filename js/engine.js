@@ -1443,6 +1443,89 @@ function QRID_findAnchor(name){
   }
   return fallback;
 }
+/* Whether the person cannot change the field on this page (REQ-2). @READONLY
+   leaves the anchor of a radio, yes/no, true/false or checkbox field enabled,
+   because that anchor is the hidden mirror REDCap keeps, and disables the
+   options the person clicks instead. On an autocomplete dropdown it locks the
+   text box that stands in for the select. Every factory asks this one test
+   when it binds, and the save guard asks it again at save, because REDCap may
+   apply @READONLY after the engine bound the field. codes: the checkbox codes
+   whose visible boxes (id-__chk__<field>_RC_<code>) count, when known. */
+function QRID_fieldLocked(anchor, fieldName, codes){
+  if(!anchor) return false;
+  if(anchor.readOnly || anchor.disabled) return true;
+  if(!document.getElementsByName) return false;
+  var seen = 0, locked = 0, els, i;
+  function count(el){ seen++; if(el.disabled || el.readOnly) locked++; }
+  els = document.getElementsByName(fieldName + "___radio");
+  for(i = 0; i < els.length; i++) count(els[i]);
+  els = document.getElementsByName("__chkn__" + fieldName);
+  for(i = 0; i < els.length; i++) count(els[i]);
+  for(i = 0; codes && document.getElementById && i < codes.length; i++){
+    var box = document.getElementById("id-__chk__" + fieldName + "_RC_" + codes[i]);
+    if(box) count(box);
+  }
+  if(seen > 0 && locked === seen) return true;
+  var ac = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
+  return !!(ac && (ac.disabled || ac.readOnly));
+}
+/* Whether REDCap hides the field from the person (REQ-1): branching logic
+   that is false, or @HIDDEN, sets display:none on the field's row
+   (#<field>-tr). The walk starts above the anchor, which is itself hidden for
+   a radio's mirror input, and stops at the field's row, so an embedded field
+   ({field} in another field's label) is judged by the row it sits in now,
+   and a page container REDCap hides while it loads is never read. With no
+   row found the field counts as shown. */
+function QRID_fieldHidden(anchor){
+  var el = anchor ? anchor.parentNode : null;
+  var gcs = (typeof window !== "undefined" && typeof window.getComputedStyle === "function") ? window.getComputedStyle : null;
+  var path = [];
+  while(el && el.nodeType === 1){
+    path.push(el);
+    if((el.tagName || "").toLowerCase() === "tr" && /-tr$/.test(el.id || "")) break;
+    el = el.parentNode;
+  }
+  if(!el || el.nodeType !== 1) return false;
+  for(var i = 0; i < path.length; i++){
+    var p = path[i];
+    if(p.style && p.style.display === "none") return true;
+    if(gcs){ try { if(gcs(p).display === "none") return true; } catch(e){} }
+  }
+  return false;
+}
+/* REDCap shows and hides rows in doBranching(), which fires no DOM event. A
+   factory whose notice depends on whether its row is shown subscribes here and
+   runs again after each call, and once more when a fade has had time to end. */
+var QRID_BRANCHING = { fns: [], armed: false, timer: null };
+var QRID_BRANCHING_SETTLE_MS = 450;
+function QRID_onBranching(fn){
+  QRID_BRANCHING.fns.push(fn);
+  if(QRID_BRANCHING.armed) return;
+  QRID_BRANCHING.armed = true;
+  function run(){
+    for(var i = 0; i < QRID_BRANCHING.fns.length; i++){ try { QRID_BRANCHING.fns[i](); } catch(e){} }
+  }
+  function wrap(){
+    var orig = window.doBranching;
+    if(typeof orig !== "function") return false;
+    if(orig.__qridBranching) return true;
+    var wrapped = function(){
+      var r = orig.apply(this, arguments);
+      run();
+      if(QRID_BRANCHING.timer) clearTimeout(QRID_BRANCHING.timer);
+      QRID_BRANCHING.timer = setTimeout(function(){ QRID_BRANCHING.timer = null; run(); }, QRID_BRANCHING_SETTLE_MS);
+      return r;
+    };
+    wrapped.__qridBranching = true;
+    window.doBranching = wrapped;
+    return true;
+  }
+  if(wrap() || document.readyState === "complete") return;
+  if(document.readyState === "loading" && typeof document.addEventListener === "function"){
+    document.addEventListener("DOMContentLoaded", wrap);
+  }
+  if(typeof window.addEventListener === "function") window.addEventListener("load", wrap);
+}
 /* ---- "when" conditions: parser/evaluator twins (module feature) ------------
    A rule may carry {when: "[specimen_type]='2'"} — the rule then validates
    only while the condition is true. php/Logic.php is the NORMATIVE dialect
@@ -3331,8 +3414,12 @@ function QRID_answerStale(entry){
 function QRID_registerBlocker(input, fieldName, blockMode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
      inputs (e.g. @READONLY) keep their message but are exempt from blocking
-     (UX-003) — the server audit still sees the value. */
-  if(input.readOnly || input.disabled) return;
+     (UX-003) — the server audit still sees the value. The test is the shared
+     one, which also reads a radio's or checkbox's options (REQ-2). A plain
+     guard item has no DOM: its factory asked the same test already, and a
+     @UVEXISTS item on a read-only field still registers on purpose, to hold
+     the save while a lookup that fills fields is on its way. */
+  if(input.getAttribute && QRID_fieldLocked(input, fieldName)) return;
   input.__qridBlockMode = blockMode;
   input.__qridFieldName = fieldName;
   /* a guard item is a plain object that arrives with the label its factory
@@ -3363,7 +3450,15 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       var item = UV_guard.items[ri];
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
-    var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
+    /* Asked again here, not only at bind: a field the person cannot change
+       (REDCap may apply @READONLY after the engine bound it, REQ-2) or cannot
+       see (its row hidden by branching logic or @HIDDEN, REQ-1) never holds
+       the save. The notice stays; the server audit still sees the value. */
+    var bad = UV_guard.items.filter(function(el){
+      if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;
+      var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
+      return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
+    });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
@@ -4309,7 +4404,7 @@ function QRIDConstraintInit(QRID_CONFIG){
        shared flag. Readonly/disabled fields keep their message but never trap
        the save (the anchor's state is copied onto the wrapper). */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -4673,7 +4768,7 @@ function QRIDWindowInit(QRID_CONFIG){
        time, so a page left open past midnight is checked against the day it
        is saved on, not the day the value was typed. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -5924,7 +6019,7 @@ function QRIDRangeInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
        time: the note waits for the field to be left, the guard does not. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -6205,7 +6300,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit): independent invalid/block state
        so required composes with any other mode on the same input. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -6218,6 +6313,11 @@ function QRIDRequiredInit(QRID_CONFIG){
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); }
     function check(){
+      /* REDCap hides the row of a field whose branching logic is false (or
+         that carries @HIDDEN), leaves it out of its own required check, and
+         erases the value on save. Nobody can answer a field they cannot see,
+         so it is not required while hidden (REQ-1). */
+      if(QRID_fieldHidden(input)){ clear(); return; }
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no requirement in force — unless no branch could be CHOSEN at all,
@@ -6270,6 +6370,8 @@ function QRIDRequiredInit(QRID_CONFIG){
     for(var gi = 0; gi < VS.all.length; gi++){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
     }
+    /* the row is shown or hidden by REDCap's doBranching, with no event */
+    QRID_onBranching(function(){ check(); });
     check();
     return true;
   }
@@ -6277,7 +6379,7 @@ function QRIDRequiredInit(QRID_CONFIG){
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "required", mode: { required: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
-        if(a.length !== 1) return null;
+        if(a.length !== 1 || QRID_fieldHidden(QRID_findAnchor(f))) return null;
         return String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") !== ""; } };
   });
   function boot(){
@@ -6448,22 +6550,10 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     /* The anchor of a radio or checkbox field is a hidden mirror input, which
        @READONLY leaves enabled while it disables the options the person would
        have to click. Such a field can never be corrected here, so it must never
-       hold the save (UX-003 applied to the inputs that actually matter). */
-    function optionsLocked(){
-      var seen = 0, locked = 0, els, i, k;
-      if(!document.getElementsByName) return false;
-      els = document.getElementsByName(fieldName + "___radio");
-      for(i = 0; i < els.length; i++){ seen++; if(els[i].disabled || els[i].readOnly) locked++; }
-      els = document.getElementsByName("__chkn__" + fieldName);
-      for(i = 0; i < els.length; i++){ seen++; if(els[i].disabled || els[i].readOnly) locked++; }
-      for(k = 0; isCheckbox && document.getElementById && k < MANAGED.length; k++){
-        var vis = document.getElementById("id-__chk__" + fieldName + "_RC_" + MANAGED[k]);
-        if(vis){ seen++; if(vis.disabled || vis.readOnly) locked++; }
-      }
-      return seen > 0 && locked === seen;
-    }
+       hold the save (UX-003 applied to the inputs that actually matter). The
+       test is the one every factory shares (QRID_fieldLocked). */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled && !optionsLocked()){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName, isCheckbox ? MANAGED : null)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -6858,7 +6948,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     QRID_followWidget(input, msg, fieldName);
     var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -7138,7 +7228,7 @@ function QRIDExistsInit(QRID_CONFIG){
        the user cannot edit (@READONLY) never blocks the save (UX-003, see
        QRID_registerBlocker), but a rule that fills fields still holds it
        while its answer is on the way, and no longer than QRID_PENDING_MS. */
-    var EDITABLE = !input.readOnly && !input.disabled;
+    var EDITABLE = !QRID_fieldLocked(input, fieldName);
     if(!configError && ((ANY_BLOCK && EDITABLE) || OWNED_ANY)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,

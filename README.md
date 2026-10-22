@@ -268,6 +268,11 @@ Semantics worth knowing before relying on it:
   live case, values you already have the right to read. A survey respondent, or a
   user without rights to that instrument, never receives one. A brand-new record
   has no saved values yet, so such refs resolve as `''`.
+- **On a survey shown one section per page**, a field answered on another page
+  is off-page in the same way: REDCap renders only the current page's fields, so
+  a comparison over that field is settled on the server from the saved response
+  when the page is drawn. A comparison that mixes it with a field of the current
+  page is deferred, as any off-page value on a survey is.
 - **A reference the module cannot resolve is refused, not guessed** (1.6.0).
   Until then an unreadable reference looked exactly like a genuine blank, and the
   rule was checked against a `''` that had never been read. Three cases are now
@@ -433,7 +438,16 @@ the two things it lacks: a **condition** and a **real block**:
 - Works on **Text, Notes, dropdown, radio, yes/no, true/false and slider**
   fields. Not calc — the person entering data cannot fill a calc, so requiring
   one would trap them (the same reasoning as the read-only exemption: a
-  read-only field shows the notice but never blocks the save).
+  read-only field, a `@READONLY` radio or autocomplete dropdown included, shows
+  the notice but never blocks the save).
+- **A field REDCap hides is not required.** While branching logic or `@HIDDEN`
+  hides the field's row there is no notice and the save goes through, as with
+  REDCap's own required flag; the notice comes back as soon as the row is shown.
+  The audit and the scan read the field's branching logic in the condition
+  dialect above and skip a blank field while that logic is false. Branching
+  logic outside the dialect (functions, smart variables, `[event][field]`
+  prefixes) leaves a blank field unchecked there and is logged as a rule
+  problem, never as a missing value.
 - Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
   conditions true at once is a visible conflict that never blocks.
 - The server audit logs a blank-while-required save as `type: required`,
@@ -1209,6 +1223,7 @@ php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, page curves 
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
+php  tests/required_pages_php.php    # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

@@ -83,6 +83,9 @@ class UniversalValidator extends AbstractExternalModule
     /** pid => conditionNumbers() map, built once per request from the dictionary. */
     private $conditionNumbersCache = [];
 
+    /** pid => field => branchingOf() answer, from a dictionary that was read. */
+    private $branchingCache = [];
+
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
 
@@ -317,6 +320,8 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            // and what a required field's branching logic reads (REQ-1)
+            foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
 
         // Read every audited + condition-referenced field for this exact
@@ -2949,6 +2954,15 @@ class UniversalValidator extends AbstractExternalModule
      * "when" gate above already skipped the rule when the condition is
      * false, so reaching here means the requirement is in force. Nothing
      * identifying is in a blank, so the finding carries an empty value.
+     *
+     * A field REDCap hides is not required (REQ-1). REDCap hides a field
+     * whose branching logic is false, leaves it out of its own required
+     * check and erases its value on save, so a blank there is the expected
+     * answer. The logic is read in the condition dialect (php/Logic.php),
+     * whose references the audit and the scan read with the rule's own
+     * (requiredBranchingRefs). Logic the dialect cannot read, or that
+     * references a value this context could not resolve, leaves the field
+     * unchecked and says so as a rule problem, never as a finding.
      */
     private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -2958,11 +2972,83 @@ class UniversalValidator extends AbstractExternalModule
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
-            if ($value === null || trim((string) $value) === '') {
-                $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
+            if ($value !== null && trim((string) $value) !== '') continue;
+            $shown = $this->branchingShows($project_id, $field, $values, $resolution);
+            if ($shown === false) continue;
+            if (is_string($shown)) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $shown];
+                continue;
             }
+            $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
         }
         return $out;
+    }
+
+    /**
+     * Whether REDCap's branching logic shows $field in this context: true
+     * (no logic, or the logic holds), false (the logic is false), or a
+     * sentence saying why it cannot be told. See findingsRequired().
+     */
+    private function branchingShows($project_id, $field, array $values, array $resolution)
+    {
+        $b = $this->branchingOf($project_id, $field);
+        if ($b === null) return true;
+        $name = '[' . $field . ']';
+        if (!is_array($b['ast'])) {
+            return 'the branching logic of ' . $name . ' ' . $b['error']
+                 . ' The module cannot tell whether REDCap shows the field, so the requirement is not checked here.';
+        }
+        foreach (Logic::referencedFields($b['ast']) as $ref) {
+            $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+            if ($state !== 'ok') return 'the branching logic of ' . $name . ' ' . self::resolutionProblem($state, $ref[0]);
+        }
+        return Logic::evaluate($b['ast'], $values, Logic::BLANK_INERT, false, $this->conditionNumbers($project_id));
+    }
+
+    /**
+     * The branching logic of $field parsed in the condition dialect, or null
+     * when the field has none: ['text' => the logic, 'ast' => the parsed
+     * condition], or 'ast' false and 'error' when the dialect cannot read it.
+     * Read once per project and field.
+     */
+    private function branchingOf($pid, $field)
+    {
+        $pid = (int) $pid;
+        $field = (string) $field;
+        if (isset($this->branchingCache[$pid]) && array_key_exists($field, $this->branchingCache[$pid])) {
+            return $this->branchingCache[$pid][$field];
+        }
+        $dd = $this->dataDictionary($pid);
+        $text = ($dd && isset($dd[$field]['branching_logic'])) ? trim((string) $dd[$field]['branching_logic']) : '';
+        $out = null;
+        if ($text !== '') {
+            $p = Logic::parse($text);
+            $out = empty($p['ok'])
+                ? ['text' => $text, 'ast' => false, 'error' => isset($p['error']) ? (string) $p['error'] : 'cannot be read.']
+                : ['text' => $text, 'ast' => $p['ast']];
+        }
+        // Only a dictionary that was read is an answer worth keeping.
+        if ($dd) $this->branchingCache[$pid][$field] = $out;
+        return $out;
+    }
+
+    /**
+     * The fields the branching logic of a @UVREQUIRED rule's fields reads,
+     * for the audit's and the scan's read sets. Other modes judge a value,
+     * and a hidden field has none once REDCap erased it.
+     *
+     * @return string[]
+     */
+    private function requiredBranchingRefs($pid, array $r)
+    {
+        if (!empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'required') return [];
+        $out = [];
+        foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+            $b = $this->branchingOf($pid, $f);
+            if ($b === null || !is_array($b['ast'])) continue;
+            foreach (Logic::referencedFields($b['ast']) as $ref) $out[(string) $ref[0]] = true;
+        }
+        return array_keys($out);
     }
 
     /**
@@ -4477,6 +4563,13 @@ class UniversalValidator extends AbstractExternalModule
         $live = $this->fieldsOnInstrument($pid, $instrument);
         $unknownForm = ($live === null);
         if ($unknownForm) $live = [];
+        // A survey shown one section per page renders only this page's fields,
+        // so a field answered on another page is off-page like a field of
+        // another form, and is settled here from the saved response (REQ-4).
+        if (!$unknownForm && $context === 'survey') {
+            $page = $this->surveyPageFields($pid, $instrument);
+            if ($page !== null) $live = array_intersect_key($live, $page);
+        }
 
         $values = [];
         $resolution = [];
@@ -7282,6 +7375,49 @@ class UniversalValidator extends AbstractExternalModule
      * conservative choice for import/API contexts where the hook's instrument
      * argument may be absent or not match a form name.
      */
+    /**
+     * The fields on the page of a multi-page survey that REDCap is rendering,
+     * as field => true, or null when the whole instrument is on one page or
+     * the page cannot be told (REQ-4).
+     *
+     * A survey set to show one section per page renders only the current
+     * page's fields, so a "when" over a field answered on an earlier page
+     * read a blank in the browser. REDCap sets $_GET['__page__'] to the page
+     * it draws before redcap_survey_page_top runs. The pages follow the
+     * dictionary the way REDCap's getPageFields() splits them: each field with
+     * a section header starts a new page, except the first field, and the
+     * record id field is on none.
+     */
+    private function surveyPageFields($pid, $instrument)
+    {
+        $page = (isset($_GET['__page__']) && is_scalar($_GET['__page__'])) ? (string) $_GET['__page__'] : '';
+        if (!$instrument || !preg_match('/^[1-9][0-9]{0,4}$/D', $page)) return null;
+        if (!$this->surveyBySection($pid, $instrument)) return null;
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return null;
+        $pk = (string) array_key_first($dd);
+        $pages = [];
+        $n = 1;
+        $seen = 0;
+        foreach ($dd as $name => $meta) {
+            if (!isset($meta['form_name']) || $meta['form_name'] !== $instrument || (string) $name === $pk) continue;
+            if ($seen > 0 && isset($meta['section_header']) && (string) $meta['section_header'] !== '') $n++;
+            $pages[$n][(string) $name] = true;
+            $seen++;
+        }
+        return (count($pages) > 1 && isset($pages[(int) $page])) ? $pages[(int) $page] : null;
+    }
+
+    /** Whether $instrument is a survey set to show one section per page. */
+    private function surveyBySection($pid, $instrument)
+    {
+        $proj = $this->projectObject($pid);
+        if ($proj === null || !isset($proj->forms[$instrument]['survey_id'])) return false;
+        $sid = $proj->forms[$instrument]['survey_id'];
+        return isset($proj->surveys[$sid]) && is_array($proj->surveys[$sid])
+            && !empty($proj->surveys[$sid]['question_by_section']);
+    }
+
     private function fieldsOnInstrument($pid, $instrument)
     {
         if (!$instrument) return null;
@@ -9276,6 +9412,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach ($r['fields'] as $f) $readSet[$f] = true;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            foreach ($this->requiredBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
         }
         // A project-scope unique rule cannot be evaluated from a DAG-confined
         // scan: the scan reads one group, so a value duplicated ACROSS groups is

@@ -291,7 +291,8 @@ browser behaviors** — none can block an API or import write.
 | Compulsory | `hard` | Block the browser form/survey save until the value is fixed |
 
 *Compulsory* never traps a **read-only** field — someone who cannot edit the
-value is not blocked by it. Start new rules at *Informational* to see what they
+value is not blocked by it. That includes a `@READONLY` radio, yes/no or
+autocomplete dropdown, and a field whose row branching logic or `@HIDDEN` hides. Start new rules at *Informational* to see what they
 catch, then tighten to *Advisory* or *Compulsory* once you trust them.
 
 ### `@UVALIDATE` annotation syntax
@@ -620,7 +621,8 @@ stopped an unquoted condition at the first space.
 - **Same-page fields react live** — change the dropdown and the gated field's
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
-  yet, so those references read as empty).
+  yet, so those references read as empty). On a survey shown one section per
+  page, a field answered on another page uses its saved answer in the same way.
 - **A reference that cannot be resolved is refused, not read as blank** (1.6.0):
   a field on a different repeating instrument, a field not collected in this
   event, or a read that failed. The rule stops checking and reports why — see the
@@ -647,9 +649,12 @@ stopped an unquoted condition at the first space.
   Caps: 500 characters, 20 references, 10 nesting levels.
 
 > **A field merely shown by branching logic** (no `when` needed) also just works:
-> the validator binds by field name and activates once the field is present and
-> has a value; while hidden and empty it stays silent. Reach for `when` when the
-> *validation itself* should depend on another field's value.
+> the validator binds by field name and checks the value once there is one. A
+> field whose row is hidden, by branching logic or `@HIDDEN`, never holds the
+> save. `@UVREQUIRED` goes further: a hidden field is not required at all, on
+> the page, in the audit and in the scan (which read the field's branching
+> logic in this same condition dialect). Reach for `when` when the *validation
+> itself* should depend on another field's value.
 
 ---
 
