@@ -1427,6 +1427,51 @@ $SUPER = 787;
     echo '  plan tombstone: ' . $tFindKey . "\n";
 }
 
+// WHAT THE DETAIL BUDGET LEFT OUT, ON A REAL SERVER (review rvf1-3). The
+// contract above drives the counts; this is the two things only a server
+// shows: a run from before schema version 6 (open_unstored NULL) keeps NULL
+// through a commit, a requeue and a departure, where `NULL + ?` and the
+// GREATEST(CAST(...)) take-back could have errored or started a count; and a
+// take-back larger than the count stops at 0 instead of failing the unsigned
+// column.
+{
+    $UPID = 965;
+    $us = new SqlScanStore($dbA);
+    $ur = $us->startRun($UPID, ['created_by' => 'alice']);
+    $urid = (int) $ur['run']['run_id'];
+    $us->writeManifest($urid, [['id_bin' => 'N1', 'hash' => hash('sha256', 'N1', true), 'dag' => null],
+                               ['id_bin' => 'N2', 'hash' => hash('sha256', 'N2', true), 'dag' => null]]);
+    $uep = (int) $us->run($UPID, $urid)['lease_epoch'];
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET open_unstored = NULL WHERE run_id = ' . $urid);
+    $uc = $us->claim($urid, 'w', $uep, 2);
+    $ub = ['bytes' => 0, 'findings' => [], 'records' => [], 'unstored' => []];
+    foreach ($uc as $c) {
+        $ub['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                            'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
+        $ub['unstored'][$c['ordinal']] = 2;
+    }
+    $okU = $us->commitBatch($urid, 'w', $uep, $ub) === true;
+    $nullAfterCommit = $us->run($UPID, $urid)['open_unstored'];
+    $us->advancePhase($urid, $uep, ScanPhase::CATCH_UP);
+    $rq = $us->requeue($urid, $uep, [hash('sha256', 'N1', true)]);
+    $dp = $us->depart($urid, $uep, [hash('sha256', 'N2', true)]);
+    check('rvf1-3 server: a run from before the count keeps NULL through a commit, a requeue and a departure',
+        $okU && $nullAfterCommit === null && $rq === 1 && $dp === 1
+        && $us->run($UPID, $urid)['open_unstored'] === null);
+    // The rows still say what each reading left out, then nothing once it
+    // left done, whatever the run's count.
+    $rowsU = $dbA->select('SELECT record_id_bin, unstored FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
+    check('rvf1-3 server: and each row\'s own count is zeroed when it leaves done',
+        (int) $rowsU[0][1] === 0 && (int) $rowsU[1][1] === 0);
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET open_unstored = 1 WHERE run_id = ' . $urid);
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . ScanStore::REC_DONE
+        . ', unstored = 5 WHERE run_id = ' . $urid . " AND record_id_bin = 'N1'");
+    $tb = $us->tombstone($urid, $uep, [hash('sha256', 'N1', true)]);
+    check('rvf1-3 server: a take-back larger than the count stops at 0 rather than failing the write',
+        $tb === 1 && (int) $us->run($UPID, $urid)['open_unstored'] === 0);
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

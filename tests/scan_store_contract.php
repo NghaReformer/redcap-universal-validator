@@ -1643,6 +1643,56 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $okD4 && $activeD() === ['L1']
         && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
 
+    // -- what the detail budget left out, per record (review rvf1-3) -------
+    //
+    // A record committed done keeps its left-out count on its row and the
+    // run's open_unstored grows by it; every way out of done takes it back.
+    $su = $newStore();
+    $ru = (int) $su->startRun(747, ['created_by' => 'alice'])['run']['run_id'];
+    $hU = function ($id) { return hash('sha256', $id, true); };
+    $su->writeManifest($ru, array_map(function ($id) use ($hU) {
+        return ['id_bin' => $id, 'hash' => $hU($id), 'dag' => null];
+    }, ['U1', 'U2', 'U3', 'U4']));
+    $epU = (int) $su->run(747, $ru)['lease_epoch'];
+    $openU = function () use ($su, $ru) {
+        $v = $su->run(747, $ru)['open_unstored'];
+        return $v === null ? null : (int) $v;
+    };
+    $C('rvf1-3: a run created now starts with nothing left out, not with no count',
+        $openU() === 0);
+    $bU = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+    foreach ($su->claim($ru, 'w1', $epU, 4) as $c) {
+        $done = $c['id_bin'] !== 'U4';
+        $bU['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => $done ? ScanStore::REC_DONE : ScanStore::REC_TOMBSTONE,
+                            'claim' => $c['claim']];
+        $left = ['U1' => 2, 'U2' => 3, 'U3' => 0, 'U4' => 5];
+        if ($left[$c['id_bin']] > 0) $bU['unstored'][$c['ordinal']] = $left[$c['id_bin']];
+    }
+    $C('rvf1-3: the batch commits', $su->commitBatch($ru, 'w1', $epU, $bU) === true);
+    $C('rvf1-3: the run holds what its done records left out, and a record committed in any other state holds none',
+        $openU() === 5);
+    $su->advancePhase($ru, $epU, ScanPhase::CATCH_UP);
+    $C('rvf1-3: a record sent back to be read again gives its count back',
+        $su->requeue($ru, $epU, [$hU('U1')]) === 1 && $openU() === 3);
+    $C('rvf1-3: a record that left the run\'s group gives its count back',
+        $su->depart($ru, $epU, [$hU('U2')]) === 1 && $openU() === 0);
+    $C('rvf1-3: a record read again keeps only what its new reading left out',
+        (function () use ($su, $ru, $epU, $openU) {
+            $c = $su->claimPending($ru, 'w2', $epU, 10);
+            if (!is_array($c) || count($c) !== 1) return false;
+            $ok = $su->commitBatch($ru, 'w2', $epU, ['bytes' => 0, 'findings' => [],
+                'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '11', 'claim' => $c[0]['claim']]],
+                'unstored' => [$c[0]['ordinal'] => 4]]) === true;
+            return $ok && $openU() === 4;
+        })());
+    $C('rvf1-3: and a deleted record gives its count back',
+        $su->tombstone($ru, $epU, [$hU('U1')]) === 1 && $openU() === 0);
+    $C('rvf1-3: requeueing, departing or deleting again takes nothing more back',
+        $su->requeue($ru, $epU, [$hU('U3')]) === 1 && $su->depart($ru, $epU, [$hU('U2')]) === 0
+        && $su->tombstone($ru, $epU, [$hU('U1')]) === 0 && $openU() === 0);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

@@ -1097,6 +1097,7 @@ final class SqlScanStore implements ScanStore
             // than an accident of timing.
             $held = [];
             $applied = 0;
+            $openLeft = 0;
             foreach ($records as $rec) {
                 // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
                 // claimed by claimPending() is in CLAIMED, and must still be
@@ -1109,15 +1110,23 @@ final class SqlScanStore implements ScanStore
                 // errors under a strict one, and the wrap is the worse of the
                 // two - a record tried 255 times would start again at nothing
                 // and the retry cap would silently stop existing.
+                // THE FINDINGS LEFT OUT OF THIS READING go on the row (review
+                // rvf1-3), so the run can take them back when the record
+                // leaves done. A row reaches here below done, where its count
+                // is 0 (every way out of done zeroes it), so setting it is
+                // the whole change and open_unstored only grows here.
+                $left = ((int) $rec['state'] === self::REC_DONE && isset($unstored[(int) $rec['ordinal']]))
+                      ? $unstored[(int) $rec['ordinal']] : 0;
                 $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
                     SET state = ?, attempts = LEAST(attempts + 1, 254), version_scanned = ?,
-                        claim_owner = NULL, claim_seq = 0, updated_at = ?
+                        unstored = ?, claim_owner = NULL, claim_seq = 0, updated_at = ?
                     WHERE run_id = ? AND ordinal = ? AND state < ?
                       AND claim_owner = ? AND claim_seq = ?',
-                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
+                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, $left, self::now(),
                      $runId, $rec['ordinal'], self::REC_DONE, $owner, (int) $rec['claim']]);
                 if ($this->db->affected() !== 1) continue;
                 $held[(int) $rec['ordinal']] = true;
+                $openLeft += $left;
                 // Terminal rows only. A requeued record is written back as
                 // pending, which changes its attempt count and its timestamp -
                 // so it affects a row without having been finished, and
@@ -1250,11 +1259,13 @@ final class SqlScanStore implements ScanStore
             // freezing. The other places are freezeManifest(), a manifest page
             // appended, and setProgressState() when a finishing phase's step
             // moved the run forward (W7-N9) - each of them progress too.
+            // open_unstored stays NULL on a run that began before it existed.
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
-                    detail_bytes = detail_bytes + ?, updated_at = ?';
+                    detail_bytes = detail_bytes + ?, open_unstored = open_unstored + ?,
+                    updated_at = ?';
             $args = [$applied, $stored, isset($batch['bytes']) ? (int) $batch['bytes'] : 0,
-                     self::now()];
+                     $openLeft, self::now()];
             if ($applied > 0) {
                 $sql .= ', progress_at = ?';
                 $args[] = self::now();
@@ -1520,6 +1531,18 @@ final class SqlScanStore implements ScanStore
      *
      * @return array<int,int> positive counts only
      */
+    /**
+     * The SET clause that takes `?` left-out findings back from a run (review
+     * rvf1-3). Never below 0, and NULL stays NULL: a run that began before
+     * open_unstored existed is counted the old way, and an unsigned column
+     * asked to go negative is an error on a strict server and a wrap on a
+     * lenient one.
+     */
+    private static function withdrawUnstored()
+    {
+        return 'open_unstored = GREATEST(CAST(open_unstored AS SIGNED) - ?, 0)';
+    }
+
     private static function unstoredOf(array $batch)
     {
         $out = [];
@@ -2311,12 +2334,14 @@ final class SqlScanStore implements ScanStore
             // here and of no other. A tombstone already closed its findings
             // when it became one (reState(), W5F-N4).
             $left = [];
-            foreach ($this->db->select('SELECT record_hash FROM ' . $t
+            $withdrawn = 0;
+            foreach ($this->db->select('SELECT record_hash, unstored FROM ' . $t
                     . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state NOT IN (?, ?)
                     FOR UPDATE',
                     array_merge([$runId], array_values($hashes),
                                 [self::REC_DEPARTED, self::REC_TOMBSTONE])) as $row) {
                 $left[] = $row[0];
+                $withdrawn += (int) $row[1];
             }
             if (!$left) {
                 $this->db->commit();
@@ -2325,8 +2350,8 @@ final class SqlScanStore implements ScanStore
             $now = self::now();
             $lm = implode(',', array_fill(0, count($left), '?'));
             $this->db->execNoCount('UPDATE ' . $t . '
-                SET state = ?, version_scanned = NULL, claim_owner = NULL, claim_seq = 0,
-                    updated_at = ?
+                SET state = ?, version_scanned = NULL, unstored = 0, claim_owner = NULL,
+                    claim_seq = 0, updated_at = ?
                 WHERE run_id = ? AND record_hash IN (' . $lm . ')',
                 array_merge([self::REC_DEPARTED, $now, $runId], $left));
             $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
@@ -2337,9 +2362,11 @@ final class SqlScanStore implements ScanStore
                 array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $left));
             $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
+            // What the departed readings left out is no longer the run's
+            // (review rvf1-3). See withdrawUnstored().
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
-                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
-                [isset($d[0][0]) ? (int) $d[0][0] : 0, $now, $runId]);
+                . ' SET manifest_done = ?, ' . self::withdrawUnstored() . ', updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $withdrawn, $now, $runId]);
             $this->db->commit();
             return count($left);
         } catch (\Throwable $e) {
@@ -2388,15 +2415,23 @@ final class SqlScanStore implements ScanStore
             // decided first, under the row locks, so the findings closed below
             // are those of records that became tombstones here, on this run's
             // manifest, and of no other.
+            //
+            // AND EITHER WAY THE ROWS' LEFT-OUT FINDINGS ARE TAKEN BACK (review
+            // rvf1-3): a record sent back to be read again, or deleted, no
+            // longer holds the reading that left them out. Read here, under
+            // the same locks, for both.
             $closing = ($state === self::REC_TOMBSTONE);
+            $moving = [];
+            $withdrawn = 0;
+            foreach ($this->db->select('SELECT record_hash, unstored FROM ' . $t
+                    . ' WHERE run_id = ? AND record_hash IN (' . $marks . ')'
+                    . ($closing ? ' AND state <> ?' : '') . ' FOR UPDATE',
+                    array_merge([$runId], array_values($hashes),
+                                $closing ? [self::REC_TOMBSTONE] : [])) as $row) {
+                $moving[] = $row[0];
+                $withdrawn += (int) $row[1];
+            }
             if ($closing) {
-                $moving = [];
-                foreach ($this->db->select('SELECT record_hash FROM ' . $t
-                        . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state <> ?
-                        FOR UPDATE',
-                        array_merge([$runId], array_values($hashes), [self::REC_TOMBSTONE])) as $row) {
-                    $moving[] = $row[0];
-                }
                 if (!$moving) {
                     $this->db->commit();
                     return 0;
@@ -2412,7 +2447,7 @@ final class SqlScanStore implements ScanStore
             // staleness is the entire reason the record was requeued.
             $this->db->exec('UPDATE ' . $t . '
                 SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '')
-                . 'claim_owner = NULL, claim_seq = 0, updated_at = ?
+                . 'unstored = 0, claim_owner = NULL, claim_seq = 0, updated_at = ?
                 WHERE run_id = ? AND record_hash IN (' . $marks . ')', $params);
             $n = $this->db->affected();
             if ($closing) {
@@ -2430,8 +2465,8 @@ final class SqlScanStore implements ScanStore
             $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
-                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
-                [isset($d[0][0]) ? (int) $d[0][0] : 0, self::now(), $runId]);
+                . ' SET manifest_done = ?, ' . self::withdrawUnstored() . ', updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $withdrawn, self::now(), $runId]);
             $this->db->commit();
             return $n;
         } catch (\Throwable $e) {

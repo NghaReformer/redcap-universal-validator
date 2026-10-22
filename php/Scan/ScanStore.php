@@ -165,6 +165,10 @@ interface ScanStore
         // other projects the run looked values up in from it (review R3U-N1):
         // the reader's plan can no longer say once the rule is gone.
         'policy_json',
+        // The findings the detail budget left out of readings the run still
+        // holds (schema version 6, review rvf1-3). NULL on a run that began
+        // before the column existed, and that run is counted the old way.
+        'open_unstored',
     ];
 
     /**
@@ -530,6 +534,13 @@ interface ScanStore
      * in the same transaction, behind the same fences: a record lost to
      * another worker is that worker's to count. Absent is none.
      *
+     * AND PER RECORD (review rvf1-3). A held record committed done keeps its
+     * count on its manifest row, and the run's open_unstored grows by it, in
+     * the same transaction. The row's count is what requeue(), tombstone()
+     * and depart() take back from open_unstored when the record leaves
+     * done, so a finding left out of a reading the run no longer holds is no
+     * longer counted. Any other committed state keeps 0.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */
@@ -540,6 +551,11 @@ interface ScanStore
      * because its detail budget was spent (H9). ScanPromotion::tally() adds it
      * to what the summary counts, so `violations` is every finding; a run with
      * any is `truncated`, and one with none is not.
+     *
+     * RUN-WIDE AND ONLY EVER ADDED TO, so it cannot take back a record that
+     * left the run (review rvf1-3). A run row whose open_unstored is not NULL
+     * (every run created at schema version 6 or later) is judged on that
+     * instead; this aggregate is read only for a run that began before it.
      */
     const DETAIL_UNSTORED = 'detail-unstored';
 
@@ -846,6 +862,12 @@ interface ScanStore
      * record_hash) finds the rows, where record_id_bin has no index and a
      * filter on it reads every row of the run.
      *
+     * Each row's left-out count (commitBatch(), rvf1-3) is taken back from
+     * the run's open_unstored and zeroed, in the same transaction: the
+     * reading that left those findings out is the one being replaced. Its
+     * stored findings stay active until the new reading supersedes them, so
+     * the report is never blank for a record still being checked.
+     *
      * @param string[] $hashes raw record hashes
      */
     public function requeue($runId, $epoch, array $hashes);
@@ -862,7 +884,8 @@ interface ScanStore
      * this run's generation are closed at the run's sequence, as depart()
      * and a worker's tombstone commit close them: the run reports on records
      * the project holds, and counts a deleted one as removed. Duplicate-value
-     * findings (staged) are the finalizer's and are not touched.
+     * findings (staged) are the finalizer's and are not touched. Its
+     * left-out count is taken back as requeue() takes it.
      *
      * @param string[] $hashes raw record hashes, as requeue() takes them
      * @return int rows that became tombstones
@@ -878,7 +901,8 @@ interface ScanStore
      * and the record's active findings in this run's generation are closed
      * at the run's sequence, as a re-examination closes them. A deleted
      * record stays a tombstone: gone is the stronger fact. Duplicate-value
-     * findings (staged) are the finalizer's and are not touched.
+     * findings (staged) are the finalizer's and are not touched. Its left-out
+     * count is taken back as requeue() takes it (rvf1-3).
      *
      * Catch-up phase and current lease epoch only, like the other
      * reconciliation writes. A record departing while the worker reads it

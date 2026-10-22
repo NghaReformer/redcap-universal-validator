@@ -274,3 +274,52 @@ check('upgrade: migrating an already-migrated installation succeeds', $r2['ok'] 
 check('upgrade: and leaves the retired runs retired',
     (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
         . ' WHERE terminal = "expired"')[0][0] === 2);
+
+// -- VERSION 5 TO 6 (review rvf1-3), on a server that holds a run ---------------
+//
+// A run in flight across the upgrade did not keep its open count from its
+// start, so the column is NULL on it and it is counted the old way; a run
+// created after starts at 0. Built at version 5 and migrated for real.
+foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
+for ($v5 = 1; $v5 <= 5; $v5++) {
+    foreach (Schema::statements($v5) as $item) $A->query(is_array($item) ? $item['sql'] : $item);
+}
+$A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES (5, NOW())');
+$A->query('INSERT INTO ' . Schema::table('scan_run') . '
+    (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+     coverage, detail, values_state, policy_json, policy_revision, fingerprint,
+     created_at, updated_at, active_slot)
+    VALUES (UNHEX(REPLACE(UUID(), "-", "")), ' . $PID . ', 1, 1, "alice", "project", "full", "scanning",
+            "partial", "complete", "none", "{}", 1, REPEAT("a", 64), NOW(), NOW(), 1)');
+$v5run = (int) $A->insert_id;
+$A->query('INSERT INTO ' . Schema::table('scan_record') . '
+    (run_id, ordinal, record_id_bin, record_hash, state, updated_at)
+    VALUES (' . $v5run . ', 1, "R1", UNHEX(SHA2("R1", 256)), 100, NOW())');
+check('v6 upgrade: the fixture is at version 5', Schema::currentVersion($ca) === 5);
+$r6 = Schema::migrate($ca);
+check('v6 upgrade: an installation at version 5 moves to version 6',
+    $r6['ok'] === true && $r6['from'] === 5 && $r6['to'] === Schema::VERSION
+    && Schema::currentVersion($ca) === Schema::VERSION);
+$colOf = function ($table, $col) use ($ca) {
+    $r = $ca->query('SELECT is_nullable, column_default FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?', [Schema::table($table), $col]);
+    return isset($r[0]) ? [$r[0][0], $r[0][1]] : null;
+};
+check('v6 upgrade: uv_scan_record.unstored is NOT NULL DEFAULT 0, and 0 on the row already there',
+    $colOf('scan_record', 'unstored') === ['NO', '0']
+    && (int) $ca->query('SELECT unstored FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ?', [$v5run])[0][0] === 0);
+check('v6 upgrade: uv_scan_run.open_unstored is NULL on the run in flight, so it is counted the old way',
+    $colOf('scan_run', 'open_unstored') === ['YES', '0']
+    && $ca->query('SELECT open_unstored FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$v5run])[0][0] === null);
+$v6store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+$v6new = $v6store->startRun($NEIGHBOUR, ['created_by' => 'bob']);
+check('v6 upgrade: and a run created after it starts at 0',
+    $v6new['ok'] === true && $v6new['run']['open_unstored'] !== null
+    && (int) $v6new['run']['open_unstored'] === 0);
+$r6b = Schema::migrate($ca);
+check('v6 upgrade: migrating again applies nothing',
+    $r6b['ok'] === true && $r6b['applied'] === 0
+    && $ca->query('SELECT open_unstored FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$v5run])[0][0] === null);

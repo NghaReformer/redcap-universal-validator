@@ -1411,8 +1411,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     // still working (review rv10b1-3), and a run with no verdict, whose
     // floor is taken over what was STORED and then has them added (rv10b1-5
     // M1: compared instead, a run that stored 5 and left 2 out said 5).
+    // A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 (open_unstored NULL), which
+    // is counted from the run-wide aggregate as it always was; the run-row
+    // count that replaces it for later runs is pinned below (rvf1-3).
     $uns = new ArrayScanStore();
-    $uid = (int) $uns->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
+    $uid = (int) $uns->startRun(822, ['created_by' => 'alice', 'open_unstored' => null])['run']['run_id'];
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
@@ -3385,6 +3388,40 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $mo['status']['total'] === 4 && $mo['status']['done'] === 4
             && $mo['status']['findings'] === 0 && $mo['findings'] === []);
     }
+
+    // rvf1-3: WHAT A DEPARTED RECORD'S READING LEFT OUT LEAVES WITH IT. The
+    // reviewer's case (C): a detail budget of one finding, R02's finding
+    // stored and R03's left out, then R03 moves to group 31 and departs. The
+    // left-out count was run-wide, so the group's finished report counted
+    // R03's finding and was truncated over a group whose every finding was
+    // stored.
+    $ms = new ArrayScanStore();
+    $mm = $groupModule($ms);
+    $mm->flagged['R02'] = true;
+    $mm->flagged['R03'] = true;
+    $mm->proj['scan-max-detail-findings'] = '1';
+    $rid = (int) (new ScanService($mm, $ms))->start(183)['run_id'];
+    $mm->readSleep = 3.2;
+    (new ScanService($mm, $ms))->work(183, $rid);
+    $leftBefore = (int) $ms->run(183, $rid)['open_unstored'];
+    $mm->dagOf['R03'] = '31';
+    $mm->version['R03'] = '110';
+    $mm->changes['R03'] = '110';
+    $mm->top = '120';
+    for ($i = 0; $i < 15 && $ms->run(183, $rid)['terminal'] === null; $i++) {
+        (new ScanService($mm, $ms))->work(183, $rid);
+    }
+    $row = $ms->run(183, $rid);
+    $st = (new ScanService($mm, $ms))->status(183, $rid);
+    $states = $ms->recordStates($rid);
+    check('rvf1-3: the fixture stored R02\'s finding, left R03\'s out, and R03 then departed',
+        $leftBefore === 1 && (int) $row['detail_rows'] === 1
+        && isset($states[ScanStore::REC_DEPARTED]) && $states[ScanStore::REC_DEPARTED] === 1);
+    check('rvf1-3: the departed reading\'s left-out finding is no longer the run\'s',
+        (int) $row['open_unstored'] === 0);
+    check('rvf1-3: so the group\'s run is not truncated, and counts the one finding it holds',
+        $row['terminal'] === 'complete' && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
+        && $st['ok'] === true && $st['findings'] === 1 && $st['detail'] === ScanOutcome::DETAIL_COMPLETE);
 
     // NO RECORD SOURCE, NO ANSWER. A scoped run whose source cannot be opened
     // can tell no record's group, and cannot tell takes nothing out of it; an

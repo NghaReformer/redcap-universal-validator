@@ -39,6 +39,19 @@ namespace {
      * every statement it was given. Nothing here pretends to be a database: the
      * point is what the MIGRATOR does with the answers, not what MySQL does.
      */
+    /**
+     * Mark every change of version $from and later as already made, so a
+     * scenario about an earlier version sees only its own statements.
+     */
+    function uv_later_versions_applied(FakeModule $m, $from)
+    {
+        if ($from <= 6) {
+            $m->columns[] = 'uv_scan_record.unstored';
+            $m->columns[] = 'uv_scan_run.open_unstored';
+            $m->zeroDefault[] = 'uv_scan_run.open_unstored';
+        }
+    }
+
     class FakeModule {
         public $sql = [];
         /** null = the version table does not exist yet (fresh install). */
@@ -54,6 +67,8 @@ namespace {
         public $columns = [];
         public $indexes = [];
         public $notNull = [];
+        /** "table.column" whose default reads '0' (version 6). */
+        public $zeroDefault = [];
         /** Rows still carrying project_id = 0 when the data step looks. */
         public $unattributed = 0;
         /** Model a paged DELETE that never removes anything, so verifyV2 has work to do. */
@@ -86,6 +101,9 @@ namespace {
             $t = $m[1];
             if (preg_match('/ADD COLUMN (\w+)/', $sql, $c)) {
                 $this->columns[] = $t . '.' . $c[1];
+            }
+            if (preg_match('/ALTER COLUMN (\w+) SET DEFAULT 0/', $sql, $c)) {
+                $this->zeroDefault[] = $t . '.' . $c[1];
             }
             if (preg_match('/MODIFY COLUMN (\w+)[^,]*NOT NULL/i', $sql, $c)) {
                 $this->notNull[] = $t . '.' . $c[1];
@@ -151,6 +169,9 @@ namespace {
                 $c = isset($params[1]) ? $params[1] : '';
                 if (strpos($sql, 'is_nullable') !== false) {
                     return [[in_array($t . '.' . $c, $this->notNull, true) ? 1 : 0]];
+                }
+                if (strpos($sql, 'column_default') !== false) {
+                    return [[in_array($t . '.' . $c, $this->zeroDefault, true) ? 1 : 0]];
                 }
                 return [[in_array($t . '.' . $c, $this->columns, true) ? 1 : 0]];
             }
@@ -228,6 +249,13 @@ namespace INSPIRE\UniversalValidator\Scan {
         $created = $runDdl !== '';
         foreach ($v2sql as $sql) {
             if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+        }
+        // And every later version's: version 6 adds open_unstored (rvf1-3).
+        for ($v = 3; $v <= Schema::VERSION; $v++) {
+            foreach (Schema::statements($v) as $item) {
+                $sql = is_array($item) ? $item['sql'] : $item;
+                if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+            }
         }
         $undeclared = [];
         foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $c) {
@@ -341,7 +369,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v3: an installation at version 2 applies the as_of column',
             $r['ok'] === true && $r['from'] === 2 && $r['to'] === Schema::VERSION
-            && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5))
+            && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6))
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
         check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
             return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -350,7 +378,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->columns[] = 'uv_finding.as_of';
         $r = Schema::migrate($m);
         check('v3: a column already there is not added twice', $r['ok'] === true
-            && $r['applied'] === count(Schema::statements(4)) + count(Schema::statements(5))
+            && $r['applied'] === count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6))
             && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
         $m = new \FakeModule();
         $m->version = '2';
@@ -579,7 +607,8 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         $have = new \FakeModule();
         $have->version = '3';
-        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference'];
+        uv_later_versions_applied($have, 6);
+        $have->columns = array_merge($have->columns, ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
@@ -605,10 +634,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     {
         $m = new \FakeModule();
         $m->version = '4';
+        uv_later_versions_applied($m, 6);
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: an installation at version 4 moves to version 5',
-            $r['ok'] === true && $r['from'] === 4 && $r['to'] === 5 && Schema::VERSION === 5);
+            $r['ok'] === true && $r['from'] === 4 && $r['to'] === Schema::VERSION && Schema::VERSION >= 5);
         check('v5: by two ALTERs that add uv_finding.z_score and growth_reference, NULL for every existing row (got ' . json_encode($alters) . ')',
             $alters === ['ALTER TABLE uv_finding ADD COLUMN z_score VARCHAR(16) NULL',
                          'ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
@@ -617,20 +647,23 @@ namespace INSPIRE\UniversalValidator\Scan {
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '4';
-        $have->columns = ['uv_finding.z_score', 'uv_finding.growth_reference'];
+        uv_later_versions_applied($have, 6);
+        $have->columns = array_merge($have->columns, ['uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v5: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '4';
-        $half->columns = ['uv_finding.z_score'];
+        uv_later_versions_applied($half, 6);
+        $half->columns = array_merge($half->columns, ['uv_finding.z_score']);
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: with z_score there, only growth_reference is added (got ' . json_encode($alters) . ')',
             $rh['ok'] === true && $rh['applied'] === 1 && $alters === ['ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
         $inert = new \FakeModule();
         $inert->version = '4';
+        uv_later_versions_applied($inert, 6);
         $inert->inertAlter = 'ADD COLUMN z_score';
         $ri = Schema::migrate($inert);
         check('v5: an ALTER that did not take is not recorded', $ri['ok'] === false
@@ -638,6 +671,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $inert = new \FakeModule();
         $inert->version = '4';
+        uv_later_versions_applied($inert, 6);
         $inert->inertAlter = 'ADD COLUMN growth_reference';
         $ri = Schema::migrate($inert);
         check('v5: ... the second ALTER too, and the refusal names its column', $ri['ok'] === false
@@ -646,6 +680,56 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v5: a fresh install ends with both columns',
             strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN z_score VARCHAR(16)') !== false
             && strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN growth_reference VARCHAR(64)') !== false);
+    }
+
+    /* =====================================================================
+     * V6  what a run holds open (review rvf1-3)
+     *
+     * uv_scan_record.unstored, 0 on every row already there; and
+     * uv_scan_run.open_unstored, NULL on every run already there (counted
+     * the old way) and 0 on every run created after (its default is set
+     * once the column exists).
+     * ===================================================================== */
+    {
+        $v6 = ['ALTER TABLE uv_scan_record ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
+               'ALTER TABLE uv_scan_run ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
+               'ALTER TABLE uv_scan_run ALTER COLUMN open_unstored SET DEFAULT 0'];
+        $m = new \FakeModule();
+        $m->version = '5';
+        $r = Schema::migrate($m);
+        $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v6: an installation at version 5 moves to version 6',
+            $r['ok'] === true && $r['from'] === 5 && $r['to'] === 6 && Schema::VERSION === 6);
+        check('v6: by adding the row count, the run count with no default, then its default (got '
+            . json_encode($alters) . ')', $alters === $v6);
+        check('v6: with no data step, and records version 6',
+            !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'UPDATE uv_') === 0; })
+            && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        $before = count($m->sql);
+        $again = Schema::migrate($m);
+        check('v6: run again, it issues no ALTER: the columns are there and the default reads 0',
+            $again['ok'] === true && $again['applied'] === 0
+            && !array_filter(array_slice($m->sql, $before), function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $half = new \FakeModule();
+        $half->version = '5';
+        $half->columns = ['uv_scan_record.unstored', 'uv_scan_run.open_unstored'];
+        $rh = Schema::migrate($half);
+        check('v6: interrupted after the columns, the resumed run sets the default and nothing else',
+            $rh['ok'] === true && $rh['applied'] === 1
+            && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; })) === [$v6[2]]);
+        foreach (['ADD COLUMN unstored' => 'scan_record table has no unstored column',
+                  'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column'] as $frag => $why) {
+            $inert = new \FakeModule();
+            $inert->version = '5';
+            $inert->inertAlter = $frag;
+            $ri = Schema::migrate($inert);
+            check('v6: an ALTER that did not take is not recorded, and the refusal names its column (' . $frag . ')',
+                $ri['ok'] === false && strpos((string) $ri['why'], 'version 6 did not verify') !== false
+                && strpos((string) $ri['why'], $why) !== false
+                && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        }
+        check('v6: a fresh install ends with all three statements, in order',
+            strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v6)) !== false);
     }
 
     /* =====================================================================
@@ -670,7 +754,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             $r['ok'] === true && $r['from'] === 1 && $r['to'] === Schema::VERSION);
         check('v2: and applies only the versions after 1, not version 1 again',
             $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3))
-                             + count(Schema::statements(4)) + count(Schema::statements(5)));
+                             + count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -716,7 +800,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             $rh['ok'] === true);
         check('v2: and skips exactly the statements already applied',
             $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3))
-                               + count(Schema::statements(4)) + count(Schema::statements(5)));
+                               + count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with

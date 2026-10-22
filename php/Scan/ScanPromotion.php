@@ -309,6 +309,27 @@ final class ScanPromotion
     }
 
     /**
+     * How many findings the detail budget left out of readings the run still
+     * holds (review rvf1-3).
+     *
+     * The run row's open_unstored, which the store keeps per record: a record
+     * that is read again, deleted or leaves the run's group takes its count
+     * back. The DETAIL_UNSTORED aggregate only ever grows, so a departed
+     * record's left-out findings stayed in the count and alone made the run
+     * truncated. A run that began before schema version 6 has NULL here and
+     * is counted from the aggregate, as it always was.
+     *
+     * @param array $t tally() of the run's aggregates
+     */
+    private static function unstoredOf(array $run, array $t)
+    {
+        if (isset($run['open_unstored']) && $run['open_unstored'] !== null) {
+            return max(0, (int) $run['open_unstored']);
+        }
+        return (int) $t['unstored'];
+    }
+
+    /**
      * How many findings this run has to show.
      *
      * A RUN THAT REACHED A VERDICT ANSWERS FROM ITS SUMMARY, because that is
@@ -358,11 +379,12 @@ final class ScanPromotion
             return $rows + self::kindTotal($store->aggregates((int) $run['run_id']), ScanStore::DETAIL_UNSTORED);
         }
         $t = self::tally($store->aggregates((int) $run['run_id']));
+        $unstored = self::unstoredOf($run, $t);
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
-            $floor = max($rows, $t['stored']) + $t['unstored'];
+            $floor = max($rows, $t['stored']) + $unstored;
             return $floor > 0 ? $floor : null;
         }
-        return $t['violations'];
+        return $t['stored'] + $unstored;
     }
 
     /**
@@ -707,8 +729,10 @@ final class ScanPromotion
     {
         $aggregates = $store->aggregates($runId);
         $t = self::tally($aggregates);
+        // What the budget left out of readings the run still holds (rvf1-3).
+        $unstored = self::unstoredOf($run, $t);
         $f = self::facts($run, $states, array_merge($in, [
-            'violations' => $t['violations'], 'unstored' => $t['unstored'],
+            'violations' => $t['stored'] + $unstored, 'unstored' => $unstored,
             'ruleProblems' => $t['ruleProblems'],
             'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
             'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));

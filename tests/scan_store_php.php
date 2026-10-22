@@ -133,6 +133,28 @@ namespace {
             count($m[0]) >= 2 && $bare === []);
     }
 
+    // rvf1-3: A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 has open_unstored
+    // NULL, and keeps it: its count was not kept from its start, so neither
+    // a commit nor a departure may start one. The SQL store's half is the
+    // schema case's upgrade on a real server.
+    {
+        $old = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $orid = (int) $old->startRun(748, ['created_by' => 'alice', 'open_unstored' => null])['run']['run_id'];
+        $old->writeManifest($orid, [['id_bin' => 'O1', 'hash' => hash('sha256', 'O1', true), 'dag' => null]]);
+        $oep = (int) $old->run(748, $orid)['lease_epoch'];
+        $oc = $old->claim($orid, 'w1', $oep, 1);
+        $old->commitBatch($orid, 'w1', $oep, ['bytes' => 0, 'findings' => [],
+            'records' => [['ordinal' => $oc[0]['ordinal'], 'record_hash' => $oc[0]['hash'],
+                           'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'version' => '1',
+                           'claim' => $oc[0]['claim']]],
+            'unstored' => [$oc[0]['ordinal'] => 3]]);
+        $afterCommit = $old->run(748, $orid)['open_unstored'];
+        $old->advancePhase($orid, $oep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+        $old->depart($orid, $oep, [hash('sha256', 'O1', true)]);
+        check('rvf1-3: a run from before the count keeps no count, through a commit and a departure',
+            $afterCommit === null && $old->run(748, $orid)['open_unstored'] === null);
+    }
+
     echo "scan_store_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }
