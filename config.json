@@ -68,7 +68,7 @@
     },
     {
       "tag": "@UVASSERT",
-      "description": "Cross-field CONSTRAINT: the field is invalid unless a condition is true — the gap REDCap branching (only hides), min/max (only warns) and Data Quality (batch, no as-you-type block) leave open. Forms: <code>@UVASSERT=\"[end_date]&gt;=[start_date]\"</code> (the condition is the value), or JSON <code>@UVASSERT={\"assert\":\"[end_date]&gt;=[start_date]\",\"message\":\"End must be on or after start\",\"blockSave\":\"hard\"}</code>. Confirm-a-value (\"type it twice\") is just <code>@UVASSERT=\"[id]=[id_confirm]\"</code>. The condition uses the same REDCap-style dialect as <code>when</code> ([field] and [checkbox(code)] refs, = &lt;&gt; != &gt; &lt; &gt;= &lt;=, and/or/not, parentheses; ISO dates and numbers compare correctly). JSON keys: assert (required), message (your wording, shown on failure), blockSave (off/confirm/hard), when (only enforce the constraint while this is true). An EMPTY field is inert — use @UVREQUIRED to require a value. Works on Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields. A field may carry @UVASSERT alongside @UVALIDATE (they COMPOSE — both must pass) and several @UVASSERT tags with different <code>when</code> conditions branch (plus at most one without, as the fallback). A malformed tag shows a configuration error under the field."
+      "description": "Cross-field CONSTRAINT: the field is invalid unless a condition is true — the gap REDCap branching (only hides), min/max (only warns) and Data Quality (batch, no as-you-type block) leave open. Forms: <code>@UVASSERT=\"[end_date]&gt;=[start_date]\"</code> (the condition is the value), or JSON <code>@UVASSERT={\"assert\":\"[end_date]&gt;=[start_date]\",\"message\":\"End must be on or after start\",\"blockSave\":\"hard\"}</code>. Confirm-a-value (\"type it twice\") takes exact: <code>@UVASSERT={\"assert\":\"[id]=[id_confirm]\",\"exact\":true}</code>, so 00123 does not confirm 123. The condition uses the same REDCap-style dialect as <code>when</code> ([field] and [checkbox(code)] refs, = &lt;&gt; != &gt; &lt; &gt;= &lt;=, and/or/not, parentheses; ISO dates and numbers compare correctly, a number field is read as its number, comma decimals included, and two numbers compare by value). JSON keys: assert (required), message (your wording, shown on failure), blockSave (off/confirm/hard), when (only enforce the constraint while this is true), caseSensitive, exact (= and &lt;&gt; compare character for character). An EMPTY field is inert — use @UVREQUIRED to require a value. Works on Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields. A field may carry @UVASSERT alongside @UVALIDATE (they COMPOSE — both must pass) and several @UVASSERT tags with different <code>when</code> conditions branch (plus at most one without, as the fallback). A malformed tag shows a configuration error under the field."
     },
     {
       "tag": "@UVWINDOW",
@@ -352,6 +352,11 @@
           "key": "assert",
           "name": "Constraint rules only: the condition that must be TRUE for the field's value to be valid, e.g. [end_date]>=[start_date] or [dose]<=[max_dose]. Same REDCap-style dialect as 'Only validate when' ([field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, parentheses; ISO dates and numbers compare correctly). An EMPTY field is never tested — use a Required rule to demand a value (one field may carry both; the rules compose).",
           "type": "text"
+        },
+        {
+          "key": "assert-exact",
+          "name": "Constraint rules only: compare exactly (OFF by default). Ticked, = and &lt;&gt; in the constraint condition compare the two values character for character: 00123 is not 123, 1002.0 is not 1002, and letter case counts. Tick it for a type-it-twice check of an ID, a specimen number or a phone number, e.g. [participant_id]=[participant_id_confirm]. Unticked, = compares numbers by value (02 = 2).",
+          "type": "checkbox"
         },
         {
           "key": "message",

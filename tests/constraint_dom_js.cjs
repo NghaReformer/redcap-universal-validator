@@ -887,5 +887,40 @@ function submitEv() {
     !/Branch folded/.test(cMsg(envB, 'answer').innerHTML) && b1.getAttribute('aria-invalid') !== 'true');
 }
 
+// ---- AST-1 / AST-2 (review 2026-10-21): number fields and "exact" ------------
+{
+  // config.numberMarks names the form's number fields; the condition reads
+  // 12,5 on a comma-decimal field as 12.5, as the server does
+  const hb = makeEl('input'); hb.name = 'hb'; hb.value = '12,5';
+  const tx = makeEl('input'); tx.name = 'tx'; tx.value = '12,5';
+  const env = boot([hb, tx], { singleFields: [], pooledFields: [], numberMarks: { hb: 'comma' },
+    rules: [{ type: 'constraint', fields: ['hb'], assert: '[hb]>=5', message: 'Hb below 5', blockSave: 'hard' },
+            { type: 'constraint', fields: ['tx'], assert: '[tx]>=5', message: 'Text below 5', blockSave: 'hard' }] });
+  check('AST-1: a typed 12,5 on a comma-decimal field passes [hb]>=5',
+    !/Hb below 5/.test(cMsg(env, 'hb').innerHTML) && hb.getAttribute('aria-invalid') !== 'true');
+  check('AST-1: the same text on a field with no mark is text, as on the server',
+    /Text below 5/.test(cMsg(env, 'tx').innerHTML));
+  hb.value = '4,5'; hb.fire('change');
+  check('AST-1: a typed 4,5 fails [hb]>=5', /Hb below 5/.test(cMsg(env, 'hb').innerHTML));
+  hb.value = '2.5E1'; hb.fire('change');
+  check('AST-3: 2.5E1 on a number field is 25', !/Hb below 5/.test(cMsg(env, 'hb').innerHTML));
+
+  // "exact": = compares character for character; without it, by value
+  const a = makeEl('input'); a.name = 'pid'; a.value = '00123';
+  const c = makeEl('input'); c.name = 'pid_c'; c.value = '123';
+  const l = makeEl('input'); l.name = 'pid_l'; l.value = '123';
+  const envX = boot([a, c, l], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['pid_c'], assert: '[pid]=[pid_c]', exact: true, message: 'IDs differ', blockSave: 'hard' },
+            { type: 'constraint', fields: ['pid_l'], assert: '[pid]=[pid_l]', message: 'Loose differ', blockSave: 'hard' }] });
+  check('AST-2: "exact" holds 00123 confirmed as 123', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+  check('AST-2: without "exact", 00123 equals 123 (numbers by value)', !/Loose differ/.test(cMsg(envX, 'pid_l').innerHTML));
+  let ev = submitEv(); envX.doc.fire('submit', ev);
+  check('AST-2: the "exact" mismatch holds the save', ev._prevented === true);
+  c.value = '00123'; c.fire('change');
+  check('AST-2: the same ID typed twice passes', !/IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+  c.value = 'AB12'; a.value = 'ab12'; a.fire('change'); c.fire('change');
+  check('AST-2: "exact" counts letter case', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

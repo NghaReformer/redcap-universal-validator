@@ -80,6 +80,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     private $ddCache = [];
 
+    /** pid => conditionNumbers() map, built once per request from the dictionary. */
+    private $conditionNumbersCache = [];
+
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
 
@@ -550,7 +553,7 @@ class UniversalValidator extends AbstractExternalModule
                         continue 2;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[$g][] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id))) $active[$g][] = $bi;
             }
             if ($broken && count($groups) === 1) {
                 // One group: the field as a whole is not checked.
@@ -675,7 +678,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) {
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id))) {
                 // inert here: nothing to report, and the fields it returns to are emptied
                 if (!empty($meta['returns']) && ($blank = self::ownedReturns($rule, $meta))) $out['returns'] = $blank;
                 return $out;
@@ -1025,13 +1028,46 @@ class UniversalValidator extends AbstractExternalModule
     private static function numberMarkOf($meta)
     {
         if (!is_array($meta)) return null;
-        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
-        if ($type === 'calc' || $type === 'slider') return 'point';
-        if ($type !== 'text') return null;
-        $v = strtolower(self::validationOf($meta));
-        if (preg_match('/^(?:int|integer|float|number(?:_[1-9]dp)?)$/', $v)) return 'point';
-        if (preg_match('/^number(?:_[1-9]dp)?_comma_decimal$/', $v)) return 'comma';
-        return null;
+        return Logic::numberMark(isset($meta['field_type']) ? $meta['field_type'] : '', self::validationOf($meta));
+    }
+
+    /**
+     * Every field of project $pid that holds numbers, with its decimal mark:
+     * the $numbers map a rule condition is evaluated with (Logic::evaluate),
+     * so [hb]>=5 reads a saved 12,5 as 12.5 (AST-1). Cached per project for
+     * the request; an unreadable dictionary gives an empty map, which reads
+     * every value as typed, as before.
+     */
+    private function conditionNumbers($pid)
+    {
+        $key = (string) $pid;
+        if (isset($this->conditionNumbersCache[$key])) return $this->conditionNumbersCache[$key];
+        $dd = $this->dataDictionary($pid);
+        if (!is_array($dd) || !$dd) return [];
+        $out = [];
+        foreach ($dd as $f => $meta) {
+            $mark = self::numberMarkOf($meta);
+            if ($mark !== null) $out[(string) $f] = $mark;
+        }
+        return $this->conditionNumbersCache[$key] = $out;
+    }
+
+    /**
+     * The text mode a rule's TEST condition ("assert") is evaluated with:
+     * Logic::EXACT for "exact": true, else its "caseSensitive" flag. A "when"
+     * gate always uses the flag alone.
+     */
+    private static function testTextMode(array $rule)
+    {
+        if (!empty($rule['exact'])) return Logic::EXACT;
+        return !empty($rule['caseSensitive']);
+    }
+
+    /** testTextMode as the index of foldRuleConditions' folded tests: 0, 1 or 2 (exact). */
+    private static function testModeIndex(array $rule)
+    {
+        $mode = self::testTextMode($rule);
+        return $mode === Logic::EXACT ? 2 : ($mode ? 1 : 0);
     }
 
     /** numberMarkOf for each of $fields of project $pid; null for a field the dictionary does not hold. */
@@ -3025,6 +3061,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $out;
             }
         }
+        $numbers = $this->conditionNumbers($project_id);
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3036,7 +3073,7 @@ class UniversalValidator extends AbstractExternalModule
             // server logged a violation (M-04).
             if ($value === null || is_array($value)) continue;
             if (trim((string) $value, " \t\r\n") === '') continue;
-            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
+            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers)) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
             }
         }
@@ -3930,6 +3967,11 @@ class UniversalValidator extends AbstractExternalModule
         if ($config['rules'] && $pid !== null && is_string($instrument) && $instrument !== '') {
             $formats = $this->pageDateFormats($pid, $instrument);
             if ($formats) $config['dateFormats'] = $formats;
+            // The fields of this form that hold numbers, with their decimal
+            // mark: a condition on the page reads 12,5 as 12.5, as the server
+            // does (conditionNumbers, AST-1).
+            $marks = array_intersect_key($this->conditionNumbers($pid), $this->fieldsOnInstrument($pid, $instrument) ?: []);
+            if ($marks) $config['numberMarks'] = $marks;
         }
         // The saved value of each field a today-relative @UVWINDOW part judges (a
         // "from" of today or now, notPast). The page judges those parts only for
@@ -4467,11 +4509,13 @@ class UniversalValidator extends AbstractExternalModule
 
         // Every condition is folded once per ROLE (gate / assert polarity) and
         // once per CASE MODE: text => [0 => case-insensitive (the default),
-        // 1 => case-sensitive]. Two rules may share a condition string and
-        // differ only in "caseSensitive", and an off-page comparison settled to
-        // a constant under one mode is not the constant the other would produce.
+        // 1 => case-sensitive], and a test also 2 => "exact" (AST-2). Two
+        // rules may share a condition string and differ only in
+        // "caseSensitive" or "exact", and an off-page comparison settled to a
+        // constant under one mode is not the constant the other would produce.
         $folded = [];
         $foldedAssert = [];
+        $numbers = $this->conditionNumbers($pid);
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -4480,14 +4524,14 @@ class UniversalValidator extends AbstractExternalModule
             $b = [];
             $sn = [];
             $folded[$w] = [];
-            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false);
+            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers);
             // Freshness diagnostics come from reference resolution and liveness
             // alone, never from a verdict, so the pass above already recorded
             // them; this one discards its own.
             $fCs = false;
             $bCs = [];
             $snCs = [];
-            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true);
+            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
@@ -4502,11 +4546,12 @@ class UniversalValidator extends AbstractExternalModule
             // The freshness diagnostics come from reference resolution and
             // liveness alone — never from a verdict — so this pass discards
             // them rather than overwriting the ones above.
-            foreach ([0, 1] as $cs) {
+            // A test has a third text mode, "exact" (index 2, testTextMode).
+            foreach ([0 => false, 1 => true, 2 => Logic::EXACT] as $cs => $mode) {
                 $f2 = false;
                 $b2 = [];
                 $sn2 = [];
-                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, (bool) $cs);
+                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers);
             }
         }
         // With the form unknown, NOTHING is live — not because these fields are
@@ -4602,7 +4647,7 @@ class UniversalValidator extends AbstractExternalModule
             foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
                 $tk = $rk['key'];
                 if (!isset($r[$tk]) || !isset($folded[$r[$tk]])) continue;
-                $rules[$i][$rk['ast']] = $foldedAssert[$r[$tk]][empty($r['caseSensitive']) ? 0 : 1];
+                $rules[$i][$rk['ast']] = $foldedAssert[$r[$tk]][self::testModeIndex($r)];
                 // A frozen TEST must never block: its verdict is stale the
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r[$tk]])) $rules[$i]['deferred'] = true;
@@ -4671,7 +4716,7 @@ class UniversalValidator extends AbstractExternalModule
                     foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
                         $tk = $rk['key'];
                         if (!isset($b[$tk]) || !isset($folded[$b[$tk]])) continue;
-                        $rules[$i]['branches'][$bi][$rk['ast']] = $foldedAssert[$b[$tk]][empty($b['caseSensitive']) ? 0 : 1];
+                        $rules[$i]['branches'][$bi][$rk['ast']] = $foldedAssert[$b[$tk]][self::testModeIndex($b)];
                         if (!empty($frozen[$b[$tk]])) $rules[$i]['branches'][$bi]['deferred'] = true;
                         if (!empty($blocked[$b[$tk]])) {
                             $noteFor($i, $b[$tk]);
@@ -5175,7 +5220,7 @@ class UniversalValidator extends AbstractExternalModule
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
+        foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'assert-exact', 'message',
                   'unique-with', 'unique-also', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
                   'suggest-fix', 'pattern', 'alternates-json', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -5276,6 +5321,9 @@ class UniversalValidator extends AbstractExternalModule
             $rule = ['type' => $ruleType, 'fields' => $fields];
             if ($mode === 'constraint' && isset($s['assert']) && trim((string) $s['assert']) !== '') {
                 $rule['assert'] = trim((string) $s['assert']);
+            }
+            if ($mode === 'constraint' && isset($s['assert-exact']) && in_array($s['assert-exact'], [true, 'true', '1', 1], true)) {
+                $rule['exact'] = true;
             }
             if ($mode === 'unique') {
                 if (isset($s['unique-with']) && trim((string) $s['unique-with']) !== '') {
@@ -5653,7 +5701,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
+        $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'assert-exact', 'message',
                  'unique-with', 'unique-also', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -10025,6 +10073,8 @@ class UniversalValidator extends AbstractExternalModule
             }
             return null;
         };
+        // the plan's map of fields that hold numbers (conditionNumbers)
+        $numbers = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
 
         $cfg = $rule;
         if (isset($rule['branches']) && is_array($rule['branches'])) {
@@ -10044,7 +10094,7 @@ class UniversalValidator extends AbstractExternalModule
                         . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
-                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[] = $bi;
+                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']), $numbers)) $active[] = $bi;
             }
             if (count($active) === 1) {
                 $pick = $active[0];
@@ -10073,7 +10123,7 @@ class UniversalValidator extends AbstractExternalModule
                 $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
                 return;
             }
-            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']))) return;
+            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']), $numbers)) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
@@ -11228,7 +11278,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']))) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid))) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;

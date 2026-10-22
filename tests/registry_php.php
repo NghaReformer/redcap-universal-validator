@@ -64,7 +64,10 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'keepChars',
     'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'suggestFix', 'note',
-    'assert', 'caseSensitive', 'message', 'references',
+    'assert', 'caseSensitive',
+    // @UVASSERT "exact" (AST-2 of the 2026-10-21 review)
+    'exact',
+    'message', 'references',
     // a rule message's other languages (modes.json textKeys)
     'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys',
@@ -104,7 +107,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'suggestFix',
     'keepChars', 'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'when', 'whenAst',
-    'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy', 'snapshotFields',
+    'assert', 'assertAst', 'caseSensitive',
+    // @UVASSERT "exact" (AST-2 of the 2026-10-21 review)
+    'exact',
+    'message', 'deferred', 'deferredWhy', 'snapshotFields',
     // a rule message's other languages (modes.json textKeys)
     'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',

@@ -356,14 +356,20 @@ enforced with the same message/confirm/block modes as everything else:
 - The condition uses the **same dialect** as `when` (`[field]`/`[checkbox(code)]`
   refs, `= <> != > < >= <=`, `and`/`or`/`not`, parentheses). ISO dates and numbers
   compare correctly; the evaluator is the one parity-locked engine, used here as
-  the *test* rather than a gate.
+  the *test* rather than a gate. A field validated as a number, a calc and a slider
+  are read as the number they hold (a saved `12,5` is 12.5), and two numbers compare
+  by value, so `02` equals `2`.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
-  constraint's. Confirm-a-value ("type it twice") is just `@UVASSERT="[id]=[id_confirm]"`.
+  constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
+  `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
+  the two entries character for character, so `00123` does not confirm `123` and
+  `+237677123456` does not confirm `237677123456`.
 - **Text is compared without regard to case** (2.1.0-rc.1), like every condition in
   the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
-  `"caseSensitive":true` when case carries meaning, such as IDs where `ab12` and
-  `AB12` are different: `@UVASSERT={"assert":"[id]=[id_confirm]","caseSensitive":true}`.
-  The flag covers both the `assert` and the `when` of that tag.
+  `"caseSensitive":true` when case carries meaning, such as codes where `ab12` and
+  `AB12` are different answers: `@UVASSERT={"assert":"[code]='AB12'","caseSensitive":true}`.
+  The flag covers both the `assert` and the `when` of that tag. `"exact":true`
+  counts case too, in the `assert` only.
 - `message` is your own wording, shown on failure (a generic line is used if you
   omit it — recommended to set one, since only you can word an arbitrary relationship).
   Under Multi-Language Management it may be a map of language id to text,

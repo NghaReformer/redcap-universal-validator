@@ -82,8 +82,8 @@
       "refKeys": [
         {"key": "assert", "kind": "cond", "role": "test", "ast": "assertAst"}
       ],
-      "branchKeys": ["assert", "caseSensitive", "message", "references", "i18n"],
-      "clientKeys": ["assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields", "i18n"],
+      "branchKeys": ["assert", "caseSensitive", "exact", "message", "references", "i18n"],
+      "clientKeys": ["assert", "assertAst", "caseSensitive", "exact", "message", "deferred", "deferredWhy", "snapshotFields", "i18n"],
       "textKeys": ["message"],
       "needs": [],
       "dialog": true,

@@ -892,7 +892,11 @@ field invalid unless a condition holds — checked live, enforceable with a real
 ```
 
 Put this on `end_date`. While the condition is false, the field is invalid and shows a
-generic message. ISO dates and numbers compare correctly.
+generic message. ISO dates and numbers compare correctly. A field validated as a number
+(an integer, a number with any decimals, comma decimals included), a calc and a slider
+are read as the number they hold: a saved `12,5` is 12.5 and `2.5E1` is 25. Two numbers
+compare by value, so `=` treats `02` and `2` as equal; for an ID or a phone number, use
+`"exact":true` (Level 2).
 
 A bare `@UVASSERT` with no condition is a configuration error — there is nothing to
 assert.
@@ -904,10 +908,13 @@ or the next action tag, as for [`@UVREQUIRED`](#level-4--compound-conditions):
 ### Level 2 — confirm-a-value
 
 ```text
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}
 ```
 
-"Type it twice" needs no special feature; it is an assertion like any other.
+"Type it twice" is an assertion like any other, with one option. Without `"exact":true`,
+`=` compares numbers by value, so `00123` confirmed as `123`, `1002` as `1002.0` and
+`+237677123456` as `237677123456` would all pass. With it, `=` and `<>` compare the two
+entries character for character (spaces around them aside), letter case included.
 
 ### Level 3 — your own message
 
@@ -4129,13 +4136,13 @@ Another common pairing — an ID typed twice, format-checked, and unique:
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
-The confirmation ignores letter case, so `tb-000123` confirms `TB-000123`. If the two
-entries must match character for character, add `"caseSensitive":true` to the
-`@UVASSERT`.
+`"exact":true` makes the two entries match character for character: `TB-000123` does
+not confirm `tb-000123`, and a dropped leading zero is caught. Leave it out only when
+letter case should not matter and the value is never a number.
 
 ---
 
@@ -4349,7 +4356,7 @@ Text in a condition is compared without regard to the case of A-Z. So are the va
 Set `"caseSensitive":true` when case is part of the value:
 
 ```text
-@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","caseSensitive":true,"message":"Lot codes must match exactly"}
+@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","exact":true,"message":"Lot codes must match exactly"}
 @UVREQUIRED={"when":"[grade]='A'","caseSensitive":true}
 @UVUNIQUE={"caseSensitive":true,"message":"This code is taken (codes are case-sensitive)"}
 @UVEXISTS={"in":"[lot_code]","caseSensitive":true}
@@ -4860,14 +4867,17 @@ it looks: the tag validates the field it sits on, and that is where the message 
 ```text
 # on: participant_id_confirm — put the tag on the CONFIRM field, so the message
 # lands next to the box the typist should re-check
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"IDs do not match - re-type","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"IDs do not match - re-type","blockSave":"hard"}
 
 # on: phone_confirm
-@UVASSERT={"assert":"[phone_number]=[phone_confirm]","message":"Phone numbers do not match"}
+@UVASSERT={"assert":"[phone_number]=[phone_confirm]","exact":true,"message":"Phone numbers do not match"}
 
 # on: specimen_id_confirm
-@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","message":"Specimen ID confirmation mismatch - re-scan"}
+@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","exact":true,"message":"Specimen ID confirmation mismatch - re-scan"}
 ```
+
+`"exact":true` is what makes these checks work: without it `=` compares numbers by
+value, and `0677123456` would confirm `677123456`.
 
 #### Specimen and lab workflow
 
@@ -5306,7 +5316,7 @@ the required notice fires; once filled, the value checks take over.
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
@@ -5581,6 +5591,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
 | `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
 | `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
+| `exact`         | boolean | `false`      | `=` and `<>` in `assert` compare character for character: `00123` is not `123` |
 
 ### `@UVREQUIRED`
 
@@ -5803,7 +5814,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── @UVASSERT — cross-field constraint ───────────────────────────────────────
 @UVASSERT="[end_date]>=[start_date]"
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}   type it twice
 @UVASSERT={"assert":"[dose]<=[max_dose]","message":"Dose exceeds the protocol maximum","blockSave":"hard"}
 @UVASSERT={"assert":"[sex]='2'","when":"[pregnant]='1'","message":"Pregnant participants must be recorded female"}
 
@@ -5866,6 +5877,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}
+@UVASSERT={"assert":"[code]=[code_confirm]","exact":true}              also 007 is not 7
 @UVUNIQUE={"caseSensitive":true}                       "AB12" and "ab12" are different codes
 
 # ── Composing several kinds on ONE field ─────────────────────────────────────

@@ -694,13 +694,28 @@
     }
     return out;
   })();
+  /* The fields of this form that hold numbers (config.numberMarks: field =>
+     "point" | "comma"). A condition reads their value as the number, so 12,5
+     on a comma-decimal field compares as 12.5 and 2.5E1 as 25, as the server
+     reads it (Logic::numberValue, AST-1). */
+  var QRID_NUMBER_MARKS = (function(){
+    var out = Object.create(null);
+    var m = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.numberMarks;
+    if(m && typeof m === "object" && !Array.isArray(m)){
+      for(var k in m){
+        if(Object.prototype.hasOwnProperty.call(m, k) && (m[k] === "point" || m[k] === "comma")) out[k] = m[k];
+      }
+    }
+    return out;
+  })();
   function QRID_logicValue(f, v){
     var fm = QRID_DATE_FORMATS[f];
-    if(!fm || typeof v !== "string") return v;
+    if(!fm || typeof v !== "string") return QRID_numberValue(f, v, QRID_NUMBER_MARKS);
     var p = QRID_temporalDate(QRID_whenTrim(v), fm[0], fm[1]);
     if(!p) return v;
     return fm[0] === "datetime" ? p.value.slice(0, 16) : p.value;
   }
+  function QRID_pageNumberValue(f, v){ return QRID_numberValue(f, v, QRID_NUMBER_MARKS); }
 
   /* Shared per-load registries (were window globals; now namespace-only).
      Object.create(null): REDCap field names are attacker-ish input for a plain
@@ -1457,6 +1472,10 @@ function QRID_trimZerosRight(s){
    "not a violation"; a "when" gate reads it as "cannot say the rule applies". */
 var QRID_BLANK_PASSES = true;
 var QRID_BLANK_INERT  = false;
+/* The text mode of a test with "exact": true, passed where the rule's
+   caseSensitive flag goes: = and <> compare character for character. Twin of
+   Logic::EXACT. */
+var QRID_WHEN_EXACT = "exact";
 
 function QRID_whenErr(msg){ return { ok: false, error: msg }; }
 
@@ -2136,10 +2155,20 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
 }
+/* The value of field f as a condition reads it: a field that holds numbers
+   (marks: field => "point" | "comma") as its number, written as NUM_RE
+   (QRID_rangeNumber); anything else, or a value that is not a number,
+   unchanged. Twin of Logic::numberValue. */
+function QRID_numberValue(f, v, marks){
+  if(!marks || typeof v !== "string" || !Object.prototype.hasOwnProperty.call(marks, f)) return v;
+  var n = QRID_rangeNumber(v, marks[f] === "comma");
+  return (n === null || n === "") ? v : n;
+}
 function QRID_whenOperandVal(op, resolve){
   if(op[0] === "qref" || op[0] === "binding"){
     if(!resolve.extendedValues) throw new Error("Resolve extended references before browser evaluation.");
-    return resolve(QRID_whenRefKey(op), null, true);
+    var xv = resolve(QRID_whenRefKey(op), null, true);
+    return (op[0] === "qref" && op[2] === null && typeof resolve.numberValue === "function") ? resolve.numberValue(op[1], xv) : xv;
   }
   if(op[0] === "lit") return op[1];
   /* A page resolver may say how a field's value is compared (resolve.logicValue:
@@ -2149,8 +2178,10 @@ function QRID_whenOperandVal(op, resolve){
   return (op[2] === null && typeof resolve.logicValue === "function") ? resolve.logicValue(op[1], v) : v;
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
-   for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
-function QRID_whenEvaluate(ast, values, blank, caseSensitive){
+   for checkboxes). Missing fields resolve to '' (checkbox refs to '0').
+   numbers (field => "point" | "comma") names the fields that hold numbers,
+   as the $numbers map of Logic::evaluate does. */
+function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   var resolve = function(f, code, extended){
     if(extended && (!values || !Object.prototype.hasOwnProperty.call(values, f) || values[f] === null || typeof values[f] === "object")) throw new Error("Unresolved extended reference.");
@@ -2165,6 +2196,9 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive){
     return String(v);
   };
   resolve.extendedValues = true;
+  if(numbers){
+    resolve.logicValue = resolve.numberValue = function(f, v){ return QRID_numberValue(f, v, numbers); };
+  }
   return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
 function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
@@ -2870,6 +2904,9 @@ function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
   a = QRID_whenTrim(a); b = QRID_whenTrim(b);
+  /* "exact": identity of the two strings, before any reading as numbers or
+     folding of case (AST-2). Twin of Logic::compare. */
+  if(caseSensitive === QRID_WHEN_EXACT && (op === "=" || op === "<>")) return (a === b) === (op === "=");
   if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
     var c = QRID_whenDecCmp(a, b);
     switch(op){
@@ -3024,9 +3061,11 @@ var QRID_WHEN = (function(){
     if(el) return el.value == null ? "" : String(el.value);
     return "";
   }
-  /* readRef for a condition: a comparison sees a date as REDCap stores it. */
+  /* readRef for a condition: a comparison sees a date as REDCap stores it,
+     and a number as the number it is (12,5 as 12.5). */
   function readLogic(f, code){ return readRef(f, code); }
   readLogic.logicValue = QRID_logicValue;
+  readLogic.numberValue = QRID_pageNumberValue;
   /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
      only values the page really has (QRID_condValues). */
   function has(f, code){
@@ -4195,9 +4234,11 @@ function QRIDConstraintInit(QRID_CONFIG){
        lines below, which stays on the inert default. */
     /* Text matches case-insensitively ('Yes' = 'yes') unless the rule sets
        "caseSensitive": true — strictly true, as the server stores it. The same
-       flag governs this rule's "when" gate below. */
+       flag governs this rule's "when" gate below. "exact": true makes = and <>
+       of the test compare character for character (AST-2); the gate keeps the
+       caseSensitive flag. */
     var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst, QRID_BLANK_PASSES,
-                                                            cfg.caseSensitive === true);
+                                                            cfg.exact === true ? QRID_WHEN_EXACT : cfg.caseSensitive === true);
     if(!configError && !assertGate){
       configError = "@UVASSERT has no condition to check — set an \"assert\" such as [end_date]>=[start_date].";
     }
@@ -8021,7 +8062,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var DEFAULT_KEYS = ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
                       "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
-                      "message", "deferred", "deferredWhy", "snapshotFields", "i18n",
+                      "exact", "message", "deferred", "deferredWhy", "snapshotFields", "i18n",
                       "uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts",
                       "choicesShow", "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
                       "windowFromOpWhy", "windowLo", "windowHi", "windowUnit",
@@ -8223,6 +8264,7 @@ window.INSPIREUniversalValidator = {
        Logic::BLANK_PASSES / Logic::BLANK_INERT. */
     BLANK_PASSES: QRID_BLANK_PASSES,
     BLANK_INERT: QRID_BLANK_INERT,
+    EXACT: QRID_WHEN_EXACT,                  /* the "exact" text mode (AST-2), twin of Logic::EXACT */
     caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
   },
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */

@@ -47,6 +47,8 @@ foreach ($fx['eval'] as $c) {
     check('eval parses: ' . $c['name'], !empty($r['ok']));
     if (!empty($r['ok'])) {
         $values = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
+        // 'numbers': the fields of the row that hold numbers (AST-1).
+        $nums = isset($c['numbers']) && is_array($c['numbers']) ? $c['numbers'] : [];
         // EVERY case runs in BOTH roles. The blank-operand polarity (CRIT-01) is
         // the one thing about this dialect that differs between an @UVASSERT
         // test and a "when" gate, and pinning only the default is exactly how
@@ -57,21 +59,25 @@ foreach ($fx['eval'] as $c) {
         // "caseSensitive": true); the Ci twins are the module default, which
         // folds A-Z first.
         check('eval verdict (assert): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, true) === $c['expect']);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, true, $nums) === $c['expect']);
         $wantGate = array_key_exists('expectGate', $c) ? $c['expectGate'] : $c['expect'];
         check('eval verdict (gate): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, true) === $wantGate);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, true, $nums) === $wantGate);
         // 'expectCi' defaults to 'expect', so every row whose verdict depends on
         // letter case has to say so — a row that silently agrees does not care.
         // 'expectGateCi' defaults to 'expectGate' where the row names one (the
         // blank-operand rows, where polarity decides), else to 'expectCi'.
         $wantCi = array_key_exists('expectCi', $c) ? $c['expectCi'] : $c['expect'];
         check('eval verdict (assert, case-insensitive): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, false) === $wantCi);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, false, $nums) === $wantCi);
         $wantGateCi = array_key_exists('expectGateCi', $c) ? $c['expectGateCi']
             : (array_key_exists('expectGate', $c) ? $c['expectGate'] : $wantCi);
         check('eval verdict (gate, case-insensitive): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, false) === $wantGateCi);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, false, $nums) === $wantGateCi);
+        // 'expectExact': the test under "exact" (AST-2), defaulting to 'expect'.
+        $wantExact = array_key_exists('expectExact', $c) ? $c['expectExact'] : $c['expect'];
+        check('eval verdict (assert, exact): ' . $c['name'],
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, Logic::EXACT, $nums) === $wantExact);
     }
 }
 

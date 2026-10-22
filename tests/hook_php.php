@@ -3416,6 +3416,59 @@ namespace {
     check('durable: a value with no letters, under two branches that differ only in letter case, is two lookups and no collapse',
         count($ida) === 2 && $ida[0]['lookup'] === 1 && $ida[0]['group_hmac'] !== $ida[1]['group_hmac'] && $dur['collapsed'] === 0);
 
+    // ---- AST-1 / AST-2 / AST-3 (review 2026-10-21) ----
+    // A field that holds numbers is read as its number in the audit, on the
+    // page and in the fold; "exact" makes a double-entry assert tell 00123
+    // from 123. The rows behind these are in tests/when_fixture.json.
+    $comma = ['field_type' => 'text', 'text_validation_type_or_show_slider_number' => 'number_1dp_comma_decimal'];
+    $nDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'lab'],
+        'hb'     => $comma + ['form_name' => 'lab', 'field_annotation' => '@UVASSERT={"assert":"[hb]>=5","blockSave":"hard"}'],
+        'hb_max' => $comma + ['form_name' => 'other', 'field_annotation' => ''],
+        'hb2'    => $comma + ['form_name' => 'lab', 'field_annotation' => '@UVASSERT="[hb2]<=[hb_max]"'],
+        'x'      => ['field_type' => 'text', 'form_name' => 'lab', 'text_validation_type_or_show_slider_number' => 'number',
+                     'field_annotation' => '@UVASSERT="[x]<=100"'],
+        'tx'     => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => '@UVASSERT="[tx]<=100"'],
+        'pid'    => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => ''],
+        'pid_c'  => ['field_type' => 'text', 'form_name' => 'lab',
+                     'field_annotation' => '@UVASSERT={"assert":"[pid]=[pid_c]","exact":true}'],
+        'pid_l'  => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => '@UVASSERT="[pid]=[pid_l]"'],
+    ];
+    $nSave = function (array $values) use ($nDict) {
+        $m = newModule([], $nDict, [7 => [351 => array_merge(['record_id' => '7'], $values)]], 149);
+        $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+        return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m));
+    };
+    check('AST-1: a saved 12,5 passes [hb]>=5', $nSave(['hb' => '12,5']) === []);
+    check('AST-1: a saved 4,5 fails [hb]>=5', $nSave(['hb' => '4,5']) === ['hb']);
+    check('AST-1: two comma fields order by value (9,5 <= 15,0)', $nSave(['hb2' => '9,5', 'hb_max' => '15,0']) === []);
+    check('AST-1: 16,0 <= 15,0 is still a violation', $nSave(['hb2' => '16,0', 'hb_max' => '15,0']) === ['hb2']);
+    check('AST-3: 2.5E1 in a number field is 25', $nSave(['x' => '2.5E1']) === []);
+    check('AST-3: 2.5E1 in a text field stays text (mixed, false)', $nSave(['tx' => '2.5E1']) === ['tx']);
+    check('AST-2: "exact" logs 00123 confirmed as 123', $nSave(['pid' => '00123', 'pid_c' => '123']) === ['pid_c']);
+    check('AST-2: "exact" passes the same ID typed twice', $nSave(['pid' => '00123', 'pid_c' => '00123']) === []);
+    check('AST-2: without "exact", = still compares numbers by value', $nSave(['pid' => '00123', 'pid_l' => '123']) === []);
+
+    // the dialog's "compare exactly" box
+    $exRow = ['rule-type' => 'constraint', 'fields' => ['pid_l'], 'assert' => '[pid]=[pid_l]'];
+    $nd2 = $nDict;
+    $nd2['pid_l']['field_annotation'] = '';
+    $m = newModule([dlgRow($exRow + ['assert-exact' => '1'])], $nd2, [7 => [351 => ['record_id' => '7', 'pid' => '0677', 'pid_l' => '677']]], 149);
+    $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+    check('AST-2: the dialog box "compare exactly" logs 0677 confirmed as 677', count(invalidLogs($m)) === 1);
+    $m = newModule([dlgRow($exRow)], $nd2, [7 => [351 => ['record_id' => '7', 'pid' => '0677', 'pid_l' => '677']]], 149);
+    $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+    check('AST-2: unticked, the dialog constraint compares by value', count(invalidLogs($m)) === 0);
+
+    // the page: the marks of this form's number fields, and "exact" shipped
+    // (the bake of an off-page comma value is in tests/crossform_php.php)
+    $m = newModule([], $nDict, [7 => [351 => ['record_id' => '7', 'hb_max' => '15,0']]], 149);
+    $p = pageCfg($m, 'form', '7', 'lab');
+    check('page: numberMarks names the number fields of this form only',
+        isset($p['cfg']['numberMarks']) && $p['cfg']['numberMarks'] === ['hb' => 'comma', 'hb2' => 'comma', 'x' => 'point']);
+    $rc = ruleFor($p, 'pid_c');
+    check('page: an "exact" rule ships the flag', $rc !== null && ($rc['exact'] ?? null) === true);
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

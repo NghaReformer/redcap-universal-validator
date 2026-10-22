@@ -593,6 +593,14 @@ One condition may mix `and`, `or` and `not` with parentheses:
 parentheses for the other grouping. Every tag that takes a condition (`when` on all
 tags, the `@UVASSERT` test, the `@UVREQUIRED` condition) reads the same language.
 
+**Numbers.** A field validated as an integer or a number (any decimals, comma
+decimals included), a calc and a slider are read as the number they hold: a saved
+`12,5` is 12.5 and `2.5E1` is 25. Two numbers compare by value, so `=` treats `02`,
+`2` and `2.0` as equal. A Text field without number validation is read as typed. For
+an ID or a phone number typed twice, set `"exact":true` on the `@UVASSERT` (the
+Configure dialog's "compare exactly" box): `=` and `<>` then compare the two entries
+character for character, so `00123` does not confirm `123`.
+
 The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
 `@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
 or the next action tag. Text after a complete condition is ignored as a note. If that
@@ -855,8 +863,9 @@ Yes — since 1.0.0 that is exactly what a **Constraint** rule (the `@UVASSERT`
 tag, or the Constraint kind in the Configure dialog) does: the field is invalid
 unless a condition such as `[end_date]>=[start_date]` or `[id]=[id_confirm]`
 is true, checked live and enforceable with a real save block. Text comparisons
-ignore letter case unless you set `"caseSensitive":true`, so for IDs where `ab12`
-and `AB12` are different values, set it. And since 1.1.0
+ignore letter case unless you set `"caseSensitive":true`. For an ID typed twice,
+set `"exact":true`: the two entries must then match character for character, so
+`ab12` does not confirm `AB12` and `00123` does not confirm `123`. And since 1.1.0
 a **Required** rule (`@UVREQUIRED`) demands a value, optionally only while a
 condition is true. See the README sections on both tags.
 
