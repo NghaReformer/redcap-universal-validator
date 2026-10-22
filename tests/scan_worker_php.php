@@ -3827,6 +3827,46 @@ namespace INSPIRE\UniversalValidator\Scan {
         (new ScanWorker($store, $gated($finder(2), [])))->work(800, $runId);
         check('H9: a worker given no budget stores everything',
             count($store->allFindings()) === 6 && $leftOut($store, $runId) === 0);
+
+        // TWO WORKERS ON ONE RUN (review rv10b1-4). Worker A claims its first
+        // batch, and while it reads those records worker B runs a whole
+        // request of three batches and stops. A judged its batches against the
+        // stored count its request began with, 0, and stored a whole budget
+        // of its own on top of B's. Read for every batch, the count holds
+        // what B committed, and A stores nothing past the budget.
+        $recs = [];
+        for ($i = 0; $i < 12; $i++) $recs[] = sprintf('R%02d', $i);
+        list($store, $runId) = $fixture($recs, 807);
+        $pairs = function ($probe = null) {
+            $o = ['mode' => 'cron', 'memoryLimit' => $probe ? 1000000 : null, 'timeLimit' => null,
+                  'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true)];
+            if ($probe) $o['probe'] = $probe;
+            return new WorkBudget($o);
+        };
+        // B stops itself once six records are done: a request that ends after
+        // a few batches, as a browser pass does.
+        $bStops = function ($reset) use ($store, $runId) {
+            $u = ((int) $store->run(807, $runId)['manifest_done'] >= 6) ? 990000 : 0;
+            return ['used' => $u, 'peak' => $u, 'arena' => $u];
+        };
+        $limits4 = ['maxFindings' => 4, 'maxBytes' => 1000000];
+        $B = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+            'budget' => $pairs($bStops), 'owner' => 'tab-B', 'attempts' => 3, 'finalizer' => $fin(),
+            'limits' => $limits4]);
+        $bRes = null;
+        $aRead = function ($ids) use (&$bRes, $B, $runId, $reader) {
+            if ($bRes === null) $bRes = $B->work(807, $runId);
+            return $reader($ids);
+        };
+        $aRes = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $aRead, 'evaluate' => $finder(1),
+            'budget' => $pairs(), 'owner' => 'tab-A', 'attempts' => 3, 'finalizer' => $fin(),
+            'limits' => $limits4]))->work(807, $runId);
+        check('rv10b1-4: the fixture ran B inside A\'s first batch, and every record was examined',
+            is_array($bRes) && (int) $bRes['worked'] === 6 && (int) $store->run(807, $runId)['manifest_done'] === 12);
+        check('rv10b1-4: two workers sharing a run store no more than its budget between them',
+            count($store->allFindings()) === 4 && (int) $store->run(807, $runId)['detail_rows'] === 4);
+        check('rv10b1-4: and every finding either of them found is counted',
+            $leftOut($store, $runId) === 8 && (int) $aRes['findings'] + (int) $bRes['findings'] === 12);
     }
 
     /* =====================================================================
