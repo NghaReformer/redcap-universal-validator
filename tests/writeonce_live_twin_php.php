@@ -14,7 +14,9 @@
  *
  * It checks the configuration errors word for word, which fields each page
  * locks, every log entry of each save in the sheet's order, and the scan
- * with its detail lines. The page configs it builds are the input of
+ * with its detail lines: on the visit (380), on a whole repeating event (382,
+ * an import of two instances), on a survey whose first page is saved by Next,
+ * and after a deletion of the form's data, which the check cannot place. The page configs it builds are the input of
  * tests/writeonce_live_twin_js.cjs, which replays the sheet's clicks through
  * js/engine.js; they are kept in tests/writeonce_live_pages.json, and this
  * suite fails when that file is not what the module builds now.
@@ -59,7 +61,7 @@ namespace {
         public static function getGroupNames($u = false, $g = null) { return ''; }
         public static function getRecordIdField() { return 'record_id'; }
     }
-    /** pid 149, arm 1: event ids as on chpr-redcap.org; uv_writeonce_test at visit_1_arm_1 only. */
+    /** pid 149, arm 1: event ids as on chpr-redcap.org; uv_writeonce_test at visit_1_arm_1 and at unscheduled_arm_1, which repeats as a whole. */
     class Project {
         public $project = ['missing_data_codes' => ''];
         public $longitudinal = true;
@@ -76,7 +78,7 @@ namespace {
             379 => ['xe_visit', 'xr_specimen'],
             380 => ['xe_visit', 'xr_specimen', 'xr_result', 'uv_writeonce_test'],
             381 => ['xe_visit', 'xr_result'],
-            382 => ['xe_unsched'],
+            382 => ['xe_unsched', 'uv_writeonce_test'],
             383 => ['xe_visit', 'xe_close'],
         ];
         public function __construct($pid) {}
@@ -101,7 +103,7 @@ namespace {
 
     // ---- the dictionary: the fixture plus the record ID field --------------------------------
     $dict = ['record_id' => ['form_name' => 'xe_enrol', 'field_type' => 'text']];
-    $LABELS = []; $TYPES = [];
+    $LABELS = []; $TYPES = []; $NOTES = [];
     $fh = fopen(__DIR__ . '/../docs/testbed/uvwriteonce_test_fields.csv', 'r');
     $head = fgetcsv($fh, 0, ',', '"', '');
     $read = 0;
@@ -113,11 +115,14 @@ namespace {
             'field_annotation' => $r['Field Annotation'], 'select_choices_or_calculations' => $r['Choices, Calculations, OR Slider Labels'],
             'text_validation_type_or_show_slider_number' => $r['Text Validation Type OR Show Slider Number']];
         $LABELS[$f] = $r['Field Label'];
+        $NOTES[$f] = $r['Field Note'];
         $TYPES[$f] = ['type' => $r['Field Type'], 'validation' => $r['Text Validation Type OR Show Slider Number'],
             'choices' => $r['Choices, Calculations, OR Slider Labels']];
     }
     fclose($fh);
     check('the fixture holds 13 rows', $read === 13, $read);
+    check('the field notes name no role and no "since" date: REDCap shows them on the page, where B2 looks for neither',
+        !array_filter($NOTES, function ($t) { return stripos($t, 'data manager') !== false || strpos($t, '2099') !== false; }), $NOTES);
     check('the fixture adds one instrument only', count(array_unique(array_map(function ($f) use ($dict) { return $dict[$f]['form_name']; }, array_keys($LABELS)))) === 1);
     foreach ($dict as &$m) $m += ['field_annotation' => '', 'select_choices_or_calculations' => '', 'text_validation_type_or_show_slider_number' => ''];
     unset($m);
@@ -131,12 +136,18 @@ namespace {
 
     // ---- REDCap's log: one row per save the sheet makes --------------------------------------
     $LOG = [];
-    /** A save of the form or an import: the row REDCap writes, its fields as "f = 'v'" lines. */
-    function logSave($at, array $values, $user = 'tester') {
+    /**
+     * A save of the form or an import: the row REDCap writes, its fields as
+     * "f = 'v'" lines after an "[instance = N]" line past the first instance.
+     * $kind 'DELETE' with its description is a deletion.
+     */
+    function logSave($at, array $values, $user = 'tester', $record = 'XE-3', $event = 380, $instance = 1, $kind = 'UPDATE', $descr = null) {
         global $LOG;
-        $lines = [];
+        $lines = $instance > 1 ? ['[instance = ' . (int) $instance . ']'] : [];
         foreach ($values as $f => $v) $lines[] = $f . " = '" . str_replace("'", "\\'", (string) $v) . "'";
-        $LOG[] = [count($LOG) + 1, 149, 'XE-3', 380, $at, implode(",\n", $lines), 'redcap_data', 'UPDATE', $user];
+        $row = [count($LOG) + 1, 149, $record, $event, $at, implode(",\n", $lines), 'redcap_data', $kind, $user];
+        if ($descr !== null) $row[] = $descr;
+        $LOG[] = $row;
     }
     function setPrivate($m, $prop, $value) {
         $p = new \ReflectionProperty(get_class($m), $prop);
@@ -161,9 +172,9 @@ namespace {
         setPrivate($m, 'clockOverride', \INSPIRE\UniversalValidator\UniversalValidator::clockStamp(new \DateTimeImmutable('2026-10-23 10:00:00', $utc)));
         return $m;
     }
-    function page($m) {
+    function page($m, $record = 'XE-3', $event = 380, $instance = 1) {
         ob_start();
-        $m->redcap_data_entry_form_top(149, 'XE-3', 'uv_writeonce_test', 380, null, 1);
+        $m->redcap_data_entry_form_top(149, $record, 'uv_writeonce_test', $event, null, $instance);
         $html = ob_get_clean();
         preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
         return ['html' => $html, 'cfg' => json_decode($mm[1] ?? 'null', true)];
@@ -195,10 +206,33 @@ namespace {
         foreach ($m->logCalls as $c) if ($c[0] === 'uvalidate-unconfigurable' && strpos((string) $c[1]['fields'], 'uw_bad_') === false) $out[] = $c[1];
         return $out;
     }
-    function save(array $data, array $roles) {
+    function save(array $data, array $roles, $record = 'XE-3', $event = 380, $instance = 1) {
         $m = mod($data, $roles);
-        $m->redcap_save_record(149, 'XE-3', 'uv_writeonce_test', 380, null, null, null, 1);
+        $m->redcap_save_record(149, $record, 'uv_writeonce_test', $event, null, null, null, $instance);
         return $m;
+    }
+    function surveyPage($m, $record) {
+        ob_start();
+        $m->redcap_survey_page_top(149, $record, 'uv_writeonce_test', 380, null, 'hash', null, 1);
+        $html = ob_get_clean();
+        preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
+        return ['html' => $html, 'cfg' => json_decode($mm[1] ?? 'null', true)];
+    }
+    /** "record@event#instance field:reason asOf" for each write-once finding of the scan, and the rule problems of the good fields */
+    function scanAt(array $data, array $roles, &$problems = null) {
+        $m = mod($data, $roles);
+        $res = $m->scanProject(149);
+        $out = []; $problems = [];
+        foreach ($res['violations'] as $v) {
+            if ($v['type'] !== 'writeonce') continue;
+            $out[] = $v['record'] . '@' . $v['event_id'] . '#' . ($v['instance'] ?? 1) . ' ' . $v['field'] . ':' . $v['reason'] . ' ' . ($v['asOf'] ?? '?');
+        }
+        sort($out);
+        foreach ($res['unconfigurable'] as $u) {
+            if (!array_filter($u['fields'], function ($f) { return strpos($f, 'uw_bad_') === false; })) continue;
+            $problems[] = $u;
+        }
+        return $out;
     }
     /** "field:reason asOf" for each write-once finding of the scan, and the detail line of each */
     function scan(array $data, array $roles, &$lines = null) {
@@ -261,7 +295,8 @@ namespace {
 
     // ---- Section B: the first save and the page lock (the tester holds no role) ---------------
     check('B1: nothing saved yet, nothing locked', lockedOn($p) === [], lockedOn($p));
-    $B1 = ['uw_consent' => '2026-10-01', 'uw_arm' => '1', 'uw_yn' => '1', 'uw_notes' => 'First note', 'uw_pain' => '50', 'uw_weight' => '70.0', 'uw_free' => 'a'];
+    // the note runs over two lines: the log writes it whole, and the reader reads it whole
+    $B1 = ['uw_consent' => '2026-10-01', 'uw_arm' => '1', 'uw_yn' => '1', 'uw_notes' => "First note\nsecond line", 'uw_pain' => '50', 'uw_weight' => '70.0', 'uw_free' => 'a'];
     $D['XE-3'][380] = $B1;
     logSave('20261023090000', $B1 + ['uv_writeonce_test_complete' => '0']);
     $m = save($D, $ROLE_OUT);
@@ -319,6 +354,55 @@ namespace {
     $got = scan($D, $ROLE_OUT);
     check('D4: the scan reads the roles as they are now, so the arm and the site count as changes again', $got === [
         'uw_arm:changed 2026-10-23 09:00', 'uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00', 'uw_site:changed 2026-10-23 09:05'], $got);
+
+    // ---- Section E: the Data Import Tool on a whole repeating event (review L14) -------------------
+    $D['XE-3']['repeat_instances'][382][''][1] = ['uw_consent' => '2026-10-03'];
+    logSave('20261023094000', ['uw_consent' => '2026-10-03', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-3', 382, 1);
+    $m = save($D, $ROLE_OUT, 'XE-3', 382, 1);
+    check('E1: the first save at instance 1 of the repeating event: no finding', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    check('E1: reopened, it is locked', lockedOn(page(mod($D, $ROLE_OUT), 'XE-3', 382, 1)) === ['uw_consent']);
+    $D['XE-3']['repeat_instances'][382][''][1]['uw_consent'] = '2026-10-04';
+    $D['XE-3']['repeat_instances'][382][''][2] = ['uw_consent' => '2026-10-09'];
+    logSave('20261023095000', ['uw_consent' => '2026-10-04'], 'tester', 'XE-3', 382, 1);
+    logSave('20261023095000', ['uw_consent' => '2026-10-09'], 'tester', 'XE-3', 382, 2);
+    $got = scanAt($D, $ROLE_OUT, $prob);
+    check('E2: the scan finds the import at instance 1; instance 2, first saved by the import, is locked by it', $got === [
+        'XE-3@380#1 uw_arm:changed 2026-10-23 09:00', 'XE-3@380#1 uw_consent:changed 2026-10-23 09:00', 'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00',
+        'XE-3@380#1 uw_site:changed 2026-10-23 09:05', 'XE-3@382#1 uw_consent:changed 2026-10-23 09:40'] && $prob === [], [$got, $prob]);
+    check('E3: instance 2 opens locked at the imported date', lockedOn(page(mod($D, $ROLE_OUT), 'XE-3', 382, 2)) === ['uw_consent']);
+    $m = save($D, $ROLE_OUT, 'XE-3', 382, 1);
+    check('E4: saving instance 1 as it is logs the change, at event 382', hits($m) === ['uw_consent:changed 2026-10-23 09:40 > 2026-10-23 09:50'], hits($m));
+
+    // ---- Section G: a survey, whose first page Next saves -----------------------------------------
+    $D['XE-4'] = [351 => ['record_id' => 'XE-4'], 380 => []];
+    $ps = surveyPage(mod($D, $ROLE_OUT), 'XE-4');
+    check('G1: the survey for XE-4 opens with nothing locked', lockedOn($ps) === [], lockedOn($ps));
+    $G2 = ['uw_consent' => '2026-10-05', 'uw_arm' => '1', 'uw_free' => 's'];
+    $D['XE-4'][380] = $G2;
+    logSave('20261023100000', $G2 + ['uv_writeonce_test_complete' => '0'], '[survey respondent]', 'XE-4');
+    $m = save($D, $ROLE_OUT, 'XE-4');
+    check('G2: Next saves the first page: no finding', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    $ps = surveyPage(mod($D, $ROLE_OUT), 'XE-4');
+    $pages['g3'] = $ps['cfg'];
+    check('G3: Previous finds the answers locked, the role field too',
+        lockedOn($ps) === ['uw_arm', 'uw_consent'], lockedOn($ps));
+    check('G3: the survey page names no role', stripos($ps['html'], 'data manager') === false && stripos($ps['html'], 'u-149uvdm') === false);
+    check('G3: a respondent holds no role, even on a login that holds one', lockedOn(surveyPage(mod($D, $ROLE_IN), 'XE-4')) === ['uw_arm', 'uw_consent']);
+
+    // ---- Section H: a deletion of the form's data, which the check cannot place -------------------
+    logSave('20261023101000', ['uw_consent' => '', 'uw_arm' => '', 'uw_free' => ''], 'tester', 'XE-4', 380, 1, 'DELETE', 'Delete all record data for single form');
+    $D['XE-4'][380] = [];
+    check('H1: after the deletion the form opens with nothing locked', lockedOn(page(mod($D, $ROLE_OUT), 'XE-4')) === []);
+    $D['XE-4'][380] = ['uw_consent' => '2026-10-06'];
+    logSave('20261023101500', ['uw_consent' => '2026-10-06', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-4');
+    $m = save($D, $ROLE_OUT, 'XE-4');
+    $why = implode(' ', array_map(function ($p) { return (string) ($p['why'] ?? ''); }, problems($m)));
+    check('H2: the next save logs no finding, and a rule problem for the consent date that names the deletion', hits($m) === []
+        && strpos($why, 'the project log holds a deletion this check cannot place (part of the record, or one arm of it) — field not checked') !== false, [hits($m), problems($m)]);
+    $got = scanAt($D, $ROLE_OUT, $prob);
+    check('H3: the scan lists XE-4\'s consent date as not checked, never as a pass or a finding',
+        !array_filter($got, function ($g) { return strpos($g, 'XE-4') === 0; })
+        && (bool) array_filter($prob, function ($u) { return in_array('uw_consent', $u['fields'], true) && strpos((string) ($u['why'] ?? ''), 'deletion') !== false; }), [$got, $prob]);
 
     // The labels and field types the engine replay builds its page from.
     $pages['labels'] = $LABELS;

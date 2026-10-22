@@ -104,8 +104,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // that field's decimal comma), the limits, their words, the branch group
     'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
     'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
-    // @UVWRITEONCE: the roles that may still change the value, the day the lock starts
-    'writeonceRoles', 'writeonceSince',
+    // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
+    // what the page hook adds: the roles could not be read, a dropdown's saved code
+    'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -156,6 +157,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // @UVDELTA (the earlier value travels folded, as deltaVsOp)
     'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
     'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code
+    'writeonceRolesUnread', 'writeonceSaved',
 ]);
 
 // Branching::modeOfType.
@@ -539,6 +542,18 @@ $cases = [
         return json_encode($g); })($good),
     'reasonMessages as a list' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['whereMessage'];
+        return json_encode($g); })($good),
+    'a "when" that is not false' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['when'] = true;
+        return json_encode($g); })($good),
+    'a lock whose text names no {by}' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['lock'] = ['returnWhy' => 'cannot lock "[{field}]"'];
+        return json_encode($g); })($good),
+    'a finding key mapped to a log key the module writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['log' => 'value'];
+        return json_encode($g); })($good),
+    'a finding key mapped to a scan key the module writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['scan' => 'rule'];
         return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {

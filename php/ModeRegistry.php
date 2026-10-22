@@ -23,6 +23,12 @@ require_once __DIR__ . '/Logic.php';
 
 final class ModeRegistry
 {
+    /** Keys every audit log entry already has (UniversalValidator::logInvalid, auditRule). */
+    const RESERVED_LOG_KEYS = ['field', 'type', 'algorithm', 'reason', 'instrument', 'event_id', 'instance', 'record',
+        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs'];
+    /** Keys every scan violation already has (UniversalValidator::scanRecord, FindingRowMapper). */
+    const RESERVED_SCAN_KEYS = ['record', 'event_id', 'instance', 'field', 'type', 'reason', 'rule', 'value', 'valueWithheld',
+        'valueState', 'locus', 'instrument', 'dag', 'branch', 'z', 'reference', 'ruleSource', 'findingId'];
     /** @var array|null the decoded, checked file */
     private static $data = null;
     /** @var array derived maps, built once per request */
@@ -143,6 +149,13 @@ final class ModeRegistry
                     if (!is_string($k) || $k === '' || !is_array($to) || !$to || array_diff(array_keys($to), ['log', 'scan'])
                             || array_filter($to, function ($v) { return !is_string($v) || !preg_match('/^[a-z][a-zA-Z_]*$/D', $v); })) {
                         throw new \RuntimeException('mode "' . $m['mode'] . '" has a findingKeys entry that is not {log?: key, scan?: key}');
+                    }
+                    // a key the entry already gives would be overwritten, or would
+                    // carry a raw value past the log-values setting ("value")
+                    foreach (['log' => self::RESERVED_LOG_KEYS, 'scan' => self::RESERVED_SCAN_KEYS] as $where => $taken) {
+                        if (isset($to[$where]) && in_array($to[$where], $taken, true)) {
+                            throw new \RuntimeException('mode "' . $m['mode'] . '" maps a finding key to the ' . $where . ' key "' . $to[$where] . '", which the module already writes');
+                        }
                     }
                 }
             }
@@ -486,6 +499,13 @@ final class ModeRegistry
     {
         $m = self::mode($mode);
         return isset($m['lock']['returnWhy']) ? $m['lock']['returnWhy'] : null;
+    }
+
+    /** Whether the mode locks its fields' values (php/modes.json "lock"). */
+    public static function locks($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['lock']);
     }
 
     /** A per-mode method name from the "hooks" block, or null. */

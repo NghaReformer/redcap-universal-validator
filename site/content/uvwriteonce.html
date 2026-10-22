@@ -19,9 +19,10 @@ it from then on. Named user roles can still change it.</p>
 <tr><td><code>roles</code></td><td>The user roles whose members may still change or clear
     the value, by the name the User Rights page shows or by the unique role name. Letter
     case does not matter. Up to 20 roles</td></tr>
-<tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>. Saves before
-    it do not lock anything; the value the field held on that date is locked from then
-    on. Use it when the tag is added to a project that already holds data</td></tr>
+<tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>, which starts
+    at 00:00 in the project's time zone. Saves before then do not lock anything; the value
+    the field held at that moment is locked from then on. Use it when the tag is added to
+    a project that already holds data</td></tr>
 <tr><td><code>message</code></td><td>The text shown under a locked field and in the
     scan. It may be a map of language ids to texts, as for the other tags</td></tr>
 </tbody>
@@ -37,8 +38,10 @@ form holds.</p>
 <p>Text and Notes fields (dates included), <strong>dropdown</strong>,
 <strong>radio</strong>, <strong>yes/no</strong>, <strong>true/false</strong>,
 <strong>slider</strong> and <strong>SQL</strong> fields. Not a calc or a checkbox field,
-nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code> or
-<code>@SETVALUE</code>, whose value REDCap writes again by itself. A field that another
+nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@SETVALUE</code>
+or <code>@PREFILL</code>, whose value REDCap writes again by itself, nor a field with
+<code>@RICHTEXT</code> or a BioPortal ontology search, whose widget keeps its own copy of
+the text and saves it over the field. A field that another
 rule returns a value to (<code>@UVEXISTS</code> or <code>@UVRANGE</code>
 <code>"return"</code>) cannot be locked either, because that value is written again on
 every save.</p>
@@ -53,15 +56,26 @@ every save.</p>
     value. A member who clears it releases the lock, and the next value saved locks it
     again. Roles are read when the audit or the scan runs, not as they were at the
     save, because REDCap's log names who saved but not the role they held. A change
-    counts as the role's while its maker holds the role.</li>
+    counts as the role's while its maker holds the role. Rights that have expired and a
+    suspended account hold no role, and an administrator who is not a user of the project
+    is locked out like everyone else outside the roles.</li>
+<li>REDCap logs a field only when its value changes. A member of a named role who wants
+    to keep a value that someone outside the roles saved saves the field twice: another
+    value, then that one.</li>
 <li>On a form or a survey the locked field is read-only for everyone outside the roles,
     with a short note under it. A text box is made read-only, the radio buttons are
-    disabled and their "reset" link hidden, and the slider and the date picker are
-    disabled. A dropdown cannot be disabled without REDCap saving the field blank, so
-    it takes no clicks, and a change made with the keyboard or a script is undone and
-    the note says so.</li>
-<li>Another rule on a locked field still shows its note, but it never holds the save:
-    the person cannot change the value it objects to.</li>
+    disabled and their "reset" link hidden, the enhanced radio buttons take no clicks,
+    the slider is disabled, and the date picker is kept from opening, with its button and
+    REDCap's Today and Now buttons hidden. Nothing the form posts is disabled, since
+    REDCap would then save the field blank: a dropdown takes no clicks instead, and a
+    change made with the keyboard or a script is undone and the note says so. A dropdown
+    whose saved code is no longer one of its choices gets that code back as an option.</li>
+<li>When the user roles cannot be read, the field is locked for everyone, and the note
+    says the role could not be checked.</li>
+<li>A person's own first answer is locked as soon as it is saved. After Save &amp; Stay,
+    or Next on a multi-page survey, going back finds it locked.</li>
+<li>Another rule on a locked field still shows its note. It holds the save only when it
+    also reads another field, which the person can still change.</li>
 <li>The lock lives in the browser only. A change made through the API, the Data Import
     Tool or a script that bypasses the form is found afterwards, from REDCap's log.</li>
 </ul>
@@ -72,7 +86,17 @@ every save.</p>
 changed or cleared after the lock as <code>type: writeonce</code> with reason
 <code>changed</code> or <code>cleared</code>, plus <code>locked_at</code> (when the lock
 was set) and <code>changed_at</code> (when the current value was saved). The Validation
-scan reports it with the day it was locked. A log that holds more saves of the record
-than the audit reads (5,000), a save the log does not spell out, or user roles that
-cannot be read when a change needs them, are reported as rule problems, never as a
-pass.</p>
+scan reports it with the day it was locked. Each record and event is read on its own,
+and a deletion of the whole record starts a new history.</p>
+
+<p>These are reported as rule problems, never as a pass:</p>
+
+<ul>
+<li>a log that holds more rows of the record and event than the audit reads (5,000);</li>
+<li>any other deletion (of a form, an event or one arm), and in a project of several arms
+    every deletion, since the check cannot tell what it removed;</li>
+<li>a save the log names no event for;</li>
+<li>a save the log does not spell out;</li>
+<li>a value the log never shows saved;</li>
+<li>user roles that cannot be read when a change needs them.</li>
+</ul>

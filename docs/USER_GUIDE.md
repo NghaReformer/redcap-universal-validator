@@ -921,7 +921,9 @@ height a Text field with integer or number validation, or a calc. Change
 limits (`@UVDELTA`): Text fields with no, integer or number validation
 (including comma decimals), calc fields and sliders, compared with a field of
 any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
-dropdown, radio, yes/no, true/false, slider and SQL fields.
+dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
+with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, nor a
+BioPortal ontology search.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1107,13 +1109,19 @@ reason `up` or `down`, and the scan labels them "Rose more than allowed" or
 Yes. `@UVWRITEONCE` leaves a field open until its first save of a value, then
 locks it on forms and surveys. `@UVWRITEONCE={"roles":["Data manager"]}` lets
 members of that role still change or clear it, and the lock moves to the new
-value. `"since":"2026-11-01"` locks the value held on that day, for a project
-that already holds data. A blank and a missing data code lock nothing. The
-lock is the browser's only: a change made through the Data Import Tool or the
-API is found afterwards, from REDCap's log, by the next form save's audit
-(`type: writeonce`, reason `changed` or `cleared`) and by the scan. Roles are
-read when the audit or the scan runs, so a change counts as the role's only
-while its maker holds the role. Annotation-only; see the README section and
+value. `"since":"2026-11-01"` locks the value held at 00:00 that day in the
+project's time zone, for a project that already holds data. A blank and a
+missing data code lock nothing. The lock is the browser's only: a change made
+through the Data Import Tool or the API is found afterwards, from REDCap's log,
+by the next form save's audit (`type: writeonce`, reason `changed` or
+`cleared`) and by the scan. Roles are read when the audit or the scan runs, so
+a change counts as the role's only while its maker holds the role; expired
+rights and a suspended account hold no role, and an administrator who is not a
+user of the project is locked out too. When the roles cannot be read, the page
+locks the field for everyone and says so. A record whose log runs past 5,000
+rows for the event, or holds a deletion of part of the record (in a project of
+several arms, any deletion), is reported as not checked rather than passed.
+Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
 
 **Can a child's weight or height be checked against the WHO growth standards?**

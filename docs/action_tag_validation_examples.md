@@ -4408,6 +4408,15 @@ locked. It cannot be changed here."
 - Roles are read when the audit or the scan runs, not as they were at the
   save, because REDCap's log names who saved but not the role they held. A
   change counts as the role's while its maker holds the role.
+- Rights that have expired and a suspended account hold no role. An
+  administrator who is not a user of the project holds none either, and is
+  locked out.
+- When the user roles cannot be read, the page locks the field for everyone
+  and the note adds "Your user role could not be checked, so the field is
+  locked for now."
+- REDCap logs a field only when its value changes. A member who wants to keep
+  a value that someone outside the roles saved saves the field twice: another
+  value, then that one.
 - `message` replaces the note under the field and the scan's detail line. It
   may be a map of language ids to texts.
 
@@ -4417,9 +4426,9 @@ locked. It cannot be changed here."
 @UVWRITEONCE={"since":"2026-11-01"}
 ```
 
-Saves before `since` lock nothing. The value the field held on that day is
-locked from then on, and the page locks nothing before that day in the
-project's clock. The date is written YYYY-MM-DD.
+Saves before `since` lock nothing. The day starts at 00:00 in the project's
+time zone: the value the field held at that moment is locked from then on, and
+the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 ### Semantics worth knowing
 
@@ -4427,21 +4436,34 @@ project's clock. The date is written YYYY-MM-DD.
   the API is not stopped. It is found afterwards, from REDCap's log, by the
   next form save's audit and by the Validation scan.
 - A text box is made read-only, the radio buttons are disabled and their
-  "reset" link hidden, and the slider and the date picker are disabled. A
-  dropdown is not disabled, since REDCap would save it blank. It takes no
-  clicks, and a change made with the keyboard or a script is undone, and the
-  note says so.
-- Another tag on a locked field still shows its note but never holds the save,
-  since the person cannot change the value it objects to.
+  "reset" link hidden, the enhanced radio buttons take no clicks, the slider is
+  disabled, and the date picker is kept from opening, with its button and
+  REDCap's Today and Now buttons hidden. Nothing the form posts is disabled,
+  since REDCap would save the field blank: a dropdown takes no clicks instead,
+  and a change made with the keyboard or a script is undone, and the note says
+  so. A dropdown whose saved code is no longer one of its choices gets that
+  code back as an option.
+- A person's own first answer is locked as soon as it is saved: after Save &
+  Stay, or Next on a multi-page survey, going back finds it locked.
+- Another tag on a locked field still shows its note. It holds the save only
+  when it also reads another field, which the person can still change; a tag
+  that reads the locked field alone never holds it.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
-- Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE` or
-  `@SETVALUE`, or a field another rule returns a value to (`@UVEXISTS` or
-  `@UVRANGE` "return"). Each of those is written again by itself.
+- Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
+  `@SETVALUE` or `@PREFILL`, or a field another rule returns a value to
+  (`@UVEXISTS` or `@UVRANGE` "return"): each of those is written again by
+  itself. Not on a field with `@RICHTEXT` or a BioPortal ontology search
+  either, whose widget keeps its own copy of the text.
+- A field given `@UVWRITEONCE` twice is refused: the tag takes no `when`, so
+  there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
-  `locked_at` and `changed_at`. A log that holds more saves of the record than
-  are read, a save the log does not spell out, a value the log never shows
-  saved, and roles that cannot be read when a change needs them are rule
-  problems, never a pass.
+  `locked_at` and `changed_at`. Each record and event is read on its own, and a
+  deletion of the whole record starts a new history. A log that holds more
+  rows of the record and event than are read (5,000), any other deletion (and
+  in a project of several arms, every deletion), a save the log names no event
+  for, a save the log does not spell out, a value the log never shows saved,
+  and roles that cannot be read when a change needs them are rule problems,
+  never a pass.
 
 ```text invalid
 # refused: takes no value
@@ -4460,8 +4482,9 @@ project's clock. The date is written YYYY-MM-DD.
 
 Once the data dictionary and the user roles are read, the module also refuses a
 role the project does not have, a calc or checkbox field, a field with
-`@CALCTEXT`, `@CALCDATE` or `@SETVALUE`, and a field another rule returns a
-value to.
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, a BioPortal
+field, a field given the tag twice, and a field another rule returns a value
+to.
 
 ---
 
@@ -6103,7 +6126,7 @@ number keeps. `blockSave` is refused.
 | Key       | Type          | Default         | Notes                                                                              |
 | --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
 | `roles`   | list          | *(none)*        | User roles that may still change or clear the value; by name or unique role name, any letter case, 1 to 20 |
-| `since`   | string        | *(none)*        | YYYY-MM-DD: saves before it lock nothing; the value held that day is locked         |
+| `since`   | string        | *(none)*        | YYYY-MM-DD, from 00:00 project time: saves before it lock nothing; the value held then is locked |
 | `message` | string or map | generic line    | The note under a locked field and the scan's detail line                            |
 
 No `when`, `caseSensitive`, `blockSave` or `references`.

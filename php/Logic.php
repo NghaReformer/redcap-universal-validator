@@ -1264,7 +1264,10 @@ class Logic
         }
         if ($n === 0) return $empty($current) ? ['verdict' => 'ok'] : ['verdict' => 'unknown', 'why' => 'gap'];
         if (!$same($last, $current)) return ['verdict' => 'unknown', 'why' => 'gap'];
-        if ($lock === null || $same($lock, $current)) return ['verdict' => 'ok'];
+        // The lock and the last save are both as the log writes them, so they
+        // are compared as written: unescaping here would read a backslash
+        // removed from "It\'s" as no change.
+        if ($lock === null || $norm($lock) === $norm($last)) return ['verdict' => 'ok'];
         return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt];
     }
 

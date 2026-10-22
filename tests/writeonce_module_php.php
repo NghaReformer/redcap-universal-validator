@@ -14,7 +14,8 @@
  *   - the page: a rule reaches the page only with the fields whose saved
  *     value is a value (not blank, not a Missing Data Code), only for a
  *     viewer who holds none of its roles, never on a new record; a survey
- *     respondent holds no role; roles that cannot be read lock nothing; the
+ *     respondent holds no role; roles that cannot be read lock the field
+ *     for everyone and say so; the
  *     roles and "since" never reach the page,
  *   - the post-save audit logs changed / cleared as type 'writeonce' with
  *     locked_at and changed_at, lets a role move or release the lock, honours
@@ -263,8 +264,12 @@ namespace {
     $pd = page(mod($DICT, $DATA, 'dm'), 'form', '2', 'enrol_form');
     check('page: a member of a named role is not locked out; a rule with no roles locks everyone (got ' . json_encode(lockedOn($pd)) . ')',
         lockedOn($pd) === ['consent_date', 'notes_w']);
-    check('page: roles that cannot be read lock nothing of a rule that names roles (got ' . json_encode(lockedOn($pu)) . ')',
-        lockedOn($pu) === ['consent_date', 'notes_w']);
+    check('page: the user name compares without letter case or spaces', lockedOn(page(mod($DICT, $DATA, ' DM '), 'form', '2', 'enrol_form')) === ['consent_date', 'notes_w']);
+    check('page: roles that cannot be read lock a rule that names roles too (got ' . json_encode(lockedOn($pu)) . ')',
+        lockedOn($pu) === ['arm', 'bad_role', 'consent_date', 'notes_w', 'pain']);
+    check('... and only such a rule says the role could not be checked',
+        !empty(ruleFor($pu, 'arm')['writeonceRolesUnread']) && empty(ruleFor($pu, 'consent_date')['writeonceRolesUnread'])
+        && empty(ruleFor($pd, 'consent_date')['writeonceRolesUnread']));
     $ps = page(mod($DICT, $DATA, 'dm'), 'survey', '2', 'enrol_form');
     check('page: a survey respondent holds no role, even on a login a role holds (got ' . json_encode(lockedOn($ps)) . ')',
         lockedOn($ps) === ['arm', 'consent_date', 'notes_w', 'pain']);
@@ -356,7 +361,22 @@ namespace {
     };
     $m = mod($DICT, $NOW, 'nurse', $capped);
     $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
-    check('audit: a log past the cap is a rule problem', strpos(implode(' ', problems($m, 'consent_date')), 'more saves of this record than are read') !== false);
+    check('audit: a log past the cap is a rule problem', strpos(implode(' ', problems($m, 'consent_date')), 'more saves of this record and event than are read') !== false);
+    // a history the reader could not finish says why
+    foreach (['delete' => 'holds a deletion this check cannot place (part of the record, or one arm of it)', 'noevent' => 'holds a save of this field that names no event',
+              'unnamed' => 'the log reader was not told to keep this field', 'read' => 'the project log could not be read',
+              'other' => 'the project log could not be read'] as $why => $says) {
+        $unk = new class($why) {
+            private $why;
+            public function __construct($why) { $this->why = $why; }
+            public function saves($record, $eventId, $instance, $field) { return ['state' => 'unknown', 'saves' => [], 'why' => $this->why]; }
+            public function logTimeOf($d) { return '20261005000000'; }
+        };
+        $m = mod($DICT, $NOW, 'nurse', $unk);
+        $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+        check('audit: a history the reader could not finish (' . $why . ') is a rule problem that says why (got ' . json_encode(problems($m, 'consent_date')) . ')',
+            !woBy($m) && strpos(implode(' ', problems($m, 'consent_date')), $says . ' — field not checked') !== false);
+    }
     $nosince = new class {
         public function saves($record, $eventId, $instance, $field) { return ['state' => 'read', 'saves' => []]; }
         public function logTimeOf($d) { return null; }
@@ -393,6 +413,94 @@ namespace {
     check('scan labels per reason', ModeRegistry::issueLabel('writeonce', 'changed') === 'Changed after it was locked'
         && ModeRegistry::issueLabel('writeonce', 'cleared') === 'Cleared after it was locked'
         && ModeRegistry::issueLabel('writeonce', 'other') === 'Changed after it was locked');
+
+    // ============================================================================
+    // A rule on a locked field that reads another field (review M3): lockReads
+    // ============================================================================
+    $LDICT = [
+        'record_id' => f('enrol_form'),
+        'wt'        => f('enrol_form', '@UVWRITEONCE @UVASSERT="[wt]<[ht]"', 'number'),
+        'ht'        => f('enrol_form', '', 'number'),
+        'wt2'       => f('enrol_form', '@UVWRITEONCE @UVASSERT="[wt2]>10"', 'number'),
+        'free'      => f('enrol_form', '@UVASSERT="[free]<[ht]"', 'number'),
+        'dm_only'   => f('enrol_form', '@UVWRITEONCE={"roles":["Data manager"]} @UVASSERT="[dm_only]<[ht]"', 'number'),
+    ];
+    $LDATA = ['2' => [351 => ['record_id' => '2', 'wt' => '70', 'ht' => '150', 'wt2' => '20', 'free' => '1', 'dm_only' => '5']]];
+    $ruleOf = function ($p, $type, $f) {
+        foreach ($p['cfg']['rules'] ?? [] as $r) if (($r['type'] ?? '') === $type && in_array($f, $r['fields'] ?? [], true)) return $r;
+        return null;
+    };
+    $p = page(mod($LDICT, $LDATA), 'form', '2', 'enrol_form');
+    check('lockReads: a rule on a locked field that reads another field names it (got ' . json_encode($ruleOf($p, 'constraint', 'wt')) . ')',
+        ($ruleOf($p, 'constraint', 'wt')['lockReads'] ?? null) === ['wt']);
+    check('lockReads: none for a rule that reads the locked field alone', !isset($ruleOf($p, 'constraint', 'wt2')['lockReads']));
+    check('lockReads: none for a rule on a field nothing locks', !isset($ruleOf($p, 'constraint', 'free')['lockReads']));
+    check('lockReads: none on the lock itself', !isset($ruleOf($p, 'writeonce', 'wt')['lockReads']));
+    check('lockReads: a role holder has no lock, so no lockReads', ($pd = page(mod($LDICT, $LDATA, 'dm'), 'form', '2', 'enrol_form'))
+        && $ruleOf($pd, 'writeonce', 'dm_only') === null && !isset($ruleOf($pd, 'constraint', 'dm_only')['lockReads'])
+        && ($ruleOf($p, 'constraint', 'dm_only')['lockReads'] ?? null) === ['dm_only']);
+    $ps = page(mod($LDICT, $LDATA), 'survey', '2', 'enrol_form');
+    check('lockReads: sent to a survey too', ($ruleOf($ps, 'constraint', 'wt')['lockReads'] ?? null) === ['wt']);
+
+    // what the log reader is told of the project: the dictionary's order and whether a DELETE may cover one arm
+    $opts = function ($m) {
+        $r = new \ReflectionMethod(get_class($m), 'valueHistoryOptions');
+        $r->setAccessible(true);
+        return $r->invoke($m, PID);
+    };
+    $o = $opts(mod($LDICT, $LDATA));
+    check('reader options: the data dictionary\'s order, and one arm (got ' . json_encode($o) . ')',
+        $o === ['order' => ['record_id' => 0, 'wt' => 1, 'ht' => 2, 'wt2' => 3, 'free' => 4, 'dm_only' => 5], 'multiArm' => false]);
+    $GLOBALS['Proj'] = new class {
+        public $project_id = PID;
+        public $eventInfo = [351 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1], 352 => ['unique_event_name' => 'event_1_arm_2', 'arm_num' => 2]];
+        public function getUniqueEventNames() { return [351 => 'event_1_arm_1', 352 => 'event_1_arm_2']; }
+        public function getRepeatingFormsEvents() { return []; }
+    };
+    $o = $opts(mod($LDICT, $LDATA));
+    unset($GLOBALS['Proj']);
+    check('reader options: two arms, where a DELETE may cover one (got ' . json_encode($o['multiArm']) . ')', $o['multiArm'] === true);
+
+    // ============================================================================
+    // Locks on returned fields, and the refusals in order
+    // ============================================================================
+    $RDICT = [
+        'record_id' => f('enrol_form'),
+        'src1'      => f('enrol_form'),
+        'src2'      => f('enrol_form'),
+        'lk'        => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src1":"[r1]","src2":"[r2]"}}'),
+        'r1'        => f('enrol_form', '@UVWRITEONCE={"message":"R"}'),
+        'r2'        => f('enrol_form', '@UVWRITEONCE={"message":"R"}'),
+        // two lookups returning to one field are both refused, so neither returns to it: the lock stands
+        'lk_a'      => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src1":"[r3]"}}'),
+        'lk_b'      => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src2":"[r3]"}}'),
+        'r3'        => f('enrol_form', '@UVWRITEONCE'),
+        'low'       => f('enrol_form', "@UVWRITEONCE @setvalue='x'"),
+        'low2'      => f('enrol_form', '@UVWRITEONCE @prefill="x"'),
+        'rich'      => f('enrol_form', '@UVWRITEONCE @richtext', '', 'notes'),
+        'onto'      => array_merge(f('enrol_form', '@UVWRITEONCE'), ['select_choices_or_calculations' => ' BIOPORTAL:ICD10']),
+    ];
+    $RDATA = ['2' => [351 => ['record_id' => '2', 'src1' => '', 'src2' => '', 'lk' => '', 'r1' => 'a', 'r2' => 'b', 'lk_a' => '', 'lk_b' => '', 'r3' => 'c', 'low' => 'x', 'low2' => 'x', 'rich' => 'x', 'onto' => 'x']]];
+    $p = page(mod($RDICT, $RDATA), 'form', '2', 'enrol_form');
+    $at = function ($p, $f) {
+        foreach ($p['cfg']['rules'] ?? [] as $i => $r) if (($r['type'] ?? '') === 'writeonce' && in_array($f, $r['fields'] ?? [], true)) return $i;
+        return null;
+    };
+    check('returned: each refused lock of one rule is its own refusal (got ' . errOf($p, 'r1') . ' / ' . errOf($p, 'r2') . ')',
+        errOf($p, 'r1') === '@UVWRITEONCE cannot lock "[r1]": the rule on "lk" returns a value to it, which is written again on every save.' && strpos(errOf($p, 'r2'), 'cannot lock "[r2]"') !== false);
+    check('returned: ... in field order, the first in the rule\'s own place', $at($p, 'r1') !== null && $at($p, 'r1') < $at($p, 'r2'));
+    check('returned: a lookup refused for another reason returns nothing, so the lock on its field stands (got ' . errOf($p, 'r3') . ')',
+        errOf($p, 'lk') === '' && errOf($p, 'r3') === '' && strpos(errOf($p, 'lk_a'), '[r3]') !== false && strpos(errOf($p, 'lk_b'), '[r3]') !== false
+        && in_array('r3', lockedOn($p), true));
+    check('@SETVALUE and @PREFILL refused whatever their letter case (got ' . errOf($p, 'low') . ' / ' . errOf($p, 'low2') . ')',
+        strpos(errOf($p, 'low'), 'cannot lock a field with @SETVALUE') !== false && strpos(errOf($p, 'low2'), 'cannot lock a field with @PREFILL') !== false);
+    $pdup = page(mod(['record_id' => f('enrol_form'), 'dup' => f('enrol_form', '@UVWRITEONCE @UVWRITEONCE={"message":"x"}')],
+        ['2' => [351 => ['record_id' => '2', 'dup' => 'v']]]), 'form', '2', 'enrol_form');
+    check('a field given @UVWRITEONCE twice: refused, saying the tag takes no condition (got ' . json_encode($pdup['cfg']['rules'] ?? null) . ')',
+        errOf($pdup, 'dup') !== '' && strpos(errOf($pdup, 'dup'), '@UVWRITEONCE 2 times — this tag takes no "when" condition, so keep one.') !== false
+        && lockedOn($pdup) === []);
+    check('@RICHTEXT refused (got ' . errOf($p, 'rich') . ')', strpos(errOf($p, 'rich'), 'cannot lock a field with @RICHTEXT') !== false);
+    check('a BioPortal ontology search refused (got ' . errOf($p, 'onto') . ')', strpos(errOf($p, 'onto'), 'cannot lock a field that searches an ontology (BioPortal)') !== false);
 
     echo "writeonce_module_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

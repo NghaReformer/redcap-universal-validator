@@ -100,7 +100,14 @@ function boot(cfg, values) {
     w.on = function (events, handler) { for (const ev of events.split(' ')) if (el) el.addEventListener(ev.split('.')[0], handler); return w; };
     w.hasClass = (c) => !!el && (' ' + el.className + ' ').indexOf(' ' + c + ' ') >= 0;
     w.slider = (a) => { calls.push(['slider', el && el.id, a]); return w; };
-    w.datepicker = (a) => { calls.push(['datepicker', el && el.name, a]); return w; };
+    // as jQuery UI 1.13: "disable" disables the input itself, which the form then leaves out
+    w.datepicker = (a, k, v) => {
+      calls.push(['datepicker', el && el.name, a]);
+      if (el && a === 'disable') el.disabled = true;
+      if (el && a === 'option' && k === 'beforeShow') el.__beforeShow = v;
+      return w;
+    };
+    w.nextAll = () => ({ hide() { calls.push(['hide-trigger', el && el.name]); } });
     return w;
   };
   jq.fn = { on: true };
@@ -184,8 +191,10 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
     check('B2 ' + f + ' is locked, with the default note', isLocked(env, f) && note(env, f) === LOCK, [isLocked(env, f), note(env, f)]);
   }
   for (const f of ['uw_site', 'uw_weight', 'uw_free']) check('B2 ' + f + ' is not locked and has no note', !isLocked(env, f) && note(env, f) === '');
-  check('B2 the date picker and the slider are disabled', env.calls.some((c) => c[0] === 'datepicker' && c[1] === 'uw_consent' && c[2] === 'disable')
+  check('B2 the date picker is kept from opening and the slider is disabled', typeof env.ctl.uw_consent.el.__beforeShow === 'function'
+    && env.ctl.uw_consent.el.__beforeShow() === false
     && env.calls.some((c) => c[0] === 'slider' && c[1] === 'slider-uw_pain' && c[2] === 'disable'), env.calls);
+  check('B2 the date box is read-only, not disabled, so the form posts it', env.ctl.uw_consent.el.readOnly === true && env.ctl.uw_consent.el.disabled !== true);
   check('B2 the arm\'s buttons take no click', (pick(env, 'uw_arm', '2'), env.ctl.uw_arm.el.value === '1'));
   // a script (or the date picker's own "Today") changes the date: undone, and the note says so
   type(env, 'uw_consent', '2026-10-05');
@@ -196,7 +205,7 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
   check('B2 a reset of Eligible is undone', env.ctl.uw_yn.el.value === '1' && env.ctl.uw_yn.buttons[0].checked === true, env.ctl.uw_yn.el.value);
   // a change no event announces, put back before the save
   env.ctl.uw_notes.el.value = 'Edited';
-  check('B2 a silent change to the note is put back at the save, which goes through', save(env) === 'saved' && env.ctl.uw_notes.el.value === 'First note', env.ctl.uw_notes.el.value);
+  check('B2 a silent change to the note is put back at the save, which goes through', save(env) === 'saved' && env.ctl.uw_notes.el.value === 'First note\nsecond line', env.ctl.uw_notes.el.value);
   pick(env, 'uw_site', '1');
   check('B3 the site takes its first value and the record saves', env.ctl.uw_site.el.value === '1' && save(env) === 'saved');
 }

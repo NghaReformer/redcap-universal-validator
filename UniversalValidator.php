@@ -31,6 +31,7 @@ require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ValueStamps.php';
 require_once __DIR__ . '/php/ValueHistory.php';
+require_once __DIR__ . '/php/RoleBook.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
@@ -3492,9 +3493,14 @@ class UniversalValidator extends AbstractExternalModule
             }
             $h = $history->saves($record, $event_id, $instance, $field);
             if ($h['state'] === 'capped' || $h['state'] === 'unknown') {
+                $unknown = ['delete' => 'the project log holds a deletion this check cannot place (part of the record, or one arm of it)',
+                            'noevent' => 'the project log holds a save of this field that names no event',
+                            'unnamed' => 'the log reader was not told to keep this field',
+                            'read' => 'the project log could not be read'];
+                $why = isset($h['why'], $unknown[$h['why']]) ? $unknown[$h['why']] : $unknown['read'];
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => ($h['state'] === 'capped'
-                    ? 'the project log holds more saves of this record than are read, so its first save of this value is not known'
-                    : 'the project log could not be read') . ' — field not checked'];
+                    ? 'the project log holds more saves of this record and event than are read, so its first save of this value is not known'
+                    : $why) . ' — field not checked'];
                 continue;
             }
             $since = isset($rule['writeonceSince']) && is_string($rule['writeonceSince']) ? $rule['writeonceSince'] : null;
@@ -3529,8 +3535,9 @@ class UniversalValidator extends AbstractExternalModule
      * field left, or one whose "since" is a day still to come in the
      * project's clock (the audit locks nothing before it either). The roles
      * and "since" never reach the page (serverKeys). Roles that cannot be
-     * read lock nothing: the page does not keep a person from a change the
-     * audit may find was theirs to make.
+     * read lock the field for everyone, with writeonceRolesUnread set so the
+     * note says the role could not be checked: a lock left open would let
+     * anyone change the value.
      */
     private function pageWriteonce(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
     {
@@ -3538,6 +3545,15 @@ class UniversalValidator extends AbstractExternalModule
         $codes = null;
         $user = null;
         $today = null;
+        // every locked field's saved value in one read, not one per rule
+        $all = [];
+        foreach ($rules as $r) {
+            if (is_array($r) && (isset($r['type']) ? $r['type'] : '') === 'writeonce' && empty($r['configError'])) {
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $all[(string) $f] = true;
+            }
+        }
+        $values = null;
+        $resolution = [];
         foreach ($rules as $r) {
             if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce' || !empty($r['configError'])) {
                 $out[] = $r;
@@ -3551,15 +3567,20 @@ class UniversalValidator extends AbstractExternalModule
             $roles = isset($r['writeonceRoles']) && is_array($r['writeonceRoles']) ? $r['writeonceRoles'] : [];
             if ($roles && $context !== 'survey') {
                 if ($user === null) $user = (string) $this->currentUsername();
-                if ($this->userHoldsRole($pid, $user, $roles) !== false) continue;
+                $holds = $this->userHoldsRole($pid, $user, $roles);
+                if ($holds === true) continue;
+                // roles that cannot be read lock the field, and the note says why
+                if ($holds === null) $r['writeonceRolesUnread'] = true;
             }
             $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
-            $resolution = [];
-            try {
-                $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
-            } catch (\Throwable $e) {
-                continue;
+            if ($values === null) {
+                try {
+                    $values = $this->readValues($pid, $record, array_keys($all), $event_id, $instrument, $repeat_instance, true, $resolution);
+                } catch (\Throwable $e) {
+                    $values = false;
+                }
             }
+            if ($values === false) continue;
             if ($codes === null) $codes = $this->missingDataCodes($pid);
             $locked = [];
             foreach ($fields as $f) {
@@ -3570,6 +3591,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             if (!$locked) continue;
             $r['fields'] = $locked;
+            // A dropdown whose saved code is no longer a choice shows blank: the
+            // page gets the code to put back as an option (QRIDWriteOnceInit).
+            $dd = $this->dataDictionary($pid) ?: [];
+            foreach ($locked as $f) {
+                if (isset($dd[$f]['field_type']) && $dd[$f]['field_type'] === 'dropdown') $r['writeonceSaved'][$f] = (string) $values[$f];
+            }
             $out[] = $r;
         }
         return $out;
@@ -3578,8 +3605,11 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * @UVWRITEONCE "field" hook: a field whose value REDCap computes
      * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, and one with
-     * @SETVALUE is written again each time its form or survey page opens, so
-     * neither can be locked.
+     * @SETVALUE (or its alias @PREFILL) is written again each time its form or
+     * survey page opens, so neither can be locked. Nor can a field whose
+     * widget keeps its own copy of the text: the rich text editor (@RICHTEXT)
+     * writes its copy into the field when the form is saved, after the save
+     * guard has run, and a BioPortal search box does the same with its pick.
      */
     private function annotateWriteonceField(array $frag, $name, array $meta, $pid)
     {
@@ -3588,9 +3618,18 @@ class UniversalValidator extends AbstractExternalModule
             return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
                 . ' — REDCap works its value out again whenever the fields it reads change.', '_tag' => AnnotationRules::TAG_WRITEONCE];
         }
-        if (preg_match('/@SETVALUE\b/i', $ann)) {
-            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @SETVALUE'
+        if (preg_match('/@(SETVALUE|PREFILL)\b/i', $ann, $m)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
                 . ' — REDCap writes its value again each time the form or survey page opens.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@RICHTEXT\b/i', $ann)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @RICHTEXT'
+                . ' — the rich text editor keeps its own copy of the text and saves it over the field.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        $enum = isset($meta['select_choices_or_calculations']) ? ltrim((string) $meta['select_choices_or_calculations']) : '';
+        if (isset($meta['field_type']) && $meta['field_type'] === 'text' && stripos($enum, 'BIOPORTAL:') === 0) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field that searches an ontology (BioPortal)'
+                . ' — its search box keeps its own text and saves it over the field.', '_tag' => AnnotationRules::TAG_WRITEONCE];
         }
         return $frag;
     }
@@ -3600,7 +3639,7 @@ class UniversalValidator extends AbstractExternalModule
      * this project, by the name the User Rights page shows or by its unique
      * role name, so a misspelt role does not lock out the people it names.
      * Roles that cannot be read are not refused here (the page then locks
-     * nothing and the audit says when it needed them).
+     * the field for everyone and the audit says when it needed them).
      */
     private function annotateWriteonceDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -3637,39 +3676,17 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The project's user roles, once per request: ['roles' => [lowercase name
-     * => true], 'users' => [lowercase username => [lowercase names of the role
-     * the user holds]]], where a role's names are the one the User Rights page
-     * shows and its unique role name. null when they cannot be read. A REDCap
-     * without unique role names is read without them.
+     * The project's user roles, once per request (RoleBook::read): null when
+     * they cannot be read. Rights that expire are compared with today on
+     * PHP's clock, as REDCap compares them.
      */
     private function roleBook($pid)
     {
         if ($this->roleBookOverride !== null) return $this->roleBookOverride === false ? null : $this->roleBookOverride;
         $key = (string) (int) $pid;
         if (array_key_exists($key, $this->roleBookMemo)) return $this->roleBookMemo[$key];
-        $db = new Scan\ModuleDb($this);
-        $book = null;
-        foreach ([', r.unique_role_name', ''] as $unique) {
-            try {
-                $roleRows = $db->select('SELECT r.role_name' . $unique . ' FROM redcap_user_roles r WHERE r.project_id = ?', [(int) $pid]);
-                $userRows = $db->select('SELECT u.username, r.role_name' . $unique . ' FROM redcap_user_rights u'
-                    . ' JOIN redcap_user_roles r ON r.role_id = u.role_id WHERE u.project_id = ?', [(int) $pid]);
-            } catch (\Throwable $e) {
-                continue;
-            }
-            $book = ['roles' => [], 'users' => []];
-            foreach ($roleRows as $row) {
-                foreach ([0, 1] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['roles'][strtolower(trim((string) $row[$c]))] = true;
-            }
-            foreach ($userRows as $row) {
-                $u = isset($row[0]) ? strtolower(trim((string) $row[0])) : '';
-                if ($u === '') continue;
-                foreach ([1, 2] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['users'][$u][] = strtolower(trim((string) $row[$c]));
-            }
-            break;
-        }
-        return $this->roleBookMemo[$key] = $book;
+        $today = (new \DateTimeImmutable('now'))->format('Y-m-d');
+        return $this->roleBookMemo[$key] = RoleBook::read(new Scan\ModuleDb($this), $pid, $today);
     }
 
     /**
@@ -3689,10 +3706,27 @@ class UniversalValidator extends AbstractExternalModule
             }
             $server = new \DateTimeZone(date_default_timezone_get());
             $zone = $this->clockZone($pid);
-            $h = ValueHistory::forProject(new Scan\ModuleDb($this), $pid, $fields, $server, $zone === null ? $server : $zone);
+            $h = ValueHistory::forProject(new Scan\ModuleDb($this), $pid, $fields, $server, $zone === null ? $server : $zone,
+                $this->valueHistoryOptions($pid));
             $this->valueHistoryMemo[$key] = $h === null ? false : $h;
         }
         return $this->valueHistoryMemo[$key];
+    }
+
+    /**
+     * What ValueHistory needs to know of the project: the data dictionary's
+     * order, in which the log writes a save's fields (ValueHistory::parseRow),
+     * and whether a DELETE may cover one arm only: a project of several arms,
+     * or one whose arms cannot be read.
+     */
+    private function valueHistoryOptions($pid)
+    {
+        $dd = $this->dataDictionary($pid) ?: [];
+        $arms = [];
+        $events = $this->temporalShape($pid, $dd)->events();
+        foreach ($events as $e) $arms[isset($e['arm']) ? (string) $e['arm'] : '?'] = true;
+        return ['order' => array_flip(array_map('strval', array_keys($dd))),
+                'multiArm' => !$events || count($arms) !== 1 || isset($arms['?'])];
     }
 
     /** What a finding carries for the scan (php/modes.json findingKeys "scan"), as violation key => text. */
@@ -4252,6 +4286,7 @@ class UniversalValidator extends AbstractExternalModule
             $hook = ModeRegistry::hook($m['mode'], 'page');
             if ($hook !== null) $config['rules'] = $this->$hook($config['rules'], $pid, $context, $record, $instrument, $event_id, $repeat_instance);
         }
+        $config['rules'] = self::markLockReads($config['rules']);
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -5466,20 +5501,50 @@ class UniversalValidator extends AbstractExternalModule
             if ($lockWhy === null) continue;
             $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
             $keep = [];
+            $mine = [];     // this rule's refusals, in field order
             foreach ($fields as $f) {
-                if (!isset($owner[$f]) || $owner[$f] === $i) { $keep[] = $f; continue; }
+                // a returning rule that is itself refused returns nothing
+                if (!isset($owner[$f]) || $owner[$f] === $i || !empty($rules[$owner[$f]]['configError'])) { $keep[] = $f; continue; }
                 $by = isset($rules[$owner[$f]]['fields'][0]) ? (string) $rules[$owner[$f]]['fields'][0] : '?';
-                $split[] = array_merge($r, ['fields' => [$f], 'configError' => strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by])]);
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by])]);
             }
             if (count($keep) === count($fields)) continue;
             if ($keep) {
                 $rules[$i]['fields'] = $keep;
             } else {
-                // every field refused: the rule's place holds the first refusal
-                $rules[$i] = array_shift($split);
+                // every field refused: the rule's place holds its own first refusal
+                $rules[$i] = array_shift($mine);
             }
+            foreach ($mine as $x) $split[] = $x;
         }
         foreach ($split as $r) $rules[] = $r;
+        return $rules;
+    }
+
+    /**
+     * A rule on a field that a lock (php/modes.json "lock") holds on this page
+     * names in lockReads each locked field it reads another field for. The
+     * person cannot change the locked value but can change that other field,
+     * so the rule's guard item keeps holding the save there (UV_LOCK_READS in
+     * js/engine.js); a rule that reads the locked field alone does not.
+     */
+    private static function markLockReads(array $rules)
+    {
+        $locked = [];
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError']) || !ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $locked[(string) $f] = true;
+        }
+        if (!$locked) return $rules;
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            $reads = array_map('strval', ModeRegistry::refFields($r));
+            $marks = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (isset($locked[(string) $f]) && array_diff($reads, [(string) $f])) $marks[] = (string) $f;
+            }
+            if ($marks) $rules[$i]['lockReads'] = $marks;
+        }
         return $rules;
     }
 
@@ -7372,7 +7437,7 @@ class UniversalValidator extends AbstractExternalModule
                 . '" with ' . $what . ' — a value is written into the page being edited, so the field must be on that form.';
         }
         $note = isset($m['field_annotation']) ? (string) $m['field_annotation'] : '';
-        if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE)\b/i', $note, $tag)) {
+        if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE|PREFILL)\b/i', $note, $tag)) {
             return $label . ' is filled by REDCap\'s @' . strtoupper($tag[1]) . ', which would overwrite the returned value '
                 . '(and the other way round) — remove @' . strtoupper($tag[1]) . ', or write to another field.';
         }

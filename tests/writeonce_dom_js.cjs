@@ -60,6 +60,14 @@ function makeEl(tag) {
       return out;
     },
     closest() { return null; },
+    /* class selectors only, joined by commas, as the lock asks */
+    querySelectorAll(sel) {
+      const classes = String(sel).split(',').map((x) => x.trim().replace(/^\./, ''));
+      const out = [];
+      const walk = (e) => { for (const c of e.children) { if (classes.some((k) => (' ' + c.className + ' ').indexOf(' ' + k + ' ') >= 0)) out.push(c); walk(c); } };
+      walk(this);
+      return out;
+    },
     focus() { this._focused = true; },
     get nextSibling() {
       const i = this.parentNode ? this.parentNode.children.indexOf(this) : -1;
@@ -120,7 +128,14 @@ function boot(els, config, opts) {
       };
       w.hasClass = (c) => !!el && (' ' + el.className + ' ').indexOf(' ' + c + ' ') >= 0;
       w.slider = (a) => { calls.push(['slider', el && el.id, a]); return w; };
-      w.datepicker = (a) => { calls.push(['datepicker', el && el.name, a]); return w; };
+      // as jQuery UI 1.13: "disable" disables the input itself, which the form then leaves out
+    w.datepicker = (a, k, v) => {
+      calls.push(['datepicker', el && el.name, a]);
+      if (el && a === 'disable') el.disabled = true;
+      if (el && a === 'option' && k === 'beforeShow') el.__beforeShow = v;
+      return w;
+    };
+    w.nextAll = () => ({ hide() { calls.push(['hide-trigger', el && el.name]); } });
       return w;
     };
     jq.fn = { on: true };
@@ -159,6 +174,8 @@ function select(name, codes, value) {
   const s = makeEl('select'); s.name = name;
   s.options = codes.map((c) => option(c));
   s.value = value;
+  const append = s.appendChild;
+  s.appendChild = function (c) { append.call(s, c); if (c.tagName === 'OPTION') s.options.push(c); return c; };
   return s;
 }
 /* A REDCap radio field: the hidden mirror, one button per code and the reset link, in one row. */
@@ -274,7 +291,9 @@ for (const order of ['lock first', 'lock last']) {
   const dt = text('visit_date', '01-03-2026'); dt.className = 'x hasDatepicker';
   const env = boot([sl, sliderDiv, dt], { rules: [WO(['pain', 'visit_date'])] }, { jQuery: true });
   check('the slider widget is disabled', env.calls.some((c) => c[0] === 'slider' && c[1] === 'slider-pain' && c[2] === 'disable'), env.calls);
-  check('the date picker is disabled', env.calls.some((c) => c[0] === 'datepicker' && c[1] === 'visit_date' && c[2] === 'disable'), env.calls);
+  check('the date picker is kept from opening, its trigger hidden (got ' + JSON.stringify(env.calls) + ')',
+    typeof dt.__beforeShow === 'function' && dt.__beforeShow() === false && env.calls.some((c) => c[0] === 'hide-trigger' && c[1] === 'visit_date'));
+  check('... and the date box is not disabled, so the form still posts it (review H1)', dt.disabled !== true);
   check('... and both boxes are read-only', sl.readOnly === true && dt.readOnly === true);
   // a jQuery change (the date picker's own) reaches the lock through the jQuery listener
   dt.value = '02-03-2026'; dt.fire('change');
@@ -297,6 +316,99 @@ for (const order of ['lock first', 'lock last']) {
   const f = text('y1', 'v');
   const env = boot([f], { rules: [WO(['y1']), WO(['y1'])] });
   check('two write-once rules on one field: a duplicate error, no lock', f.readOnly === false && !!region(env, 'y1', 'cfg'));
+}
+
+// ---- 9) a rule on a locked field that reads another field (review M3) ----------------
+for (const order of ['lock first', 'lock last']) {
+  const locked = text('weight', '70'), open = text('height', '150');
+  const lock = WO(['weight']);
+  const rule = { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] };
+  const env = boot([locked, open], { rules: order === 'lock first' ? [lock, rule] : [rule, lock] });
+  check(order + ': the locked field is read-only', locked.readOnly === true);
+  check(order + ': a rule on a locked field that reads another field: the save goes through while it holds', save(env) === 'saved');
+  open.value = '50'; open.fire('change');
+  const a = env.win._alerts.length;
+  check(order + ': ... and is held once that other field breaks it, naming the locked field', save(env) === 'held' && /weight/.test(env.win._alerts[a] || ''), env.win._alerts);
+}
+{
+  // @READONLY was there before the lock: the field still never holds the save (UX-003)
+  const locked = text('weight', '70'), open = text('height', '50');
+  locked.readOnly = true;
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] }] });
+  check('a field REDCap made read-only (@READONLY) never holds the save, even with the lock reading it', save(env) === 'saved', env.win._alerts);
+}
+{
+  // a radio: the lock disables the buttons, which must not count as @READONLY for the choices filter
+  const r = radioField('grp', ['1', '2', '9'], '9');
+  const legacy = text('legacy', '0');
+  const env = boot(r.els.concat([legacy]), { rules: [WO(['grp']),
+    { type: 'choices', fields: ['grp'], choicesHide: ['9'], choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard', lockReads: ['grp'] }] });
+  check('a radio the lock disabled still gets the choices filter\'s guard item', env.NS.guard.items.some((it) => it.__qridFieldName === 'grp' && it.__qridMode === 'choices'),
+    env.NS.guard.items.map((it) => it.__qridMode));
+  check('... which holds the save while the other field hides the saved code', save(env) === 'held');
+  legacy.value = '1'; legacy.fire('change');
+  check('... and lets it through once the other field changes', save(env) === 'saved', env.win._alerts);
+}
+{
+  const locked = text('weight', '70');
+  const open = text('height', '200');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', message: 'Heavier than tall', lockReads: ['weight'] }] });
+  // a lookup still running for a rule that reads the locked field alone does not hold
+  env.NS.guard.items.push({ __qridFieldName: 'weight', __qridMode: 'unique', __qridPending: true, __qridInvalid: false,
+    __qridBlockMode: 'hard', __qridFieldLabel: 'weight', focus() {} });
+  check('a lookup still running on a locked field, for a rule that reads it alone, does not hold the save', save(env) === 'saved', env.win._alerts);
+  env.NS.guard.items.push({ __qridFieldName: 'weight', __qridMode: 'constraint', __qridPending: true, __qridInvalid: false,
+    __qridBlockMode: 'hard', __qridFieldLabel: 'weight', focus() {} });
+  check('... one for a rule that reads another field does', save(env) === 'held');
+}
+
+// ---- 10) roles that could not be read (review M8) --------------------------------------
+{
+  const f = text('rv', 'x');
+  const env = boot([f], { rules: [WO(['rv'], { writeonceRolesUnread: true })] });
+  check('roles that could not be read: locked, and the note says why', f.readOnly === true
+    && note(env, 'rv') === '&#128274; ' + DEFAULT + ' Your user role could not be checked, so the field is locked for now.', note(env, 'rv'));
+}
+
+// ---- 11) a dropdown whose saved code is no longer a choice (review L9) ------------------
+{
+  const s = select('arm2', ['', '1', '2'], '');
+  const env = boot([s], { rules: [WO(['arm2'], { writeonceSaved: { arm2: '9' } })] });
+  check('a dropdown whose saved code is no longer a choice gets it back as an option', s.options.some((o) => o.value === '9') && s.value === '9', s.value);
+  check('... the save goes through, keeping it', save(env) === 'saved' && s.value === '9', s.value);
+  check('... and test() calls it the saved value', env.NS.validators.arm2.test() === true);
+}
+
+// ---- 12) the widgets REDCap builds around a field (review L10, live sheet) -------------
+{
+  const r = radioField('grp', ['1', '2'], '1');
+  const enh = makeEl('div'); enh.className = 'enhancedchoice'; enh._row = 'grp-tr';
+  boot(r.els.concat([enh]), { rules: [WO(['grp'])] });
+  check('the enhanced radio buttons take no clicks', enh.style.pointerEvents === 'none');
+}
+{
+  const s = select('site2', ['', '1', '2'], '2');
+  const env = boot([s], { rules: [WO(['site2'])] });
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site2'; ac.value = '2'; env.allEls.push(ac);   // built after the lock
+  save(env);
+  check('an autocomplete box built after the lock is read-only by the time the save is checked', ac.readOnly === true);
+}
+{
+  const d = text('vd', '2026-01-01'); d._row = 'vd-tr';
+  const today = makeEl('button'); today.setAttribute('onclick', "setToday('vd','ymd');"); today._row = 'vd-tr'; today.style.display = 'inline';
+  const now = makeEl('button'); now.setAttribute('onclick', "setNowTime('vd');"); now._row = 'vd-tr'; now.style.display = 'inline';
+  boot([d, today, now], { rules: [WO(['vd'])] });
+  check("REDCap's Today and Now buttons are hidden", today.style.display === 'none' && now.style.display === 'none');
+}
+
+// ---- 13) every guard item names its mode --------------------------------------------
+{
+  const src = require('fs').readFileSync(path.join(__dirname, '..', 'js', 'engine.js'), 'utf8');
+  const used = new Set([...src.matchAll(/QRID_registerBlocker\([^;]*,\s*"([a-z]+)"\);/g)].map((m) => m[1]));
+  const modes = require('../php/modes.json').modes.map((m) => m.mode);
+  check('every guard item names a mode the registry knows, and every mode has one', [...used].every((m) => modes.includes(m)) && modes.every((m) => used.has(m)), [...used]);
 }
 
 console.log('writeonce_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

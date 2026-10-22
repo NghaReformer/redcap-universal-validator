@@ -81,9 +81,10 @@ class Branching
     }
 
     /**
-     * Illegal sharing per field: field => ['kind' => 'two-unconditional' |
+     * Illegal sharing per field: field => ['kind' => 'twice' | 'two-unconditional' |
      * 'identical-when' | 'mixed-type' | 'differing-key', 'rules' => [ruleIndex, ...],
-     * 'detail' => count|whenString|[typeA, typeB]|[tag, option name]]. Fields whose sharing is
+     * 'detail' => tag|count|whenString|[typeA, typeB]|[tag, option name]]; "twice" is
+     * two rules of a mode that takes no "when" (and names its type). Fields whose sharing is
      * legal (or not shared at all) are absent. Rule indexes refer to the
      * INPUT list, so callers can name "Rule 2 and Rule 5" in messages.
      */
@@ -125,7 +126,8 @@ class Branching
             $conflict = self::conflictOf($rules, $field, $idxs);
             if ($conflict !== null) {
                 $extra[] = [
-                    'type'        => 'single',
+                    // the refused mode's own type where the refusal is about that mode alone
+                    'type'        => isset($conflict['type']) ? $conflict['type'] : 'single',
                     'fields'      => [$field],
                     'configError' => self::message($field, $conflict),
                     // A synthesized rule inherits the origin of the first rule
@@ -201,6 +203,9 @@ class Branching
             case 'mixed-type':
                 return 'field "' . $field . '" is covered by both a single-value rule and a pooled rule '
                     . '— all rules sharing a field must have the same field type.';
+            case 'twice':
+                return 'field "' . $field . '" is given ' . $conflict['detail'] . ' ' . count($conflict['rules'])
+                    . ' times — this tag takes no "when" condition, so keep one.';
             case 'differing-key':
                 return 'field "' . $field . '" is covered by ' . $conflict['detail'][0] . ' rules that give "'
                     . $conflict['detail'][1] . '" different values — every rule on one field must give "'
@@ -259,13 +264,15 @@ class Branching
     /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
-     * fixed priority order: two-unconditional, identical-when, mixed-type,
-     * differing-key.
+     * fixed priority order: twice (a mode with no "when" never branches),
+     * two-unconditional, identical-when, mixed-type, differing-key.
      */
     private static function conflictOf(array $rules, $field, array $idxs)
     {
         $t = (isset($rules[$idxs[0]]['type']) && $rules[$idxs[0]]['type'] !== '') ? $rules[$idxs[0]]['type'] : 'single';
         $mode = self::modeOfType($t);
+        // a mode that takes no condition cannot branch: one rule per field
+        if (!ModeRegistry::takesWhen($mode)) return ['kind' => 'twice', 'rules' => $idxs, 'detail' => ModeRegistry::tag($mode), 'type' => $t];
         $groupKey = ModeRegistry::branchGroup($mode);
         $unconditional = [];   // group => [ruleIndex, ...]
         $whens = [];           // group => [when => ruleIndex]

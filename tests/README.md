@@ -47,7 +47,7 @@ php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across even
 php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
 node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
 php  tests/writeonce_php.php      # @UVWRITEONCE verdict vs writeonce_fixture.json, and the log reader
-node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, disabled, a change undone)
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, grammar, page, audit, scan
 php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
@@ -521,29 +521,55 @@ inner spaces.
   blank, not a Missing Data Code), a change or a clearing after it, a role that
   moves or releases the lock, "since", a quote the log escaped, a save the log
   does not spell out, a value it never shows saved, and roles that cannot be
-  read. It also drives `ValueHistory` over a mock of REDCap's log
-  (`writeonce_fake_log.php`): rows newest first in pages, a `DELETE` ending
-  the history, another record of the same name in a loose collation, the cap,
-  a failed read, and save times turned into the project's clock.
+  read, and the lock compared with the last save rather than the value now. It
+  also drives `ValueHistory` over a mock of REDCap's log
+  (`writeonce_fake_log.php`): one history per record and event (the mock
+  applies the event filter and refuses SQL without it; with `$looseEvent` it
+  returns every event's rows and the reader must pass over the others); rows
+  newest first in pages; a whole-record `DELETE` ending the history in a
+  project of one arm, while a `DELETE` of a form, an event or an arm, and any
+  `DELETE` with several arms, make it unknown; a save with no event that names
+  a kept field; another record of the same name in a loose collation; the cap
+  counted per event, with a history of exactly the cap read in full; a failed
+  read; save times turned into the project's clock; and `parseRow` (a notes
+  value over several lines, checkbox lines, a field written twice, a stray
+  line, and a row out of the data dictionary's order). `RoleBook::read` runs
+  over a mock database: both names of each role, users by lowercase name, the
+  project and today bound as parameters, and a REDCap with no unique role
+  names. The SQL of both runs on a real server in `tests/mysql/cases/history.php`.
 - `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
   read-only with the note under it, in the rule's own words when it has a
-  message; radio buttons are disabled and the "reset" link hidden; a dropdown
-  is not disabled but takes no clicks, and its autocomplete box is read-only;
-  the slider and the date picker are disabled through jQuery UI; a change made
-  anyway (an event, a jQuery change, a script with no event) is undone and the
-  note says so; a value that cannot be put back holds the save; another mode's
-  item on a locked field never holds the save; a configuration error locks
-  nothing.
+  message; radio buttons are disabled and the "reset" link hidden, and the
+  enhanced radio buttons take no clicks; REDCap's Today and Now buttons are
+  hidden; a dropdown is not disabled but takes no clicks, its autocomplete box
+  is read-only even when it is built after the lock, and a saved code that is
+  no longer a choice comes back as an option; the slider is disabled through
+  jQuery UI, and the date picker is kept from opening with its button hidden
+  while the date box stays enabled; a change made anyway (an event, a jQuery
+  change, a script with no event) is undone and the note says so; a value that
+  cannot be put back holds the save; another mode's item on a locked field
+  never holds the save unless its rule reads another field (`lockReads`), in
+  either order of binding, while a field REDCap made read-only (`@READONLY`)
+  still never holds it; roles that could not be read lock the field and the
+  note says so; a configuration error locks nothing; and every guard item
+  names a mode the registry knows.
 - `writeonce_module_php.php` covers the server side: calc and checkbox fields
-  and `@CALCTEXT`, `@CALCDATE` and `@SETVALUE` refused; each role checked
-  against the project, by name or unique role name, in any letter case, and
-  refused once by name; a lock on a field another rule returns to refused,
-  split off its group; the grammar; the page (only fields holding a value,
-  never for a member of a role, a survey respondent holds none, never on a new
-  record, not before "since", roles and "since" kept off the page); the audit
-  (`changed`, `cleared`, a role moving or releasing the lock, a code saved over
-  a locked value, "since", the lock times kept whatever the log mode, and each
-  rule problem); and the scan with its labels and detail line.
+  and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
+  `@RICHTEXT` and BioPortal fields refused; a field given the tag twice
+  refused; each role checked against the project, by name or unique role name,
+  in any letter case, and refused once by name; a lock on a field another rule
+  returns to refused, split off its group with each refusal in field order,
+  while a returning rule refused for another reason leaves the lock alone; the
+  grammar; the page (only fields holding a value, never for a member of a
+  role, the user name compared without letter case, a survey respondent holds
+  none, roles that cannot be read lock every rule that names roles and say so,
+  never on a new record, not before "since", roles and "since" kept off the
+  page, `lockReads` on a rule that reads another field); what the log reader
+  is told of the project (the data dictionary's order, one arm or several);
+  the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
+  saved over a locked value, "since", the lock times kept whatever the log
+  mode, and each rule problem, with the reason a history could not be read);
+  and the scan with its labels and detail line.
 - `writeonce_live_twin_php.php` runs the module over the live fixture on a copy
   of pid 149's events with a copy of REDCap's log that gains the row of each
   save the sheet makes, and checks every answer of
@@ -558,8 +584,11 @@ inner spaces.
   autocomplete box, a notes box, a slider), and checks each lock, each note,
   each undone change and each save. A refused tag on a dropdown shows its
   error under the field.
-- `writeonce_mutations.py` applies 61 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them.
+- `writeonce_mutations.py` applies 119 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Three mutate
+  the role book's SQL and are killed only by `tests/mysql/run.php`; they run
+  when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are
+  reported as skipped otherwise.
 
 ## `growth_*` — growth references (z-scores)
 

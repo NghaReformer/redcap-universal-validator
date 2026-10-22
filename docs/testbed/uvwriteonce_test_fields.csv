@@ -1,11 +1,11 @@
 Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
 uw_consent,uv_writeonce_test,A. Locked after the first save,text,Consent date,,Locked for everyone once saved.,date_ymd,,,,,,,,,,@UVWRITEONCE
-uw_arm,uv_writeonce_test,,radio,Study arm,"1, Arm A | 2, Arm B",The UV Data manager role may change it.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""]}"
-uw_site,uv_writeonce_test,,dropdown,Site,"1, Douala | 2, Yaounde | 3, Bamenda",The UV Data manager role may change it. Own message.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""],""message"":""Ask the data manager to change the site.""}"
+uw_arm,uv_writeonce_test,,radio,Study arm,"1, Arm A | 2, Arm B",A named role may change it.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""]}"
+uw_site,uv_writeonce_test,,dropdown,Site,"1, Douala | 2, Yaounde | 3, Bamenda",A named role may change it. Own message. Autocomplete.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""UV Data manager""],""message"":""Ask the data manager to change the site.""} @AUTOCOMPLETE"
 uw_yn,uv_writeonce_test,,yesno,Eligible,,The role named in other letters.,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""uv data MANAGER""]}"
 uw_notes,uv_writeonce_test,,notes,Screening note,,Locked for everyone once saved.,,,,,,,,,,,@UVWRITEONCE
 uw_pain,uv_writeonce_test,,slider,Pain at screening,No pain | Some | Worst pain,Locked for everyone once saved.,number,,,,,,,,,,@UVWRITEONCE
-uw_weight,uv_writeonce_test,,text,Baseline weight (kg),,The lock starts on 2099-01-01.,number_1dp,,,,,,,,,,"@UVWRITEONCE={""since"":""2099-01-01""}"
+uw_weight,uv_writeonce_test,,text,Baseline weight (kg),,The lock starts on a day far ahead.,number_1dp,,,,,,,,,,"@UVWRITEONCE={""since"":""2099-01-01""}"
 uw_free,uv_writeonce_test,,text,Free text (no tag),,Never locked.,,,,,,,,,,,
 uw_bad_role,uv_writeonce_test,F. Configuration errors,text,A role the project does not have,,,,,,,,,,,,,"@UVWRITEONCE={""roles"":[""Nobody here""]}"
 uw_bad_calc,uv_writeonce_test,,calc,A calc,[uw_weight]*2,,,,,,,,,,,,@UVWRITEONCE

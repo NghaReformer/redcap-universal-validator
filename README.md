@@ -991,37 +991,60 @@ first save of a value and locks it from then on:
   clear the value, by the name the User Rights page shows or by the unique
   role name, in any letter case, up to 20. Each must be a role of the project.
   A member's change moves the lock to the new value, and clearing it releases
-  the lock. Roles are read when the audit or the scan runs, not as they were at
-  the save, because REDCap's log names who saved but not the role they held.
-  So a change counts as the role's while its maker holds the role, and as a
-  violation once they leave it.
-- **`since`.** A date written YYYY-MM-DD. Saves before it lock nothing, the
-  value held on that day is locked from then on, and the page locks nothing
-  before that day in the project's clock. Use it when the tag is added to a
-  project that already holds data.
+  the lock. A user whose rights in the project have expired, or whose account
+  is suspended, holds no role. An administrator who is not a user of the
+  project holds none either, so the lock stops them as it stops everyone else.
+  Roles are read when the audit or the scan runs, not as they were at the
+  save, because REDCap's log names who saved but not the role they held, and
+  it records a change of role only as free text this check does not read. So
+  a change counts as the role's while its maker holds the role, and as a
+  violation once they leave it. REDCap logs a field only when its value
+  changes, so a member who wants to keep a value that someone outside the
+  roles saved saves the field twice: another value, then that one.
+- **`since`.** A date written YYYY-MM-DD, which starts at 00:00 in the
+  project's time zone. Saves before then lock nothing, the value held at that
+  moment is locked from then on, and the page locks nothing before that day.
+  Use it when the tag is added to a project that already holds data.
 - **Field types.** Text and Notes fields (dates included), dropdown, radio,
   yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
-  nor a field with `@CALCTEXT`, `@CALCDATE` or `@SETVALUE`, whose value REDCap
-  writes again by itself, nor a field another rule returns a value to.
+  nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE` or `@PREFILL`, whose
+  value REDCap writes again by itself, nor a field with `@RICHTEXT` or a
+  BioPortal ontology search, whose widget keeps its own copy of the text, nor
+  a field another rule returns a value to.
 - **On the page.** For everyone outside the roles the field keeps the value it
   opened with, with a short note under it. A text box is read-only, the radio
-  buttons are disabled and their "reset" link hidden, and the slider and the
-  date picker are disabled. A dropdown is not disabled, since REDCap would then
-  save it blank. It takes no clicks, and a change made with the keyboard or a
-  script is undone, and the note says so. A survey respondent holds no role.
-  Another rule on a locked field still shows its note but never holds the
-  save. The roles and `since` never reach the page.
+  buttons are disabled and their "reset" link hidden, the enhanced radio
+  buttons take no clicks, the slider is disabled, and the date picker is kept
+  from opening, with its button and REDCap's Today and Now buttons hidden.
+  Nothing the form posts is disabled, since REDCap would then save the field
+  blank: a dropdown takes no clicks instead, and one whose saved code is no
+  longer one of its choices gets that code back as an option. A change made
+  with the keyboard or a script is undone, and the note says so. A survey
+  respondent holds no role. When the user roles cannot be read the field is
+  locked for everyone, and the note says the role could not be checked.
+  Another rule on a locked field still shows its note, and holds the save only
+  when it also reads another field, which can still be changed. A person's own
+  first answer is locked as soon as it is saved, so after Save & Stay, or Next
+  on a multi-page survey, going back finds it locked. The roles and `since`
+  never reach the page.
 - **The browser only.** The Data Import Tool and the API are not stopped. What
   they change is found afterwards from REDCap's log, by the next form save's
   audit and by the Validation scan.
 - **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
   or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
   as "Changed after it was locked" or "Cleared after it was locked" and names
-  when the value was locked. A log that holds more saves of the record than
-  are read (5,000), a save the log does not spell out, a value the log never
-  shows saved, and roles that cannot be read when a change needs them are rule
-  problems, never a pass. The tag takes no `when`, `caseSensitive` or
-  `blockSave`. Configure via field annotation only.
+  when the value was locked. Each record and event is read on its own. A
+  deletion of the whole record starts a new history. These are rule problems,
+  never a pass: a log that holds more rows of the record and event than are
+  read (5,000); any other deletion (of a form, an event, or one arm), and in a
+  project of several arms every deletion, since the check cannot tell what it
+  removed; a save the log names no event for; a save the log does not spell
+  out; a value the log never shows saved; and roles that cannot be read when a
+  change needs them. A Notes value typed to look like the log line of another
+  field is caught when that field comes earlier in the data dictionary;
+  otherwise it can read as a save of that field, which gives at worst a false
+  finding or a rule problem, never a pass. The tag takes no `when`,
+  `caseSensitive` or `blockSave`. Configure via field annotation only.
 
 ## The Validation scan — checking data that is already saved
 
@@ -1338,7 +1361,7 @@ php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from
 node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
 python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named suite fail
 php  tests/writeonce_php.php      # @UVWRITEONCE verdict and the log reader vs writeonce_fixture.json
-node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, disabled, a change undone)
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, scan
 php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine

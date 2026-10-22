@@ -215,7 +215,7 @@
         "uw_arm": "1",
         "uw_consent": "2026-10-01",
         "uw_free": "a",
-        "uw_notes": "First note",
+        "uw_notes": "First note\nsecond line",
         "uw_pain": "50",
         "uw_weight": "70.0",
         "uw_yn": "1"
@@ -256,7 +256,10 @@
                 "message": "Ask the data manager to change the site.",
                 "fields": [
                     "uw_site"
-                ]
+                ],
+                "writeonceSaved": {
+                    "uw_site": "1"
+                }
             },
             {
                 "type": "writeonce",
@@ -305,7 +308,7 @@
         "uw_arm": "1",
         "uw_consent": "2026-10-01",
         "uw_free": "a",
-        "uw_notes": "First note",
+        "uw_notes": "First note\nsecond line",
         "uw_pain": "50",
         "uw_site": "1",
         "uw_weight": "70.0",
@@ -346,7 +349,10 @@
                 "message": "Ask the data manager to change the site.",
                 "fields": [
                     "uw_site"
-                ]
+                ],
+                "writeonceSaved": {
+                    "uw_site": "2"
+                }
             },
             {
                 "type": "writeonce",
@@ -505,7 +511,10 @@
                 "message": "Ask the data manager to change the site.",
                 "fields": [
                     "uw_site"
-                ]
+                ],
+                "writeonceSaved": {
+                    "uw_site": "2"
+                }
             },
             {
                 "type": "writeonce",
@@ -558,6 +567,72 @@
         "uw_site": "2",
         "uw_weight": "71.0",
         "uw_yn": "1"
+    },
+    "g3": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "survey",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            }
+        ]
     },
     "labels": {
         "uw_consent": "Consent date",

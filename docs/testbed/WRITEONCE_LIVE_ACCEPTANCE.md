@@ -5,25 +5,29 @@ Live test of write-once locks on a real REDCap. The automated suites
 `tests/writeonce_module_php.php`) prove the logic against stubs. This run
 checks the real date picker, radio buttons, dropdown, notes box and slider,
 the real project log as the lock's source, a Data Import Tool change the page
-never sees, user roles, the module log and the Validation scan.
+never sees (on a visit and on a whole repeating event), user roles, a
+multi-page survey, a deletion of a form's data, the module log and the
+Validation scan.
 
 Target: chpr-redcap.org pid 149 (longitudinal, seed records XE-1 to XE-4). The
 fixture is [`uvwriteonce_test_fields.csv`](uvwriteonce_test_fields.csv), 13
 fields on one new instrument `uv_writeonce_test`:
 
 - 7 carry a valid `@UVWRITEONCE`: `uw_consent` (date), `uw_arm` (radio, the
-  role may change it), `uw_site` (dropdown, the role, its own message),
-  `uw_yn` (yes/no, the role written in other letters), `uw_notes` (notes),
-  `uw_pain` (slider) and `uw_weight` (the lock starts on 2099-01-01).
+  role may change it), `uw_site` (dropdown with `@AUTOCOMPLETE`, the role, its
+  own message), `uw_yn` (yes/no, the role written in other letters),
+  `uw_notes` (notes, saved over two lines), `uw_pain` (slider) and `uw_weight`
+  (the lock starts on 2099-01-01). The field notes name neither the role nor
+  that date, because B2 checks that the page does not.
 - `uw_free` carries no tag.
 - The 5 `uw_bad_*` fields carry a broken one.
 
 Every "Expect" below is the module's own answer.
 `tests/writeonce_live_twin_php.php` runs the real module over the fixture on a
 copy of pid 149's events and forms, with a copy of REDCap's log that gains the
-row each save of this sheet writes. It checks each configuration error word
-for word, which fields each page locks, each log entry each save writes, and
-the scan. `tests/writeonce_live_twin_js.cjs` replays the clicks through
+row each save of this sheet writes (the deletion of section H included). It
+checks each configuration error word for word, which fields each page locks,
+each log entry each save writes, and the scan. `tests/writeonce_live_twin_js.cjs` replays the clicks through
 `js/engine.js` with the page configs the module built
 (`tests/writeonce_live_pages.json`) on a page shaped as REDCap renders these
 field types, and checks each lock, each note and each save. Both run in CI;
@@ -39,8 +43,10 @@ php tests/writeonce_live_twin_php.php && node tests/writeonce_live_twin_js.cjs
 
 - A field is locked from the first save of a value that is not blank and not a
   Missing Data Code. The page then keeps that value. A text box is read-only,
-  radio buttons are disabled, a dropdown takes no clicks, and a change made
-  any other way is undone.
+  radio buttons are disabled, a dropdown takes no clicks, the date picker does
+  not open, REDCap's Today and Now buttons are hidden, and a change made any
+  other way is undone. Nothing the form posts is disabled, because REDCap
+  would then save the field blank.
 - A person who holds one of the rule's roles may change the value, and the
   lock moves to the new value. Clearing it releases the lock.
 - The lock is the browser's only. A value written by the Data Import Tool or
@@ -50,6 +56,10 @@ php tests/writeonce_live_twin_php.php && node tests/writeonce_live_twin_js.cjs
   save. REDCap's log names the user who saved but not that user's role at the
   time. So a change counts as the role's while its maker holds the role, and
   as a violation once they leave it. Section D shows both.
+- Each record and event (and instance) has its own history. A deletion of the
+  whole record starts a new one. Any other deletion makes the field "not
+  checked" until the log no longer reaches back to it, since the check cannot
+  tell what it removed. Section H shows it.
 
 ---
 
@@ -60,13 +70,20 @@ php tests/writeonce_live_twin_php.php && node tests/writeonce_live_twin_js.cjs
 2. Append, never replace. Download the current dictionary, paste the 13 rows of
    `uvwriteonce_test_fields.csv` after its last row and upload. The diff must
    report one new instrument with 13 new fields and nothing else.
-3. Designate `uv_writeonce_test` on `visit_1_arm_1` (380) only.
+3. Designate `uv_writeonce_test` on `visit_1_arm_1` (380) and on
+   `unscheduled_arm_1` (382), which repeats as a whole. Section E uses 382.
 4. Do not create the role yet. Section A starts without it.
-5. The tester's account needs edit rights to `uv_writeonce_test` and the Data
-   Import Tool. Note the role the tester holds now, if any, because section D
-   moves the tester into another role and back.
+5. The tester's account needs edit rights to `uv_writeonce_test`, the Data
+   Import Tool, User Rights, and Project Design and Setup with read access to
+   every form (the Validation scan of C1b, D3, D4, E2 and H3 asks for both).
+   Note the role the tester holds now, if any, because section D moves the
+   tester into another role and back.
 6. Form URL, record XE-3:
    `DataEntry/index.php?pid=149&id=XE-3&event_id=380&page=uv_writeonce_test`
+7. For section G: Online Designer, enable `uv_writeonce_test` as a survey, and
+   in its survey settings set "Question display format" to one section per
+   page. The fixture's two section headers make two pages. Keep the "Previous
+   page" button.
 
 Read the injected config at any point with:
 
@@ -75,9 +92,10 @@ JSON.parse(document.getElementById('inspire-validator-config').textContent)
 ```
 
 A "lock note" below is the grey box under the field, starting with 🔒. Write
-down the time of each save in sections B and C: the module log and the scan
-give the lock times to the minute, in the project's time zone. The twin uses
-2026-10-23 09:00 for B1, 09:05 for B3, 09:20 for C1 and 09:30 for D2.
+down the time of each save in sections B, C, D and E: the module log and the
+scan give the lock times to the minute, in the project's time zone. The twin
+uses 2026-10-23 09:00 for B1, 09:05 for B3, 09:20 for C1, 09:30 for D2, 09:40
+for E1, 09:50 for E2, 10:00 for G2, 10:10 for H1 and 10:15 for H2.
 
 ---
 
@@ -86,17 +104,18 @@ give the lock times to the minute, in the project's time zone. The twin uses
 | # | Action | Expect |
 |---|---|---|
 | A1 | Open the form for XE-3 | Under `uw_arm` and `uw_site`: "⚠ Configuration error: @UVWRITEONCE on "uw_arm": "UV Data manager" is not a role of this project — use the role name the User Rights page shows, or its unique role name." (with `uw_site` in its own). Under `uw_yn` the same, naming "uv data MANAGER". The `uw_site` error sits under the dropdown, not in a box at the top of the page |
-| A2 | User Rights: create a role named "UV Data manager" with edit rights to `uv_writeonce_test`. Assign nobody to it. Reload the form | The three errors are gone. The five `uw_bad_*` errors of section F stay. Nothing is locked, since the record has no saved value on this form yet |
+| A2 | User Rights: create a role named "UV Data manager" with the rights of Setup 5: edit rights to `uv_writeonce_test`, the Data Import Tool, User Rights, Project Design and Setup, and read access to every form. Section D moves the tester into this role, and D4 needs User Rights to move them out again. Assign nobody to it. Reload the form | The three errors are gone. The five `uw_bad_*` errors of section F stay. Nothing is locked, since the record has no saved value on this form yet |
 
 ## Section B: the first save and the page lock (the tester holds no role)
 
 | # | Action | Expect |
 |---|---|---|
-| B1 | `uw_consent` = 2026-10-01, `uw_arm` = Arm A, `uw_yn` = Yes, `uw_notes` = First note, `uw_pain` slider to 50, `uw_weight` = 70.0, `uw_free` = a. Leave `uw_site` blank. Type anything in the `uw_bad_*` text boxes. Save | The record saves. The broken rules never block. The module log has no `type: writeonce` entry |
-| B2 | Reopen the form | Locked, each with the lock note "🔒 This value was saved once and is locked. It cannot be changed here.": `uw_consent` (read-only, the date picker button does nothing), `uw_arm` and `uw_yn` (buttons greyed out, the "reset" link gone), `uw_notes` (read-only), `uw_pain` (the slider does not move, its number box is read-only). Not locked and no note: `uw_site` (blank), `uw_weight` (its lock starts in 2099), `uw_free` (no tag). The page source names neither "UV Data manager" nor 2099 |
+| B1 | `uw_consent` = 2026-10-01, `uw_arm` = Arm A, `uw_yn` = Yes, `uw_notes` = "First note", Enter, "second line" (two lines), `uw_pain` slider to 50, `uw_weight` = 70.0, `uw_free` = a. Leave `uw_site` blank. Type anything in the `uw_bad_*` text boxes. Save | The record saves. The broken rules never block. The module log has no `type: writeonce` entry |
+| B2 | Reopen the form | Locked, each with the lock note "🔒 This value was saved once and is locked. It cannot be changed here.": `uw_consent` (read-only, the date picker does not open, and its calendar button and REDCap's Today button are gone), `uw_arm` and `uw_yn` (buttons greyed out, the "reset" link gone), `uw_notes` (read-only, both lines), `uw_pain` (the slider does not move, its number box is read-only). Not locked and no note: `uw_site` (blank), `uw_weight` (its lock starts in 2099), `uw_free` (no tag). The page source names neither "UV Data manager" nor 2099 |
 | B2b | Click Arm B | Nothing changes |
+| B2c | Only if the project has Missing Data Codes: click the "M" button beside `uw_consent` and pick a code | The date comes back, and the note ends " A change was undone." |
 | B3 | `uw_site` = Douala. Save | The record saves. No `type: writeonce` entry |
-| B4 | Reopen. Click into the `uw_site` dropdown, or Tab to it and press the Down arrow | `uw_site` shows Douala with the note "🔒 Ask the data manager to change the site." A mouse click does nothing. A keyboard change snaps back to Douala and the note ends " A change was undone." The dropdown is not greyed out: a greyed-out dropdown would save blank |
+| B4 | Reopen. Click into the `uw_site` autocomplete box and type "Yao", then Tab to the list and press the Down arrow | `uw_site` shows Douala with the note "🔒 Ask the data manager to change the site." The autocomplete box takes no typing and a mouse click does nothing. A keyboard change snaps back to Douala and the note ends " A change was undone." The dropdown is not greyed out: a greyed-out dropdown would save blank |
 | B4b | Save | The record saves with Douala. No `type: writeonce` entry |
 | B5 | `uw_weight` = 71.0. Save | The weight changes and saves; no entry. Reopened, it is still not locked |
 
@@ -118,11 +137,19 @@ give the lock times to the minute, in the project's time zone. The twin uses
 | D3 | Run the scan | Two findings: `uw_consent` and `uw_notes` |
 | D4 | User Rights: take the tester out of the role (back to the role noted in Setup 5, if any). Reopen the form, then run the scan | `uw_arm` is locked at Arm B, and `uw_site` and `uw_yn` are locked again. The scan has four findings: `uw_arm` "Changed after it was locked" (locked at B1, changed at D2), `uw_consent`, `uw_notes` and `uw_site`. The arm and the site count as changes again because the scan reads the roles as they are now (see "How the lock works") |
 
-## Section E: what the browser cannot stop
+## Section E: a whole repeating event (the tester holds no role)
 
-There is nothing to click here. The API behaves as the import of section C: a
-value it writes is found by the next form save's audit and by the scan, and
-is never blocked.
+The API behaves as the import of section C. A value it writes is found by the
+next form save's audit and by the scan, and is never blocked. This section
+imports into an event that repeats as a whole, where REDCap's log starts each
+row past the first instance with "[instance = N]".
+
+| # | Action | Expect |
+|---|---|---|
+| E1 | Open XE-3 at `unscheduled_arm_1`, add instance 1 of the event, `uw_consent` = 2026-10-03. Save. Reopen | The record saves with no `type: writeonce` entry. `uw_consent` is locked at instance 1 |
+| E2 | Data Import Tool, CSV with the columns `record_id,redcap_event_name,redcap_repeat_instrument,redcap_repeat_instance,uw_consent` and the rows `XE-3,unscheduled_arm_1,,1,2026-10-04` and `XE-3,unscheduled_arm_1,,2,2026-10-09`. Import, then run the scan | Five `@UVWRITEONCE` findings. Four are those of D4 at visit 1. The fifth is `uw_consent` at `unscheduled_arm_1` instance 1, "Changed after it was locked", locked at E1's time. Instance 2 has none, because its first save is the import, which locks it |
+| E3 | Open instance 2 | `uw_consent` shows 2026-10-09, locked |
+| E4 | Open instance 1 and save it without changing anything | One `type: writeonce` entry at event 382, instance 1: `uw_consent` reason `changed`, `locked_at` E1's time, `changed_at` E2's time |
 
 ## Section F: configuration errors
 
@@ -141,6 +168,29 @@ On a survey page each of these reads only "this check is not set up
 correctly; the study team can see the details on the data entry form.", so a
 role name never reaches a respondent.
 
+## Section G: a survey of two pages (the tester holds no role)
+
+| # | Action | Expect |
+|---|---|---|
+| G1 | Open XE-4 at `visit_1_arm_1` on the data entry form, then "Survey options", "Open survey" | The first page opens with nothing locked: XE-4 has no saved value on this form |
+| G2 | `uw_consent` = 2026-10-05, `uw_arm` = Arm A, `uw_free` = s. Click Next | The second page (the `uw_bad_*` fields) opens. Next saved the first page. The module log has no `type: writeonce` entry |
+| G3 | Click Previous | `uw_consent` and `uw_arm` are locked, each with the lock note; `uw_free` is open. A survey respondent holds no role, so `uw_arm` would be locked for a member of the role too. The page source names no role, and each `uw_bad_*` error reads the survey's general wording |
+| G4 | Click Next, then Submit | The survey closes. No `type: writeonce` entry |
+
+## Section H: a deletion of the form's data
+
+| # | Action | Expect |
+|---|---|---|
+| H1 | Open XE-4 at `visit_1_arm_1` on the data entry form and delete the data of this form only (REDCap's "Delete data for THIS FORM only"). Confirm. Reopen the form | The form is blank and nothing is locked |
+| H2 | `uw_consent` = 2026-10-06. Save | The record saves. No `type: writeonce` entry. A rule-problem entry for `uw_consent` reads "the project log holds a deletion this check cannot place (part of the record, or one arm of it) — field not checked" |
+| H3 | Run the scan | XE-4's `uw_consent` is listed as not checked, with the same reason, and has no finding |
+
+Two cases are not run live. A deletion of the whole record starts a new
+history, and pid 149's seed records are kept. In a project of several arms
+every deletion makes the field "not checked", because REDCap can delete a
+record from one arm only, and pid 149 has one arm. `tests/writeonce_php.php`
+and `tests/mysql/cases/history.php` cover both.
+
 ---
 
 ## Recording the run
@@ -149,4 +199,5 @@ Copy these tables into `reports/deploy/LIVE_TEST_<version>_writeonce.md` with
 a column for what was seen, and note the REDCap version, the browser, the save
 times and every difference from "Expect". Then, with the project owner's
 agreement, delete the role "UV Data manager" and the instrument
-`uv_writeonce_test`.
+`uv_writeonce_test` (with it, its survey settings and the data XE-3 and XE-4
+hold on it).
