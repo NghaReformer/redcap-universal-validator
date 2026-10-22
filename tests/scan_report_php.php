@@ -978,9 +978,15 @@ namespace {
         check('facts: the coverage sentence is the page\'s own, truncation included',
             $p['coverageSentence'] === ScanPageView::coverageSentence(ScanOutcome::COV_PARTIAL, ScanOutcome::DETAIL_TRUNCATED)
             && strpos($p['coverageSentence'], 'not kept') !== false);
-        check('facts: the keys are the ones wave 11 was promised',
+        check('facts: the keys are the ones wave 11 was promised, and the day dates were judged as of (W10BF-3)',
             array_keys($p) === ['schema', 'columns', 'legend', 'coverage', 'detail', 'coverageSentence', 'mayCertify',
-                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows']);
+                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf']);
+        check('W10BF-3: the report says the day the run froze for its date rules, and nothing for a run with none',
+            $p['asOf'] === null
+            && $facts($complete + ['clean' => 1, 'policy_json' => json_encode(['asOf' =>
+                   ['today' => '2026-10-21', 'now' => '2026-10-21 23:59:30']])])['asOf'] === '2026-10-21'
+            && $facts($complete + ['clean' => 1, 'policy_json' => json_encode(['asOf' =>
+                   ['today' => '2026-10-21', 'now' => '2026-10-22 00:00:30']])])['asOf'] === null);
         check('facts: schema, columns and legend describe the file',
             $p['schema'] === ScanReport::SCHEMA && in_array('record', $p['columns'], true)
             && strpos($p['legend'], 'record=Record') !== false && $p['valuesState'] === 'locations');

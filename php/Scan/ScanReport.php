@@ -147,6 +147,10 @@ final class ScanReport
             'labelsDegraded'   => $this->dims->isDegraded(),
             'degradedSummary'  => $this->dims->degradedSummary(),
             'expectedRows'     => $expectedRows === null ? null : max(0, (int) $expectedRows),
+            // The day the run's date rules were judged as of (W10BF-3), or
+            // null for a run whose rules read no clock (or a row read
+            // without its policy).
+            'asOf'             => ScanPlanner::frozenDay($this->run),
         ];
     }
 }

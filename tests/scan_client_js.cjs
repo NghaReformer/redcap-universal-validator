@@ -558,6 +558,22 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     && els['uv-scan-done'].textContent.indexOf('whether or not it had been checked') !== -1
     && els['uv-scan-done'].textContent.indexOf('Any findings it counted are on deleted records') !== -1);
 
+  // W10BF-3. A finished run says the day its date rules were judged as of,
+  // last; a status without one, or with something that is not a day, says
+  // nothing of it.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('complete-through-fence'),
+    { asOf: '2026-10-21' }) }]);
+  UV.start(); await ticks(6);
+  const judged = els['uv-scan-done'].textContent;
+  check('client: W10BF-3 a finished run ends with the day it was judged as of',
+    judged.indexOf('Every record was checked') === 0
+    && judged.slice(-'Dates were judged as of 2026-10-21.'.length) === 'Dates were judged as of 2026-10-21.');
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('complete-through-fence'),
+    { asOf: '<b>2026</b>' }) }]);
+  UV.start(); await ticks(6);
+  check('client: W10BF-3 and a value that is not a day is not shown',
+    els['uv-scan-done'].textContent === fenced);
+
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.
   reset([{ ok: true, run_id: 7 },

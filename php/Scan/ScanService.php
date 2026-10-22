@@ -335,6 +335,9 @@ final class ScanService
                                && array_key_exists('crossLookups', $ctx['plan']))
                                ? $ctx['plan']['crossLookups'] : null,
             'createdBy' => (string) $this->username(),
+            // The clock every record of the run is judged by (W10BF-3),
+            // frozen into its policy; see durableScanContext().
+            'asOf'      => isset($ctx['clock']) ? $ctx['clock'] : null,
             // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
             // unlocatable, unmapped-instrument and group-unscopable rules are
             // decided before a record is read; the planner records them so
@@ -784,6 +787,9 @@ final class ScanService
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            // The day the run's date rules are judged as of (W10BF-3), or
+            // null for a run whose rules read no clock.
+            'asOf'      => ScanPlanner::frozenDay($run),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
@@ -1450,6 +1456,9 @@ final class ScanService
             'generation'   => (int) $run['generation_id'],
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
+            // The clock the run froze at planning (W10BF-3), so a record
+            // judged after midnight is judged as of the same day.
+            'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
         // could not be read just now.

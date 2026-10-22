@@ -306,6 +306,22 @@ class ScanPageView
         return self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
                                       isset($status['detail']) ? $status['detail'] : null);
     }
+    /**
+     * The day a run's date rules were judged as of (W10BF-3). A durable run
+     * freezes it when it is planned, so a record read after midnight is
+     * judged as of the same day as the rest; a run whose rules read no clock
+     * has none, and says nothing.
+     */
+    const JUDGED_AS_OF = 'Dates were judged as of {date}.';
+
+    /** JUDGED_AS_OF for this status, or null. js/scan.js decides the same way. */
+    public static function asOfText($status)
+    {
+        $d = (is_array($status) && isset($status['asOf']) && is_string($status['asOf'])) ? $status['asOf'] : '';
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $d)) return null;
+        return str_replace('{date}', $d, self::JUDGED_AS_OF);
+    }
+
     const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
                         . 'project.';
     const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
@@ -419,6 +435,7 @@ class ScanPageView
             'withheld'        => Scan\ScanAuthorization::WITHHELD,
             'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
             'stoppedWithheld' => self::STOPPED_WITHHELD,
+            'asOf'            => self::JUDGED_AS_OF,
         ];
     }
 
@@ -620,10 +637,12 @@ class ScanPageView
             'found'  => self::foundText($status),
             'stored' => self::storedText($status),
             'pct'    => $pct,
-            // ONE STRING, coverage then decision - see verdictText().
+            // ONE STRING, coverage then decision - see verdictText() - then
+            // the day dates were judged as of (asOfText()).
             'done'   => empty($status['terminal']) ? null
                 : self::endedSentence($status)
-                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
+                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status))
+                  . (self::asOfText($status) === null ? '' : ' ' . self::asOfText($status)),
             'active' => !empty($status['active']),
         ];
     }

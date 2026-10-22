@@ -3149,7 +3149,13 @@ class UniversalValidator extends AbstractExternalModule
                     $asOf = $st['at'];
                     $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf];
                 } elseif ($st['why'] !== null) {
-                    if ($spec['notFuture']) $clock = $server;
+                    // THE ONE PART JUDGED AGAINST TODAY, and in a durable run
+                    // the today it froze (W10BF-3): a run that read this value
+                    // either side of midnight gave two answers in one report.
+                    // windowDayFree() above keeps the request's clock: its
+                    // answer is the same against any day up to it, and a
+                    // value saved after the run's frozen day is still one.
+                    if ($spec['notFuture']) $clock = $this->judgedClock !== null ? $this->judgedClock : $server;
                     if ($todayRelative) {
                         // Not checked: the parts that need the day it was saved.
                         $vspec['notPast'] = false;
@@ -3446,6 +3452,11 @@ class UniversalValidator extends AbstractExternalModule
     private $valueStampsMemo = [];
     /** @var array zone name ('' = the server's own) => that clock, read once per request */
     private $clockMemo = [];
+    /**
+     * @var ?array the clock a durable run froze at planning (W10BF-3), while
+     * one of its records is judged (durableEvaluateRecord()); null otherwise
+     */
+    private $judgedClock = null;
 
     /**
      * Today and now for the @UVWINDOW "notFuture" check, read once per request
@@ -7847,10 +7858,13 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The instance properties that are not memos: what a test pinned
-     * (existsIndexCap, clockOverride, valueStampsOverride), and the record save
-     * in progress (returnQueue, surveySave), which a cron pass is never inside.
+     * (existsIndexCap, clockOverride, valueStampsOverride), the record save
+     * in progress (returnQueue, surveySave), which a cron pass is never inside,
+     * and the clock of the scan record being judged (judgedClock), which
+     * durableEvaluateRecord() sets and clears around that one record.
      */
-    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave'];
+    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
+                            'judgedClock'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -8711,13 +8725,24 @@ class UniversalValidator extends AbstractExternalModule
         $ownership = isset($plan['ownership']) && is_array($plan['ownership'])
                    ? $plan['ownership'] : [];
 
+        // THE CLOCK THE RUN IS JUDGED BY (W10BF-3). A @UVWINDOW part judged
+        // against today - notFuture on a value whose saved day the log does
+        // not show - changed its answer at midnight inside one run, so one
+        // report held records judged on two days. The run freezes the clock
+        // its planning request read (ScanService stores `clock` below in
+        // policy_json as asOf) and hands it back on every request after, and
+        // every record of the run, catch-up included, is judged by it
+        // (findingsWindow()). Null, or anything that is not a clock, is the
+        // clock of the request, as before: a run begun before the freeze.
+        $asOf = Scan\ScanPlanner::clockOf(isset($opts['asOf']) ? $opts['asOf'] : null);
+
         $module = $this;
         // No generation, no evaluator. A caller that only needs the rule list
         // gets one it cannot accidentally scan with.
         $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
-                                                          $runSeq, $valueExpiry) {
+                                                          $runSeq, $valueExpiry, $asOf) {
             return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
-                                                  $runSeq, $valueExpiry);
+                                                  $runSeq, $valueExpiry, $asOf);
         };
 
         // The read the worker performs. Explicit records, and only the fields
@@ -8778,10 +8803,19 @@ class UniversalValidator extends AbstractExternalModule
         // fingerprint's inputs, and a fact built from a failed read is not the
         // project's. Named, so the refusal can say what; ScanService refuses
         // to start or advance a run on a configuration with any.
+        // `clock`: what this context judges by - the run's frozen clock, or,
+        // with none, this request's - and only where a live rule reads the
+        // clock (ModeRegistry "needs"), so a run with no such rule records
+        // no date it was never judged against.
+        $clock = null;
+        if (ModeRegistry::rulesNeed($plan['live'], 'clock')) {
+            $clock = $asOf !== null ? $asOf : Scan\ScanPlanner::clockOf($this->serverClock($pid));
+        }
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
                 'verifyFingerprint' => true, 'structure' => $facts['structure'],
                 'choices' => $facts['choices'], 'unread' => $this->configUnreadOf($pid),
+                'clock' => $clock,
                 'problems' => self::problemList($plan['unconf'])];
     }
 
@@ -8995,17 +9029,25 @@ class UniversalValidator extends AbstractExternalModule
      * rule identities come from the planner - so this method chooses nothing and
      * exists to translate.
      *
+     * $asOf is the clock the run froze (W10BF-3), set for the length of this
+     * record's judgement only; null judges by the request's clock.
+     *
      * @return array{findings:array, candidates:array, bytes:int, contexts:int,
      *               problems:array, why:?string}
      */
     public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
-                                          array $ids, $runSeq = 0, $valueExpiry = null)
+                                          array $ids, $runSeq = 0, $valueExpiry = null, $asOf = null)
     {
         $found = [];
         $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
         $seen = [];
         $unconf = [];
-        $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
+        $this->judgedClock = Scan\ScanPlanner::clockOf($asOf);
+        try {
+            $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
+        } finally {
+            $this->judgedClock = null;
+        }
         if ($r['why'] !== null) {
             return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
                     'problems' => [], 'collapsed' => 0, 'why' => $r['why']];

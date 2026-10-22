@@ -171,6 +171,17 @@
     }
 
     /**
+     * "Dates were judged as of 2026-10-22.", or null (W10BF-3): the day a
+     * durable run froze for its date rules. ScanPageView::asOfText() decides
+     * the same way.
+     */
+    function asOfText(st) {
+        if (typeof st.asOf !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(st.asOf)) return null;
+        var L = labels();
+        return fill(L.asOf || 'Dates were judged as of {date}.', { date: st.asOf });
+    }
+
+    /**
      * "Nothing found yet", "3 findings so far", or that they were not counted.
      *
      * A findings value that is not a number is NOT zero. A run that ended
@@ -402,6 +413,8 @@
             var sentence = endedSentence(st);
             var verdict = verdictText(st);
             if (verdict) sentence += ' ' + verdict;
+            var asOf = asOfText(st);
+            if (asOf) sentence += ' ' + asOf;
             // Revealed BEFORE it is written. A live region that is display:none
             // when its text changes announces nothing in most assistive
             // technology, so the old order made the completion sentence the one

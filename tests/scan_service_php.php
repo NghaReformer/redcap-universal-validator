@@ -674,6 +674,10 @@ namespace {
         public $unread = [];
         /** @var ?string the sentence durableScanContext() refuses with, or null for a context (W10BF-4) */
         public $refuse = null;
+        /** @var ?array the clock the context says it judges by when it is given none (W10BF-3) */
+        public $clock = null;
+        /** @var array the asOf each context was asked with, 'absent' for none (W10BF-3) */
+        public $askedAsOf = [];
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -715,6 +719,7 @@ namespace {
             $key = $this->sys['log-hmac-key'];
             $self = $this;
             $this->contextsBuilt++;
+            $this->askedAsOf[] = array_key_exists('asOf', $opts) ? $opts['asOf'] : 'absent';
             // As buildScanPlan(): a lookup whose project refuses the reader is
             // in crossRefused, and its rule stays in the rule list.
             $refused = $this->planRefused;
@@ -740,6 +745,8 @@ namespace {
                 'rules' => $this->rules,
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
+                // As the module: the run's clock when it is given one, else this request's.
+                'clock' => (isset($opts['asOf']) && is_array($opts['asOf'])) ? $opts['asOf'] : $this->clock,
                 'verifyFingerprint' => $this->verifyFingerprint,
                 'plan' => $plan,
                 'read' => function (array $ids) use ($self) {
@@ -2308,6 +2315,42 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('W10BF-2: and loosening it mid-run is no tightening: the run finishes complete',
         $ns->run(165, $nrun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- the run's clock is frozen at planning (W10BF-3) -------------------------
+    //
+    // A @UVWINDOW part judged against today changed its answer at midnight
+    // inside one run. The clock the planning context judged by is stored in
+    // the run's policy, every later context is asked with it, and the status
+    // says the day.
+    $cs3 = new ArrayScanStore();
+    $cm3 = new \E2eModule($cs3);
+    $day1 = ['today' => '2026-10-21', 'now' => '2026-10-21 23:59:40'];
+    $cm3->clock = $day1;
+    $c3 = (new ScanService($cm3, $cs3))->start(169);
+    $c3run = (int) $c3['run_id'];
+    $c3pol = json_decode((string) $cs3->run(169, $c3run)['policy_json'], true);
+    check('W10BF-3: a run whose rules read the clock freezes the planning clock into its policy',
+        is_array($c3pol) && isset($c3pol['asOf']) && $c3pol['asOf'] === $day1);
+    $cm3->clock = ['today' => '2026-10-22', 'now' => '2026-10-22 00:00:20'];   // past midnight
+    $cm3->askedAsOf = [];
+    $c3w = (new ScanService($cm3, $cs3))->work(169, $c3run);
+    check('W10BF-3: a work request after midnight asks its context for the frozen clock, not its own',
+        $cm3->askedAsOf && !array_filter($cm3->askedAsOf, function ($a) use ($day1) { return $a !== $day1; }));
+    $c3st = (new ScanService($cm3, $cs3))->status(169, $c3run);
+    check('W10BF-3: and the status says the day the run is judged as of',
+        !empty($c3st['ok']) && $c3st['asOf'] === '2026-10-21'
+        && isset($c3w['status']['asOf']) && $c3w['status']['asOf'] === '2026-10-21');
+    $cs4 = new ArrayScanStore();
+    $cm4 = new \E2eModule($cs4);
+    $c4 = (new ScanService($cm4, $cs4))->start(170);
+    $c4run = (int) $c4['run_id'];
+    $c4pol = json_decode((string) $cs4->run(170, $c4run)['policy_json'], true);
+    $cm4->askedAsOf = [];
+    (new ScanService($cm4, $cs4))->work(170, $c4run);
+    check('W10BF-3: a run whose rules read no clock stores none, is asked with none, and says no day',
+        is_array($c4pol) && !array_key_exists('asOf', $c4pol)
+        && $cm4->askedAsOf && !array_filter($cm4->askedAsOf, function ($a) { return $a !== null; })
+        && (new ScanService($cm4, $cs4))->status(170, $c4run)['asOf'] === null);
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();
