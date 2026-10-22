@@ -1053,6 +1053,37 @@ namespace {
                     'detail' => ScanOutcome::DETAIL_COMPLETE, 'clean' => null])['suffix'] === '_INCOMPLETE_CANCELLED'
             && $facts($complete + ['clean' => 0])['suffix'] === '_NOT-CERTIFIED');
 
+        // rv11a2-3: THE TERMINAL ROW DOES NOT CONTRADICT ITSELF. It opened
+        // "This scan did not cover the whole project" for every incomplete
+        // run, ahead of "Every record was checked" for the run that examined
+        // every record and passed the detail limit. Every derive() state.
+        $rows = [];
+        $contradicts = [];
+        foreach ($derived as $name => $f) {
+            $o = ScanOutcome::derive($f);
+            $m = ScanReport::incompleteMarks(['terminal' => $o['terminal'], 'coverage' => $o['coverage'],
+                                              'detail' => $o['detail'], 'clean' => ScanOutcome::cleanColumn($o)]);
+            $rows[$name] = $m['row'];
+            if ($m['row'] !== null && strpos($m['row'], 'did not cover') !== false
+                    && stripos($m['row'], 'every record') !== false) {
+                $contradicts[] = $name;
+            }
+        }
+        check('rv11a2-3: no terminal row says the scan did not cover the project and that every record was checked',
+            $contradicts === []);
+        check('rv11a2-3: a run that examined every record and passed the detail limit says the file lacks findings',
+            $rows['fenced, cut'] === ScanReport::ROW_CUT . ' '
+                . ScanPageView::coverageSentence(ScanOutcome::FENCED, ScanOutcome::DETAIL_TRUNCATED));
+        check('rv11a2-3: a manifest-only run says it does not certify, ahead of what it checked',
+            $rows['manifest only'] === ScanReport::ROW_UNCERTIFIED . ' '
+                . ScanPageView::coverageSentence(ScanOutcome::MANIFEST)
+            && strpos($rows['manifest only, cut'], ScanReport::ROW_UNCERTIFIED) === 0);
+        check('rv11a2-3 (control): a stopped, failed or blocked run still says it did not cover the project',
+            strpos($rows['cancelled'], ScanReport::ROW_UNCOVERED) === 0
+            && strpos($rows['failed'], ScanReport::ROW_UNCOVERED) === 0
+            && strpos($rows['blocked'], ScanReport::ROW_UNCOVERED) === 0
+            && $rows['clean'] === null && $rows['found 3'] === null);
+
         $bad = dims(); $bad->degraded = ['events' => 'the event map could not be read'];
         $deg = $facts($complete + ['clean' => 1], $bad);
         check('facts: degraded labels are said, with the source named',

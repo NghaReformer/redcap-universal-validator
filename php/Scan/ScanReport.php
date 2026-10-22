@@ -206,11 +206,41 @@ final class ScanReport
             'certified'  => $certified,
             'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
             'row'        => $incomplete
-                ? 'This scan did not cover the whole project. Rows above are real findings over the records '
-                  . 'that WERE examined; absence of a row is not evidence a record is clean. '
+                ? self::rowOpening($o['coverage'], $o['detail']) . ' '
                   . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
                 : null,
             'suffix'     => $suffix,
         ];
+    }
+
+    /** The terminal row's opening for a run that did not reach every record. */
+    const ROW_UNCOVERED = 'This scan did not cover the whole project. Rows above are real findings over the '
+        . 'records that WERE examined; absence of a row is not evidence a record is clean.';
+
+    /** ...for a run that examined every record and did not keep every finding. */
+    const ROW_CUT = 'This file does not hold every finding this scan made. Rows above are real findings; '
+        . 'absence of a row is not evidence a record is clean.';
+
+    /** ...for a run that examined every record on its list and still cannot certify. */
+    const ROW_UNCERTIFIED = 'This scan does not certify the project. Rows above are real findings over the '
+        . 'records it examined; absence of a row is not evidence a record is clean.';
+
+    /**
+     * The terminal row's opening, CHOSEN BY COVERAGE (review rv11a2-3). It was
+     * ROW_UNCOVERED for every incomplete run, so a run that examined every
+     * record and passed the detail limit - `partial`, complete through its
+     * fence, truncated - read "This scan did not cover the whole project"
+     * and, two sentences on, "Every record was checked"; a manifest-only run
+     * read the same ahead of "Every record on the opening list was checked".
+     * The coverage sentence that follows says what was checked; the opening
+     * says why the file does not certify, without contradicting it.
+     */
+    private static function rowOpening($coverage, $detail)
+    {
+        if ($coverage === ScanOutcome::FENCED) {
+            return $detail === ScanOutcome::DETAIL_TRUNCATED ? self::ROW_CUT : self::ROW_UNCERTIFIED;
+        }
+        if ($coverage === ScanOutcome::MANIFEST) return self::ROW_UNCERTIFIED;
+        return self::ROW_UNCOVERED;
     }
 }
