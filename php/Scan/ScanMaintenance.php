@@ -284,7 +284,7 @@ final class ScanMaintenance
 
         $this->state['after'] = $this->lap($this->cursor(), $lapUntil, $out, function (array $row) use ($lapUntil, &$out) {
             $pid = $row['pid'];
-            // mutated
+            if (isset($this->state['revoke'][$pid])) return true;   // its purge waits (R8-3)
             $kept = self::keptModes($row['modes']);
             // runDays is at least 1, so a run finished within the last day is
             // never due, whatever the project chose: no policy read for it.
@@ -615,7 +615,7 @@ final class ScanMaintenance
         $rows = $this->db->select('SELECT project_id,'
             . ' MAX(CASE WHEN active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
             . '   AND (lease_expires_at IS NULL OR lease_expires_at < ?) THEN 1 ELSE 0 END),'
-            . ' MAX(CASE WHEN terminal = ? AND supersede_cursor < generation_id'
+            . ' MAX(CASE WHEN terminal = ? AND scope_dag IS NULL AND supersede_cursor < generation_id'
             . '   THEN 1 ELSE 0 END),'
             . ' MIN(CASE WHEN active_slot IS NULL THEN updated_at END),'
             . ' GROUP_CONCAT(DISTINCT values_state)'

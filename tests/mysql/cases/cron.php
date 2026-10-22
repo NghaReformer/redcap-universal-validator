@@ -298,6 +298,13 @@ $runRow = function ($runId) use ($dbA) {
     check('reap pass: a second pass has nothing to do and sends no supersede',
         $again['out']['superseded'] === 0 && $again['out']['runs_expired'] === 0
         && $rec->matching('select', array('supersede_cursor', 'FOR UPDATE')) === array());
+    // THE CENSUS DOES NOT NAME A GROUP'S SCAN (review rv10a1-4). 973's scoped
+    // run completed with its cursor below its generation, and always will:
+    // it supersedes nothing. Named by the census, it would cost a project
+    // visit and a list read on every pass, for ever.
+    check('reap pass: and a completed scan of one group is no project\'s work in the census',
+        $again['out']['projects'] === 0 && count($rec->log) === 2
+        && $rec->matching('select', array('scope_dag IS NULL', 'ORDER BY generation_id')) === array());
     check('reap pass: nothing failed', $r['out']['failed'] === 0 && $again['out']['failed'] === 0);
 }
 
@@ -395,21 +402,43 @@ $runRow = function ($runId) use ($dbA) {
     $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $old . "', values_state = 'expired'"
         . ' WHERE run_id = ' . (int) $w1['run']);
     $PRJ[986] = array('scan-run-retention-days' => '10');
+    // 987: the intent of a revocation was stored and its bump fails this pass,
+    // so the lap reaches 987 with its run still keeping raw values under a
+    // policy that now keeps none (review rv10a1-4). Judged again, it would
+    // store a second intent over the first, log a second revocation and fail
+    // a second time; the lap sends nothing for it.
+    $x1 = $plant(987, 1, '2999-01-01 00:00:00', true, $raw);
+    $PRJ[987] = array('scan-value-storage' => 'locations');
     $hook = new UvHookDb($dbA);
     $hook->before = function ($kind, $sql, array $params) {
         if (strpos($sql, 'SELECT DISTINCT generation_id') !== false && (int) $params[0] === 986) {
             throw new \RuntimeException('the revocation read failed');
         }
+        if (strpos($sql, 'SET policy_revision = ?') !== false && in_array(987, $params, true)) {
+            throw new \RuntimeException('the revocation bump failed');
+        }
     };
+    $rec = new UvRecordingDb($hook);
     $logs = array();
-    $mtw = new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($hook, array('policy' => $policyOf,
+    $mtw = new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf,
         'log' => function ($e, array $c) use (&$logs) { $logs[] = array($e, $c); }));
-    $wait = $mtw->retain(array('revoke' => array(986 => array('revision' => 2, 'bumped' => true, 'cursor' => null))), 60.0);
+    $intent987 = array('revision' => 2, 'bumped' => false, 'cursor' => null);
+    $wait = $mtw->retain(array('revoke' => array(986 => array('revision' => 2, 'bumped' => true, 'cursor' => null),
+        987 => $intent987)), 60.0);
     $said = array();
-    foreach ($logs as $l) if ($l[0] === 'scan-cron-step-failed') $said[] = $l[1]['step'] . ':' . $l[1]['project_id'];
+    $revoked = 0;
+    foreach ($logs as $l) {
+        if ($l[0] === 'scan-cron-step-failed') $said[] = $l[1]['step'] . ':' . $l[1]['project_id'];
+        if ($l[0] === 'scan-cron-revoke') $revoked++;
+    }
     check('purge: a project whose revocation is unfinished is not purged, though its run is past retention',
         $runRow($w1['run']) !== null && $wait['out']['runs_purged'] === 0 && isset($wait['state']['revoke'][986])
-        && $said === array('revoke:986'));
+        && $said === array('revoke:986', 'revoke:987'));
+    $judged = array_filter($rec->matching('select', array('SELECT values_state, policy_json')), function ($s) {
+        return in_array(987, $s[2], true); });
+    check('revoke: the lap sends nothing for a project whose revocation is in hand, and keeps its intent',
+        $judged === array() && $revoked === 0 && $wait['state']['revoke'][987] === $intent987
+        && $runRow($x1['run'])[4] === 'raw');
     $done = $maint()->retain($wait['state'], 60.0);
     check('purge: and is purged by the pass that finishes the revocation',
         !isset($done['state']['revoke'][986]) && $runRow($w1['run']) === null && $done['out']['failed'] === 0);
