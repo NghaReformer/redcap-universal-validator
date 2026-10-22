@@ -226,8 +226,12 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (strpos($sql, 'CREATE TABLE IF NOT EXISTS ' . $runTable . ' ') === 0) $runDdl .= $sql;
         }
         $created = $runDdl !== '';
-        foreach ($v2sql as $sql) {
-            if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+        // the ALTERs of every later version (version 6 adds detail_justified)
+        for ($v = 2; $v <= Schema::VERSION; $v++) {
+            foreach (Schema::statements($v) as $item) {
+                $sql = is_array($item) ? $item['sql'] : $item;
+                if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+            }
         }
         $undeclared = [];
         foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $c) {
@@ -579,7 +583,8 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         $have = new \FakeModule();
         $have->version = '3';
-        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified'];
+        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified',
+            'uv_scan_run.detail_justified'];
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
@@ -618,14 +623,14 @@ namespace INSPIRE\UniversalValidator\Scan {
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '4';
-        $have->columns = ['uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified'];
+        $have->columns = ['uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified', 'uv_scan_run.detail_justified'];
         $rh = Schema::migrate($have);
         check('v5: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '4';
-        $half->columns = ['uv_finding.z_score', 'uv_finding.justified'];
+        $half->columns = ['uv_finding.z_score', 'uv_finding.justified', 'uv_scan_run.detail_justified'];
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: with z_score there, only growth_reference is added (got ' . json_encode($alters) . ')',
@@ -650,11 +655,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
-     * V6  uv_finding.justified
+     * V6  uv_finding.justified and uv_scan_run.detail_justified
      *
-     * Whether a reason (@UVJUSTIFY) stands for the finding. 0 for every
-     * existing row, which is what every finding stored before the tag
-     * existed was, so no data step.
+     * Whether a reason (@UVJUSTIFY) stands for the finding, and how many of
+     * a run's stored rows carry it. 0 for every existing row, which is what
+     * every finding stored before the tag existed was, so no data step.
      * ===================================================================== */
     {
         $m = new \FakeModule();
@@ -663,18 +668,27 @@ namespace INSPIRE\UniversalValidator\Scan {
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v6: an installation at version 5 moves to version 6',
             $r['ok'] === true && $r['from'] === 5 && $r['to'] === 6 && Schema::VERSION === 6);
-        check('v6: by one ALTER that adds uv_finding.justified, 0 for every existing row (got ' . json_encode($alters) . ')',
-            $alters === ['ALTER TABLE uv_finding ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0']);
+        check('v6: by two ALTERs that add uv_finding.justified and uv_scan_run.detail_justified, 0 for every existing row (got ' . json_encode($alters) . ')',
+            $alters === ['ALTER TABLE uv_finding ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',
+                         'ALTER TABLE uv_scan_run ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0']);
         check('v6: with no data step', !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
         check('v6: and records version 6',
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '5';
-        $have->columns = ['uv_finding.justified'];
+        $have->columns = ['uv_finding.justified', 'uv_scan_run.detail_justified'];
         $rh = Schema::migrate($have);
         check('v6: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $half = new \FakeModule();
+        $half->version = '5';
+        $half->columns = ['uv_finding.justified'];
+        $rh = Schema::migrate($half);
+        $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v6: with the finding column there, only the run column is added (got ' . json_encode($alters) . ')',
+            $rh['ok'] === true && $rh['applied'] === 1
+            && $alters === ['ALTER TABLE uv_scan_run ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0']);
         $inert = new \FakeModule();
         $inert->version = '5';
         $inert->inertAlter = 'ADD COLUMN justified';
@@ -683,8 +697,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             && strpos((string) $ri['why'], 'version 6 did not verify') !== false
             && strpos((string) $ri['why'], 'has no justified column') !== false
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
-        check('v6: a fresh install ends with the column',
-            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0') !== false);
+        $inert = new \FakeModule();
+        $inert->version = '5';
+        $inert->inertAlter = 'ADD COLUMN detail_justified';
+        $ri = Schema::migrate($inert);
+        check('v6: ... the second ALTER too, and the refusal names the run table and its column', $ri['ok'] === false
+            && strpos((string) $ri['why'], 'the run table has no detail_justified column') !== false
+            && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('v6: a fresh install ends with both columns',
+            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0') !== false
+            && strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0') !== false);
     }
 
     /* =====================================================================

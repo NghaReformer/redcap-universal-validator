@@ -23,7 +23,16 @@
  *   - a configuration error is shown under the field and releases nothing;
  *   - the note asks only while the save guard would hold (QRID_itemHolds):
  *     none under a field made read-only after bind or hidden by branching,
- *     and a reason row that doBranching() hides brings the note back at once.
+ *     and a reason row that doBranching() hides brings the note back at once;
+ *   - a reason field embedded in a field's label ({wt_why}) is judged by the
+ *     row it sits in: typed there it releases the save, and that row hidden
+ *     by branching gives no reason;
+ *   - a checkbox field (@UVCHOICES), which has no input of its own name, is
+ *     paired by its options: a hidden code ticked holds the save and asks
+ *     for the reason in a note that stays shown beside the options, even
+ *     with the first option hidden, and a reason releases it;
+ *   - a reason label holding "$&" or "$$" shows as written, and the note
+ *     under an autocomplete dropdown sits after its text box.
  *
  * Run:  node tests/justify_dom_js.cjs
  */
@@ -51,13 +60,15 @@ function makeEl(tag) {
     addEventListener(type, fn) { (this._handlers[type] = this._handlers[type] || []).push(fn); },
     dispatchEvent(ev) { this.fire(ev.type, ev); return true; },
     fire(type, ev) { (this._handlers[type] || []).forEach((fn) => fn.call(this, ev || {})); },
-    appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+    appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); return c; },
     insertBefore(node, ref) {
+      if (node.parentNode) node.parentNode.removeChild(node);
       node.parentNode = this;
       const i = ref ? this.children.indexOf(ref) : -1;
       if (i >= 0) this.children.splice(i, 0, node); else this.children.push(node);
       return node;
     },
+    removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); c.parentNode = null; return c; },
     getElementsByTagName(t) {
       const out = [];
       const walk = (e) => { for (const c of e.children) { if (c.tagName === t.toUpperCase()) out.push(c); walk(c); } };
@@ -122,13 +133,19 @@ function boot(els, config, opts) {
   const body = makeEl('body');
   const holders = {};
   const rows = {};
+  /* a holder sits in the body, or in the row named by el._inRow (a checkbox
+     option's own row inside its field's row) */
+  const rowOf = (id) => {
+    if (!rows[id]) { const r = makeEl(/-tr$/.test(id) ? 'tr' : 'div'); r.id = id; rows[id] = r; body.appendChild(r); allEls.push(r); }
+    return rows[id];
+  };
   for (const el of els) {
     let holder = el._row ? rows[el._row] : null;
     if (!holder) {
       /* a field's row ("<field>-tr") is a table row, as REDCap draws it */
       holder = makeEl(el._row && /-tr$/.test(el._row) ? 'tr' : 'div');
       if (el._row) { holder.id = el._row; rows[el._row] = holder; }
-      body.appendChild(holder);
+      (el._inRow ? rowOf(el._inRow) : body).appendChild(holder);
       allEls.push(holder);
     }
     holder.appendChild(el);
@@ -447,6 +464,96 @@ for (const order of ['reason first', 'reason last']) {
   env.win.doBranching(); flush();
   check('the reason row shown again: the note goes', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
   check('... and the save goes through', save(env) === 'saved');
+}
+
+// ---- 14) a reason field embedded in a field's label ({wt_why}) -----------------------------
+/* REDCap moves an embedded field's input into the row of the field whose
+   label names it and keeps the embedded field's own row hidden. A plain
+   hidden reason row gives no reason (8, 13); an embedded one is judged by
+   the row it sits in. */
+{
+  const wt = text('wt', '30'); wt._row = 'wt-tr';
+  const why = text('wt_why', ''); why._row = 'wt-tr';
+  const own = makeEl('span'); own._row = 'wt_why-tr';
+  const env = boot([wt, why, own], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  env.doc.getElementById('wt_why-tr').style.display = 'none';
+  env.win.doBranching(); flush();
+  check('embedded in the field\'s own label, no reason yet: held, naming the reason field', save(env) === 'held' && /\(or give a reason in “wt_why”\)/.test(said(env)), said(env));
+  type(env, why, 'scale recalibrated');
+  check('... a reason typed in the box inside the label releases the save', save(env) === 'saved', said(env));
+  check('... and the note goes', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+}
+{
+  const wt = text('wt', '30');
+  const host = text('host', ''); host._row = 'host-tr';
+  const why = text('wt_why', 'scale recalibrated'); why._row = 'host-tr';
+  const own = makeEl('span'); own._row = 'wt_why-tr';
+  const env = boot([wt, host, why, own], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  env.doc.getElementById('wt_why-tr').style.display = 'none';
+  env.win.doBranching(); flush();
+  check('embedded in another field\'s label, that row shown: the reason releases the save', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+  env.doc.getElementById('host-tr').style.display = 'none';
+  env.win.doBranching(); flush();
+  check('... that row hidden by branching: no reason, held', save(env) === 'held' && /\(or give a reason in “wt_why”\)/.test(said(env)), said(env));
+  check('... and the note asks again at once', shown(env, 'wt', 'j') === NOTE('wt_why'), shown(env, 'wt', 'j'));
+}
+
+// ---- 15) a checkbox field, paired by its options ------------------------------------------
+/* REDCap draws each option of a checkbox field as a hidden input named
+   __chk__<field>_RC_<code>, holding the code while ticked, and the box the
+   person clicks, named __chkn__<field>, in a row of its own inside the
+   field's row. No input carries the field's own name. */
+function checkboxOption(field, code) {
+  const row = 'opt-' + field + '-' + code;
+  const hidden = makeEl('input'); hidden.name = '__chk__' + field + '_RC_' + code; hidden.type = 'hidden'; hidden._row = row; hidden._inRow = field + '-tr';
+  const box = makeEl('input'); box.name = '__chkn__' + field; box.id = 'id-__chk__' + field + '_RC_' + code; box.type = 'checkbox'; box._row = row;
+  return { hidden, box, els: [hidden, box], tick(on) { box.checked = on; hidden.value = on ? code : ''; box.fire('click'); box.fire('change'); flush(); } };
+}
+{
+  const opts = ['1', '2', '9'].map((c) => checkboxOption('reach', c));
+  const why = text('reach_why', '');
+  const els = [].concat(...opts.map((o) => o.els), [why]);
+  const env = boot(els, { rules: [
+    { type: 'choices', fields: ['reach'], choicesHide: ['1', '9'], choicesAll: ['1', '2', '9'], blockSave: 'hard', message: 'Legacy channel' },
+    J(['reach'], 'reach_why')] });
+  const note = () => env.doc.getElementById('uvalidate-msg-reach-j');
+  const noteText = () => (note() && note().style.display !== 'none' ? note().innerHTML : '');
+  check('checkbox: the first option, hidden and unticked, is hidden', opts[0].hidden.parentNode.style.display === 'none');
+  check('... nothing ticked that is hidden: the save goes through, no note', save(env) === 'saved' && noteText() === '', noteText());
+  opts[2].tick(true);
+  check('a hidden code ticked holds the save, offering the reason', save(env) === 'held' && /• reach \(or give a reason in “reach_why”\)/.test(said(env)), said(env));
+  check('... and a note asks for the reason', noteText() === NOTE('reach_why'), noteText());
+  check('... beside the options, not inside the hidden first option', note() && note().parentNode === env.doc.getElementById('reach-tr'));
+  type(env, why, 'legacy channel used before the change');
+  check('a reason given releases the save', save(env) === 'saved', said(env));
+  check('... and the note goes', noteText() === '', noteText());
+  type(env, why, '');
+  opts[2].tick(false);
+  check('the hidden code unticked: nothing holds and nothing asks', save(env) === 'saved' && noteText() === '', noteText());
+}
+
+// ---- 16) a reason label holding "$&" or "$$"; an autocomplete dropdown ---------------------
+{
+  const wt = text('wt', '30'), why = text('wt_why', '');
+  why.setAttribute('aria-label', 'Cost in $$ or $& (USD)');
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  check('a reason label holding "$$" and "$&" shows as written in the note', shown(env, 'wt', 'j') === NOTE('Cost in $$ or $&amp; (USD)'), shown(env, 'wt', 'j'));
+  check('... and in the save message', save(env) === 'held' && said(env).indexOf('(or give a reason in “Cost in $$ or $& (USD)”)') >= 0, said(env));
+}
+{
+  // REDCap's autocomplete puts a text box, in a wrapper, right after the hidden select
+  const dose = select('dose', ['', '1', '2'], '1');
+  const wrap = makeEl('span'); wrap._row = 'dose-tr';
+  dose._row = 'dose-tr';
+  const why = text('dose_why', '');
+  const env = boot([dose, wrap, why], { rules: [{ type: 'constraint', fields: ['dose'], assert: "[dose]<>'1'", blockSave: 'hard' }, J(['dose'], 'dose_why')] });
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_dose'; wrap.appendChild(ac); env.allEls.push(ac);
+  type(env, why, '');
+  const row = env.doc.getElementById('dose-tr');
+  const j = env.doc.getElementById('uvalidate-msg-dose-j');
+  check('an autocomplete dropdown: the note sits after the text box\'s wrapper, not between it and the select',
+    j && j.parentNode === row && row.children.indexOf(j) > row.children.indexOf(wrap) && row.children.indexOf(dose) + 1 !== row.children.indexOf(j)
+    && shown(env, 'dose', 'j') === NOTE('dose_why'), row.children.map((c) => c.id || c.tagName));
 }
 
 console.log('justify_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

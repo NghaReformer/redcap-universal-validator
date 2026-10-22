@@ -41,11 +41,13 @@ VERDICT = 'tests/justify_php.php'
 TWIN = 'tests/justify_js.cjs'
 DOM = 'tests/justify_dom_js.cjs'
 MODULE = 'tests/justify_module_php.php'
+LIVE_JS = 'tests/justify_live_twin_js.cjs'
 REGISTRY = 'tests/registry_php.php'
 MISSING = 'tests/missing_codes_php.php'
 MLM = 'tests/mlm_messages_dom_js.cjs'
 SCHEMA_T = 'tests/scan_schema_php.php'
 STORE_T = 'tests/scan_store_php.php'
+SERVICE_T = 'tests/scan_service_php.php'
 WORKER_T = 'tests/scan_worker_php.php'
 REPORT_T = 'tests/scan_report_php.php'
 PAGE_T = 'tests/scan_page_php.php'
@@ -156,6 +158,21 @@ MUTATIONS = [
     ('a reason field of another type accepted', UV,
      '        if (!in_array($type, self::JUSTIFY_REASON_TYPES, true)) {',
      '        if (false) {', MODULE),
+    ('the record ID field accepted as a reason field', UV,
+     '        if ($reason === $this->recordIdFieldOf($pid)) {',
+     '        if (false) {', MODULE),
+    ('a reason field REDCap fills in accepted', UV,
+     "        if (preg_match('/@(' . $filled . ')(?![\\w-])/i', $ann, $m)) {",
+     '        if (false) {', MODULE),
+    ('a tag that fills a field in left off the list', UV,
+     "        'NOW-SERVER', 'NOW-UTC', 'NOW', ",
+     "        'NOW-UTC', 'NOW', ", MODULE),
+    ('a read-only reason field accepted', UV,
+     "        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\\w-])/i', $ann, $m)) {",
+     '        if (false) {', MODULE),
+    ('a reason field that carries @UVJUSTIFY itself accepted', UV,
+     "        if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\\w-])/i', $ann)) {",
+     '        if (false) {', MODULE),
     ('a reason field makes a locked field hold the save', UV,
      "            $reads = array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList']));",
      "            $reads = array_map('strval', ModeRegistry::refFields($r));", MODULE),
@@ -230,8 +247,36 @@ MUTATIONS = [
      "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',",
      "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 1',", SCHEMA_T),
     ('schema 6 recorded without the column', SCHEMA,
-     "            if ($v === 6 && !self::alreadyApplied(",
-     '            if (false && !self::alreadyApplied(', SCHEMA_T),
+     "            if ($v === 6) {\n                foreach ([['finding', 'the finding table', 'justified'],",
+     "            if (false) {\n                foreach ([['finding', 'the finding table', 'justified'],", SCHEMA_T),
+    ('schema 6 adds no run counter of the rows saved with a reason', SCHEMA,
+     ",\n                ['sql' => 'ALTER TABLE ' . $r . ' ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0',\n"
+     "                 'skipIf' => ['column', $r, 'detail_justified']]];",
+     '];', SCHEMA_T),
+    ('a run read back without its counter of the rows saved with a reason', 'php/Scan/ScanStore.php',
+     "        // so a run still working counts them apart from its open findings.\n        'detail_justified',\n",
+     '', MYSQL),
+    ('the array store does not count the rows saved with a reason', ARRAYSTORE,
+     "        $this->runs[$runId]['detail_justified'] += count(array_filter($keep, function ($f) { return !empty($f['justified']); }));\n",
+     '', STORE_T),
+    ('the SQL store does not count the rows saved with a reason', SQLSTORE,
+     "                     $justified, self::now()];",
+     "                     0, self::now()];", MYSQL),
+    ('a working run counts its rows saved with a reason as findings', PROMOTION,
+     "        $rows = max(0, $rows - (isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0));\n",
+     '', SERVICE_T),
+    ('a working run says nothing of its rows saved with a reason', PROMOTION,
+     "        if ($terminal === null) return $rows;\n        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];",
+     "        if ($terminal === null) return 0;\n        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];", SERVICE_T),
+    ('a run that ended without a verdict drops the rows its counter holds', PROMOTION,
+     '        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $summary);',
+     '        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return $summary;', SERVICE_T),
+    ('the largest axis taken without the standing one', PROMOTION,
+     '        foreach (RollupBuilder::KINDS as $kind) $active = max($active, $of($kind));',
+     '        foreach (array_diff(RollupBuilder::KINDS, [RollupBuilder::K_STANDING]) as $kind) $active = max($active, $of($kind));', WORKER_T),
+    ('the audit reads no reason field it was not already reading', 'php/TemporalRules.php',
+     '        $out=array_merge($out,ModeRegistry::justifyFields($rule));\n',
+     '', MODULE),
 
     # ---- the page ----
     ('a given reason releases nothing', ENGINE,
@@ -250,8 +295,32 @@ MUTATIONS = [
      '      return QRID_justifiable(el)\n',
      '      return false\n', DOM),
     ('a hidden reason row gives a reason', ENGINE,
-     '    if(row && row.style && row.style.display === "none") return false;\n',
+     '    if(anc && QRID_fieldHidden(anc.el)) return false;\n',
      '', DOM),
+    ("an embedded reason judged by its own row, which REDCap hides", ENGINE,
+     '    var anc = QRID_fieldAnchor(reason);\n    if(anc && QRID_fieldHidden(anc.el)) return false;',
+     '    var row = document.getElementById(reason + "-tr");\n    if(row && row.style && row.style.display === "none") return false;', DOM),
+    ("an embedded reason judged by its own row, on the live sheet's page (C8)", ENGINE,
+     '    var anc = QRID_fieldAnchor(reason);\n    if(anc && QRID_fieldHidden(anc.el)) return false;',
+     '    var row = document.getElementById(reason + "-tr");\n    if(row && row.style && row.style.display === "none") return false;', LIVE_JS),
+    ('a checkbox field found by none of its options', ENGINE,
+     '  if(el) return { el: el, checkbox: false };\n  if(!document.getElementsByName) return null;',
+     '  if(el) return { el: el, checkbox: false };\n  return null;', DOM),
+    ("a checkbox judged by the row of the option it is anchored on", ENGINE,
+     '  if(el && anchor.__qridAnchorOf && !((el.tagName || "").toLowerCase() === "tr" && /-tr$/.test(el.id || ""))) el = el.parentNode;\n',
+     '', DOM),
+    ("a checkbox's change of verdict not passed to its note", ENGINE,
+     '  var jf = input.__qridFieldName || input.__qridAnchorOf || input.name;',
+     '  var jf = input.__qridFieldName || input.name;', DOM),
+    ("a checkbox's note left in the row of its first option", ENGINE,
+     '    optionRow.removeChild(msg);\n    optionBox.appendChild(msg);\n',
+     '', DOM),
+    ('the note not moved after an autocomplete dropdown', ENGINE,
+     '      QRID_followWidget(anchor, msg, fieldName);\n      var holds = false;',
+     '      var holds = false;', DOM),
+    ('a label holding "$&" or "$$" read as a replacement pattern', ENGINE,
+     'NOTE.replace("{reason}", function(){ return label(); })',
+     'NOTE.replace("{reason}", label())', DOM),
     ('the note not refreshed when the verdict changes', ENGINE,
      '  if(typeof jf === "string" && UV_JUSTIFY[jf]) UV_JUSTIFY[jf].later();',
      '', DOM),
@@ -271,14 +340,14 @@ MUTATIONS = [
      '        if(el.__qridFieldName === fieldName && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true\n',
      '        if(el.__qridFieldName === fieldName\n', DOM),
     ("the note ignores the rule's own words and is not escaped", ENGINE,
-     '      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", label()));',
+     '      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", function(){ return label(); }));',
      '      msg.innerHTML = NOTE.replace("{reason}", label());', DOM),
     ('the modes a reason stands for never read', ENGINE,
      '  for(var jm in JUSTIFY_OF_MODE) if(own(JUSTIFY_OF_MODE, jm) && JUSTIFY_OF_MODE[jm] === true) QRID_JUSTIFY_OF_MODE[jm] = true;',
      '', DOM),
     ('a field paired with a reason field not on the page', ENGINE,
-     '    if(!anchor || !source) return false;\n    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;',
-     '    if(!anchor) return false;\n    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;', DOM),
+     '    if(!found || !source) return false;',
+     '    if(!found) return false;\n    source = source || { el: {} };', DOM),
     ('a tag with no reason field releases the save', ENGINE,
      '  if(!configError && !/^[a-z][a-z0-9_]*$/.test(reason)) configError = "@UVJUSTIFY needs the field that holds the reason.";',
      '', DOM),
@@ -310,7 +379,7 @@ def main():
     skipped = []
     with tempfile.TemporaryDirectory(prefix='uv-justify-mutations-') as directory:
         copy = Path(directory)
-        for folder in ['php', 'js', 'tests', 'data', 'docs']:
+        for folder in ['php', 'js', 'tests', 'data', 'docs', 'site']:
             shutil.copytree(ROOT / folder, copy / folder)
         for filename in [UV, 'config.json']:
             shutil.copy2(ROOT / filename, copy / filename)

@@ -5,14 +5,15 @@
  * which tests/justify_live_twin_php.php keeps in step with the module), on a
  * page built from the fixture's field types the way REDCap renders them: text
  * boxes and notes, radio and yes/no buttons with their hidden mirror and
- * "reset" link, dropdowns, a checkbox, rows that branching logic hides, and
- * one survey page per section. The lookup and the duplicate check get the
+ * "reset" link, dropdowns, a checkbox, rows that branching logic hides, a
+ * field embedded in another field's label, and one survey page per section. The lookup and the duplicate check get the
  * answers the module gave for the same values (the "ajax" table).
  *
  * It checks each hold, each line of the alert and of the "Save anyway?"
  * dialog word for word, the note under the field that asks for the reason
  * (region "-j"), each release once the reason is given, what is no reason
- * (blank, spaces, a Missing Data Code, a blank choice, a hidden row), the
+ * (blank, spaces, a Missing Data Code, a blank choice, a hidden row), a
+ * reason typed in a box embedded in another field's label, the
  * Enter key, the duplicate and the lock a reason does not release, the
  * reason on another survey page, and the configuration errors.
  *
@@ -78,7 +79,9 @@ function codes(t) {
  * One page: each field of PAGES.types (or of the sections listed in
  * opts.sections, for a survey page) as REDCap renders it, holding the saved
  * values; the server's config as the page has it. A row whose branching
- * logic is false on the saved values starts hidden, as REDCap draws it.
+ * logic is false on the saved values starts hidden, as REDCap draws it. A
+ * field named as {field} in another field's label is drawn as REDCap embeds
+ * it: its own row (with its label) hidden, its box in the row of that label.
  */
 function boot(cfg, values, opts) {
   opts = opts || {};
@@ -89,6 +92,8 @@ function boot(cfg, values, opts) {
   const body = makeEl('body');
   const add = (holder, el) => { holder.appendChild(el); all.push(el); return el; };
   const types = Object.assign({}, PAGES.types);
+  const hostOf = {};
+  for (const f of Object.keys(types)) String(PAGES.labels[f] || '').replace(/\{([a-z0-9_]+)\}/g, (m, x) => { hostOf[x] = f; return m; });
   for (const f of Object.keys(types)) {
     if (opts.sections && opts.sections.indexOf(PAGES.sections[f]) < 0) continue;
     if (opts.without && opts.without.indexOf(f) >= 0) continue;
@@ -99,7 +104,11 @@ function boot(cfg, values, opts) {
     holders[f] = row;
     const lab = makeEl('td'); lab.id = 'label-' + f; lab.textContent = PAGES.labels[f]; add(row, lab);
     const c = { type: t.type };
-    if (t.type === 'radio' || t.type === 'yesno') {
+    const into = hostOf[f] && holders[hostOf[f]] ? holders[hostOf[f]] : row;
+    if (into !== row) row.style.display = 'none';
+    if (t.type === 'descriptive') {
+      /* a line of text, no box */
+    } else if (t.type === 'radio' || t.type === 'yesno') {
       c.el = add(row, makeEl('input')); c.el.name = f; c.el.type = 'text'; c.el.value = v;
       c.buttons = codes(t).map((code) => { const b = add(row, makeEl('input')); b.name = f + '___radio'; b.type = 'radio'; b.value = code; b.checked = code === v; return b; });
       c.reset = add(row, makeEl('a')); c.reset.setAttribute('onclick', "radioResetVal('" + f + "','form');return false;"); c.reset.style.display = 'inline';
@@ -114,7 +123,7 @@ function boot(cfg, values, opts) {
         return b;
       });
     } else {
-      c.el = add(row, makeEl(t.type === 'notes' ? 'textarea' : 'input')); c.el.name = f; c.el.type = 'text'; c.el.value = v;
+      c.el = add(into, makeEl(t.type === 'notes' ? 'textarea' : 'input')); c.el.name = f; c.el.type = 'text'; c.el.value = v;
       if (/^date/.test(t.validation)) c.el.className = 'x hasDatepicker';
     }
     ctl[f] = c;
@@ -397,6 +406,33 @@ modeStep('B8', 'uj_wt2', 'uj_wt2_why', (e) => type(e, 'uj_wt2', '302.5'),
   type(env, 'uj_ro_why', 'Device recalibrated');
   check('C7b the reason typed: still no note asking, the range note stays', ask(env, 'uj_ro') === '' && shown(env, 'uj_ro', 'n') === W(), notes(env, 'uj_ro'));
   check('C7b the record saves', save(env) === 'saved');
+}
+{
+  // C8: the reason box sits in the line below the value, embedded in its label; REDCap hides the reason field's own row
+  const env = boot(PAGES.form, V.C8, { ready: READONLY });
+  check('C8 the row of "' + label('uj_emb_why') + '" is hidden and its box sits in the row of uj_emb_box',
+    env.holders.uj_emb_why.style.display === 'none' && env.ctl.uj_emb_why.el.parentNode === env.holders.uj_emb_box);
+  type(env, 'uj_emb', '300.0');
+  check('C8 300.0: the range note under it', shown(env, 'uj_emb', 'n') === W(), notes(env, 'uj_emb'));
+  check('C8 ... and the note asking for the reason, which names the embedded field', ask(env, 'uj_emb') === NOTE('uj_emb_why'), ask(env, 'uj_emb'));
+  const s = save(env);
+  check('C8 Save is held, the line naming the reason field', s === 'held: ' + HELD + offer('uj_emb', 'uj_emb_why'), s);
+  type(env, 'uj_emb_why', 'Second scale checked');
+  check('C8 the reason typed in the embedded box: the note asking for it goes, the range note stays',
+    ask(env, 'uj_emb') === '' && shown(env, 'uj_emb', 'n') === W(), notes(env, 'uj_emb'));
+  check('C8b the record saves', save(env) === 'saved');
+}
+{
+  // C8c: clear the reason, then the weight, so the later steps start from the record of C7b
+  const env = boot(PAGES.form, V.C8c, { ready: READONLY });
+  check('C8c reopened with the reason saved: the range note, no note asking', shown(env, 'uj_emb', 'n') === W() && ask(env, 'uj_emb') === '', notes(env, 'uj_emb'));
+  type(env, 'uj_emb_why', '');
+  check('C8c the reason cleared: the note asking for it is back', ask(env, 'uj_emb') === NOTE('uj_emb_why'), ask(env, 'uj_emb'));
+  const s = save(env);
+  check('C8c Save is held, the line naming the reason field', s === 'held: ' + HELD + offer('uj_emb', 'uj_emb_why'), s);
+  type(env, 'uj_emb', '');
+  check('C8c the weight cleared too: no note under it', JSON.stringify(notes(env, 'uj_emb')) === '{}', notes(env, 'uj_emb'));
+  check('C8c the record saves', save(env) === 'saved');
 }
 
 // ---- Section D: "Save anyway?", and a rule that never blocks --------------------------------------

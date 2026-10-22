@@ -107,7 +107,7 @@ final class ArrayScanStore implements ScanStore
             // store's columns are not.
             'lease_owner' => null, 'lease_expires_at' => null,
             'supersede_cursor' => 0, 'created_by' => '',
-            'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
+            'detail_rows' => 0, 'detail_bytes' => 0, 'detail_justified' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
             // Reconciliation state. Present from the start so progressState()
             // reads the same shape on a run that has not reached catch-up as on
@@ -686,6 +686,8 @@ final class ArrayScanStore implements ScanStore
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);
+        // the kept rows a reason (@UVJUSTIFY) stands for - see SqlScanStore::commitBatch()
+        $this->runs[$runId]['detail_justified'] += count(array_filter($keep, function ($f) { return !empty($f['justified']); }));
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
         // One of exactly two places, and only when a record actually finished.
         if ($applied > 0) $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');

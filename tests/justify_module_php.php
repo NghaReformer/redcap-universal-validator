@@ -73,9 +73,28 @@ namespace {
         public static $rights = [];
         public static $mappings = null;
         public static function getInstrumentEventMappings($pid = null) { return self::$mappings; }
+        /**
+         * As REDCap answers: the records asked for, and with "fields" only
+         * those fields and the record ID field, in every event and instance,
+         * so a field the module forgets to ask for is missing as it would be
+         * on the server.
+         */
         public static function getData($p) {
             $data = self::$data;
             if (isset($p['records'])) $data = array_intersect_key($data, array_fill_keys(array_map('strval', (array) $p['records']), true));
+            if (empty($p['fields'])) return $data;
+            $want = array_fill_keys(array_merge([self::getRecordIdField()], array_map('strval', (array) $p['fields'])), true);
+            foreach ($data as $rec => $node) {
+                foreach ($node as $ev => $row) {
+                    if ($ev !== 'repeat_instances') {
+                        if (is_array($row)) $data[$rec][$ev] = array_intersect_key($row, $want);
+                        continue;
+                    }
+                    foreach ($row as $e => $forms) foreach ($forms as $form => $instances) foreach ($instances as $i => $values) {
+                        $data[$rec]['repeat_instances'][$e][$form][$i] = array_intersect_key($values, $want);
+                    }
+                }
+            }
             return $data;
         }
         public static function getDataDictionary($pid, $f = 'array') {
@@ -316,6 +335,64 @@ namespace {
         ['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>[b]', 'justifyBy' => ['a' => 'why']]]);
     check('markLockReads: another field the rule reads still does', isset($out[1]['lockReads']) && $out[1]['lockReads'] === ['a' => ['b']]);
 
+    // ---- 1b) a reason field that is never blank, or that nobody writes -------------------
+    // Any value in the reason field stands for every broken value of the field, so
+    // the record ID field, a field REDCap fills in itself, a read-only field and a
+    // field with a @UVJUSTIFY of its own are refused, word for word.
+    $R = function ($reason) use ($J) { return '@UVRANGE={"hard":[0,10]} ' . $J($reason); };
+    $FILLED = ['ct_why' => '@CALCTEXT(if([r_ct]>10,"auto","auto"))', 'cd_why' => '@CALCDATE([r_cd],1,"d")', 'df_why' => '@DEFAULT="n/a"',
+        'sv_why' => '@SETVALUE="checked"', 'pf_why' => '@PREFILL="checked"', 'now_why' => '@NOW', 'nows_why' => '@NOW-SERVER',
+        'nowu_why' => '@NOW-UTC', 'td_why' => '@TODAY', 'tds_why' => '@TODAY-SERVER', 'tdu_why' => '@TODAY-UTC',
+        'un_why' => '@USERNAME', 'aun_why' => '@APPUSERNAME-APP', 'lat_why' => '@LATITUDE', 'lon_why' => '@LONGITUDE',
+        'dc_why' => '@DOWNLOAD-COUNT(consent_file)', 'ro_why' => '@READONLY', 'rof_why' => '@READONLY-FORM', 'ros_why' => '@READONLY-SURVEY'];
+    $BADR = ['record_id' => f('visit_form'), 'r_rid' => f('visit_form', $R('record_id'), 'integer')];
+    foreach ($FILLED as $why => $tag) {
+        $BADR['r_' . substr($why, 0, -4)] = f('visit_form', $R($why), 'integer');
+        $BADR[$why] = f('visit_form', $tag);
+    }
+    $BADR += [
+        // each the other's reason; and a chain: ca's reason cb is itself paired with cc
+        'ma' => f('visit_form', $R('mb'), 'integer'), 'mb' => f('visit_form', $R('ma'), 'integer'),
+        'ca' => f('visit_form', $R('cb'), 'integer'), 'cb' => f('visit_form', $R('cc'), 'integer'), 'cc' => f('visit_form'),
+        // tags that fill nothing in, and one that only starts like a refused one
+        'r_ok' => f('visit_form', $R('ok_why'), 'integer'), 'ok_why' => f('visit_form', '@CHARLIMIT=200 @WORDLIMIT=50 @NOWRAP'),
+    ];
+    $bp = page(mod($BADR, ['2' => [351 => ['record_id' => '2']]], $FULL), '2', 'visit_form');
+    $berr = function ($field) use ($bp) {
+        foreach (rulesOn($bp, $field) as $r) {
+            if (isset($r['configError']) && strpos((string) $r['configError'], '@UVJUSTIFY on "' . $field . '"') === 0) return (string) $r['configError'];
+        }
+        return '';
+    };
+    check('the record ID field is no reason field (got ' . $berr('r_rid') . ')', $berr('r_rid') === '@UVJUSTIFY on "r_rid": "reason" names "[record_id]", the record ID field'
+        . ' — it is never blank, so it would release every broken value; name a field the person fills in.');
+    foreach ($FILLED as $why => $tag) {
+        $f = 'r_' . substr($why, 0, -4);
+        $name = strtoupper(preg_replace('/^@([A-Z-]+).*$/s', '$1', $tag));
+        $want = strpos($name, 'READONLY') === 0
+            ? '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.'
+            : '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", which has @' . $name . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
+        check('a reason field with @' . $name . ' is refused (got ' . $berr($f) . ')', $berr($f) === $want);
+    }
+    foreach (['ma' => 'mb', 'mb' => 'ma', 'ca' => 'cb'] as $f => $why) {
+        check($f . ': a reason field that carries @UVJUSTIFY itself is refused (got ' . $berr($f) . ')', $berr($f) === '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why
+            . ']", which carries @UVJUSTIFY itself — the two fields could stand for each other; name a field that only holds the reason.');
+    }
+    check('the end of a chain keeps its reason field (got ' . $berr('cb') . ')', justifyOn($bp, 'cb') !== null && $berr('cb') === '');
+    check('tags that fill nothing in leave the reason field as it is (got ' . $berr('r_ok') . ')', justifyOn($bp, 'r_ok') !== null && $berr('r_ok') === '');
+    // the audit: a broken value with a refused reason field stays open, whatever the field holds
+    $brow = ['record_id' => '2', 'r_rid' => '99', 'ma' => '99', 'mb' => '99', 'ca' => '99', 'cb' => '99', 'cc' => 'scale reads high',
+        'r_ok' => '99', 'ok_why' => 'scale reads high'];
+    foreach ($FILLED as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+    $m = save($BADR, ['2' => [351 => $brow]], 'visit_form');
+    $open = [];
+    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED))) as $f) {
+        if (audit($m, $f) !== ['invalid-id-saved:range:hard-high']) $open[$f] = audit($m, $f);
+    }
+    check('a refused reason field releases nothing in the audit (got ' . json_encode($open) . ')', $open === []);
+    check('... the end of a chain and a field with harmless tags still do (got ' . json_encode([audit($m, 'cb'), audit($m, 'r_ok')]) . ')',
+        audit($m, 'cb') === ['uvalidate-justified:range:hard-high:cc'] && audit($m, 'r_ok') === ['uvalidate-justified:range:hard-high:ok_why']);
+
     // ---- 2) the post-save audit ----------------------------------------------------------
     $m = save($DICT, $data(), 'visit_form');
     check('no reason: the broken rule is logged open (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
@@ -427,6 +504,21 @@ namespace {
     foreach ($res['violations'] as $v) $hits[] = $v['event_id'] . ':' . (empty($v['justified']) ? 'open' : 'justified');
     sort($hits);
     check('scan: each event with its own reason (got ' . json_encode($hits) . ')', $hits === ['2:justified', '3:open']);
+
+    // An extended rule (@UVDELTA against the previous event) reads only the fields
+    // TemporalRules::fields names, and REDCap returns no other (the getData stub),
+    // so the reason field must be among them or the reason is never seen.
+    $XD = ['record_id' => f('enrol_form'),
+        'weight' => f('visit_form', '@UVDELTA={"vs":"previous-event","maxPct":10,"blockSave":"hard"} ' . $J('weight_why'), 'number_1dp'),
+        'weight_why' => f('visit_form', '', '', 'notes')];
+    $XDATA = ['2' => [1 => ['record_id' => '2'], 2 => ['weight' => '70.0', 'weight_why' => ''], 3 => ['weight' => '90.0', 'weight_why' => 'fluid retention, confirmed']]];
+    $m = mod($XD, $XDATA, $FULL, ['enable-event-instance-refs' => true]);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    check('an extended rule reads its reason field too (got ' . json_encode(audit($m, 'weight')) . ')', audit($m, 'weight') === ['uvalidate-justified:delta:up:weight_why']);
+    $XDATA['2'][3]['weight_why'] = '';
+    $m = mod($XD, $XDATA, $FULL, ['enable-event-instance-refs' => true]);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    check('... and with the reason field blank the finding stays open (got ' . json_encode(audit($m, 'weight')) . ')', audit($m, 'weight') === ['invalid-id-saved:delta:up']);
 
     classic();
     \Project::$repeats = [351 => ['visit_form' => '']];

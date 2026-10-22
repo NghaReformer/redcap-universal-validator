@@ -1536,6 +1536,34 @@ function QRID_findAnchor(name){
   }
   return fallback;
 }
+/* The anchor of a field of any type REDCap renders, as {el, checkbox}, or
+   null while the page has none. Every type but a checkbox has an element of
+   the field's own name (QRID_findAnchor). A checkbox has none: its anchor is
+   the input of its first option, __chk__<field>_RC_<code>, for the codes
+   given (in their order) and then the codes of the boxes REDCap draws (name
+   __chkn__<field>, id id-__chk__<field>_RC_<code>), else the first box
+   itself. Its name is the option's, so the anchor keeps its field in
+   __qridAnchorOf (QRID_setModeState reads it). */
+function QRID_fieldAnchor(name, codes){
+  var el = QRID_findAnchor(name);
+  if(el) return { el: el, checkbox: false };
+  if(!document.getElementsByName) return null;
+  var list = codes ? codes.slice() : [];
+  var boxes = document.getElementsByName("__chkn__" + name);
+  var pre = "id-__chk__" + name + "_RC_";
+  for(var b = 0; b < boxes.length; b++){
+    var id = String(boxes[b].id || "");
+    if(id.indexOf(pre) === 0) list.push(id.slice(pre.length));
+  }
+  for(var i = 0; i < list.length && !el; i++){
+    var els = document.getElementsByName("__chk__" + name + "_RC_" + list[i]);
+    if(els.length) el = els[0];
+  }
+  if(!el && boxes.length) el = boxes[0];
+  if(!el) return null;
+  el.__qridAnchorOf = name;
+  return { el: el, checkbox: true };
+}
 /* Whether the person cannot change the field on this page (REQ-2). @READONLY
    leaves the anchor of a radio, yes/no, true/false or checkbox field enabled,
    because that anchor is the hidden mirror REDCap keeps, and disables the
@@ -1570,9 +1598,12 @@ function QRID_fieldLocked(anchor, fieldName, codes){
    a radio's mirror input, and stops at the field's row, so an embedded field
    ({field} in another field's label) is judged by the row it sits in now,
    and a page container REDCap hides while it loads is never read. With no
-   row found the field counts as shown. */
+   row found the field counts as shown. A checkbox's anchor sits in its own
+   option's row (QRID_fieldAnchor), which @UVCHOICES hides while that option
+   is hidden and unticked, so the walk starts above the option's row. */
 function QRID_fieldHidden(anchor){
   var el = anchor ? anchor.parentNode : null;
+  if(el && anchor.__qridAnchorOf && !((el.tagName || "").toLowerCase() === "tr" && /-tr$/.test(el.id || ""))) el = el.parentNode;
   var gcs = (typeof window !== "undefined" && typeof window.getComputedStyle === "function") ? window.getComputedStyle : null;
   var path = [];
   while(el && el.nodeType === 1){
@@ -3816,6 +3847,22 @@ function QRID_attachMsgRegion(input, fieldName, mode){
   }
   return msg;
 }
+/* QRID_attachMsgRegion for a field found by QRID_fieldAnchor, after $at when
+   given (an autocomplete's text box), else after the anchor. A checkbox
+   anchor is the FIRST option's input, so its region landed inside that
+   option's row and vanished with it whenever @UVCHOICES hid the row: the
+   save was blocked with no message on screen. It belongs to the option
+   container, after the last row. */
+function QRID_attachFieldRegion(found, fieldName, mode, at){
+  var input = found.el;
+  var msg = QRID_attachMsgRegion(at || input, fieldName, mode);
+  if(found.checkbox && msg.parentNode && msg.parentNode === input.parentNode && input.parentNode.parentNode){
+    var optionRow = input.parentNode, optionBox = optionRow.parentNode;
+    optionRow.removeChild(msg);
+    optionBox.appendChild(msg);
+  }
+  return msg;
+}
 /* ---- composite per-field presentation state -------------------------------
    The outline and aria-invalid live on the INPUT, which is shared by every mode
    attached to it, so the last mode to run used to decide what the field looked
@@ -3859,8 +3906,9 @@ function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "warn" | "inf
     QRID_setInvalidState(comp, bad ? true : (ok ? false : null));
   }
   /* a field paired with a reason (@UVJUSTIFY) shows or hides its note once the
-     mode's guard item has caught up, a tick later */
-  var jf = input.__qridFieldName || input.name;
+     mode's guard item has caught up, a tick later; a checkbox's anchor is
+     named after its option (QRID_fieldAnchor) */
+  var jf = input.__qridFieldName || input.__qridAnchorOf || input.name;
   if(typeof jf === "string" && UV_JUSTIFY[jf]) UV_JUSTIFY[jf].later();
 }
 /* Autocomplete dropdowns: REDCap pairs the hidden <select> with a companion
@@ -7079,8 +7127,12 @@ function QRIDWriteOnceInit(QRID_CONFIG){
    still being checked still waits, and a locked write-once field stays
    locked. Without the reason field on this
    page (another survey page) the tag does nothing here, and a reason field
-   whose row branching logic hides gives no reason. The audit and the scan
-   mark the findings the same way (UniversalValidator::markJustified).
+   the person cannot see gives no reason: its row hidden by branching logic,
+   or, for a field embedded in another's label, the row it sits in now
+   (QRID_fieldHidden, the guard's own test). Fields of every type are found
+   as the other factories find them (QRID_fieldAnchor), a checkbox by its
+   options. The audit and the scan mark the findings the same way
+   (UniversalValidator::markJustified).
    tests/justify_dom_js.cjs locks this contract. */
 function QRIDJustifyInit(QRID_CONFIG){
   var configError = QRID_CONFIG.configErrorOverride || "";
@@ -7090,22 +7142,25 @@ function QRIDJustifyInit(QRID_CONFIG){
   var NOTE = "Fix this value, or say why it is right in \u201C{reason}\u201D.";
   if(!configError && !/^[a-z][a-z0-9_]*$/.test(reason)) configError = "@UVJUSTIFY needs the field that holds the reason.";
   function given(){
-    var row = document.getElementById ? document.getElementById(reason + "-tr") : null;
-    if(row && row.style && row.style.display === "none") return false;
+    var anc = QRID_fieldAnchor(reason);
+    if(anc && QRID_fieldHidden(anc.el)) return false;
     return QRID_reasonGiven(QRID_WHEN.readRef(reason, null));
   }
   function label(){
-    var a = QRID_findAnchor(reason);
-    return a ? QRID_fieldLabel(a, reason) : reason;
+    var a = QRID_fieldAnchor(reason);
+    return a ? QRID_fieldLabel(a.el, reason) : reason;
   }
   function attach(fieldName){
-    var anchor = QRID_findAnchor(fieldName);
-    var source = QRID_findAnchor(reason);
-    if(!anchor || !source) return false;
+    var found = QRID_fieldAnchor(fieldName);
+    var source = QRID_fieldAnchor(reason);
+    if(!found || !source) return false;
+    var anchor = found.el;
     if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;   /* per-mode bind marker */
     if(anchor.setAttribute) anchor.setAttribute("data-qrid-bound-j", "1");
-    var msg = QRID_attachMsgRegion(anchor, fieldName, "j");
+    var msg = QRID_attachFieldRegion(found, fieldName, "j");
     function refresh(){
+      /* an autocomplete dropdown's text box may render after the bind */
+      QRID_followWidget(anchor, msg, fieldName);
       var holds = false;
       for(var i = 0; i < UV_guard.items.length; i++){
         var el = UV_guard.items[i];
@@ -7117,7 +7172,8 @@ function QRIDJustifyInit(QRID_CONFIG){
       if(!holds || given()){ msg.style.display = "none"; msg.innerHTML = ""; return; }
       msg.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
         "font-size:12px;font-family:inherit;border:1px solid #d9c7a3;background:#fdf6e7;color:#6b4e16";
-      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", label()));
+      /* a function, so a label holding "$&" or "$$" is not read as a pattern */
+      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", function(){ return label(); }));
     }
     var queued = false;
     function later(){
@@ -7126,9 +7182,9 @@ function QRIDJustifyInit(QRID_CONFIG){
       setTimeout(function(){ queued = false; refresh(); }, 0);
     }
     UV_JUSTIFY[fieldName] = { reason: reason, given: given, label: label, later: later };
-    if(source.addEventListener){
-      source.addEventListener("input", later);
-      source.addEventListener("change", later);
+    if(source.el.addEventListener){
+      source.el.addEventListener("input", later);
+      source.el.addEventListener("change", later);
     }
     /* a change no event announces (a radio's hidden mirror, a script) */
     var watch = QRID_WHEN.gateFor("[" + reason + "]<>''", null);
@@ -7432,30 +7488,16 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
   })();
 
   function attach(fieldName){
-    /* Checkbox fields carry NO element named <field> — fall back to the first
-       __chk__ option input so the message region and guard have a home. */
-    var input = QRID_findAnchor(fieldName);
-    var isCheckbox = !input;   /* only checkbox fields carry no element named <field> */
-    if(!input){
-      for(var mi = 0; mi < MANAGED.length && !input; mi++){
-        var chkEls = document.getElementsByName ? document.getElementsByName("__chk__" + fieldName + "_RC_" + MANAGED[mi]) : [];
-        if(chkEls.length) input = chkEls[0];
-      }
-    }
-    if(!input) return false;
+    /* Checkbox fields carry NO element named <field>: the anchor is an option's
+       input (QRID_fieldAnchor), so the message region and guard have a home. */
+    var found = QRID_fieldAnchor(fieldName, MANAGED);
+    if(!found) return false;
+    var input = found.el;
+    var isCheckbox = found.checkbox;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-cf")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-cf", "1");
     var acAnchor = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
-    var msg = QRID_attachMsgRegion(acAnchor || input, fieldName, "ch");
-    /* A checkbox anchor is the FIRST option's input, so the region landed inside
-       that option's row and vanished with it whenever the filter hid the row:
-       the save was blocked with no message on screen. It belongs to the option
-       container, after the last row. */
-    if(isCheckbox && msg.parentNode && msg.parentNode === input.parentNode && input.parentNode.parentNode){
-      var optionRow = input.parentNode, optionBox = optionRow.parentNode;
-      optionRow.removeChild(msg);
-      optionBox.appendChild(msg);
-    }
+    var msg = QRID_attachFieldRegion(found, fieldName, "ch", acAnchor);
     /* The anchor of a radio or checkbox field is a hidden mirror input, which
        @READONLY leaves enabled while it disables the options the person would
        have to click. Such a field can never be corrected here, so it must never

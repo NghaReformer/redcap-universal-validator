@@ -4542,22 +4542,22 @@ rule returns a value to.
 
 ## `@UVJUSTIFY` — values saved with a reason
 
-Some values break a rule and are still right, such as a weight gain of 15%
-after a long hospital stay, or a visit outside its window because the clinic
-was closed. `@UVJUSTIFY` names a second field where the reason is written. Once that field
+Some values break a rule and are still right, such as a weight above the range
+the protocol expected for a patient who really weighs that much, or a visit
+outside its window because the clinic was closed. `@UVJUSTIFY` names a second field where the reason is written. Once that field
 holds a reason, the field's broken rules no longer hold the save, and the
 audit and the scan report those findings apart from the open ones.
 
 ### Level 1 — a reason field
 
 ```text
-@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
 ```
 
 `reason` names one field of the same form: a Text or Notes field, or a
 dropdown, radio or SQL field whose choices are the reasons you allow. While the
-weight breaks the `@UVDELTA` limit and `weight_reason` is empty, a note under
-the weight reads "Fix this value, or say why it is right in “Reason for
+weight is outside 30 to 250, which holds the save, and `weight_reason` is
+empty, a note under the weight reads "Fix this value, or say why it is right in “Reason for
 change”." (the reason field's label), and the save message names the field as
 "Weight (or give a reason in “Reason for change”)". Once a reason is written,
 the save goes through.
@@ -4565,7 +4565,7 @@ the save goes through.
 ### Level 2 — your own note
 
 ```text
-@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
 @UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[sbp_why]","message":{"en":"Say why this reading is right.","fr":"Dites pourquoi cette mesure est juste."}}
 ```
 
@@ -4583,12 +4583,20 @@ to texts.
   that tag names can change it.
 - A reason is any text left once spaces, tabs and line breaks are taken from
   both ends. A blank field and a missing data code give none, so a reason field
-  marked "unknown" still asks for one. On the form, a reason field whose row
-  branching logic hides gives none either.
+  marked "unknown" still asks for one. On the form, a reason field the person
+  cannot see gives none either: its row hidden by branching logic, or, for a
+  reason field embedded in another field's label, the row it sits in.
+- A reason stands until someone clears it. A later, different broken value of
+  the field saves under the same reason, so clear the reason field when the
+  value changes for another reason.
 - The note shows while a covered rule holds the save or asks "Save anyway?"
   and no reason is given. The rules' own notes stay once the reason is given.
 - A reason never lets anything else through. A rule with `blockSave` `"off"`
   still only warns, and a lookup still being checked still holds the save.
+- On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
+  compares with another event or instance, which the page shows only as
+  advice) a reason never shows a note on the page; it only labels the finding
+  in the audit and the scan.
 - On a survey page that does not carry the reason field, the tag does nothing
   on that page. The audit after the save still reads the reason.
 - The audit logs a finding whose reason is given, in the same record, event
@@ -4622,6 +4630,19 @@ Once the data dictionary is read, the module also refuses a reason field that
 is not a field of the project, one on another form, one of another type (a
 calc, checkbox, yes/no, true/false, slider or file field), the field itself, a
 field given the tag twice, and a field that no rule a reason stands for checks.
+It refuses a reason field the person does not fill in, since any value there
+would stand for every broken value: the record ID field, a field REDCap fills
+in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
+`@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
+`@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`), a field
+with any form of `@READONLY`, and a field that carries `@UVJUSTIFY` itself.
+These refusals read the reason field's own annotation, so the blocks above
+cannot show them. With `weight_reason` given `@DEFAULT="n/a"`, the form
+shows under the weight:
+
+```text
+⚠ Configuration error: @UVJUSTIFY on "weight": "reason" names "[weight_reason]", which has @DEFAULT — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.
+```
 
 ---
 
@@ -6276,7 +6297,7 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 
 | Key       | Type          | Default         | Notes                                                                              |
 | --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
-| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance |
+| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in (not the record ID field, a field REDCap fills in, a read-only field or one with `@UVJUSTIFY`) |
 | `message` | string or map | generic line    | The note under the field that asks for the reason                                  |
 
 No `when`, `caseSensitive`, `blockSave` or `references`.
@@ -6475,8 +6496,8 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVWRITEONCE={"since":"2026-11-01"}                                locks what was held on that day
 
 # ── @UVJUSTIFY — values saved with a reason ──────────────────────────────────
-@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
-                                                                  a change past 10% saves once a reason is written
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+                                                                  a weight outside 30 to 250 saves once a reason is written
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

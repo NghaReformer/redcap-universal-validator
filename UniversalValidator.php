@@ -3871,6 +3871,11 @@ class UniversalValidator extends AbstractExternalModule
      * @UVJUSTIFY "dictionary" hook: the reason field must exist, sit on the
      * same form as the field, so the reason is given where the value is, and
      * take a reason: a Text or Notes field, a dropdown, radio or SQL field.
+     * It must also be a field only the person fills in, since any value in it
+     * stands for every broken value of the field: not the record ID field,
+     * not one REDCap fills in itself (JUSTIFY_FILLED_TAGS), not a read-only
+     * one, and not one with a @UVJUSTIFY of its own, which would let two
+     * fields stand for each other.
      */
     private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -3889,11 +3894,36 @@ class UniversalValidator extends AbstractExternalModule
         if (!in_array($type, self::JUSTIFY_REASON_TYPES, true)) {
             return $err('"reason" names "[' . $reason . ']", a "' . $type . '" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field.');
         }
+        if ($reason === $this->recordIdFieldOf($pid)) {
+            return $err('"reason" names "[' . $reason . ']", the record ID field — it is never blank, so it would release every broken value; name a field the person fills in.');
+        }
+        $ann = isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '';
+        $filled = implode('|', array_map(function ($t) { return preg_quote($t, '/'); }, self::JUSTIFY_FILLED_TAGS));
+        if (preg_match('/@(' . $filled . ')(?![\w-])/i', $ann, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+                . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.');
+        }
+        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $ann, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+                . ' — the person cannot write a reason there; name a field the person fills in.');
+        }
+        if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_JUSTIFY
+                . ' itself — the two fields could stand for each other; name a field that only holds the reason.');
+        }
         return $frag;
     }
 
     /** The field types a @UVJUSTIFY reason may be (annotateJustifyDictionary). */
     const JUSTIFY_REASON_TYPES = ['text', 'notes', 'dropdown', 'radio', 'sql'];
+
+    /**
+     * The action tags with which REDCap fills a field in itself, so it never
+     * holds a reason (annotateJustifyDictionary). Add a tag here to refuse it.
+     */
+    const JUSTIFY_FILLED_TAGS = ['CALCTEXT', 'CALCDATE', 'DEFAULT', 'SETVALUE', 'PREFILL',
+        'NOW-SERVER', 'NOW-UTC', 'NOW', 'TODAY-SERVER', 'TODAY-UTC', 'TODAY',
+        'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT'];
 
     /**
      * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the

@@ -660,22 +660,32 @@ to a finding saved with a reason.
   rules a reason stands for: the save message adds "or give a reason in" with
   the reason field's label and a note asks for one; a reason releases the
   field for "hard" and "confirm" in either boot order, and clearing it brings
-  the hold back; a Missing Data Code, a hidden reason row and a reason field
-  not on the page give no reason; a radio or dropdown reason counts, even
+  the hold back; a Missing Data Code, a hidden reason row, a reason field
+  embedded in a hidden row and a reason field not on the page give no
+  reason, and one embedded in a row that shows does; a radio or dropdown
+  reason counts, even
   changed with no event; a rule with blockSave "off", a lookup still in
   flight, a duplicate and a write-once lock are never lifted; configuration
   errors release nothing. A field made read-only after the engine bound it,
   or whose row branching hides, gets no note, and the note follows each
-  branching redraw.
+  branching redraw. On a checkbox a hidden code ticked holds the save with
+  the reason offered, and a reason releases it; the note sits beside the
+  options, and after an autocomplete dropdown's text box. A reason field
+  label holding `$&` or `$$` reads as written in the note and the alert.
 - `justify_module_php.php` covers the server side: the field and dictionary
   hooks, `applyJustify` (a field no covered rule checks is an error of its
   own, split from a rule written alike on several fields; two tags on one
-  field refused), the page config (no `justifyBy` reaches the page; a reason
+  field refused; a reason field that is the record ID field, that REDCap
+  fills in, that is read-only or that carries `@UVJUSTIFY` itself refused
+  word for word, and none of them releases a finding in the audit), the page config (no `justifyBy` reaches the page; a reason
   field never makes a locked field hold the save), the post-save audit
   (`uvalidate-justified` with `justified_by`, never the reason; a blank,
   spaces or a code leaves `invalid-id-saved`; the reason read at the same
-  event and instance only), and the legacy and durable scans (rows, counts,
-  the "Saved with a reason" column and sentence, the stored flag).
+  event and instance only, also for an `@UVDELTA` that compares with the
+  previous event), and the legacy and durable scans (rows, counts, the "Saved
+  with a reason" column and sentence, the stored flag). Its `getData` stub
+  returns only the fields a read asks for, so a reason field the audit
+  forgot to ask for reads as blank.
 - `missing_codes_php.php` adds a reason field holding a code (no reason) and
   `mlm_messages_dom_js.cjs` the note in the person's language.
 - `justify_live_twin_php.php` runs the module over the live fixture on a copy
@@ -690,13 +700,15 @@ to a finding saved with a reason.
 - `justify_live_twin_js.cjs` boots `js/engine.js` with those configs on a page
   shaped as REDCap renders the fixture's field types: text and notes boxes,
   radio buttons with their mirror and "reset" link, dropdowns and an SQL
-  field, a checkbox, rows hidden by branching logic, and one survey page per
-  section. It checks each note, each hold, each line of the save alert and the
+  field, a checkbox, rows hidden by branching logic, a reason field embedded
+  in another field's label (its own row hidden, its box in the row of that
+  label), and one survey page per section. It checks each note, each hold, each line of the save alert and the
   "Save anyway?" dialog, each release once the reason is given, and each case
   that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
-  read-only field, and a reason on another survey page.
-- `justify_mutations.py` applies 69 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Five mutate
+  read-only field, and a reason on another survey page. A reason typed in
+  the embedded box releases the field (C8).
+- `justify_mutations.py` applies 91 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Seven mutate
   the stores, the rollup and the status poll of the durable scan and are
   killed only by `tests/mysql/run.php` (cases `justified` and `perf`); they run
   when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are

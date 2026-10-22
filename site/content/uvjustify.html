@@ -1,6 +1,6 @@
-<p>Some values break a rule and are still right: a weight gain of 15% after a long
-hospital stay, a visit date outside its window because the clinic was closed, a lab
-value above the range the protocol expected. A rule that holds the save then forces the
+<p>Some values break a rule and are still right: a weight above the range the protocol
+expected for a patient who really weighs that much, or a visit date outside its window
+because the clinic was closed. A rule that holds the save then forces the
 person to enter a wrong value or leave the form. <code>@UVJUSTIFY</code> names a second
 field where the reason is written. Once that field holds a reason, the broken rule no
 longer holds the save, and the audit and the scan report the finding as "saved with a
@@ -8,9 +8,9 @@ reason", apart from the open ones.</p>
 
 <h2>Syntax</h2>
 
-<pre><code>@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
+<pre><code>@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
 
-@UVWINDOW={...} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}</code></pre>
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}</code></pre>
 
 <div class="scroll">
 <table>
@@ -19,7 +19,14 @@ reason", apart from the open ones.</p>
 <tr><td><code>reason</code></td><td>The field that holds the reason, written as one field
     reference such as <code>"[weight_reason]"</code>. It must be on the same form as the
     field, and be a Text or Notes field, or a dropdown, radio or SQL field whose choices
-    are the reasons you allow. It cannot be the field itself</td></tr>
+    are the reasons you allow. It cannot be the field itself. The person must fill it
+    in, so the module refuses the record ID field, a field REDCap fills in itself
+    (<code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@DEFAULT</code>,
+    <code>@SETVALUE</code>, <code>@PREFILL</code>, <code>@NOW</code>,
+    <code>@TODAY</code> and their <code>-SERVER</code> and <code>-UTC</code> forms,
+    <code>@USERNAME</code>, <code>@APPUSERNAME-APP</code>, <code>@LATITUDE</code>,
+    <code>@LONGITUDE</code>, <code>@DOWNLOAD-COUNT</code>), a field with any form of
+    <code>@READONLY</code>, and a field that carries <code>@UVJUSTIFY</code> itself</td></tr>
 <tr><td><code>message</code></td><td>The note under the field that asks for the reason.
     It may be a map of language ids to texts, as for the other tags. Without it the note
     reads "Fix this value, or say why it is right in" the reason field's label</td></tr>
@@ -49,8 +56,12 @@ shows a configuration error under that field.</p>
     field gives no reason.</li>
 <li>A <strong>missing data code</strong> gives no reason. A reason field marked "unknown"
     still asks for one.</li>
-<li>On the form, a reason field whose row branching logic hides gives no reason. The
-    reason has to be visible where the value is entered.</li>
+<li>On the form, a reason field the person cannot see gives no reason: its row hidden
+    by branching logic, or, for a reason field embedded in another field's label, the
+    row it sits in. The reason has to be visible where the value is entered.</li>
+<li>A reason stands until someone clears it. A later, different broken value of the
+    field saves under the same reason, so clear the reason field when the value changes
+    for another reason.</li>
 <li>The reason itself is never written to the log or the scan. Only the name of the
     reason field is.</li>
 </ul>
@@ -67,6 +78,10 @@ shows a configuration error under that field.</p>
     <code>"off"</code> still only warns. A lookup still being checked
     (<code>@UVUNIQUE</code>, <code>@UVEXISTS</code>) still holds the save until its answer
     comes. A field locked by <code>@UVWRITEONCE</code> stays locked.</li>
+<li>On a rule that only warns (<code>blockSave</code> <code>"off"</code>, or an
+    <code>@UVDELTA</code> that compares with another event or instance, which the page
+    shows only as advice) a reason never shows a note on the page. It only labels the
+    finding in the audit and the scan.</li>
 <li>On a survey whose reason field is on another page, the tag does nothing on the
     page of the field. The audit after the save still reads the reason.</li>
 </ul>

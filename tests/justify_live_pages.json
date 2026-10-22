@@ -185,6 +185,62 @@
             "uj_wt2_why": "1",
             "uj_wt_why": "Scale checked twice"
         },
+        "C8": {
+            "uj_anchor": "2026-10-01",
+            "uj_arm": "2",
+            "uj_dia": "90",
+            "uj_dia_why": "1",
+            "uj_dose": "1",
+            "uj_dose_why": "Dose by weight",
+            "uj_hr": "250",
+            "uj_hr_show": "1",
+            "uj_hr_why": "Athlete, resting rate checked",
+            "uj_id": "79927398710",
+            "uj_id_why": "Number printed on the tube",
+            "uj_mother": "XE-9",
+            "uj_mother_why": "Mother enrolled at another site",
+            "uj_pool": "79927398713 79927398710",
+            "uj_pool_why": "Second tube relabelled\nat the lab",
+            "uj_req_why": "1",
+            "uj_ro": "300.0",
+            "uj_ro_why": "Device recalibrated",
+            "uj_sys": "80",
+            "uj_visit": "2026-10-20",
+            "uj_visit_why": "Clinic closed for a week",
+            "uj_wt": "300.0",
+            "uj_wt2": "302.5",
+            "uj_wt2_why": "1",
+            "uj_wt_why": "Scale checked twice"
+        },
+        "C8c": {
+            "uj_anchor": "2026-10-01",
+            "uj_arm": "2",
+            "uj_dia": "90",
+            "uj_dia_why": "1",
+            "uj_dose": "1",
+            "uj_dose_why": "Dose by weight",
+            "uj_emb": "300.0",
+            "uj_emb_why": "Second scale checked",
+            "uj_hr": "250",
+            "uj_hr_show": "1",
+            "uj_hr_why": "Athlete, resting rate checked",
+            "uj_id": "79927398710",
+            "uj_id_why": "Number printed on the tube",
+            "uj_mother": "XE-9",
+            "uj_mother_why": "Mother enrolled at another site",
+            "uj_pool": "79927398713 79927398710",
+            "uj_pool_why": "Second tube relabelled\nat the lab",
+            "uj_req_why": "1",
+            "uj_ro": "300.0",
+            "uj_ro_why": "Device recalibrated",
+            "uj_sys": "80",
+            "uj_visit": "2026-10-20",
+            "uj_visit_why": "Clinic closed for a week",
+            "uj_wt": "300.0",
+            "uj_wt2": "302.5",
+            "uj_wt2_why": "1",
+            "uj_wt_why": "Scale checked twice"
+        },
         "D1": {
             "uj_anchor": "2026-10-01",
             "uj_arm": "2",
@@ -574,6 +630,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -825,6 +882,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -965,6 +1029,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -1027,6 +1092,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -1278,6 +1344,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -1418,6 +1491,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -1471,6 +1545,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -1722,6 +1797,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -1868,6 +1950,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -1921,6 +2004,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -2172,6 +2256,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -2318,6 +2409,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -2371,6 +2463,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -2620,6 +2713,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -2759,6 +2859,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -2822,6 +2923,7 @@
                 "fields": [
                     "uj_wt",
                     "uj_ro",
+                    "uj_emb",
                     "uj_lock"
                 ]
             },
@@ -3073,6 +3175,13 @@
                 ]
             },
             {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
                 "type": "range",
                 "rangeHardLo": "5",
                 "rangeHardHi": "60",
@@ -3219,6 +3328,7 @@
             "uj_off": "point",
             "uj_hr": "point",
             "uj_ro": "point",
+            "uj_emb": "point",
             "uj_rr": "point",
             "uj_lock": "point",
             "uj_far": "point",
@@ -3262,6 +3372,9 @@
         "uj_hr_why": "Why the heart rate is right",
         "uj_ro": "Weight from the device",
         "uj_ro_why": "Why the device weight is right",
+        "uj_emb": "Weight on the second scale",
+        "uj_emb_box": "Reason for the second-scale weight: {uj_emb_why}",
+        "uj_emb_why": "Why the second-scale weight is right",
         "uj_rr": "Respiratory rate (per minute)",
         "uj_code": "Participant code",
         "uj_code_why": "Why the code is right",
@@ -3459,6 +3572,24 @@
             "choices": "",
             "branching": ""
         },
+        "uj_emb": {
+            "type": "text",
+            "validation": "number_1dp",
+            "choices": "",
+            "branching": ""
+        },
+        "uj_emb_box": {
+            "type": "descriptive",
+            "validation": "",
+            "choices": "",
+            "branching": ""
+        },
+        "uj_emb_why": {
+            "type": "text",
+            "validation": "",
+            "choices": "",
+            "branching": ""
+        },
         "uj_rr": {
             "type": "text",
             "validation": "integer",
@@ -3581,6 +3712,9 @@
         "uj_hr_why": "A. Rules a reason stands for",
         "uj_ro": "A. Rules a reason stands for",
         "uj_ro_why": "A. Rules a reason stands for",
+        "uj_emb": "A. Rules a reason stands for",
+        "uj_emb_box": "A. Rules a reason stands for",
+        "uj_emb_why": "A. Rules a reason stands for",
         "uj_rr": "A. Rules a reason stands for",
         "uj_code": "B. Rules a reason does not release",
         "uj_code_why": "B. Rules a reason does not release",

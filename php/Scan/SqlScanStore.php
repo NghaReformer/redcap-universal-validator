@@ -1188,6 +1188,13 @@ final class SqlScanStore implements ScanStore
             // insertFindings() as it walks them rather than by building a second
             // list here - see the memory note there.
             $stored = $this->insertFindings($findings, $held, $runSeq);
+            // Of those, the ones a reason (@UVJUSTIFY) stands for: every held
+            // finding was stored (insertFindingChunk refuses a short write), so
+            // the flags it was sent with are the flags it holds.
+            $justified = 0;
+            foreach ($findings as $f) {
+                if (!empty($held[(int) $f['ordinal']]) && !empty($f['justified'])) $justified++;
+            }
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
             // scan that depends on records other than the one being examined, so
@@ -1234,9 +1241,9 @@ final class SqlScanStore implements ScanStore
             // freezing. The other place is freezeManifest().
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
-                    detail_bytes = detail_bytes + ?, updated_at = ?';
+                    detail_bytes = detail_bytes + ?, detail_justified = detail_justified + ?, updated_at = ?';
             $args = [$applied, $stored, isset($batch['bytes']) ? (int) $batch['bytes'] : 0,
-                     self::now()];
+                     $justified, self::now()];
             if ($applied > 0) {
                 $sql .= ', progress_at = ?';
                 $args[] = self::now();

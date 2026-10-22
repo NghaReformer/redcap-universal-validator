@@ -1327,6 +1327,62 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * J1-5  FINDINGS SAVED WITH A REASON ARE COUNTED APART IN EVERY STATE
+ *
+ * status() reports findingsOf() and justifiedOf(). A run still working used
+ * to count every stored row as a finding, those saved with a reason
+ * (@UVJUSTIFY) among them, and said nothing of the reasons until the run was
+ * totalled, when the findings shrank. The run row keeps the stored rows that
+ * carry the flag (detail_justified): a working run says its open rows and
+ * its rows with a reason apart, a run that ended without a verdict takes the
+ * larger of each counter and its summary, and a verdict reads the summary.
+ * ===================================================================== */
+{
+    $SA = new ArrayScanStore();
+    $said = (int) $SA->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
+    // a summary: five active findings on every axis, two of them with a reason
+    foreach (RollupBuilder::KINDS as $kind) {
+        if ($kind !== RollupBuilder::K_STANDING) $SA->addAggregate($said, $kind, 'x', null, 5);
+    }
+    $SA->addAggregate($said, RollupBuilder::K_STANDING, RollupBuilder::STANDING_OPEN, null, 3);
+    $SA->addAggregate($said, RollupBuilder::K_STANDING, RollupBuilder::STANDING_JUSTIFIED, null, 2);
+    $NB = new ArrayScanStore();
+    $nid = (int) $NB->startRun(823, ['created_by' => 'alice'])['run']['run_id'];
+    $st = function (ArrayScanStore $s, $pid, $id, array $over) {
+        $run = array_merge($s->run($pid, $id), $over);
+        $agg = isset($run['terminal']) ? $s->aggregates($id) : null;
+        $out = ['findings' => ScanPromotion::findingsOf($s, $run, $agg), 'justified' => ScanPromotion::justifiedOf($s, $run, $agg)];
+        return $out + ['text' => \INSPIRE\UniversalValidator\ScanPageView::foundText($out)];
+    };
+    $w = $st($NB, 823, $nid, ['terminal' => null, 'detail_rows' => 5, 'detail_justified' => 2]);
+    check('J1-5: a run still working counts its open rows and its rows with a reason apart (got ' . json_encode($w) . ')',
+        $w === ['findings' => 3, 'justified' => 2, 'text' => '3 findings so far, and 2 saved with a reason']);
+    $w = $st($NB, 823, $nid, ['terminal' => null, 'detail_rows' => 5, 'detail_justified' => 5]);
+    check('J1-5: ... and one whose rows all have a reason has found nothing yet (got ' . json_encode($w) . ')',
+        $w === ['findings' => 0, 'justified' => 5, 'text' => 'Nothing found yet, and 5 saved with a reason']);
+    $w = $st($NB, 823, $nid, ['terminal' => null, 'detail_rows' => 4]);
+    check('J1-5: ... and one with no reason anywhere reads as before (got ' . json_encode($w) . ')',
+        $w === ['findings' => 4, 'justified' => 0, 'text' => '4 findings so far']);
+    foreach (ScanOutcome::NO_VERDICT as $how) {
+        $c = $st($NB, 823, $nid, ['terminal' => $how, 'detail_rows' => 4, 'detail_justified' => 1]);
+        check("J1-5 ($how): with no summary the rows are counted apart (got " . json_encode($c) . ')',
+            $c['findings'] === 3 && $c['justified'] === 1);
+        $c = $st($SA, 822, $said, ['terminal' => $how, 'detail_rows' => 2, 'detail_justified' => 0]);
+        check("J1-5 ($how): a summary that counted more gives its numbers (got " . json_encode($c) . ')',
+            $c['findings'] === 3 && $c['justified'] === 2);
+        $c = $st($SA, 822, $said, ['terminal' => $how, 'detail_rows' => 10, 'detail_justified' => 6]);
+        check("J1-5 ($how): counters that are larger are kept (got " . json_encode($c) . ')',
+            $c['findings'] === 4 && $c['justified'] === 6);
+        $c = $st($NB, 823, $nid, ['terminal' => $how, 'detail_rows' => 5, 'detail_justified' => 5]);
+        check("J1-5 ($how): rows that all have a reason, with no summary, leave the findings not counted (got " . json_encode($c) . ')',
+            $c['findings'] === null && $c['justified'] === 5);
+    }
+    $v = $st($SA, 822, $said, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9, 'detail_justified' => 7]);
+    check('J1-5: a run that reached a verdict answers both from its summary (got ' . json_encode($v) . ')',
+        $v === ['findings' => 3, 'justified' => 2, 'text' => '3 findings so far, and 2 saved with a reason']);
+}
+
+/* =====================================================================
  * CL-5 / EE-3  THE SERVICE GIVES ITS WORKER A WAY TO TELL "DELETED"
  *
  * ScanService hands the worker an `exists` probe over the project's record

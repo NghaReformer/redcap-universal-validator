@@ -777,9 +777,12 @@ writes any invalid value to the **module log**. It is a detection/audit trail,
 not a second gate: it fires *after* the write, so the browser *Compulsory* block
 remains the primary control for human entry.
 
-Three log entry types make sure nothing passes silently:
+Four log entry types make sure nothing passes silently:
 
 - `invalid-id-saved` — an invalid value was written.
+- `uvalidate-justified` — a value that breaks a rule was written with a reason
+  in the field its `@UVJUSTIFY` names. The entry names the reason field, not
+  the reason.
 - `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
@@ -942,7 +945,12 @@ dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
 with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, nor a
 BioPortal ontology search. A reason (`@UVJUSTIFY`) may stand for the rules of
 any field another tag checks, and the reason field itself is a Text, Notes,
-dropdown, radio or SQL field on the same form.
+dropdown, radio or SQL field on the same form that the person fills in: not
+the record ID field, a field with any form of `@READONLY`, a field that
+carries `@UVJUSTIFY` itself, or a field REDCap fills in (`@CALCTEXT`,
+`@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`, `@NOW`, `@TODAY` and their
+`-SERVER` and `-UTC` forms, `@USERNAME`, `@APPUSERNAME-APP`, `@LATITUDE`,
+`@LONGITUDE`, `@DOWNLOAD-COUNT`).
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1165,7 +1173,17 @@ reason in" with the reason field's label. Once the reason is written, the
 field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
 `@UVRANGE`, `@UVDELTA` and `@UVEXISTS` rules no longer hold the save. A reason
 never releases `@UVUNIQUE` or `@UVWRITEONCE`, and never turns a warning into a
-block. A blank reason and a missing data code count as no reason. The audit
+block. On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
+compares with another event or instance) a reason shows no note on the page;
+it only labels the finding in the audit and the scan. A blank reason, a
+missing data code and a reason field the person cannot see (its row hidden by
+branching logic, or the row it is embedded in hidden) count as no reason. The
+module refuses a reason field the person does not fill in: the record ID
+field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`, `@NOW` and the
+like), a field with `@READONLY`, and a field with its own `@UVJUSTIFY`. A
+reason stands until someone clears it, so a later, different broken value of
+the field saves under the same reason; clear the reason field when the value
+changes for another reason. The audit
 logs such a finding as `uvalidate-justified`, naming the reason field but not
 the reason, and the Validation scan counts it apart from the open findings, so
 a scan whose findings all have a reason counts no open violations.

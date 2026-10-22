@@ -706,16 +706,22 @@ final class Schema
      * Version 6: whether a reason (@UVJUSTIFY) stands for the finding, 1 or
      * 0. The rollup counts the two apart and a scan whose findings all have a
      * reason is clean (ScanPromotion::tally). 0 for every existing row, which
-     * is what every finding stored before the tag existed was. One ALTER,
-     * skipped when the column is there.
+     * is what every finding stored before the tag existed was. And the run's
+     * count of the stored rows that carry it, beside detail_rows, so a run
+     * still working says its open findings and those saved with a reason
+     * apart (ScanPromotion::findingsOf, justifiedOf). 0 for every existing
+     * run. Two ALTERs, each skipped when its column is there.
      *
      * @return array[] each ['sql' => string, 'skipIf' => ?array]
      */
     private static function statementsV6()
     {
         $f = self::table('finding');
+        $r = self::table('scan_run');
         return [['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',
-                 'skipIf' => ['column', $f, 'justified']]];
+                 'skipIf' => ['column', $f, 'justified']],
+                ['sql' => 'ALTER TABLE ' . $r . ' ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $r, 'detail_justified']]];
     }
 
     /**
@@ -930,10 +936,13 @@ final class Schema
                                    . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
-            if ($v === 6 && !self::alreadyApplied($module, ['column', self::table('finding'), 'justified'])) {
-                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
-                        'why' => 'schema version 6 did not verify after it was applied: the finding table '
-                               . 'has no justified column. The version is NOT recorded and the scan stays disabled.'];
+            if ($v === 6) {
+                foreach ([['finding', 'the finding table', 'justified'], ['scan_run', 'the run table', 'detail_justified']] as $c) {
+                    if (self::alreadyApplied($module, ['column', self::table($c[0]), $c[2]])) continue;
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 6 did not verify after it was applied: ' . $c[1]
+                                   . ' has no ' . $c[2] . ' column. The version is NOT recorded and the scan stays disabled.'];
+                }
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

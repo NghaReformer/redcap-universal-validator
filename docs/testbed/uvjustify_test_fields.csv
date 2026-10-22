@@ -29,6 +29,9 @@ uj_hr_show,uv_justify_test,,yesno,Explain the heart rate?,,Yes shows the reason 
 uj_hr_why,uv_justify_test,,text,Why the heart rate is right,,Shown only while the answer above is Yes.,,,,,[uj_hr_show]='1',,,,,,
 uj_ro,uv_justify_test,,text,Weight from the device,,Read-only on the form (the sheet imports it). 30 to 250 kg. Never blocks here.,number_1dp,,,,,,,,,,"@READONLY @UVRANGE={""hard"":[30,250],""hardBlock"":""hard"",""unit"":""kg""} @UVJUSTIFY={""reason"":""[uj_ro_why]""}"
 uj_ro_why,uv_justify_test,,text,Why the device weight is right,,A text reason.,,,,,,,,,,,
+uj_emb,uv_justify_test,,text,Weight on the second scale,,30 to 250 kg. Blocks outside. Its reason box sits in the line below.,number_1dp,,,,,,,,,,"@UVRANGE={""hard"":[30,250],""hardBlock"":""hard"",""unit"":""kg""} @UVJUSTIFY={""reason"":""[uj_emb_why]""}"
+uj_emb_box,uv_justify_test,,descriptive,Reason for the second-scale weight: {uj_emb_why},,The next field is embedded in this line.,,,,,,,,,,,
+uj_emb_why,uv_justify_test,,text,Why the second-scale weight is right,,A text reason. REDCap shows its box in the line above.,,,,,,,,,,,
 uj_rr,uv_justify_test,,text,Respiratory rate (per minute),,5 to 60. Its reason is an SQL field an administrator adds (see the sheet).,integer,,,,,,,,,,"@UVRANGE={""hard"":[5,60],""hardBlock"":""hard""} @UVJUSTIFY={""reason"":""[uj_sql_why]""}"
 uj_code,uv_justify_test,B. Rules a reason does not release,text,Participant code,,UJ- and three digits. Must be unique. A reason releases the format only.,,,,,,,,,,,"@UVALIDATE={""algorithm"":""none"",""pattern"":""UJ-[0-9]{3}"",""blockSave"":""hard""} @UVUNIQUE={""blockSave"":""hard""} @UVJUSTIFY={""reason"":""[uj_code_why]""}"
 uj_code_why,uv_justify_test,,text,Why the code is right,,A text reason.,,,,,,,,,,,

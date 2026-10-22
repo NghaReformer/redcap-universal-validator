@@ -1157,22 +1157,28 @@ first save of a value and locks it from then on:
 
 ## Values saved with a reason — the `@UVJUSTIFY` tag
 
-Some values break a rule and are still right, such as a weight gain of 15%
-after a long hospital stay, or a visit outside its window because the clinic
-was closed. A rule that holds the save then leaves the person two choices, a wrong value
+Some values break a rule and are still right, such as a weight above the range
+the protocol expected for a patient who really weighs that much, or a visit
+outside its window because the clinic was closed. A rule that holds the save then leaves the person two choices, a wrong value
 or an unsaved form. `@UVJUSTIFY` names a second field where the reason is
 written. Once that field holds a reason, the field's broken rules no longer
 hold the save, and the audit and the scan report those findings apart from
 the open ones:
 
 ```text
-@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
-@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
 ```
 
 - **`reason`** (required) names one field of the same form: a Text or Notes
   field, or a dropdown, radio or SQL field whose choices are the reasons you
-  allow. Not the field itself, and no event or instance.
+  allow. Not the field itself, and no event or instance. The person must
+  fill it in, so the module refuses the record ID field, a field REDCap fills
+  in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
+  `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
+  `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`), a field
+  with any form of `@READONLY`, and a field that carries `@UVJUSTIFY` itself,
+  which would let two fields stand for each other.
 - **`message`** is the note under the field that asks for the reason (a map of
   language ids to texts is accepted, as for the other tags). Without it the
   note reads "Fix this value, or say why it is right in" the reason field's
@@ -1188,7 +1194,11 @@ the open ones:
 - **What counts as a reason.** Any text left once spaces, tabs and line
   breaks are taken from both ends. A blank field and a missing data code give
   none, so a reason field marked "unknown" still asks for one. On the form, a
-  reason field whose row branching logic hides gives none either.
+  reason field the person cannot see gives none either: its row hidden by
+  branching logic, or, for a reason field embedded in another field's label,
+  the row it sits in. A reason stands until someone clears it, so a later,
+  different broken value of the field saves under the same reason. Clear the
+  reason field when the value changes for another reason.
 - **On the page.** While a covered rule holds the save, or asks "Save
   anyway?", and no reason is given, a note under the field asks for one, and
   the field's line in the save message reads "Weight (or give a reason in
@@ -1198,17 +1208,22 @@ the open ones:
   lookup still being checked still holds the save, and a field locked by
   `@UVWRITEONCE` stays locked. On a survey page that does not carry the
   reason field, the tag does nothing; the audit after the save still reads
-  the reason.
+  the reason. On a rule that only warns (`blockSave` `"off"`, or an
+  `@UVDELTA` that compares with another event or instance, which the page
+  shows only as advice) a reason never shows a note on the page; it only
+  labels the finding in the audit and the scan.
 - **Audited.** The post-save audit logs a broken rule whose reason is given,
   in the same record, event and instance, as `uvalidate-justified` with
   `justified_by` naming the reason field; open findings stay
   `invalid-id-saved`. The reason itself is never logged. A reason field that
   cannot be read, or missing data codes that cannot be read, leave the
   finding open. The Validation scan counts these findings apart: the summary
-  adds "and N saved with a reason", the findings table has a "Saved with a
-  reason" column, the durable scan stores `uv_finding.justified` (schema
-  version 6), and a scan whose findings all have a reason counts no open
-  violations. Configure via field annotation only.
+  adds "and N saved with a reason" while the scan runs and once it ends, the
+  findings table has a "Saved with a reason" column, the durable scan stores
+  `uv_finding.justified` and counts a run's stored rows with a reason in
+  `uv_scan_run.detail_justified` (schema version 6), and a scan whose findings
+  all have a reason counts no open violations. Configure via field annotation
+  only.
 
 ## The Validation scan — checking data that is already saved
 

@@ -7,8 +7,9 @@
  * it on its own axis, apart from the open findings, and it is no bar to clean.
  * Each block here is a claim about what the server does with the column: how it
  * is defined on a fresh install and after the version-6 migration, the values
- * the store writes and reads back, the keys that leave it out of a finding's
- * identity, and the summary and the verdict built on it.
+ * the store writes and reads back, the run's count of them (scan_run.
+ * detail_justified, which a working run's status reads), the keys that leave
+ * it out of a finding's identity, and the summary and the verdict built on it.
  *
  * THE NEIGHBOUR HAS A JUSTIFIED FINDING. Every block that counts plants project
  * pid+1 in the same generation, and one of its two findings is marked justified,
@@ -203,6 +204,20 @@ $PID = 980;
     ksort($readm);
     check('store: ArrayScanStore stores and returns the same flags (got ' . json_encode($readm) . ')',
         $okm === true && $readm === $read);
+
+    // THE RUN'S COUNTERS. detail_rows counts the three stored rows and
+    // detail_justified the one with its reason given, through the batch's own
+    // UPDATE, so the status poll of a working run says them apart: two
+    // findings so far, one saved with a reason. Both stores agree.
+    $cnt = $dbA->select('SELECT detail_rows, detail_justified FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', [$o['run']]);
+    check('store: the run counts 3 stored rows, 1 of them with a reason (got ' . json_encode($cnt) . ')',
+        (int) $cnt[0][0] === 3 && (int) $cnt[0][1] === 1);
+    $sqlRun = $s->run($PID, $o['run']);
+    $memRun = $mem->run($PID, $om['run']);
+    check('store: run() reads the counter back, and ArrayScanStore holds the same',
+        (int) $sqlRun['detail_justified'] === 1 && (int) $memRun['detail_justified'] === 1 && (int) $memRun['detail_rows'] === 3);
+    check('store: a working run shows 2 findings so far and 1 saved with a reason',
+        ScanPromotion::findingsOf($s, $sqlRun) === 2 && ScanPromotion::justifiedOf($s, $sqlRun) === 1);
 
     // THE READ THAT NOW SELECTS justified, on the key it was built for.
     // Asserted on the statement sent.
@@ -452,12 +467,29 @@ $ROLL = 984;
     $h = Schema::health($ca);
     check('v5: which health() refuses, naming the version it is at', $h['ok'] === false && $h['version'] === 5);
 
-    // startRun() and writeManifest() name no version-6 column, so a run can be
-    // planted through the store; the findings are written as a version-5 build
-    // wrote them, with no justified in the column list.
+    // startRun()'s INSERT and writeManifest() name no version-6 column, so a
+    // run can be planted through the store. startRun() then reads the row back
+    // through run(), which names detail_justified (version 6) and so fails at
+    // version 5; the row is written by then, and its id, generation and epoch
+    // are read here. The findings are written as a version-5 build wrote them,
+    // with no justified in the column list.
     $s5 = new SqlScanStore($dbA);
-    $o = $open($s5, 990, ['NEW-1']);
-    $on = $open($s5, 991, ['NB-1']);
+    $open5 = function ($pid, array $ids) use ($s5, $dbA) {
+        try {
+            $s5->startRun($pid, ['created_by' => 'alice', 'fence_open' => '10']);
+        } catch (\Throwable $e) {
+            // the read-back of a version-5 row, as above
+        }
+        $r = $dbA->select('SELECT run_id, generation_id, lease_epoch FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
+        $rid = (int) $r[0][0];
+        $m = [];
+        foreach ($ids as $id) $m[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+        $s5->writeManifest($rid, $m);
+        return ['run' => $rid, 'gen' => (int) $r[0][1], 'epoch' => (int) $r[0][2]];
+    };
+    $o = $open5(990, ['NEW-1']);
+    $on = $open5(991, ['NB-1']);
     $seq = uv_run_seq($dbA, $o['run']);
     $row = function ($pid, $gen, $seq, $name, $rec, $closed, $field, $z, $ref) {
         return '(' . (int) $pid . ', ' . (int) $gen . ', UNHEX(SHA2("' . $name . '", 256)), ' . (int) $seq . ', '
@@ -489,6 +521,14 @@ $ROLL = 984;
     $zero = $dbA->select('SELECT COUNT(*) FROM ' . $F . ' WHERE justified <> 0');
     check('v5 to v6: every row stored at version 5 is kept and reads 0',
         $count() === 4 && (int) $zero[0][0] === 0);
+    $rc = $A->query("SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = '" . Schema::table('scan_run') . "' AND column_name = 'detail_justified'")->fetch_row();
+    check('v5 to v6: the run table gains detail_justified, BIGINT UNSIGNED NOT NULL DEFAULT 0 (got ' . json_encode($rc) . ')',
+        is_array($rc) && strtolower((string) $rc[0]) === 'bigint' && stripos((string) $rc[1], 'unsigned') !== false
+        && (string) $rc[2] === 'NO' && (string) $rc[3] === '0');
+    $runs0 = $dbA->select('SELECT COUNT(*), SUM(detail_justified) FROM ' . Schema::table('scan_run') . ' WHERE run_id IN (?, ?)', [$o['run'], $on['run']]);
+    check('v5 to v6: and the two runs from version 5 read 0 there',
+        (int) $runs0[0][0] === 2 && (int) $runs0[0][1] === 0);
     $vers = [];
     foreach ($dbA->select('SELECT version FROM ' . Schema::table('schema_version') . ' ORDER BY version') as $vr) {
         $vers[] = (int) $vr[0];
@@ -513,6 +553,7 @@ $ROLL = 984;
     $j = $dbA->select('SELECT justified FROM ' . $F . ' WHERE project_id = ? AND field = ?', [990, 'reason_given']);
     check('v5 to v6: a justified finding written after the migration is stored as 1',
         $ok === true && count($j) === 1 && (string) $j[0][0] === '1');
+    check('v5 to v6: and the run counts it in detail_justified', (int) $s5->run(990, $o['run'])['detail_justified'] === 1);
     $roll = new RollupBuilder($dbA, $s5);
     while ($roll->step(990, $o['run'], $o['epoch'], $o['gen'], 100)['done'] === false) { }
     $standing = [];

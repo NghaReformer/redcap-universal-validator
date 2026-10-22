@@ -150,7 +150,7 @@ namespace {
             'choices' => $r['Choices, Calculations, OR Slider Labels'], 'branching' => $r['Branching Logic (Show field only if...)']];
     }
     fclose($fh);
-    check('setup: the fixture holds 44 rows', $read === 44, $read);
+    check('setup: the fixture holds 47 rows', $read === 47, $read);
     check('setup: the fixture adds one instrument only', count(array_unique(array_map(function ($m) { return $m['form_name']; }, $FIX))) === 1);
     check('setup: the fixture holds no SQL field (only an administrator can add one, J4)', !array_filter($FIX, function ($m) { return $m['field_type'] === 'sql'; }));
     $pad = function (array $d) {
@@ -326,7 +326,7 @@ namespace {
     foreach (array_keys($ERR) as $f) $pages['errors'][$f] = errOf($p, $f);
     $REASON = ['uj_req' => 'uj_req_why', 'uj_wt' => 'uj_wt_why', 'uj_id' => 'uj_id_why', 'uj_pool' => 'uj_pool_why', 'uj_dia' => 'uj_dia_why',
         'uj_dose' => 'uj_dose_why', 'uj_visit' => 'uj_visit_why', 'uj_wt2' => 'uj_wt2_why', 'uj_mother' => 'uj_mother_why', 'uj_temp' => 'uj_temp_why',
-        'uj_off' => 'uj_off_why', 'uj_hr' => 'uj_hr_why', 'uj_ro' => 'uj_ro_why', 'uj_code' => 'uj_code_why', 'uj_lock' => 'uj_lock_why', 'uj_far' => 'uj_far_why'];
+        'uj_off' => 'uj_off_why', 'uj_hr' => 'uj_hr_why', 'uj_ro' => 'uj_ro_why', 'uj_emb' => 'uj_emb_why', 'uj_code' => 'uj_code_why', 'uj_lock' => 'uj_lock_why', 'uj_far' => 'uj_far_why'];
     foreach ($REASON as $f => $why) {
         $j = rulesOn($p, $f, 'justify');
         check("A2: $f carries its justify rule, naming $why", count($j) === 1 && ($j[0]['justifyReason'] ?? '') === $why && empty($j[0]['configError']), $j);
@@ -341,7 +341,7 @@ namespace {
     check('A2: one field per mode a reason stands for, plus the duplicate and the lock (which come in F)', $modes === [
         'uj_req' => ['required'], 'uj_wt' => ['range'], 'uj_id' => ['single'], 'uj_pool' => ['pooled'], 'uj_dia' => ['constraint'], 'uj_dose' => ['choices'],
         'uj_visit' => ['window'], 'uj_wt2' => ['delta'], 'uj_mother' => ['exists'], 'uj_temp' => ['range'], 'uj_off' => ['constraint'], 'uj_hr' => ['range'],
-        'uj_ro' => ['range'], 'uj_code' => ['single', 'unique'], 'uj_lock' => ['range'], 'uj_far' => ['range']], $modes);
+        'uj_ro' => ['range'], 'uj_emb' => ['range'], 'uj_code' => ['single', 'unique'], 'uj_lock' => ['range'], 'uj_far' => ['range']], $modes);
 
     // ---- Section B: each rule a reason stands for, on XE-1 ------------------------------------------
     // The log entries of each save. Every save audits every rule of the form,
@@ -424,6 +424,14 @@ namespace {
     $m = $save('XE-1', ['uj_ro_why' => 'Device recalibrated'], '20261026095500');
     $step('C7b', $m, [$J('uj_ro', 'range:hard-high')], [$O('uj_ro', 'range:hard-high')]);
     $quiet('C7b', $m, ['Device recalibrated']);
+    // C8: the reason field is embedded in the label of the line below the value
+    $open('C8', 'form');
+    $m = $save('XE-1', ['uj_emb' => '300.0', 'uj_emb_why' => 'Second scale checked'], '20261026095600');
+    $step('C8b', $m, [$J('uj_emb', 'range:hard-high')]);
+    $quiet('C8b', $m, ['Second scale checked']);
+    $open('C8c', 'form');
+    $m = $save('XE-1', ['uj_emb' => '', 'uj_emb_why' => ''], '20261026095630');
+    $step('C8c', $m, [], [$J('uj_emb', 'range:hard-high')]);
     $open('D1', 'form');
 
     // ---- Section D: "Save anyway?", and a rule that never blocks --------------------------------------

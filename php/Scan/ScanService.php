@@ -657,7 +657,7 @@ final class ScanService
             'stopping'  => $progress['stopping'],
             'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run, $aggregates),
-            // apart from 'findings': the ones a reason (@UVJUSTIFY) stands for, once the run is totalled
+            // apart from 'findings': the ones a reason (@UVJUSTIFY) stands for, counted the same way
             'justified' => ScanPromotion::justifiedOf($store, $run, $aggregates),
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,

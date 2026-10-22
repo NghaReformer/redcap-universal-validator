@@ -11,7 +11,7 @@ pages, the Data Import Tool, the module log and the Validation scan. Section J
 checks what REDCap does that the code depends on.
 
 Target: chpr-redcap.org pid 149 (longitudinal, seed records XE-1 to XE-4). The
-fixture is [`uvjustify_test_fields.csv`](uvjustify_test_fields.csv), 44 fields
+fixture is [`uvjustify_test_fields.csv`](uvjustify_test_fields.csv), 47 fields
 on one new instrument `uv_justify_test`, in five sections:
 
 - Section A of the form pairs one field per rule a reason stands for with its
@@ -21,12 +21,15 @@ on one new instrument `uv_justify_test`, in five sections:
   languages), `uj_wt2` (`@UVDELTA`) and `uj_mother` (`@UVEXISTS`). Then
   `uj_temp` asks "Save anyway?" (blockSave `confirm`, the soft mode),
   `uj_off` only warns (blockSave `off`), `uj_hr` has its reason in a row
-  that branching logic hides, `uj_ro` is read-only, and `uj_rr` names an SQL
-  reason field that only an administrator can add (J4).
+  that branching logic hides, `uj_ro` is read-only, `uj_emb` has its reason
+  field `uj_emb_why` embedded in the label of the line below it
+  (`uj_emb_box`), and `uj_rr` names an SQL reason field that only an
+  administrator can add (J4).
 - The reason fields cover each type a reason may sit in: text (`uj_wt_why`
-  and eight more), notes (`uj_pool_why`, `uj_visit_why`), dropdown
+  and nine more), notes (`uj_pool_why`, `uj_visit_why`), dropdown
   (`uj_dia_why`), radio (`uj_req_why`, `uj_wt2_why`) and SQL (`uj_sql_why`,
-  added in J4). `uj_sys`, `uj_arm`, `uj_anchor` and `uj_hr_show` carry no rule.
+  added in J4). `uj_sys`, `uj_arm`, `uj_anchor`, `uj_hr_show` and the
+  descriptive `uj_emb_box` carry no rule.
 - Section B of the form puts a reason beside `@UVUNIQUE` (`uj_code`) and
   beside `@UVWRITEONCE` (`uj_lock`). A reason releases neither.
 - Sections C and D hold `uj_far` and its reason, one survey page each.
@@ -41,7 +44,7 @@ lookup and duplicate answers, and both scans. `tests/justify_live_twin_js.cjs`
 replays the clicks and typing through `js/engine.js` with the page configs the
 module built (`tests/justify_live_pages.json`) on a page shaped as REDCap
 renders these field types. It checks each note, each hold and each line of the
-alert and the dialog. Steps J1, J5 and J6 read what REDCap itself does, and
+alert and the dialog. Steps J1, J5, J6 and J7 read what REDCap itself does, and
 each says what to record when REDCap does it another way. Both twins run in
 CI; run them after any change to the module, the engine or this sheet:
 
@@ -63,7 +66,9 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
   `@UVDELTA`. It never stands for `@UVUNIQUE` or `@UVWRITEONCE` (section F).
 - A reason is text that is not blank, not only spaces and not a Missing Data
   Code, or a choice picked in a dropdown, radio or SQL field. On the page, a
-  reason field whose row branching logic hides gives no reason. The audit and
+  reason field whose row branching logic hides gives no reason. A reason
+  field embedded in another field's label counts as shown while the row it
+  sits in shows (C8). The audit and
   the scans read the saved value and never see branching (J2).
 - A reason never adds a hold. A rule with blockSave `off` still only warns
   and gets no note. A field the person cannot change (read-only) or cannot see
@@ -83,9 +88,9 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
 
 1. Deploy the release that contains `@UVJUSTIFY` and confirm the version in
    Control Center.
-2. Append, never replace. Download the current dictionary, paste the 44 rows
+2. Append, never replace. Download the current dictionary, paste the 47 rows
    of `uvjustify_test_fields.csv` after its last row and upload. The diff must
-   report one new instrument with 44 new fields and nothing else.
+   report one new instrument with 47 new fields and nothing else.
 3. Designate `uv_justify_test` on `visit_1_arm_1` (380).
 4. In Project Setup, Additional customizations, the project needs the Missing
    Data Code `UNK, Unknown` (C3 and H2). Add it for this run if the project
@@ -128,7 +133,7 @@ times to the minute, in the project's time zone. The twin uses 2026-10-26
 09:00 for B1b, 09:05 for B2b, 09:10 for B3b, 09:15 for B4b, 09:20 for B5b,
 09:25 for B6b, 09:30 for B7b, 09:35 for B8b, 09:40 for B9b, 09:45 for C4b,
 09:50 for C5b, 09:52 for C6b, 09:53 for the import of C7 and 09:54 for its
-save, 09:55 for C7b, 09:57 for D2, 10:00 for D3, 10:05 for D4, 10:10 for E2,
+save, 09:55 for C7b, 09:56 for C8b and C8c, 09:57 for D2, 10:00 for D3, 10:05 for D4, 10:10 for E2,
 10:15 for F1b, 10:20 for F2, 10:25 for F3c, 10:30 for F4b, 10:35 for F5b,
 10:40 for the import of F6 and 10:45 for its save, 10:50 to 10:54 for the
 five survey pages, 11:00, 11:05 and 11:10 for the imports of H2, 11:15 and
@@ -203,6 +208,9 @@ C1 to C4 change the page only, and each puts the reason back.
 | C6b | "Explain the heart rate?" = Yes. If C6 erased the reason, type Athlete, resting rate checked again. Save | Once the reason shows with its text the note goes. The record saves, with the entries of C5b |
 | C7 | Data Import Tool, CSV `record_id,redcap_event_name,uj_ro` with the row `XE-1,visit_1_arm_1,300.0`. Import. Reopen the form. Save | "Weight from the device" is read-only and shows "✗ This value is above the plausible range (allowed 30 to 250 kg)." No reason note, because the person cannot change the field here and it never holds the save. The record saves. New entry `invalid-id-saved` for `uj_ro`, with type `range`, reason `hard-high`, no `justified_by` |
 | C7b | "Why the device weight is right" = Device recalibrated. Save | Still no reason note; the range note stays. The record saves. The `uj_ro` entry is now `uvalidate-justified` with `justified_by` `uj_ro_why` |
+| C8 | "Weight on the second scale" = 300.0 and leave. Save. Then type Second scale checked in the box of the line "Reason for the second-scale weight:" | No row "Why the second-scale weight is right" shows; its box sits in the line "Reason for the second-scale weight:". "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note naming “Why the second-scale weight is right”. Held: "• Weight on the second scale (or give a reason in “Why the second-scale weight is right”)". Once the reason is typed the note goes and the range note stays |
+| C8b | Save | The record saves. New entry for `uj_emb`, with type `range`, reason `hard-high`, `justified_by` `uj_emb_why` |
+| C8c | Clear the box of "Reason for the second-scale weight:" and leave. Save. Then clear "Weight on the second scale" and leave. Save | With the reason cleared the note is back. Held, the line of C8. With the weight cleared both notes go and the record saves, with the entries of C7b |
 
 ## Section D: "Save anyway?", and a rule that never blocks (XE-1)
 
@@ -283,6 +291,7 @@ down what you saw in the run report.
 | J4b | "Why the respiratory rate is right" = Counted twice. Save | The reason note goes. The record saves. New entry for `uj_rr`, with type `range`, reason `hard-high`, `justified_by` `uj_sql_why`. Then delete `uj_sql_why` |
 | J5 | Read the module log at the imports of C7, F6, H2 and J2 | No entry at any import, since an import runs no module hook. If an import writes an entry, record it |
 | J6 | On survey page 3 (G3), run `document.getElementsByName('uj_far_why').length` in the browser console | 0, because REDCap draws only the current page's fields. If it is 1, record it, since the reason field would then sit hidden on the page |
+| J7 | In C8, run `document.getElementsByName('uj_emb_why')[0].closest('tr').id` in the browser console | `uj_emb_box-tr`: REDCap moves the embedded box into the row of the label that names it, and the page judges that row. If it names another row, record it |
 
 ---
 
