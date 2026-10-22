@@ -165,8 +165,10 @@ final class ScanRetention
      * A NULL REVISION BUMPS NOTHING and only carries the clearing on. The
      * cron's later calls for one revocation pass null (wave 10): a run
      * started after the bump was planned under the policy that caused it, and
-     * a repeated bump would mark its values expired too. Every run starts at
-     * revision 1, so "below the revision" does not tell such a run apart.
+     * a repeated bump would mark its values expired too. Such a run starts
+     * at the project's revision, the one the bump wrote (W10A-N1), so a
+     * repeat of the same bump - a pass that died between the bump and its
+     * checkpoint - leaves it alone as well.
      *
      * @param int|null   $newRevision the revision to move the project's runs
      *                           to, or null to bump nothing

@@ -95,12 +95,18 @@ final class ArrayScanStore implements ScanStore
                 && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
             ? (int) $run['baseline_generation'] : $seq;
 
+        // At the project's revision now (W10A-N1; SqlScanStore::startRun()).
+        $rev = 1;
+        foreach ($this->runs as $r) {
+            if ((int) $r['project_id'] === (int) $pid) $rev = max($rev, (int) $r['policy_revision']);
+        }
+
         $id = $this->nextRun++;
         $this->runs[$id] = array_merge([
             'run_id' => $id, 'project_id' => (int) $pid, 'scope_dag' => null,
             'phase' => 'planning', 'terminal' => null, 'coverage' => ScanOutcome::COV_PARTIAL,
             'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'none',
-            'policy_revision' => 1, 'fingerprint' => str_repeat('0', 64),
+            'policy_revision' => $rev, 'fingerprint' => str_repeat('0', 64),
             'manifest_total' => 0, 'manifest_done' => 0, 'cursor_ordinal' => 0,
             'lease_epoch' => 0, 'generation_id' => $gen, 'run_seq' => $seq,
             // The planning lease (claimPlan()). Not in RUN_COLUMNS, as the SQL

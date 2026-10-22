@@ -366,11 +366,14 @@ final class ScanMaintenance
      * policy that cannot be read is tightened, as ScanService treats it.
      *
      * The revision is one past the project's highest, so the bump reaches
-     * every run of the project, including one started under the new policy:
-     * every run starts at revision 1 and nothing else tells them apart. That
-     * clears more than it must, never less. The intent is checkpointed before
-     * the bump and again after it, so a pass that dies in between bumps again
-     * rather than leaving previews it never clears.
+     * every run of the project. A run starts at the project's highest
+     * revision (W10A-N1), so one started under the new policy before a pass
+     * noticed the change sits at the same revision as the runs it tightened,
+     * and its previews are cleared too: more than it must, never less. A run
+     * started after the bump starts at the new revision, and a repeat of the
+     * bump leaves it alone. The intent is checkpointed before the bump and
+     * again after it, so a pass that dies in between bumps again rather than
+     * leaving previews it never clears.
      *
      * @return bool false when the budget ran out inside the clearing
      */

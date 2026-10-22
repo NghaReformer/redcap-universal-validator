@@ -1505,6 +1505,22 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $setRun($sm, $rm, ['terminal_reason' => ScanStore::REMOVING_WHY]);
         $C('remove: once retention has begun removing it, it reads as no run, and the next run is untouched',
             $sm->run(793, $rm) === null && $sm->run(793, $rn) !== null);
+
+        // A RUN STARTS AT ITS PROJECT'S REVISION NOW (W10A-N1). The retention
+        // cron moves a project's runs to a higher revision when its privacy
+        // policy tightens; a run started after that starts there, not at 1,
+        // so a repeat of the bump does not reach it. Another project's
+        // revision is not this one's.
+        $sv = $newStore();
+        $ra = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $C('revision: a project\'s first run starts at revision 1', (int) $ra['policy_revision'] === 1);
+        $sv->finish((int) $ra['run_id'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $setRun($sv, (int) $ra['run_id'], ['policy_revision' => 3]);
+        $rb = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $rc = $sv->startRun(795, ['created_by' => 'alice'])['run'];
+        $C('revision: a later run starts at the project\'s highest revision, and only its own project\'s',
+            (int) $rb['policy_revision'] === 3 && (int) $sv->run(794, (int) $rb['run_id'])['policy_revision'] === 3
+            && (int) $rc['policy_revision'] === 1);
     }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------

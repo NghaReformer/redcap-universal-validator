@@ -156,6 +156,18 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
+     * The highest policy revision of the project's runs, 1 when it has none:
+     * what a new run starts at (W10A-N1). One statement over the project's
+     * own rows (ix_project_created), which retention keeps few.
+     */
+    private function projectRevision($pid)
+    {
+        $r = $this->db->select('SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ?', [(int) $pid]);
+        return isset($r[0][0]) && (int) $r[0][0] > 1 ? (int) $r[0][0] : 1;
+    }
+
+    /**
      * A claim token for one claim, drawn from the run's own project sequence.
      *
      * NOT A RANDOM NUMBER, and not a timestamp. Random would be adequate for
@@ -225,6 +237,12 @@ final class SqlScanStore implements ScanStore
         $gen = (isset($run['run_kind']) && $run['run_kind'] === 'incremental'
                 && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
             ? (int) $run['baseline_generation'] : $seq;
+        // AT THE PROJECT'S REVISION NOW (W10A-N1), outside the insert's try
+        // for the reason above. A run that started at 1 after the retention
+        // cron moved the project's runs to a higher revision sat below it, so
+        // a repeat of that bump expired the previews of a run planned under
+        // the policy that caused it (ScanRetention::revokePreviews()).
+        $rev = isset($run['policy_revision']) ? (int) $run['policy_revision'] : $this->projectRevision($pid);
 
         $sql = 'INSERT INTO ' . Schema::table('scan_run') . '
             (run_uuid, project_id, run_seq, generation_id, created_by, scope_dag, scope_kind,
@@ -246,7 +264,7 @@ final class SqlScanStore implements ScanStore
             'planning', ScanOutcome::COV_PARTIAL, ScanOutcome::DETAIL_COMPLETE,
             isset($run['values_state']) ? $run['values_state'] : 'none',
             isset($run['policy_json']) ? $run['policy_json'] : '{}',
-            isset($run['policy_revision']) ? $run['policy_revision'] : 1,
+            $rev,
             isset($run['fingerprint']) ? $run['fingerprint'] : str_repeat('0', 64),
             isset($run['fence_open']) ? $run['fence_open'] : null,
             $now, $now,

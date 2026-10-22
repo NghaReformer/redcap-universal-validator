@@ -381,6 +381,32 @@ $REV = 820;
         $bkey !== '' && $prefix($bkey, 'scan_run', 1) === ['project_id']);
 }
 
+// -- A RUN STARTED AFTER A BUMP IS NOT REACHED BY ITS REPEAT (W10A-N1) ---------
+//
+// Project 822's finished run keeps previews; the cron moves the project to
+// revision 5. A run started after that was planned under the policy that
+// caused the bump, and starts at 5. A pass that died between the bump and
+// its checkpoint repeats the bump with the same revision: the new run, and
+// the previews it writes, are left alone.
+{
+    $T = 822;
+    $before = $plantRun($dbA, $T, 2, '2999-01-01 00:00:00');
+    $ret = new ScanRetention($dbA);
+    $ret->revokePreviews($T, 5, null, 50);
+    $after = $plantRun($dbA, $T, 2, '2999-01-01 00:00:00', false, ['values_state' => 'value']);
+    $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$after['run']]);
+    check('revision: a run started after the bump starts at the revision it wrote',
+        is_array($before) && is_array($after) && (int) $row[0][0] === 5 && $row[0][1] === 'value');
+    $again = $ret->revokePreviews($T, 5, null, 50);
+    $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$after['run']]);
+    check('revision: so a repeat of that bump moves no run, and the new run keeps its previews',
+        $again['runs'] === 0 && (int) $row[0][0] === 5 && $row[0][1] === 'value'
+        && $count($dbA, 'project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', [$T, $after['gen']]) === 2);
+    uv_clear_project($dbA, $T);
+}
+
 // -- A REVOKE CURSOR IS GOOD ONLY FOR THE PROJECT IT WAS ISSUED FOR (R8-3) ----
 //
 // Project 824's previews are planted first, so every one of its finding ids
