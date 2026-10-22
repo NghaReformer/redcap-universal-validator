@@ -20,13 +20,21 @@ other rule.</p>
 <code>[field]</code> and <code>[checkbox(code)]</code> references, the operators
 <code>=</code> <code>&lt;&gt;</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code>
 <code>&gt;=</code> <code>&lt;=</code>, <code>and</code> / <code>or</code> /
-<code>not</code>, and parentheses. ISO dates and numbers compare correctly.</p>
+<code>not</code>, and parentheses. ISO dates and numbers compare correctly. A field
+validated as a number, a calc and a slider are read as the number they hold (a saved
+<code>12,5</code> is 12.5), and two numbers compare by value, so <code>02</code>
+equals <code>2</code>.</p>
 
 <h2>Confirm-a-value pairs</h2>
 
-<p>"Type it twice" needs no special feature — it is an assertion:</p>
+<p>"Type it twice" is an assertion with <code>exact</code> set, so the two entries
+must match character for character:</p>
 
-<pre><code>@UVASSERT="[participant_id]=[participant_id_confirm]"</code></pre>
+<pre><code>@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}</code></pre>
+
+<p>Without <code>exact</code>, <code>=</code> compares numbers by value:
+<code>00123</code> would confirm <code>123</code>, and <code>0677123456</code> would
+confirm <code>677123456</code>.</p>
 
 <h2>Letter case</h2>
 

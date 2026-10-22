@@ -119,6 +119,10 @@
     "staff":  "The measurement is 0 or below.",
     "survey": "Please enter a measurement above 0."
   },
+  "range/returned-stale": {
+    "staff":  "This field holds a value its growth rule returned for an earlier measurement or input. An import does not refill it; open the form and save it to write the current value.",
+    "survey": "This value is out of date."
+  },
   "range/*": {
     "staff":  "The value is outside its plausible range.",
     "survey": "This value is not allowed here.",
@@ -149,6 +153,10 @@
   "single/check-character": {
     "staff":  "The format is right but the check character does not match, so one character is mistyped.",
     "survey": "This ID looks mistyped - please check it."
+  },
+  "single/too-long": {
+    "staff":  "The value is longer than 512 characters, more than any ID field holds, so it was not checked.",
+    "survey": "This entry is too long."
   },
   "pooled/no-id": {
     "staff":  "No recognisable ID could be found in this field.",

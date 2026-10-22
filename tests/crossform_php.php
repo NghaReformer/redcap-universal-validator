@@ -207,6 +207,26 @@ namespace {
         strpos($p7['html'], SECRET) === false);
     check('rights table has no row for this user: deferred', !empty(ruleFor($p7, 'offref')['deferred']));
 
+    // ---- 5b) AST-1: an off-page comma-decimal value is baked as its number.
+    //          The browser compares a literal as written, so a baked "15,0"
+    //          against a typed 9,5 read as 9.5 would be text against a number.
+    $commaDict = $DICT + [
+        'hb_max' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'enroll_form',
+                     'text_validation_type_or_show_slider_number' => 'number_1dp_comma_decimal'],
+        'hb'     => ['field_type' => 'text', 'form_name' => 'visit_form',
+                     'text_validation_type_or_show_slider_number' => 'number_1dp_comma_decimal',
+                     'field_annotation' => '@UVASSERT="[hb]<=[hb_max]"'],
+    ];
+    $commaData = $DATA;
+    $commaData[2][351]['hb_max'] = '15,0';
+    $pc = page(mod($commaDict, $commaData, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    $rc = ruleFor($pc, 'hb');
+    check('AST-1: the off-page 15,0 is baked as the number 15.0',
+        json_encode(isset($rc['assertAst']) ? $rc['assertAst'] : null) === json_encode(['cmp', '<=', ['ref', 'hb', null], ['lit', '15.0']]));
+    check('AST-1: the page names hb as a comma-decimal field',
+        isset($pc['cfg']['numberMarks']['hb']) && $pc['cfg']['numberMarks']['hb'] === 'comma'
+        && !isset($pc['cfg']['numberMarks']['hb_max']));
+
     // ---- 6) same-instrument is untouched: both refs stay live ---------------
     $same = $DICT;
     $same['start_date']['form_name'] = 'visit_form';

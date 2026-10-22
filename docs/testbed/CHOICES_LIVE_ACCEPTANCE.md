@@ -179,6 +179,7 @@ back with the report page.
 | I2 | Chrome + Firefox: spot-check A2, B3, C3 | identical behavior |
 | I3 | Load a form with the module's OTHER modes live (an @UVALIDATE / @UVASSERT / @UVUNIQUE field alongside a @UVCHOICES field) | every prior mode still works; no console errors; the choices field composes cleanly |
 | I4 | **pid 134** (second project): add one simple @UVCHOICES rule | filtering works and the two projects' settings do not bleed into each other |
+| I5 | Turn on "Enhanced radio buttons and checkboxes" in the `uv_choices_test` survey settings, open the survey, pick `uch_country = 1` | the region buttons for 201 and 202 disappear, the original radio list does not appear beside the buttons, a stale pick keeps its button, and the message shows under the field. Repeat with `uch_reach` (checkbox) |
 
 ---
 

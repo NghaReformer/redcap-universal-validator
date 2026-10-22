@@ -291,7 +291,8 @@ browser behaviors** — none can block an API or import write.
 | Compulsory | `hard` | Block the browser form/survey save until the value is fixed |
 
 *Compulsory* never traps a **read-only** field — someone who cannot edit the
-value is not blocked by it. Start new rules at *Informational* to see what they
+value is not blocked by it. That includes a `@READONLY` radio, yes/no or
+autocomplete dropdown, and a field whose row branching logic or `@HIDDEN` hides. Start new rules at *Informational* to see what they
 catch, then tighten to *Advisory* or *Compulsory* once you trust them.
 
 ### `@UVALIDATE` annotation syntax
@@ -593,6 +594,14 @@ One condition may mix `and`, `or` and `not` with parentheses:
 parentheses for the other grouping. Every tag that takes a condition (`when` on all
 tags, the `@UVASSERT` test, the `@UVREQUIRED` condition) reads the same language.
 
+**Numbers.** A field validated as an integer or a number (any decimals, comma
+decimals included), a calc and a slider are read as the number they hold: a saved
+`12,5` is 12.5 and `2.5E1` is 25. Two numbers compare by value, so `=` treats `02`,
+`2` and `2.0` as equal. A Text field without number validation is read as typed. For
+an ID or a phone number typed twice, set `"exact":true` on the `@UVASSERT` (the
+Configure dialog's "compare exactly" box): `=` and `<>` then compare the two entries
+character for character, so `00123` does not confirm `123`.
+
 The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
 `@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
 or the next action tag. Text after a complete condition is ignored as a note. If that
@@ -612,7 +621,8 @@ stopped an unquoted condition at the first space.
 - **Same-page fields react live** — change the dropdown and the gated field's
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
-  yet, so those references read as empty).
+  yet, so those references read as empty). On a survey shown one section per
+  page, a field answered on another page uses its saved answer in the same way.
 - **A reference that cannot be resolved is refused, not read as blank** (1.6.0):
   a field on a different repeating instrument, a field not collected in this
   event, or a read that failed. The rule stops checking and reports why — see the
@@ -639,9 +649,12 @@ stopped an unquoted condition at the first space.
   Caps: 500 characters, 20 references, 10 nesting levels.
 
 > **A field merely shown by branching logic** (no `when` needed) also just works:
-> the validator binds by field name and activates once the field is present and
-> has a value; while hidden and empty it stays silent. Reach for `when` when the
-> *validation itself* should depend on another field's value.
+> the validator binds by field name and checks the value once there is one. A
+> field whose row is hidden, by branching logic or `@HIDDEN`, never holds the
+> save. `@UVREQUIRED` goes further: a hidden field is not required at all, on
+> the page, in the audit and in the scan (which read the field's branching
+> logic in this same condition dialect). Reach for `when` when the *validation
+> itself* should depend on another field's value.
 
 ---
 
@@ -767,7 +780,10 @@ remains the primary control for human entry.
 Three log entry types make sure nothing passes silently:
 
 - `invalid-id-saved` — an invalid value was written.
-- `uvalidate-unconfigurable` — a rule the server could not evaluate.
+- `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
+  it could not judge the way the browser does (a character outside printable
+  ASCII that the format pattern's regex reads differently in the two engines).
+  Check those values by hand.
 - `uvalidate-audit-error` — the hook itself failed.
 
 ### The coverage caveat (read before relying on it)
@@ -852,8 +868,9 @@ Yes — since 1.0.0 that is exactly what a **Constraint** rule (the `@UVASSERT`
 tag, or the Constraint kind in the Configure dialog) does: the field is invalid
 unless a condition such as `[end_date]>=[start_date]` or `[id]=[id_confirm]`
 is true, checked live and enforceable with a real save block. Text comparisons
-ignore letter case unless you set `"caseSensitive":true`, so for IDs where `ab12`
-and `AB12` are different values, set it. And since 1.1.0
+ignore letter case unless you set `"caseSensitive":true`. For an ID typed twice,
+set `"exact":true`: the two entries must then match character for character, so
+`ab12` does not confirm `AB12` and `00123` does not confirm `123`. And since 1.1.0
 a **Required** rule (`@UVREQUIRED`) demands a value, optionally only while a
 condition is true. See the README sections on both tags.
 
@@ -934,9 +951,12 @@ fixed. Annotation-only in this version; see the README section and
 
 **Can I stop the same participant ID being entered in two records?**
 Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
-in the Configure dialog) checks the value against every other record as it is
-typed, with optional composite keys (`with`), project/DAG/event scopes, and a
-real save block. Two saves at the same instant can both pass the live check —
+in the Configure dialog) checks the value against every other record when it is
+entered or changed, with optional composite keys (`with`), project/DAG/event
+scopes, and a real save block. When the check cannot be made, staff see "Could
+not check" with the reason, and the save goes through; the exception is the
+limit of 60 lookups a minute, where a blocking rule holds the save until the
+server answers again. Two saves at the same instant can both pass the live check —
 the post-save audit logs such a collision to the module log. Letter case is
 ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
 an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when

@@ -80,6 +80,12 @@ class UniversalValidator extends AbstractExternalModule
      */
     private $ddCache = [];
 
+    /** pid => conditionNumbers() map, built once per request from the dictionary. */
+    private $conditionNumbersCache = [];
+
+    /** pid => field => branchingOf() answer, from a dictionary that was read. */
+    private $branchingCache = [];
+
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
 
@@ -318,6 +324,8 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            // and what a required field's branching logic reads (REQ-1)
+            foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
 
         // Read every audited + condition-referenced field for this exact
@@ -356,6 +364,10 @@ class UniversalValidator extends AbstractExternalModule
             $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
         }
 
+        // The unique rules of this save share their reads of the whole
+        // project, one per event filter (PRF-1). Every rule below is caught on
+        // its own, so nothing leaves the loop before endUniqueAudit().
+        $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
             if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
             // Each rule is isolated: one rule blowing up must not silently
@@ -402,6 +414,7 @@ class UniversalValidator extends AbstractExternalModule
                 $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
             }
         }
+        $this->endUniqueAudit();
     }
 
     /**
@@ -556,7 +569,7 @@ class UniversalValidator extends AbstractExternalModule
                         continue 2;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[$g][] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id))) $active[$g][] = $bi;
             }
             if ($broken && count($groups) === 1) {
                 // One group: the field as a whole is not checked.
@@ -681,7 +694,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) {
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id))) {
                 // inert here: nothing to report, and the fields it returns to are emptied
                 if (!empty($meta['returns']) && ($blank = self::ownedReturns($rule, $meta))) $out['returns'] = $blank;
                 return $out;
@@ -747,6 +760,17 @@ class UniversalValidator extends AbstractExternalModule
                     $out['invalid'][]=['field'=>$field,'value'=>$value,'algo'=>'unique','type'=>'unique','reason'=>'duplicate-value'];
                 }
                 continue;
+            }
+            // A composite part this context could not read is not a blank
+            // (UNQ-2): compared as one, every reuse at another site was a
+            // duplicate. The scan refuses it in the same words.
+            foreach ($with as $w) {
+                $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => [$field],
+                        'why' => 'the unique rule\'s composite key ' . self::resolutionProblem($state, $w)];
+                    continue 2;
+                }
             }
             $cand = [$field => (string) $value];
             foreach ($with as $w) {
@@ -1031,13 +1055,46 @@ class UniversalValidator extends AbstractExternalModule
     private static function numberMarkOf($meta)
     {
         if (!is_array($meta)) return null;
-        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
-        if ($type === 'calc' || $type === 'slider') return 'point';
-        if ($type !== 'text') return null;
-        $v = strtolower(self::validationOf($meta));
-        if (preg_match('/^(?:int|integer|float|number(?:_[1-9]dp)?)$/', $v)) return 'point';
-        if (preg_match('/^number(?:_[1-9]dp)?_comma_decimal$/', $v)) return 'comma';
-        return null;
+        return Logic::numberMark(isset($meta['field_type']) ? $meta['field_type'] : '', self::validationOf($meta));
+    }
+
+    /**
+     * Every field of project $pid that holds numbers, with its decimal mark:
+     * the $numbers map a rule condition is evaluated with (Logic::evaluate),
+     * so [hb]>=5 reads a saved 12,5 as 12.5 (AST-1). Cached per project for
+     * the request; an unreadable dictionary gives an empty map, which reads
+     * every value as typed, as before.
+     */
+    private function conditionNumbers($pid)
+    {
+        $key = (string) $pid;
+        if (isset($this->conditionNumbersCache[$key])) return $this->conditionNumbersCache[$key];
+        $dd = $this->dataDictionary($pid);
+        if (!is_array($dd) || !$dd) return [];
+        $out = [];
+        foreach ($dd as $f => $meta) {
+            $mark = self::numberMarkOf($meta);
+            if ($mark !== null) $out[(string) $f] = $mark;
+        }
+        return $this->conditionNumbersCache[$key] = $out;
+    }
+
+    /**
+     * The text mode a rule's TEST condition ("assert") is evaluated with:
+     * Logic::EXACT for "exact": true, else its "caseSensitive" flag. A "when"
+     * gate always uses the flag alone.
+     */
+    private static function testTextMode(array $rule)
+    {
+        if (!empty($rule['exact'])) return Logic::EXACT;
+        return !empty($rule['caseSensitive']);
+    }
+
+    /** testTextMode as the index of foldRuleConditions' folded tests: 0, 1 or 2 (exact). */
+    private static function testModeIndex(array $rule)
+    {
+        $mode = self::testTextMode($rule);
+        return $mode === Logic::EXACT ? 2 : ($mode ? 1 : 0);
     }
 
     /** numberMarkOf for each of $fields of project $pid; null for a field the dictionary does not hold. */
@@ -2919,6 +2976,15 @@ class UniversalValidator extends AbstractExternalModule
      * "when" gate above already skipped the rule when the condition is
      * false, so reaching here means the requirement is in force. Nothing
      * identifying is in a blank, so the finding carries an empty value.
+     *
+     * A field REDCap hides is not required (REQ-1). REDCap hides a field
+     * whose branching logic is false, leaves it out of its own required
+     * check and erases its value on save, so a blank there is the expected
+     * answer. The logic is read in the condition dialect (php/Logic.php),
+     * whose references the audit and the scan read with the rule's own
+     * (requiredBranchingRefs). Logic the dialect cannot read, or that
+     * references a value this context could not resolve, leaves the field
+     * unchecked and says so as a rule problem, never as a finding.
      */
     private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -2928,11 +2994,83 @@ class UniversalValidator extends AbstractExternalModule
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
-            if ($value === null || trim((string) $value) === '') {
-                $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
+            if ($value !== null && trim((string) $value) !== '') continue;
+            $shown = $this->branchingShows($project_id, $field, $values, $resolution);
+            if ($shown === false) continue;
+            if (is_string($shown)) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $shown];
+                continue;
             }
+            $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
         }
         return $out;
+    }
+
+    /**
+     * Whether REDCap's branching logic shows $field in this context: true
+     * (no logic, or the logic holds), false (the logic is false), or a
+     * sentence saying why it cannot be told. See findingsRequired().
+     */
+    private function branchingShows($project_id, $field, array $values, array $resolution)
+    {
+        $b = $this->branchingOf($project_id, $field);
+        if ($b === null) return true;
+        $name = '[' . $field . ']';
+        if (!is_array($b['ast'])) {
+            return 'the branching logic of ' . $name . ' ' . $b['error']
+                 . ' The module cannot tell whether REDCap shows the field, so the requirement is not checked here.';
+        }
+        foreach (Logic::referencedFields($b['ast']) as $ref) {
+            $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+            if ($state !== 'ok') return 'the branching logic of ' . $name . ' ' . self::resolutionProblem($state, $ref[0]);
+        }
+        return Logic::evaluate($b['ast'], $values, Logic::BLANK_INERT, false, $this->conditionNumbers($project_id));
+    }
+
+    /**
+     * The branching logic of $field parsed in the condition dialect, or null
+     * when the field has none: ['text' => the logic, 'ast' => the parsed
+     * condition], or 'ast' false and 'error' when the dialect cannot read it.
+     * Read once per project and field.
+     */
+    private function branchingOf($pid, $field)
+    {
+        $pid = (int) $pid;
+        $field = (string) $field;
+        if (isset($this->branchingCache[$pid]) && array_key_exists($field, $this->branchingCache[$pid])) {
+            return $this->branchingCache[$pid][$field];
+        }
+        $dd = $this->dataDictionary($pid);
+        $text = ($dd && isset($dd[$field]['branching_logic'])) ? trim((string) $dd[$field]['branching_logic']) : '';
+        $out = null;
+        if ($text !== '') {
+            $p = Logic::parse($text);
+            $out = empty($p['ok'])
+                ? ['text' => $text, 'ast' => false, 'error' => isset($p['error']) ? (string) $p['error'] : 'cannot be read.']
+                : ['text' => $text, 'ast' => $p['ast']];
+        }
+        // Only a dictionary that was read is an answer worth keeping.
+        if ($dd) $this->branchingCache[$pid][$field] = $out;
+        return $out;
+    }
+
+    /**
+     * The fields the branching logic of a @UVREQUIRED rule's fields reads,
+     * for the audit's and the scan's read sets. Other modes judge a value,
+     * and a hidden field has none once REDCap erased it.
+     *
+     * @return string[]
+     */
+    private function requiredBranchingRefs($pid, array $r)
+    {
+        if (!empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'required') return [];
+        $out = [];
+        foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+            $b = $this->branchingOf($pid, $f);
+            if ($b === null || !is_array($b['ast'])) continue;
+            foreach (Logic::referencedFields($b['ast']) as $ref) $out[(string) $ref[0]] = true;
+        }
+        return array_keys($out);
     }
 
     /**
@@ -3031,6 +3169,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $out;
             }
         }
+        $numbers = $this->conditionNumbers($project_id);
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3042,7 +3181,7 @@ class UniversalValidator extends AbstractExternalModule
             // server logged a violation (M-04).
             if ($value === null || is_array($value)) continue;
             if (trim((string) $value, " \t\r\n") === '') continue;
-            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
+            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers)) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
             }
         }
@@ -3601,12 +3740,13 @@ class UniversalValidator extends AbstractExternalModule
         $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
         $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
         $pattern = isset($rule['idPattern']) ? $rule['idPattern'] : null;
-        $unconfigurable = [];
+        $unconfigurable = []; $notChecked = [];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
-            if ($value === null || $value === '') continue;
+            // blank as the browser sees it: input.value.trim() === "" (VAL-3)
+            if ($value === null || CheckCharacter::browserTrim($value) === '') continue;
             // ONE config array for both verdicts: the single and pooled twins
             // read the same keys, so there is no second argument list to keep in
             // step when a rule gains an option.
@@ -3629,6 +3769,13 @@ class UniversalValidator extends AbstractExternalModule
                 // of treating it as valid — a silent pass is the one outcome an
                 // auditor can never see (COR-002).
                 $unconfigurable[] = $field;
+            } elseif (isset($res['reason']) && $res['reason'] === 'not-checked') {
+                // The server cannot say what the browser's RegExp makes of
+                // this value: a character outside printable ASCII that the
+                // pattern can match and the two engines read differently, or
+                // a PCRE limit hit mid-match. Reported, never passed as valid
+                // (VAL-1).
+                $notChecked[] = $field;
             } elseif (empty($res['ok'])) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => $algo, 'type' => $type,
                                      'reason' => isset($res['reason']) ? $res['reason'] : ''];
@@ -3636,6 +3783,9 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($unconfigurable) {
             $out['unconfigurable'][] = ['fields' => $unconfigurable, 'why' => 'rule cannot be evaluated server-side (unsafe or uncompilable configuration)'];
+        }
+        if ($notChecked) {
+            $out['unconfigurable'][] = ['fields' => $notChecked, 'why' => 'the server cannot tell how the browser reads this value against the format pattern (a character outside printable ASCII that the two regex engines read differently, or a regex engine limit); check the value by hand'];
         }
         return $out;
     }
@@ -3938,7 +4088,7 @@ class UniversalValidator extends AbstractExternalModule
      * already renders for an unreadable source, leaving every other rule live.
      * The stub keeps only the rule's type and field names, which are designer
      * configuration and ASCII by validation. It runs after buildClientConfig,
-     * so on a survey it says nothing of why (ModeRegistry::SURVEY_DROP).
+     * so on a survey it says nothing of why (ModeRegistry::withoutSurveyTexts).
      */
     private static function encodableRules(array $rules, $flags, $survey = false)
     {
@@ -3971,7 +4121,8 @@ class UniversalValidator extends AbstractExternalModule
         // EVERY form, so a single DOM mutation fans out to all of them and freezes
         // the tab (PER-003, the 1.5.1 known perf issue). The post-save audit and the
         // Validation scan still cover every rule on every form.
-        $rules = $this->rulesOnInstrument($rules, $pid, $instrument);
+        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey');
+
         $config = array_merge($this->defaults(), [
             'singleFields' => [],
             'pooledFields' => [],
@@ -4012,6 +4163,11 @@ class UniversalValidator extends AbstractExternalModule
         if ($config['rules'] && $pid !== null && is_string($instrument) && $instrument !== '') {
             $formats = $this->pageDateFormats($pid, $instrument);
             if ($formats) $config['dateFormats'] = $formats;
+            // The fields of this form that hold numbers, with their decimal
+            // mark: a condition on the page reads 12,5 as 12.5, as the server
+            // does (conditionNumbers, AST-1).
+            $marks = array_intersect_key($this->conditionNumbers($pid), $this->fieldsOnInstrument($pid, $instrument) ?: []);
+            if ($marks) $config['numberMarks'] = $marks;
         }
         // The saved value of each field a today-relative @UVWINDOW part judges (a
         // "from" of today or now, notPast). The page judges those parts only for
@@ -4025,7 +4181,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         // A survey page never shows why a rule is not checked on it, and a
         // step after clientShape (the growth table cap) may have said why:
-        // this pass takes every such text off (ModeRegistry::SURVEY_DROP).
+        // this pass takes every such text off (surveyShape's "drop" keys).
         // The one step after it, encodableRules, leaves it off on a survey.
         if ($context === 'survey') {
             foreach ($config['rules'] as $i => $r) {
@@ -4526,6 +4682,13 @@ class UniversalValidator extends AbstractExternalModule
         $live = $this->fieldsOnInstrument($pid, $instrument);
         $unknownForm = ($live === null);
         if ($unknownForm) $live = [];
+        // A survey shown one section per page renders only this page's fields,
+        // so a field answered on another page is off-page like a field of
+        // another form, and is settled here from the saved response (REQ-4).
+        if (!$unknownForm && $context === 'survey') {
+            $page = $this->surveyPageFields($pid, $instrument);
+            if ($page !== null) $live = array_intersect_key($live, $page);
+        }
 
         $values = [];
         $resolution = [];
@@ -4558,11 +4721,13 @@ class UniversalValidator extends AbstractExternalModule
 
         // Every condition is folded once per ROLE (gate / assert polarity) and
         // once per CASE MODE: text => [0 => case-insensitive (the default),
-        // 1 => case-sensitive]. Two rules may share a condition string and
-        // differ only in "caseSensitive", and an off-page comparison settled to
-        // a constant under one mode is not the constant the other would produce.
+        // 1 => case-sensitive], and a test also 2 => "exact" (AST-2). Two
+        // rules may share a condition string and differ only in
+        // "caseSensitive" or "exact", and an off-page comparison settled to a
+        // constant under one mode is not the constant the other would produce.
         $folded = [];
         $foldedAssert = [];
+        $numbers = $this->conditionNumbers($pid);
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -4571,14 +4736,14 @@ class UniversalValidator extends AbstractExternalModule
             $b = [];
             $sn = [];
             $folded[$w] = [];
-            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false);
+            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers);
             // Freshness diagnostics come from reference resolution and liveness
             // alone, never from a verdict, so the pass above already recorded
             // them; this one discards its own.
             $fCs = false;
             $bCs = [];
             $snCs = [];
-            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true);
+            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
@@ -4593,11 +4758,12 @@ class UniversalValidator extends AbstractExternalModule
             // The freshness diagnostics come from reference resolution and
             // liveness alone — never from a verdict — so this pass discards
             // them rather than overwriting the ones above.
-            foreach ([0, 1] as $cs) {
+            // A test has a third text mode, "exact" (index 2, testTextMode).
+            foreach ([0 => false, 1 => true, 2 => Logic::EXACT] as $cs => $mode) {
                 $f2 = false;
                 $b2 = [];
                 $sn2 = [];
-                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, (bool) $cs);
+                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers);
             }
         }
         // With the form unknown, NOTHING is live — not because these fields are
@@ -4693,7 +4859,7 @@ class UniversalValidator extends AbstractExternalModule
             foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
                 $tk = $rk['key'];
                 if (!isset($r[$tk]) || !isset($folded[$r[$tk]])) continue;
-                $rules[$i][$rk['ast']] = $foldedAssert[$r[$tk]][empty($r['caseSensitive']) ? 0 : 1];
+                $rules[$i][$rk['ast']] = $foldedAssert[$r[$tk]][self::testModeIndex($r)];
                 // A frozen TEST must never block: its verdict is stale the
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r[$tk]])) $rules[$i]['deferred'] = true;
@@ -4762,7 +4928,7 @@ class UniversalValidator extends AbstractExternalModule
                     foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
                         $tk = $rk['key'];
                         if (!isset($b[$tk]) || !isset($folded[$b[$tk]])) continue;
-                        $rules[$i]['branches'][$bi][$rk['ast']] = $foldedAssert[$b[$tk]][empty($b['caseSensitive']) ? 0 : 1];
+                        $rules[$i]['branches'][$bi][$rk['ast']] = $foldedAssert[$b[$tk]][self::testModeIndex($b)];
                         if (!empty($frozen[$b[$tk]])) $rules[$i]['branches'][$bi]['deferred'] = true;
                         if (!empty($blocked[$b[$tk]])) {
                             $noteFor($i, $b[$tk]);
@@ -5266,7 +5432,7 @@ class UniversalValidator extends AbstractExternalModule
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
+        foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'assert-exact', 'message',
                   'unique-with', 'unique-also', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
                   'suggest-fix', 'pattern', 'alternates-json', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -5368,6 +5534,9 @@ class UniversalValidator extends AbstractExternalModule
             if ($mode === 'constraint' && isset($s['assert']) && trim((string) $s['assert']) !== '') {
                 $rule['assert'] = trim((string) $s['assert']);
             }
+            if ($mode === 'constraint' && isset($s['assert-exact']) && in_array($s['assert-exact'], [true, 'true', '1', 1], true)) {
+                $rule['exact'] = true;
+            }
             if ($mode === 'unique') {
                 if (isset($s['unique-with']) && trim((string) $s['unique-with']) !== '') {
                     $rule['uniqueWith'] = array_map('strtolower',
@@ -5437,6 +5606,12 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($fields as $f) {
                     if (in_array($f, $rule['uniqueWith'], true)) {
                         $errors[] = '"with" must not name a field this rule validates ("' . $f . '").';
+                    }
+                }
+                if (!$errors) {
+                    foreach ($fields as $f) {
+                        $p = self::withPlacementProblem($rule['uniqueWith'], $f, $dd, $layout);
+                        if ($p !== null) { $errors[] = $p; break; }
                     }
                 }
             }
@@ -5744,7 +5919,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
+        $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'assert-exact', 'message',
                  'unique-with', 'unique-also', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -5898,6 +6073,10 @@ class UniversalValidator extends AbstractExternalModule
     {
         $errs = [];
         if (isset($frag['uniqueWith'])) $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+        if (!$errs && isset($frag['uniqueWith']) && is_array($frag['uniqueWith']) && $frag['uniqueWith']) {
+            $p = self::withPlacementProblem($frag['uniqueWith'], $name, $this->dataDictionary($pid), $pid ? $this->eventLayout($pid) : null);
+            if ($p !== null) $errs[] = $p;
+        }
         if (!$errs && isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) {
             $dd = $this->dataDictionary($pid);
             $errs = self::checkUniqueAlso($frag['uniqueAlso'], $name, $types, $dd);
@@ -7887,6 +8066,49 @@ class UniversalValidator extends AbstractExternalModule
      * conservative choice for import/API contexts where the hook's instrument
      * argument may be absent or not match a form name.
      */
+    /**
+     * The fields on the page of a multi-page survey that REDCap is rendering,
+     * as field => true, or null when the whole instrument is on one page or
+     * the page cannot be told (REQ-4).
+     *
+     * A survey set to show one section per page renders only the current
+     * page's fields, so a "when" over a field answered on an earlier page
+     * read a blank in the browser. REDCap sets $_GET['__page__'] to the page
+     * it draws before redcap_survey_page_top runs. The pages follow the
+     * dictionary the way REDCap's getPageFields() splits them: each field with
+     * a section header starts a new page, except the first field, and the
+     * record id field is on none.
+     */
+    private function surveyPageFields($pid, $instrument)
+    {
+        $page = (isset($_GET['__page__']) && is_scalar($_GET['__page__'])) ? (string) $_GET['__page__'] : '';
+        if (!$instrument || !preg_match('/^[1-9][0-9]{0,4}$/D', $page)) return null;
+        if (!$this->surveyBySection($pid, $instrument)) return null;
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return null;
+        $pk = (string) array_key_first($dd);
+        $pages = [];
+        $n = 1;
+        $seen = 0;
+        foreach ($dd as $name => $meta) {
+            if (!isset($meta['form_name']) || $meta['form_name'] !== $instrument || (string) $name === $pk) continue;
+            if ($seen > 0 && isset($meta['section_header']) && (string) $meta['section_header'] !== '') $n++;
+            $pages[$n][(string) $name] = true;
+            $seen++;
+        }
+        return (count($pages) > 1 && isset($pages[(int) $page])) ? $pages[(int) $page] : null;
+    }
+
+    /** Whether $instrument is a survey set to show one section per page. */
+    private function surveyBySection($pid, $instrument)
+    {
+        $proj = $this->projectObject($pid);
+        if ($proj === null || !isset($proj->forms[$instrument]['survey_id'])) return false;
+        $sid = $proj->forms[$instrument]['survey_id'];
+        return isset($proj->surveys[$sid]) && is_array($proj->surveys[$sid])
+            && !empty($proj->surveys[$sid]['question_by_section']);
+    }
+
     private function fieldsOnInstrument($pid, $instrument)
     {
         if (!$instrument) return null;
@@ -7908,13 +8130,35 @@ class UniversalValidator extends AbstractExternalModule
      * conservative choice for contexts where the form is not identifiable, matching
      * fieldsOnInstrument()'s null contract elsewhere in the audit.
      */
-    private function rulesOnInstrument(array $rules, $pid, $instrument)
+    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false)
     {
         $onForm = $this->fieldsOnInstrument($pid, $instrument);
-        if ($onForm === null) return $rules;   // cannot identify the form's fields: leave the set as-is
+        if ($onForm === null) {
+            // A survey page carries no configuration error it cannot place:
+            // the notice is muted there, and the rule names other forms (LIVE-2).
+            if (!$survey) return $rules;
+            return array_values(array_filter($rules, function ($r) { return empty($r['configError']); }));
+        }
+        // A survey shown one section per page renders only this page's fields.
+        $onPage = $survey ? $this->surveyPageFields($pid, $instrument) : null;
         $out = [];
         foreach ($rules as $r) {
-            if (!empty($r['configError'])) { $out[] = $r; continue; }   // keep config-error notices
+            if (!empty($r['configError'])) {
+                // Staff see every configuration error, on any form. A survey
+                // page keeps only those of its own fields, as "not available"
+                // under the field (ModeRegistry::clientShape): it showed none of
+                // the others, and its source carried them all (LIVE-2, CHO-6).
+                if ($survey) {
+                    $own = [];
+                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                        if (isset($onForm[$f]) && ($onPage === null || isset($onPage[$f]))) $own[] = $f;
+                    }
+                    if (!$own) continue;
+                    $r['fields'] = $own;
+                }
+                $out[] = $r;
+                continue;
+            }
             if (empty($r['fields']) || !is_array($r['fields'])) continue;
             $onFields = [];
             foreach ($r['fields'] as $f) {
@@ -9881,6 +10125,11 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach ($r['fields'] as $f) $readSet[$f] = true;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            foreach ($this->requiredBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
+            // the fields a rule returns to, when the scan compares them (RNG-1)
+            if ($this->returnsComparedByScan($r, $pid)) {
+                foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
+            }
         }
         // A project-scope unique rule cannot be evaluated from a DAG-confined
         // scan: the scan reads one group, so a value duplicated ACROSS groups is
@@ -10297,6 +10546,9 @@ class UniversalValidator extends AbstractExternalModule
             // add findings the same report says it cannot vouch for.
             if (isset($plan['skip'][$i])) continue;
             $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
+            // What the next save would write to the rule's returned fields,
+            // compared with what they hold (returnsStale).
+            $cmpReturns = $this->returnsComparedByScan($r, $pid);
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
                 // Only where the host was STARTED (R2O-2), and only for a pair
@@ -10358,7 +10610,19 @@ class UniversalValidator extends AbstractExternalModule
                     // A scan request answers @UVEXISTS from one index per rule, not one
                     // whole-project read per record (findingsExists).
                     $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck],
-                        ['dag' => $recDag, 'existsIndex' => true, 'instance' => $ctx['instance']]);
+                        ['dag' => $recDag, 'existsIndex' => true, 'instance' => $ctx['instance']] + ($cmpReturns ? ['returns' => true] : []));
+                    // A returned value out of date: REDCap does not run the save
+                    // hook for a Data Import Tool import, so an imported or
+                    // corrected measurement leaves the old z-score (RNG-1).
+                    // Reported on the returned field; opening the form and
+                    // saving it writes the current values.
+                    if ($cmpReturns && isset($f['returns']) && is_array($f['returns'])) {
+                        foreach ($this->returnsStale($evaluatedRule, $f['returns'], $ctx['values'], $pid) as $rf => $held) {
+                            $f['invalid'][] = ['field' => $rf, 'value' => $held,
+                                'type' => isset($evaluatedRule['type']) ? (string) $evaluatedRule['type'] : 'range', 'reason' => 'returned-stale'];
+                        }
+                    }
+
                     if ($preparedBranch !== null) {
                         foreach ($f['invalid'] as $k => $v) if (!isset($v['branch'])) $f['invalid'][$k]['branch'] = $preparedBranch;
                     }
@@ -10678,6 +10942,8 @@ class UniversalValidator extends AbstractExternalModule
             }
             return null;
         };
+        // the plan's map of fields that hold numbers (conditionNumbers)
+        $numbers = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
 
         $cfg = $rule;
         if (isset($rule['branches']) && is_array($rule['branches'])) {
@@ -10697,7 +10963,7 @@ class UniversalValidator extends AbstractExternalModule
                         . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
-                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[] = $bi;
+                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']), $numbers)) $active[] = $bi;
             }
             if (count($active) === 1) {
                 $pick = $active[0];
@@ -10726,7 +10992,7 @@ class UniversalValidator extends AbstractExternalModule
                 $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
                 return;
             }
-            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']))) return;
+            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']), $numbers)) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
@@ -10739,35 +11005,13 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
-        // M1: A 'dag' SCOPE NEEDS A DAG, AND A RECORD IN NO GROUP HAS NONE.
-        //
-        // The bucket key below appends (string) $recDag, and $recDag is null for
-        // a record REDCap returned with no redcap_data_access_group. (string)
-        // null is '', so every ungrouped record in the project fell into ONE
-        // bucket and any two of them sharing a value were reported as duplicates
-        // OF EACH OTHER - under a rule whose entire meaning is "unique within a
-        // Data Access Group", for records that are not in one. The rule's
-        // question has no answer for these records, and this module's contract
-        // is that an unevaluable condition is reported, never answered wrongly.
-        //
-        // A PROPERTY OF THE RECORD, NOT OF THE RULE. The same rule stays live and
-        // is still evaluated on every record that does have a group; only this
-        // record's contribution is withheld. $refuse() keys $unconf by
-        // ruleIndex|suffix, so a project with ten thousand ungrouped records
-        // produces ONE rule problem rather than ten thousand - which is the
-        // deduplication every other refusal in this function relies on and the
-        // reason the report stays bounded.
-        //
-        // AFTER the composite-key loop above, so a rule broken in two ways
-        // reports the more specific problem first, and a `return` rather than a
-        // `continue`, because the group is a property of the CONTEXT and not of
-        // any one field - matching every other context-level refusal here.
-        if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) {
-            $refuse('this rule requires values to be unique within a Data Access Group, and this '
-                . 'record is not in one, so the rule was NOT evaluated for it. Records with no '
-                . 'group are not compared with each other.', 'dag-no-group');
-            return;
-        }
+        // A 'dag' scope and a record in no group: the bucket key below appends
+        // (string) $recDag, which is '' for such a record, so the records in no
+        // group form one group of their own and are compared with each other
+        // only. That is what README says, what @UVEXISTS does and what the live
+        // check and the audit do (findCollision, UNQ-1). Earlier releases of
+        // the scan refused these records instead (M1), and the three paths
+        // gave three answers.
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -10910,8 +11154,8 @@ class UniversalValidator extends AbstractExternalModule
         $rec = (string) $rec;
         $done = [];
         foreach ($spec['shapes'] as list($with, $scope, $fold)) {
-            // A record in no group has no group to share a value with.
-            if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) continue;
+            // A record in no group shares a value with the other records in
+            // none ('' below), as collectUniqueCandidates keys them (UNQ-1).
             $shape = self::uniqueShape($with, $scope, $fold);
             foreach ($ctxAll as $ctx) {
                 $row = $ctx['values'];
@@ -11156,7 +11400,12 @@ class UniversalValidator extends AbstractExternalModule
                 // A signed-in caller is throttled too, and answered only about
                 // forms they may open: "already used" on a field of a form the
                 // user has no access to is a read of that form by another door.
-                if ($this->signedInRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+                // Its own answer, as exists-check gives it: the page says
+                // "could not check" and why, instead of nothing (UNQ-3).
+                if ($this->signedInRateLimited($project_id)) {
+                    return ['unknown' => true, 'record' => null, 'throttled' => true,
+                            'why' => 'too many checks in the last minute — wait a moment'];
+                }
                 // An "also" field is searched too, so the caller must be able
                 // to open its form as well.
                 $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -11202,14 +11451,23 @@ class UniversalValidator extends AbstractExternalModule
                     $offPage[] = $w;
                 }
                 if ($offPage) {
+                    $withRes = [];
                     try {
-                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
+                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false, $withRes);
                         foreach ($offPage as $w) {
                             if (isset($saved[$w]) && !is_array($saved[$w])) $values[$w] = (string) $saved[$w];
                         }
                     } catch (\Throwable $e) {
-                        // Read failure: keep the client's blank — fails OPEN (never a
-                        // false "used"), consistent with the endpoint's catch-all below.
+                        foreach ($offPage as $w) $withRes[$w] = 'unreadable';
+                    }
+                    // A part that was not read here is not a blank (UNQ-2):
+                    // blank against blank called every reuse at another site
+                    // a duplicate.
+                    foreach ($offPage as $w) {
+                        if (isset($withRes[$w]) && $withRes[$w] !== 'ok') {
+                            return ['unknown' => true, 'record' => null]
+                                + ($isAuthenticated && !$isSurvey ? ['why' => 'the composite key ' . self::resolutionProblem($withRes[$w], $w)] : []);
+                        }
                     }
                 }
             }
@@ -11228,7 +11486,8 @@ class UniversalValidator extends AbstractExternalModule
             // Not settled (the read budget refused the read it needed, or the
             // read failed): not "free", which would let a known duplicate
             // through a save that asked again.
-            if ($col === false) return ['unknown' => true, 'record' => null];
+            if ($col === false) return ['unknown' => true, 'record' => null]
+                + ($isAuthenticated && !$isSurvey ? ['why' => 'the saved values could not be compared just now'] : []);
             if ($col === null) return ['used' => false, 'record' => null];
 
             // The colliding record id goes ONLY to an authenticated user, and a
@@ -11322,7 +11581,11 @@ class UniversalValidator extends AbstractExternalModule
                 if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
-                if ($this->signedInRateLimited($project_id)) return $unknown('too many checks in the last minute — wait a moment');
+                // Flagged, so a rule that blocks holds the save until the next
+                // answer instead of letting the value through (UNQ-3).
+                if ($this->signedInRateLimited($project_id)) {
+                    return $unknown('too many checks in the last minute — wait a moment') + ['throttled' => true];
+                }
                 // Generic on purpose: naming the field would tell the page where
                 // the rule looks. The fields a rule copies ("return") are read
                 // too; another project's are checked there (crossCaller).
@@ -11881,7 +12144,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']))) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid))) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;
@@ -11956,13 +12219,16 @@ class UniversalValidator extends AbstractExternalModule
      * repeating-instrument field is matched exactly the way the Validation scan
      * matches it — the per-save audit and the scan can no longer disagree (H-03).
      * Scopes: project (default), event (same event only), dag (records in the
-     * same Data Access Group — resolved from the current record's saved rows,
-     * falling back to the acting user's group; unresolvable DAG degrades to
-     * project scope, the conservative direction for finding duplicates).
+     * same Data Access Group). Under dag the group of the record being checked
+     * is read before anything else (recordDagOf); a record not saved yet is
+     * created in the acting user's group, or in none. Records in no group are
+     * one group of their own (UNQ-1): they are compared with each other and
+     * with nothing else, as README says and as @UVEXISTS does, in the live
+     * check, the audit and the scan alike.
      * Returns null (no other record holds the value), ['record' => id,
      * 'dag' => nameOrNull, 'field' => the field it was found in], or false
-     * when the lookup could not be settled: the read failed, or $mayFullRead
-     * refused it.
+     * when the lookup could not be settled: a read failed, the group could
+     * not be told, or $mayFullRead refused the read.
      *
      * $also (@UVUNIQUE "also") are other fields the value is looked for in:
      * a value saved in the primary field OR in any of them, in another record,
@@ -11991,6 +12257,22 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($target[$field] === '') return null;
 
+        // The group to stay in under "dag": '' is the group of records in no
+        // group, and a group whose name cannot be read is not that (UNQ-1).
+        $currentDag = null;
+        if ($scope === 'dag') {
+            $rd = $this->recordDagOf($pid, $excludeRecord);
+            if ($rd === false) return false;
+            if ($rd['found']) {
+                $currentDag = (string) $rd['dag'];
+            } elseif ($groupId !== null && $groupId !== '') {
+                $currentDag = ScanPageView::dagNameOf($groupId);
+                if ($currentDag === null) return false;
+            } else {
+                $currentDag = '';
+            }
+        }
+
         $params = [
             'project_id'    => $pid,
             'return_format' => 'array',
@@ -12007,22 +12289,20 @@ class UniversalValidator extends AbstractExternalModule
         // exact comparison below stays authoritative and the post-save audit (which
         // never narrows) is the correctness backstop, so this only ever saves work:
         // it can never turn a real duplicate into a missed save.
-        // F4-DAG-01: dag scope must NOT narrow — a value-filtered read drops the
-        // current record (whose saved value differs from the candidate being typed)
-        // from the result, so its DAG can no longer be resolved from the record node
-        // and a no-DAG acting user (group_id null) would silently degrade to project
-        // scope, falsely flagging a collision in another DAG. Keep the full scan for
-        // dag scope; narrowing (the F4 amplification guard) applies to project/event.
+        // F4-DAG-01: dag scope did not narrow, because the group of the current
+        // record was read from its node in the result, which a value-filtered
+        // read leaves out. The group is now read on its own above, so dag scope
+        // narrows like the others.
         //
         // Only a hit settles the lookup here; a miss falls through to the full
         // read (collisionFilterLogic says why).
-        if ($narrow && $scope !== 'dag') {
+        if ($narrow) {
             $fl = self::collisionFilterLogic($need, $target, $fold, $marks, $also);
             if ($fl !== null) {
                 try {
                     $n = \REDCap::getData($params + ['filterLogic' => $fl]);
                     if (is_array($n)) {
-                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
+                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
                         if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
@@ -12031,9 +12311,139 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         if ($mayFullRead !== null && !call_user_func($mayFullRead)) return false;
+        $shared = $this->sharedCollisionRead($params);
+        if ($shared !== null) {
+            if ($shared === false) return false;
+            return $this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+        }
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
-        return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
+        return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The save audit's shared read for $params (PRF-1): the event filter it
+     * belongs to, or false when that read failed. Null outside the audit, or
+     * for fields the audit did not plan, and the caller reads on its own.
+     *
+     * In the save audit (beginUniqueAudit) every unique rule of the save
+     * shares one read per event filter, of the union of their fields, and a
+     * rule compares only the records that hold its value (collisionInShared).
+     * Before, every unique field of a save exported the whole project again
+     * and built every record's contexts.
+     */
+    private function sharedCollisionRead(array $params)
+    {
+        $plan = $this->uniqueAuditPlan;
+        if ($plan === null || (int) $plan['pid'] !== (int) $params['project_id']) return null;
+        $ek = isset($params['events']) ? implode(',', $params['events']) : '*';
+        $union = isset($plan['fields'][$ek]) ? $plan['fields'][$ek] : [];
+        if (array_diff($params['fields'], $union)) return null;
+        if (!array_key_exists($ek, $this->uniqueAuditReads)) {
+            $data = \REDCap::getData(['fields' => $union] + $params);
+            if (!is_array($data)) {
+                $this->uniqueAuditReads[$ek] = false;
+            } else {
+                $recs = [];
+                foreach ($data as $rec => $node) {
+                    if (is_array($node)) $recs[] = [(string) $rec, $node];
+                }
+                $this->uniqueAuditReads[$ek] = ['records' => $recs];
+            }
+        }
+        return $this->uniqueAuditReads[$ek] === false ? false : $ek;
+    }
+
+    /**
+     * collisionIn over the shared read $ek: the same answer, the same first
+     * match in record order. One pass over each searched field's values finds
+     * the records that hold the value's key, and collisionIn compares only
+     * those, so no per-record context is built for the others.
+     */
+    private function collisionInShared($ek, array $target, array $keys, array $marks, $fold, $currentDag, $excludeRecord, array $codes = [], array $also = [])
+    {
+        reset($target);
+        $primary = key($target);
+        $records = $this->uniqueAuditReads[$ek]['records'];
+        $hits = [];
+        foreach (array_merge([$primary], $also) as $f) {
+            $mark = isset($marks[$f]) ? $marks[$f] : null;
+            $key = Logic::lookupKey($target[$primary], $fold, $mark);
+            foreach ($records as $ord => $r) {
+                if (isset($hits[$ord])) continue;
+                foreach (self::contextValuesOf($r[1], $f) as $v) {
+                    if ($v === null || is_array($v)) continue;
+                    $rv = Logic::lookupTrim($v);
+                    if ($rv !== '' && Logic::lookupKey($rv, $fold, $mark) === $key) { $hits[$ord] = true; break; }
+                }
+            }
+        }
+        if (!$hits) return null;
+        ksort($hits);
+        $subset = [];
+        foreach (array_keys($hits) as $o) $subset[$records[$o][0]] = $records[$o][1];
+        return self::collisionIn($subset, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The value of $f in each context recordContexts($node) gives, in the
+     * same order, without building the contexts: a repeat instance holds its
+     * own non-blank value, or else its event's.
+     */
+    private static function contextValuesOf(array $node, $f)
+    {
+        $out = [];
+        foreach ($node as $k => $row) {
+            if ($k === 'repeat_instances' || !is_array($row)) continue;
+            $out[] = (isset($row[$f]) && $row[$f] !== '') ? $row[$f] : null;
+        }
+        if (isset($node['repeat_instances']) && is_array($node['repeat_instances'])) {
+            foreach ($node['repeat_instances'] as $evt => $byInstr) {
+                if (!is_array($byInstr)) continue;
+                $base = (isset($node[$evt]) && is_array($node[$evt]) && isset($node[$evt][$f]) && $node[$evt][$f] !== '') ? $node[$evt][$f] : null;
+                foreach ($byInstr as $byInst) {
+                    if (!is_array($byInst)) continue;
+                    foreach ($byInst as $row) {
+                        if (!is_array($row)) continue;
+                        $out[] = (isset($row[$f]) && $row[$f] !== '') ? $row[$f] : $base;
+                    }
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** @var array|null pid and event filter => fields the save's unique rules read (sharedCollisionRead) */
+    private $uniqueAuditPlan = null;
+    /** @var array event filter => the shared read of this save's audit, prepared, or false when it failed */
+    private $uniqueAuditReads = [];
+
+
+    /**
+     * Start sharing the full reads of the unique rules among $rules for one
+     * save of a record in $pid on $event_id. endUniqueAudit() drops them.
+     */
+    private function beginUniqueAudit(array $rules, $pid, $event_id)
+    {
+        $fields = [];
+        foreach ($rules as $r) {
+            if (!empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+            foreach (self::uniqueVariants($r) as $v) {
+                $scope = isset($v['uniqueScope']) ? $v['uniqueScope'] : (isset($r['uniqueScope']) ? $r['uniqueScope'] : 'project');
+                $ek = ($scope === 'event' && $event_id) ? (string) $event_id : '*';
+                $with = (isset($v['uniqueWith']) && is_array($v['uniqueWith'])) ? $v['uniqueWith'] : [];
+                $also = (isset($v['uniqueAlso']) && is_array($v['uniqueAlso'])) ? $v['uniqueAlso'] : [];
+                foreach (array_merge($r['fields'], $with, $also) as $f) $fields[$ek][(string) $f] = true;
+            }
+        }
+        $this->uniqueAuditReads = [];
+        $this->uniqueAuditPlan = $fields ? ['pid' => (int) $pid, 'fields' => array_map('array_keys', $fields)] : null;
+    }
+
+    private function endUniqueAudit()
+    {
+        $this->uniqueAuditPlan = null;
+        $this->uniqueAuditReads = [];
     }
 
     /**
@@ -12041,9 +12451,10 @@ class UniversalValidator extends AbstractExternalModule
      * ['record','dag','field'], or null. The primary value is looked for in
      * the primary field and then in each of $also, keyed with that field's
      * own number mark; the composite components must match in the same
-     * merged context either way.
+     * merged context either way. $currentDag is the group to stay in ('' for
+     * records in no group), or null when the scope is not "dag".
      */
-    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $scope, $excludeRecord, $groupId, array $codes = [], array $also = [])
+    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $currentDag, $excludeRecord, array $codes = [], array $also = [])
     {
         reset($target);
         $primary = key($target);
@@ -12051,21 +12462,12 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($also as $a) {
             $slots[$a] = Logic::lookupKey($target[$primary], $fold, isset($marks[$a]) ? $marks[$a] : null);
         }
-        $currentDag = null;
-        if ($scope === 'dag') {
-            if ($excludeRecord !== null && $excludeRecord !== '' && isset($data[$excludeRecord]) && is_array($data[$excludeRecord])) {
-                $currentDag = self::dagOfRecordNode($data[$excludeRecord]);
-            }
-            if ($currentDag === null && $groupId !== null && $groupId !== '') {
-                $currentDag = ScanPageView::dagNameOf($groupId);
-            }
-        }
 
         foreach ($data as $rec => $node) {
             if ($excludeRecord !== null && $excludeRecord !== '' && (string) $rec === (string) $excludeRecord) continue;
             if (!is_array($node)) continue;
             $dag = self::dagOfRecordNode($node);
-            if ($scope === 'dag' && $currentDag !== null && $dag !== $currentDag) continue;
+            if ($currentDag !== null && (string) $dag !== $currentDag) continue;
             // Compare against MERGED contexts (base event row + each repeat
             // instance), not raw rows, so a composite spanning an event field and a
             // repeat-instrument field is detected — the same view the scan uses (H-03).
@@ -12724,6 +13126,51 @@ class UniversalValidator extends AbstractExternalModule
         }
         $this->eventLayoutCache[$ck] = $out;
         return $out;
+    }
+
+    /**
+     * Why a @UVUNIQUE "with" field can never be read beside the tagged field,
+     * or null (UNQ-2). The composite key is read in the context the tagged
+     * field is saved in, so some event must hold both fields' instruments,
+     * and in that event the "with" field must not sit on a repeating
+     * instrument of its own: no instance of it belongs to the tagged field's
+     * entry. A rule placed so is refused when it is read; before, the live
+     * check and the audit compared the part as a blank and the scan refused
+     * the rule at run time. $layout is eventLayout(); null claims nothing.
+     */
+    private static function withPlacementProblem(array $with, $field, $dd, $layout)
+    {
+        if (!is_array($layout) || !is_array($dd)) return null;
+        $formOf = function ($f) use ($dd) {
+            return isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : null;
+        };
+        $ft = $formOf($field);
+        if ($ft === null) return null;
+        foreach ($with as $w) {
+            $fw = $formOf($w);
+            if ($fw === null || $fw === $ft) continue;
+            $held = false;
+            $paired = false;
+            foreach ($layout as $ev) {
+                if ($ev['forms'] !== null && (!isset($ev['forms'][$ft]) || !isset($ev['forms'][$fw]))) continue;
+                $held = true;
+                // In an event that repeats as a whole, its forms share an
+                // instance. Otherwise a repeating form of the "with" field has
+                // no instance that belongs to the tagged field's entry.
+                if ($ev['repeatEvent'] || $ev['repeat'] === null || !isset($ev['repeat'][$fw])) { $paired = true; break; }
+            }
+            if (!$held) {
+                return '"with" field "' . $w . '" is collected in no event with "' . $field . '", so the composite '
+                    . 'key could never be read beside it and the rule would never be checked. Keep both fields '
+                    . 'in the same event.';
+            }
+            if (!$paired) {
+                return '"with" field "' . $w . '" is on the repeating instrument "' . $fw . '" in every event that holds "'
+                    . $field . '", and no instance of it belongs to the entry of "' . $field . '", so the rule would '
+                    . 'never be checked. Put both fields on the same instrument, or use a "with" field that does not repeat.';
+            }
+        }
+        return null;
     }
 
     /**

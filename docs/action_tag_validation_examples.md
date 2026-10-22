@@ -895,7 +895,11 @@ field invalid unless a condition holds — checked live, enforceable with a real
 ```
 
 Put this on `end_date`. While the condition is false, the field is invalid and shows a
-generic message. ISO dates and numbers compare correctly.
+generic message. ISO dates and numbers compare correctly. A field validated as a number
+(an integer, a number with any decimals, comma decimals included), a calc and a slider
+are read as the number they hold: a saved `12,5` is 12.5 and `2.5E1` is 25. Two numbers
+compare by value, so `=` treats `02` and `2` as equal; for an ID or a phone number, use
+`"exact":true` (Level 2).
 
 A bare `@UVASSERT` with no condition is a configuration error — there is nothing to
 assert.
@@ -907,10 +911,13 @@ or the next action tag, as for [`@UVREQUIRED`](#level-4--compound-conditions):
 ### Level 2 — confirm-a-value
 
 ```text
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}
 ```
 
-"Type it twice" needs no special feature; it is an assertion like any other.
+"Type it twice" is an assertion like any other, with one option. Without `"exact":true`,
+`=` compares numbers by value, so `00123` confirmed as `123`, `1002` as `1002.0` and
+`+237677123456` as `237677123456` would all pass. With it, `=` and `<>` compare the two
+entries character for character (spaces around them aside), letter case included.
 
 ### Level 3 — your own message
 
@@ -1079,8 +1086,9 @@ note, is not read.
 ## `@UVUNIQUE` — no duplicates across records
 
 REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value against every
-other record **as it is typed**, over a CSRF-protected module AJAX call — no page
-reload.
+other record when it is entered or changed, over a CSRF-protected module AJAX call, with
+no page reload. Typing clears the old answer; the page asks when the field loses focus,
+and again at Save.
 
 ### Level 1 — unique across the project
 
@@ -1096,7 +1104,9 @@ reload.
 @UVUNIQUE=event        unique within the same event of a longitudinal project
 ```
 
-Any other bare value is a configuration error naming the three valid scopes.
+Any other bare value is a configuration error naming the three valid scopes. Under `dag`,
+records in no group form one group of their own, and a new record made by a user in no
+group is compared with them.
 
 ### Level 3 — message and enforcement
 
@@ -1116,7 +1126,10 @@ unique. A specimen ID may repeat across sites but not within one.
 
 Constraints on `with`: a JSON list of real REDCap field names, at most **5** entries, no
 duplicates, and each must exist in the data dictionary and be a scalar field. Names are
-lowercased automatically.
+lowercased automatically. A `with` value is read from the same entry as the tagged field,
+so each `with` field must be collected in an event that also collects the tagged field,
+and must not sit on a repeating instrument the tagged field is not on. The rule is refused
+otherwise.
 
 ### Level 5 — surveys (explicit opt-in)
 
@@ -1321,9 +1334,8 @@ branch stays visible and is marked invalid; `blockSave:"hard"` challenges the br
 save until it is corrected. Dropdowns keep that stale option greyed and marked
 `data-uv-stale`, never disabled, so the answer on screen is the answer REDCap
 receives; autocomplete keeps the entered text but excludes it from new suggestions.
-On a multi-page survey, put the controlling field on the same page as the filtered
-field: a field answered on an earlier page is not in the page's form, so the filter
-cannot read it there and only the post-save audit checks that answer. Clearing or correcting
+On a survey shown one section per page, the controlling field may sit on an earlier
+page: the page is drawn with the condition settled from the saved answer. Clearing or correcting
 the answer releases the choice-filter block. Off-page/extended conditions remain
 advisory even if `hard` was authored. Audits and scans detect saved hidden choices.
 
@@ -3179,8 +3191,11 @@ no `soft` or `hard`: none of the four is made from a limit.
   form as changed. After a change REDCap hears an input and a change event, so
   its calculations and branching logic that read the field run. On save: the
   post-save audit works out the same values from the saved record and writes
-  those that differ, for a form, a survey, an import and the API, with one
-  save per entry (event and instance), the entry being saved first. An entry
+  those that differ, for a save of a form or a survey, with one save per entry
+  (event and instance), the entry being saved first. An import or an API write
+  leaves the fields as they were, because REDCap does not run the save hook for
+  a Data Import Tool import; the Validation scan reports such a field as
+  "Returned value out of date". An entry
   REDCap refuses to write (a locked form) is logged, and the others are still
   written. The write appears in the record's log as an update by the user who
   saved. It is not audited again. The rules that return values are checked
@@ -4397,13 +4412,13 @@ Another common pairing — an ID typed twice, format-checked, and unique:
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
-The confirmation ignores letter case, so `tb-000123` confirms `TB-000123`. If the two
-entries must match character for character, add `"caseSensitive":true` to the
-`@UVASSERT`.
+`"exact":true` makes the two entries match character for character: `TB-000123` does
+not confirm `tb-000123`, and a dropped leading zero is caught. Leave it out only when
+letter case should not matter and the value is never a number.
 
 ---
 
@@ -4617,7 +4632,7 @@ Text in a condition is compared without regard to the case of A-Z. So are the va
 Set `"caseSensitive":true` when case is part of the value:
 
 ```text
-@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","caseSensitive":true,"message":"Lot codes must match exactly"}
+@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","exact":true,"message":"Lot codes must match exactly"}
 @UVREQUIRED={"when":"[grade]='A'","caseSensitive":true}
 @UVUNIQUE={"caseSensitive":true,"message":"This code is taken (codes are case-sensitive)"}
 @UVEXISTS={"in":"[lot_code]","caseSensitive":true}
@@ -5131,14 +5146,17 @@ it looks: the tag validates the field it sits on, and that is where the message 
 ```text
 # on: participant_id_confirm — put the tag on the CONFIRM field, so the message
 # lands next to the box the typist should re-check
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"IDs do not match - re-type","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"IDs do not match - re-type","blockSave":"hard"}
 
 # on: phone_confirm
-@UVASSERT={"assert":"[phone_number]=[phone_confirm]","message":"Phone numbers do not match"}
+@UVASSERT={"assert":"[phone_number]=[phone_confirm]","exact":true,"message":"Phone numbers do not match"}
 
 # on: specimen_id_confirm
-@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","message":"Specimen ID confirmation mismatch - re-scan"}
+@UVASSERT={"assert":"[specimen_id]=[specimen_id_confirm]","exact":true,"message":"Specimen ID confirmation mismatch - re-scan"}
 ```
+
+`"exact":true` is what makes these checks work: without it `=` compares numbers by
+value, and `0677123456` would confirm `677123456`.
 
 #### Specimen and lab workflow
 
@@ -5616,7 +5634,7 @@ the required notice fires; once filled, the value checks take over.
 
 ```text
 @UVALIDATE={"algorithm":"none","pattern":"TB-[0-9]{6}","blockSave":"hard"}
-@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true,"message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
 
@@ -5891,6 +5909,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
 | `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
 | `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
+| `exact`         | boolean | `false`      | `=` and `<>` in `assert` compare character for character: `00123` is not `123` |
 
 ### `@UVREQUIRED`
 
@@ -6127,7 +6146,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── @UVASSERT — cross-field constraint ───────────────────────────────────────
 @UVASSERT="[end_date]>=[start_date]"
-@UVASSERT="[participant_id]=[participant_id_confirm]"
+@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","exact":true}   type it twice
 @UVASSERT={"assert":"[dose]<=[max_dose]","message":"Dose exceeds the protocol maximum","blockSave":"hard"}
 @UVASSERT={"assert":"[sex]='2'","when":"[pregnant]='1'","message":"Pregnant participants must be recorded female"}
 
@@ -6197,6 +6216,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}
+@UVASSERT={"assert":"[code]=[code_confirm]","exact":true}              also 007 is not 7
 @UVUNIQUE={"caseSensitive":true}                       "AB12" and "ab12" are different codes
 
 # ── Composing several kinds on ONE field ─────────────────────────────────────
