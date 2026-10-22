@@ -4154,7 +4154,12 @@ function QRIDSingleInit(QRID_CONFIG){
     }
     /* register BEFORE the initial check: check() stamps the ACTIVE variant's
        blockSave on the input, and registration must never clobber it */
-    if(ANY_BLOCK && !configError) QRID_registerBlocker(input, fieldName, VS.firstBlock);
+    if(ANY_BLOCK && !configError){
+      /* re-judged at save: a value or a "when" controller changed without an
+         event (a calc, a script) must not leave a stale verdict (VAL-6) */
+      input.__qridRecheck = function(){ if(debounced.cancel) debounced.cancel(); check(true); };
+      QRID_registerBlocker(input, fieldName, VS.firstBlock);
+    }
     check(true);
     return true;
   }
@@ -4308,7 +4313,11 @@ function QRIDConstraintInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { input.focus(); } catch(e){} },
+                /* re-judged at save: a referenced value changed without an
+                   event (a calc, a radio reset) must not leave a stale
+                   verdict (AST-7) */
+                __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -6200,7 +6209,10 @@ function QRIDRequiredInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { input.focus(); } catch(e){} },
+                /* re-judged at save: a "when" over a calc flipped without an
+                   event must not let a blank field through (REQ-3) */
+                __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -8012,7 +8024,11 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     }
     /* register BEFORE the initial render: render() stamps the ACTIVE variant's
        blockSave on the input, and registration must never clobber it */
-    if(ANY_BLOCK && !configError) QRID_registerBlocker(input, fieldName, VS.firstBlock);
+    if(ANY_BLOCK && !configError){
+      /* re-judged at save, as the single field is (VAL-6) */
+      input.__qridRecheck = function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); };
+      QRID_registerBlocker(input, fieldName, VS.firstBlock);
+    }
     render(msg, input);
     return true;
   }
