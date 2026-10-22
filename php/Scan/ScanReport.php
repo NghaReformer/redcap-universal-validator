@@ -115,6 +115,22 @@ final class ScanReport
     }
 
     /**
+     * A DATA line about the report: the label in the first column, the text
+     * in the second, the rest empty.
+     *
+     * NOT A COMMENT, ON PURPOSE. README promises that an incomplete file says
+     * so in a row that survives deleting the comment lines and sorting the
+     * sheet. A `# ` line goes with the first and is lost among the rows by the
+     * second; a data row whose Issue cell says what it is does neither. As
+     * wide as every other line, and through the same quoting and defence.
+     */
+    public function csvNoticeLine($label, $text)
+    {
+        $cells = [(string) $label, (string) $text];
+        return ScanPageView::csvRow(array_pad($cells, max(count($this->cols), count($cells)), ''));
+    }
+
+    /**
      * What is true of the whole report, for its heading and its file header.
      *
      * THERE IS NO KEY HERE A CALLER COULD PRINT AS "CLEAN". Whether the run may

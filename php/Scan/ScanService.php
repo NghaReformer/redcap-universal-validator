@@ -1315,6 +1315,12 @@ final class ScanService
     /** README: a user REDCap bars from its data export tool reads the scan on screen only. */
     const NO_EXPORT = 'You need data export rights in this project to download the scan report.';
 
+    /** The Issue cell of the terminal data row of a run that cannot certify (README). */
+    const INCOMPLETE_LABEL = 'INCOMPLETE SCAN';
+
+    /** The Issue cell of the data row a file that lost rows carries. */
+    const LOST_LABEL = 'INCOMPLETE EXPORT';
+
     /** The line a file that stopped early ends on, in place of the trailer. */
     const ROWS_LOST = 'ROWS WERE LOST: the report could not be read to the end, so this file is not the whole report';
 
@@ -1367,12 +1373,16 @@ final class ScanService
             ['columns', $facts['legend']],
             ['expected_rows', $facts['expectedRows'] === null ? 'unknown' : (string) $facts['expectedRows']],
         ];
-        $filename = sprintf('uv-scan-%d-run%d-%s.csv', (int) $pid, (int) $run['run_id'], gmdate('Ymd'));
+        // README's three marks of a file that cannot certify (incompleteMarks()):
+        // the banner and the terminal row go in the file, the suffix in its name.
+        $marks = self::incompleteMarks($run);
+        $filename = sprintf('uv-scan-%d-run%d-%s%s.csv', (int) $pid, (int) $run['run_id'], gmdate('Ymd'),
+                            preg_replace('/[^A-Za-z0-9_-]/', '', $marks['suffix']));
         $store = $this->store();
         return ['ok' => true, 'filename' => $filename,
-                'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head) {
+                'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head, $marks) {
                     $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
-                                                $r['scope'], $head, $write, $flush);
+                                                $r['scope'], $head, $marks, $write, $flush);
                     if ($out['error'] instanceof ScanStoreUnavailable) {
                         $this->storageFailed($pid, $runId, $out['error']);
                     }
@@ -1399,13 +1409,25 @@ final class ScanService
      * A download cut off anywhere lacks the trailer; a store that fails
      * partway writes ROWS_LOST where the trailer would be.
      *
-     * @param array $head [[key, value], ...] the lines about the report
+     * AND WHETHER THE RUN WAS (README, item 10). A run that cannot certify the
+     * project opens on its banner, above everything else, and ends its rows
+     * on a terminal data row, which survives deleting the comment lines and
+     * sorting the sheet; the third mark, the filename suffix, is the caller's.
+     * A file that lost rows says so in a data row too, for the same reason.
+     *
+     * @param array $head  [[key, value], ...] the lines about the report
+     * @param array $marks incompleteMarks() of the run: `banner` and `row`, each
+     *                     null when the run needs none
      * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
      */
     public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
-                                          array $scope, array $head, callable $write, callable $flush)
+                                          array $scope, array $head, array $marks, callable $write,
+                                          callable $flush)
     {
+        $banner = isset($marks['banner']) ? $marks['banner'] : null;
+        $terminal = isset($marks['row']) ? $marks['row'] : null;
         $write("\xEF\xBB\xBF");
+        if ($banner !== null) $write($report->csvMetaLine($banner, '') . "\r\n");
         foreach ($head as $h) $write($report->csvMetaLine($h[0], $h[1]) . "\r\n");
         $write($report->csvHeaderLine() . "\r\n");
         $flush();
@@ -1430,10 +1452,12 @@ final class ScanService
                 $after = $through;
             } while ($after !== null);
         } catch (\Throwable $e) {
+            $write($report->csvNoticeLine(self::LOST_LABEL, self::ROWS_LOST) . "\r\n");
             $write($report->csvMetaLine(self::ROWS_LOST, 'rows=' . $rows) . "\r\n");
             $flush();
             return ['ok' => false, 'rows' => $rows, 'pages' => $pages, 'error' => $e];
         }
+        if ($terminal !== null) $write($report->csvNoticeLine(self::INCOMPLETE_LABEL, $terminal) . "\r\n");
         $write($report->csvMetaLine('export_complete=1', 'rows=' . $rows) . "\r\n");
         $flush();
         return ['ok' => true, 'rows' => $rows, 'pages' => $pages, 'error' => null];

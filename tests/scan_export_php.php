@@ -135,7 +135,7 @@ namespace INSPIRE\UniversalValidator\Scan {
      *         start, sampled at every write, when $keep is false (the text is
      *         then only hashed, as a browser would take it away)
      */
-    function xstream(ScanStore $store, ScanReport $report, $pid, $gen, array $scope, $keep = true)
+    function xstream(ScanStore $store, ScanReport $report, $pid, $gen, array $scope, $keep = true, array $marks = [])
     {
         $text = '';
         $flushes = 0;
@@ -151,7 +151,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         };
         $flush = function () use (&$flushes) { $flushes++; };
         $head = [['schema', ScanReport::SCHEMA], ['expected_rows', 'unknown']];
-        $out = ScanService::streamFindings($store, $report, $pid, $gen, $scope, $head, $write, $flush);
+        $out = ScanService::streamFindings($store, $report, $pid, $gen, $scope, $head, $marks, $write, $flush);
         $lines = $keep ? explode("\r\n", rtrim(substr($text, 3), "\r\n")) : [];
         return ['out' => $out, 'text' => $text, 'flushes' => $flushes, 'lines' => $lines,
                 'peak' => $peak, 'bytes' => $bytes];
@@ -222,6 +222,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('lost: and its last line says rows were lost, and how many were written',
             end($x['lines']) === $rep->csvMetaLine(ScanService::ROWS_LOST, 'rows=100')
             && $x['out']['error'] instanceof ScanStoreUnavailable);
+        check('lost: a data row says so too, for a reader who deleted the comment lines',
+            $x['lines'][count($x['lines']) - 2] === $rep->csvNoticeLine(ScanService::LOST_LABEL, ScanService::ROWS_LOST));
         check('lost: the reason never reaches the file', strpos($x['text'], 'gone away') === false);
 
         $stuck = new class($inner) extends FaultyStore {
@@ -324,6 +326,67 @@ namespace INSPIRE\UniversalValidator\Scan {
         $allGroups = [];
         foreach (array_slice($all['lines'], 3, -1) as $l) $allGroups[str_getcsv($l)[$at]] = true;
         check('group (control): the unconfined file holds all three', count($allGroups) === 3);
+    }
+
+    /* =====================================================================
+     * 6. README'S THREE MARKS OF A FILE THAT CANNOT CERTIFY (item 10)
+     *
+     * A banner at the top, a terminal data row that survives deleting the
+     * comment lines and sorting the sheet, and _INCOMPLETE in the filename.
+     * ===================================================================== */
+    {
+        $m = function (array $o) {
+            return ScanService::incompleteMarks($o + ['terminal' => ScanOutcome::COMPLETE,
+                'coverage' => ScanOutcome::FENCED, 'detail' => ScanOutcome::DETAIL_COMPLETE, 'clean' => 0]);
+        };
+        $clean = $m(['clean' => 1]);
+        check('marks: a certified run carries none, and no suffix',
+            $clean['incomplete'] === false && $clean['certified'] === true && $clean['banner'] === null
+            && $clean['row'] === null && $clean['suffix'] === '');
+        $found = $m([]);
+        check('marks: a complete run that found something is not incomplete, and is named not certified',
+            $found['incomplete'] === false && $found['certified'] === false && $found['banner'] === null
+            && $found['suffix'] === '_NOT-CERTIFIED');
+        $cases = [
+            ['cancelled', ['terminal' => ScanOutcome::CANCELLED, 'coverage' => ScanOutcome::COV_PARTIAL, 'clean' => null],
+             '_INCOMPLETE_CANCELLED'],
+            ['failed', ['terminal' => ScanOutcome::FAILED, 'coverage' => ScanOutcome::COV_FAILED, 'clean' => null],
+             '_INCOMPLETE_FAILED'],
+            ['expired', ['terminal' => ScanOutcome::EXPIRED, 'coverage' => ScanOutcome::COV_PARTIAL, 'clean' => null],
+             '_INCOMPLETE_EXPIRED'],
+            ['partial, manifest only', ['terminal' => ScanOutcome::PARTIAL, 'coverage' => ScanOutcome::MANIFEST],
+             '_INCOMPLETE_MANIFEST_ONLY'],
+            ['partial', ['terminal' => ScanOutcome::PARTIAL, 'coverage' => ScanOutcome::COV_PARTIAL], '_INCOMPLETE'],
+            ['complete with findings cut', ['detail' => ScanOutcome::DETAIL_TRUNCATED], '_INCOMPLETE_TRUNCATED'],
+        ];
+        foreach ($cases as $c) {
+            $x = $m($c[1]);
+            check('marks: a ' . $c[0] . ' run carries all three, its name ending ' . $c[2],
+                $x['incomplete'] === true && $x['certified'] === false && $x['suffix'] === $c[2]
+                && strpos($x['banner'], 'INCOMPLETE SCAN') === 0 && strpos($x['banner'], 'NOT certify') !== false
+                && strpos($x['row'], 'absence of a row is not evidence a record is clean') !== false);
+        }
+
+        $s = new ArrayScanStore();
+        $p = xplant($s, XPID, [[], [], []], 'I');
+        $rep = xreport($s, XPID, $p['run']);
+        $marks = $m($cases[0][1]);
+        $x = xstream($s, $rep, XPID, $p['gen'], ['dag' => null], true, $marks);
+        check('marks: the banner is the file\'s first line, before anything else',
+            $x['lines'][0] === $rep->csvMetaLine($marks['banner'], ''));
+        $terminal = $rep->csvNoticeLine(ScanService::INCOMPLETE_LABEL, $marks['row']);
+        check('marks: the terminal row is the last data row, before the trailer',
+            $x['lines'][count($x['lines']) - 2] === $terminal
+            && end($x['lines']) === $rep->csvMetaLine('export_complete=1', 'rows=3'));
+        check('marks: the terminal row is data, not a comment, and as wide as the header',
+            strpos($terminal, '"# ') !== 0 && count(str_getcsv($terminal)) === count(str_getcsv($rep->csvHeaderLine())));
+        $kept = array_values(array_filter($x['lines'], function ($l) { return strpos($l, '"# ') !== 0; }));
+        sort($kept);
+        check('marks: deleting the comment lines and sorting the sheet leaves the terminal row in it',
+            in_array($terminal, $kept, true) && count($kept) === 1 + 3 + 1);
+        $plain = xstream($s, $rep, XPID, $p['gen'], ['dag' => null], true, $found);
+        check('marks (control): a complete run\'s file has no banner and no terminal row',
+            strpos($plain['text'], 'INCOMPLETE') === false && strpos($plain['lines'][0], '"# schema"') === 0);
     }
 
     /* =====================================================================

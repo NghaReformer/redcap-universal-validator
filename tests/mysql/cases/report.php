@@ -228,7 +228,7 @@ $csvOf = function (array $scope) use ($dbA, $PID, $mine) {
     $text = '';
     $flushes = 0;
     $out = \INSPIRE\UniversalValidator\Scan\ScanService::streamFindings($store, $report, $PID, $mine['gen'], $scope,
-        [['schema', 'uv-scan-report/1']], function ($s) use (&$text) { $text .= $s; },
+        [['schema', 'uv-scan-report/1']], ['banner' => null, 'row' => null], function ($s) use (&$text) { $text .= $s; },
         function () use (&$flushes) { $flushes++; });
     $lines = explode("\r\n", rtrim(substr($text, 3), "\r\n"));
     $at = array_search('dag', str_getcsv($lines[1]), true);

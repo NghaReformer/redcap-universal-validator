@@ -3809,8 +3809,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         && strpos($wholeCsv['text'], '"# expected_rows","10"') !== false
         && strpos($wholeCsv['text'], '"# scope","whole project"') !== false
         && strpos($wholeCsv['text'], '"# run","' . $fAll . '"') !== false);
-    check('B5 export: the file is named for the project, the run and the day',
-        preg_match('/^uv-scan-186-run' . $fAll . '-\d{8}\.csv$/', $wholeCsv['filename']) === 1);
+    check('B5 export: the file is named for the project, the run and the day, and says it does not certify',
+        preg_match('/^uv-scan-186-run' . $fAll . '-\d{8}_NOT-CERTIFIED\.csv$/', $wholeCsv['filename']) === 1
+        && strpos($wholeCsv['text'], 'INCOMPLETE') === false);
     $mineCsv = $csv($f31, 31);
     check('B5 export group: a group reader\'s file holds their group\'s findings and not the row filed under another group',
         !empty($mineCsv['ok']) && $mineCsv['result']['rows'] === 4 && strpos($mineCsv['text'], '"R06"') === false
@@ -3846,6 +3847,18 @@ namespace INSPIRE\UniversalValidator\Scan {
     $heldX = $csv($stopped, 31, 188);
     check('B5 export: a group run that never proved its group is refused, not handed over empty',
         $heldX === ['ok' => false, 'http' => 403, 'why' => ScanAuthorization::WITHHELD_ENDED]);
+    $fm->user->rights['group_id'] = null;
+    $halted = (int) (new ScanService($fm, $fs))->start(190)['run_id'];
+    (new ScanService($fm, $fs))->cancel(190, $halted);
+    $haltedCsv = $csv($halted, null, 190);
+    check('B5 export (item 10): a stopped run\'s file says it is incomplete three ways',
+        !empty($haltedCsv['ok']) && $fs->run(190, $halted)['terminal'] === ScanOutcome::CANCELLED
+        && preg_match('/_INCOMPLETE_CANCELLED\.csv$/', $haltedCsv['filename']) === 1
+        && strpos($haltedCsv['text'], "\xEF\xBB\xBF\"# INCOMPLETE SCAN") === 0
+        && strpos($haltedCsv['text'], "\r\n\"" . ScanService::INCOMPLETE_LABEL . '","This scan did not cover') !== false
+        && $haltedCsv['result']['ok'] === true);
+    check('B5 export (item 10): and promises no row count, because a stopped run has no verdict',
+        strpos($haltedCsv['text'], '"# expected_rows","unknown"') !== false);
     $broken = new FaultyStore($fs);
     $fm->user->rights['group_id'] = null;
     $bx = (new ScanService($fm, $broken))->exportOpen(186, $fAll);
