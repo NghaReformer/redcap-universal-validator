@@ -1346,6 +1346,21 @@ $SUPER = 787;
     // `record_id_bin IN (...)`, a column no index holds, so each read the
     // run's whole primary-key range. Asked by hash, each goes through
     // uq_run_record, as depart() does above.
+    //
+    // ON A RUN LARGE ENOUGH THAT THE PLAN MEANS SOMETHING. Over the forty
+    // rows above, a read of two hashes costs about the same through
+    // PRIMARY's run_id range, and MySQL 8.0 chose it on one run of this case
+    // in three. 400 more pending rows on the run, and fresh statistics, make
+    // the range the cost a real manifest has; pending rows move no counter
+    // the checks below read.
+    $pad = [];
+    for ($i = 0; $i < 400; $i++) {
+        $pad[] = '(' . (int) $drid . ', ' . (1000 + $i) . ", 'PAD" . $i . "', UNHEX(SHA2('PAD" . $i
+               . "', 256)), 0, NOW())";
+    }
+    $A->query('INSERT INTO ' . Schema::table('scan_record')
+        . ' (run_id, ordinal, record_id_bin, record_hash, state, updated_at) VALUES ' . implode(',', $pad));
+    $A->query('ANALYZE TABLE ' . Schema::table('scan_record'));
     $nrec = new UvRecordingDb($dbA);
     $nsr = new SqlScanStore($nrec);
     $nh = function ($id) { return hash('sha256', $id, true); };
