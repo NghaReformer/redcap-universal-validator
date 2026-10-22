@@ -449,7 +449,7 @@ final class ScanService
         // It refuses until the run really is finishable, so asking early costs
         // one predicate - while not asking at all is how a run ends up complete
         // in every respect except the row that says so.
-        $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
+        $u = $this->finalizer($pid, $ctx, $store)->status((int) $run['generation_id']);
         $p = ScanPromotion::promote($store, $pid, $runId, [
             // WHAT WAS FOUND IS NOT PASSED. Violations, rule problems, gaps,
             // what blocks coverage and the window's changes are read from the
@@ -519,7 +519,7 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx),
+            'finalizer' => $this->finalizer($pid, $ctx, $store),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -1450,7 +1450,7 @@ final class ScanService
         ]);
     }
 
-    private function finalizer($pid, array $ctx)
+    private function finalizer($pid, array $ctx, ScanStore $store)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1462,6 +1462,12 @@ final class ScanService
         $seen = new \ArrayObject();
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
+            // The store its emit and publish transactions hold the run row
+            // through (review rv10a1-1): the worker's own, as RollupBuilder
+            // is given it. Unless a test gave its own store, that store is
+            // built over $this->db, so the hold and the writes are one
+            // transaction on one connection.
+            'store'    => $store,
             'hmacKey'  => $this->key(),
             'versions' => $this->fence($pid),
             // Re-reading a duplicate group goes through the SAME read the worker

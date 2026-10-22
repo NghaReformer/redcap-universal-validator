@@ -310,6 +310,9 @@ class FaultyStore implements ScanStore
     public function holdRollupCursor($runId, $epoch)
     { $this->gate('holdRollupCursor'); return $this->inner->holdRollupCursor($runId, $epoch); }
 
+    public function holdRun($runId, $epoch, $phase)
+    { $this->gate('holdRun'); return $this->inner->holdRun($runId, $epoch, $phase); }
+
     public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
     { $this->gate('markAggregate'); return $this->inner->markAggregate($runId, $kind, $axis1, $axis2, $blocks, $samples); }
 

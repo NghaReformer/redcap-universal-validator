@@ -57,10 +57,17 @@ interface SequencedFinalizer
     /**
      * A copy of this finalizer that writes as the run with this run_seq.
      *
-     * @param int $runSeq 1 or more
+     * With $runId and $epoch it also writes only while that run still holds
+     * that lease epoch, has not ended and is in unique-finalize (review
+     * rv10a1-1): each write is refused, with nothing written, once a cancel,
+     * the reaper or another user's Start has ended or taken the run.
+     *
+     * @param int      $runSeq 1 or more
+     * @param int|null $runId  the run's id, 1 or more
+     * @param int|null $epoch  the lease epoch the caller's work started on
      * @return DuplicateFinalizer
      */
-    public function forRun($runSeq);
+    public function forRun($runSeq, $runId = null, $epoch = null);
 }
 
 /**
@@ -116,6 +123,13 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     /** Why emit() wrote nothing: the records' Data Access Groups could not be read. */
     const NO_DAGS = 'the data access groups of the records in a duplicate group could not be '
                   . 'read, so its duplicate findings were not written; the scan can be resumed';
+
+    /**
+     * Why emit() or publish() wrote nothing: they can be fenced on the run
+     * only with both a store and a run, and one of the two is missing.
+     */
+    const NO_FENCE = 'the duplicate check could not confirm that its scan is still running, so '
+                   . 'it wrote no duplicate findings';
 
     /** The reason a duplicate carries, as the live check and the audit write it (W7-R4). */
     const REASON = 'duplicate-value';
@@ -177,11 +191,23 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * @var int|null
      */
     private $seq = null;
+    /**
+     * The run and lease epoch emit() and publish() are fenced on, bound with
+     * forRun() (review rv10a1-1). Null when no run was bound.
+     *
+     * @var int|null
+     */
+    private $runId = null;
+    /** @var int|null */
+    private $epoch = null;
 
     /**
      * @param array $deps {
      *   pid:      int|string  REQUIRED; a project id of 1 or more
      *   seq:      ?int  the writing run's run_seq; or bind one with forRun()
+     *   store:    ?ScanStore  holds the run row for each emit and publish
+     *             transaction, over the same connection as $db; the run
+     *             itself is bound with forRun() (review rv10a1-1, held())
      *   read:     callable(array $locations): array{ok:bool, values:array, why:?string}
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
@@ -224,11 +250,72 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     }
 
     /** {@inheritdoc} */
-    public function forRun($runSeq)
+    public function forRun($runSeq, $runId = null, $epoch = null)
     {
         $c = clone $this;
         $c->seq = self::runSeq($runSeq);
+        if ($runId !== null || $epoch !== null) {
+            $okId = is_numeric($runId) && (int) $runId >= 1;
+            $okEp = is_numeric($epoch) && (int) $epoch >= 0;
+            if (!$okId || !$okEp) {
+                throw new \InvalidArgumentException('a duplicate finalizer was bound to a run '
+                    . 'without a valid run id and lease epoch');
+            }
+            $c->runId = (int) $runId;
+            $c->epoch = (int) $epoch;
+        }
         return $c;
+    }
+
+    /**
+     * Run $write inside one transaction that first holds the run (review
+     * rv10a1-1), and answer true, or the reason nothing was written.
+     *
+     * THE FENCE. emit() and publish() were fenced on the group's
+     * candidate_epoch only, which says whether the CANDIDATES moved and
+     * nothing about the RUN. A request mid-finalize when the cron expired its
+     * run, or a cancel or another user's Start took it, went on emitting and
+     * publishing duplicates into a run already reported ended: the reviewer's
+     * repro took the expired run's generation from 1 finding to 3. The first
+     * statement here is ScanStore::holdRun(), a locking read of the run row,
+     * so a writer that ended the run first is seen, and one that comes later
+     * waits for this commit.
+     *
+     * Fenced when a store or a run is given, and then both are required: a
+     * finalizer that has one without the other refuses to write rather than
+     * write unfenced (NO_FENCE). One with neither is a finalizer driven
+     * directly, by a test, over groups that belong to no run row, and writes
+     * as before. ScanService gives the store and ScanWorker binds the run.
+     *
+     * Discovery, verification, block() and restart() stay unfenced. They write
+     * the generation's group rows, which only this run's own finalizer reads;
+     * nothing is reported from them once the run has ended.
+     *
+     * @param callable $write
+     * @return true|string
+     */
+    private function held($write)
+    {
+        $store = isset($this->deps['store']) ? $this->deps['store'] : null;
+        if ($store === null && $this->runId === null) {
+            $write();
+            return true;
+        }
+        if (!($store instanceof ScanStore) || $this->runId === null) return self::NO_FENCE;
+        $this->db->begin();
+        try {
+            $hold = $store->holdRun($this->runId, $this->epoch, ScanPhase::UNIQUE);
+            if ($hold !== true) {
+                $this->db->rollback();
+                return is_string($hold) && $hold !== '' ? $hold : ScanStore::HOLD_NO_RUN;
+            }
+            $write();
+            $this->db->commit();
+            return true;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
     }
 
     /** A run_seq as the schema allocates them, or a refusal: never a guessed one. */
@@ -659,8 +746,9 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // Checked values only: a lookup was verified with the group and is
         // not a finding (Schema::statementsV4).
         if (!$rows) {
-            return ['emitted' => 0, 'published' => $this->publish($generationId, $g), 'read' => 0,
-                    'why' => null];
+            $pub = $this->publish($generationId, $g);
+            return ['emitted' => 0, 'published' => $pub === true, 'read' => 0,
+                    'why' => $pub === true ? null : $pub];
         }
 
         // The page's records' groups, in one call.
@@ -717,19 +805,30 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // no active slot, and every NULL in a unique index counts as distinct,
         // so a retried page would insert a second copy of every row it had
         // already written.
-        $this->db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
-            (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
-             record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
-             rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
-             dag_key, group_hmac, stage_epoch)
-            VALUES ' . implode(',', $marks) . '
-            ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
-        $emitted = count($marks);
-        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group')
-            . ' SET emit_cursor = ?
-               WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
-            [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return ['emitted' => $emitted, 'published' => false, 'read' => $read, 'why' => null];
+        //
+        // The page and its cursor are one transaction held on the run
+        // (held(), review rv10a1-1). A refusal writes neither and reports
+        // nothing read: the run has ended or been taken, so the same refusal
+        // meets the next step and the worker stops on the why.
+        $db = $this->db;
+        $pid = $this->pid;
+        $wrote = $this->held(function () use ($db, $pid, $marks, $flat, $cursor, $g) {
+            $db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
+                (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
+                 record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
+                 rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
+                 dag_key, group_hmac, stage_epoch)
+                VALUES ' . implode(',', $marks) . '
+                ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
+            $db->execNoCount('UPDATE ' . Schema::table('unique_group')
+                . ' SET emit_cursor = ?
+                   WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+                [$cursor, $pid, $g['group_id'], $g['candidate_epoch']]);
+        });
+        if ($wrote !== true) {
+            return ['emitted' => 0, 'published' => false, 'read' => 0, 'why' => $wrote];
+        }
+        return ['emitted' => count($marks), 'published' => false, 'read' => $read, 'why' => null];
     }
 
     /**
@@ -741,6 +840,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * would fail. Then the group's pointer is written, fenced on the epoch that
      * produced these rows: if the candidates moved while we were emitting, that
      * fence fails and nothing becomes visible.
+     *
+     * @return true|string true, or held()'s reason nothing was published
      */
     private function publish($generationId, array $g)
     {
@@ -749,22 +850,29 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // is a property of the key material and not of the query, and the
         // project_id leading ix_group_stage_v2 is what makes them read one
         // project's rows instead of the generation's.
+        //
+        // The three statements are one transaction held on the run (held(),
+        // review rv10a1-1), so a group is published whole into a run that is
+        // still running, or not at all.
         $t = Schema::table('finding');
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
-            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
-              AND stage_epoch <> ?',
-            [$this->seq, $this->pid, $generationId, $g['group_hmac'],
-             $g['candidate_epoch']]);
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
-            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
-              AND active_slot IS NULL',
-            [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-            SET phase = ?, published_epoch = ?, staged_epoch = ?
-            WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
-            [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
-             $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return true;
+        $db = $this->db;
+        $pid = $this->pid;
+        $seq = $this->seq;
+        return $this->held(function () use ($db, $t, $pid, $seq, $generationId, $g) {
+            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
+                  AND stage_epoch <> ?',
+                [$seq, $pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
+                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
+                  AND active_slot IS NULL',
+                [$pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+            $db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
+                SET phase = ?, published_epoch = ?, staged_epoch = ?
+                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+                [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
+                 $pid, $g['group_id'], $g['candidate_epoch']]);
+        });
     }
 
     /** The group could not be decided. Terminal, and it blocks the run's coverage. */

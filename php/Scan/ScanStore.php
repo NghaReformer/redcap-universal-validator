@@ -844,6 +844,45 @@ interface ScanStore
     public function holdRollupCursor($runId, $epoch);
 
     /**
+     * Why a finishing phase may not write for a run. One copy, both stores.
+     *
+     * Each reaches the worker as the reason it stopped, so each says what
+     * happened to the work and names nothing about the run.
+     */
+    const HOLD_NO_RUN     = 'this run could not be read, so nothing more was written for it';
+    const HOLD_TAKEN_OVER = 'this scan was stopped or taken over while this request was '
+        . 'finishing it, so what this request found was not written';
+    const HOLD_FINISHED   = 'this scan has already ended, so what this request found was not '
+        . 'added to a result that has already been reported';
+    const HOLD_MOVED      = 'this scan has moved past the step this request was working on, so '
+        . 'what this request found was not written';
+
+    /**
+     * Hold the run row while a finishing phase writes for it (review rv10a1-1).
+     *
+     * CALLED INSIDE THE CALLER'S TRANSACTION, as its first statement, and the
+     * hold lasts until that transaction ends. The answer is true when the run
+     * exists, still has lease epoch $epoch, has not ended and is in phase
+     * $phase; otherwise one of the HOLD_* sentences above, in this order: no
+     * such run, a different epoch, ended, a different phase. The caller then
+     * rolls back and writes nothing.
+     *
+     * WHY A HOLD AND NOT A CHECK. A cancel, the reaper and another user's
+     * Start all end a run by writing its row. A plain read before a write
+     * leaves a window in which the run ends and the write lands anyway: a
+     * request that was mid-finalize when the cron expired its run went on
+     * emitting and publishing duplicates into the run already reported
+     * expired. Under the hold the row cannot change until the caller commits,
+     * and a writer that ended the run first is seen by the read.
+     *
+     * @param int    $runId
+     * @param int    $epoch the lease epoch the caller's work started on
+     * @param string $phase one of ScanPhase's working phases
+     * @return true|string
+     */
+    public function holdRun($runId, $epoch, $phase);
+
+    /**
      * Add to a counted aggregate.
      *
      * ADDS rather than sets, because an aggregate is built from bounded pages

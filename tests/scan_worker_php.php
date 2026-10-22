@@ -2201,15 +2201,18 @@ namespace INSPIRE\UniversalValidator\Scan {
         /** Shared by every bound copy, so the test sees what each one stepped as. */
         public $log;
         public function __construct() { $this->log = new \ArrayObject(); }
-        public function forRun($runSeq)
+        public $bound = null;
+        public function forRun($runSeq, $runId = null, $epoch = null)
         {
             $c = clone $this;
             $c->seq = (int) $runSeq;
+            $c->bound = [$runId, $epoch];
             return $c;
         }
         public function step($generationId, $limit = 500, $readLimit = null)
         {
             $this->log[] = $this->seq;
+            $this->log['bound'] = $this->bound;
             return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
                     'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
         }
@@ -2231,6 +2234,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('unique: the worker binds the finalizer to the run it is working, before the first step',
         (int) $seqStore->run(827, $seqRun)['run_seq'] === 3
         && count($seqFin->log) >= 1 && $seqFin->log[0] === 3);
+    check('rv10a1-1: and to the run id and the lease epoch it holds, so each write is fenced on them',
+        isset($seqFin->log['bound']) && $seqFin->log['bound'] === [$seqRun, $ep]);
 
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
@@ -2403,6 +2408,93 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W7-R4: and says why, with nothing counted as moved, so the worker stops on it',
         $down['why'] === UniqueFinalizer::NO_DAGS && $down['emitted'] === 0 && $down['read'] === 0
         && $down['done'] === false);
+
+    // rv10a1-1: EMIT AND PUBLISH WRITE ONLY FOR A RUN STILL HELD. Each page is
+    // one transaction whose first statement holds the run; a run whose epoch
+    // moved (a cancel, a reap) or that has ended takes no page and no publish.
+    /** EmitPageDb, with the transaction boundaries and every write in order. */
+    class TxEmitDb extends EmitPageDb
+    {
+        public $tx = [];
+        public $empty = false;
+        public function select($sql, array $params = [])
+        {
+            if ($this->empty && strpos($sql, 'lookup = 0') !== false) return [];
+            return parent::select($sql, $params);
+        }
+        public function execNoCount($sql, array $params = [])
+        {
+            $this->tx[] = 'write';
+            parent::execNoCount($sql, $params);
+        }
+        public function begin() { $this->tx[] = 'begin'; }
+        public function commit() { $this->tx[] = 'commit'; }
+        public function rollback() { $this->tx[] = 'rollback'; }
+    }
+    $fenceRun = function () {
+        $s = new ArrayScanStore();
+        $rid = (int) $s->startRun(800, ['created_by' => 'alice'])['run']['run_id'];
+        $s->writeManifest($rid, [['id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null]]);
+        $ep = (int) $s->run(800, $rid)['lease_epoch'];
+        foreach ([ScanPhase::SCANNING, ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $p) {
+            $s->advancePhase($rid, $ep, $p);
+        }
+        return [$s, $rid, $ep];
+    };
+    // The reaper and a cancel both move the epoch; the reaper's part lives on
+    // another branch, so the bump is made here as it makes it.
+    $bumpEpoch = function (ArrayScanStore $s, $rid) {
+        $f = function ($rid) { $this->runs[$rid]['lease_epoch']++; };
+        \Closure::bind($f, $s, ArrayScanStore::class)($rid);
+    };
+    list($fs, $frid, $fep) = $fenceRun();
+    $tdb = new TxEmitDb();
+    $live = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('rv10a1-1: a page for a live run is one transaction, the hold first and then its two writes',
+        $live['emitted'] === 3 && $live['why'] === null
+        && $tdb->tx === ['begin', 'write', 'write', 'commit']);
+    $bumpEpoch($fs, $frid);
+    $tdb = new TxEmitDb();
+    $late = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('rv10a1-1: a page after the epoch moved writes no finding and no cursor',
+        $tdb->inserts === [] && $tdb->updates === 0 && $tdb->tx === ['begin', 'rollback']);
+    check('rv10a1-1: and says the scan was stopped or taken over, with nothing counted as moved',
+        $late['why'] === ScanStore::HOLD_TAKEN_OVER && $late['emitted'] === 0 && $late['read'] === 0
+        && $late['published'] === false);
+    list($fs, $frid, $fep) = $fenceRun();
+    $tdb = new TxEmitDb();
+    $tdb->empty = true;
+    $pubLive = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('rv10a1-1: a group published for a live run is published in one held transaction',
+        $pubLive['published'] === true && $pubLive['why'] === null
+        && $tdb->tx === ['begin', 'write', 'write', 'write', 'commit']);
+    $fs->finish($frid, ScanOutcome::derive(['failed' => true]));
+    $tdb = new TxEmitDb();
+    $tdb->empty = true;
+    $pubLate = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('rv10a1-1: a group is not published into a run that has ended',
+        $pubLate['published'] === false && $pubLate['why'] === ScanStore::HOLD_FINISHED
+        && $tdb->tx === ['begin', 'rollback']);
+    list($fs, $frid, $fep) = $fenceRun();
+    $tdb = new TxEmitDb();
+    $noRun = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5)->emit(1, $g7, 10);
+    $tdb2 = new TxEmitDb();
+    $noStore = (new UniqueFinalizer($tdb2, ['pid' => 800, 'hmacKey' => 'k']))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('rv10a1-1: a store with no run bound, or a run with no store, writes nothing rather than unfenced',
+        $noRun['why'] === UniqueFinalizer::NO_FENCE && $noStore['why'] === UniqueFinalizer::NO_FENCE
+        && $tdb->tx === [] && $tdb2->tx === []);
+    $badBind = 0;
+    foreach ([[null, 1], [0, 1], [3, -1], ['x', 1]] as $bb) {
+        try { (new UniqueFinalizer($tdb, ['pid' => 800]))->forRun(5, $bb[0], $bb[1]); }
+        catch (\InvalidArgumentException $e) { $badBind++; }
+    }
+    check('rv10a1-1: a run bound without a valid id and epoch is refused when bound', $badBind === 4);
 
     // -- the duplicate phase is entered, not skipped -------------------------
     //

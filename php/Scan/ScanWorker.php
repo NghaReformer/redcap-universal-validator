@@ -442,9 +442,12 @@ final class ScanWorker
                 // THE FINDINGS IT WRITES ARE THIS RUN'S. A finalizer that
                 // writes is bound to the run's sequence here, the one place
                 // that has the run row, so no caller can build one that dates
-                // duplicates to some other run (review R8-5).
+                // duplicates to some other run (review R8-5). And to the run
+                // id and the lease epoch this request holds, so a write after
+                // a cancel, a reap or another user's Start is refused rather
+                // than added to a run already reported ended (review rv10a1-1).
                 if ($fin instanceof SequencedFinalizer && $runSeq >= 1) {
-                    $fin = $fin->forRun($runSeq);
+                    $fin = $fin->forRun($runSeq, (int) $runId, (int) $epoch);
                 }
                 // TWO CLAIMS, because a step is one of two different things
                 // and nobody knows which until it has run (review BU-1). A page

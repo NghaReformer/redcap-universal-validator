@@ -1226,6 +1226,17 @@ final class ArrayScanStore implements ScanStore
         return (int) (array_key_exists('rollup_cursor', $r) ? $r['rollup_cursor'] : 0);
     }
 
+    public function holdRun($runId, $epoch, $phase)
+    {
+        // Same four refusals, in the same order, as the SQL store.
+        if (!isset($this->runs[$runId])) return self::HOLD_NO_RUN;
+        $r = $this->runs[$runId];
+        if ((int) $r['lease_epoch'] !== (int) $epoch) return self::HOLD_TAKEN_OVER;
+        if (isset($r['terminal']) && $r['terminal'] !== null) return self::HOLD_FINISHED;
+        if ((string) $r['phase'] !== (string) $phase) return self::HOLD_MOVED;
+        return true;
+    }
+
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
         // Coerced to strings exactly as the column is declared NOT NULL. A store

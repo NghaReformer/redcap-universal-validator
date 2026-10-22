@@ -3006,10 +3006,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $svcR = new ScanService(new \SourceModule());
     $finOf = new \ReflectionMethod(ScanService::class, 'finalizer');
     $finOf->setAccessible(true);
-    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan]);
+    $storeR = new ArrayScanStore();
+    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan], $storeR);
     $depsP = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
     $depsP->setAccessible(true);
     $fd = $depsP->getValue($finR);
+    check('rv10a1-1: the service gives its finalizer the worker\'s store to hold the run through',
+        isset($fd['store']) && $fd['store'] === $storeR);
     check('W7-R4: the service gives its finalizer the plan\'s ordinals and a groups reader',
         isset($fd['ordinals']) && $fd['ordinals'] === ['src-a' => 1, 'src-b' => 2]
         && isset($fd['dags']) && is_callable($fd['dags']));
