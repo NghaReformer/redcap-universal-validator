@@ -556,7 +556,7 @@ final class ArrayScanStore implements ScanStore
             if (!isset($rec['record_hash'])) continue;
             if (empty($held[(int) $rec['ordinal']])) continue;
             $st = (int) $rec['state'];
-            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE || $st === self::REC_DEPARTED) {
                 $closing[$rec['record_hash']] = true;
             }
         }
@@ -1101,6 +1101,57 @@ final class ArrayScanStore implements ScanStore
     public function tombstone($runId, $epoch, array $recordIds)
     {
         return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_TOMBSTONE, false);
+    }
+
+    public function depart($runId, $epoch, array $hashes)
+    {
+        if (!$hashes || !isset($this->runs[$runId])) return 0;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::CATCH_UP || (int) $r['lease_epoch'] !== (int) $epoch) {
+            return 0;
+        }
+        $want = array_fill_keys(array_map('strval', $hashes), true);
+        $left = [];
+        foreach ($this->records[$runId] as $o => $row) {
+            if (!isset($want[(string) $row['hash']])) continue;
+            $st = (int) $row['state'];
+            if ($st === ScanStore::REC_DEPARTED || $st === ScanStore::REC_TOMBSTONE) continue;
+            $this->records[$runId][$o]['state'] = ScanStore::REC_DEPARTED;
+            $this->records[$runId][$o]['version'] = null;
+            $this->records[$runId][$o]['claimed_at'] = null;
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
+            $left[(string) $row['hash']] = true;
+        }
+        if (!$left) return 0;
+        // The SQL store's statement, by record hash in the run's generation.
+        foreach ($this->findings as $i => $f) {
+            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
+            if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
+            if ((int) $f['project_id'] !== (int) $r['project_id']) continue;
+            if ((int) $f['generation_id'] !== (int) $r['generation_id']) continue;
+            if (!isset($f['record_hash']) || !isset($left[(string) $f['record_hash']])) continue;
+            $this->findings[$i]['active_slot'] = null;
+            $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
+        }
+        $done = 0;
+        foreach ($this->records[$runId] as $row) {
+            if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
+        }
+        $this->runs[$runId]['manifest_done'] = $done;
+        return count($left);
+    }
+
+    public function departedOf($runId, array $hashes)
+    {
+        $out = [];
+        if (!$hashes || !isset($this->records[$runId])) return $out;
+        $want = array_fill_keys(array_map('strval', $hashes), true);
+        foreach ($this->records[$runId] as $row) {
+            if ((int) $row['state'] !== ScanStore::REC_DEPARTED) continue;
+            if (isset($want[(string) $row['hash']])) $out[(string) $row['hash']] = true;
+        }
+        return $out;
     }
 
     private function reState($runId, $epoch, array $recordIds, $state, $clearScan)

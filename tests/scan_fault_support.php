@@ -295,6 +295,12 @@ class FaultyStore implements ScanStore
     public function tombstone($runId, $epoch, array $recordIds)
     { $this->gate('tombstone'); return $this->inner->tombstone($runId, $epoch, $recordIds); }
 
+    public function depart($runId, $epoch, array $hashes)
+    { $this->gate('depart'); return $this->inner->depart($runId, $epoch, $hashes); }
+
+    public function departedOf($runId, array $hashes)
+    { $this->gate('departedOf'); return $this->inner->departedOf($runId, $hashes); }
+
     public function recordStates($runId)
     { $this->gate('recordStates'); return $this->inner->recordStates($runId); }
 

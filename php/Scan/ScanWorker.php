@@ -718,8 +718,34 @@ final class ScanWorker
         $fence = isset($this->deps['fence']) ? $this->deps['fence'] : null;
         $before = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
+        // EACH RECORD'S GROUP, ASKED BEFORE IT IS READ (review rv5b-1). A
+        // group-scoped run's list is the group as planning read it, and a
+        // record moved to another group since then is that group's record:
+        // it leaves the run unread. Asked between the two version reads, so
+        // a move during the read moves the version and the record is
+        // requeued by the stable-read rule below rather than decided on a
+        // stale answer. Cannot tell is set aside with an attempt counted, so
+        // a group that can never be told ends as a reported exclusion.
+        // Only a scoped run has the dependency; an unscoped one asks nothing.
+        $group = [];
+        if (isset($this->deps['scope']) && is_callable($this->deps['scope'])) {
+            try {
+                $ans = call_user_func($this->deps['scope'], $ids);
+            } catch (\Throwable $e) {
+                $ans = [];
+            }
+            foreach ($ids as $id) {
+                $v = (is_array($ans) && array_key_exists((string) $id, $ans)) ? $ans[(string) $id] : null;
+                $group[(string) $id] = ($v === true) ? true : (($v === false) ? false : null);
+            }
+        }
+        $toRead = [];
+        foreach ($ids as $id) {
+            if (!$group || $group[(string) $id] === true) $toRead[] = $id;
+        }
+
         $read = $this->deps['read'];
-        $got = $read($ids);
+        $got = ($toRead || !$group) ? $read($toRead) : ['ok' => true, 'data' => [], 'why' => null];
         if (empty($got['ok'])) {
             // A FAILED READ IS NOT AN EMPTY ONE. Committing these records as
             // examined-and-clean is the exact mistake the module was built to
@@ -764,6 +790,7 @@ final class ScanWorker
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
             if ($moved($id)) continue;
+            if ($group && $group[(string) $id] !== true) continue;    // not read: see above
             if (array_key_exists($id, $data) && is_array($data[$id])) continue;
             $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
             if ($tries + 1 >= $maxAttempts) $lastChance[] = $id;
@@ -817,6 +844,23 @@ final class ScanWorker
                     $requeued++;
                     $outcome[(int) $c['ordinal']] = 'requeued';
                 }
+                continue;
+            }
+
+            if ($group && $group[(string) $id] === false) {
+                // In another group now, or in none, and its version held
+                // still while that was asked: it leaves the run, unread, and
+                // the store closes what the run found in it before.
+                $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                                       'state' => ScanStore::REC_DEPARTED, 'version' => null,
+                                       'claim' => $claim];
+                $outcome[(int) $c['ordinal']] = 'departed';
+                continue;
+            }
+            if ($group && $group[(string) $id] === null) {
+                // Its group could not be told. Not read and not decided: one
+                // attempt counted, after the commit, as for a set-aside record.
+                $setAside[(int) $c['ordinal']] = $claim;
                 continue;
             }
 
@@ -1000,7 +1044,7 @@ final class ScanWorker
         $candidates = count($batch['candidates']);
         if (is_array($heldOrd)) {
             $keep = array_flip(array_map('intval', $heldOrd));
-            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
+            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0, 'departed' => 0];
             foreach ($outcome as $o => $k) {
                 if (isset($keep[$o])) $tally[$k]++;
             }

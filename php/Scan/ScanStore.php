@@ -107,6 +107,22 @@ interface ScanStore
     const REC_UNSTORED   = 104;
 
     /**
+     * Left the run's Data Access Group while the run was open (review rv5b-1).
+     *
+     * A group-scoped run lists the group as planning read it, and a record can
+     * be moved to another group afterwards. It is then another group's
+     * record: reading it again would put that group's data into this run's
+     * report, so it leaves the run instead. Terminal, never examined again,
+     * and its findings in this run are closed with it.
+     *
+     * NOT IN NOT_EXAMINED and not blocking: it was not skipped, it stopped
+     * being in scope, as a deleted record stops existing. Not a tombstone
+     * either: the record is still in the project, and the run's figures say
+     * nothing about it at all - the total a reader is shown leaves it out.
+     */
+    const REC_DEPARTED   = 105;
+
+    /**
      * Terminal WITHOUT having been examined. One list, because two places ask:
      * promotion, where any of these caps coverage at partial, and the progress
      * figure, which must not call them done. A tombstone is not here - a record
@@ -771,6 +787,38 @@ interface ScanStore
      * false-complete case, and the reason C3 called it worse.
      */
     public function tombstone($runId, $epoch, array $recordIds);
+
+    /**
+     * Take records that left the run's group out of the run (review rv5b-1).
+     *
+     * By RECORD HASH, which is what uq_run_record (run_id, record_hash)
+     * serves. In one transaction: each row not already departed or
+     * tombstoned becomes REC_DEPARTED with no scanned version and no claim,
+     * and the record's active findings in this run's generation are closed
+     * at the run's sequence, as a re-examination closes them. A deleted
+     * record stays a tombstone: gone is the stronger fact. Duplicate-value
+     * findings (staged) are the finalizer's and are not touched.
+     *
+     * Catch-up phase and current lease epoch only, like the other
+     * reconciliation writes. A record departing while the worker reads it
+     * goes through commitBatch() with REC_DEPARTED instead.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return int rows that departed
+     */
+    public function depart($runId, $epoch, array $hashes);
+
+    /**
+     * Which of these record hashes left this run's group, as a set.
+     *
+     * The duplicate finalizer asks it of each page of candidates: a departed
+     * record's candidate was written while it was in the group, and
+     * verifying it would re-read another group's record.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return array<string,true> raw hash => true, for the departed ones only
+     */
+    public function departedOf($runId, array $hashes);
 
     /** How many manifest rows are in each state. The input to the coverage predicate. */
     public function recordStates($runId);

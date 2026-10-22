@@ -344,12 +344,13 @@ final class RecordManifestSource
      * read, and only when some id is absent.
      *
      * @param string[] $ids
+     * @param bool $named the caller confirmed the name in this same call
      * @return array<string,true>|null
      */
-    private function heldInData(array $ids)
+    private function heldInData(array $ids, $named = false)
     {
         if ($this->dataTable === null || !$ids) return null;
-        if (self::dataTable($this->db, $this->pid) !== $this->dataTable) return null;
+        if (!$named && self::dataTable($this->db, $this->pid) !== $this->dataTable) return null;
         $marks = implode(',', array_fill(0, count($ids), '?'));
         try {
             $rows = $this->db->select('SELECT DISTINCT record FROM ' . $this->dataTable
@@ -473,38 +474,82 @@ final class RecordManifestSource
     }
 
     /**
-     * Is each record inside a run scoped to $dag?
+     * Is each record inside a run scoped to $dag: yes, no, or cannot tell?
+     * (review rv5b-1)
      *
-     * FAILS CLOSED, unlike exist(). A record whose group cannot be established
-     * is NOT admitted to a group-scoped run: admitting it would put another
-     * group's record into a report its reader is not entitled to, which is the
-     * same fail-open the page-level DAG filter was hardened against. Leaving it
-     * out costs coverage, and coverage is reported.
+     * ONE RESOLUTION FOR BOTH HALVES OF THE RUN (B3b), and for both of
+     * catch-up's questions. It replaces inScope(), which answered only
+     * whether a record may be ADDED, with false as its safe answer. A record
+     * already on a run's list needs three answers, because false now takes
+     * it out of the run: true, the record is in the group; false, the
+     * project holds the record and it is in another group or in none; null,
+     * the question could not be answered. Null is never false here - a read
+     * that failed must not take a record out of a run, any more than it may
+     * put one in - and catch-up admits a new record on true only, which is
+     * inScope()'s fail-closed direction.
      *
-     * @return array<string,bool>
+     * False needs evidence that the record exists: a row in the record index
+     * (its group column says where it is), or a __GROUPID__ row, or any row
+     * in the data table REDCap names for the project now. A record nobody
+     * lists is null, and whether it was deleted is exist()'s question.
+     *
+     * One index read, then one data-table read for the records the index
+     * did not list (or for all of them on a source with no group column),
+     * plus one primary-key read to confirm the data table is still the
+     * project's (rv5a-1), and one more only when a record has no group row.
+     *
+     * @return array<string,?bool>
      */
-    public function inScope(array $ids, $dag = null)
+    public function scopeOf(array $ids, $dag = null)
     {
-        if ($dag === null) {
-            // An unscoped run admits everything the project holds.
-            return array_fill_keys(array_map('strval', $ids), true);
+        $ids = array_map('strval', $ids);
+        if ($dag === null) return array_fill_keys($ids, true);
+        $out = array_fill_keys($ids, null);
+        if (!$ids) return $out;
+        $want = (string) $dag;
+        $rest = $ids;
+        if ($this->dagCol !== null) {
+            $marks = implode(',', array_fill(0, count($ids), '?'));
+            try {
+                $rows = $this->db->select('SELECT ' . $this->recordCol . ', ' . $this->dagCol
+                    . ' FROM ' . $this->table . ' WHERE project_id = ? AND ' . $this->recordCol
+                    . ' IN (' . $marks . ')', array_merge([$this->pid], $ids));
+            } catch (\Throwable $e) {
+                return $out;
+            }
+            $listed = [];
+            foreach ($rows as $row) {
+                $listed[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
+            }
+            $rest = [];
+            foreach ($ids as $id) {
+                if (!array_key_exists($id, $listed)) {
+                    $rest[] = $id;
+                    continue;
+                }
+                $out[$id] = ($listed[$id] !== null && $listed[$id] === $want);
+            }
+            if (!$rest) return $out;
         }
-        // ONE RESOLUTION FOR BOTH HALVES OF THE RUN. This used to refuse every
-        // record whenever dagCol was null, which on the data-table fallback
-        // meant a group-scoped run admitted nothing at catch-up while its
-        // manifest had been built from exactly the group information this
-        // branch claimed was unavailable. dagsOf() now answers on both sources,
-        // so both halves ask the same question of the same rows. A record whose
-        // group still cannot be established comes back null and is refused
-        // below - the fail-closed direction this method's docblock commits to,
-        // reached by an answer rather than by an assumption.
-        if ($this->dagCol === null && $this->dataTable === null) {
-            // No way at all to establish a group: fail closed, as documented.
-            return array_fill_keys(array_map('strval', $ids), false);
+        if ($this->dataTable === null) return $out;
+        if (self::dataTable($this->db, $this->pid) !== $this->dataTable) return $out;
+        $map = $this->groupsFromDataTable($rest);
+        if ($map === null) return $out;
+        $unplaced = [];
+        foreach ($rest as $id) {
+            if (!array_key_exists($id, $map)) {
+                $unplaced[] = $id;
+                continue;
+            }
+            // A __GROUPID__ row is evidence the record exists; '' (folded to
+            // null by groupsFromDataTable) is a record in no group.
+            $out[$id] = ($map[$id] !== null && $map[$id] === $want);
         }
-        $out = [];
-        foreach ($this->dagsOf($ids) as $id => $g) {
-            $out[$id] = ($g !== null && (string) $g === (string) $dag);
+        if ($unplaced) {
+            $held = $this->heldInData($unplaced, true);
+            if ($held !== null) {
+                foreach ($unplaced as $id) if (isset($held[$id])) $out[$id] = false;
+            }
         }
         return $out;
     }
@@ -780,7 +825,7 @@ final class RecordManifestSource
         // index branch at page() already folds both onto null. Doing it here
         // rather than in each caller is what keeps the two sources answering
         // the same shape: dagsOf() reads this method on the fallback, and
-        // inScope() then refuses null - so an unfolded '' would be compared
+        // scopeOf() then answers null as no group - so an unfolded '' would be compared
         // against a group id as a value rather than refused as an absence.
         foreach ($q as $row) {
             $map[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];

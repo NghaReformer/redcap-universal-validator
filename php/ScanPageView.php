@@ -640,7 +640,7 @@ class ScanPageView
      *
      * 'dag' is the NUMERIC group id, because that is the identity every
      * comparison downstream actually speaks: ScanPlanner::stream() matches it
-     * against redcap_record_list.dag_id, RecordManifestSource::inScope() against
+     * against redcap_record_list.dag_id, RecordManifestSource::scopeOf() against
      * the same column or the data table's __GROUPID__ rows, and
      * ScanAuthorization::scopeMatches() against $rights['group_id'] from the
      * framework. It used to be the unique NAME, so all three compared "site_a"
@@ -728,7 +728,7 @@ class ScanPageView
             // 'dag' is stored verbatim as uv_scan_run.scope_dag and is then
             // compared, unchanged, against three id-shaped values:
             // redcap_record_list.dag_id (ScanPlanner::stream and
-            // RecordManifestSource::inScope) and $rights['group_id']
+            // RecordManifestSource::scopeOf) and $rights['group_id']
             // (ScanAuthorization::readable). Returning the friendly name here
             // meant a group-scoped run listed every record, appended none,
             // called an empty manifest complete and promoted to

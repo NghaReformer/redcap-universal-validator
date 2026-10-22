@@ -574,7 +574,7 @@ namespace {
 
         // C-1 SEAM. The scope value is compared downstream against three things
         // that all speak the NUMERIC group id: redcap_record_list.dag_id (via
-        // ScanPlanner::stream and RecordManifestSource::inScope) and
+        // ScanPlanner::stream and RecordManifestSource::scopeOf) and
         // $rights['group_id'] (via ScanAuthorization::scopeMatches). It used to
         // be the unique name, so every one of those comparisons failed: a
         // group-scoped run froze an empty manifest and called the project clean,

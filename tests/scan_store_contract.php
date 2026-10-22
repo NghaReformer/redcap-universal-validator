@@ -1407,6 +1407,70 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
             && $again['carry'] === null && $again['pages'] === 0 && $again['attempts'] === 1);
     }
 
+    // -- A RECORD THAT LEFT THE RUN'S GROUP (review rv5b-1) ----------------
+    //
+    // It leaves the run: terminal, unread, and its findings in this run's
+    // generation closed, as a re-examination closes them. By record hash, in
+    // catch-up and at the current epoch only, as the other reconciliation
+    // writes; and a deleted record stays a tombstone.
+    $sd = $newStore();
+    $rd = (int) $sd->startRun(746, [])['run']['run_id'];
+    $sd->writeManifest($rd, [$mk5('L1'), $mk5('L2'), $mk5('L3'), $mk5('L4')]);
+    $rowD = $sd->run(746, $rd);
+    $epD = (int) $rowD['lease_epoch'];
+    $genD = (int) $rowD['generation_id'];
+    $hD = function ($id) { return hash('sha256', $id, true); };
+    $findingD = function ($ord, $id) use ($genD, $rowD, $hD) {
+        return ['ordinal' => $ord, 'project_id' => 746, 'generation_id' => $genD,
+                'host_form' => 'fa', 'field' => 'x', 'check_type' => 'required',
+                'reason_code' => 'required-blank', 'record_id_bin' => $id,
+                'identity' => hash('sha256', 'd' . $id, true),
+                'valid_from_seq' => (int) $rowD['run_seq'], 'record_hash' => $hD($id),
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    };
+    $activeD = function () use ($sd, $genD) {
+        $ids = [];
+        foreach ($sd->findings(746, $genD, [], 0, 100) as $f) $ids[] = (string) $f['record_id_bin'];
+        sort($ids);
+        return $ids;
+    };
+    $bD = ['bytes' => 10, 'records' => [], 'findings' => []];
+    foreach ($sd->claim($rd, 'w1', $epD, 4) as $c) {
+        $bD['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                            'state' => ScanStore::REC_DONE, 'version' => '10', 'claim' => $c['claim']];
+        $bD['findings'][] = $findingD($c['ordinal'], $c['id_bin']);
+    }
+    $sd->commitBatch($rd, 'w1', $epD, $bD);
+    $C('depart: refused while the run is still scanning',
+        $sd->depart($rd, $epD, [$hD('L2')]) === 0 && $sd->departedOf($rd, [$hD('L2')]) === []
+        && $activeD() === ['L1', 'L2', 'L3', 'L4']);
+    $sd->advancePhase($rd, $epD, ScanPhase::CATCH_UP);
+    $C('depart: refused at another lease epoch', $sd->depart($rd, $epD + 1, [$hD('L2')]) === 0);
+    $sd->tombstone($rd, $epD, ['L3']);
+    $nD = $sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
+    $stD = $sd->recordStates($rd);
+    $C('depart: a record that left the group departs, and a deleted one stays a tombstone',
+        $nD === 1 && isset($stD[ScanStore::REC_DEPARTED]) && $stD[ScanStore::REC_DEPARTED] === 1
+        && $stD[ScanStore::REC_TOMBSTONE] === 1 && $stD[ScanStore::REC_DONE] === 2);
+    $C('depart: its findings in the run are closed, and no other record\'s',
+        $activeD() === ['L1', 'L3', 'L4']);
+    $C('depart: the run counts it finished, so it holds nothing open',
+        (int) $sd->run(746, $rd)['manifest_done'] === 4 && $sd->manifestComplete($rd) === true);
+    $C('depart: departedOf() names it, and no other',
+        $sd->departedOf($rd, [$hD('L1'), $hD('L2'), $hD('L3')]) === [$hD('L2') => true]);
+    $C('depart: departing it again moves nothing', $sd->depart($rd, $epD, [$hD('L2')]) === 0);
+    // The worker's half: a record it finds in another group is committed
+    // departed, and the commit closes its findings as a re-examination would.
+    $sd->requeue($rd, $epD, ['L4']);
+    $cD4 = $sd->claimPending($rd, 'w2', $epD, 10);
+    $okD4 = is_array($cD4) && count($cD4) === 1 && $sd->commitBatch($rd, 'w2', $epD,
+        ['bytes' => 0, 'records' => [['ordinal' => $cD4[0]['ordinal'], 'record_hash' => $cD4[0]['hash'],
+            'state' => ScanStore::REC_DEPARTED, 'version' => null, 'claim' => $cD4[0]['claim']]],
+         'findings' => []]) === true;
+    $C('depart: a batch that commits a record departed closes its findings with it',
+        $okD4 && $activeD() === ['L1', 'L3']
+        && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

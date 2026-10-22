@@ -558,7 +558,7 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx),
+            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id']),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -594,6 +594,14 @@ final class ScanService
         // stops the run before writing anything further. Null when this
         // context does not ask for the comparison.
         if ($policyRevision !== null) $deps['policyRevision'] = (int) $policyRevision;
+        // A GROUP-SCOPED RUN ASKS EACH RECORD'S GROUP BEFORE IT READS IT
+        // (review rv5b-1), the question catch-up asks, of the same source. A
+        // record moved to another group since planning is that group's
+        // record, and reading it would put that group's data into this run.
+        // An unscoped run asks nothing and pays nothing.
+        if (isset($run['scope_dag']) && $run['scope_dag'] !== null) {
+            $deps['scope'] = $this->scopeProbe($pid, $run['scope_dag']);
+        }
         return $deps;
     }
 
@@ -690,7 +698,10 @@ final class ScanService
             'coverage'  => $run['coverage'],
             'detail'    => $run['detail'],
             'values'    => $run['values_state'],
-            'total'     => (int) $run['manifest_total'],
+            // Less the records that left the group (review rv5b-1): the
+            // manifest keeps their rows, and the group's reader is shown the
+            // group's records only.
+            'total'     => max(0, (int) $run['manifest_total'] - $progress['departed']),
             // EXAMINED, and only examined. This was every terminal state summed,
             // so a run in which every record failed to store read "12 of 12
             // records (100%)" above a report with nothing in it. What was not
@@ -818,6 +829,10 @@ final class ScanService
         $excluded = 0;
         foreach (ScanStore::NOT_EXAMINED as $state) $excluded += $n($state);
         $removed = $n(ScanStore::REC_TOMBSTONE);
+        // Records that left a group-scoped run's group (review rv5b-1). In no
+        // figure a reader is shown: statusOf() takes them off the total, and
+        // they are not settled, because they are not the run's any more.
+        $departed = $n(ScanStore::REC_DEPARTED);
 
         $phase = isset($run['phase']) ? (string) $run['phase'] : '';
         $at = function ($k) use ($run) { return self::clock($run, $k); };
@@ -844,6 +859,7 @@ final class ScanService
         $driven = self::workerHolds($run, $now, $threshold);
 
         return ['done' => $done, 'excluded' => $excluded, 'removed' => $removed,
+                'departed' => $departed,
                 'settled' => $done + $excluded + $removed,
                 'stalled' => $quiet && $driven,
                 'paused' => $quiet && !$driven,
@@ -1471,6 +1487,25 @@ final class ScanService
         };
     }
 
+    /**
+     * "Is each record in this run's group", as a callable: true, false, or
+     * null for cannot tell (RecordManifestSource::scopeOf, review rv5b-1).
+     *
+     * Catch-up asks it of the change log's records, and the worker of each
+     * batch before it reads one. With no source an unscoped run admits
+     * everything and a scoped one can tell nothing: no group can be
+     * established, and cannot tell neither admits a record nor takes one out.
+     */
+    private function scopeProbe($pid, $dag)
+    {
+        $source = $this->openSource($pid);
+        return function (array $ids) use ($source, $dag) {
+            $ids = array_map('strval', $ids);
+            if ($source === null) return array_fill_keys($ids, $dag === null ? true : null);
+            return $source->scopeOf($ids, $dag);
+        };
+    }
+
     private function catchUp($pid, ScanStore $store, $dag)
     {
         $source = $this->openSource($pid);
@@ -1481,20 +1516,14 @@ final class ScanService
                 return Hmac::raw(Hmac::P_RECORD, $pid, (string) $id, $key);
             },
             'exists' => $this->existsProbe($pid),
-            'scope'  => function (array $ids) use ($source, $dag) {
-                // No source means no way to establish a group. For a scoped run
-                // that is a refusal to admit; for an unscoped one it is
-                // irrelevant, and inScope() draws that distinction.
-                if ($source === null) return array_fill_keys($ids, $dag === null);
-                return $source->inScope($ids, $dag);
-            },
+            'scope'  => $this->scopeProbe($pid, $dag),
             'dag'    => function (array $ids) use ($source) {
                 return $source === null ? array_fill_keys($ids, null) : $source->dagsOf($ids);
             },
         ]);
     }
 
-    private function finalizer($pid, array $ctx)
+    private function finalizer($pid, array $ctx, ?ScanStore $store = null, $runId = null)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1502,6 +1531,12 @@ final class ScanService
             'pid'      => $pid,
             'hmacKey'  => $this->key(),
             'versions' => $this->fence($pid),
+            // Which candidates' records left the run's group (review rv5b-1).
+            // Their candidates are dropped from the group rather than re-read.
+            'departed' => ($store === null || $runId === null) ? null
+                : function (array $hashes) use ($store, $runId) {
+                    return $store->departedOf((int) $runId, $hashes);
+                },
             // Re-reading a duplicate group goes through the SAME read the worker
             // uses, so a group is verified against the values the scan would
             // have seen rather than a second, differently-shaped export.

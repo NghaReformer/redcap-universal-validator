@@ -224,10 +224,16 @@ namespace {
             }
             // exist(): which of these ids the project still holds. Every
             // parameter after the project id is one of the ids asked about.
+            // dagsOf() and scopeOf() ask the same rows for their group as
+            // well, and get it: this answered the id alone, so every record
+            // read as in no group (review rv5b-1 made that answer matter).
             if (strpos($sql, ' IN (') !== false) {
                 $asked = array_map('strval', array_slice($params, 1));
+                $withDag = strpos($sql, 'dag_id') !== false;
                 $out = [];
-                foreach ($this->rows as $r) if (in_array($r[0], $asked, true)) $out[] = [$r[0]];
+                foreach ($this->rows as $r) {
+                    if (in_array($r[0], $asked, true)) $out[] = $withDag ? [$r[0], $r[1]] : [$r[0]];
+                }
                 return $out;
             }
             $wantsDag = strpos($sql, 'dag_id') !== false;
@@ -2820,6 +2826,192 @@ namespace INSPIRE\UniversalValidator\Scan {
         $dScoped['withheld'] === true && $dScoped['moved'] === false
         && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage'
         && $dWhole['worked'] === 0 && empty($dWhole['withheld']));
+    \REDCap::$groupNames = $keptNames;
+}
+
+/* =====================================================================
+ * rv5b-1  A RECORD THAT LEAVES THE RUN'S GROUP LEAVES THE RUN
+ *
+ * The reviewer's repro, end to end. A group-7 user scans; R03 is one of the
+ * group's five records. An administrator then moves R03 to group 31 and a
+ * group-31 user blanks its a_val - two log entries for R03 inside the
+ * window. Catch-up requeued it as an edit, the worker read it with group
+ * 31's value, and the proved status showed the group-7 user total=5 and one
+ * finding, on group 31's record. Twice: moved after the run read it (catch-up
+ * must take it out) and moved before (the worker must not read it).
+ * ===================================================================== */
+{
+    $keptNames = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'site_a', 31 => 'site_b'];
+    $movedRun = function ($pid, $moveFirst) {
+        $ms = new ArrayScanStore();
+        $mm = new class($ms) extends \E2eModule {
+            public $dagOf = [];
+            public $version = [];
+            public $changes = [];
+            public $top = '100';
+            public $reads = [];
+            public $readSleep = 0.0;
+            public function query($sql, $params = [])
+            {
+                if (strpos($sql, 'FROM redcap_log_event') !== false) {
+                    $s = ltrim($sql);
+                    if (strpos($sql, 'pk IN (') !== false) {
+                        $out = [];
+                        foreach (array_slice($params, 1) as $id) {
+                            $id = (string) $id;
+                            if (in_array($id, $this->records, true)) {
+                                $out[] = [$id, isset($this->version[$id]) ? $this->version[$id] : '50'];
+                            }
+                        }
+                        return $out;
+                    }
+                    if (strpos($sql, 'log_event_id > ?') !== false) {
+                        $rows = [];
+                        $cursor = isset($params[3]) ? (string) $params[3] : null;
+                        foreach ($this->changes as $id => $v) {
+                            if ((int) $v <= (int) $params[1] || (int) $v > (int) $params[2]) continue;
+                            if ($cursor !== null && strcmp($id, $cursor) <= 0) continue;
+                            $rows[$id] = [$id, (string) $v];
+                        }
+                        ksort($rows, SORT_STRING);
+                        return array_values($rows);
+                    }
+                    if (strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) return [[$this->top]];
+                }
+                if (strpos($sql, 'log_event_table') === false
+                        && (strpos($sql, 'information_schema.columns') !== false
+                            || strpos($sql, 'redcap_record_list') !== false
+                            || strpos($sql, 'redcap_projects') !== false
+                            || strpos($sql, 'FROM redcap_data') !== false)) {
+                    $rows = [];
+                    foreach ($this->records as $id) $rows[] = [$id, $this->dagOf[$id]];
+                    $this->index->rows = $rows;
+                    return $this->index->select($sql, $params);
+                }
+                return parent::query($sql, $params);
+            }
+            public function durableScanContext($pid, array $opts = [], $dag = null)
+            {
+                $ctx = parent::durableScanContext($pid, $opts, $dag);
+                $read = $ctx['read'];
+                $self = $this;
+                $ctx['read'] = function (array $ids) use ($read, $self) {
+                    foreach ($ids as $id) $self->reads[] = (string) $id;
+                    if ($self->readSleep > 0) { usleep((int) ($self->readSleep * 1e6)); $self->readSleep = 0.0; }
+                    return $read($ids);
+                };
+                return $ctx;
+            }
+        };
+        $mm->records = [];
+        for ($i = 1; $i <= 10; $i++) {
+            $id = sprintf('R%02d', $i);
+            $mm->records[] = $id;
+            $mm->dagOf[$id] = $i <= 5 ? '7' : '31';
+        }
+        $mm->user->rights['group_id'] = 7;
+        $move = function () use ($mm) {
+            $mm->dagOf['R03'] = '31';
+            $mm->flagged['R03'] = true;
+            $mm->version['R03'] = '110';
+            $mm->changes['R03'] = '110';
+            $mm->top = '120';
+            $mm->reads = [];
+        };
+        $rid = (int) (new ScanService($mm, $ms))->start($pid)['run_id'];
+        if ($moveFirst) {
+            $move();
+        } else {
+            // The first request examines the group's five records, then the
+            // budget stops it: R03 is read while it is still group 7's.
+            $mm->readSleep = 3.2;
+            (new ScanService($mm, $ms))->work($pid, $rid);
+            $move();
+        }
+        for ($i = 0; $i < 12 && $ms->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($mm, $ms))->work($pid, $rid);
+        }
+        $row = $ms->run($pid, $rid);
+        $ids = [];
+        foreach ($ms->findings($pid, (int) $row['generation_id'], [], 0, 100) as $f) {
+            $ids[] = (string) $f['record_id_bin'];
+        }
+        return ['row' => $row, 'states' => $ms->recordStates($rid), 'reads' => $mm->reads,
+                'status' => (new ScanService($mm, $ms))->status($pid, $rid), 'findings' => $ids];
+    };
+    foreach (['after the run read it' => [178, false], 'before the run read it' => [179, true]]
+             as $when => $c) {
+        $mo = $movedRun($c[0], $c[1]);
+        check('rv5b-1: a record moved to another group ' . $when . ' is never read with that group\'s data',
+            !in_array('R03', $mo['reads'], true));
+        check('rv5b-1: it leaves the run (' . $when . '), and the run still finishes through its fence',
+            isset($mo['states'][ScanStore::REC_DEPARTED]) && $mo['states'][ScanStore::REC_DEPARTED] === 1
+            && $mo['row']['terminal'] === 'complete' && !empty($mo['row']['fence_target']));
+        check('rv5b-1: the group\'s reader is shown the group\'s four records and no finding (' . $when . ')',
+            $mo['status']['ok'] === true && empty($mo['status']['withheld'])
+            && $mo['status']['total'] === 4 && $mo['status']['done'] === 4
+            && $mo['status']['findings'] === 0 && $mo['findings'] === []);
+    }
+
+    // NO RECORD SOURCE, NO ANSWER. A scoped run whose source cannot be opened
+    // can tell no record's group, and cannot tell takes nothing out of it; an
+    // unscoped run admits everything, as it did.
+    $ns = new ArrayScanStore();
+    $nm = new class($ns) extends \E2eModule {
+        public function query($sql, $params = [])
+        {
+            if (strpos($sql, 'log_event_table') === false
+                    && (strpos($sql, 'information_schema.columns') !== false
+                        || strpos($sql, 'redcap_record_list') !== false
+                        || strpos($sql, 'redcap_projects') !== false
+                        || strpos($sql, 'FROM redcap_data') !== false)) {
+                throw new \RuntimeException('the record list could not be read');
+            }
+            return parent::query($sql, $params);
+        }
+    };
+    $probe = new \ReflectionMethod(ScanService::class, 'scopeProbe');
+    $probe->setAccessible(true);
+    $nsvc = new ScanService($nm, $ns);
+    check('rv5b-1: with no record source a scoped run can tell no record\'s group, so takes none out',
+        call_user_func($probe->invoke($nsvc, 180, '7'), ['R1']) === ['R1' => null]);
+    check('rv5b-1 control: and an unscoped run with no source still admits every record',
+        call_user_func($probe->invoke($nsvc, 180, null), ['R1']) === ['R1' => true]);
+
+    // THE SERVICE WIRES BOTH HALVES: a scoped run's worker is handed the
+    // group question, and its duplicate check the run's departures. An
+    // unscoped run's worker asks nothing.
+    $wdOf = new \ReflectionMethod(ScanService::class, 'workerDeps');
+    $wdOf->setAccessible(true);
+    $fdOf = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
+    $fdOf->setAccessible(true);
+    $wctx = ['read' => function (array $ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+             'evaluate' => function ($id, $node) {
+                 return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+             }];
+    $wsS = new ArrayScanStore();
+    $wsId = (int) $wsS->startRun(149, ['created_by' => 'alice', 'scope_dag' => '7'])['run']['run_id'];
+    $wsS->writeManifest($wsId, [['id_bin' => 'W1', 'hash' => hash('sha256', 'W1', true), 'dag' => '7'],
+                                ['id_bin' => 'W2', 'hash' => hash('sha256', 'W2', true), 'dag' => '7']]);
+    $wsEp = (int) $wsS->run(149, $wsId)['lease_epoch'];
+    $wsS->advancePhase($wsId, $wsEp, ScanPhase::CATCH_UP);
+    $wsS->depart($wsId, $wsEp, [hash('sha256', 'W1', true)]);
+    $wdS = $wdOf->invoke(new ScanService(new \SourceModule()), 149, $wsS, $wsS->run(149, $wsId),
+                         ScanPolicy::resolve([], []), $wctx, 'browser');
+    $fdS = $fdOf->getValue($wdS['finalizer']);
+    check('rv5b-1: a scoped run\'s worker is handed the group question',
+        isset($wdS['scope']) && is_callable($wdS['scope']));
+    check('rv5b-1: and its duplicate check is handed the run\'s departures, and only them',
+        isset($fdS['departed']) && is_callable($fdS['departed'])
+        && call_user_func($fdS['departed'], [hash('sha256', 'W1', true), hash('sha256', 'W2', true)])
+           === [hash('sha256', 'W1', true) => true]);
+    $wsU = new ArrayScanStore();
+    $wuId = (int) $wsU->startRun(149, ['created_by' => 'alice'])['run']['run_id'];
+    $wdU = $wdOf->invoke(new ScanService(new \SourceModule()), 149, $wsU, $wsU->run(149, $wuId),
+                         ScanPolicy::resolve([], []), $wctx, 'browser');
+    check('rv5b-1 control: an unscoped run\'s worker is not handed the group question',
+        !isset($wdU['scope']));
     \REDCap::$groupNames = $keptNames;
 }
 
