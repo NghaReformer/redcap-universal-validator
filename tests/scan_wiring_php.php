@@ -105,19 +105,10 @@ namespace {
         // -- wave 11, the report. It could not have been built earlier:
         //    findings() filters on generation_id alone and generation_id was
         //    the literal 1 for every run of every project until wave 4.
-        'ScanStore::findings'                    => 'wave 11 (B5): there is no way to read a finding, and a read path built before wave 4 is a cross-project leak',
-        'ArrayScanStore::findings'               => 'wave 11 (B5), with the contract',
-        'SqlScanStore::findings'                 => 'wave 11 (B5), with the contract',
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
-        'ScanReport::present'                    => 'wave 11 (B5): the findings table; the stores have no findings read until wave 8',
         'ScanReport::csvHeaderLine'              => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
         'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
         'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
-        'ScanReport::runFacts'                   => 'wave 11 (B5): the heading of the findings page and of the export',
-        'ScanStore::dimensions'                  => 'wave 11 (M5): the report reads the snapshot planning writes, with scan-findings',
-        'ArrayScanStore::dimensions'             => 'wave 11 (M5), with the contract',
-        'SqlScanStore::dimensions'               => 'wave 11 (M5), with the contract',
-        'ScanDimensions::fromSnapshot'           => 'wave 11 (M5): the report on a stored run, with scan-findings',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's
@@ -402,6 +393,37 @@ namespace {
             if (!is_string($why) || strlen($why) < 20) $unexplained[] = $key;
         }
         check('W-03: every allow-list line explains itself', $unexplained === []);
+    }
+
+    /* =====================================================================
+     * W-05  every scan verb the framework will route is one the module answers
+     *
+     * Three lists name the scan's AJAX verbs: config.json's auth-ajax-actions
+     * (the framework's gate), the in_array() in redcap_module_ajax() (the
+     * module's second gate) and the `$action === '...'` branches of
+     * scanAction(). A verb added to two of them reads as "unknown action" or
+     * is refused by the framework before the module sees it.
+     * ===================================================================== */
+    {
+        $cfg = json_decode((string) file_get_contents(dirname(__DIR__) . '/config.json'), true);
+        $src = (string) file_get_contents(dirname(__DIR__) . '/UniversalValidator.php');
+        $auth = is_array($cfg) && isset($cfg['auth-ajax-actions']) ? $cfg['auth-ajax-actions'] : [];
+        $open = is_array($cfg) && isset($cfg['no-auth-ajax-actions']) ? $cfg['no-auth-ajax-actions'] : [];
+        $declared = array_values(array_filter($auth, function ($a) { return strpos($a, 'scan-') === 0; }));
+        $gate = [];
+        if (preg_match("~if \\(in_array\\(\\\$action, \\[([^\\]]*'scan-[^\\]]*)\\], true\\)\\)~", $src, $m)) {
+            preg_match_all("~'([a-z-]+)'~", $m[1], $g);
+            $gate = $g[1];
+        }
+        preg_match_all("~\\\$action === '(scan-[a-z-]+)'~", $src, $b);
+        $branches = array_values(array_unique($b[1]));
+        sort($declared); sort($gate); sort($branches);
+        check('W-05: the scan verbs config.json routes are the ones redcap_module_ajax() lets through',
+            $declared !== [] && $declared === $gate);
+        check('W-05: and scanAction() answers each of them', $branches === $declared);
+        check('W-05: the report read is one of them', in_array('scan-findings', $declared, true));
+        check('W-05: no scan verb is open to a caller REDCap has not signed in',
+            !preg_grep('~^scan-~', $open));
     }
 
     /* =====================================================================

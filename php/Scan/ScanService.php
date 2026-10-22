@@ -8,8 +8,9 @@ namespace INSPIRE\UniversalValidator\Scan;
 // differently from the first.
 use INSPIRE\UniversalValidator\ScanPageView;
 use INSPIRE\UniversalValidator\ScanCapabilities;
-// The report's labels, snapshotted at planning (M5).
+// The report's labels, snapshotted at planning (M5), and its columns.
 use INSPIRE\UniversalValidator\ScanDimensions;
+use INSPIRE\UniversalValidator\ScanColumns;
 
 /**
  * Where the durable scan is assembled, and the only thing the outside world
@@ -1029,6 +1030,261 @@ final class ScanService
             $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
         }
         return $this->stopRun($store, $pid, $runId, (string) $this->username(), $run, time());
+    }
+
+    // -- the report (B5) -------------------------------------------------------
+
+    /** Findings one scan-findings page answers when it is not told, and at most. */
+    const FINDINGS_PAGE = 50;
+    const FINDINGS_PAGE_MAX = 100;
+
+    /**
+     * A scan-findings filter name => the findings column it narrows. The four
+     * axes ScanStore::findings() takes (FindingRowMapper::PAGE_AXES), under
+     * the names a page sends.
+     */
+    const FINDINGS_FILTERS = ['form' => 'host_form', 'reason' => 'reason_code',
+                              'type' => 'check_type', 'group' => 'dag_key'];
+
+    /** RollupBuilder's summary kind for each filter: what the page may offer in it. */
+    const FINDINGS_FACETS = ['form' => RollupBuilder::K_FORM, 'reason' => RollupBuilder::K_REASON,
+                             'type' => RollupBuilder::K_TYPE, 'group' => RollupBuilder::K_DAG];
+
+    /**
+     * One keyset page of a finished run's findings, as the `scan-findings`
+     * action answers it (B5).
+     *
+     * @param array $req {
+     *   after:  ?int     the `next` of the page before; absent or 0 for the first
+     *   limit:  ?int     rows wanted, 1..FINDINGS_PAGE_MAX, FINDINGS_PAGE when absent
+     *   filter: ?array   form, reason, type, group: one stored value each, '' for none
+     * }
+     * @return array see the wave 11 part A report for the shape; every refusal
+     *         is ['ok' => false, 'why' => string, 'final' => bool]
+     */
+    public function findings($pid, $runId, array $req = [])
+    {
+        try {
+            return $this->findingsPage($pid, $runId, $req);
+        } catch (ScanStoreUnavailable $e) {
+            return ['ok' => false, 'why' => $this->storageFailed($pid, $runId, $e), 'final' => false];
+        }
+    }
+
+    /** @see findings() — the body. */
+    private function findingsPage($pid, $runId, array $req)
+    {
+        $r = $this->reportOf($pid, $runId);
+        if (empty($r['ok'])) return $r['answer'];
+
+        $given = (isset($req['filter']) && is_array($req['filter'])) ? $req['filter'] : [];
+        $filter = [];
+        $applied = [];
+        foreach (self::FINDINGS_FILTERS as $name => $col) {
+            $v = array_key_exists($name, $given) ? $given[$name] : null;
+            if ($v === null || $v === '') { $applied[$name] = ''; continue; }
+            if (!is_string($v) && !is_int($v)) {
+                return ['ok' => false, 'why' => 'a findings filter takes one value', 'final' => true];
+            }
+            $filter[$col] = $applied[$name] = (string) $v;
+        }
+        $after = (isset($req['after']) && is_scalar($req['after'])) ? max(0, (int) $req['after']) : 0;
+        $limit = (isset($req['limit']) && is_scalar($req['limit'])) ? (int) $req['limit'] : self::FINDINGS_PAGE;
+        $limit = max(1, min(self::FINDINGS_PAGE_MAX, $limit));
+
+        $run = $r['run'];
+        $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
+                'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
+                'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($run)]
+             + self::decisionOf($run);
+        // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
+        // status shows no counts: a row is a count of one. No facets either.
+        if ($r['withheld'] !== null) {
+            return array_merge($out, ['withheld' => true, 'withheldWhy' => $r['withheld'],
+                                      'rows' => [], 'next' => null, 'facets' => null]);
+        }
+        $through = null;
+        $rows = $this->store()->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
+                                         $after, $limit, $through);
+        $out['rows'] = $r['report']->present($rows);
+        $out['next'] = $through;
+        $out['facets'] = $this->facetsOf($r['aggregates'], $r['dims'], $r['scope']);
+        return $out;
+    }
+
+    /**
+     * Everything a stored run's report is built from, for THIS reader, or the
+     * refusal: the gate that the findings page and the export share.
+     *
+     * THE ORDER IS THE GATE (L8, rv5b-4): the reader before the run row, then
+     * the run, then the reader's entitlement to THIS run - instruments, scope,
+     * and the other projects it looked values up in - and only then anything
+     * read from it. A run outside the reader's group, a whole-project run
+     * read by a group reader and an id that is no run all answer NO_RUN.
+     *
+     * THE LABELS ARE THE RUN'S (M5): its snapshot, or, for a run planned
+     * before snapshots were kept, today's, marked degraded so the report says
+     * so. THE IDENTIFIER FLAGS ARE BOTH: a field flagged in the snapshot or in
+     * the dictionary now is withheld, because a flag added since the run is a
+     * decision about who may see that field today. THE VALUE CEILING is the
+     * reader's export rights floored by the project's value policy now, and
+     * the record names come from the module's own posture (W7-R2).
+     *
+     * @return array{ok:bool, answer?:array, run?:array, report?:ScanReport,
+     *               dims?:ScanDimensions, scope?:array, withheld?:?string,
+     *               columns?:array, expected?:?int, aggregates?:array}
+     */
+    private function reportOf($pid, $runId)
+    {
+        $no = function ($why, $final) { return ['ok' => false, 'answer' => ['ok' => false, 'why' => $why, 'final' => $final]]; };
+        $refused = $this->readerRefusal($pid);
+        if ($refused !== null) return ['ok' => false, 'answer' => $refused];
+        $store = $this->store();
+        $run = $store->run($pid, $runId);
+        if ($run === null) return $no(self::NO_RUN, true);
+        $ent = $this->entitlement($pid, $run);
+        if (empty($ent['ok'])) return $no($ent['why'], !empty($ent['final']));
+        $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'], $ent['unknown']);
+        if (empty($auth['ok'])) return $no($auth['why'], true);
+        $cross = $this->crossRefusal($pid, $run);
+        if ($cross !== null) return ['ok' => false, 'answer' => $cross];
+        if ($run['terminal'] === null || $run['terminal'] === '') {
+            return $no('this scan has not finished, so it has no report yet', false);
+        }
+
+        $reader = $this->readerScope($pid);
+        // The reader's group as a finding stores it: its unique name, which is
+        // what readerScope() resolved the group id to. A group reader whose
+        // group has no name was refused there.
+        $scope = ['dag' => $reader['dag'] === null ? null : (string) $reader['dagName']];
+        $withheld = null;
+        if (!ScanAuthorization::scopeProved($run)) {
+            $withheld = ScanAuthorization::preFenceStatus(['terminal' => $run['terminal']])['withheldWhy'];
+        }
+
+        $ctx = $ent['ctx'];
+        $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
+        $dims = $this->runDimensions($pid, (int) $run['generation_id'], $plan);
+        $live = array_key_exists('identifiers', $plan) ? $plan['identifiers'] : null;
+        $ids = (is_array($dims->identifiers) && is_array($live)) ? $dims->identifiers + $live : null;
+        $posture = is_callable([$this->module, 'scanRecordIdPosture'])
+            ? $this->module->scanRecordIdPosture($pid) : null;
+        if (!is_array($posture)) {
+            return $no('this installation cannot say how a report names records, so the report is not shown', true);
+        }
+        $mapper = new FindingRowMapper([
+            'pid'           => (int) $pid,
+            'now'           => gmdate('Y-m-d H:i:s'),
+            'valuesState'   => $run['values_state'],
+            'readerCeiling' => ScanPolicy::floor($reader['valueCeiling'], $ent['policy']['valueMode']),
+            'identifiers'   => $ids,
+        ] + $posture);
+        $report = new ScanReport($mapper, $dims, $run);
+        $columns = [];
+        foreach (ScanColumns::all($dims) as $c) $columns[] = ['key' => $c['key'], 'label' => $c['label']];
+
+        // What the summary counted, for the facets and the expected count. A
+        // run that ended without a verdict may have no summary, and its count
+        // is then unknown rather than zero.
+        $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
+        $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
+            ? ScanPromotion::tally($aggregates)['stored'] : null;
+        return ['ok' => true, 'run' => $run, 'report' => $report, 'dims' => $dims, 'scope' => $scope,
+                'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
+                'aggregates' => $aggregates];
+    }
+
+    /**
+     * The labels a stored run's report uses: its snapshot (M5), read a page at
+     * a time; for a run with none, the project's as they are now, with
+     * degraded `snapshot` saying so.
+     */
+    private function runDimensions($pid, $generationId, array $plan)
+    {
+        $store = $this->store();
+        $rows = [];
+        $after = null;
+        do {
+            $page = $store->dimensions($pid, $generationId, $after);
+            foreach ($page as $r) $rows[] = $r;
+            $last = $page ? $page[count($page) - 1] : null;
+            $after = $last === null ? null : [$last['kind'], $last['key']];
+        } while ($after !== null && count($page) === ScanStore::DIM_PAGE);
+        $d = ScanDimensions::fromSnapshot($rows);
+        if ($d !== null) return $d;
+        $d = null;
+        try {
+            if (is_callable([$this->module, 'scanDimensions'])) {
+                $d = $this->module->scanDimensions($pid,
+                    (isset($plan['allRules']) && is_array($plan['allRules'])) ? $plan['allRules'] : []);
+            }
+        } catch (\Throwable $e) {
+            $d = null;
+        }
+        if (!($d instanceof ScanDimensions)) $d = new ScanDimensions();
+        $d->rulesBySource = self::ruleOrdinals($plan);
+        $d->degraded['snapshot'] = 'this scan was planned before its labels were kept with it, '
+            . 'so names are shown as the project has them now';
+        return $d;
+    }
+
+    /**
+     * What each filter may be set to, from the run's summary: value, label
+     * and count. A group reader's facets are their run's, which is their
+     * group's; a finding with no group has no group value to filter on.
+     */
+    private function facetsOf(array $aggregates, ScanDimensions $dims, array $scope)
+    {
+        $out = [];
+        foreach (self::FINDINGS_FACETS as $name => $kind) {
+            $out[$name] = [];
+            foreach ($aggregates as $a) {
+                if (!isset($a['kind']) || $a['kind'] !== $kind) continue;
+                $v = (string) $a['axis1'];
+                if ($v === '') continue;
+                if ($name === 'group' && $scope['dag'] !== null && $v !== $scope['dag']) continue;
+                $out[$name][] = ['value' => $v, 'label' => $name === 'form' ? $dims->form($v) : $v,
+                                 'count' => (int) $a['cnt']];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * README's three ways of saying a report is incomplete, from the run row:
+     * a banner above it, a terminal row inside it that survives sorting and
+     * deleting comment lines, and a filename suffix that survives renaming.
+     * The page and the export both take them from here.
+     *
+     * Incomplete is a run that did not finish complete, or that finished
+     * complete and did not keep every finding (the detail limit). A complete
+     * run that may still not be called clean is not incomplete: its suffix
+     * says _NOT-CERTIFIED and it carries no banner.
+     *
+     * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
+     */
+    public static function incompleteMarks(array $run)
+    {
+        $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
+              'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
+              'detail'   => isset($run['detail']) ? $run['detail'] : null,
+              'clean'    => isset($run['clean']) && $run['clean'] !== null && (int) $run['clean'] === 1];
+        $incomplete = $o['terminal'] !== ScanOutcome::COMPLETE || $o['detail'] === ScanOutcome::DETAIL_TRUNCATED;
+        $certified = ScanOutcome::mayClaimClean($o);
+        $suffix = ScanOutcome::suffix($o);
+        if ($incomplete && strpos($suffix, '_INCOMPLETE') === false) $suffix = '_INCOMPLETE' . $suffix;
+        if (!$incomplete && !$certified && $suffix === '') $suffix = '_NOT-CERTIFIED';
+        return [
+            'incomplete' => $incomplete,
+            'certified'  => $certified,
+            'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
+            'row'        => $incomplete
+                ? 'This scan did not cover the whole project. Rows above are real findings over the records '
+                  . 'that WERE examined; absence of a row is not evidence a record is clean. '
+                  . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
+                : null,
+            'suffix'     => $suffix,
+        ];
     }
 
     /**

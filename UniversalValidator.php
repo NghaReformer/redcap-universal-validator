@@ -10628,7 +10628,7 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Thin on purpose. Everything that decides anything - the feature flags,
      * the schema health, the rights, the scope, the run's own state - lives in
-     * ScanService, so this method reads a run id, calls one of four things, and
+     * ScanService, so this method reads a run id, calls one of five things, and
      * hands back what it said. A handler that made decisions would be a second
      * place those decisions live.
      *
@@ -10691,6 +10691,14 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
             if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
+            if ($action === 'scan-findings') {
+                // One keyset page of a finished run's findings (B5). The cursor,
+                // the page size and the filter are handed over as sent; the
+                // service bounds and checks every one of them.
+                $r = $svc->findings($project_id, $runId, is_array($payload) ? $payload : []);
+                $answered = true;
+                return $r;
+            }
             $answered = true;
             return ['ok' => false, 'why' => 'unknown action'];
         } catch (\Throwable $e) {
@@ -10720,14 +10728,14 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
-        // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
+        // THE DURABLE SCAN'S FIVE VERBS. Declared in auth-ajax-actions ONLY - a
         // scan reads and stores record values, so there is no version of it an
         // unauthenticated caller may reach. $user_id is the only value here that
         // means REDCap authenticated this caller; the framework's own action
         // list is a first gate, and this is the second, because
         // redcap_module_ajax() guards the action NAME and hands the identity
         // straight through without checking it.
-        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel'], true)) {
+        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel', 'scan-findings'], true)) {
             if ($user_id === null || $user_id === '') {
                 return ['ok' => false, 'why' => 'you are not signed in'];
             }
