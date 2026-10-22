@@ -430,6 +430,36 @@ class ScanPageView
     const STORED        = 'Stored: {rows}';
     const STORED_VALUES = 'Stored: {rows}, with {size} of values';
 
+    /**
+     * THE FINDINGS PANEL (B5): a finished run's report, a keyset page at a
+     * time. The rows' own words are the report's (ScanReport through
+     * scan-findings); these are the panel's. No apostrophes, for the reason
+     * given at STALLED.
+     *
+     * {page} counts the pages this reader has turned, not a position in the
+     * report: a keyset page has no number of its own.
+     */
+    const REPORT_CAPTION   = 'Findings of this scan, page {page}';
+    const REPORT_LOADING   = 'Loading the findings.';
+    /** {findings} is "1 finding" or "1,234 findings": the reader's whole report, unfiltered. */
+    const REPORT_COUNT     = 'This report holds {findings}.';
+    const REPORT_NONE      = 'This scan stored no findings.';
+    const REPORT_EMPTY     = 'No findings match these filters.';
+    const REPORT_NO_MORE   = 'No further findings match these filters.';
+    /**
+     * A page can come back empty while later pages hold matches (review
+     * rv11a2-6): with two filters the server reads the first filter's key a
+     * window at a time. The panel reads on a few pages, saying REPORT_LOOKING,
+     * and then says REPORT_SEARCHING and leaves the next press to the reader.
+     * Neither is ever "no findings".
+     */
+    const REPORT_LOOKING   = 'Looking further for findings that match these filters.';
+    const REPORT_SEARCHING = 'Still looking: the pages read so far held no finding that matches these '
+                           . 'filters, and there are more to read. Press Next page to keep looking.';
+    const REPORT_RETRY     = 'Trying again shortly.';
+    const REPORT_FAILED    = 'The findings of this scan could not be read just now.';
+    const FILTER_ALL       = 'All';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -457,6 +487,17 @@ class ScanPageView
             'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
             'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
             'none'            => self::COUNT_NONE,
+            'reportCaption'   => self::REPORT_CAPTION,
+            'reportLoading'   => self::REPORT_LOADING,
+            'reportCount'     => self::REPORT_COUNT,
+            'reportNone'      => self::REPORT_NONE,
+            'reportEmpty'     => self::REPORT_EMPTY,
+            'reportNoMore'    => self::REPORT_NO_MORE,
+            'reportLooking'   => self::REPORT_LOOKING,
+            'reportSearching' => self::REPORT_SEARCHING,
+            'reportRetry'     => self::REPORT_RETRY,
+            'reportFailed'    => self::REPORT_FAILED,
+            'filterAll'       => self::FILTER_ALL,
         ];
     }
 

@@ -319,3 +319,67 @@ $point = (new SqlScanStore($rec2))->dimension($PID, $mine['gen'], 'state', 'snap
 $pq = $rec2->log[0];
 check('report dims: the state row is one lookup on uq_dim_v2',
     $point !== null && count($rec2->log) === 1 && uv_explain_keys($A, $pq[1], $pq[2]) === ['uq_dim_v2']);
+
+// -- THE RUN THE FINDINGS PANEL OPENS ON (B5) -----------------------------------
+//
+// ScanService::finishedRun(): the newest finished run of the reader's own
+// scope, one row through ix_project_created, newest first with no sort. Runs
+// of the neighbour, unfinished runs and runs of another scope are never it.
+if (!class_exists('UvReportModule', false)) {
+    /** The framework edge for ScanService over the real connection, keeping each statement. */
+    class UvReportModule
+    {
+        private $c;
+        /** @var array[] [sql, params] per statement */
+        public $log = [];
+        public function __construct($c) { $this->c = $c; }
+        public function query($sql, $params = [])
+        {
+            $this->log[] = [$sql, $params];
+            if (!$params) return $this->c->query($sql);
+            $st = $this->c->prepare($sql);
+            bindAll($st, array_values($params));
+            $st->execute();
+            $r = $st->get_result();
+            return $r === false ? true : $r;
+        }
+    }
+}
+$runT = Schema::table('scan_run');
+$endRun = function ($rid) use ($A, $runT) {
+    $A->query("UPDATE $runT SET phase = 'terminal', terminal = 'complete', active_slot = NULL WHERE run_id = "
+        . (int) $rid);
+};
+$fs = new SqlScanStore($dbA);
+// The planted runs hold each project's slot; end them, then add, in order:
+// a whole-project run, a newer north run, and a whole-project run left going.
+$endRun($mine['run']);
+$endRun($theirs['run']);
+$newest = (int) $fs->startRun($PID, ['created_by' => 'alice'])['run']['run_id'];
+$endRun($newest);
+$north = (int) $fs->startRun($PID, ['created_by' => 'alice', 'scope_dag' => '7'])['run']['run_id'];
+$endRun($north);
+$going =(int) $fs->startRun($PID, ['created_by' => 'alice'])['run']['run_id'];
+$neighbourNewer = (int) $fs->startRun($NB, ['created_by' => 'bob'])['run']['run_id'];
+$endRun($neighbourNewer);
+$fm = new UvReportModule($A);
+$fsvc = new INSPIRE\UniversalValidator\Scan\ScanService($fm);
+$whole = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => null]);
+$inNorth = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => '7']);
+$inSouth = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => '9']);
+check('report panel: the newest finished whole-project run is offered, not a newer group run, the one still going nor the neighbour\'s',
+    $north > $newest && $going > $north && $neighbourNewer > $newest && $whole === $newest);
+check('report panel: a group reader is offered their group\'s run, and a group with none is offered nothing',
+    $inNorth === $north && $inSouth === null);
+check('report panel: and a scope that cannot be read is offered nothing, without a statement',
+    count($fm->log) === 3 && $fsvc->finishedRun($PID, ['ok' => false, 'dag' => null]) === null && count($fm->log) === 3);
+$bad = [];
+$sorts = [];
+foreach ($fm->log as $q) {
+    $keys = uv_explain_keys($A, $q[0], $q[1]);
+    if ($keys !== ['ix_project_created']) $bad[] = implode(',', $keys) . ' <- ' . implode(' ', uv_explain_rows($A, $q[0], $q[1]));
+    if (stripos($extra($q[0], $q[1]), 'filesort') !== false) $sorts[] = $q[0];
+}
+check('report panel: each read names ix_project_created', $bad === []);
+if ($bad) fwrite(STDERR, '  panel: ' . implode("\n    ", array_unique($bad)) . "\n");
+check('report panel: and none of them sorts', $sorts === []);

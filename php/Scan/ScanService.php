@@ -1800,6 +1800,45 @@ final class ScanService
     }
 
     /**
+     * The newest finished run of THIS reader's scope, for the findings panel
+     * to open on, or null.
+     *
+     * The panel shows a finished run's report (B5), and a run that finished
+     * after its tab was closed had no way back onto the page: activeRun()
+     * answers only the run holding the slot. A group reader is offered the
+     * newest finished run of their group, an unrestricted reader the newest
+     * whole-project run - the scope a Start from this page would have.
+     *
+     * A LOCATOR, NOT A GRANT. The id is printed into the page for the client
+     * to ask scan-findings about, and that verb decides everything again,
+     * before the run row (L8): a reader it refuses is refused the same way for
+     * this id as for any other. Nothing about the run but its id is read here.
+     *
+     * ONE ROW, THROUGH ix_project_created, newest first (run_id breaks a tie in
+     * the same second; it is the key's own suffix, so there is no sort). A
+     * project keeps one row per run, and retention purges old ones.
+     *
+     * @param array|null $scope ScanPageView::scanScope()'s answer, as the page holds it
+     * @return int|null null for no such run, no readable scope, or a read that failed
+     */
+    public function finishedRun($pid, $scope = null)
+    {
+        if (!is_array($scope) || empty($scope['ok']) || !array_key_exists('dag', $scope)) return null;
+        try {
+            $sql = 'SELECT run_id FROM ' . Schema::table('scan_run')
+                 . ' WHERE project_id = ? AND phase = ? AND '
+                 . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
+                 . ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
+            $params = [(int) $pid, ScanPhase::TERMINAL];
+            if ($scope['dag'] !== null) $params[] = (string) $scope['dag'];
+            $r = $this->db->select($sql, $params);
+            return (isset($r[0][0]) && ctype_digit((string) $r[0][0])) ? (int) $r[0][0] : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
      * Retire any active run whose scope no user of this project could match.
      *
      * THE AUTHORITY IS THE PROJECT'S OWN GROUP LIST. A run is unworkable when
