@@ -719,12 +719,40 @@ interface ScanStore
      * run() zips RUN_COLUMNS, and a row of the wrong width throws.
      *
      * KEYSET ON finding_id: rows come back with finding_id > $afterId, in
-     * finding_id order, so the last row's finding_id is the next page's
-     * $afterId and no row is ever returned on two pages. $limit is clamped to
-     * 1..100. $filter takes host_form, reason_code, dag_key and check_type;
-     * any other key is ignored rather than interpolated.
+     * finding_id order, and no row is ever returned on two pages. $limit is
+     * clamped to 1..100.
+     *
+     * $scope IS MANDATORY (B5): ['dag' => ?string], the reader's group as a
+     * finding stores it (its unique name), or null for a reader confined to
+     * none. An absent dag key throws; see FindingRowMapper::pageAxes(), which
+     * both stores ask, for that and for $filter, whose keys are
+     * FindingRowMapper::PAGE_AXES (host_form, reason_code, check_type,
+     * dag_key). Any other filter key is ignored rather than interpolated.
+     *
+     * $through IS THE NEXT PAGE'S $afterId, or null when nothing follows.
+     * It is the last row's finding_id when a further row exists; when the
+     * page is short it says where the walk stopped. One axis, or none, is one
+     * statement over the key built for it (ix_page_v2, or the axis's
+     * ix_filter_*), reading at most $limit + 1 entries. Two or more axes have
+     * no key that holds them all, so the page walks the first axis's key in
+     * windows of FILTER_WINDOW entries, at most FILTER_WINDOWS of them, and
+     * may come back short with $through at the last window's end: a short
+     * page is not the end of the report unless $through is null. A walk that
+     * filtered rows one by one through a whole axis would read every row of
+     * it for a page that keeps none.
+     *
+     * Only ACTIVE rows of this project and generation: a closed row - departed,
+     * tombstoned, re-examined or superseded - is history, and a staged
+     * duplicate is not yet a finding.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit);
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null);
+
+    /** Index entries one window of a filtered page may walk. See findings(). */
+    const FILTER_WINDOW = 5000;
+
+    /** Windows one filtered page may walk before it answers short. See findings(). */
+    const FILTER_WINDOWS = 4;
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);

@@ -821,7 +821,7 @@ namespace {
             if (strpos($s, 'SELECT finding_id, host_form, reason_code, dag_key, check_type') === 0) {
                 $limit = preg_match('/LIMIT (\d+)/', $sql, $m) ? (int) $m[1] : 100;
                 $out = [];
-                foreach ($this->store->findings($params[0], $params[1], [], $params[2], $limit) as $f) {
+                foreach ($this->store->findings($params[0], $params[1], ['dag' => null], [], $params[2], $limit) as $f) {
                     $out[] = [$f['finding_id'], $f['host_form'], $f['reason_code'], $f['dag_key'],
                               $f['check_type']];
                 }
@@ -3246,7 +3246,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
         $row = $ms->run($pid, $rid);
         $ids = [];
-        foreach ($ms->findings($pid, (int) $row['generation_id'], [], 0, 100) as $f) {
+        foreach ($ms->findings($pid, (int) $row['generation_id'], ['dag' => null], [], 0, 100) as $f) {
             $ids[] = (string) $f['record_id_bin'];
         }
         return ['row' => $row, 'states' => $ms->recordStates($rid), 'reads' => $mm->reads,

@@ -1025,7 +1025,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $wide = [];
     foreach (FindingRowMapper::INPUT_KEYS as $i => $k) $wide[] = 'v' . $i;
     $fdb->rows = ['FROM ' . Schema::table('finding') => [$wide, $wide]];
-    $page = (new SqlScanStore($fdb))->findings(700, 5, ['dag_key' => 'n', 'nope' => 'x'], 0, 50);
+    $page = (new SqlScanStore($fdb))->findings(700, 5, ['dag' => null], ['dag_key' => 'n', 'nope' => 'x'], 0, 50);
     check('rows: findings() keys every row by FindingRowMapper::INPUT_KEYS, in order',
         count($page) === 2 && array_keys($page[0]) === FindingRowMapper::INPUT_KEYS
         && $page[0]['finding_id'] === 'v0' && $page[1]['value_expires_at'] === 'v16');
@@ -1038,10 +1038,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         count($sel) === 1 && strpos($sel[0][0], 'SELECT ' . implode(', ', $selectList) . "\n") === 0);
     check('rows: a known axis is bound, an unknown one never reaches the statement',
         count($sel) === 1 && strpos($sel[0][0], 'dag_key = ?') !== false
-        && strpos($sel[0][0], 'nope') === false && $sel[0][1] === [700, 5, 0, 'n']);
+        && strpos($sel[0][0], 'nope') === false && $sel[0][1] === [700, 5, 'n', 0]);
     $fdb->rows = ['FROM ' . Schema::table('finding') => [array_slice($wide, 0, 12)]];
     $r = outcomeOf(function () use ($fdb) {
-        return (new SqlScanStore($fdb))->findings(700, 5, [], 0, 50);
+        return (new SqlScanStore($fdb))->findings(700, 5, ['dag' => null], [], 0, 50);
     });
     check('rows: a row of the old twelve columns is a LogicException, never a false row',
         $r['kind'] === 'other' && $r['class'] === 'LogicException');

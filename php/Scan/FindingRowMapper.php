@@ -68,6 +68,69 @@ final class FindingRowMapper
     const POOLED_CODE = 'pooled';
 
     /**
+     * The axes a findings page may be narrowed by, column => the column's
+     * width in bytes, in the order a page picks its key: the first axis a
+     * page names is the key it walks (ScanStore::findings()). The group comes
+     * last because a group reader's scope names it on every page, and inside
+     * a group's run nearly every row is the group's, so it narrows least.
+     */
+    const PAGE_AXES = ['host_form' => 128, 'reason_code' => 64, 'check_type' => 32, 'dag_key' => 255];
+
+    /**
+     * What one findings page is confined to: the scope, then the filter, as
+     * column => value. ONE ANSWER FOR BOTH STORES, so a scope one store
+     * refuses is refused by the other in the same words.
+     *
+     * THE SCOPE IS MANDATORY (B5). A read path that can be called without a
+     * confinement is one that will eventually be called without one, so an
+     * absent `dag` key throws rather than defaulting to the whole project.
+     * `dag` is the reader's Data Access Group as a finding stores it - the
+     * group's UNIQUE NAME, the dag_key axis - or null for a reader confined to
+     * no group. An empty or non-string name is refused too: '' is what "the
+     * group could not be named" looks like, and reading it as "no group"
+     * would widen the page to the project.
+     *
+     * The filter takes the PAGE_AXES keys; any other key is ignored rather
+     * than interpolated, and an empty value is no filter. A value that is not
+     * a scalar throws. A filter on the group that differs from the scope's
+     * group cannot match a row, so it answers `none` and no statement is sent.
+     *
+     * @return array{axes: array<string,string>, none: bool}
+     * @throws \InvalidArgumentException when the scope has no dag key, or a value is not text
+     */
+    public static function pageAxes(array $scope, array $filter)
+    {
+        if (!array_key_exists('dag', $scope)) {
+            throw new \InvalidArgumentException('a findings page needs the reader\'s scope; '
+                . 'the scope has no dag key, and the whole project is not a default');
+        }
+        $dag = $scope['dag'];
+        if ($dag !== null && (!is_string($dag) || $dag === '')) {
+            throw new \InvalidArgumentException('a findings page scoped to a group needs the group\'s '
+                . 'unique name; an empty or non-text group would read as the whole project');
+        }
+        $axes = [];
+        foreach (self::PAGE_AXES as $col => $width) {
+            if (!array_key_exists($col, $filter) || $filter[$col] === null || $filter[$col] === '') continue;
+            if (!is_scalar($filter[$col])) {
+                throw new \InvalidArgumentException('a findings filter on ' . $col . ' must be text');
+            }
+            $axes[$col] = (string) $filter[$col];
+        }
+        if ($dag !== null) {
+            if (isset($axes['dag_key']) && $axes['dag_key'] !== $dag) return ['axes' => $axes, 'none' => true];
+            $axes['dag_key'] = $dag;
+        }
+        // In PAGE_AXES order whatever order the caller wrote them in, so the
+        // key a page walks never depends on how a request spelled its filter.
+        $ordered = [];
+        foreach (self::PAGE_AXES as $col => $width) {
+            if (isset($axes[$col])) $ordered[$col] = $axes[$col];
+        }
+        return ['axes' => $ordered, 'none' => false];
+    }
+
+    /**
      * The check types whose finding IS an empty field. Every other kind is
      * inert on a blank (UniversalValidator::ruleFindings() skips it), so for
      * them a stored row with no value is a value nobody stored, not an empty

@@ -3022,7 +3022,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     };
     $activeOf = function ($store) {
         $ids = [];
-        foreach ($store->findings(800, 1, [], 0, 100) as $f) $ids[] = (string) $f['record_id_bin'];
+        foreach ($store->findings(800, 1, ['dag' => null], [], 0, 100) as $f) $ids[] = (string) $f['record_id_bin'];
         sort($ids);
         return $ids;
     };

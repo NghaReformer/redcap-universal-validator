@@ -1963,56 +1963,123 @@ final class SqlScanStore implements ScanStore
      * measurement back, so a row whose value preview expired, was revoked or
      * was never stored has no z-score either. A reader that may not see
      * value_bin must not be shown z_score.
+     *
+     * EVERY PAGE NAMES ITS KEY. An unfiltered page is pinned to ix_page_v2:
+     * over a small table MySQL 8.0 and MariaDB chose uq_active_identity_v2
+     * and sorted the generation (see ScanRetention::slicePage()). A filtered
+     * page was left to the optimiser, which could walk ix_page_v2 and test
+     * the filter row by row - a page that keeps ten rows out of a generation
+     * of 500,000 then reads all of them. It is pinned to the key of its first
+     * axis (FindingRowMapper::PAGE_AXES order), whose prefix is the page's
+     * equality and whose order is finding_id; tests/mysql/cases/report.php
+     * asserts the plan for each axis.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
+        $through = null;
         $limit = max(1, min(100, (int) $limit));
+        // The scope first, and before any statement: a call with no
+        // confinement throws here rather than reading the project.
+        $page = FindingRowMapper::pageAxes($scope, $filter);
+        if ($page['none']) return [];
+        $axes = $page['axes'];
         $keys = FindingRowMapper::INPUT_KEYS;
+        $cols = [];
+        foreach ($keys as $k) {
+            $cols[] = $k === 'z_score' ? 'CASE WHEN value_bin IS NULL THEN NULL ELSE z_score END AS z_score' : $k;
+        }
         // PROJECT FIRST, in the predicate and in the index. This method had
         // no production caller at all, which is the only reason a read
         // filtered by generation alone - with the generation the literal 1
         // for every project - was stored corruption rather than a live
         // cross-project disclosure. The report is what would have turned it
         // into one.
-        $params = [(int) $projectId, $generationId, (int) $afterId];
-        // Only allowlisted axes reach the statement; an unknown key is dropped
-        // rather than interpolated.
-        $where = '';
-        foreach (['host_form' => 'host_form', 'reason_code' => 'reason_code',
-                  'dag_key' => 'dag_key', 'check_type' => 'check_type'] as $k => $col) {
-            if (isset($filter[$k]) && $filter[$k] !== '') {
-                $where .= ' AND ' . $col . ' = ?';
-                $params[] = $filter[$k];
+        $base = 'project_id = ? AND generation_id = ? AND active_slot = 1';
+        $baseParams = [(int) $projectId, $generationId];
+        $first = $axes ? (string) key($axes) : null;
+        $index = $first === null ? 'ix_page_v2' : self::$axisKeys[$first];
+        $from = Schema::table('finding') . ' FORCE INDEX (' . $index . ')';
+        $lead = '';
+        $leadParams = [];
+        if ($first !== null) {
+            $lead = ' AND ' . $first . ' = ?';
+            $leadParams[] = $axes[$first];
+        }
+        $rest = '';
+        $restParams = [];
+        foreach ($axes as $col => $v) {
+            if ($col === $first) continue;
+            $rest .= ' AND ' . $col . ' = ?';
+            $restParams[] = $v;
+        }
+        $select = function ($after, $upTo, $n) use ($cols, $from, $base, $lead, $rest, $baseParams,
+                                                    $leadParams, $restParams, $keys) {
+            $sql = 'SELECT ' . implode(', ', $cols) . '
+                    FROM ' . $from . '
+                    WHERE ' . $base . $lead . ' AND finding_id > ?'
+                    . ($upTo === null ? '' : ' AND finding_id <= ?') . $rest . '
+                    ORDER BY finding_id LIMIT ' . (int) $n;
+            $params = array_merge($baseParams, $leadParams, [(int) $after],
+                                  $upTo === null ? [] : [(int) $upTo], $restParams);
+            $out = [];
+            foreach ($this->db->select($sql, $params) as $r) {
+                $row = array_values((array) $r);
+                if (count($row) !== count($keys)) {
+                    // As in run(): array_combine() would answer false, and a
+                    // false row reads as "no such key" in every cell.
+                    throw new \LogicException('a finding row has ' . count($row) . ' columns and '
+                        . 'FindingRowMapper::INPUT_KEYS names ' . count($keys));
+                }
+                $out[] = array_combine($keys, $row);
             }
+            return $out;
+        };
+
+        if ($rest === '') {
+            // ONE KEY HOLDS EVERY PREDICATE: one statement, $limit + 1 entries
+            // read, the extra one only to say whether a page follows.
+            $out = $select((int) $afterId, null, $limit + 1);
+            if (count($out) > $limit) {
+                $out = array_slice($out, 0, $limit);
+                $through = (int) $out[$limit - 1]['finding_id'];
+            }
+            return $out;
         }
-        // An unfiltered page is ix_page_v2's prefix in ix_page_v2's order, and
-        // is pinned to it: over a small table MySQL 8.0 and MariaDB chose
-        // uq_active_identity_v2 and sorted the generation (see
-        // ScanRetention::slicePage()). A filtered page is left to the
-        // optimiser, which has an ix_filter_* key for each axis.
-        $hint = $where === '' ? ' FORCE INDEX (ix_page_v2)' : '';
-        $cols = [];
-        foreach ($keys as $k) {
-            $cols[] = $k === 'z_score' ? 'CASE WHEN value_bin IS NULL THEN NULL ELSE z_score END AS z_score' : $k;
-        }
-        $sql = 'SELECT ' . implode(', ', $cols) . '
-                FROM ' . Schema::table('finding') . $hint . '
-                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
-                  AND finding_id > ?' . $where . '
-                ORDER BY finding_id LIMIT ' . $limit;
+
+        // TWO OR MORE AXES: windows of the first axis's key. The window's end
+        // is read from the key alone - finding_id is in it, so nothing else is
+        // touched - and the page then reads only rows inside it.
         $out = [];
-        foreach ($this->db->select($sql, $params) as $r) {
-            $row = array_values((array) $r);
-            if (count($row) !== count($keys)) {
-                // As in run(): array_combine() would answer false, and a false
-                // row reads as "no such key" in every cell of the report.
-                throw new \LogicException('a finding row has ' . count($row) . ' columns and '
-                    . 'FindingRowMapper::INPUT_KEYS names ' . count($keys));
+        $after = (int) $afterId;
+        for ($w = 0; $w < self::FILTER_WINDOWS; $w++) {
+            $ids = $this->db->select('SELECT finding_id FROM ' . $from . '
+                WHERE ' . $base . $lead . ' AND finding_id > ?
+                ORDER BY finding_id LIMIT ' . self::FILTER_WINDOW,
+                array_merge($baseParams, $leadParams, [$after]));
+            if (!$ids) return $out;
+            $end = (int) $ids[count($ids) - 1][0];
+            foreach ($select($after, $end, $limit + 1 - count($out)) as $row) $out[] = $row;
+            if (count($out) > $limit) {
+                $out = array_slice($out, 0, $limit);
+                $through = (int) $out[$limit - 1]['finding_id'];
+                return $out;
             }
-            $out[] = array_combine($keys, $row);
+            // A window shorter than the bound is the end of the axis.
+            if (count($ids) < self::FILTER_WINDOW) return $out;
+            $after = $end;
         }
+        $through = $after;
         return $out;
     }
+
+    /** The key each page axis is walked through: its ix_filter_* (Schema::statementsV2()). */
+    private static $axisKeys = [
+        'host_form'   => 'ix_filter_form_v2',
+        'reason_code' => 'ix_filter_reason_v2',
+        'check_type'  => 'ix_filter_type',
+        'dag_key'     => 'ix_filter_dag_v2',
+    ];
 
     /**
      * Keyed rows, not the positional ones the driver returns.

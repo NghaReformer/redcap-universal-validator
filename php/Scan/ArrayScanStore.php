@@ -997,13 +997,33 @@ final class ArrayScanStore implements ScanStore
      * finding_id order, each row keyed by FindingRowMapper::INPUT_KEYS in that
      * order (B5-N1). This returned the whole internal row, positioned by a
      * count of rows walked, and ignored a dag_key filter the SQL store applies.
+     *
+     * THE SAME WALK AS THE SQL STORE, window for window: the first axis is
+     * the key, and a page of two or more axes reads FILTER_WINDOW rows of
+     * that axis at a time, so $through means the same thing from both
+     * stores. The list is in finding_id order, so the first row after
+     * $afterId is found by halving rather than by walking the rows before it.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
+        $through = null;
         $limit = max(1, min(100, (int) $limit));
+        $page = FindingRowMapper::pageAxes($scope, $filter);
+        if ($page['none']) return [];
+        $axes = $page['axes'];
+        $first = $axes ? (string) key($axes) : null;
+        $windowed = count($axes) > 1;
+        $in = function (array $f, $col, $v) {
+            return $f[$col] !== null && (string) $f[$col] === $v;
+        };
         $out = [];
-        foreach ($this->findings as $f) {
-            if ((int) $f['finding_id'] <= (int) $afterId) continue;
+        $walked = 0;      // rows of the first axis read in this window
+        $windows = 0;
+        $last = (int) $afterId;
+        $n = count($this->findings);
+        for ($i = $this->firstAfter((int) $afterId); $i < $n; $i++) {
+            $f = $this->findings[$i];
             if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
             // Closed rows belong to an earlier reading of a record and are
@@ -1011,9 +1031,26 @@ final class ArrayScanStore implements ScanStore
             // shows the ACTIVE ones; the real store says the same with
             // active_slot = 1 in its WHERE.
             if ($f['active_slot'] === null || (int) $f['active_slot'] !== 1) continue;
-            foreach (['host_form', 'reason_code', 'dag_key', 'check_type'] as $k) {
-                if (isset($filter[$k]) && $filter[$k] !== ''
-                    && ($f[$k] === null || (string) $f[$k] !== (string) $filter[$k])) continue 2;
+            if ($first !== null && !$in($f, $first, $axes[$first])) continue;
+            if ($windowed) {
+                if ($walked === self::FILTER_WINDOW) {
+                    // The window is spent; the next starts after its end.
+                    $walked = 0;
+                    if (++$windows === self::FILTER_WINDOWS) {
+                        $through = $last;
+                        return $out;
+                    }
+                }
+                $walked++;
+                $last = (int) $f['finding_id'];
+            }
+            foreach ($axes as $col => $v) {
+                if ($col !== $first && !$in($f, $col, $v)) continue 2;
+            }
+            if (count($out) === $limit) {
+                // A row beyond the page: there is a next page, after the last row kept.
+                $through = (int) $out[$limit - 1]['finding_id'];
+                return $out;
             }
             $row = [];
             foreach (FindingRowMapper::INPUT_KEYS as $k) {
@@ -1023,9 +1060,26 @@ final class ArrayScanStore implements ScanStore
             // growth z-score gives the measurement back.
             if ($row['value_bin'] === null) $row['z_score'] = null;
             $out[] = $row;
-            if (count($out) >= $limit) break;
+        }
+        // The last window filled exactly as the rows ran out: the SQL store
+        // cannot tell that from more rows waiting, and says where it stopped.
+        if ($windowed && $walked === self::FILTER_WINDOW && $windows === self::FILTER_WINDOWS - 1) {
+            $through = $last;
         }
         return $out;
+    }
+
+    /** The index of the first stored finding whose finding_id is above $afterId. */
+    private function firstAfter($afterId)
+    {
+        $lo = 0;
+        $hi = count($this->findings);
+        while ($lo < $hi) {
+            $mid = ($lo + $hi) >> 1;
+            if ((int) $this->findings[$mid]['finding_id'] <= $afterId) $lo = $mid + 1;
+            else $hi = $mid;
+        }
+        return $lo;
     }
 
     public function aggregates($runId)
