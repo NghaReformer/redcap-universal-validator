@@ -20,7 +20,10 @@
  *     reason field not on this page leaves the tag doing nothing, and a
  *     reason in a radio or dropdown field counts, including a change no
  *     event announces;
- *   - a configuration error is shown under the field and releases nothing.
+ *   - a configuration error is shown under the field and releases nothing;
+ *   - the note asks only while the save guard would hold (QRID_itemHolds):
+ *     none under a field made read-only after bind or hidden by branching,
+ *     and a reason row that doBranching() hides brings the note back at once.
  *
  * Run:  node tests/justify_dom_js.cjs
  */
@@ -36,7 +39,7 @@ function check(label, cond, got) {
 
 function makeEl(tag) {
   return {
-    tagName: (tag || 'div').toUpperCase(), id: '', name: '', value: '', innerHTML: '',
+    tagName: (tag || 'div').toUpperCase(), nodeType: 1, id: '', name: '', value: '', innerHTML: '',
     type: '', checked: false, className: '',
     style: { set cssText(v) { this._css = v; const m = /display:\s*([a-z]+)/.exec(v); this.display = m ? m[1] : ''; },
              get cssText() { return this._css || ''; } },
@@ -122,7 +125,8 @@ function boot(els, config, opts) {
   for (const el of els) {
     let holder = el._row ? rows[el._row] : null;
     if (!holder) {
-      holder = makeEl('div');
+      /* a field's row ("<field>-tr") is a table row, as REDCap draws it */
+      holder = makeEl(el._row && /-tr$/.test(el._row) ? 'tr' : 'div');
       if (el._row) { holder.id = el._row; rows[el._row] = holder; }
       body.appendChild(holder);
       allEls.push(holder);
@@ -143,6 +147,8 @@ function boot(els, config, opts) {
   const win = {
     _alerts: [], _confirms: [], confirmAnswer: false,
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
+    /* REDCap's branching: the test sets a row's display itself, then calls this, as REDCap does */
+    doBranching() {},
     INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
   if (opts.stub) win.EMStub = { UV: opts.stub.obj };
@@ -151,6 +157,9 @@ function boot(els, config, opts) {
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
   require(enginePath);
+  /* REDCap's own start-up (jQuery's ready handlers, @READONLY among them)
+     runs after the engine bound the fields and before its first tick */
+  if (opts.ready) opts.ready();
   flush();
   return { doc, win, holders, allEls, NS: win.INSPIREUniversalValidator, poll() { intervals.forEach((f) => f()); flush(); } };
 }
@@ -379,6 +388,49 @@ for (const order of ['reason first', 'reason last']) {
   const wt = text('wt', '30'), why = text('wt_why', '');
   const env = boot([wt, why], { rules: [J(['wt'], 'wt_why')] });
   check('a justify rule alone holds nothing and asks nothing', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+}
+
+// ---- 13) the note asks only while the item would hold the save -------------------------------
+/* The note and the save guard ask one question (QRID_itemHolds): a field the
+   person cannot change or cannot see never holds the save, so no note asks
+   for a reason under it. REDCap applies @READONLY in its own start-up, after
+   the engine bound the field and before the engine's first tick. */
+{
+  const wt = text('wt', '30'), why = text('wt_why', '');
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] }, { ready() { wt.readOnly = true; } });
+  check('read-only after bind: the save goes through', save(env) === 'saved');
+  check('... the rule\'s own note stays', /Too light/.test(shown(env, 'wt', 'c')), shown(env, 'wt', 'c'));
+  check('... and no note asks for a reason', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+  type(env, why, '');
+  check('... nor after the reason field changes', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+}
+{
+  // the field's own row hidden by branching logic
+  const wt = text('wt', '30'); wt._row = 'wt-tr';
+  const why = text('wt_why', '');
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  check('a shown field asks for its reason', shown(env, 'wt', 'j') === NOTE('wt_why'));
+  env.doc.getElementById('wt-tr').style.display = 'none';
+  env.win.doBranching(); flush();
+  check('its row hidden by branching: the note goes', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+  check('... and the save goes through', save(env) === 'saved');
+  env.doc.getElementById('wt-tr').style.display = '';
+  env.win.doBranching(); flush();
+  check('shown again: the note is back', shown(env, 'wt', 'j') === NOTE('wt_why'), shown(env, 'wt', 'j'));
+}
+{
+  // the reason's row hidden by branching logic, its text kept (no event on the reason field)
+  const wt = text('wt', '30'), why = text('wt_why', 'a reason'); why._row = 'wt_why-tr';
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  check('a shown reason: no note', shown(env, 'wt', 'j') === '');
+  env.doc.getElementById('wt_why-tr').style.display = 'none';
+  env.win.doBranching(); flush();
+  check('the reason row hidden: the note asks again at once', shown(env, 'wt', 'j') === NOTE('wt_why'), shown(env, 'wt', 'j'));
+  check('... in step with the save', save(env) === 'held' && /or give a reason in “wt_why”/.test(said(env)), said(env));
+  env.doc.getElementById('wt_why-tr').style.display = '';
+  env.win.doBranching(); flush();
+  check('the reason row shown again: the note goes', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+  check('... and the save goes through', save(env) === 'saved');
 }
 
 console.log('justify_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
