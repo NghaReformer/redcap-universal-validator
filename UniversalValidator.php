@@ -5389,7 +5389,10 @@ class UniversalValidator extends AbstractExternalModule
      * A rule of a locking mode (@UVWRITEONCE) may not lock a field another
      * rule returns to: the save writes a returned value again every time, so
      * the lock would either undo the rule or be broken by it. The lock is
-     * refused, naming the rule that writes.
+     * refused on that field alone, naming the rule that writes: tags that are
+     * written alike on several fields are one rule (AnnotationRules::groupMulti),
+     * so the field is split off into a rule of its own and the others keep
+     * their lock.
      */
     private static function markReturnClashes(array $rules)
     {
@@ -5449,17 +5452,27 @@ class UniversalValidator extends AbstractExternalModule
             $rules[$i]['configError'] = ModeRegistry::tagOfType(isset($rules[$i]['type']) ? $rules[$i]['type'] : '')
                 . ' "return": ' . implode(' ', array_values(array_unique($list)));
         }
+        $split = [];
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError'])) continue;
             $lockWhy = ModeRegistry::lockReturnWhy(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''));
             if ($lockWhy === null) continue;
-            foreach (isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [] as $f) {
-                if (!isset($owner[$f]) || $owner[$f] === $i) continue;
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $keep = [];
+            foreach ($fields as $f) {
+                if (!isset($owner[$f]) || $owner[$f] === $i) { $keep[] = $f; continue; }
                 $by = isset($rules[$owner[$f]]['fields'][0]) ? (string) $rules[$owner[$f]]['fields'][0] : '?';
-                $rules[$i]['configError'] = strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by]);
-                break;
+                $split[] = array_merge($r, ['fields' => [$f], 'configError' => strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by])]);
+            }
+            if (count($keep) === count($fields)) continue;
+            if ($keep) {
+                $rules[$i]['fields'] = $keep;
+            } else {
+                // every field refused: the rule's place holds the first refusal
+                $rules[$i] = array_shift($split);
             }
         }
+        foreach ($split as $r) $rules[] = $r;
         return $rules;
     }
 

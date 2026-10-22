@@ -15,10 +15,10 @@ require_once __DIR__ . '/../php/ValueStamps.php';
 require_once __DIR__ . '/../php/ValueHistory.php';
 require_once __DIR__ . '/../php/ExactDecimal.php';
 require_once __DIR__ . '/../php/Logic.php';
+require_once __DIR__ . '/writeonce_fake_log.php';
 
 use INSPIRE\UniversalValidator\Logic;
 use INSPIRE\UniversalValidator\ValueHistory;
-use INSPIRE\UniversalValidator\Scan\ScanDb;
 
 $n = 0;
 $fails = 0;
@@ -64,44 +64,6 @@ Logic::writeOnceVerdict([
 check('verdict: the roles of the users who departed from the lock are asked, no other', $asked === ['cat'], $asked);
 
 // ---- the log reader ----------------------------------------------------------------
-
-/** The log as rows [id, pid, pk, event_id, ts, data_values, object_type, event, user]. */
-final class FakeHistoryLog implements ScanDb
-{
-    public $rows = [];
-    public $table = 'redcap_log_event7';
-    public $queries = 0;
-    public $fail = false;
-    public $failOn = 0;
-    public $sql = [];
-    public function select($sql, array $params = [])
-    {
-        $this->queries++;
-        $this->sql[] = $sql;
-        if ($this->fail || ($this->failOn && $this->queries === $this->failOn)) throw new \RuntimeException('down');
-        if (strpos($sql, 'FROM redcap_projects') !== false) return [[$this->table]];
-        if (strpos($sql, 'FROM ' . $this->table . ' ') === false) throw new \RuntimeException('wrong table');
-        preg_match('/LIMIT (\d+)$/', $sql, $m);
-        $limit = (int) $m[1];
-        list($pid, $pk) = $params;
-        $before = isset($params[2]) ? (int) $params[2] : PHP_INT_MAX;
-        $out = [];
-        foreach ($this->rows as $r) {
-            // the collation matches letter case loosely, as MySQL's may
-            if ($r[1] !== $pid || strtolower($r[2]) !== strtolower($pk) || $r[0] >= $before) continue;
-            if ($r[6] !== 'redcap_data' || !in_array($r[7], ['INSERT', 'UPDATE', 'DELETE'], true)) continue;
-            $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2], $r[8], $r[7]];
-        }
-        usort($out, function ($a, $b) { return (int) $b[0] - (int) $a[0]; });
-        return array_slice($out, 0, $limit);
-    }
-    public function exec($sql, array $params = []) {}
-    public function execNoCount($sql, array $params = []) {}
-    public function affected() { return 0; }
-    public function begin() {}
-    public function commit() {}
-    public function rollback() {}
-}
 
 $utc = new \DateTimeZone('UTC');
 $row = function ($id, $pk, $event, $ts, $dv, $user = 'ann', $ev = 'UPDATE', $obj = 'redcap_data', $pid = 149) {

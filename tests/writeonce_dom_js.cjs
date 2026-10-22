@@ -178,7 +178,7 @@ const DEFAULT = 'This value was saved once and is locked. It cannot be changed h
   const f = text('consent_date', '2026-03-01');
   const env = boot([f], { rules: [WO(['consent_date'])] });
   check('a locked text box is read-only', f.readOnly === true);
-  check('... with the default note under it', note(env, 'consent_date') === '\u{1F512} ' + DEFAULT || note(env, 'consent_date') === '&#128274; ' + DEFAULT,
+  check('... with the default note under it', note(env, 'consent_date') === '&#128274; ' + DEFAULT,
     note(env, 'consent_date'));
   check('... in the lock region (id ends "-o"), muted grey, not red', region(env, 'consent_date', 'o') && /#f4f4f4/.test(region(env, 'consent_date', 'o').style.cssText));
   check('... no outline or aria-invalid of its own', f.getAttribute('aria-invalid') === null && !f.style.outline);
