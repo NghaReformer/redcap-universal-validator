@@ -3635,6 +3635,7 @@ class UniversalValidator extends AbstractExternalModule
                 $unknown = ['delete' => 'the project log holds a deletion this check cannot place (part of the record, or one arm of it)',
                             'noevent' => 'the project log holds a save of this field that names no event',
                             'start' => 'the project log does not show the record being made (it was renamed, or came with a copied project), so its first saves are not read',
+                            'startrow' => 'the row of the project log that made the record could not be read plainly (its record id line comes after a Text or Notes value), so its first saves are not read',
                             'unnamed' => 'the log reader was not told to keep this field',
                             'read' => 'the project log could not be read'];
                 $why = isset($h['why'], $unknown[$h['why']]) ? $unknown[$h['why']] : $unknown['read'];
@@ -4466,7 +4467,9 @@ class UniversalValidator extends AbstractExternalModule
             $hook = ModeRegistry::hook($m['mode'], 'page');
             if ($hook !== null) $config['rules'] = $this->$hook($config['rules'], $pid, $context, $record, $instrument, $event_id, $repeat_instance);
         }
-        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: []);
+        $event = ($pid !== null && $event_id !== null) ? $this->temporalShape($pid)->event((int) $event_id) : null;
+        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: [],
+            $context, is_array($event) && isset($event['name']) && $event['name'] !== '' ? (string) $event['name'] : null);
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -5720,18 +5723,24 @@ class UniversalValidator extends AbstractExternalModule
      * A rule on a field that a lock (php/modes.json "lock") holds on this page
      * names in lockReads, for each such field, the other fields it reads that
      * the person may change here: fields of this form ($onPage, field =>
-     * true; null when the form's fields are not known) that no lock holds.
-     * The guard item keeps holding the save only once one of them has changed
-     * on the page (UV_LOCK_READS in js/engine.js): a violation saved before
-     * the page opened does not trap the form, and two locked fields that read
-     * each other hold nothing. A rule that reads no such field is not marked.
-     * A checkbox is named once per option, as "field(code)", the way the page
-     * reads it. A calc, @CALCTEXT or @CALCDATE field is named only when a
-     * field its value is worked out from may be changed here (lockReadsCalc):
-     * REDCap works it out again as the page opens, and the person cannot
-     * change it back. $dd is the data dictionary (field => metadata).
+     * true; null when the form's fields are not known) that no lock holds and
+     * that are neither fixed on the page nor written by REDCap as it starts
+     * (lockReadsFixed, which reads $context, "form" or "survey"). The guard
+     * item keeps holding the save only once one of them has changed on the
+     * page (UV_LOCK_READS in js/engine.js): a violation saved before the page
+     * opened does not trap the form, and two locked fields that read each
+     * other hold nothing. A rule that reads no such field is not marked. A
+     * checkbox is named once per option, as "field(code)", the way the page
+     * reads it. A calc, @CALCTEXT or @CALCDATE field is never named, since
+     * REDCap works it out again as the page starts: in its place come the
+     * fields it is worked out from that the person may change here, through
+     * other calcs too (lockReadsCalc, on the page's unique event name
+     * $eventName), a checkbox option by option. Those of every calc are
+     * worked out together, as the least fixpoint over what each calc reads,
+     * so a cycle of calcs gives the same answer whatever the order of the
+     * rules. $dd is the data dictionary (field => metadata).
      */
-    private static function markLockReads(array $rules, $onPage = null, array $dd = [])
+    private static function markLockReads(array $rules, $onPage = null, array $dd = [], $context = null, $eventName = null)
     {
         $locked = [];
         foreach ($rules as $r) {
@@ -5739,33 +5748,54 @@ class UniversalValidator extends AbstractExternalModule
             foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $locked[(string) $f] = true;
         }
         if (!$locked) return $rules;
-        $memo = [];
-        $changeable = function ($x) use (&$changeable, &$memo, $locked, $onPage, $dd) {
-            if (array_key_exists($x, $memo)) return $memo[$x];
-            $memo[$x] = false;   // a calc that reads itself, however far round, changes nothing
-            if (isset($locked[$x]) || (is_array($onPage) && !isset($onPage[$x]))) return false;
-            $from = self::lockReadsCalc(isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : []);
-            if ($from === null) return $memo[$x] = true;
-            foreach ($from as $y) if ($changeable($y)) return $memo[$x] = true;
-            return false;
+        $meta = function ($x) use ($dd) { return isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : []; };
+        $here = function ($x) use ($locked, $onPage) { return !isset($locked[$x]) && !(is_array($onPage) && !isset($onPage[$x])); };
+        // a field that is no calc, as the entries the page compares: field => entry => true
+        $plain = function ($x, $code) use ($here, $meta, $context) {
+            $m = $meta($x);
+            if (!$here($x) || self::lockReadsFixed($m, $context)) return [];
+            if ((isset($m['field_type']) ? $m['field_type'] : '') !== 'checkbox') return [$x => true];
+            $codes = $code !== null ? [$code] : Logic::parseChoiceCodes(isset($m['select_choices_or_calculations']) ? $m['select_choices_or_calculations'] : '');
+            $out = [];
+            foreach ($codes as $c) $out[$x . '(' . $c . ')'] = true;
+            return $out;
         };
+        // every calc the rules read, however far round: calc => [field, code] it reads
+        $calcs = [];
+        $todo = [];
+        foreach ($rules as $r) {
+            if (is_array($r) && empty($r['configError'])) foreach (ModeRegistry::refFields($r) as $x) $todo[] = (string) $x;
+        }
+        while ($todo) {
+            $x = array_pop($todo);
+            if (isset($calcs[$x])) continue;
+            $from = self::lockReadsCalc($meta($x), $eventName);
+            if ($from === null) continue;
+            $calcs[$x] = $from;
+            foreach ($from as $ref) $todo[] = $ref[0];
+        }
+        // what each calc on this page is worked out from, grown until nothing changes
+        $inputs = array_fill_keys(array_keys($calcs), []);
+        do {
+            $grew = false;
+            foreach ($calcs as $c => $from) {
+                if (!$here($c)) continue;
+                foreach ($from as $ref) {
+                    foreach (isset($calcs[$ref[0]]) ? $inputs[$ref[0]] : $plain($ref[0], $ref[1]) as $e => $_) {
+                        if (!isset($inputs[$c][$e])) { $inputs[$c][$e] = true; $grew = true; }
+                    }
+                }
+            }
+        } while ($grew);
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError']) || ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
-            $reads = array_map('strval', ModeRegistry::refFields($r));
             $others = [];
-            foreach ($reads as $x) {
-                if (!$changeable($x)) continue;
-                $meta = isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : [];
-                if ((isset($meta['field_type']) ? $meta['field_type'] : '') === 'checkbox') {
-                    $codes = Logic::parseChoiceCodes(isset($meta['select_choices_or_calculations']) ? $meta['select_choices_or_calculations'] : '');
-                    foreach ($codes as $code) $others[] = $x . '(' . $code . ')';
-                    continue;
-                }
-                $others[] = $x;
+            foreach (array_map('strval', ModeRegistry::refFields($r)) as $x) {
+                foreach (isset($calcs[$x]) ? $inputs[$x] : $plain($x, null) as $e => $_) $others[$e] = true;
             }
             $marks = [];
             foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
-                if (isset($locked[(string) $f]) && $others) $marks[(string) $f] = array_values($others);
+                if (isset($locked[(string) $f]) && $others) $marks[(string) $f] = array_keys($others);
             }
             if ($marks) $rules[$i]['lockReads'] = $marks;
         }
@@ -5773,12 +5803,35 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The fields a calc, @CALCTEXT or @CALCDATE field's value is worked out
-     * from on this event, or null for a field of any other kind. A reference
-     * that names an event ("[event][field]") reads another event's value,
-     * which no one changes on this page, so it is left out.
+     * Whether the person cannot change a field on this page, or REDCap writes
+     * it as the page starts, by its action tags: @READONLY and @HIDDEN, with
+     * their -FORM or -SURVEY variant when it matches $context ("form" or
+     * "survey"; every variant when the context is not known), @NOW and @TODAY
+     * with their -SERVER and -UTC variants, @LATITUDE, @LONGITUDE, @SETVALUE
+     * and @DEFAULT.
      */
-    private static function lockReadsCalc(array $meta)
+    private static function lockReadsFixed(array $meta, $context = null)
+    {
+        $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+        if (strpos($ann, '@') === false) return false;
+        if (preg_match('/@(?:NOW|TODAY)(?:-SERVER|-UTC)?(?![\w-])|@(?:LATITUDE|LONGITUDE|SETVALUE|DEFAULT)(?![\w-])/i', $ann)) return true;
+        preg_match_all('/@(?:READONLY|HIDDEN)(-FORM|-SURVEY)?(?![\w-])/i', $ann, $m);
+        foreach ($m[1] as $variant) {
+            if ($variant === '' || ($context !== 'form' && $context !== 'survey') || strcasecmp($variant, '-' . $context) === 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * What a calc, @CALCTEXT or @CALCDATE field's value is worked out from on
+     * this event, as [field, checkbox code or null], or null for a field of
+     * any other kind. A reference that names an event ("[event][field]")
+     * reads that event's value: "[event-name]" and this page's own unique
+     * event name ($eventName) name this event, so the field is kept; any
+     * other event's value no one changes on this page, so it is left out.
+     * The name of an "[event][field]" pair's event is no field.
+     */
+    private static function lockReadsCalc(array $meta, $eventName = null)
     {
         $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
         $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
@@ -5786,9 +5839,22 @@ class UniversalValidator extends AbstractExternalModule
         if ($type !== 'calc' && !$tagged) return null;
         $text = ($type === 'calc' && isset($meta['select_choices_or_calculations']) ? (string) $meta['select_choices_or_calculations'] : '')
               . ' ' . ($tagged ? $ann : '');
-        // a reference right after "]" is the field of an "[event][field]" pair
-        preg_match_all('/(?<!\])\[([a-z][a-z0-9_]*)(?:\([^)]*\))?\]/', $text, $m);
-        return array_keys(array_fill_keys($m[1], true));
+        preg_match_all('/\[([^\[\]]*)\]/', $text, $m, PREG_OFFSET_CAPTURE);
+        $tokens = [];   // [inside the brackets, where it starts, where it ends, field, code]
+        foreach ($m[0] as $k => $t) {
+            $f = preg_match('/^([a-z][a-z0-9_]*)(?:\(([^()]*)\))?$/D', $m[1][$k][0], $p) ? $p : null;
+            $tokens[] = [$m[1][$k][0], $t[1], $t[1] + strlen($t[0]), $f ? $f[1] : null, $f && isset($f[2]) ? $f[2] : null];
+        }
+        $out = [];
+        foreach ($tokens as $k => $t) {
+            if ($t[3] === null) continue;
+            $next = isset($tokens[$k + 1]) ? $tokens[$k + 1] : null;
+            if ($next !== null && $next[1] === $t[2] && $next[3] !== null) continue;   // the event of a pair
+            $prev = $k > 0 ? $tokens[$k - 1] : null;
+            if ($prev !== null && $prev[2] === $t[1] && $prev[0] !== 'event-name' && ($eventName === null || $prev[0] !== (string) $eventName)) continue;
+            $out[$t[3] . "\x1F" . $t[4]] = [$t[3], $t[4]];
+        }
+        return array_values($out);
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */

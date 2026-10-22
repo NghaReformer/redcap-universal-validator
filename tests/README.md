@@ -49,7 +49,7 @@ node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from t
 php  tests/writeonce_php.php      # @UVWRITEONCE verdict vs writeonce_fixture.json, and the log reader
 node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, grammar, page, audit, scan
-php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer but I4, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
@@ -552,11 +552,20 @@ inner spaces.
   record id line, read at any event, even one naming another record id; a
   history without one unknown; an UPDATE that writes the record id, and a
   record id line typed into a notes value, change nothing; "recordXid" and
-  "prev_record_id" lines not read); a save with no event that names a kept
+  "prev_record_id" lines not read), read from the row as written with the
+  module's own options, the record id field counted as a Text field: a field
+  moved since, a Notes value with a line ending in a quote and a comma, a
+  locked field at another event, and lines of fields no one types, checkbox
+  lines and an instance line before the record id line leave the start
+  trusted, while a record id line after a Text, Notes or stray line, one that
+  runs on, or one with no value is "startrow", and a newer untrusted row does
+  not outrank an older start; a save with no event that names a kept
   field, on any instance; another record of the same name in a loose
   collation, also past the cap; the cap counted per event over that event's
-  rows, deletes and rows with no event, with a history of exactly the cap read
-  in full and `MAX_ROWS_READ` rows of any kind; a
+  rows, deletes and rows with no event (each counted, another event's rows
+  not), with a history of exactly the cap read in full and `MAX_ROWS_READ`
+  rows of any kind; a whole-record `DELETE` in any letter case; log and erase
+  ids that are not digits read as unknown; a
   failed read; save times turned into the project's clock; and `parseRow` (a
   notes value over several lines, 130,000 lines in under a second, checkbox
   lines, a field written twice, a stray line, an instance line that is not the
@@ -564,8 +573,12 @@ inner spaces.
   Text or Notes value before the break). `RoleBook::read` runs
   over a mock database: both names of each role, users by lowercase name, the
   project and today bound as parameters, and a REDCap with no unique role
-  names, and role names kept as `Logic::roleKey` (letter case in any alphabet,
-  spaces folded, a no-break space at either end trimmed). The SQL of both runs
+  names, usernames stored with spaces trimmed, and role names kept as
+  `Logic::roleKey` (letter case folded in full, so "STRASSE" matches "Straße";
+  spaces folded; a no-break space at either end trimmed; a zero-width space,
+  a byte order mark and a word joiner dropped; a name with combining accents
+  matching its composed form where PHP's intl extension is loaded, a check the
+  suite skips with a note otherwise). The SQL of both runs
   on a real server in `tests/mysql/cases/history.php`, with two erases, rows
   that are no erase (a record "730 " or "７３０", one form of a record "730",
   another object type, one that names an event), the record's start through
@@ -586,7 +599,13 @@ inner spaces.
   and for every mode, while a field REDCap made read-only (`@READONLY`) or
   disabled still never holds it; a violation saved before the page opened and
   two locked fields that read each other never hold it, also with the engine
-  loaded before the form, as REDCap prints it; a checkbox read option by
+  loaded before the form, as REDCap prints it; the opening values taken after
+  REDCap's start-up, on a stub with timers and a jQuery whose ready callbacks
+  run in a timer after the DOMContentLoaded listeners, as jQuery 3 runs them:
+  a value REDCap writes in a ready callback, in a timer started there, or in a
+  DOMContentLoaded listener added before the engine is no change, while a
+  later change still holds the save, and nothing is compared before the
+  values are taken; a checkbox read option by
   option; a read field the page does not carry is never compared; the lock
   leaves an
   embedded field's enhanced choices, reset link and Today button alone; the
@@ -606,14 +625,22 @@ inner spaces.
   none, roles that cannot be read lock every rule that names roles and say so,
   never on a new record, not before "since", roles and "since" kept off the
   page, `lockReads` naming only fields of the form that are not locked, a
-  checkbox once per option, and a calc only when a field it is worked out
-  from may be changed there, through other calcs too, saved
+  checkbox once per option, a calc, `@CALCTEXT` or `@CALCDATE` field replaced
+  by the fields it is worked out from that may be changed there, through
+  other calcs too (a checkbox option a calc reads named alone, a calc of
+  another form naming nothing, a cycle of calcs giving the same answer in
+  either rule order), `[event-name][f]` and the page's own event name read as
+  this event while another event's field is left out, and a field with
+  `@READONLY` or `@HIDDEN` (per page, every variant when the page is not
+  known), `@NOW`, `@TODAY` (with `-SERVER` and `-UTC`), `@LATITUDE`,
+  `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never named, saved
   values that cannot be read flagged, the saved code sent for dropdown and SQL
   fields); what the log reader is told of the project (the data dictionary's
   order, its Text and Notes fields, the record id field, one arm or several);
   the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
   saved over a locked value, "since", the lock times kept whatever the log
-  mode, and each rule problem, with the reason a history could not be read);
+  mode, and each rule problem, with the reason a history could not be read,
+  a creating row out of order included);
   and the scan with its labels and detail line.
 - `writeonce_live_twin_php.php` runs the module over the live fixture on a copy
   of pid 149's events with a copy of REDCap's log that gains the row of each
@@ -622,19 +649,30 @@ inner spaces.
   for word (and the survey's general wording), which fields each page locks,
   each log entry of each save in order, the Data Import Tool change found by
   the scan and the next save, and the roles read as they are when the audit
-  or scan runs. It writes the page configs to `writeonce_live_pages.json`.
+  or scan runs. For section I, whose steps read what REDCap itself logs, it
+  checks the module's answer for the log each step expects and for the other
+  log the step tells the tester to record (I0, I0b, I1, I2, I3, I3b, I5, I5b,
+  I6, I7, and the three wordings of H4). It does not cover I4, since the
+  fixture holds no SQL field, nor what REDCap actually writes: that is what
+  the live run checks. It writes the page configs to
+  `writeonce_live_pages.json`.
 - `writeonce_live_twin_js.cjs` boots `js/engine.js` with those configs on a
   page shaped as REDCap renders the fixture's field types (a date box with its
   picker, radio buttons with their mirror and "reset" link, a dropdown with its
   autocomplete box, a notes box, a slider), and checks each lock, each note,
   each undone change and each save. A refused tag on a dropdown shows its
-  error under the field.
-- `writeonce_mutations.py` applies 190 mutations to a copy of the code, one at a
+  error under the field. B7, and a second run of B6, load the engine above
+  the form while the page is still loading, as REDCap prints it, with
+  jQuery's ready callbacks run in a timer.
+- `writeonce_mutations.py` applies 236 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Twelve mutate
   the SQL (three the role book's, six the erase search, three the search for
   the record's start) and are killed only by
   `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
-  variables name a server, and are reported as skipped otherwise.
+  variables name a server, and are reported as skipped otherwise. The one
+  that drops the composed form of role names runs only where PHP loads the
+  intl extension (the script passes `-d extension=intl` when PHP has it but
+  has not loaded it), and is reported as skipped otherwise.
 
 ## `growth_*` — growth references (z-scores)
 

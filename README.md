@@ -1067,8 +1067,12 @@ first save of a value and locks it from then on:
   locks nothing, so a field marked "unknown" can still be filled in later.
 - **Roles.** `roles` names the user roles whose members may still change or
   clear the value, by the name the User Rights page shows or by the unique
-  role name, up to 20. Letter case does not matter in any alphabet, and a run
-  of spaces counts as one. Each must be a role of the project.
+  role name, up to 20. Letter case does not matter in any alphabet ("STRASSE"
+  matches "Straße"), invisible format characters such as a zero-width space
+  are ignored, and a run of spaces counts as one. With PHP's intl extension a
+  name typed with combining accents also matches one typed with composed
+  letters; without intl the two spellings differ. Each must be a role of the
+  project.
   A member's change moves the lock to the new value, and clearing it releases
   the lock. A user whose rights in the project have expired, or whose account
   is suspended, holds no role. An administrator who is not a user of the
@@ -1105,12 +1109,17 @@ first save of a value and locks it from then on:
   role could not be checked. When the saved value cannot be read the field is
   not locked; staff see a note saying so, and the audit still checks a change.
   Another rule on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked (a calc counts
-  only when a field it is worked out from is such a field), and only once that
-  field has been changed on the page, a checkbox option by option. The value
-  each field opened with is read once the form exists. So a violation already
-  saved when the page opened, or one between two locked fields, never holds
-  it, whether the person clicks Save or presses Enter. A person's own
+  when it also reads a field of this form that the person can change, and
+  only once that field has been changed on the page, a checkbox option by
+  option. A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the
+  fields it is worked out from, through other calcs too. A field with
+  `@READONLY` or `@HIDDEN` (or the `-FORM` or `-SURVEY` form that applies to
+  the page), `@NOW`, `@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or
+  `@DEFAULT` never counts. The value each field opened with is read after
+  REDCap's own start-up on the page, once its calcs, branching and action tags
+  have filled their fields. So a violation already saved when the page opened,
+  or one between two locked fields, never holds it, whether the person clicks
+  Save or presses Enter. A person's own
   first answer is locked as soon as it is saved, so after Save & Stay, or Next
   on a multi-page survey, going back finds it locked. The roles and `since`
   never reach the page.
@@ -1122,7 +1131,9 @@ first save of a value and locks it from then on:
   as "Changed after it was locked" or "Cleared after it was locked" and names
   when the value was locked. Each record and event is read on its own, back to
   the row REDCap writes when it makes the record, which names the record id
-  field. A deletion of the whole record starts a new history, and so does an
+  field. That row is read as REDCap wrote it, and it counts only when its
+  record id line comes before every other Text or Notes value in it, since a
+  Notes value could hold a typed copy of that line. A deletion of the whole record starts a new history, and so does an
   erase of all the project's records (Erase all data, or deleting every record
   when the project moves to production): every history starts after the
   newest one. A deletion of one form or one event at another event changes
@@ -1134,7 +1145,8 @@ first save of a value and locks it from then on:
   deletion of the record, since the check cannot tell what it removed; a
   record whose log does not show it being made (one renamed while its saves
   stay logged under the old name, or one that came with a copied project); a
-  save the log names no event for; a save the log
+  record whose creating row has its record id line after a Text or Notes
+  value; a save the log names no event for; a save the log
   does not spell out; a value the log never shows saved; and roles that cannot
   be read when a change needs them. The log lists a save's fields in the data
   dictionary's order. A Notes value typed to look like the log line of another
@@ -1152,7 +1164,13 @@ first save of a value and locks it from then on:
   save of another value is reported as a change. A person with no role could
   reach the same lock by saving that value first, so the line gives no one a
   value they could not have saved; the finding falls on whoever saved next,
-  and the forged row stays in the log. The tag takes no `when`,
+  and the forged row stays in the log. Renaming a locked field after it holds
+  data restarts its history when REDCap's log keeps the earlier saves under
+  the old name. The page lock still holds the saved value, and the audit
+  reports the field as a rule problem until a save is logged under the new
+  name. An import or API change made after the rename, before any save of the
+  field is logged under the new name, is read as the field's first save and
+  is not caught. The tag takes no `when`,
   `caseSensitive` or `blockSave`. Configure via field annotation only.
 
 ## The Validation scan — checking data that is already saved
@@ -1473,7 +1491,7 @@ python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named 
 php  tests/writeonce_php.php      # @UVWRITEONCE verdict and the log reader vs writeonce_fixture.json
 node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, scan
-php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer but I4, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
 python3 tests/writeonce_mutations.py   # @UVWRITEONCE: every mutation must make a named suite fail
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes

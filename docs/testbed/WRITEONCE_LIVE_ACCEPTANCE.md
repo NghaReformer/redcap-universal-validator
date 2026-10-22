@@ -7,10 +7,11 @@ checks the real date picker, radio buttons, dropdown, notes box and slider,
 the real project log as the lock's source, a Data Import Tool change the page
 never sees (on a visit and on a whole repeating event), user roles, a
 multi-page survey, a deletion of a form's data, the module log and the
-Validation scan. Section I checks what REDCap writes to its log on an import
-with its columns out of order, a form with an embedded field, a renamed
-record, an SQL field and an erase of all records, which the module's reading
-of the log assumes.
+Validation scan. Section I checks what REDCap writes to its log when it makes
+a record, on an import with its columns out of order, a form with an embedded
+field, a renamed record, an SQL field, an erase of all records, the
+production move's deletion of all records, a deletion of one repeating
+instance and a renamed field, which the module's reading of the log assumes.
 
 Target: chpr-redcap.org pid 149 (longitudinal, seed records XE-1 to XE-4). The
 fixture is [`uvwriteonce_test_fields.csv`](uvwriteonce_test_fields.csv), 13
@@ -33,9 +34,11 @@ checks each configuration error word for word, which fields each page locks,
 each log entry each save writes, and the scan. `tests/writeonce_live_twin_js.cjs` replays the clicks through
 `js/engine.js` with the page configs the module built
 (`tests/writeonce_live_pages.json`) on a page shaped as REDCap renders these
-field types, and checks each lock, each note and each save. Section I is
-not in the twin: its steps read what REDCap itself logs, and each says what
-to record when REDCap logs it another way. Both twins run in CI; run them
+field types, and checks each lock, each note and each save. Section I's
+steps read what REDCap itself logs, and each says what to record when REDCap
+logs it another way. The PHP twin checks the module's answer for the log each
+step expects and, where the step names another, for that one too. I4 is not
+in it, since the fixture holds no SQL field. Both twins run in CI; run them
 after any change to the module, the engine or this sheet:
 
 ```bash
@@ -66,9 +69,12 @@ php tests/writeonce_live_twin_php.php && node tests/writeonce_live_twin_js.cjs
   starts every history again (section I). A deletion of this event's data, or
   of an arm, makes the field "not checked" from then on, since the check
   cannot tell what it removed; REDCap never trims its log, so this lasts.
-  Section H shows it. A deletion of another event's data changes nothing here.
-  A renamed record is "not checked" too, because REDCap logs its earlier saves
-  under the old name (section I).
+  Section H shows it. A deletion of one form or one event at another event
+  changes nothing here; one the log describes in other words makes every
+  event "not checked" (H4, I6). A renamed record is "not checked" when REDCap
+  keeps its earlier saves under the old name, and reads as before when REDCap
+  moves them to the new name (I3 records which). A renamed field starts its
+  history again (I7).
 
 ---
 
@@ -107,6 +113,8 @@ scan give the lock times to the minute, in the project's time zone. The twin
 uses 2026-10-23 09:00 for B1, 09:05 for B3, 09:10 for B5, 09:11 for B6,
 09:12 for B7, 09:13 for B7b, 09:20 for C1, 09:30 for D2, 09:40
 for E1, 09:50 for E2, 10:00 for G2, 10:05 for G4, 10:10 for H1 and 10:15 for H2.
+Section I's steps each run on their own copy of the log in the twin, from
+10:20 on.
 
 ---
 
@@ -203,9 +211,11 @@ role name never reaches a respondent.
 
 Two cases are not run live. A deletion of the whole record starts a new
 history, and pid 149's seed records are kept. In a project of several arms
-every deletion makes the field "not checked", because REDCap can delete a
-record from one arm only, and pid 149 has one arm. `tests/writeonce_php.php`
-and `tests/mysql/cases/history.php` cover both.
+every deletion of the whole record makes the field "not checked", because
+REDCap can delete a record from one arm only; a deletion of one form or one
+event at another event is still passed over, as in a project of one arm.
+pid 149 has one arm. `tests/writeonce_php.php` and
+`tests/mysql/cases/history.php` cover both.
 
 ## Section I: what REDCap writes to its log
 
@@ -217,13 +227,17 @@ holds no role, as after D4.
 
 | # | Action | Expect |
 |---|---|---|
-| I0 | The row that made a record. On the Logging page, filter on record XE-3 and read its oldest row, the seed import that made it | The row lists `record_id = 'XE-3'`. The audit reads a history only back to such a row. If the row has no `record_id` line, every locked field reads as not checked ("the project log does not show the record being made"): record the row |
-| I1 | An import with its columns out of order. Open XE-1 at `visit_1_arm_1`: `uw_consent` = 2026-10-07, `uw_notes` = "first". Save. Data Import Tool, CSV with the columns `uw_notes,uw_consent,redcap_event_name,record_id` (reversed) and the row `second,2026-10-08,visit_1_arm_1,XE-1`. Import. On the Logging page, filter on record XE-1 and read the import's row. Run the scan | The row lists `uw_consent` before `uw_notes`, the data dictionary's order. The scan has two findings for XE-1: `uw_consent` and `uw_notes`, "Changed after it was locked", locked at I1's save. If the row lists `uw_notes` first, both fields are listed as not checked, "the project log does not say plainly what one save of it wrote": record the row, since the order check then has to change |
+| I0 | The row that made a record. On the Logging page, filter on record XE-3 and read its oldest row, the seed import that made it. Compare the order of its lines with the data dictionary | The row lists `record_id = 'XE-3'` first, and its other lines in the data dictionary's order. The audit reads a history only back to such a row. If the row has no `record_id` line, every locked field reads as not checked ("the project log does not show the record being made"). If its `record_id` line comes after the line of a Text or Notes field, every locked field reads as not checked ("the row of the project log that made the record could not be read plainly"). If another line is out of the dictionary's order, the record is still read, and the fields that row wrote read as not checked ("the project log does not say plainly what one save of it wrote"). In each of these cases record the row |
+| I0b | A record made from a form with an embedded field. In the Online Designer, add ` {uw_free}` at the end of `uw_consent`'s label. Add record XE-E and open it at `visit_1_arm_1`: `uw_consent` = 2026-10-07, `uw_notes` = "n", `uw_free` = e. Save. On the Logging page, read the row that made XE-E. Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-E,visit_1_arm_1,2026-10-08`. Import, then run the scan. Remove ` {uw_free}` from the label | The row lists `record_id` first, then `uw_consent`, `uw_notes` and `uw_free` in the data dictionary's order. The scan has one finding for XE-E: `uw_consent` "Changed after it was locked", locked at I0b's save. If the row lists `uw_free` straight after `uw_consent`, the record is still read from that row and `uw_consent` is listed as not checked with the reason of I1. If `record_id` comes after the line of a Text or Notes field, `uw_consent` reads "the row of the project log that made the record could not be read plainly". In either case record the row |
+| I1 | An import with its columns out of order. Open XE-1 at `visit_1_arm_1`: `uw_consent` = 2026-10-07, `uw_notes` = "first". Save. Data Import Tool, CSV with the columns `uw_notes,uw_consent,redcap_event_name,record_id` (reversed) and the row `second,2026-10-08,visit_1_arm_1,XE-1`. Import. On the Logging page, filter on record XE-1 and read the import's row. Run the scan | The row lists `uw_consent` before `uw_notes`, the data dictionary's order. The scan has two findings for XE-1: `uw_consent` and `uw_notes`, "Changed after it was locked", locked at I1's save. If the row lists `uw_notes` first, there is no finding and `uw_consent` is listed as not checked, "the project log does not say plainly what one save of it wrote" (the scan names a rule's fields once per reason): record the row, since the order check then has to change |
 | I2 | A form with an embedded field. In the Online Designer, add ` {uw_free}` at the end of `uw_consent`'s label. Open XE-2 at `visit_1_arm_1`: `uw_free` shows inside `uw_consent`'s row. `uw_consent` = 2026-10-07, `uw_notes` = "n", `uw_free` = e. Save. Read XE-2's row on the Logging page. Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-2,visit_1_arm_1,2026-10-08`. Import, then run the scan. Remove ` {uw_free}` from the label | The row lists `uw_free` after `uw_notes`. The scan has one finding for XE-2: `uw_consent` "Changed after it was locked". If the row lists `uw_free` straight after `uw_consent`, `uw_consent` is listed as not checked with the reason of I1: record the row |
 | I3 | A renamed record. Add record XE-R1, open it at `visit_1_arm_1`, `uw_consent` = 2026-10-07. Save. On the Record Home Page, rename the record to XE-R2. Read the rows the rename wrote on the Logging page, and filter on XE-R2 to see which rows now carry the new name. Open XE-R2's form and save it without changing anything | `uw_consent` is locked at 2026-10-07. No `type: writeonce` entry. Then one of two. (a) REDCap keeps the old rows under XE-R1: a rule-problem entry for `uw_consent` reads "the project log does not show the record being made (it was renamed, or came with a copied project), so its first saves are not read — field not checked". (b) REDCap moved the old rows to XE-R2, so XE-R2's oldest row is the one that made XE-R1: no rule-problem entry. Record which, with the rename rows |
 | I3b | Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-R2,visit_1_arm_1,2026-10-08`. Import, then run the scan | In case (a), XE-R2's `uw_consent` is listed as not checked with the reason of I3. In case (b), it has one finding, "Changed after it was locked", locked at I3's save. A result with no finding and no reason means a change after a rename passed; record it as a defect |
 | I4 | Only an administrator can add an SQL field; skip this step otherwise. In the Online Designer, add a field `uw_sql` of type "Dynamic Query (SQL)" with the query `select 1, 'One' union all select 2, 'Two'` and the annotation `@UVWRITEONCE`. Open XE-1, `uw_sql` = Two. Save. Change the query to `select 1, 'One'`. Reopen XE-1, then Save | Reopened, `uw_sql` shows the saved code 2 as its own choice, locked, with the lock note. The record saves with 2 and no `type: writeonce` entry; a `cleared` entry means the form posted the field blank. Then delete `uw_sql` |
-| I5 | An erase of all records, on a copy of the project only, never on pid 149. Copy pid 149 without its records (Other Functionality, "Copy the project"), enable the module in the copy, and give the tester the rights of Setup 5. In the copy, add record XE-1, `uw_consent` = 2026-10-07 at `visit_1_arm_1`. Save. Other Functionality, "Erase all data". Read the rows the erase wrote on the Logging page. Add record XE-1 again, `uw_consent` = 2026-10-08. Save. Reopen. Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-1,visit_1_arm_1,2026-10-09`. Import, then save the form | The erase writes one row for the project, with no record named. The save after the erase writes no `type: writeonce` entry, because the save of 2026-10-07 no longer counts. Reopened, `uw_consent` is locked at 2026-10-08. The last save writes one entry, `uw_consent` reason `changed`, `locked_at` the second save's time. If the erase writes one row per record instead, or the save after it writes a `changed` entry, record the rows. Then delete the copy |
+| I5 | An erase of all records, on a copy of the project only, never on pid 149. Copy pid 149 without its records (Other Functionality, "Copy the project"), enable the module in the copy, and give the tester the rights of Setup 5. In the copy, add record XE-1, `uw_consent` = 2026-10-07 at `visit_1_arm_1`. Save. Other Functionality, "Erase all data". Read the rows the erase wrote on the Logging page. Add record XE-1 again, `uw_consent` = 2026-10-08. Save. Reopen. Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-1,visit_1_arm_1,2026-10-09`. Import, then save the form | The erase writes one row for the project, with no record named. The save after the erase writes no `type: writeonce` entry, because the save of 2026-10-07 no longer counts. Reopened, `uw_consent` is locked at 2026-10-08. The last save writes one entry, `uw_consent` reason `changed`, `locked_at` the second save's time. If the erase writes one row per record instead, or the save after it writes a `changed` entry, record the rows. Keep the copy for I5b |
+| I5b | The production move's deletion of all records, on I5's copy only, never on pid 149. Skip this step if an administrator has to approve the move and cannot. In the copy, add record XE-2, `uw_consent` = 2026-10-07 at `visit_1_arm_1`. Save. Project Setup, "Move project to production", and choose to delete all records. Read the rows the move wrote on the Logging page. Add record XE-2 again, `uw_consent` = 2026-10-08. Save. Reopen. Data Import Tool, CSV `record_id,redcap_event_name,uw_consent` with the row `XE-2,visit_1_arm_1,2026-10-09`. Import, then save the form | The move writes one row for the project with no event and no record named, as I5, or one "Delete record" row per record; either starts every history again. The save after the move writes no `type: writeonce` entry. Reopened, `uw_consent` is locked at 2026-10-08. The last save writes one entry, `uw_consent` reason `changed`, `locked_at` the second save's time. If the move writes its rows another way (a project row naming an event, or one whose description starts "Delete record" or "Delete all record data for single"), or the save after it writes a `changed` entry, record the rows. Then delete the copy |
+| I6 | One repeating instance deleted at another event. Open XE-3 at `unscheduled_arm_1` instance 2 (made in E2) and delete its data ("Delete data for THIS FORM only"). Confirm. On the Logging page, read the row the deletion wrote. Run the scan | The description is one of H4's three wordings. The scan keeps XE-3's four findings at visit 1 (those of D4: `uw_arm`, `uw_consent`, `uw_notes` and `uw_site`). XE-3's `uw_consent` at `unscheduled_arm_1` is listed as not checked, "the project log holds a deletion this check cannot place", because the deletion is of that event's own data; E2's finding there is no longer listed. If the description adds more, such as the instance number, every event of XE-3 is listed as not checked, the four findings at visit 1 included: record the description, since the wordings that are passed over then have to change |
+| I7 | A renamed field. In the Online Designer, add a Text field `uw_ren` with the annotation `@UVWRITEONCE` to `uv_writeonce_test`. Open XE-1 at `visit_1_arm_1`, `uw_ren` = a. Save. Rename the field to `uw_ren2` (in production, through draft mode). On the Logging page, read what the rename wrote, and filter on XE-1 to see whether the earlier save now shows `uw_ren2`. Open XE-1's form and save it without changing anything. Data Import Tool, CSV `record_id,redcap_event_name,uw_ren2` with the row `XE-1,visit_1_arm_1,b`. Import, then run the scan. Then delete `uw_ren2` | `uw_ren2` opens locked at "a" (if it opens blank, REDCap did not carry the value to the new name: record that and skip the rest). Then one of two. (a) The log keeps the earlier save under `uw_ren`: the save writes no `type: writeonce` entry for `uw_ren2` and a rule-problem entry for it, "the project log does not show the save of the value it holds — field not checked". After the import the scan has no finding and no reason for `uw_ren2`: the import is read as its first save, the limit the README states. (b) The log shows the earlier save as `uw_ren2`: no rule-problem entry for it, and the scan has one finding for `uw_ren2`, "Changed after it was locked". Record which, with the rows the rename wrote |
 
 ---
 
@@ -232,6 +246,7 @@ holds no role, as after D4.
 Copy these tables into `reports/deploy/LIVE_TEST_<version>_writeonce.md` with
 a column for what was seen, and note the REDCap version, the browser, the save
 times and every difference from "Expect". Then, with the project owner's
-agreement, delete the role "UV Data manager", the record XE-R2 of I3 and
-the instrument `uv_writeonce_test` (with it, its survey settings and the data
-XE-1 to XE-4 hold on it), and the copy of I5 if it is still there.
+agreement, delete the role "UV Data manager", the records XE-E of I0b and
+XE-R2 of I3, the field `uw_ren2` of I7 if it is still there, and the
+instrument `uv_writeonce_test` (with it, its survey settings and the data
+XE-1 to XE-4 hold on it), and the copy of I5 and I5b if it is still there.

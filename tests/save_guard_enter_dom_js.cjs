@@ -338,24 +338,35 @@ const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[hei
     && locked.value === '2026-03-01');
   check('8 no alert for a value put back', env.win._alerts.length === 0);
 }
+// The values the other fields opened with are taken in a timer, after REDCap's start-up (review W4-2),
+// so each page is booted, left to start, and checked before the next one is booted, once the timers
+// of the checks above have run (an alert goes to the window of the page booted last).
+const earlier = pending.slice();
+pending.push((async () => {
+await Promise.all(earlier);
 for (const order of ['lock first', 'lock last']) {
   const weight = textField('weight', '70'), height = textField('height', '50');
   const env = boot([weight, height], { rules: order === 'lock first' ? [WO(['weight']), HEAVIER] : [HEAVIER, WO(['weight'])] });
   const btn = saveButton('submit-btn-saverecord');
-  check('8 ' + order + ': a violation saved before the page opened does not hold Enter',
-    pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 1);
-  height.value = '40';
-  height.fire('change');
-  const r = pressEnter(env, height, btn);
-  check('8 ' + order + ': Enter is held once the other field changed and still breaks the rule',
-    r === false && env.calls.length === 1);
-  check('8 ' + order + ': the alert names the locked field',
-    env.win._alerts.length === 1 && /weight/.test(env.win._alerts[0]));
-  height.value = '50';
-  height.fire('change');
-  check('8 ' + order + ': the other field put back as it was lets Enter through again',
-    pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  global.document = env.doc; global.window = env.win;
+  {
+    check('8 ' + order + ': a violation saved before the page opened does not hold Enter',
+      pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 1);
+    height.value = '40';
+    height.fire('change');
+    const r = pressEnter(env, height, btn);
+    check('8 ' + order + ': Enter is held once the other field changed and still breaks the rule',
+      r === false && env.calls.length === 1);
+    check('8 ' + order + ': the alert names the locked field',
+      env.win._alerts.length === 1 && /weight/.test(env.win._alerts[0]));
+    height.value = '50';
+    height.fire('change');
+    check('8 ' + order + ': the other field put back as it was lets Enter through again',
+      pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 2);
+  }
 }
+})());
 
 Promise.all(pending).then(() => {
   console.log((fail ? 'FAIL' : 'OK') + ': save guard in front of dataEntrySubmit (' + (n - fail) + '/' + n + ' checks)');

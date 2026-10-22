@@ -49,8 +49,13 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * old name, or it came with a copied project and has no log before the copy,
  * or an erase was placed after its creation. An UPDATE that writes the
  * record id field, as the first save of a record at another event may, is no
- * rename. A line for the record id field typed into a free-text value is not
- * plain (parseRow), so it counts for nothing.
+ * rename. The start is read from the row as written (startOf), not through
+ * parseRow, so a field moved in the data dictionary since the record was
+ * made, or a Notes value later in the row, does not hide it. A typed value
+ * only adds lines after its own field's line, so the record id line counts
+ * when it comes before every line of a Text or Notes field other than the
+ * record id field itself; a row whose only record id line comes after one
+ * may hold a typed copy of it, and its history is "unknown" ("startrow").
  *
  * A ROW WITH NO EVENT that names a kept field makes the history "unknown"
  * too: it may hold the first save, and it cannot be placed.
@@ -106,7 +111,7 @@ final class ValueHistory
     private $saves = [];
     /** history key => true, in the order the histories were first read */
     private $kept = [];
-    /** history key => why it is "unknown": read (the log could not be read), delete, noevent, start */
+    /** history key => why it is "unknown": read (the log could not be read), delete, noevent, start, startrow */
     private $why = [];
 
     private function __construct(ScanDb $db, $pid, $table, array $fields, \DateTimeZone $logZone, \DateTimeZone $clockZone, array $opts)
@@ -153,8 +158,8 @@ final class ValueHistory
      *   "unknown" when the log could not be read, holds a DELETE the reader
      *   cannot place or a row with no event that names a kept field, or the
      *   field was not named when the reader was made, or the log does not
-     *   hold the record's start. "why" says which: read, delete, noevent,
-     *   unnamed or start.
+     *   hold the record's start, or holds it only after a typed value. "why"
+     *   says which: read, delete, noevent, unnamed, start or startrow.
      *   saves is empty unless the state is "read". value is null for a value
      *   the log does not say plainly (parseRow); at is ts as 'Y-m-d H:i:s' in
      *   the clock zone, or null when ts is not a time.
@@ -281,7 +286,8 @@ final class ValueHistory
      * neither one form nor one event, and at any whole-record DELETE in a
      * project of several arms; "noevent" at a row with no event that names a
      * kept field, which the reader cannot place. $started turns true at the
-     * record's start (THE START OF A RECORD).
+     * record's start, and false at an INSERT whose record id line may have
+     * been typed, unless a start was met (THE START OF A RECORD).
      */
     private function take($key, $record, $eventId, array $row, &$started)
     {
@@ -295,11 +301,11 @@ final class ValueHistory
             if ($event !== null && $event !== $eventId && !$whole && self::partDelete($row)) return null;
             return !$this->multiArm && $whole ? 'read' : 'delete';
         }
-        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText);
-        // a line parseRow does not trust is null, so a typed one counts for nothing
-        if ($verb === 'INSERT' && $this->idField !== null) {
-            foreach ($parsed as $values) if (isset($values[$this->idField])) $started = true;
+        if ($verb === 'INSERT' && $this->idField !== null && $started !== true) {
+            $start = $this->startOf(isset($row[3]) ? $row[3] : '');
+            if ($start !== null) $started = $start;
         }
+        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText);
         if ($event === null) {
             foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) return 'noevent';
             return null;
@@ -324,13 +330,53 @@ final class ValueHistory
         return (string) (int) $row[2] === $eventId;
     }
 
-    /** "read", or "unknown" ("start") when the reader knows the record id field and met no start. */
+    /**
+     * "read", or "unknown" when the reader knows the record id field and met
+     * no start: "startrow" when it met an INSERT whose record id line may
+     * have been typed ($started false), "start" when it met none (null).
+     */
     private function started($key, $started)
     {
-        if ($this->idField === null || $started) return 'read';
+        if ($this->idField === null || $started === true) return 'read';
         $this->saves[$key] = [];
-        $this->why[$key] = 'start';
+        $this->why[$key] = $started === false ? 'startrow' : 'start';
         return 'unknown';
+    }
+
+    /**
+     * Whether an INSERT row's data_values holds the record's start, read from
+     * the lines as written: true when a line "<record id field> = '<value>'"
+     * that ends the value (with "'," or at the row's end) comes before any
+     * line of a Text or Notes field other than the record id field
+     * ($freeText; every field when none was given). An "[instance = N]"
+     * first line, checkbox lines and lines of other fields that end their
+     * value may come before it. False when the row's only record id line
+     * comes after such a line, a line of no known shape or a value that runs
+     * on, where a typed value may have written it; null when it has none.
+     */
+    private function startOf($text)
+    {
+        if (!is_string($text) || $text === '') return null;
+        $lines = preg_split('/\r?\n/', $text);
+        $last = count($lines) - 1;
+        $head = $this->idField . " = '";
+        $plain = true;    // no line a person may have typed so far
+        $seen = false;
+        foreach ($lines as $i => $line) {
+            if ($i === 0 && preg_match('/^\[instance = \d+\],?$/D', $line)) continue;
+            $ends = substr($line, $i === $last ? -1 : -2) === ($i === $last ? "'" : "',");
+            if (strncmp($line, $head, strlen($head)) === 0) {
+                if ($plain && $ends && strlen($line) >= strlen($head) + ($i === $last ? 1 : 2)) return true;
+                $seen = true;
+                $plain = false;
+                continue;
+            }
+            if (!$plain) continue;
+            if (preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)) continue;
+            if ($ends && preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m) && $this->freeText && !isset($this->freeText[$m[1]])) continue;
+            $plain = false;
+        }
+        return $seen ? false : null;
     }
 
     /** Read the log of one record and event, newest first, into $saves. Returns its state. */
@@ -342,7 +388,7 @@ final class ValueHistory
         $rows = 0;
         $fetched = 0;
         $any = false;
-        $started = false;
+        $started = null;
         while (true) {
             try {
                 $page = $this->page($record, $eventId, $cursor, self::PAGE);

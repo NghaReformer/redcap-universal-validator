@@ -374,6 +374,7 @@ namespace {
     foreach (['delete' => 'holds a deletion this check cannot place (part of the record, or one arm of it)', 'noevent' => 'holds a save of this field that names no event',
               'unnamed' => 'the log reader was not told to keep this field', 'read' => 'the project log could not be read',
               'start' => 'the project log does not show the record being made (it was renamed, or came with a copied project), so its first saves are not read',
+              'startrow' => 'the row of the project log that made the record could not be read plainly (its record id line comes after a Text or Notes value), so its first saves are not read',
               'rename' => 'the project log could not be read',
               'other' => 'the project log could not be read'] as $why => $says) {
         $unk = new class($why) {
@@ -398,6 +399,42 @@ namespace {
     $m = mod($DICT, ['2' => [351 => array_merge($ROW, ['consent_date' => '', 'arm' => '', 'site' => '', 'notes_w' => '', 'pain' => ''])]], 'nurse', $none);
     $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('audit: a record the log has no row for, with nothing saved, is no finding and no problem', !woBy($m) && !problems($m, 'consent_date'));
+
+    // The row that made the record, written before a field was moved (review W4-1): the reader is told what the
+    // module tells it (every Text field free text, the record id field included). The record stays started: only
+    // that row's values are not plain, and a field first saved later is judged.
+    $asModule = function ($m, array $rows) use ($FIELDS) {
+        $db = new FakeHistoryLog();
+        foreach ($rows as $r) $db->rows[] = [$r[0], PID, $r[1], $r[2], $r[3], $r[4], 'redcap_data', isset($r[6]) ? $r[6] : 'UPDATE', $r[5]];
+        $o = new \ReflectionMethod(get_class($m), 'valueHistoryOptions');
+        $o->setAccessible(true);
+        $utc = new \DateTimeZone('UTC');
+        setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, PID, $FIELDS, $utc, $utc, $o->invoke($m, PID)));
+        return $m;
+    };
+    $MOVED = [
+        [1, '2', 351, '20261001090000', "record_id = '2',\narm = '1',\nconsent_date = '2026-03-01'", 'nurse', 'INSERT'],
+        [2, '2', 351, '20261002090000', "notes_w = 'a note',\npain = '40'", 'nurse'],
+        [3, '2', 351, '20261003090000', "consent_date = '2026-04-01',\nnotes_w = ''", 'nurse'],
+    ];
+    $NOWM = ['2' => [351 => array_merge($ROW, ['consent_date' => '2026-04-01', 'arm' => '1', 'notes_w' => '', 'pain' => '40'])]];
+    $m = $asModule(mod($DICT, $NOWM), $MOVED);
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $all = [];
+    foreach (findings($m, 'uvalidate-unconfigurable') as $e) $all[] = (string) $e['why'];
+    check('audit (module options): a creating row out of today\'s dictionary order still starts the record (got ' . json_encode(array_keys(woBy($m))) . ' / ' . json_encode($all) . ')',
+        (woBy($m)['notes_w']['reason'] ?? null) === 'cleared' && !preg_grep('/record being made|record could not be read plainly/', $all));
+    check('... and the fields that row saved are rule problems, "not plain"', strpos(implode(' ', problems($m, 'consent_date')), 'does not say plainly') !== false
+        && strpos(implode(' ', problems($m, 'arm')), 'does not say plainly') !== false && !problems($m, 'pain'));
+    $TYPED = [
+        [1, '2', 351, '20261001090000', "consent_date = '2026-03-01',\nrecord_id = '2'", 'nurse', 'INSERT'],
+        [2, '2', 351, '20261003090000', "consent_date = '2026-04-01'", 'nurse'],
+    ];
+    $m = $asModule(mod($DICT, $NOWM), $TYPED);
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('audit (module options): a creating row whose record id line follows a Text value: every field not checked, saying so (got ' . json_encode(problems($m, 'consent_date')) . ')',
+        !woBy($m) && strpos(implode(' ', problems($m, 'consent_date')), 'the row of the project log that made the record could not be read plainly') !== false
+        && strpos(implode(' ', problems($m, 'pain')), 'could not be read plainly') !== false);
 
     // ============================================================================
     // The scan
@@ -455,8 +492,31 @@ namespace {
         'bmi_e'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[event_1_arm_1][ht]+1'],
         'txt_c'     => f('enrol_form', '@CALCTEXT(if([wt2]>10, "big", "small"))'),
         'lcalc'     => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lcalc]<[bmi_l] or [lcalc]<[bmi_o] or [lcalc]<[bmi_n] or [lcalc]<[bmi_e] or [lcalc]<>[txt_c]"', 'number'),
+        // review W4-5: this event named outright or as [event-name], and another event
+        'bmi_x'     => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[event_2_arm_1][ht]+1'],
+        'bmi_en'    => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[event-name][ht]*3'],
+        'lx_e'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_e]<[bmi_e]"', 'number'),
+        'lx_x'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_x]<[bmi_x]"', 'number'),
+        'lx_n'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_n]<[bmi_en]"', 'number'),
+        // review W4-8: a checkbox option read by a calc, @CALCDATE, and a calc that also carries @CALCTEXT
+        'cb_c'      => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '', 'select_choices_or_calculations' => "if([preg(1)]='1', 1, 0)"],
+        'lx_cb'     => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_cb]<[cb_c]"', 'number'),
+        'dob_o'     => f('enrol_form', '', 'date_ymd'),
+        'due_d'     => f('enrol_form', "@CALCDATE([dob_o], 30, 'd')", 'date_ymd'),
+        'lx_d'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_d]<>[due_d]"'),
+        'wt_o'      => f('enrol_form', '', 'number'),
+        'both_c'    => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '@CALCTEXT([wt_o])', 'select_choices_or_calculations' => '[ht]+0'],
+        'lx_b'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_b]<[both_c]"', 'number'),
+        // review W4-2: a field hidden on one kind of page only
+        'hs'        => f('enrol_form', '@HIDDEN-SURVEY', 'number'),
+        'hf'        => f('enrol_form', '@HIDDEN-FORM', 'number'),
+        'lx_h'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_h]<[hs] or [lx_h]<[hf]"', 'number'),
+        // a calc of another form, worked out from a field of this one: not worked out on this page
+        'vcalc'     => ['field_type' => 'calc', 'form_name' => 'visit_form', 'field_annotation' => '', 'select_choices_or_calculations' => '[ht]*2'],
+        'lx_v'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_v]<[vcalc]"', 'number'),
     ];
-    $CDATA = ['2' => [351 => $LDATA['2'][351] + ['lc' => '120', 'lcalc' => '5']]];
+    $CDATA = ['2' => [351 => $LDATA['2'][351] + ['lc' => '120', 'lcalc' => '5', 'lx_e' => '5', 'lx_x' => '5', 'lx_n' => '5', 'lx_cb' => '5',
+        'lx_d' => '2026-01-01', 'lx_b' => '5', 'lx_h' => '5', 'lx_v' => '5']]];
     $ruleOf = function ($p, $type, $f) {
         foreach ($p['cfg']['rules'] ?? [] as $r) if (($r['type'] ?? '') === $type && in_array($f, $r['fields'] ?? [], true)) return $r;
         return null;
@@ -480,9 +540,59 @@ namespace {
     $pc = page(mod($CDICT, $CDATA), 'form', '2', 'enrol_form');
     check('lockReads: a checkbox is named once per option, as the page reads it (review W3-6) (got ' . json_encode($ruleOf($pc, 'constraint', 'lc')['lockReads'] ?? null) . ')',
         ($ruleOf($pc, 'constraint', 'lc')['lockReads'] ?? null) === ['lc' => ['preg(1)', 'preg(2)']]);
-    check('lockReads: a calc worked out only from locked fields or other events, or from such calcs, is left out; one worked out from a field the person may change is kept, through other calcs too (review W3-1) (got '
+    check('lockReads: a calc is never named; in its place come the fields it is worked out from that the person may change, through other calcs too, once each (reviews W3-1, W4-2) (got '
         . json_encode($ruleOf($pc, 'constraint', 'lcalc')['lockReads'] ?? null) . ')',
-        ($ruleOf($pc, 'constraint', 'lcalc')['lockReads'] ?? null) === ['lcalc' => ['bmi_o', 'bmi_n']]);
+        ($ruleOf($pc, 'constraint', 'lcalc')['lockReads'] ?? null) === ['lcalc' => ['ht']]);
+    $lrOf = function ($p, $f) use ($ruleOf) { return $ruleOf($p, 'constraint', $f)['lockReads'] ?? null; };
+    check('lockReads: a calc that names this event outright reads this event\'s field (review W4-5) (got ' . json_encode($lrOf($pc, 'lx_e')) . ')', $lrOf($pc, 'lx_e') === ['lx_e' => ['ht']]);
+    check('lockReads: ... and so does one that names [event-name] (got ' . json_encode($lrOf($pc, 'lx_n')) . ')', $lrOf($pc, 'lx_n') === ['lx_n' => ['ht']]);
+    check('lockReads: ... while another event\'s field is left out (got ' . json_encode($lrOf($pc, 'lx_x')) . ')', $lrOf($pc, 'lx_x') === null);
+    check('lockReads: a calc that reads one checkbox option names that option alone (review W4-8) (got ' . json_encode($lrOf($pc, 'lx_cb')) . ')', $lrOf($pc, 'lx_cb') === ['lx_cb' => ['preg(1)']]);
+    check('lockReads: a @CALCDATE field names what it is worked out from (got ' . json_encode($lrOf($pc, 'lx_d')) . ')', $lrOf($pc, 'lx_d') === ['lx_d' => ['dob_o']]);
+    check('lockReads: a calc that also carries @CALCTEXT is read from both (got ' . json_encode($lrOf($pc, 'lx_b')) . ')', $lrOf($pc, 'lx_b') === ['lx_b' => ['ht', 'wt_o']]);
+    check('lockReads: a calc of another form names nothing, though it is worked out from a field of this one (got ' . json_encode($lrOf($pc, 'lx_v')) . ')', $lrOf($pc, 'lx_v') === null);
+    check('lockReads: a field hidden on surveys only is named on a form; one hidden on forms only is not (review W4-2) (got ' . json_encode($lrOf($pc, 'lx_h')) . ')', $lrOf($pc, 'lx_h') === ['lx_h' => ['hs']]);
+    $pcs = page(mod($CDICT, $CDATA), 'survey', '2', 'enrol_form');
+    check('lockReads: ... and the other way round on a survey (got ' . json_encode($lrOf($pcs, 'lx_h')) . ')', $lrOf($pcs, 'lx_h') === ['lx_h' => ['hf']]);
+
+    // markLockReads itself: the fields the person cannot change or REDCap writes as the page starts (review W4-2),
+    // and a cycle of calcs in either order of the rules (review W4-4)
+    $mark = new \ReflectionMethod('INSPIRE\\UniversalValidator\\UniversalValidator', 'markLockReads');
+    $mark->setAccessible(true);
+    $lr = function (array $rules, array $dd, $context = null, $event = null) use ($mark) {
+        $out = [];
+        foreach ($mark->invoke(null, $rules, array_fill_keys(array_keys($dd), true), $dd, $context, $event) as $r) if (isset($r['lockReads'])) $out += $r['lockReads'];
+        return $out;
+    };
+    $t = function ($ann, $type = 'text', $calc = '') { return ['field_type' => $type, 'field_annotation' => $ann, 'select_choices_or_calculations' => $calc]; };
+    $FDD = ['lk' => $t(''), 'ro' => $t('@READONLY'), 'rof' => $t('@READONLY-FORM'), 'ros' => $t('@READONLY-SURVEY'), 'hid' => $t('@HIDDEN'),
+            'hidf' => $t('@HIDDEN-FORM'), 'hids' => $t('@HIDDEN-SURVEY'), 'hida' => $t('@HIDDEN-APP @HIDDEN-PDF @READONLY-APP'), 'nw' => $t('@NOW'),
+            'td' => $t('@TODAY'), 'tds' => $t('@TODAY-SERVER'), 'nwu' => $t('@NOW-UTC'), 'lat' => $t('@LATITUDE'), 'lon' => $t('@LONGITUDE'),
+            'sv' => $t("@SETVALUE='x'"), 'df' => $t("@DEFAULT='x'"), 'lo' => $t('@readonly'), 'open' => $t('@NOWHERE @DEFAULTS @HIDDENX'),
+            'c_fix' => $t('', 'calc', '[ro]+[nw]+[sv]'), 'c_open' => $t('', 'calc', '[open]*2')];
+    $reads = [];
+    foreach (array_keys($FDD) as $f) $reads[] = '[' . $f . "]<>'x'";
+    // each field once: a condition names at most 20 fields
+    $FRULES = [['type' => 'writeonce', 'fields' => ['lk']], ['type' => 'constraint', 'fields' => ['lk'], 'assert' => implode(' or ', $reads)]];
+    check('lockReads: on a form, @READONLY, @HIDDEN and their -FORM variants, @NOW, @TODAY, @LATITUDE, @LONGITUDE, @SETVALUE and @DEFAULT are left out (got '
+        . json_encode($lr($FRULES, $FDD, 'form')) . ')', $lr($FRULES, $FDD, 'form') === ['lk' => ['ros', 'hids', 'hida', 'open']]);
+    check('lockReads: on a survey, the -SURVEY variants (got ' . json_encode($lr($FRULES, $FDD, 'survey')) . ')', $lr($FRULES, $FDD, 'survey') === ['lk' => ['rof', 'hidf', 'hida', 'open']]);
+    check('lockReads: where the page is not known, every variant (got ' . json_encode($lr($FRULES, $FDD)) . ')', $lr($FRULES, $FDD) === ['lk' => ['hida', 'open']]);
+    $CYC = ['f1' => $t(''), 'f2' => $t(''), 'a' => $t('', 'calc', 'if([c]="", [x], [x])'), 'c' => $t('', 'calc', '[a]'), 'x' => $t('')];
+    $wo = ['type' => 'writeonce', 'fields' => ['f1', 'f2']];
+    $r1 = ['type' => 'constraint', 'fields' => ['f1'], 'assert' => '[f1] <> [a]'];
+    $r2 = ['type' => 'constraint', 'fields' => ['f2'], 'assert' => '[f2] <> [c]'];
+    check('lockReads: a cycle of calcs, the rule that reads the first calc first (got ' . json_encode($lr([$wo, $r1, $r2], $CYC)) . ')', $lr([$wo, $r1, $r2], $CYC) === ['f1' => ['x'], 'f2' => ['x']]);
+    check('lockReads: ... and last (got ' . json_encode($lr([$wo, $r2, $r1], $CYC)) . ')', $lr([$wo, $r2, $r1], $CYC) === ['f2' => ['x'], 'f1' => ['x']]);
+    check('lockReads: ... and each rule alone', $lr([$wo, $r2], $CYC) === ['f2' => ['x']] && $lr([$wo, $r1], $CYC) === ['f1' => ['x']]);
+    $CYC['x'] = $t('@READONLY');
+    check('lockReads: a cycle of calcs that nothing the person may change feeds names nothing', $lr([$wo, $r1, $r2], $CYC) === []);
+    check('lockReads: the page\'s own event named outright counts only when the page\'s event is known',
+        $lr([$wo, ['type' => 'constraint', 'fields' => ['f1'], 'assert' => '[f1] <> [e]']], ['f1' => $t(''), 'f2' => $t(''), 'x' => $t(''), 'e' => $t('', 'calc', '[visit_1_arm_1][x]')], null, 'visit_1_arm_1') === ['f1' => ['x']]
+        && $lr([$wo, ['type' => 'constraint', 'fields' => ['f1'], 'assert' => '[f1] <> [e]']], ['f1' => $t(''), 'f2' => $t(''), 'x' => $t(''), 'e' => $t('', 'calc', '[visit_1_arm_1][x]')]) === []);
+    check('lockReads: the event of a pair is no field, and a smart event other than [event-name] is another event',
+        $lr([$wo, ['type' => 'constraint', 'fields' => ['f1'], 'assert' => '[f1] <> [e]']], ['f1' => $t(''), 'f2' => $t(''), 'x' => $t(''), 'y' => $t(''), 'z' => $t(''),
+            'e' => $t('', 'calc', '[z][y]+[previous-event-name][y]+[x][2]')]) === ['f1' => ['x']]);
 
     // what the log reader is told of the project: the dictionary's order and whether a DELETE may cover one arm
     $opts = function ($m) {

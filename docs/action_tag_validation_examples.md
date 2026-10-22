@@ -4421,9 +4421,12 @@ locked. It cannot be changed here."
 ```
 
 - `roles` names user roles by the name the User Rights page shows or by the
-  unique role name, up to 20. Letter case does not matter in any alphabet, and
-  a run of spaces counts as one. Each must be a role of the project, or the
-  field shows a configuration error.
+  unique role name, up to 20. Letter case does not matter in any alphabet
+  ("STRASSE" matches "Straße"), invisible format characters such as a
+  zero-width space are ignored, and a run of spaces counts as one. With PHP's
+  intl extension a name typed with combining accents matches one typed with
+  composed letters; without intl they differ. Each must be a role of the
+  project, or the field shows a configuration error.
 - A member of a role sees the field open. A change by a member moves the lock
   to the new value; a member who clears it releases the lock, and the next
   value saved locks it again.
@@ -4473,12 +4476,17 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 - A person's own first answer is locked as soon as it is saved: after Save &
   Stay, or Next on a multi-page survey, going back finds it locked.
 - Another tag on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked (a calc counts
-  only when a field it is worked out from is such a field), and only once
-  that field has changed on the page, a checkbox option by option. The value
-  each field opened with is read once the form exists. A tag that reads the
-  locked field alone, a violation already saved when the page opened, and one
-  between two locked fields never hold it, on Save or on Enter.
+  when it also reads a field of this form that the person can change, and
+  only once that field has changed on the page, a checkbox option by option.
+  A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the fields it
+  is worked out from, through other calcs too. A field with `@READONLY` or
+  `@HIDDEN` (or the `-FORM` or `-SURVEY` form that applies to the page),
+  `@NOW`, `@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never
+  counts. The value each field opened with is read after REDCap's own start-up
+  on the page, once its calcs, branching and action tags have filled their
+  fields. A tag that reads the locked field alone, a violation already saved
+  when the page opened, and one between two locked fields never hold it, on
+  Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
 - Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
   `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
@@ -4490,7 +4498,9 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
   `locked_at` and `changed_at`. Each record and event is read on its own,
-  back to the row REDCap writes when it makes the record. A deletion of the
+  back to the row REDCap writes when it makes the record. That row counts only
+  when its record id line comes before every other Text or Notes value in it,
+  since a Notes value could hold a typed copy of that line. A deletion of the
   whole record starts a new history, and so does an erase of all the
   project's records; a deletion of one form or one event at another event
   changes nothing. A log that holds more rows of the record and event than
@@ -4498,7 +4508,8 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   at another event the log does not describe as one form or one event (and in
   a project of several arms, every deletion of the record), a record whose log
   does not show it being made (renamed while its saves stay under the old
-  name, or brought in with a copied project), a save the log names no event
+  name, or brought in with a copied project), a record whose creating row has
+  its record id line after a Text or Notes value, a save the log names no event
   for, a save the log does not spell out, a value the log never shows saved,
   and roles that cannot be read when a change needs them are rule problems,
   never a pass.
@@ -4514,6 +4525,12 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   save of another value is then reported as a change. Anyone could have saved
   that value first, so the line gives no one a value they could not have
   saved, and the forged row stays in the log.
+- Renaming a locked field after it holds data restarts its history when
+  REDCap's log keeps the earlier saves under the old name. The page lock still
+  holds the saved value, and the audit reports the field as a rule problem
+  until a save is logged under the new name. An import or API change made
+  after the rename, before any save of the field is logged under the new name,
+  is read as the field's first save and is not caught.
 
 ```text invalid
 # refused: takes no value
@@ -4532,8 +4549,8 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 Once the data dictionary and the user roles are read, the module also refuses a
 role the project does not have, a calc or checkbox field, a field with
-`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, a field
-that searches an ontology, a field given the tag twice, and a field another
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@RICHTEXT`, a field that searches an ontology of any service, a field given the tag twice, and a field another
 rule returns a value to.
 
 ---
