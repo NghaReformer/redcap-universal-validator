@@ -613,7 +613,8 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id']),
+            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id'],
+                                            $run['scope_dag'] !== null),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -1670,7 +1671,7 @@ final class ScanService
         ]);
     }
 
-    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null)
+    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null, $scoped = false)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1692,7 +1693,11 @@ final class ScanService
             'versions' => $this->fence($pid),
             // Which candidates' records left the run's group (review rv5b-1).
             // Their candidates are dropped from the group rather than re-read.
-            'departed' => ($store === null || $runId === null) ? null
+            // A GROUP-SCOPED RUN'S ONLY (review rvf1-4): a run over the whole
+            // project has no group to leave, and the question is a
+            // scan_record read on every verify page, about 250,000 reads on
+            // 500,000 records in pairs.
+            'departed' => (!$scoped || $store === null || $runId === null) ? null
                 : function (array $hashes) use ($store, $runId) {
                     return $store->departedOf((int) $runId, $hashes);
                 },

@@ -3583,6 +3583,57 @@ namespace INSPIRE\UniversalValidator\Scan {
                          ScanPolicy::resolve([], []), $wctx, 'browser');
     check('rv5b-1 control: an unscoped run\'s worker is not handed the group question',
         !isset($wdU['scope']));
+    $fdU = $fdOf->getValue($wdU['finalizer']);
+    check('rvf1-4: nor is its duplicate check handed a departures question, which it could never answer yes',
+        !isset($fdU['departed']) || $fdU['departed'] === null);
+    // WHAT THAT COSTS, IN STATEMENTS: one verify page of a pair group, on a
+    // store over a database that answers the finalizer and logs every
+    // statement. The scoped run's page reads scan_record once, for its
+    // departures; the unscoped run's reads it not at all.
+    $pageDb = function () {
+        return new class implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+            public $log = [];
+            public function select($sql, array $params = [])
+            {
+                $this->log[] = $sql;
+                if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+                if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+                if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'new', null, 2]];
+                if (strpos($sql, 'ORDER BY candidate_id LIMIT') !== false) {
+                    return [[1, 'A', 0, 1, 'f', null, 'fa', 'hA'], [2, 'B', 0, 1, 'f', null, 'fa', 'hB']];
+                }
+                return [];
+            }
+            public function exec($sql, array $params = []) { $this->log[] = $sql; return 1; }
+            public function execNoCount($sql, array $params = []) { $this->log[] = $sql; }
+            public function affected() { return 1; }
+            public function begin() { }
+            public function commit() { }
+            public function rollback() { }
+        };
+    };
+    $pageReads = function ($scopeDag) use ($pageDb, $wdOf, $fdOf, $wctx) {
+        $db = $pageDb();
+        $store = new SqlScanStore($db);
+        $run = ['run_id' => 41, 'scope_dag' => $scopeDag, 'lease_epoch' => 1, 'generation_id' => 1,
+                'run_seq' => 1, 'phase' => ScanPhase::UNIQUE];
+        $deps = $fdOf->getValue($wdOf->invoke(new ScanService(new \SourceModule()), 149, $store, $run,
+                                              ScanPolicy::resolve([], []), $wctx, 'browser')['finalizer']);
+        $fin = new UniqueFinalizer($db, ['pid' => 149,
+            'departed' => isset($deps['departed']) ? $deps['departed'] : null,
+            'read' => function (array $locs) {
+                $v = [];
+                foreach ($locs as $l) $v[UniqueFinalizer::locKey($l)] = ['x'];
+                return ['ok' => true, 'values' => $v, 'why' => null];
+            }]);
+        $db->log = [];
+        $fin->step(1, 500, 10);
+        return count(array_filter($db->log, function ($q) {
+            return strpos($q, Schema::table('scan_record')) !== false;
+        }));
+    };
+    check('rvf1-4: a verify page of an unscoped run reads scan_record not at all, a scoped run\'s once',
+        $pageReads(null) === 0 && $pageReads('7') === 1);
 
     /* -----------------------------------------------------------------
      * rv5b-2 / rv5b-6  A GROUP-SCOPED RUN THAT ENDS WITHOUT PROVING ITS
