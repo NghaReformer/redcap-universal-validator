@@ -4610,6 +4610,51 @@ namespace INSPIRE\UniversalValidator\Scan {
         $lc->calls === 1 && $lc->bytes < 4096 && count($lp['rows']) === 1
         && $lp['rows'][0]['cells']['field_label'] === 'Value A' && $lp['report']['labelsDegraded'] === false);
 
+    /* rv11a2-8  A SNAPSHOT OF MORE THAN ONE PAGE IS READ WHOLE (M2), AND A
+     * ROW OF A KIND THIS REVISION DOES NOT KNOW MARKS THE LABELS DEGRADED
+     * (M5). Reading one page left every suite green; the `state` row sorts
+     * last, so such a snapshot read as none, and its report was labelled from
+     * today's names under "planned before its labels were kept". */
+    $plant = function (ArrayScanStore $s, $pid, $gen, array $more) {
+        \Closure::bind(function () use ($pid, $gen, $more) {
+            $at = $pid . ':' . $gen;
+            foreach ($more as $r) $this->dims[$at][] = $r;
+            usort($this->dims[$at], function ($a, $b) {
+                $c = strcmp($a['kind'], $b['kind']);
+                return $c !== 0 ? $c : strcmp($a['key'], $b['key']);
+            });
+        }, $s, ArrayScanStore::class)();
+    };
+    $bs = new ArrayScanStore();
+    $bm = $labelled($bs);
+    $bm->flagged = ['R002' => true];
+    $bd = $drive($bm, $bs, 216);
+    $brid = (int) $bd['row']['run_id'];
+    $more = [];
+    for ($i = 0; $i < ScanStore::DIM_PAGE + 100; $i++) {
+        $more[] = ['kind' => 'field', 'key' => sprintf('g%04d', $i), 'label' => 'G ' . $i, 'meta' => null];
+    }
+    $plant($bs, 216, (int) $bd['row']['generation_id'], $more);
+    $bm->formLabel = 'Form B';
+    $bc = $countDims($bs);
+    $bp = (new ScanService($bm, $bc))->findings(216, $brid);
+    check('rv11a2-8 (M2): a snapshot of more than one page is read whole, so the run keeps its planned names',
+        $bc->calls === 2 && $bp['report']['labelsDegraded'] === false
+        && $bp['rows'][0]['cells']['instrument'] === 'Form A');
+    $ks = new ArrayScanStore();
+    $km = $labelled($ks);
+    $km->flagged = ['R002' => true];
+    $kd = $drive($km, $ks, 217);
+    $plant($ks, 217, (int) $kd['row']['generation_id'],
+           [['kind' => 'chart', 'key' => 'x', 'label' => null, 'meta' => null]]);
+    $kp = (new ScanService($km, $ks))->findings(217, (int) $kd['row']['run_id']);
+    check('rv11a2-8 (M5): a snapshot row of a kind this revision does not know marks the report\'s labels degraded',
+        $kp['ok'] === true && $kp['report']['labelsDegraded'] === true
+        && $kp['rows'][0]['cells']['instrument'] === 'Form A');
+    check('rv11a2-8 (control): runs whose snapshot holds only known kinds are not degraded',
+        (new ScanService($bm, $bs))->findings(216, $brid)['report']['labelsDegraded'] === false
+        && (new ScanService($lm, $ls))->findings(215, $lrid)['report']['labelsDegraded'] === false);
+
     \REDCap::$groupNames = $keptNames;
 }
 
