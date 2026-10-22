@@ -414,6 +414,20 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r2c = Schema::migrate($m2c);
         check('migrate: a schema that is genuinely complete still does nothing',
             $r2c['applied'] === 0);
+        // W8-N11: found complete in two statements, the version and one read
+        // of every table at once, where it was one read per table.
+        check('migrate W8-N11: and finds it complete in two statements, not one per table',
+            count($m2c->sql) === 2 && count(array_filter($m2c->sql, function ($s) {
+                return strpos($s, 'information_schema') !== false; })) === 1);
+        // And a table the server holds only in another case is missing to
+        // migrate() as it is to health() (R8-2), so it is created as named.
+        $m2e = new \FakeModule();
+        $m2e->version = Schema::VERSION;
+        $m2e->upperNames = true;
+        $r2e = Schema::migrate($m2e);
+        check('migrate W8-N11: a table held only in another case is created as the module names it',
+            $r2e['applied'] > 0 && count(array_filter($m2e->sql, function ($s) {
+                return strpos($s, 'CREATE TABLE IF NOT EXISTS uv_finding') === 0; })) === 1);
 
         // "Could not ask" is not "nothing is missing". A probe that throws must
         // not be read as a healthy schema, and must not be read as a broken one

@@ -1043,22 +1043,27 @@ final class Schema
      * schema is sound - and this file has the same distinction at every other
      * boundary.
      *
+     * health()'s one read (presentTables()), not a probe per table (W8-N11):
+     * one statement where there were as many as tables(). It is also health()'s
+     * answer in the one case the probes gave another: a table the server
+     * holds only in another letter case is missing here too (R8-2), so
+     * migrate() creates the table the module names, where it used to report a
+     * complete schema that health() refused.
+     *
      * @return string[]|null
      */
     private static function missingTables($module)
     {
         if (!is_callable([$module, 'query'])) return null;
+        try {
+            $present = self::presentTables($module);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if ($present === null) return null;
         $missing = [];
         foreach (self::tables() as $t) {
-            try {
-                $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
-                    WHERE table_schema = DATABASE() AND table_name = ?', [$t]);
-                $row = $q ? self::firstRow($q) : null;
-                if ($row === null) return null;
-                if ((int) (isset($row[0]) ? $row[0] : 0) < 1) $missing[] = $t;
-            } catch (\Throwable $e) {
-                return null;
-            }
+            if (!isset($present[$t])) $missing[] = $t;
         }
         return $missing;
     }
