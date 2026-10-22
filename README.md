@@ -457,8 +457,9 @@ the two things it lacks: a **condition** and a **real block**:
 ## No duplicates across records — the `@UVUNIQUE` tag
 
 REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value
-against every other record **as it is typed** (a CSRF-protected module AJAX
-call — no page reload), with the usual message/confirm/block enforcement:
+against every other record **when it is entered or changed** (a CSRF-protected
+module AJAX call, no page reload), with the usual message/confirm/block
+enforcement:
 
 ```text
 @UVUNIQUE                                                unique across the project
@@ -470,7 +471,14 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - `with` makes the key **composite** — the value plus those fields together
   must be unique (a specimen ID within its site). Scopes: `project` (default),
   `dag` (unique within each Data Access Group), `event` (within the same
-  event of a longitudinal project).
+  event of a longitudinal project). A `with` value is read from the same entry
+  as the tagged field, so the rule is refused when a `with` field is collected
+  in no event that also collects the tagged field, or sits on a repeating
+  instrument the tagged field is not on. Up to 2.3.0-rc.2, such a `with` field read
+  as blank: `SP-9` at site 1 and `SP-9` at site 2 counted as duplicates. A
+  `with` value on another form that the module cannot read for one record
+  leaves that check as *could not check*; the save audit logs it as a rule
+  problem instead of comparing a blank.
 - `also` looks for the value in up to 5 other fields too. With
   `@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`, an ID typed there
   counts as used when another record holds it in `study_id_typed` or in
@@ -499,6 +507,11 @@ call — no page reload), with the usual message/confirm/block enforcement:
   and the alternative reading — that an ungrouped record has nothing to be
   compared with — would let the rule lapse exactly where records are hardest to
   attribute. Use `project` scope if you want them compared against everything.
+  The page check, the save audit and the Validation scan apply the same reading.
+  A record not saved yet belongs to its user's group, so a new record made by a
+  user in no group is compared with the ungrouped records. Up to 2.3.0-rc.2 the page
+  and the audit compared an ungrouped record with every group, and the scan
+  refused the rule.
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
@@ -521,13 +534,23 @@ call — no page reload), with the usual message/confirm/block enforcement:
   survey they are filling in. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
+- **Asked on change, not per keystroke.** The page asks when the value is
+  entered or changed (the field loses focus, or a picked option), and Save asks
+  again first. Typing clears the previous answer. The answer is *not used
+  before* (green), *already recorded* (red, enforced per `blockSave`) or *could
+  not check* (amber, staff forms only).
 - **The race is audited, not denied.** Two near-simultaneous saves can both
   pass the live check; the post-save audit re-checks the saved value against
   every other record and logs a collision (`type: unique`,
   `reason: duplicate-value`) — review the module log for races. A failed check
-  fails **open**, so a network error on a first check never traps a save. When
-  Save asks again about an "already used" the page has held for 30 seconds or
-  more and gets no answer, that earlier answer stands and is enforced.
+  fails **open** with *could not check* and its reason, so a network error on a
+  first check never traps a save. The exception is the lookup limit (60 lookups
+  a minute per session, shared with `@UVEXISTS`): a rule that can block holds the
+  save until the server answers again, which takes at most a minute, and Save
+  asks again. When Save asks again about an "already used" the page has held
+  for 30 seconds or more and gets no answer, that earlier answer stands and is
+  enforced. Surveys never show *could not check* and are never held: there a
+  failed check simply lets the save through, and the audit is the net.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
 
@@ -671,8 +694,11 @@ the specimen ID on the collection form.
   is entered or changed, and once when the form opens. Typing clears the
   previous answer, typing in a text field a `when` condition reads included.
   The answer is *found* (green), *not found* (red, enforced per `blockSave`) or
-  *could not check* (amber, never blocks): a failed read, a `match` field that is
-  blank on another form, or a busy server all answer *could not check*.
+  *could not check* (amber, never blocks): a failed read or a `match` field that
+  is blank on another form answers *could not check*. So does a busy server
+  (more than 60 lookups a minute in the session), but then a rule that can block
+  holds the save until the server answers again, at most a minute later, and
+  Save asks again.
 - **Save waits for the answer.** Clicking Save re-checks the field first. A value
   typed and saved at once is asked before the save is decided, and while an
   answer is on its way the save is held ("still being checked"). After 10
@@ -1224,6 +1250,7 @@ node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table o
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 php  tests/required_pages_php.php    # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
+php  tests/unique_scope_php.php      # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

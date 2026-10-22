@@ -1083,8 +1083,9 @@ note, is not read.
 ## `@UVUNIQUE` — no duplicates across records
 
 REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value against every
-other record **as it is typed**, over a CSRF-protected module AJAX call — no page
-reload.
+other record when it is entered or changed, over a CSRF-protected module AJAX call, with
+no page reload. Typing clears the old answer; the page asks when the field loses focus,
+and again at Save.
 
 ### Level 1 — unique across the project
 
@@ -1100,7 +1101,9 @@ reload.
 @UVUNIQUE=event        unique within the same event of a longitudinal project
 ```
 
-Any other bare value is a configuration error naming the three valid scopes.
+Any other bare value is a configuration error naming the three valid scopes. Under `dag`,
+records in no group form one group of their own, and a new record made by a user in no
+group is compared with them.
 
 ### Level 3 — message and enforcement
 
@@ -1120,7 +1123,10 @@ unique. A specimen ID may repeat across sites but not within one.
 
 Constraints on `with`: a JSON list of real REDCap field names, at most **5** entries, no
 duplicates, and each must exist in the data dictionary and be a scalar field. Names are
-lowercased automatically.
+lowercased automatically. A `with` value is read from the same entry as the tagged field,
+so each `with` field must be collected in an event that also collects the tagged field,
+and must not sit on a repeating instrument the tagged field is not on. The rule is refused
+otherwise.
 
 ### Level 5 — surveys (explicit opt-in)
 

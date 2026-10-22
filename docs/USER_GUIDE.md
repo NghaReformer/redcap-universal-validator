@@ -948,9 +948,12 @@ fixed. Annotation-only in this version; see the README section and
 
 **Can I stop the same participant ID being entered in two records?**
 Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
-in the Configure dialog) checks the value against every other record as it is
-typed, with optional composite keys (`with`), project/DAG/event scopes, and a
-real save block. Two saves at the same instant can both pass the live check —
+in the Configure dialog) checks the value against every other record when it is
+entered or changed, with optional composite keys (`with`), project/DAG/event
+scopes, and a real save block. When the check cannot be made, staff see "Could
+not check" with the reason, and the save goes through; the exception is the
+limit of 60 lookups a minute, where a blocking rule holds the save until the
+server answers again. Two saves at the same instant can both pass the live check —
 the post-save audit logs such a collision to the module log. Letter case is
 ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
 an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when

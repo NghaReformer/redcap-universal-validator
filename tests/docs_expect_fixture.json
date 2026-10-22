@@ -4183,8 +4183,8 @@
             ]
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2456",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2462",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4198,8 +4198,8 @@
             "reason": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2457",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2463",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4213,8 +4213,8 @@
             "reason": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2458",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2464",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4228,8 +4228,8 @@
             "reason": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2459",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2465",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4243,8 +4243,8 @@
             "reason": "soft-low"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2460",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2466",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4258,8 +4258,8 @@
             "reason": "soft-high"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2461",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2467",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4273,8 +4273,8 @@
             "reason": "hard-low"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2462",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2468",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4288,8 +4288,8 @@
             "reason": "hard-high"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2463",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2469",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4303,8 +4303,8 @@
             "reason": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2464",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2470",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4318,8 +4318,8 @@
             "reason": "soft-low"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2465",
-            "tagLine": 2452,
+            "where": "docs/action_tag_validation_examples.md:2471",
+            "tagLine": 2458,
             "kind": "range",
             "spec": {
                 "decimalComma": false,
@@ -4333,8 +4333,8 @@
             "reason": "not-a-number"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2550",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2556",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "soft-low, z -3.40",
             "reference": "who-wfa",
@@ -4353,8 +4353,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2551",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2557",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "ok, z -0.04",
             "reference": "who-wfa",
@@ -4373,8 +4373,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2552",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2558",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "ok, z -2.56",
             "reference": "who-wfa",
@@ -4393,8 +4393,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2553",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2559",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "hard-low, z -8.43",
             "reference": "who-wfa",
@@ -4413,8 +4413,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2554",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2560",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -4433,8 +4433,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2555",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2561",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "not-a-number",
             "reference": "who-wfa",
@@ -4453,8 +4453,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2556",
-            "tagLine": 2546,
+            "where": "docs/action_tag_validation_examples.md:2562",
+            "tagLine": 2552,
             "kind": "growth",
             "outcome": "not-positive",
             "reference": "who-wfa",
@@ -4473,8 +4473,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2638",
-            "tagLine": 2634,
+            "where": "docs/action_tag_validation_examples.md:2644",
+            "tagLine": 2640,
             "kind": "growth",
             "outcome": "ok, z -0.31",
             "reference": "who-lhfa",
@@ -4493,8 +4493,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2639",
-            "tagLine": 2634,
+            "where": "docs/action_tag_validation_examples.md:2645",
+            "tagLine": 2640,
             "kind": "growth",
             "outcome": "soft-low, z -3.26",
             "reference": "who-lhfa",
@@ -4513,8 +4513,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2640",
-            "tagLine": 2634,
+            "where": "docs/action_tag_validation_examples.md:2646",
+            "tagLine": 2640,
             "kind": "growth",
             "outcome": "soft-low, z -5.44",
             "reference": "who-lhfa",
@@ -4533,8 +4533,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2652",
-            "tagLine": 2648,
+            "where": "docs/action_tag_validation_examples.md:2658",
+            "tagLine": 2654,
             "kind": "growth",
             "outcome": "ok, z -0.13",
             "reference": "who-acfa",
@@ -4553,8 +4553,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2653",
-            "tagLine": 2648,
+            "where": "docs/action_tag_validation_examples.md:2659",
+            "tagLine": 2654,
             "kind": "growth",
             "outcome": "soft-low, z -3.09",
             "reference": "who-acfa",
@@ -4573,8 +4573,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2654",
-            "tagLine": 2648,
+            "where": "docs/action_tag_validation_examples.md:2660",
+            "tagLine": 2654,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-acfa",
@@ -4593,8 +4593,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2665",
-            "tagLine": 2661,
+            "where": "docs/action_tag_validation_examples.md:2671",
+            "tagLine": 2667,
             "kind": "growth",
             "outcome": "ok, z -0.06",
             "reference": "who2007-bfa",
@@ -4613,8 +4613,8 @@
             "x": "120"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2666",
-            "tagLine": 2661,
+            "where": "docs/action_tag_validation_examples.md:2672",
+            "tagLine": 2667,
             "kind": "growth",
             "outcome": "ok, z -2.40",
             "reference": "who2007-bfa",
@@ -4633,8 +4633,8 @@
             "x": "120"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2667",
-            "tagLine": 2661,
+            "where": "docs/action_tag_validation_examples.md:2673",
+            "tagLine": 2667,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who2007-bfa",
@@ -4653,8 +4653,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2693",
-            "tagLine": 2689,
+            "where": "docs/action_tag_validation_examples.md:2699",
+            "tagLine": 2695,
             "kind": "growth",
             "outcome": "ok, z 0.15",
             "reference": "who-bfa",
@@ -4673,8 +4673,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2694",
-            "tagLine": 2689,
+            "where": "docs/action_tag_validation_examples.md:2700",
+            "tagLine": 2695,
             "kind": "growth",
             "outcome": "ok, z -2.36",
             "reference": "who-bfa",
@@ -4693,8 +4693,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2695",
-            "tagLine": 2689,
+            "where": "docs/action_tag_validation_examples.md:2701",
+            "tagLine": 2695,
             "kind": "growth",
             "outcome": "soft-high, z 4.86",
             "reference": "who-bfa",
@@ -4713,8 +4713,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2720",
-            "tagLine": 2716,
+            "where": "docs/action_tag_validation_examples.md:2726",
+            "tagLine": 2722,
             "kind": "growth",
             "outcome": "ok, z -0.86",
             "reference": "who-wfa",
@@ -4733,8 +4733,8 @@
             "x": "31"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2721",
-            "tagLine": 2716,
+            "where": "docs/action_tag_validation_examples.md:2727",
+            "tagLine": 2722,
             "kind": "growth",
             "outcome": "ok, z -2.49",
             "reference": "who-wfa",
@@ -4753,8 +4753,8 @@
             "x": "59"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2722",
-            "tagLine": 2716,
+            "where": "docs/action_tag_validation_examples.md:2728",
+            "tagLine": 2722,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -4773,8 +4773,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2723",
-            "tagLine": 2716,
+            "where": "docs/action_tag_validation_examples.md:2729",
+            "tagLine": 2722,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -4793,8 +4793,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2794",
-            "tagLine": 2790,
+            "where": "docs/action_tag_validation_examples.md:2800",
+            "tagLine": 2796,
             "kind": "growth",
             "outcome": "soft-low, z -3.16",
             "reference": "who-wfl",
@@ -4813,8 +4813,8 @@
             "x": "75.700000000000003"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2795",
-            "tagLine": 2790,
+            "where": "docs/action_tag_validation_examples.md:2801",
+            "tagLine": 2796,
             "kind": "growth",
             "outcome": "ok, z -2.98",
             "reference": "who-wfl",
@@ -4833,8 +4833,8 @@
             "x": "75"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2796",
-            "tagLine": 2790,
+            "where": "docs/action_tag_validation_examples.md:2802",
+            "tagLine": 2796,
             "kind": "growth",
             "outcome": "ok, z 0.00",
             "reference": "who-wfl",
@@ -4853,8 +4853,8 @@
             "x": "75"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2797",
-            "tagLine": 2790,
+            "where": "docs/action_tag_validation_examples.md:2803",
+            "tagLine": 2796,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfl",
@@ -4873,8 +4873,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2893",
-            "tagLine": 2889,
+            "where": "docs/action_tag_validation_examples.md:2899",
+            "tagLine": 2895,
             "kind": "growth",
             "outcome": "plausible-high",
             "reference": "who-wfa",
@@ -4893,8 +4893,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2894",
-            "tagLine": 2889,
+            "where": "docs/action_tag_validation_examples.md:2900",
+            "tagLine": 2895,
             "kind": "growth",
             "outcome": "plausible-low",
             "reference": "who-wfa",
@@ -4913,8 +4913,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2895",
-            "tagLine": 2889,
+            "where": "docs/action_tag_validation_examples.md:2901",
+            "tagLine": 2895,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -4933,8 +4933,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2896",
-            "tagLine": 2889,
+            "where": "docs/action_tag_validation_examples.md:2902",
+            "tagLine": 2895,
             "kind": "growth",
             "outcome": "soft-low, z -3.40",
             "reference": "who-wfa",
@@ -4953,8 +4953,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2919",
-            "tagLine": 2915,
+            "where": "docs/action_tag_validation_examples.md:2925",
+            "tagLine": 2921,
             "kind": "growth",
             "outcome": "soft-low, z -3.40",
             "reference": "who-wfa",
@@ -4973,8 +4973,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2920",
-            "tagLine": 2915,
+            "where": "docs/action_tag_validation_examples.md:2926",
+            "tagLine": 2921,
             "kind": "growth",
             "outcome": "ok, z -0.04",
             "reference": "who-wfa",
@@ -4993,8 +4993,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2942",
-            "tagLine": 2938,
+            "where": "docs/action_tag_validation_examples.md:2948",
+            "tagLine": 2944,
             "kind": "growth",
             "outcome": "ok, z -1.83",
             "reference": "who-wfa",
@@ -5013,8 +5013,8 @@
             "x": "64"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2943",
-            "tagLine": 2938,
+            "where": "docs/action_tag_validation_examples.md:2949",
+            "tagLine": 2944,
             "kind": "growth",
             "outcome": "soft-low, z -3.67",
             "reference": "who-wfa",
@@ -5033,8 +5033,8 @@
             "x": "120"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2944",
-            "tagLine": 2938,
+            "where": "docs/action_tag_validation_examples.md:2950",
+            "tagLine": 2944,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -5053,8 +5053,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2961",
-            "tagLine": 2957,
+            "where": "docs/action_tag_validation_examples.md:2967",
+            "tagLine": 2963,
             "kind": "growth",
             "outcome": "soft-low, z -3.40",
             "reference": "who-wfa",
@@ -5073,8 +5073,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2962",
-            "tagLine": 2957,
+            "where": "docs/action_tag_validation_examples.md:2968",
+            "tagLine": 2963,
             "kind": "growth",
             "outcome": "ok, z -2.56",
             "reference": "who-wfa",
@@ -5093,8 +5093,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2963",
-            "tagLine": 2957,
+            "where": "docs/action_tag_validation_examples.md:2969",
+            "tagLine": 2963,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -5113,8 +5113,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3387",
-            "tagLine": 3383,
+            "where": "docs/action_tag_validation_examples.md:3393",
+            "tagLine": 3389,
             "kind": "growth",
             "outcome": "ok, z 0.36",
             "reference": "example-hfa",
@@ -5133,8 +5133,8 @@
             "x": "66"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3388",
-            "tagLine": 3383,
+            "where": "docs/action_tag_validation_examples.md:3394",
+            "tagLine": 3389,
             "kind": "growth",
             "outcome": "ok, z 0.30",
             "reference": "example-hfa",
@@ -5153,8 +5153,8 @@
             "x": "66.5"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3389",
-            "tagLine": 3383,
+            "where": "docs/action_tag_validation_examples.md:3395",
+            "tagLine": 3389,
             "kind": "growth",
             "outcome": "ok, z -1.65",
             "reference": "example-hfa",
@@ -5173,8 +5173,8 @@
             "x": "72"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3390",
-            "tagLine": 3383,
+            "where": "docs/action_tag_validation_examples.md:3396",
+            "tagLine": 3389,
             "kind": "growth",
             "outcome": "soft-low, z -3.01",
             "reference": "example-hfa",
@@ -5193,8 +5193,8 @@
             "x": "66"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3391",
-            "tagLine": 3383,
+            "where": "docs/action_tag_validation_examples.md:3397",
+            "tagLine": 3389,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "example-hfa",
@@ -5213,8 +5213,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3440",
-            "tagLine": 3436,
+            "where": "docs/action_tag_validation_examples.md:3446",
+            "tagLine": 3442,
             "kind": "growth",
             "outcome": "ok, z -1.60",
             "reference": "example-wfl",
@@ -5233,8 +5233,8 @@
             "x": "47.299999999999997"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3441",
-            "tagLine": 3436,
+            "where": "docs/action_tag_validation_examples.md:3447",
+            "tagLine": 3442,
             "kind": "growth",
             "outcome": "ok, z 0.02",
             "reference": "example-wfl",
@@ -5253,8 +5253,8 @@
             "x": "47.5"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3442",
-            "tagLine": 3436,
+            "where": "docs/action_tag_validation_examples.md:3448",
+            "tagLine": 3442,
             "kind": "growth",
             "outcome": "soft-low, z -4.39",
             "reference": "example-wfl",
@@ -5273,8 +5273,8 @@
             "x": "47.5"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3443",
-            "tagLine": 3436,
+            "where": "docs/action_tag_validation_examples.md:3449",
+            "tagLine": 3442,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "example-wfl",
@@ -5293,8 +5293,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3517",
-            "tagLine": 3513,
+            "where": "docs/action_tag_validation_examples.md:3523",
+            "tagLine": 3519,
             "kind": "growth",
             "outcome": "ok, z 0.00",
             "reference": "example-bwga",
@@ -5313,8 +5313,8 @@
             "x": "280"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3518",
-            "tagLine": 3513,
+            "where": "docs/action_tag_validation_examples.md:3524",
+            "tagLine": 3519,
             "kind": "growth",
             "outcome": "soft-low, z -2.82",
             "reference": "example-bwga",
@@ -5333,8 +5333,8 @@
             "x": "286"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3519",
-            "tagLine": 3513,
+            "where": "docs/action_tag_validation_examples.md:3525",
+            "tagLine": 3519,
             "kind": "growth",
             "outcome": "soft-high, z 3.56",
             "reference": "example-bwga",
@@ -5353,8 +5353,8 @@
             "x": "266"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3520",
-            "tagLine": 3513,
+            "where": "docs/action_tag_validation_examples.md:3526",
+            "tagLine": 3519,
             "kind": "growth",
             "outcome": "hard-low, z -5.77",
             "reference": "example-bwga",
@@ -5373,8 +5373,8 @@
             "x": "280"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3521",
-            "tagLine": 3513,
+            "where": "docs/action_tag_validation_examples.md:3527",
+            "tagLine": 3519,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "example-bwga",
@@ -5393,8 +5393,8 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3664",
-            "tagLine": 3660,
+            "where": "docs/action_tag_validation_examples.md:3670",
+            "tagLine": 3666,
             "kind": "growth",
             "outcome": "ok, z -0.23",
             "reference": "who-wfa",
@@ -5413,8 +5413,8 @@
             "x": "100"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:3665",
-            "tagLine": 3660,
+            "where": "docs/action_tag_validation_examples.md:3671",
+            "tagLine": 3666,
             "kind": "growth",
             "outcome": "soft-low, z -3.83",
             "reference": "who-wfa",

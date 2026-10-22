@@ -6911,9 +6911,10 @@ function QRID_ajaxTransport(){
 /* The transport's first name, from when @UVUNIQUE was its only user. */
 var QRID_uniqueTransport = QRID_ajaxTransport;
 function QRIDUniqueInit(QRID_CONFIG){
-  function styleMsg(el, kind){   /* true=free, false=used, "info"=checking */
+  function styleMsg(el, kind){   /* true=free, false=used, "info"=checking, "warn"=could not check */
     var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
           : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
+          : (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
           : "#e0b4b0;background:#fbeceb;color:#c62828";
     el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
@@ -6965,9 +6966,32 @@ function QRIDUniqueInit(QRID_CONFIG){
        re-flip over the same values) into a synchronous render instead of a
        duplicate server request. */
     var answers = QRID_answerCache(16);
-    /* The last payload that got no usable answer: Save does not ask it again
-       (a server that cannot answer would hold every click). */
-    var failedKey = null;
+    /* The last payload that got no usable answer, and why: Save does not ask
+       it again (a server that cannot answer would hold every click). */
+    var failedKey = null, failedWhy = null;
+    var dirty = {};         /* field name => typed since its last change/blur */
+    function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
+    /* No answer: say so on staff forms, as @UVEXISTS does, and never block.
+       A throttled server, a failed read and no answer in time all land here
+       (UNQ-3); before, the notice simply went away. */
+    function unknown(why){
+      if(QRID_IS_SURVEY){ inert(); return; }
+      styleMsg(msg, "warn");
+      QRID_setModeState(input, "q", "warn");
+      setGuard(false);
+      setPending(false);
+      msg.innerHTML = "&#9888; Could not check whether this value is already recorded just now" +
+        (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
+    }
+    /* Throttled: the server answers again within the minute (a refused
+       check does not count toward the limit). A rule that blocks holds the
+       save until then instead of letting an unchecked value through, and
+       Save asks again (UNQ-3). */
+    function held(why){
+      unknown(why);
+      setPending(true);
+      msg.innerHTML += " The save waits until it can be checked.";
+    }
     function renderResp(resp, V){
       if(resp.used){
         styleMsg(msg, false);
@@ -7048,7 +7072,7 @@ function QRIDUniqueInit(QRID_CONFIG){
         renderResp(cached, V); return;
       }
       if(pendingKey === key) return;                    /* already asked; the answer will render */
-      if(saving === true && failedKey === key && !prior){ ++seq; pendingKey = null; inert(); return; }
+      if(saving === true && failedKey === key && !prior){ ++seq; pendingKey = null; unknown(failedWhy); return; }
       function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V); }
       var t = QRID_ajaxTransport();
       if(!t){
@@ -7069,7 +7093,7 @@ function QRIDUniqueInit(QRID_CONFIG){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
           if(prior){ keepPrior(); return; }
-          failedKey = key; inert();
+          failedKey = key; failedWhy = "no answer in time"; unknown(failedWhy);
         }
       }, QRID_PENDING_MS);
       function render(err, resp){
@@ -7084,8 +7108,12 @@ function QRIDUniqueInit(QRID_CONFIG){
             try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
           }
           if(prior){ keepPrior(); return; }
+          if(unsettled && resp.throttled === true && V.blockSave !== "off" && !QRID_IS_SURVEY){
+            failedKey = null; held(typeof resp.why === "string" ? resp.why : null); return;
+          }
           failedKey = key;
-          inert(); return;       /* fail open; the server audit is the net */
+          failedWhy = (resp && typeof resp.why === "string" && resp.why !== "") ? resp.why : null;
+          unknown(failedWhy); return;   /* fail open; the server audit is the net */
         }
         answers.put(key, QRID_stampAnswer(resp));
         renderResp(resp, V);
@@ -7099,27 +7127,52 @@ function QRIDUniqueInit(QRID_CONFIG){
         }
       } catch(e){ render(e, null); }
     }
-    var debounced = QRID_debounced(function(){ check(); });
-    if(input.addEventListener){
-      input.addEventListener("input", debounced);
-      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
-      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    /* Typing clears the verdict; change and blur ask, as @UVEXISTS does
+       (UNQ-3). Asking after every pause sent one request per character, and
+       a clerk entering a few records a minute ran into the server's limit of
+       checks a minute. */
+    function watchTyping(name, el){
+      if(!el || !el.addEventListener) return;
+      el.addEventListener("input", function(){
+        dirty[name] = true;
+        if(name === fieldName || msg.style.display !== "none"){ ++seq; pendingKey = null; inert(); }
+      });
+      var settleNow = function(){ dirty[name] = false; check(); };
+      el.addEventListener("change", settleNow);
+      el.addEventListener("blur", settleNow);
     }
-    /* Save re-judges the field first: a change no event reported (REDCap's
-       radio "reset" link) must not leave a stale verdict deciding the save. */
-    if(GITEM) GITEM.__qridRecheck = function(){ if(debounced.cancel) debounced.cancel(); check(true); };
+    dirty[fieldName] = false;
+    watchTyping(fieldName, input);
+    /* Save re-judges the field first, typing or not: the click ends the
+       typing, and a change no event reported (REDCap's radio "reset" link)
+       must not leave a stale verdict deciding the save. */
+    if(GITEM) GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
     /* watch the field itself and every composite member through the shared
-       when-registry (same trick as QRIDRequiredInit — wiring only) */
+       when-registry (same trick as QRIDRequiredInit — wiring only). Asked
+       at once, unless someone is typing: a picked option or a flipped
+       condition is a settled value, and a typed one asks on change or blur. */
+    var settle = function(){ if(!typing()) check(); };
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
-    if(selfWatch) selfWatch.onChange(function(){ check(); });
+    if(selfWatch) selfWatch.onChange(settle);
     for(var vi = 0; vi < VS.all.length; vi++){
-      if(VS.all[vi].gate) VS.all[vi].gate.onChange(function(){ check(); });
-      if(localGates[vi]) localGates[vi].onChange(function(){ check(); });
+      if(VS.all[vi].gate) VS.all[vi].gate.onChange(settle);
+      if(localGates[vi]) localGates[vi].onChange(settle);
       for(var wj = 0; wj < VS.all[vi].uniqueWith.length; wj++){
-        var ww = QRID_WHEN.gateFor("[" + VS.all[vi].uniqueWith[wj] + "]<>''", null);
-        if(ww) ww.onChange(function(){ check(); });
+        var wname = VS.all[vi].uniqueWith[wj];
+        var ww = QRID_WHEN.gateFor("[" + wname + "]<>''", null);
+        if(ww) ww.onChange(settle);
+        /* typing in a text "with" field is typing too */
+        if(!Object.prototype.hasOwnProperty.call(dirty, wname)){
+          var wel = QRID_findAnchor(wname);
+          var wtag = wel ? (wel.tagName || "").toLowerCase() : "";
+          var wty = wel ? (wel.type || "").toLowerCase() : "";
+          if(wtag === "textarea" || (wtag === "input" && wty !== "hidden" && wty !== "radio" && wty !== "checkbox")){
+            dirty[wname] = false; watchTyping(wname, wel);
+          }
+        }
       }
     }
+
     check();
     return true;
   }
@@ -7258,6 +7311,13 @@ function QRIDExistsInit(QRID_CONFIG){
       setPending(false);
       msg.innerHTML = "&#9888; Could not check this value just now" +
         (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
+    }
+    /* Throttled: as @UVUNIQUE does, a rule that blocks holds the save until
+       the server answers again, and Save asks again (UNQ-3). */
+    function held(V, why){
+      unknown(V, why);
+      setPending(true);
+      msg.innerHTML += " The save waits until it can be checked.";
     }
     /* Write the fields the rule fills: vals is field -> text, and a field it
        does not name keeps what it holds. quiet for the fill made as the page
@@ -7468,7 +7528,11 @@ function QRIDExistsInit(QRID_CONFIG){
           unknown(V, null); return;
         }
         if(resp.state === "unknown" && prior){ keepPrior(); return; }
+        if(resp.state === "unknown" && resp.throttled === true && V.blockSave !== "off" && EDITABLE && !QRID_IS_SURVEY){
+          unanswered = { key: null, why: null }; held(V, typeof resp.why === "string" ? resp.why : null); return;
+        }
         if(resp.state !== "unknown") answers.put(key, QRID_stampAnswer(resp));
+
         else unanswered = { key: key, why: resp.why || null };
         renderResp(resp, V, quiet);
       }

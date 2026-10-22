@@ -2009,15 +2009,14 @@ namespace {
     $res = $m->scanProject(149);
     check('scan: dag-scoped unique ignores cross-DAG repeats', count(scanHits($res, 'unique')) === 0);
 
-    /* M1  a record in NO group cannot be judged by a rule scoped to groups.
+    /* M1, revised by UNQ-1: records in NO group form one group of their own.
      *
-     * The bucket key appends (string) $recDag, and $recDag is null for a record
-     * REDCap returned with no redcap_data_access_group. (string) null is '', so
-     * every ungrouped record in the project fell into ONE bucket and any two of
-     * them sharing a value were reported as duplicates OF EACH OTHER - under a
-     * rule that means "unique within a Data Access Group", for records that are
-     * not in one. Two silent wrongs at once: a violation nobody can act on, and
-     * a green report for a question that was never asked.
+     * The bucket key appends (string) $recDag, '' for a record REDCap returned
+     * with no redcap_data_access_group, so the ungrouped records share one
+     * bucket and are compared with each other only. M1 had the scan refuse
+     * them instead, while the live check compared them with every group and
+     * README described this meaning: three paths, three answers. The live
+     * check and the audit now give the same answer (tests/unique_scope_php.php).
      */
     $scDataNoDag = [
         '1' => [351 => ['record_id' => '1', 'pid' => '70', 'start' => '2024-01-01',
@@ -2029,25 +2028,15 @@ namespace {
                         'redcap_data_access_group' => 'north']],
     ];
     $resND = newModule([], $scDictD, $scDataNoDag, 149)->scanProject(149);
-    check('M1: two records in no group are NOT duplicates of each other',
-        count(scanHits($resND, 'unique')) === 0);
-    // AND IT SAYS SO. Withholding the comparison silently would be the same
-    // false reassurance in the other direction - the report would look clean
-    // for a question nobody answered.
-    check('M1: and the rule is reported as unevaluable for them, not silently skipped',
-        (bool) array_filter($resND['unconfigurable'], function ($u) {
-            return stripos($u['why'], 'not in one') !== false
-                && stripos($u['why'], 'NOT evaluated') !== false;
-        }));
-    // ONE PROBLEM, NOT ONE PER RECORD. $refuse keys $unconf by ruleIndex|suffix,
-    // which is what keeps the report bounded on a project with ten thousand
-    // ungrouped records.
-    check('M1: two ungrouped records produce ONE rule problem, not one each',
-        count(array_filter($resND['unconfigurable'], function ($u) {
-            return stripos($u['why'], 'not in one') !== false;
-        })) === 1);
-    // THE RULE STAYS LIVE. It is the RECORD that cannot be judged, not the rule,
-    // so a genuine within-group duplicate must still be caught in the same run.
+    $ndRecs = [];
+    foreach (scanHits($resND, 'unique') as $v) $ndRecs[(string) $v['record']] = true;
+    check('UNQ-1: two records in no group ARE duplicates of each other',
+        count(scanHits($resND, 'unique')) === 2 && isset($ndRecs['1']) && isset($ndRecs['2']));
+    check('UNQ-1: and the record of group north is not among them', !isset($ndRecs['3']));
+    check('UNQ-1: and the ungrouped records are no rule problem',
+        !array_filter($resND['unconfigurable'], function ($u) { return stripos($u['why'], 'not in one') !== false; }));
+    // A duplicate inside a group is found in the same run, and the two kinds
+    // of group never meet.
     $scDataMixed = $scDataNoDag;
     $scDataMixed['4'] = [351 => ['record_id' => '4', 'pid' => '70', 'start' => '2024-01-01',
                                  'end' => '2024-02-01', 'phone' => '680', 'sid' => 'LOOSE',
@@ -2057,11 +2046,11 @@ namespace {
     foreach (scanHits($resMix, 'unique') as $v) $mixRecs[(string) $v['record']] = true;
     check('M1: a real duplicate INSIDE a group is still found in the same run',
         isset($mixRecs['3']) && isset($mixRecs['4']));
-    check('M1: and the ungrouped records are still not among the duplicates',
-        !isset($mixRecs['1']) && !isset($mixRecs['2']));
+    check('UNQ-1: the ungrouped pair is a duplicate group of its own in the same run',
+        isset($mixRecs['1']) && isset($mixRecs['2']) && count(scanHits($resMix, 'unique')) === 4);
     // THE CONTROL FOR THE SCOPE ITSELF. Under project scope the very same three
-    // records ARE duplicates, so the refusal above is about the dag scope and
-    // not about the fixture.
+    // records ARE all duplicates of one another.
+
     $scDictP = $scDictD;
     $scDictP['sid']['field_annotation'] = '@UVUNIQUE';
     $resProj = newModule([], $scDictP, $scDataNoDag, 149)->scanProject(149);
@@ -2685,14 +2674,21 @@ namespace {
     check('survey budget: spent, a narrowed miss is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
     check('survey budget: ...after the narrowed read alone',
         count(\REDCap::$getDataCalls) === 1 && isset(\REDCap::$getDataCalls[0]['filterLogic']));
-    // A Data Access Group rule never narrows, so its read is budgeted too.
+    // A Data Access Group rule narrows too since its group is read on its own
+    // (UNQ-1): a narrowed hit needs no full read, and a narrowed miss with the
+    // budget spent is "not known".
     $dagDict = $foldDict;
     $dagDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true,"scope":"dag"}';
     $m = newModule([], $dagDict, $f5Data, 149);
     $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
-    check('survey budget: a group rule\'s read is budgeted as well', $r === ['unknown' => true, 'record' => null]);
+    check('survey budget: a group rule\'s narrowed hit is answered', $r === ['used' => true, 'record' => null]);
+    $m = newModule([], $dagDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-404']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: a group rule\'s miss is budgeted as well', $r === ['unknown' => true, 'record' => null]);
     \REDCap::$exactFilter = false;
     // A read that returns no data set settles nothing: live it is "not known",
     // never "free", and after saving it is a rule problem, never a finding.
@@ -2701,7 +2697,9 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => "A'B"]],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     \REDCap::$wholeReadFails = false;
-    check('unique: a failed read answers "not known", not "free"', $r === ['unknown' => true, 'record' => null]);
+    check('unique: a failed read answers "not known", not "free"',
+        ($r['unknown'] ?? null) === true && !isset($r['used']) && is_string($r['why'] ?? null));
+
     $m = newModule([], $f4Dict, [
         '1' => [351 => ['record_id' => '1', 'pid_f' => 'UNIQ-1']],
         '2' => [351 => ['record_id' => '2', 'pid_f' => 'UNIQ-1']],

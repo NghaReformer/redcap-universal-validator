@@ -360,6 +360,10 @@ class UniversalValidator extends AbstractExternalModule
             $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
         }
 
+        // The unique rules of this save share their reads of the whole
+        // project, one per event filter (PRF-1). Every rule below is caught on
+        // its own, so nothing leaves the loop before endUniqueAudit().
+        $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
             if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
             // Each rule is isolated: one rule blowing up must not silently
@@ -406,6 +410,7 @@ class UniversalValidator extends AbstractExternalModule
                 $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
             }
         }
+        $this->endUniqueAudit();
     }
 
     /**
@@ -749,6 +754,17 @@ class UniversalValidator extends AbstractExternalModule
                     $out['invalid'][]=['field'=>$field,'value'=>$value,'algo'=>'unique','type'=>'unique','reason'=>'duplicate-value'];
                 }
                 continue;
+            }
+            // A composite part this context could not read is not a blank
+            // (UNQ-2): compared as one, every reuse at another site was a
+            // duplicate. The scan refuses it in the same words.
+            foreach ($with as $w) {
+                $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => [$field],
+                        'why' => 'the unique rule\'s composite key ' . self::resolutionProblem($state, $w)];
+                    continue 2;
+                }
             }
             $cand = [$field => (string) $value];
             foreach ($with as $w) {
@@ -5489,6 +5505,12 @@ class UniversalValidator extends AbstractExternalModule
                         $errors[] = '"with" must not name a field this rule validates ("' . $f . '").';
                     }
                 }
+                if (!$errors) {
+                    foreach ($fields as $f) {
+                        $p = self::withPlacementProblem($rule['uniqueWith'], $f, $dd, $layout);
+                        if ($p !== null) { $errors[] = $p; break; }
+                    }
+                }
             }
             // "also" fields: exist, hold one value, and store it the way each
             // covered field does. Naming a covered field is refused per field.
@@ -5948,6 +5970,10 @@ class UniversalValidator extends AbstractExternalModule
     {
         $errs = [];
         if (isset($frag['uniqueWith'])) $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+        if (!$errs && isset($frag['uniqueWith']) && is_array($frag['uniqueWith']) && $frag['uniqueWith']) {
+            $p = self::withPlacementProblem($frag['uniqueWith'], $name, $this->dataDictionary($pid), $pid ? $this->eventLayout($pid) : null);
+            if ($p !== null) $errs[] = $p;
+        }
         if (!$errs && isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) {
             $dd = $this->dataDictionary($pid);
             $errs = self::checkUniqueAlso($frag['uniqueAlso'], $name, $types, $dd);
@@ -10273,35 +10299,13 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
-        // M1: A 'dag' SCOPE NEEDS A DAG, AND A RECORD IN NO GROUP HAS NONE.
-        //
-        // The bucket key below appends (string) $recDag, and $recDag is null for
-        // a record REDCap returned with no redcap_data_access_group. (string)
-        // null is '', so every ungrouped record in the project fell into ONE
-        // bucket and any two of them sharing a value were reported as duplicates
-        // OF EACH OTHER - under a rule whose entire meaning is "unique within a
-        // Data Access Group", for records that are not in one. The rule's
-        // question has no answer for these records, and this module's contract
-        // is that an unevaluable condition is reported, never answered wrongly.
-        //
-        // A PROPERTY OF THE RECORD, NOT OF THE RULE. The same rule stays live and
-        // is still evaluated on every record that does have a group; only this
-        // record's contribution is withheld. $refuse() keys $unconf by
-        // ruleIndex|suffix, so a project with ten thousand ungrouped records
-        // produces ONE rule problem rather than ten thousand - which is the
-        // deduplication every other refusal in this function relies on and the
-        // reason the report stays bounded.
-        //
-        // AFTER the composite-key loop above, so a rule broken in two ways
-        // reports the more specific problem first, and a `return` rather than a
-        // `continue`, because the group is a property of the CONTEXT and not of
-        // any one field - matching every other context-level refusal here.
-        if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) {
-            $refuse('this rule requires values to be unique within a Data Access Group, and this '
-                . 'record is not in one, so the rule was NOT evaluated for it. Records with no '
-                . 'group are not compared with each other.', 'dag-no-group');
-            return;
-        }
+        // A 'dag' scope and a record in no group: the bucket key below appends
+        // (string) $recDag, which is '' for such a record, so the records in no
+        // group form one group of their own and are compared with each other
+        // only. That is what README says, what @UVEXISTS does and what the live
+        // check and the audit do (findCollision, UNQ-1). Earlier releases of
+        // the scan refused these records instead (M1), and the three paths
+        // gave three answers.
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -10444,8 +10448,8 @@ class UniversalValidator extends AbstractExternalModule
         $rec = (string) $rec;
         $done = [];
         foreach ($spec['shapes'] as list($with, $scope, $fold)) {
-            // A record in no group has no group to share a value with.
-            if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) continue;
+            // A record in no group shares a value with the other records in
+            // none ('' below), as collectUniqueCandidates keys them (UNQ-1).
             $shape = self::uniqueShape($with, $scope, $fold);
             foreach ($ctxAll as $ctx) {
                 $row = $ctx['values'];
@@ -10690,7 +10694,12 @@ class UniversalValidator extends AbstractExternalModule
                 // A signed-in caller is throttled too, and answered only about
                 // forms they may open: "already used" on a field of a form the
                 // user has no access to is a read of that form by another door.
-                if ($this->signedInRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+                // Its own answer, as exists-check gives it: the page says
+                // "could not check" and why, instead of nothing (UNQ-3).
+                if ($this->signedInRateLimited($project_id)) {
+                    return ['unknown' => true, 'record' => null, 'throttled' => true,
+                            'why' => 'too many checks in the last minute — wait a moment'];
+                }
                 // An "also" field is searched too, so the caller must be able
                 // to open its form as well.
                 $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -10736,14 +10745,23 @@ class UniversalValidator extends AbstractExternalModule
                     $offPage[] = $w;
                 }
                 if ($offPage) {
+                    $withRes = [];
                     try {
-                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
+                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false, $withRes);
                         foreach ($offPage as $w) {
                             if (isset($saved[$w]) && !is_array($saved[$w])) $values[$w] = (string) $saved[$w];
                         }
                     } catch (\Throwable $e) {
-                        // Read failure: keep the client's blank — fails OPEN (never a
-                        // false "used"), consistent with the endpoint's catch-all below.
+                        foreach ($offPage as $w) $withRes[$w] = 'unreadable';
+                    }
+                    // A part that was not read here is not a blank (UNQ-2):
+                    // blank against blank called every reuse at another site
+                    // a duplicate.
+                    foreach ($offPage as $w) {
+                        if (isset($withRes[$w]) && $withRes[$w] !== 'ok') {
+                            return ['unknown' => true, 'record' => null]
+                                + ($isAuthenticated && !$isSurvey ? ['why' => 'the composite key ' . self::resolutionProblem($withRes[$w], $w)] : []);
+                        }
                     }
                 }
             }
@@ -10762,7 +10780,8 @@ class UniversalValidator extends AbstractExternalModule
             // Not settled (the read budget refused the read it needed, or the
             // read failed): not "free", which would let a known duplicate
             // through a save that asked again.
-            if ($col === false) return ['unknown' => true, 'record' => null];
+            if ($col === false) return ['unknown' => true, 'record' => null]
+                + ($isAuthenticated && !$isSurvey ? ['why' => 'the saved values could not be compared just now'] : []);
             if ($col === null) return ['used' => false, 'record' => null];
 
             // The colliding record id goes ONLY to an authenticated user, and a
@@ -10856,7 +10875,11 @@ class UniversalValidator extends AbstractExternalModule
                 if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
-                if ($this->signedInRateLimited($project_id)) return $unknown('too many checks in the last minute — wait a moment');
+                // Flagged, so a rule that blocks holds the save until the next
+                // answer instead of letting the value through (UNQ-3).
+                if ($this->signedInRateLimited($project_id)) {
+                    return $unknown('too many checks in the last minute — wait a moment') + ['throttled' => true];
+                }
                 // Generic on purpose: naming the field would tell the page where
                 // the rule looks. The fields a rule copies ("return") are read
                 // too; another project's are checked there (crossCaller).
@@ -11490,13 +11513,16 @@ class UniversalValidator extends AbstractExternalModule
      * repeating-instrument field is matched exactly the way the Validation scan
      * matches it — the per-save audit and the scan can no longer disagree (H-03).
      * Scopes: project (default), event (same event only), dag (records in the
-     * same Data Access Group — resolved from the current record's saved rows,
-     * falling back to the acting user's group; unresolvable DAG degrades to
-     * project scope, the conservative direction for finding duplicates).
+     * same Data Access Group). Under dag the group of the record being checked
+     * is read before anything else (recordDagOf); a record not saved yet is
+     * created in the acting user's group, or in none. Records in no group are
+     * one group of their own (UNQ-1): they are compared with each other and
+     * with nothing else, as README says and as @UVEXISTS does, in the live
+     * check, the audit and the scan alike.
      * Returns null (no other record holds the value), ['record' => id,
      * 'dag' => nameOrNull, 'field' => the field it was found in], or false
-     * when the lookup could not be settled: the read failed, or $mayFullRead
-     * refused it.
+     * when the lookup could not be settled: a read failed, the group could
+     * not be told, or $mayFullRead refused the read.
      *
      * $also (@UVUNIQUE "also") are other fields the value is looked for in:
      * a value saved in the primary field OR in any of them, in another record,
@@ -11525,6 +11551,22 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($target[$field] === '') return null;
 
+        // The group to stay in under "dag": '' is the group of records in no
+        // group, and a group whose name cannot be read is not that (UNQ-1).
+        $currentDag = null;
+        if ($scope === 'dag') {
+            $rd = $this->recordDagOf($pid, $excludeRecord);
+            if ($rd === false) return false;
+            if ($rd['found']) {
+                $currentDag = (string) $rd['dag'];
+            } elseif ($groupId !== null && $groupId !== '') {
+                $currentDag = ScanPageView::dagNameOf($groupId);
+                if ($currentDag === null) return false;
+            } else {
+                $currentDag = '';
+            }
+        }
+
         $params = [
             'project_id'    => $pid,
             'return_format' => 'array',
@@ -11541,22 +11583,20 @@ class UniversalValidator extends AbstractExternalModule
         // exact comparison below stays authoritative and the post-save audit (which
         // never narrows) is the correctness backstop, so this only ever saves work:
         // it can never turn a real duplicate into a missed save.
-        // F4-DAG-01: dag scope must NOT narrow — a value-filtered read drops the
-        // current record (whose saved value differs from the candidate being typed)
-        // from the result, so its DAG can no longer be resolved from the record node
-        // and a no-DAG acting user (group_id null) would silently degrade to project
-        // scope, falsely flagging a collision in another DAG. Keep the full scan for
-        // dag scope; narrowing (the F4 amplification guard) applies to project/event.
+        // F4-DAG-01: dag scope did not narrow, because the group of the current
+        // record was read from its node in the result, which a value-filtered
+        // read leaves out. The group is now read on its own above, so dag scope
+        // narrows like the others.
         //
         // Only a hit settles the lookup here; a miss falls through to the full
         // read (collisionFilterLogic says why).
-        if ($narrow && $scope !== 'dag') {
+        if ($narrow) {
             $fl = self::collisionFilterLogic($need, $target, $fold, $marks, $also);
             if ($fl !== null) {
                 try {
                     $n = \REDCap::getData($params + ['filterLogic' => $fl]);
                     if (is_array($n)) {
-                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
+                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
                         if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
@@ -11565,9 +11605,139 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         if ($mayFullRead !== null && !call_user_func($mayFullRead)) return false;
+        $shared = $this->sharedCollisionRead($params);
+        if ($shared !== null) {
+            if ($shared === false) return false;
+            return $this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+        }
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
-        return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
+        return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The save audit's shared read for $params (PRF-1): the event filter it
+     * belongs to, or false when that read failed. Null outside the audit, or
+     * for fields the audit did not plan, and the caller reads on its own.
+     *
+     * In the save audit (beginUniqueAudit) every unique rule of the save
+     * shares one read per event filter, of the union of their fields, and a
+     * rule compares only the records that hold its value (collisionInShared).
+     * Before, every unique field of a save exported the whole project again
+     * and built every record's contexts.
+     */
+    private function sharedCollisionRead(array $params)
+    {
+        $plan = $this->uniqueAuditPlan;
+        if ($plan === null || (int) $plan['pid'] !== (int) $params['project_id']) return null;
+        $ek = isset($params['events']) ? implode(',', $params['events']) : '*';
+        $union = isset($plan['fields'][$ek]) ? $plan['fields'][$ek] : [];
+        if (array_diff($params['fields'], $union)) return null;
+        if (!array_key_exists($ek, $this->uniqueAuditReads)) {
+            $data = \REDCap::getData(['fields' => $union] + $params);
+            if (!is_array($data)) {
+                $this->uniqueAuditReads[$ek] = false;
+            } else {
+                $recs = [];
+                foreach ($data as $rec => $node) {
+                    if (is_array($node)) $recs[] = [(string) $rec, $node];
+                }
+                $this->uniqueAuditReads[$ek] = ['records' => $recs];
+            }
+        }
+        return $this->uniqueAuditReads[$ek] === false ? false : $ek;
+    }
+
+    /**
+     * collisionIn over the shared read $ek: the same answer, the same first
+     * match in record order. One pass over each searched field's values finds
+     * the records that hold the value's key, and collisionIn compares only
+     * those, so no per-record context is built for the others.
+     */
+    private function collisionInShared($ek, array $target, array $keys, array $marks, $fold, $currentDag, $excludeRecord, array $codes = [], array $also = [])
+    {
+        reset($target);
+        $primary = key($target);
+        $records = $this->uniqueAuditReads[$ek]['records'];
+        $hits = [];
+        foreach (array_merge([$primary], $also) as $f) {
+            $mark = isset($marks[$f]) ? $marks[$f] : null;
+            $key = Logic::lookupKey($target[$primary], $fold, $mark);
+            foreach ($records as $ord => $r) {
+                if (isset($hits[$ord])) continue;
+                foreach (self::contextValuesOf($r[1], $f) as $v) {
+                    if ($v === null || is_array($v)) continue;
+                    $rv = Logic::lookupTrim($v);
+                    if ($rv !== '' && Logic::lookupKey($rv, $fold, $mark) === $key) { $hits[$ord] = true; break; }
+                }
+            }
+        }
+        if (!$hits) return null;
+        ksort($hits);
+        $subset = [];
+        foreach (array_keys($hits) as $o) $subset[$records[$o][0]] = $records[$o][1];
+        return self::collisionIn($subset, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The value of $f in each context recordContexts($node) gives, in the
+     * same order, without building the contexts: a repeat instance holds its
+     * own non-blank value, or else its event's.
+     */
+    private static function contextValuesOf(array $node, $f)
+    {
+        $out = [];
+        foreach ($node as $k => $row) {
+            if ($k === 'repeat_instances' || !is_array($row)) continue;
+            $out[] = (isset($row[$f]) && $row[$f] !== '') ? $row[$f] : null;
+        }
+        if (isset($node['repeat_instances']) && is_array($node['repeat_instances'])) {
+            foreach ($node['repeat_instances'] as $evt => $byInstr) {
+                if (!is_array($byInstr)) continue;
+                $base = (isset($node[$evt]) && is_array($node[$evt]) && isset($node[$evt][$f]) && $node[$evt][$f] !== '') ? $node[$evt][$f] : null;
+                foreach ($byInstr as $byInst) {
+                    if (!is_array($byInst)) continue;
+                    foreach ($byInst as $row) {
+                        if (!is_array($row)) continue;
+                        $out[] = (isset($row[$f]) && $row[$f] !== '') ? $row[$f] : $base;
+                    }
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** @var array|null pid and event filter => fields the save's unique rules read (sharedCollisionRead) */
+    private $uniqueAuditPlan = null;
+    /** @var array event filter => the shared read of this save's audit, prepared, or false when it failed */
+    private $uniqueAuditReads = [];
+
+
+    /**
+     * Start sharing the full reads of the unique rules among $rules for one
+     * save of a record in $pid on $event_id. endUniqueAudit() drops them.
+     */
+    private function beginUniqueAudit(array $rules, $pid, $event_id)
+    {
+        $fields = [];
+        foreach ($rules as $r) {
+            if (!empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+            foreach (self::uniqueVariants($r) as $v) {
+                $scope = isset($v['uniqueScope']) ? $v['uniqueScope'] : (isset($r['uniqueScope']) ? $r['uniqueScope'] : 'project');
+                $ek = ($scope === 'event' && $event_id) ? (string) $event_id : '*';
+                $with = (isset($v['uniqueWith']) && is_array($v['uniqueWith'])) ? $v['uniqueWith'] : [];
+                $also = (isset($v['uniqueAlso']) && is_array($v['uniqueAlso'])) ? $v['uniqueAlso'] : [];
+                foreach (array_merge($r['fields'], $with, $also) as $f) $fields[$ek][(string) $f] = true;
+            }
+        }
+        $this->uniqueAuditReads = [];
+        $this->uniqueAuditPlan = $fields ? ['pid' => (int) $pid, 'fields' => array_map('array_keys', $fields)] : null;
+    }
+
+    private function endUniqueAudit()
+    {
+        $this->uniqueAuditPlan = null;
+        $this->uniqueAuditReads = [];
     }
 
     /**
@@ -11575,9 +11745,10 @@ class UniversalValidator extends AbstractExternalModule
      * ['record','dag','field'], or null. The primary value is looked for in
      * the primary field and then in each of $also, keyed with that field's
      * own number mark; the composite components must match in the same
-     * merged context either way.
+     * merged context either way. $currentDag is the group to stay in ('' for
+     * records in no group), or null when the scope is not "dag".
      */
-    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $scope, $excludeRecord, $groupId, array $codes = [], array $also = [])
+    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $currentDag, $excludeRecord, array $codes = [], array $also = [])
     {
         reset($target);
         $primary = key($target);
@@ -11585,21 +11756,12 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($also as $a) {
             $slots[$a] = Logic::lookupKey($target[$primary], $fold, isset($marks[$a]) ? $marks[$a] : null);
         }
-        $currentDag = null;
-        if ($scope === 'dag') {
-            if ($excludeRecord !== null && $excludeRecord !== '' && isset($data[$excludeRecord]) && is_array($data[$excludeRecord])) {
-                $currentDag = self::dagOfRecordNode($data[$excludeRecord]);
-            }
-            if ($currentDag === null && $groupId !== null && $groupId !== '') {
-                $currentDag = ScanPageView::dagNameOf($groupId);
-            }
-        }
 
         foreach ($data as $rec => $node) {
             if ($excludeRecord !== null && $excludeRecord !== '' && (string) $rec === (string) $excludeRecord) continue;
             if (!is_array($node)) continue;
             $dag = self::dagOfRecordNode($node);
-            if ($scope === 'dag' && $currentDag !== null && $dag !== $currentDag) continue;
+            if ($currentDag !== null && (string) $dag !== $currentDag) continue;
             // Compare against MERGED contexts (base event row + each repeat
             // instance), not raw rows, so a composite spanning an event field and a
             // repeat-instrument field is detected — the same view the scan uses (H-03).
@@ -12258,6 +12420,51 @@ class UniversalValidator extends AbstractExternalModule
         }
         $this->eventLayoutCache[$ck] = $out;
         return $out;
+    }
+
+    /**
+     * Why a @UVUNIQUE "with" field can never be read beside the tagged field,
+     * or null (UNQ-2). The composite key is read in the context the tagged
+     * field is saved in, so some event must hold both fields' instruments,
+     * and in that event the "with" field must not sit on a repeating
+     * instrument of its own: no instance of it belongs to the tagged field's
+     * entry. A rule placed so is refused when it is read; before, the live
+     * check and the audit compared the part as a blank and the scan refused
+     * the rule at run time. $layout is eventLayout(); null claims nothing.
+     */
+    private static function withPlacementProblem(array $with, $field, $dd, $layout)
+    {
+        if (!is_array($layout) || !is_array($dd)) return null;
+        $formOf = function ($f) use ($dd) {
+            return isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : null;
+        };
+        $ft = $formOf($field);
+        if ($ft === null) return null;
+        foreach ($with as $w) {
+            $fw = $formOf($w);
+            if ($fw === null || $fw === $ft) continue;
+            $held = false;
+            $paired = false;
+            foreach ($layout as $ev) {
+                if ($ev['forms'] !== null && (!isset($ev['forms'][$ft]) || !isset($ev['forms'][$fw]))) continue;
+                $held = true;
+                // In an event that repeats as a whole, its forms share an
+                // instance. Otherwise a repeating form of the "with" field has
+                // no instance that belongs to the tagged field's entry.
+                if ($ev['repeatEvent'] || $ev['repeat'] === null || !isset($ev['repeat'][$fw])) { $paired = true; break; }
+            }
+            if (!$held) {
+                return '"with" field "' . $w . '" is collected in no event with "' . $field . '", so the composite '
+                    . 'key could never be read beside it and the rule would never be checked. Keep both fields '
+                    . 'in the same event.';
+            }
+            if (!$paired) {
+                return '"with" field "' . $w . '" is on the repeating instrument "' . $fw . '" in every event that holds "'
+                    . $field . '", and no instance of it belongs to the entry of "' . $field . '", so the rule would '
+                    . 'never be checked. Put both fields on the same instrument, or use a "with" field that does not repeat.';
+            }
+        }
+        return null;
     }
 
     /**
