@@ -156,6 +156,18 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
+     * The highest policy revision of the project's runs, 1 when it has none:
+     * what a new run starts at (W10A-N1). One statement over the project's
+     * own rows (ix_project_created), which retention keeps few.
+     */
+    private function projectRevision($pid)
+    {
+        $r = $this->db->select('SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ?', [(int) $pid]);
+        return isset($r[0][0]) && (int) $r[0][0] > 1 ? (int) $r[0][0] : 1;
+    }
+
+    /**
      * A claim token for one claim, drawn from the run's own project sequence.
      *
      * NOT A RANDOM NUMBER, and not a timestamp. Random would be adequate for
@@ -225,6 +237,12 @@ final class SqlScanStore implements ScanStore
         $gen = (isset($run['run_kind']) && $run['run_kind'] === 'incremental'
                 && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
             ? (int) $run['baseline_generation'] : $seq;
+        // AT THE PROJECT'S REVISION NOW (W10A-N1), outside the insert's try
+        // for the reason above. A run that started at 1 after the retention
+        // cron moved the project's runs to a higher revision sat below it, so
+        // a repeat of that bump expired the previews of a run planned under
+        // the policy that caused it (ScanRetention::revokePreviews()).
+        $rev = isset($run['policy_revision']) ? (int) $run['policy_revision'] : $this->projectRevision($pid);
 
         $sql = 'INSERT INTO ' . Schema::table('scan_run') . '
             (run_uuid, project_id, run_seq, generation_id, created_by, scope_dag, scope_kind,
@@ -246,7 +264,7 @@ final class SqlScanStore implements ScanStore
             'planning', ScanOutcome::COV_PARTIAL, ScanOutcome::DETAIL_COMPLETE,
             isset($run['values_state']) ? $run['values_state'] : 'none',
             isset($run['policy_json']) ? $run['policy_json'] : '{}',
-            isset($run['policy_revision']) ? $run['policy_revision'] : 1,
+            $rev,
             isset($run['fingerprint']) ? $run['fingerprint'] : str_repeat('0', 64),
             isset($run['fence_open']) ? $run['fence_open'] : null,
             $now, $now,
@@ -318,9 +336,11 @@ final class SqlScanStore implements ScanStore
         // THE COLUMNS AND THE KEYS ARE ONE LIST - ScanStore::RUN_COLUMNS, which
         // says why. Every name in it is a column of scan_run, so it can be
         // imploded straight into the statement; nothing here comes from a caller.
+        // Not a run retention has begun removing (see ScanStore::run()).
         $r = $this->db->select('SELECT ' . implode(', ', self::RUN_COLUMNS) . '
-            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?',
-            [$runId, $pid]);
+            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?
+              AND (terminal_reason IS NULL OR terminal_reason <> ?)',
+            [$runId, $pid, self::REMOVING_WHY]);
         if (!isset($r[0])) return null;
         $row = array_values((array) $r[0]);
         if (count($row) !== count(self::RUN_COLUMNS)) {
@@ -1888,6 +1908,40 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
+     * An active run past the stale window that no worker holds, as a condition
+     * over uv_scan_run's own columns, with its parameters in order.
+     *
+     * ONE DEFINITION FOR EVERY READER THAT DECIDES ABANDONMENT: this store's
+     * read and its write, the cron's census (ScanMaintenance) and
+     * ScanRetention's installation-wide read. They were four copies of one
+     * predicate, and all four judged every phase by `progress_at`.
+     *
+     * THE CLOCK IS THE STATUS PAGE'S (ScanService::progressOf()). In the
+     * phases of ScanPhase::ON_THE_UPDATE_CLOCK - catch-up and the two
+     * finalizers - nothing moves `progress_at` and nothing renews the lease,
+     * while every step moves `updated_at`; so a run finalising for longer than
+     * the window after its last record was expired as abandoned by the cron or
+     * by another user's Start, while the page showed it working (review
+     * rv10a1-1). Those phases are judged by the later of the two. Every other
+     * phase keeps `progress_at` alone: in scanning, claim() moves `updated_at`
+     * on a run whose every batch is refused, which is the wedge the progress
+     * clock exists to catch.
+     *
+     * @param string $cut the window's start, 'Y-m-d H:i:s' UTC
+     * @param string $at  now, the same form, for the lease
+     * @return array{0:string, 1:array}
+     */
+    public static function staleWhere($cut, $at)
+    {
+        $phases = array_values(ScanPhase::ON_THE_UPDATE_CLOCK);
+        return ['active_slot = 1 AND (CASE WHEN phase IN (' . implode(', ', array_fill(0, count($phases), '?')) . ')'
+            . ' THEN GREATEST(COALESCE(progress_at, created_at), updated_at)'
+            . ' ELSE COALESCE(progress_at, created_at) END) < ?'
+            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)',
+            array_merge($phases, [(string) $cut, (string) $at])];
+    }
+
+    /**
      * See ScanStore::expireAbandoned(): one fenced UPDATE, then the audit row.
      *
      * READ, THEN WRITE UNDER THE SAME PREDICATE. The audit has to name the
@@ -1898,6 +1952,15 @@ final class SqlScanStore implements ScanStore
      * again, so a run that moved between the two is not touched, and its
      * count decides whether there is anything to audit.
      *
+     * THE WRITE AND ITS AUDIT ARE ONE TRANSACTION (review rv10a1-5). The audit
+     * was a statement of its own after the UPDATE had committed, so an audit
+     * insert that failed left a run expired with no record of who expired it,
+     * for ever - the next pass finds nothing stale - while the cron logged the
+     * work as rolled back. Now a failed audit rolls the expiry back with it,
+     * the run is still stale, and the next pass or Start does both. The read
+     * stays outside: in the common case it is the only statement, and it
+     * opens no transaction.
+     *
      * The row is finish()'s for derive(['expired' => true]), column for column,
      * with the lease epoch moved in the same statement (Risk 5).
      */
@@ -1907,30 +1970,39 @@ final class SqlScanStore implements ScanStore
         $hours = max(1, (int) $staleHours);
         $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
         $at = gmdate('Y-m-d H:i:s', $t);
-        $stale = ' WHERE project_id = ? AND active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-               . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)';
+        $w = self::staleWhere($cut, $at);
+        // Not a run somebody stopped: it ends as cancelled, by the finisher
+        // Stop uses, never as abandoned (review rv10a1-2).
+        $stale = ' WHERE project_id = ? AND phase <> ? AND ' . $w[0];
+        $bind = array_merge([(int) $pid, ScanPhase::CANCELLING], $w[1]);
         try {
-            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale,
-                [(int) $pid, $cut, $at]);
-            if (!isset($r[0][0])) return 0;
-            $runId = (int) $r[0][0];
-            $o = ScanOutcome::derive(['expired' => true]);
+            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale, $bind);
+        } catch (\Throwable $e) {
+            throw $this->unavailable($e);
+        }
+        if (!isset($r[0][0])) return 0;
+        $runId = (int) $r[0][0];
+        $o = ScanOutcome::derive(['expired' => true]);
+        $this->db->begin();
+        try {
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET phase = ?, terminal = ?, coverage = ?, detail = ?, active_slot = NULL,
                     terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = 0,
                     not_examined = 0, lease_epoch = lease_epoch + 1, updated_at = ?'
                 . $stale . ' AND run_id = ?',
-                [ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
-                 substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'],
-                 $at, (int) $pid, $cut, $at, $runId]);
-            if ($this->db->affected() !== 1) return 0;
-        } catch (ScanStoreUnavailable $e) {
-            throw $e;
+                array_merge([ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
+                    substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'], $at],
+                    $bind, [$runId]));
+            if ($this->db->affected() !== 1) {
+                $this->db->rollback();
+                return 0;
+            }
+            $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
+                json_encode(['stale_hours' => $hours]));
+            $this->db->commit();
         } catch (\Throwable $e) {
-            throw $this->unavailable($e);
+            throw $this->rolledBack($e);
         }
-        $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
-            json_encode(['stale_hours' => $hours]));
         return 1;
     }
 

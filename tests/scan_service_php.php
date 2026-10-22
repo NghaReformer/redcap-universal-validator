@@ -791,8 +791,17 @@ namespace {
                 if (strpos($sql, 'log_event_id > ?') !== false) return [];
                 if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [['1']];
                 if (strpos($s, 'SELECT MAX(log_event_id)') === 0) {
-                    // The fence's own read, not the capability probe's MAX+COUNT.
-                    if ($this->logFails > 0 && strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) {
+                    // The fence's own read, not the capability probe's. Since
+                    // W8-N11 the two send the same statement, so the caller
+                    // tells them apart.
+                    $probe = false;
+                    foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 12) as $f) {
+                        if (isset($f['class']) && $f['class'] === 'INSPIRE\\UniversalValidator\\ScanCapabilities') {
+                            $probe = true;
+                            break;
+                        }
+                    }
+                    if ($this->logFails > 0 && !$probe) {
                         $this->logFails--;
                         throw new \RuntimeException('MySQL server has gone away', 2006);
                     }
@@ -877,6 +886,27 @@ namespace INSPIRE\UniversalValidator\Scan {
     $mod3->sys[ScanService::SYS_FLAG] = 'no';
     $mod3->proj[ScanService::PROJ_FLAG] = 'no';
     check('service: nor does "no"', (new ScanService($mod3))->available(1)['ok'] === false);
+
+    // -- A MODULE BEING SWITCHED OFF REFUSES START AND WORK (review rv10a2-3) --
+    //
+    // The disable hook stops every run while the module still answers; a Start
+    // in that window made a run the hook had walked past.
+    $dis = new \FakeModule();
+    $dis->sys[ScanService::SYS_FLAG] = '1';
+    $dis->proj[ScanService::PROJ_FLAG] = '1';
+    $dis->sys[ScanService::DISABLED_AT] = (string) time();
+    $dv = (new ScanService($dis))->available(1);
+    check('service: while the module is being switched off, Start and work are refused, and told why',
+        $dv['ok'] === false && strpos($dv['why'], 'being switched off') !== false);
+    $dis->sys[ScanService::ENABLED_AT] = (string) (time() + 1);
+    $dv = (new ScanService($dis))->available(1);
+    check('service: an enable after the disable lifts that refusal',
+        strpos((string) $dv['why'], 'being switched off') === false);
+    unset($dis->sys[ScanService::ENABLED_AT]);
+    $dis->sys[ScanService::DISABLED_AT] = (string) (time() - ScanService::DISABLING_SECONDS - 1);
+    $dv = (new ScanService($dis))->available(1);
+    check('service: and with no enable hook it ends by itself, so a missed hook cannot refuse every scan',
+        strpos((string) $dv['why'], 'being switched off') === false);
 
     // -- the flag answer discloses nothing about the installation ------------
     //

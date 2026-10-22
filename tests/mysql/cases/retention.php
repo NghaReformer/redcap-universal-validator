@@ -180,6 +180,28 @@ $prefix = function ($key, $table, $n) use ($A) {
         . 'however old updated_at looks',
         $ret->expireAbandoned(1) === 0);
 
+    // IN A FINALISING PHASE updated_at IS PROGRESS TOO (review rv10a1-1):
+    // nothing there moves progress_at, every step moves updated_at, and the
+    // status page reads the later of the two. The installation-wide read
+    // names no project for such a run, however old its last record.
+    $phaseWas = $store->run(800, $rid)['phase'];
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'unique-finalize',"
+        . " progress_at = '2000-01-01 00:00:00', updated_at = UTC_TIMESTAMP() WHERE run_id = " . $rid);
+    $recR = new UvRecordingDb($dbA);
+    check('retention: a run finalising now is not abandoned, and no project is named for it',
+        (new \INSPIRE\UniversalValidator\Scan\ScanRetention($recR))->expireAbandoned(1) === 0
+        && $recR->matching('select', array('SELECT run_id FROM')) === array());
+    // Nor is a run somebody stopped, however stale (review rv10a1-2): it ends
+    // as cancelled, by the finisher Stop uses.
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'cancelling', updated_at = '2000-01-01 00:00:00'"
+        . ' WHERE run_id = ' . $rid);
+    $recR = new UvRecordingDb($dbA);
+    check('retention: a stale run left cancelling is not abandoned, and no project is named for it',
+        (new \INSPIRE\UniversalValidator\Scan\ScanRetention($recR))->expireAbandoned(1) === 0
+        && $recR->matching('select', array('SELECT run_id FROM')) === array());
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . $phaseWas . "',"
+        . ' progress_at = UTC_TIMESTAMP() WHERE run_id = ' . $rid);
+
     // Now age the PROGRESS clock, which is the one the predicate reads.
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET progress_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
@@ -357,6 +379,38 @@ $REV = 820;
     $bkey = $bump ? uv_explain_key($A, $bump[0][1], $bump[0][2]) : '';
     check('revoke: and the bump touches this project\'s runs through a project-leading key',
         $bkey !== '' && $prefix($bkey, 'scan_run', 1) === ['project_id']);
+}
+
+// -- A RUN STARTED AFTER A BUMP IS NOT REACHED BY ITS REPEAT (W10A-N1) ---------
+//
+// Project 822's finished run keeps previews; the cron moves the project to
+// revision 5. A run started after that was planned under the policy that
+// caused the bump, and starts at 5. A pass that died between the bump and
+// its checkpoint repeats the bump with the same revision: the new run, and
+// the previews it writes, are left alone.
+{
+    $T = 822;
+    $before = $plantRun($dbA, $T, 2, '2999-01-01 00:00:00');
+    $ret = new ScanRetention($dbA);
+    $ret->revokePreviews($T, 5, null, 50);
+    $rec = new UvRecordingDb($dbA);
+    $after = $plantRun($rec, $T, 2, '2999-01-01 00:00:00', false, ['values_state' => 'value']);
+    $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$after['run']]);
+    check('revision: a run started after the bump starts at the revision it wrote',
+        is_array($before) && is_array($after) && (int) $row[0][0] === 5 && $row[0][1] === 'value');
+    $read = $rec->matching('select', ['SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')]);
+    $rkey = $read ? uv_explain_key($A, $read[0][1], $read[0][2]) : '';
+    echo '  plan start revision read: ' . ($read ? implode(' ', uv_explain_rows($A, $read[0][1], $read[0][2])) : '-') . "\n";
+    check('revision: and the start reads it in one statement, through a project-leading key',
+        count($read) === 1 && $rkey !== '' && $prefix($rkey, 'scan_run', 1) === ['project_id']);
+    $again = $ret->revokePreviews($T, 5, null, 50);
+    $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$after['run']]);
+    check('revision: so a repeat of that bump moves no run, and the new run keeps its previews',
+        $again['runs'] === 0 && (int) $row[0][0] === 5 && $row[0][1] === 'value'
+        && $count($dbA, 'project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', [$T, $after['gen']]) === 2);
+    uv_clear_project($dbA, $T);
 }
 
 // -- A REVOKE CURSOR IS GOOD ONLY FOR THE PROJECT IT WAS ISSUED FOR (R8-3) ----

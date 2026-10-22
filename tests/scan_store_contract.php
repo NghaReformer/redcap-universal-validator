@@ -35,9 +35,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            the run's plan row, which nothing in the module
  *                            does while a run plans (review R5-9). Null skips
  *                            that case.
+ * @param callable|null $setRun (ScanStore $store, int $runId, array $cols) => void:
+ *                            write run columns as stored, standing in for the
+ *                            hours between two writes that the reaper's clocks
+ *                            measure (review rv10a1-1). Null skips those cases.
  */
 function storeContract(callable $newStore, $label, callable $age, ?callable $clocked = null,
-                       ?callable $dropPlan = null)
+                       ?callable $dropPlan = null, ?callable $setRun = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -1619,6 +1623,71 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('depart: a batch that commits a record departed closes its findings with it',
         $okD4 && $activeD() === ['L1', 'L3']
         && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
+    // A RUN SOMEBODY STOPPED IS NOT ABANDONED (review rv10a1-2), however long
+    // it has sat in `cancelling`: it ends as cancelled, by the finisher Stop
+    // uses, and an expiry would write "abandoned" over the stop.
+    $sc = $newStore();
+    $rc = (int) $sc->startRun(792, ['created_by' => 'alice'])['run']['run_id'];
+    $sc->cancel(792, $rc, 'alice');
+    $C('reap: a run left cancelling is not expired, however stale',
+        $sc->expireAbandoned(792, 24, 'cron', $later) === 0
+        && $sc->run(792, $rc)['phase'] === ScanPhase::CANCELLING && $sc->run(792, $rc)['terminal'] === null);
+
+    // THE CLOCK IS THE STATUS PAGE'S (review rv10a1-1). In catch-up and the two
+    // finalizers nothing moves progress_at and nothing renews the lease, and
+    // every step moves updated_at: the last record finished thirty hours ago,
+    // the finalizer touched the run five seconds ago, and the page calls it
+    // working. Scanning keeps the progress clock, because there updated_at is
+    // what a claim refreshes on a run whose every batch is refused.
+    if ($setRun !== null) {
+        $long = gmdate('Y-m-d H:i:s', time() - 30 * 3600);
+        $recent = gmdate('Y-m-d H:i:s', time() - 5);
+        foreach (array_merge(ScanPhase::ON_THE_UPDATE_CLOCK, [ScanPhase::SCANNING]) as $i => $ph) {
+            $sp = $newStore();
+            $pp = 788 + $i;
+            $rp = (int) $sp->startRun($pp, ['created_by' => 'alice'])['run']['run_id'];
+            $setRun($sp, $rp, ['phase' => $ph, 'progress_at' => $long, 'updated_at' => $recent,
+                               'lease_expires_at' => null]);
+            $onUpdate = $ph !== ScanPhase::SCANNING;
+            $C('reap: in ' . $ph . ', a run touched seconds ago after thirty hours without a record '
+                . ($onUpdate ? 'is working, not abandoned' : 'is abandoned: a touch is no progress there'),
+                $sp->expireAbandoned($pp, 24, 'cron') === ($onUpdate ? 0 : 1));
+            if (!$onUpdate) continue;
+            $setRun($sp, $rp, ['updated_at' => $long]);
+            $C('reap: and in ' . $ph . ', once nothing has touched it for the window either, it is expired',
+                $sp->expireAbandoned($pp, 24, 'cron') === 1
+                && $sp->run($pp, $rp)['terminal'] === ScanOutcome::EXPIRED);
+        }
+
+        // A RUN RETENTION HAS BEGUN REMOVING IS NO RUN (review rv10a1-3).
+        // purgeRuns() marks the row before its first page and deletes it after
+        // its last; in between, every reader answers as it will afterwards.
+        $sm = $newStore();
+        $rm = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rm, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $rn = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rn, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $C('remove: a finished run reads as itself', $sm->run(793, $rm) !== null);
+        $setRun($sm, $rm, ['terminal_reason' => ScanStore::REMOVING_WHY]);
+        $C('remove: once retention has begun removing it, it reads as no run, and the next run is untouched',
+            $sm->run(793, $rm) === null && $sm->run(793, $rn) !== null);
+
+        // A RUN STARTS AT ITS PROJECT'S REVISION NOW (W10A-N1). The retention
+        // cron moves a project's runs to a higher revision when its privacy
+        // policy tightens; a run started after that starts there, not at 1,
+        // so a repeat of the bump does not reach it. Another project's
+        // revision is not this one's.
+        $sv = $newStore();
+        $ra = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $C('revision: a project\'s first run starts at revision 1', (int) $ra['policy_revision'] === 1);
+        $sv->finish((int) $ra['run_id'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $setRun($sv, (int) $ra['run_id'], ['policy_revision' => 3]);
+        $rb = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $rc = $sv->startRun(795, ['created_by' => 'alice'])['run'];
+        $C('revision: a later run starts at the project\'s highest revision, and only its own project\'s',
+            (int) $rb['policy_revision'] === 3 && (int) $sv->run(794, (int) $rb['run_id'])['policy_revision'] === 3
+            && (int) $rc['policy_revision'] === 1);
+    }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

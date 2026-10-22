@@ -268,8 +268,21 @@ interface ScanStore
      */
     public function startRun($pid, array $run);
 
-    /** One run by id, bound to $pid, or null. The id is a locator, not a right. */
+    /**
+     * One run by id, bound to $pid, or null. The id is a locator, not a right.
+     *
+     * NULL FOR A RUN BEING REMOVED (review rv10a1-3). ScanRetention::purgeRuns()
+     * takes a large run apart a page per call across cron passes, its run row
+     * last; it marks the row with REMOVING_WHY before anything goes. Read in
+     * between, the run said `complete` with 0 records done and 0 findings
+     * while its findings were still stored: a report that silently lost rows.
+     * Every reader comes through here, so from the first page on they all
+     * answer as they will once the row is gone.
+     */
     public function run($pid, $runId);
+
+    /** terminal_reason of a finished run that retention has begun removing; see run(). */
+    const REMOVING_WHY = 'this scan was kept longer than its project keeps scans, and is being removed';
 
     /**
      * Freeze the manifest: write every in-scope record id with its ordinal, then
@@ -658,6 +671,17 @@ interface ScanStore
      * project's one active slot for nobody: its tab closed, its worker died or
      * its request was killed. It becomes terminally `expired` and the slot is
      * free.
+     *
+     * THE CLOCK IS THE ONE THE STATUS PAGE READS (ScanService::progressOf()).
+     * In the phases of ScanPhase::ON_THE_UPDATE_CLOCK it is the later of the
+     * progress clock and updated_at, because their work moves only the second;
+     * judged by progress_at alone, a run finalising for longer than the window
+     * was reaped while the page showed it working (review rv10a1-1).
+     *
+     * NOT A RUN SOMEBODY STOPPED. A run left `cancelling` ends as cancelled,
+     * by ScanPromotion::finishCancelled() (Start's reap and the cron's), never
+     * as expired: an expiry wrote "abandoned" over the user's stop and over
+     * the reason a disable gave (review rv10a1-2).
      *
      * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
      * in it on purpose:

@@ -165,8 +165,10 @@ final class ScanRetention
      * A NULL REVISION BUMPS NOTHING and only carries the clearing on. The
      * cron's later calls for one revocation pass null (wave 10): a run
      * started after the bump was planned under the policy that caused it, and
-     * a repeated bump would mark its values expired too. Every run starts at
-     * revision 1, so "below the revision" does not tell such a run apart.
+     * a repeated bump would mark its values expired too. Such a run starts
+     * at the project's revision, the one the bump wrote (W10A-N1), so a
+     * repeat of the same bump - a pass that died between the bump and its
+     * checkpoint - leaves it alone as well.
      *
      * @param int|null   $newRevision the revision to move the project's runs
      *                           to, or null to bump nothing
@@ -267,7 +269,7 @@ final class ScanRetention
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
         $cut = self::daysAgo($olderThanDays);
-        $run = $this->db->select('SELECT run_id, generation_id FROM ' . Schema::table('scan_run')
+        $run = $this->db->select('SELECT run_id, generation_id, terminal_reason FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?'
             . ' ORDER BY run_id LIMIT 1', [$pid, $cut]);
         if (!isset($run[0])) {
@@ -275,6 +277,20 @@ final class ScanRetention
         }
         $runId = (int) $run[0][0];
         $gen   = (int) $run[0][1];
+
+        // MARKED BEFORE ANYTHING IT OWNS GOES (review rv10a1-3). A run of
+        // 500,000 records is about a hundred manifest pages and two hundred
+        // finding pages, one or more cron passes, and its row stays until the
+        // last; read in between, it said `complete` with 0 records done and 0
+        // findings while its findings were still stored. ScanStore::run()
+        // answers null for this reason, so every reader says the run is gone
+        // from the first page. One statement per run, on the first call only,
+        // and NOT updated_at: that is the age this purge is judged by.
+        if (!isset($run[0][2]) || (string) $run[0][2] !== ScanStore::REMOVING_WHY) {
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET terminal_reason = ?'
+                . ' WHERE run_id = ? AND project_id = ? AND active_slot IS NULL',
+                [ScanStore::REMOVING_WHY, $runId, $pid]);
+        }
 
         $steps = [
             ['scan_record', 'run_id = ?', [$runId]],
@@ -365,10 +381,14 @@ final class ScanRetention
             return $store->expireAbandoned(self::project($pid), $staleHours, $actor, $now);
         }
         $t = $now === null ? time() : (int) $now;
+        // The store's own predicate, so this read names exactly the projects
+        // the store will reap (review rv10a1-1: it judged every phase by the
+        // progress clock alone).
+        $w = SqlScanStore::staleWhere(gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600),
+            gmdate('Y-m-d H:i:s', $t));
         $rows = $this->db->select('SELECT DISTINCT project_id FROM ' . Schema::table('scan_run')
-            . ' WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY project_id',
-            [gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600), gmdate('Y-m-d H:i:s', $t)]);
+            . ' WHERE phase <> ? AND ' . $w[0] . ' ORDER BY project_id',
+            array_merge([ScanPhase::CANCELLING], $w[1]));
         $n = 0;
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;

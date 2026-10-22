@@ -95,12 +95,18 @@ final class ArrayScanStore implements ScanStore
                 && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
             ? (int) $run['baseline_generation'] : $seq;
 
+        // At the project's revision now (W10A-N1; SqlScanStore::startRun()).
+        $rev = 1;
+        foreach ($this->runs as $r) {
+            if ((int) $r['project_id'] === (int) $pid) $rev = max($rev, (int) $r['policy_revision']);
+        }
+
         $id = $this->nextRun++;
         $this->runs[$id] = array_merge([
             'run_id' => $id, 'project_id' => (int) $pid, 'scope_dag' => null,
             'phase' => 'planning', 'terminal' => null, 'coverage' => ScanOutcome::COV_PARTIAL,
             'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'none',
-            'policy_revision' => 1, 'fingerprint' => str_repeat('0', 64),
+            'policy_revision' => $rev, 'fingerprint' => str_repeat('0', 64),
             'manifest_total' => 0, 'manifest_done' => 0, 'cursor_ordinal' => 0,
             'lease_epoch' => 0, 'generation_id' => $gen, 'run_seq' => $seq,
             // The planning lease (claimPlan()). Not in RUN_COLUMNS, as the SQL
@@ -137,6 +143,8 @@ final class ArrayScanStore implements ScanStore
         // Bound to the project: a locator that resolves across projects is an
         // authorisation bug wearing a lookup's clothes.
         if ($r === null || (int) $r['project_id'] !== (int) $pid) return null;
+        // A run retention has begun removing is no run (ScanStore::run()).
+        if ($r['terminal_reason'] === self::REMOVING_WHY) return null;
         // EXACTLY THE PROJECTION THE SQL STORE RETURNS, in its order. This used
         // to hand back the whole internal row, so a caller could come to depend
         // on a key - active_slot, a catch-up cursor - that the real store never
@@ -969,7 +977,16 @@ final class ArrayScanStore implements ScanStore
         $at = gmdate('Y-m-d H:i:s', $t);
         foreach ($this->runs as $id => $r) {
             if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] !== 1) continue;
+            // A stopped run ends as cancelled, never as abandoned (rv10a1-2).
+            if ($r['phase'] === ScanPhase::CANCELLING) return 0;
+            // SqlScanStore::staleWhere()'s clock: the later of the progress
+            // clock and updated_at in the phases whose work moves only the
+            // second (review rv10a1-1).
             $clock = $r['progress_at'] !== null ? (string) $r['progress_at'] : (string) $r['created_at'];
+            if (in_array($r['phase'], ScanPhase::ON_THE_UPDATE_CLOCK, true)
+                && strcmp((string) $r['updated_at'], $clock) > 0) {
+                $clock = (string) $r['updated_at'];
+            }
             if (strcmp($clock, $cut) >= 0) return 0;
             if ($r['lease_expires_at'] !== null && strcmp((string) $r['lease_expires_at'], $at) >= 0) return 0;
             // finish() writes the derived row; the epoch moves beside it, as in

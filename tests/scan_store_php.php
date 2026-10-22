@@ -43,6 +43,12 @@ namespace {
         // The stand-in for DELETE FROM uv_scan_plan WHERE run_id = ?.
         $drop = function ($runId) { unset($this->plans[$runId]); };
         \Closure::bind($drop, $store, \INSPIRE\UniversalValidator\Scan\ArrayScanStore::class)($runId);
+    }, function ($store, $runId, array $cols) {
+        // The stand-in for UPDATE uv_scan_run SET ... WHERE run_id = ?.
+        $set = function ($runId, array $cols) {
+            foreach ($cols as $k => $v) $this->runs[$runId][$k] = $v;
+        };
+        \Closure::bind($set, $store, \INSPIRE\UniversalValidator\Scan\ArrayScanStore::class)($runId, $cols);
     });
 
     // THE STORED ROW, which only this store can show whole. findings() returns

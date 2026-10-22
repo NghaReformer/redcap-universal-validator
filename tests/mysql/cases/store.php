@@ -1378,4 +1378,11 @@ $clocked = function ($clock) use ($fresh, $dbA) {
 $dropPlan = function ($store, $runId) use ($A) {
     $A->query('DELETE FROM ' . Schema::table('scan_plan') . ' WHERE run_id = ' . (int) $runId);
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan);
+// Run columns written as stored, for the clocks the reaper reads.
+$setRun = function ($store, $runId, array $cols) use ($dbA) {
+    $sets = array();
+    foreach (array_keys($cols) as $k) $sets[] = $k . ' = ?';
+    $dbA->exec('UPDATE ' . Schema::table('scan_run') . ' SET ' . implode(', ', $sets) . ' WHERE run_id = ?',
+        array_merge(array_values($cols), array((int) $runId)));
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan, $setRun);

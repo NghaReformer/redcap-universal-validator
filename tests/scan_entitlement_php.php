@@ -491,10 +491,12 @@ namespace {
      * Widening the entitlement would otherwise make a run that was legitimately
      * started before the deploy simultaneously unworkable, unreadable AND
      * uncancellable — while it holds active_slot = 1, so the whole project
-     * answers busy. The three paths that release a slot are finish() from a
-     * worker pass (gated by mayWork), reapCancelled() (needs a successful
-     * cancel), and ScanRetention::expireAbandoned(), which has no caller. The
-     * exit would be a DBA.
+     * answers busy. Short of switching the module off, the paths that release
+     * a slot are finish() from a worker pass (gated by mayWork),
+     * reapCancelled() (needs a successful cancel), and
+     * ScanStore::expireAbandoned(), which the reap cron and Start run only
+     * once the run has gone staleHours without progress. Until then nobody
+     * could stop the run.
      *
      * mayCancel's own docblock forbids this shape — "Ownership would only add a
      * way for a wedged run to become unstoppable" — and keying it on instrument

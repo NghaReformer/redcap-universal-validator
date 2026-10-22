@@ -364,13 +364,15 @@ $RECORDS = 6;
     // heartbeat written in the page's own transaction, and the plan_done gate
     // the freeze reads. A start sent 35 before them. Wave 10 put one more on
     // it, B6a's: the indexed read of this project's active run that asks
-    // whether it was abandoned (ScanStore::expireAbandoned()).
+    // whether it was abandoned (ScanStore::expireAbandoned()). And one more
+    // (W10A-N1): the read of the project's highest policy revision, which a
+    // new run starts at (SqlScanStore::startRun()).
     // Review rv10b1-4 put one statement on each batch a work request commits
     // under a detail budget: the run row read by its key, so the budget is
     // judged on what every worker has stored. The request with records left
     // commits one batch here, and went from 76 to 77.
     $bounds = array(
-        'start'                              => array($startCount, 45),
+        'start'                              => array($startCount, 46),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 77),
         'the work request that finishes'     => array($finishCount, 77),

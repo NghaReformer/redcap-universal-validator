@@ -678,7 +678,17 @@ final class ScanPromotion
             if (isset($in[$k])) $budget[$k] = $in[$k];
         }
         $outcome = self::conclude($store, $runId, $run, $store->recordStates($runId), $budget, true);
-        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') $outcome['why'] = $in['why'];
+        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') {
+            $outcome['why'] = $in['why'];
+        } elseif (isset($run['phase'], $run['terminal_reason']) && $run['phase'] === ScanPhase::CANCELLING
+                  && is_string($run['terminal_reason']) && $run['terminal_reason'] !== '') {
+            // A STOP THAT SAID WHY KEEPS ITS SENTENCE, whichever request
+            // finishes the run (review rv10a2-3). Only a disable writes one on
+            // a stopped run (ScanMaintenance::stopPage()); a run it stopped and
+            // could not finish in time read as an ordinary cancel when Start
+            // or the reap cron finished it later.
+            $outcome['why'] = $run['terminal_reason'];
+        }
         return $store->finish($runId, $outcome);
     }
 

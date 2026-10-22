@@ -7515,6 +7515,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_enable($version = null)
     {
+        // THE ENABLE MARKER FIRST (review rv10a2-3): Start and work refuse
+        // while the disable marker is newer than this one
+        // (ScanService::disabling()), so an enable after a disable is what
+        // lets scans run again at once.
+        try {
+            $this->setSystemSetting(self::SCAN_ENABLED_AT, (string) time());
+        } catch (\Throwable $e) {
+            // Logged, never thrown; without it the refusal ends on its own
+            // after ScanService::DISABLING_SECONDS.
+            $this->scanDisableFailed('enable-marker', $e);
+        }
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
@@ -7544,14 +7555,16 @@ class UniversalValidator extends AbstractExternalModule
      *
      *   1. THE STOP MARKER, first and alone: SCAN_DISABLED_AT, the time. A
      *      maintenance pass that began at or before it stops at its next unit
-     *      (scanMaintenance()'s `stopped`). The framework starts no new pass
-     *      for a disabled module.
-     *   2. EVERY WORKER SLOT RELEASED AND EVERY ACTIVE RUN STOPPED, as
-     *      cancelled with ScanMaintenance::DISABLED_WHY by the finisher Stop
-     *      uses. Only where the scan is switched on and its tables are
-     *      healthy, the crons' own gates: with the switch off no worker runs
-     *      and Start refuses, and an installation that never turned the scan
-     *      on has its schema inspected by nobody.
+     *      (scanMaintenance()'s `stopped`), and Start and work refuse from
+     *      here on (ScanService::disabling()). The framework starts no new
+     *      pass for a disabled module.
+     *   2. EVERY ACTIVE RUN STOPPED, THEN EVERY WORKER SLOT RELEASED
+     *      (ScanMaintenance::disable()): each run cancelled with
+     *      ScanMaintenance::DISABLED_WHY, and as many as its budget allows
+     *      finished by the finisher Stop uses. Only where the scan is switched
+     *      on and its tables are healthy, the crons' own gates: with the switch
+     *      off no worker runs and Start refuses, and an installation that never
+     *      turned the scan on has its schema inspected by nobody.
      *   3. NOTHING DELETED, unless the installation opted in with
      *      SCAN_DROP_ON_DISABLE (off by default). Then every table the module
      *      created is dropped, the version table last, and the crons' saved
@@ -7567,18 +7580,10 @@ class UniversalValidator extends AbstractExternalModule
             $this->scanDisableFailed('marker', $e);
         }
         try {
-            $sys = $this->scanSystemPolicy();
-            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
-                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
-                'log'    => function ($event, array $context) {
-                    $this->log($event, array_merge(['what' => 'disable'], $context));
-                },
-            ]);
-            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
-            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the durable scan is not enabled here']);
-            } elseif (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the scan tables are not ready']);
+            $m = $this->scanDisabler('disable');
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => $why]);
             } else {
                 $this->log('scan-disable', $m->disable());
             }
@@ -7594,6 +7599,62 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    /**
+     * The module disabled for one project (review rv10a2-7). That project's
+     * active run is stopped, the slots held for it freed, and the run
+     * finished as cancelled with ScanMaintenance::PROJECT_DISABLED_WHY
+     * (ScanMaintenance::disableProject()). Before this the run held the
+     * project's slot until the reaper expired it, staleHours later, as
+     * abandoned. Under the system disable's gates; nothing deleted; never
+     * thrown.
+     */
+    public function redcap_module_project_disable($version = null, $project_id = null)
+    {
+        try {
+            $pid = (int) $project_id;
+            if ($pid < 1) return;
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-project-disable', ['project_id' => $pid, 'stopped' => 0, 'why' => $why]);
+                return;
+            }
+            $this->log('scan-project-disable',
+                ['project_id' => $pid] + $this->scanDisabler('disable-project')->disableProject($pid));
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('project-disable', $e);
+        }
+    }
+
+    /**
+     * Why a disable hook may not touch the scan tables, or null when it may:
+     * the crons' own gates. With the scan switched off no worker runs and
+     * Start refuses, and an installation that never turned the scan on has
+     * its schema inspected by nobody.
+     */
+    private function scanDisableGate()
+    {
+        $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+        if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+            return 'the durable scan is not enabled here';
+        }
+        if (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
+            return 'the scan tables are not ready';
+        }
+        return null;
+    }
+
+    /** The maintenance a disable hook works through, its log entries marked $what. */
+    private function scanDisabler($what)
+    {
+        $sys = $this->scanSystemPolicy();
+        return new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+            'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+            'log'    => function ($event, array $context) use ($what) {
+                $this->log($event, array_merge(['what' => (string) $what], $context));
+            },
+        ]);
+    }
+
     /** The disable hook's failure, logged as class and redacted detail, never thrown. */
     private function scanDisableFailed($step, \Throwable $e)
     {
@@ -7605,7 +7666,10 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** The system setting the disable hook writes its time to (M17). */
-    const SCAN_DISABLED_AT = 'scan-disabled-at';
+    const SCAN_DISABLED_AT = Scan\ScanService::DISABLED_AT;
+
+    /** The system setting the enable hook writes its time to (review rv10a2-3). */
+    const SCAN_ENABLED_AT = Scan\ScanService::ENABLED_AT;
 
     /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
     const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';
@@ -7897,7 +7961,16 @@ class UniversalValidator extends AbstractExternalModule
                 return 'the scan tables are not ready; nothing was done';
             }
             $key = 'scan-cron-state-' . $what;
-            $save = function (array $state) use ($key) {
+            $began = time();
+            $save = function (array $state) use ($key, $began) {
+                // NOT OVER A DISABLE THAT CAME AFTER THE PASS BEGAN (review
+                // rv10a2-4). A disable that drops the tables empties this
+                // cursor with them; a pass that read its census before the
+                // drop wrote its own back over it. The marker is read here
+                // every time, not every few seconds as `stopped` reads it,
+                // since a save is the last thing a pass does.
+                $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
+                if (is_numeric($at) && (int) $at >= $began) return;
                 $this->setSystemSetting($key, json_encode($state));
             };
             $sys = $this->scanSystemPolicy();
@@ -7907,7 +7980,7 @@ class UniversalValidator extends AbstractExternalModule
                     $this->log($event, array_merge(['what' => (string) $what], $context));
                 },
                 'save'   => $save,
-                'stopped' => $this->scanStopMarker(time()),
+                'stopped' => $this->scanStopMarker($began),
                 // A FRESH START FOR EVERY PROJECT (MEMO LIFETIME). The passes
                 // build no ScanService: every statement goes through the store
                 // or ScanRetention, which keep nothing between calls. What

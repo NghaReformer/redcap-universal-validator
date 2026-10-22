@@ -50,6 +50,13 @@ final class ScanService
     const SYS_FLAG  = 'scan-system-enable-durable';
     const PROJ_FLAG = 'scan-enable-durable';
 
+    /** The system settings the disable and enable hooks write their unix time to (M17). */
+    const DISABLED_AT = 'scan-disabled-at';
+    const ENABLED_AT  = 'scan-enabled-at';
+
+    /** How long after a disable, with no enable since, Start and work refuse; see disabling(). */
+    const DISABLING_SECONDS = 600;
+
     /** How long a worker's installation slot lease lasts without renewal. */
     const SLOT_TTL = 300;
 
@@ -71,8 +78,13 @@ final class ScanService
      * and `updated_at` (which their cursor writes do move) is the better clock.
      * In scanning it is the WORSE one: claim() refreshes it on a run whose every
      * batch is being refused, which is the wedge `progress_at` exists to show.
+     *
+     * The list is ScanPhase's, because the reaper reads the same clock: a run
+     * this page reported working was expired as abandoned by the cron and by
+     * another user's Start, since the reaper judged every phase by
+     * `progress_at` alone (review rv10a1-1).
      */
-    const PHASES_ON_THE_UPDATE_CLOCK = [ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP];
+    const PHASES_ON_THE_UPDATE_CLOCK = ScanPhase::ON_THE_UPDATE_CLOCK;
 
     /** @var object the module */
     private $module;
@@ -174,6 +186,9 @@ final class ScanService
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
             return self::no('the durable validation scan is not enabled here');
         }
+        if ($this->disabling()) {
+            return self::no('the module is being switched off on this server, so no scan can start or carry on');
+        }
         $health = Schema::health($this->module);
         if (empty($health['ok'])) {
             // Reported, never repaired on the fly. A migration that runs
@@ -234,6 +249,10 @@ final class ScanService
         // run id and the person starting a new scan does not have one.
         $this->reapCancelled($pid);
 
+        $scope = ScanPageView::scanScope($this->module, $pid);
+        if (empty($scope['ok'])) return self::noStart($scope['why']);
+        $dag = $scope['dag'];
+
         // AND ANY RUN THAT STOPPED MAKING PROGRESS (B6a). A run whose tab
         // closed or whose worker died held the slot until the reap cron came
         // round - or for ever, where the cron is not running - and Start
@@ -244,15 +263,18 @@ final class ScanService
         // cancelled, not expired. Swallowed as that reap is: a reap that fails
         // must not stop the start being attempted, and the slot check refuses
         // honestly if the run is still there.
+        //
+        // AFTER THE RIGHTS CHECK (review rv10a2-2). Asked before it, any
+        // signed-in user of the project - no design rights, confined to a
+        // group - ended the project's run by posting scan-start, and the audit
+        // named them; the refusal they were then given came after the damage.
+        // The cancelled-run reap stays first: it ends only a run somebody with
+        // the right to stop it already stopped.
         $policy = $this->policy($pid);
         try {
             $this->store()->expireAbandoned($pid, $policy['staleHours'], (string) $this->username());
         } catch (\Throwable $e) {
         }
-
-        $scope = ScanPageView::scanScope($this->module, $pid);
-        if (empty($scope['ok'])) return self::noStart($scope['why']);
-        $dag = $scope['dag'];
 
         // PLANNING CONTEXT. start() needs the rule list and the ownership map
         // to authorise and to plan; the run - and therefore its generation -
@@ -1478,11 +1500,14 @@ final class ScanService
         // deploy, on a project where a when/assert/with operand sits on an
         // instrument the actor cannot read, would become unworkable AND
         // unreadable AND uncancellable at once - and it holds active_slot = 1,
-        // so openRun() answers busy for everyone on that project. The three
-        // paths that release a slot are finish() from a worker pass (gated by
-        // mayWork), reapCancelled() (needs phase `cancelling`, which needs a
-        // successful cancel), and ScanRetention::expireAbandoned(), which has
-        // no caller (tests/scan_wiring_php.php). The exit would be a DBA.
+        // so openRun() answers busy for everyone on that project. Short of
+        // switching the module off, the paths that release a slot are finish()
+        // from a worker pass (gated by mayWork), reapCancelled() (needs phase
+        // `cancelling`, which needs a successful cancel), and
+        // ScanStore::expireAbandoned(), which the reap cron
+        // (ScanMaintenance::reap()) and openRun() run only once the run has
+        // gone staleHours without progress. Until then the whole project
+        // would answer busy, and nobody could stop the run.
         //
         // mayCancel's own docblock forbids this shape in the general case -
         // "Ownership would only add a way for a wedged run to become
@@ -2090,6 +2115,28 @@ final class ScanService
     private function owner()
     {
         return substr('u:' . $this->username() . ':' . substr(md5(uniqid('', true)), 0, 8), 0, 64);
+    }
+
+    /**
+     * Is the module being switched off on this server (review rv10a2-3)?
+     *
+     * The disable hook stops every active run, and the module keeps answering
+     * requests until that hook returns. A Start in that window made a run the
+     * hook's walk had already passed, which stayed active through the disable;
+     * a work request took a slot the hook was freeing. So Start and work
+     * refuse from the moment the hook writes DISABLED_AT, until an enable
+     * writes ENABLED_AT after it. DISABLING_SECONDS bounds the refusal: it is
+     * far longer than the hook may run (ScanMaintenance::DISABLE_SECONDS), so
+     * a framework that enabled the module again without calling the enable
+     * hook costs at most that wait, never a module that refuses every scan.
+     */
+    private function disabling()
+    {
+        $off = $this->setting(self::DISABLED_AT, null);
+        if (!is_numeric($off)) return false;
+        $on = $this->setting(self::ENABLED_AT, null);
+        if (is_numeric($on) && (int) $on >= (int) $off) return false;
+        return time() - (int) $off < self::DISABLING_SECONDS;
     }
 
     private function flag($key, $pid)

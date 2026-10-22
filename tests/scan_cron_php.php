@@ -260,7 +260,7 @@ $m->systemSettings = ['scan-system-enable-durable' => '1'];
 $m->tables = $tables;
 $inner = $census([[42, 0, 0, '2000-01-01 00:00:00', 'locations']]);
 $m->responder = function ($sql, $params) use ($inner, $RUN) {
-    if (strpos($sql, 'SELECT run_id, generation_id FROM ' . $RUN) !== false) return [[7, 3]];
+    if (strpos($sql, 'SELECT run_id, generation_id, terminal_reason FROM ' . $RUN) !== false) return [[7, 3, null]];
     if (strpos($sql, 'SELECT EXISTS(') !== false) return [[0]];
     if (strpos($sql, 'SELECT MAX(finding_id)') !== false) return [[0]];
     return $inner($sql, $params);
@@ -274,6 +274,17 @@ foreach ($deletes as $d) {
     if (!$byProject && !$byRun) $scoped = false;
 }
 check('purge: a project past its retention is purged', count($deletes) >= 8);
+// rv10a1-3: the run reads as gone to every reader from the first page, so it
+// is marked before anything it owns is deleted.
+$firstMark = null;
+$firstDelete = null;
+foreach ($m->bound as $i => $b) {
+    if ($firstMark === null && strpos($b[0], 'UPDATE ' . $RUN . ' SET terminal_reason = ?') !== false
+        && in_array(\INSPIRE\UniversalValidator\Scan\ScanStore::REMOVING_WHY, $b[1], true)) $firstMark = $i;
+    if ($firstDelete === null && strpos($b[0], 'DELETE FROM') !== false) $firstDelete = $i;
+}
+check('purge: the run is marked as being removed before anything it owns is deleted',
+    $firstMark !== null && $firstDelete !== null && $firstMark < $firstDelete);
 check('purge: and every DELETE names that project or its run', $scoped);
 check('purge: findings are deleted by project AND generation, never by generation alone',
     count($m->sent(['DELETE FROM ' . Schema::table('finding'), 'project_id = ?', 'generation_id = ?'])) === 1);
@@ -348,6 +359,27 @@ $stopped = (new ScanMaintenance($db, ['policy' => $policy, 'clock' => $clock,
     'stopped' => function () { return true; }]))->reap([], 100.0);
 check('stop: a pass told to stop does no project work', $stopped['out']['stopped'] === 1
     && $stopped['out']['projects'] === 0);
+// rv10a2-4: a project whose statement finds its table gone is not passed
+// over. The pass stops before it, and hands back the project before it.
+$gdb = new ScriptDb(function ($sql, $params) use ($census, $RUN) {
+    if (strpos($sql, 'SELECT run_id FROM ' . $RUN) !== false && $params[0] === 9) {
+        throw new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist");
+    }
+    return call_user_func($census([[5, 1, 0, null, ''], [9, 1, 0, null, ''], [12, 1, 0, null, '']]), $sql, $params);
+});
+$gone = (new ScanMaintenance($gdb, ['policy' => $policy]))->reap([], 100.0);
+check('gone: a pass that finds a table missing stops, and resumes at that project, not after it',
+    $gone['out']['stopped'] === 1 && $gone['out']['failed'] === 1 && $gone['state']['after'] === 5);
+$gdb = new ScriptDb(function ($sql, $params) {
+    throw new \RuntimeException("Table 'redcap.uv_finding' doesn't exist");
+});
+$owed = ['revoke' => [5 => ['revision' => 2], 9 => ['revision' => 3]], 'after' => 0];
+$gone = (new ScanMaintenance($gdb, ['policy' => $policy]))->retain($owed, 100.0);
+check('gone: and tries no revocation it still owes after the first, nor any project',
+    $gone['out']['stopped'] === 1 && $gone['out']['failed'] === 1
+    && array_filter($gdb->log, function ($l) { return in_array(9, $l[1], true)
+        || strpos($l[0], 'GROUP_CONCAT(DISTINCT values_state)') !== false; }) === []
+    && array_keys($gone['state']['revoke']) === [5, 9]);
 
 // ---- 9) the module switched off (M17) ---------------------------------------
 $SLOT = Schema::table('scan_worker_slot');
@@ -356,7 +388,11 @@ $check9 = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
     $m->systemSettings = $sys + ['scan-cron-state-reap' => '{"after":7}', 'scan-cron-state-retention' => '{"after":9}'];
     $m->tables = $tables;
     $m->responder = function ($sql, $params) use ($RUN) {
-        if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) return [[5, 42]];
+        // Run 5 of project 42 is active; once stopped, the second read
+        // (only runs not yet stopped) finds nothing.
+        if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) {
+            return strpos($sql, 'phase <> ?') !== false ? [] : [[5, 42]];
+        }
         if (stripos($sql, 'ROW_COUNT()') !== false) return [[1]];
         return null;
     };
@@ -376,11 +412,29 @@ check('disable: every leased worker slot is released, in one statement',
 check('disable: the active runs are read a bounded keyset page at a time',
     count($m->sent(['SELECT run_id, project_id FROM ' . $RUN, 'active_slot = 1 AND run_id > ?', 'LIMIT '])) === 1);
 $cancel = $m->sent(['UPDATE ' . $RUN, 'cancel_requested_at']);
-check('disable: each active run is stopped through the store, in its own project',
-    count($cancel) === 1 && in_array(5, $cancel[0][1], true) && in_array(42, $cancel[0][1], true));
+check('disable: each page of active runs is stopped in one statement, by run id, with the reason on the row',
+    count($cancel) === 1 && in_array(5, $cancel[0][1], true)
+    && strpos($cancel[0][0], 'run_id IN (') !== false && strpos($cancel[0][0], 'lease_epoch = lease_epoch + 1') !== false
+    && in_array(ScanMaintenance::DISABLED_WHY, $cancel[0][1], true));
 check('disable: the stop is audited as the system\'s',
     count(array_filter($m->sent(['INSERT INTO ' . Schema::table('scan_audit')]), function ($b) {
         return in_array('system', $b[1], true); })) === 1);
+// rv10a2-3: the runs are stopped before the slots are freed, and the active
+// runs are read once more after the walk.
+$order = [];
+foreach ($m->bound as $i => $b) {
+    if (strpos($b[0], 'UPDATE ' . $RUN) !== false && strpos($b[0], 'cancel_requested_at') !== false && !isset($order['stop'])) $order['stop'] = $i;
+    if (strpos($b[0], 'UPDATE ' . $SLOT) !== false && strpos($b[0], 'WHERE owner IS NOT NULL') !== false) $order['slots'] = $i;
+    if (strpos($b[0], 'active_slot = 1 AND phase <> ? AND run_id > ?') !== false && !isset($order['late'])) $order['late'] = $i;
+    // finishCancelled() begins with the run's own row.
+    if (strpos($b[0], 'FROM ' . $RUN . ' WHERE run_id = ? AND project_id = ?') !== false && !isset($order['finish'])) $order['finish'] = $i;
+}
+check('disable: every run is stopped before any worker slot is freed',
+    isset($order['stop'], $order['slots']) && $order['stop'] < $order['slots']);
+check('disable: and the active runs not yet stopped are read again after the walk',
+    count($m->sent(['SELECT run_id, project_id FROM ' . $RUN, 'active_slot = 1 AND phase <> ? AND run_id > ?'])) === 1);
+check('disable: and only then is any stopped run finished',
+    isset($order['late'], $order['finish']) && $order['late'] < $order['finish']);
 $dl = $m->logged('scan-disable');
 check('disable: what it did is logged', count($dl) === 1 && $dl[0]['slots_released'] === 1);
 check('disable: with the opt-in off nothing is deleted or dropped',
@@ -414,6 +468,66 @@ check('the drop opt-in is declared, as a checkbox, and off unless ticked',
         return isset($s['key']) && $s['key'] === UniversalValidator::SCAN_DROP_ON_DISABLE
             && $s['type'] === 'checkbox' && !isset($s['default']); })) === 1);
 
+// rv10a2-7: the module disabled for one project stops that project's run
+// alone, with its own sentence, and frees the slots held for that run alone.
+$checkP = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
+    $m = new UniversalValidator();
+    $m->systemSettings = $sys;
+    $m->tables = $tables;
+    $m->responder = function ($sql, $params) use ($RUN) {
+        if (strpos($sql, 'SELECT run_id FROM ' . $RUN . ' WHERE project_id = ? AND active_slot = 1') !== false) {
+            return $params === [42] ? [[5]] : [];
+        }
+        if (stripos($sql, 'ROW_COUNT()') !== false) return [[1]];
+        return null;
+    };
+    $m->queryThrows = $throws;
+    $threw = false;
+    try { $m->redcap_module_project_disable('9.9.9', 42); } catch (\Throwable $e) { $threw = true; }
+    check($label . ': the project disable hook never throws', !$threw);
+    check($label . ': and writes no stop marker, since the module is still on elsewhere',
+        $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT) === null);
+    return $m;
+};
+$m = $checkP('project disable', $on);
+$cancel = $m->sent(['UPDATE ' . $RUN, 'cancel_requested_at']);
+check('project disable: the project\'s active run is read by the project, and stopped with the project\'s sentence',
+    count($m->sent(['SELECT run_id FROM ' . $RUN, 'WHERE project_id = ? AND active_slot = 1'])) === 1
+    && count($cancel) === 1 && in_array(5, $cancel[0][1], true)
+    && in_array(ScanMaintenance::PROJECT_DISABLED_WHY, $cancel[0][1], true)
+    && !in_array(ScanMaintenance::DISABLED_WHY, $cancel[0][1], true));
+$order = [];
+foreach ($m->bound as $i => $b) {
+    if (strpos($b[0], 'cancel_requested_at') !== false && !isset($order['stop'])) $order['stop'] = $i;
+    if (strpos($b[0], 'UPDATE ' . $SLOT) !== false) $order['slots'][] = [$i, $b];
+}
+check('project disable: then the slots held for that run alone are freed',
+    isset($order['stop'], $order['slots']) && count($order['slots']) === 1 && $order['slots'][0][0] > $order['stop']
+    && strpos($order['slots'][0][1][0], 'WHERE run_id = ? AND owner IS NOT NULL') !== false
+    && $order['slots'][0][1][1] === [5]);
+$dl = $m->logged('scan-project-disable');
+check('project disable: what it did is logged, under the project', count($dl) === 1 && $dl[0]['project_id'] === 42
+    && $m->logged('scan-disable') === []);
+$m = $checkP('project disable, scan switched off', []);
+check('project disable, scan switched off: no scan table is touched',
+    $m->sent([Schema::table('scan_run')]) === [] && $m->sent([$SLOT]) === []);
+$m = $checkP('project disable, database down', $on, true);
+$dl = $m->logged('scan-project-disable');
+check('project disable, database down: the log says why nothing was stopped',
+    count($dl) === 1 && $dl[0]['stopped'] === 0 && $dl[0]['why'] === 'the scan tables are not ready');
+
+// rv10a2-3: enabling writes its own marker, which ends the refusal Start and
+// work give while a disable is newer (ScanService::disabling()).
+$m = new UniversalValidator();
+$m->systemSettings = [UniversalValidator::SCAN_DISABLED_AT => (string) (time() - 30)];
+$m->tables = $tables;
+$threw = false;
+try { $m->redcap_module_system_enable('9.9.9'); } catch (\Throwable $e) { $threw = true; }
+$en = $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT);
+check('enable: the enable marker is written, after the disable before it',
+    !$threw && is_numeric($en) && (int) $en >= (int) $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT)
+    && abs((int) $en - time()) <= 5);
+
 // A pass running when the module is switched off stops at its next unit; a
 // marker from an earlier disable stops nothing.
 $m = new UniversalValidator();
@@ -433,6 +547,52 @@ $m->uvScanReapCron();
 $cl = $m->logged('scan-cron');
 check('stop marker: an earlier disable stops no pass of the enable after it',
     count($cl) === 1 && $cl[0]['stopped'] === 0 && $cl[0]['projects'] === 1);
+
+// rv10a2-4: a disable that drops the tables lands while a pass works the
+// first of 300 projects in its census page (the reviewer's
+// temporal_rv10a2_drop_race.php). The pass read the marker a moment before,
+// so only the missing table can tell it. It stops at the first failure, not
+// one log entry for each project left, and leaves the cursor the drop emptied.
+$rows = [];
+for ($p = 1; $p <= 300; $p++) $rows[] = [$p, 1, 0, null, ''];
+$m = new UniversalValidator();
+$m->systemSettings = $on + [UniversalValidator::SCAN_DROP_ON_DISABLE => '1',
+    'scan-cron-state-reap' => json_encode(['after' => 0])];
+$m->tables = $tables;
+$dropped = false;
+$emptied = null;
+$m->responder = function ($sql, $params) use (&$dropped, &$emptied, $rows, $RUN, $m) {
+    if ($dropped && strpos($sql, 'uv_') !== false) {
+        throw new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist");
+    }
+    if (strpos($sql, 'GROUP_CONCAT(DISTINCT values_state)') !== false) {
+        $out = [];
+        foreach ($rows as $r) if ($r[0] > (int) end($params)) $out[] = $r;
+        return $out;
+    }
+    if (strpos($sql, 'SELECT run_id FROM ' . $RUN) !== false && $params[0] === 1 && !$dropped) {
+        // Another request: the administrator disables the module, opted in to the drop.
+        $m->redcap_module_system_disable('9.9.9');
+        $emptied = $m->getSystemSetting('scan-cron-state-reap');
+        $dropped = true;
+        return [];
+    }
+    if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) return [];
+    return null;
+};
+$m->uvScanReapCron(['cron_max_run_time' => '300']);
+$cl = $m->logged('scan-cron');
+check('drop race: a pass whose tables went stops at the first statement that finds one missing',
+    count($m->logged('scan-cron-step-failed')) === 1 && count($cl) === 1 && $cl[0]['stopped'] === 1);
+check('drop race: and leaves the cursor the drop emptied, not its own over it',
+    $emptied === '' && $m->getSystemSetting('scan-cron-state-reap') === '');
+check('a missing table is known by the server\'s sentence, through the store\'s wrapper too',
+    \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException("Table 'redcap.uv_scan_run' doesn't exist"))
+    && \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException('query failed', 1146))
+    && \INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable('x',
+        new \RuntimeException(str_repeat('x', 5000) . " Table 'redcap.uv_finding' doesn't exist")))
+    && !\INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException("Unknown column 'x' in 'field list'"))
+    && !\INSPIRE\UniversalValidator\Scan\DbError::isMissingTable(new \RuntimeException('Lock wait timeout exceeded', 1205)));
 
 // ---- 10) memo lifetime: one module instance, many projects (W8-N10) ---------
 //
@@ -500,7 +660,7 @@ $m->responder = function ($sql, $params) use ($inner, $RUN, $m, $rightsIn, $memo
         $seen['43'] = $memo->getValue($m);
         $rightsIn->invoke($m, 43);
     }
-    if (strpos($sql, 'SELECT run_id, generation_id FROM ' . $RUN) !== false && $params[0] === 42 && !isset($seen['42'])) {
+    if (strpos($sql, 'SELECT run_id, generation_id, terminal_reason FROM ' . $RUN) !== false && $params[0] === 42 && !isset($seen['42'])) {
         $seen['42'] = $memo->getValue($m);
     }
     return $inner($sql, $params);
