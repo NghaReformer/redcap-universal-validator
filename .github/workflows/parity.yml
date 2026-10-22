@@ -260,6 +260,8 @@ jobs:
         run: php tests/required_pages_php.php
       - name: PHP @UVUNIQUE scope and reads (group records, "with" placement, throttle answer, one read per save)
         run: php tests/unique_scope_php.php
+      - name: PHP @UVEXISTS data-table reads, rights on returned fields, read-only pages, the record being edited
+        run: php tests/exists_table_php.php
       - name: PHP survey page config (no rule detail, only this page's configuration errors)
         run: php tests/survey_shape_php.php
       - name: PHP condition kinds (an "assert" or "when" literal written as REDCap stores it, fields of one kind)

@@ -19,6 +19,11 @@ namespace INSPIRE\UniversalValidator\Scan;
  *
  * NULL, NOT [], WHEN THE TABLE CANNOT BE READ. An empty list is an answer (no
  * record holds the value); null tells the caller to fall back to the export.
+ *
+ * @UVEXISTS reads it the same way (EXS-4): the records that hold the value
+ * searched, then getData of those records only. The table is read by the
+ * module, so REDCap does not confine it to the Data Access Group of the user
+ * (EXS-1): a value saved nowhere is "not found" for a user in a group too.
  */
 final class FieldValues
 {
@@ -85,6 +90,54 @@ final class FieldValues
         $out = [];
         foreach ($hit as $rec => $_) $out[] = (string) $rec;
         return $out;
+    }
+
+    /**
+     * Every row of $field (of event $eventId, or of every event), handed to
+     * $each(record, event_id, value) one at a time. True when the whole field
+     * was read, false when the table could not be read or a row could not be
+     * read (the caller then reads through getData). The @UVEXISTS scan index
+     * is built this way (EXS-5): one statement instead of an export of every
+     * record. A NULL value is skipped, as REDCap stores no blank.
+     *
+     * @param int      $pid
+     * @param string   $field
+     * @param int|null $eventId
+     * @param callable $each function (string $record, string $eventId, string $value): void
+     * @return bool
+     */
+    public function eachRow($pid, $field, $eventId, callable $each)
+    {
+        if (!is_object($this->module) || !is_callable([$this->module, 'query'])) return false;
+        $table = $this->tableOf($pid);
+        if ($table === null) return false;
+        $sql = 'SELECT record, event_id, `value` FROM ' . $table . ' WHERE project_id = ? AND field_name = ?';
+        $params = [(int) $pid, (string) $field];
+        if ($eventId !== null && $eventId !== '') {
+            $sql .= ' AND event_id = ?';
+            $params[] = (int) $eventId;
+        }
+        $one = function ($row) use ($each) {
+            if (!is_array($row) || count($row) < 3) return false;
+            $row = array_values($row);
+            if ($row[2] !== null) $each((string) $row[0], (string) $row[1], (string) $row[2]);
+            return true;
+        };
+        try {
+            $q = $this->module->query($sql, $params);
+            if (is_array($q)) {
+                foreach ($q as $row) if (!$one($row)) return false;
+            } elseif (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                while ($row = $q->fetch_row()) if (!$one($row)) return false;
+            } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
+                while ($row = $q->fetch_assoc()) if (!$one($row)) return false;
+            } else {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            return false;
+        }
+        return true;
     }
 
     /** One row into $hit; false for a row this class cannot read. */

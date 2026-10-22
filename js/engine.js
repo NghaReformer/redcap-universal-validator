@@ -3034,6 +3034,9 @@ function QRID_selectOption(sel, code){
    typing, and the calculations and branching logic that read the field run.
    Server twin: UniversalValidator::applyReturns. */
 function QRID_writeReturned(name, text, announce, exact, lost){
+  /* A form the person may only read, or a locked one, shows the record as
+     saved (config.formReadOnly, EXS-2): nothing is written into it. */
+  if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true) return false;
   var el = QRID_returnElement(name);
   if(!el || typeof el.value !== "string") return false;
   var cur = el.value;
@@ -7439,6 +7442,9 @@ function QRIDExistsInit(QRID_CONFIG){
              whereMessage: (typeof cfg.whereMessage === "string" && cfg.whereMessage !== "") ? cfg.whereMessage : "",
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
+             /* the searched field, when it is on this form (EXS-6): its value
+                here is what this record holds, so it goes with the lookup */
+             selfIn: (typeof cfg.existsSelfIn === "string" && cfg.existsSelfIn !== "") ? cfg.existsSelfIn : null,
              returns: (cfg.existsReturnFields && cfg.existsReturnFields.length) ? cfg.existsReturnFields.slice() : [],
              numbers: (cfg.existsReturnNumbers && cfg.existsReturnNumbers.length) ? cfg.existsReturnNumbers.slice() : [],
              surveys: cfg.existsSurveys === true,
@@ -7566,6 +7572,22 @@ function QRIDExistsInit(QRID_CONFIG){
       return "";
     }
     function amberLine(text){ return '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(text) + "</div>"; }
+    /* On a form the person may only read, or a locked one, nothing is filled
+       (QRID_writeReturned). Whether what the lookup would copy differs from
+       what the fields show, so the person can be told (EXS-2). */
+    var READ_ONLY = !!(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true);
+    function differsFromShown(vals){
+      for(var k in vals){
+        if(!Object.prototype.hasOwnProperty.call(vals, k)) continue;
+        var rel = QRID_returnElement(k);
+        if(!rel || typeof rel.value !== "string") continue;
+        var cur = rel.value, text = String(vals[k]);
+        if(cur === text) continue;
+        if(NUMBERS[k] === true && cur !== "" && text !== "" && QRID_sameNumber(cur, text)) continue;
+        return true;
+      }
+      return false;
+    }
     function renderResp(resp, V, quiet){
       if(resp.state === "found"){
         styleMsg(msg, "ok");
@@ -7576,7 +7598,11 @@ function QRIDExistsInit(QRID_CONFIG){
           (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + "." +
           (kept ? amberLine(kept) : "");
         msg.innerHTML = html;
-        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object"){
+        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object" && READ_ONLY){
+          if(differsFromShown(foundValues(V, resp.values))){
+            msg.innerHTML = html + amberLine("The entry found now holds other values than this saved copy. This form cannot be changed here, so they are left as saved.");
+          }
+        } else if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object"){
           var at = seq, lost = fill(foundValues(V, resp.values), quiet);
           /* A write that set off a new judgement of this field (a "when"
              field it fills) left its own message: seq moved. */
@@ -7600,6 +7626,11 @@ function QRIDExistsInit(QRID_CONFIG){
           msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
             : "This value is not saved where it should be. Check it, or record it there first.");
         }
+        if(READ_ONLY && returnsOf(V).length){
+          var none = {};
+          for(var ni = 0; ni < OWNED.length; ni++) none[OWNED[ni]] = "";
+          if(differsFromShown(none)) msg.innerHTML += amberLine("This form cannot be changed here, so the fields this lookup fills are left as saved.");
+        }
         emptyOwned(quiet);
       } else {
         unknown(V, resp.why);
@@ -7608,7 +7639,9 @@ function QRIDExistsInit(QRID_CONFIG){
     /* The values a lookup for V sends, as the page holds them now: the value
        searched, then each match field. A match field this page does not
        carry (another form, another survey page) is left out: the server
-       reads its saved value. */
+       reads its saved value. The searched field, when this page carries it,
+       goes too: the record being edited holds what the page shows there, not
+       what was saved (EXS-6). */
     function lookupValues(V){
       var out = {};
       out[fieldName] = trim(QRID_WHEN.readRef(fieldName, null));
@@ -7616,6 +7649,7 @@ function QRIDExistsInit(QRID_CONFIG){
         var lf = V.locals[li];
         if(QRID_WHEN.has(lf, null)) out[lf] = trim(QRID_WHEN.readRef(lf, null));
       }
+      if(V.selfIn && QRID_WHEN.has(V.selfIn, null)) out[V.selfIn] = trim(QRID_WHEN.readRef(V.selfIn, null));
       return out;
     }
     /* One lookup: its values and the branch values sent with them. */
@@ -7780,8 +7814,10 @@ function QRIDExistsInit(QRID_CONFIG){
           }
         }
       }
-      for(var lj = 0; lj < VS.all[vi].locals.length; lj++){
-        var lname = VS.all[vi].locals[lj];
+      var watched = VS.all[vi].locals.slice();
+      if(VS.all[vi].selfIn) watched.push(VS.all[vi].selfIn);
+      for(var lj = 0; lj < watched.length; lj++){
+        var lname = watched[lj];
         if(!Object.prototype.hasOwnProperty.call(dirty, lname)){ dirty[lname] = false; watchTyping(lname, QRID_findAnchor(lname)); }
         var lw = QRID_WHEN.gateFor("[" + lname + "]<>''", null);
         if(lw) lw.onChange(settle);
@@ -8435,7 +8471,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "windowNotFuture", "dateType", "dateFormat", "fromType", "fromFormat",
                       "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi",
                       "windowWeekStart", "windowNotPast", "snapshotGate", "windowNotFutureOff",
-                      "existsLocal", "existsSurveys", "existsReturnFields",
+                      "existsLocal", "existsSelfIn", "existsSurveys", "existsReturnFields",
                       "existsReturnNumbers", "whereMessage", "rangeSoftLo", "rangeSoftHi",
                       "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                       "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",

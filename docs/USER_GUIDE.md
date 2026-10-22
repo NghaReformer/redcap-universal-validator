@@ -1035,7 +1035,9 @@ seconds or more is asked again at Save and stands if that second question gets
 no answer. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open, and a user in a Data Access Group only on records
-of their group. Surveys need `"surveys":true`, which is refused when the lookup
+of their group. A value saved nowhere is "not found" for a user in a group
+too: the module reads which records hold the value from the data table, which
+REDCap does not confine to a group. Surveys need `"surveys":true`, which is refused when the lookup
 touches an Identifier field. Letter case is ignored (`sp-1` finds `SP-1`)
 unless the rule sets `"caseSensitive":true`, and a searched field that holds
 numbers is compared by value, so `7` finds `007`.
@@ -1082,7 +1084,9 @@ there only goes into one flagged Identifier here. From another project, the
 lab project must also list the fields it lets this project copy, under "Only
 users who have rights". The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
-change to the entry found reaches this record when it is saved again.
+change to the entry found reaches this record when it is saved again. The save
+writes them only into a form the person who saved may change, and a locked
+form, or one the user may only read, is not filled on the page.
 
 **Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
 Yes. Add `where`, a condition on the entry found:
@@ -1198,7 +1202,9 @@ cannot share one. A rule that returns values cannot read a returned field,
 its own or another rule's. When the date of birth or another input sits in
 another event, saving that event refills the fields in every visit that reads
 it. The project setting "@UVRANGE returned values" keeps the page fill and
-turns off the write on save.
+turns off the write on save. The save writes only into a form the person who
+saved may change, and the page fills nothing on a locked form or one the user
+may only read.
 
 **Can a rule write the percentile, or the weight at -2 SD or at the median?**
 Yes. `return` also takes `percentile`, `valueAtZ:<z-score>` and

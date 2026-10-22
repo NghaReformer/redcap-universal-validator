@@ -1885,8 +1885,16 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   their own group. When REDCap lets the module see the other groups' records
   for that user, a value found only in another group is still *found*, nothing
   is copied, and the amber line says so. When REDCap confines the user's reads
-  to their group, such a value reads as *could not check*, as for a rule
-  without `return`.
+  to their group, such a value reads as *could not check*: the module knows
+  from the data table that it is saved, but cannot read the entry.
+- **Rights and locks.** The post-save audit writes only into a form the person
+  who saved may change ("View & Edit" or "Edit survey responses"). A save of
+  the form that holds a `match` field, by someone with read-only rights to the
+  form the rule fills, leaves the copied fields, and the module log gets a
+  rule problem when the values would have changed. On a locked form, a locked
+  record, or a form the user may only read, the page fills nothing; when the
+  entry found now holds other values than the ones shown, an amber line says
+  so.
 - **Where the values come from.** The entry where `in` and every `match`
   matched: the same record, event and repeat instance. A copied field must be
   on the form of `in` or on a form that does not repeat; a field of another
@@ -2230,10 +2238,28 @@ this record.
   no extra form.
   At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
   user in a Data Access Group is answered only on records of their own group.
-- **Data Access Groups.** A group user's reads may be confined to their group. A
-  *not found* from a rule that looks across groups is kept only when the module
-  sees other groups' records in the same request; otherwise it is *could not
-  check*, and the audit reports a rule problem rather than a violation.
+- **Which records are read.** The module asks the project's data table which
+  records hold the value (in any spelling the rule accepts) and reads only
+  those through REDCap. A *not found* reads no record at all. When the data
+  table cannot be read, the lookup reads the searched fields of every record,
+  as it did before 2.3.0.
+- **Data Access Groups.** A group user's reads may be confined to their group;
+  the module's read of the data table is not. A value saved nowhere is *not
+  found* for a user in a group too, and the audit logs a violation. A value
+  saved only in another group is *found*, without naming the record. A rule
+  with `match`, `where` or `return` cannot judge an entry REDCap does not let
+  the user read, and answers *could not check* there. When the data table
+  cannot be read, a *not found* from a rule that looks across groups is kept
+  only when the module sees other groups' records in the same request;
+  otherwise it is *could not check*, and the audit reports a rule problem.
+- **`in` on this form.** When the searched field is on the tagged field's own
+  form (a household member's head ID, `[hh_ref]`, looked up in `[hh_id]` on the
+  same form), the page sends what `[hh_id]` holds now. The record being edited
+  counts with that value, as it will once saved, so a head who types the same
+  ID in both fields is *found*, and a record whose saved `[hh_id]` was changed
+  on the page no longer counts with the old one. A rule with `match`, `where`,
+  `return` or `event` answers *could not check* when only the record being
+  edited holds the value; the post-save audit decides.
 - **Surveys: opt-in.** `"surveys":true` turns the check on for surveys, with a
   found / not found answer only and the survey rate limit. It is refused when any
   field the lookup touches is an Identifier, including the record-ID field for
@@ -2246,7 +2272,8 @@ this record.
   entries that fail `where`. A lookup that cannot be completed is logged as a rule
   problem, never as a pass.
 - **The Validation scan** reads the searched field once per rule per scan request
-  and checks every record against it, with "Not found in its source" in the Issue
+  (from the data table in one statement for a rule with no `match` and no
+  `where`) and checks every record against it, with "Not found in its source" in the Issue
   column, or "Saved, but not where its conditions hold" when the value is saved
   only in entries that fail `where`. It reads in chunks of records and stops with a rule problem, not a
   pass, when the index it builds is on course to use more than 60% of PHP's
@@ -3224,6 +3251,12 @@ no `soft` or `hard`: none of the four is made from a limit.
 - **Turning the write on save off.** The project setting "@UVRANGE returned
   values" (`range-return-no-save`) keeps the page fill and writes nothing when
   a record is saved. The Validation scan never writes.
+- **Rights and locks.** The save writes only into a form the person who saved
+  may change. When saving the form of an input (the date of birth on the
+  enrolment form) would change a returned field on a form that person may only
+  read, the field keeps its value and the module log gets a rule problem. A
+  locked form, a locked record, or a form the user may only read is not filled
+  on the page.
 
 ### Level 7 — a growth reference of your own
 

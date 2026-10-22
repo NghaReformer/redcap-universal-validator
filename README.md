@@ -743,8 +743,18 @@ the specimen ID on the collection form.
   datetimes to the minute, both datetimes to the second, both times of the same
   precision, or neither a date nor a time. Two number fields must use the same
   decimal mark. Dropdown and radio values are compared by code.
-  `@UVEXISTS=record` never finds the record being edited, and a record ID typed
-  in another case is found after one read of every record ID.
+  `@UVEXISTS=record` never finds the record being edited.
+- **Reads only the records that hold the value.** The module asks the project's
+  data table which records hold the value searched (in any spelling the rule
+  accepts), then reads those records through REDCap and judges them. A *not
+  found* reads no record. When the data table cannot be read, the lookup reads
+  the searched fields of every record instead, as before.
+- **`in` on this form.** When the searched field is on the tagged field's own
+  form, the page sends what that field holds now, and the record being edited
+  counts with that value, as it will once saved: a household head who types
+  the same ID in both fields is *found*. A rule with `match`, `where`,
+  `return` or `event` answers *could not check* when only the record being
+  edited holds the value, and the post-save audit decides.
 - **Asked on change, not per keystroke.** The page asks the server when the value
   is entered or changed, and once when the form opens. Typing clears the
   previous answer, typing in a text field a `when` condition reads included.
@@ -776,10 +786,14 @@ the specimen ID on the collection form.
   was found in; staff in a group see it only when it is in their group. A
   record-ID lookup never names a record.
 - **Data Access Groups.** REDCap may confine a group user's reads to their own
-  group. A *not found* from a rule that looks across groups is therefore kept
-  only when the module sees records of other groups in the same request;
-  otherwise the answer is *could not check*, and the post-save audit reports a
-  rule problem instead of a violation.
+  group, but not the module's read of the data table. A value saved nowhere is
+  therefore *not found* for a user in a group too, and the post-save audit
+  logs it as a violation. A value saved only in another group is *found*,
+  without naming the record. A rule with `match`, `where` or `return` cannot
+  judge a record REDCap does not let the user read, and answers *could not
+  check* there. When the data table cannot be read, a *not found* from a rule
+  that looks across groups is kept only when the module sees records of other
+  groups in the same request; otherwise the answer is *could not check*.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
   check on surveys, answered as found / not found only, under the survey
   throttle. It is refused when any field the lookup touches is an Identifier
@@ -798,7 +812,8 @@ the specimen ID on the collection form.
   (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The
   Validation scan reads the searched field once per rule per scan request and
-  checks every record against it. A lookup that cannot be completed is reported
+  checks every record against it; a rule with no `match` and no `where` is
+  read from the data table in one statement, with no export of the records. A lookup that cannot be completed is reported
   as a rule problem, never as a pass. A scan confined to one Data Access Group
   does not evaluate a rule that looks across groups (`scope` other than `dag`)
   and says so. A durable scan with `@UVEXISTS` rules claims coverage through its
@@ -835,7 +850,13 @@ the specimen ID on the collection form.
   fields for a user who may open every form the lookup reads, and the
   post-save audit, checking the same rights, writes the values that differ as
   the person who saved (the project setting "@UVEXISTS returned values" turns
-  that write off; a survey respondent's save writes nothing). The setup is
+  that write off; a survey respondent's save writes nothing). It writes only
+  into a form that person may change ("View & Edit" or "Edit survey
+  responses"): saving the form of a `match` field with read-only rights to the
+  form the rule fills leaves its fields, and a rule problem says why. On a
+  locked form, a locked record, or a form the user may only read, the page
+  fills nothing; when the entry found now holds other values, an amber line
+  says so. The setup is
   checked when the rule is saved: copied fields hold one value on the form of
   `in` or a form that does not repeat (in every event the entry can be found
   in), each field here can hold what the field there holds (choice codes, kind
@@ -969,7 +990,9 @@ slip:
   emptied. The rule owns its fields, so mark them `@READONLY`. Two references
   on one field each fill their own fields, and a rule that returns values may
   not read a returned field. The project setting "@UVRANGE returned values"
-  turns the save-time write off, and the scan's comparison with it.
+  turns the save-time write off, and the scan's comparison with it. The save
+  writes only into a form the person who saved may change, and a locked form
+  or one the user may only read is not filled on the page.
 - **A growth chart and a table on the form.** `show` draws the reference's
   curves with this visit's point under the field, and a table under them,
   on the page only:

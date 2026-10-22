@@ -786,6 +786,9 @@ NASK, Not asked";
     fclose($fx);
     $m = mod($live, ['2' => [EVT => ['record_id' => '2', 'ugr_sex' => '1', 'ugr_dob' => '2025-01-10', 'ugr_visit' => '2026-01-10',
         'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]]);
+    // The person who saves the form may change it: the save writes returned
+    // values only into such a form (EXS-3).
+    \REDCap::$rights['nurse']['forms']['uv_growth_return'] = '1';
     $errs = [];
     foreach (rulesOf($m) as $r) $errs[$r['fields'][0]] = isset($r['configError']) ? (string) $r['configError'] : '';
     check('live fixture: the four good rules are taken (got ' . json_encode(array_intersect_key($errs,

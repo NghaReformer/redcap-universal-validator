@@ -33,6 +33,13 @@ trait ReturnedValues
     /** @var array "event|instance" => ['event','instance','values' => [field => text],'fields' => measured fields] */
     private $returnQueue = [];
 
+    /**
+     * @var array the values auditRule kept out of the queue because they go
+     * into a form the person saving may not change (EXS-3): each
+     * ['rule','fields','values','event','instance','instrument']
+     */
+    private $returnBarred = [];
+
     /** True while this module writes returned values: that save is not audited again. */
     private static $returnWriting = false;
 
@@ -297,7 +304,9 @@ trait ReturnedValues
     {
         $queue = $this->returnQueue;
         $this->returnQueue = [];
-        if (!$queue) return false;
+        $barred = $this->returnBarred;
+        $this->returnBarred = [];
+        if (!$queue && !$barred) return false;
         try {
             $dd = $this->dataDictionary($pid);
             if (!$dd) return false;
@@ -309,6 +318,7 @@ trait ReturnedValues
                 }
                 foreach ($q['fields'] as $f => $_) $read[$f] = true;
             }
+            foreach ($barred as $b) foreach ($b['values'] as $f => $_) $read[$f] = true;
             $pk = null;
             try {
                 if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
@@ -321,6 +331,23 @@ trait ReturnedValues
             ]);
             if (!is_array($whole) || !isset($whole[$record]) || !is_array($whole[$record])) return false;
             $contexts = self::recordContexts($whole[$record]);
+            // A value kept out because its form may not be changed by this
+            // person is a rule problem only where it would change the record.
+            foreach ($barred as $b) {
+                $forms = [];
+                foreach ($b['values'] as $f => $text) {
+                    if (!isset($dd[$f]['form_name']) || $dd[$f]['form_name'] === '') continue;
+                    $ctx = $this->returnContext($contexts, (string) $dd[$f]['form_name'], $b['event'], $b['instance'], $pid);
+                    if ($ctx === null) continue;
+                    $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
+                    if (self::returnedDiffers($cur, $text, self::numberMarkOf($dd[$f]) !== null)) $forms[(string) $dd[$f]['form_name']] = true;
+                }
+                if ($forms) {
+                    $this->logUnconfigurable($b['rule'], $b['fields'], 'the person who saved may not edit the form "'
+                        . implode('", "', array_keys($forms)) . '", so the fields this rule fills there keep their values'
+                        . ' — the next save by someone who may fills them', $b['instrument'], $b['event'], $b['instance']);
+                }
+            }
             $choiceRules = null;   // field => its @UVCHOICES rules, read once (returnedChoiceText)
             $writes = [];   // "event|repeatKey|instance" => ['event_id', 'instance', 'data']
             foreach ($queue as $q) {

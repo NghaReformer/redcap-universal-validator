@@ -80,7 +80,7 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // today, now and written dates, periods, notPast; notFuture dropped for its time zone
     'windowAnchor', 'windowPeriod', 'windowOffLo', 'windowOffHi', 'windowWeekStart', 'windowNotPast', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS
-    'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
+    'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsSelfIn', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project
     'existsProject', 'existsPid', 'existsRemoteTargets',
     // @UVEXISTS "return": the map, the fields it writes, the ones that hold numbers
@@ -123,7 +123,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // a condition read when the page opened; notFuture dropped for its time zone
     'snapshotGate', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
-    'existsLocal', 'existsSurveys',
+    'existsLocal', 'existsSelfIn', 'existsSurveys',
     // @UVEXISTS "return": the page learns the fields it fills, never where the values come from
     'existsReturnFields', 'existsReturnNumbers',
     // @UVEXISTS "where": the page gets only the message, never the condition

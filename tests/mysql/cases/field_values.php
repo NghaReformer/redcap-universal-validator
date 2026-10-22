@@ -97,11 +97,30 @@ $NEIGHBOUR = uv_neighbour($PID);
     $recs = $fv->recordsWhere($PID, array('tok'), null, function ($f, $v) { return false; });
     check('field values: nothing accepted is an empty answer, not a failure', $recs === array());
 
+    // eachRow: every row of one field, with its event, for the @UVEXISTS scan
+    // index (EXS-5), through the same (project_id, field_name) index.
+    $mod->log = array();
+    $rows = array();
+    $ok = $fv->eachRow($PID, 'tok', null, function ($rec, $evt, $v) use (&$rows) { $rows[] = array($rec, $evt, $v); });
+    check('field values: eachRow reads the whole field of this project (got ' . count($rows) . ' rows)', $ok === true && count($rows) === 602);
+    $s3 = array_values(array_filter($rows, function ($r) { return $r[0] === 'S3'; }));
+    check('field values: eachRow hands each row its event and value as stored', $s3 === array(array('S3', '2', 'DUP-1')));
+    check('field values: eachRow never hands over the neighbour\'s rows', !array_filter($rows, function ($r) { return $r[0] === 'N1'; }));
+    $read = null;
+    foreach ($mod->log as $q) if (strpos($q[0], 'FROM redcap_data WHERE') !== false) $read = $q;
+    $cols = $read ? uv_index_columns($A, 'redcap_data', uv_explain_key($A, $read[0], $read[1])) : array();
+    check('field values: eachRow uses an index that starts (project_id, field_name) (plan '
+        . json_encode($read ? uv_explain_rows($A, $read[0], $read[1]) : null) . ')', array_slice($cols, 0, 2) === array('project_id', 'field_name'));
+    $rows = array();
+    $fv->eachRow($PID, 'tok', 2, function ($rec, $evt, $v) use (&$rows) { $rows[] = $rec; });
+    check('field values: eachRow with an event reads only that event (got ' . json_encode($rows) . ')', $rows === array('S3'));
+
     // A read the framework answers with false is no answer: the caller falls
     // back to the export instead of calling the value free.
     $mod->inner->failOn = 'FROM redcap_data WHERE';
     $recs = $fv->recordsWhere($PID, array('tok'), null, $same);
     check('field values: a failed read is null, never an empty list', $recs === null);
+    check('field values: a failed eachRow is false', $fv->eachRow($PID, 'tok', null, function () {}) === false);
     $mod->inner->failOn = null;
 
     // No data table the module can name: null, before any row is read.

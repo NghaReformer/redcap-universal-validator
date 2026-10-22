@@ -27,6 +27,7 @@ php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, e
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
 node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
+php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form
 php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the static method; "return"/"where" on REDCap 17
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
@@ -310,6 +311,17 @@ its `REDCap::$data` and runs every check twice: with the table, and in a second
 process (`--no-table`) without it, where the export answers instead.
 `tests/mysql/cases/field_values.php` runs the reader on a real server over a
 table with REDCap's own indexes and asserts each statement's plan.
+
+`exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
+asks the table which records hold the value and reads only those through
+getData; its mock answers the table from `REDCap::$data` and can confine
+getData to one Data Access Group, as REDCap does for a user in one. Each
+lookup is asked again with the table unreadable, and the export must give the
+same answer. It also covers a returned value kept out of a form the person who
+saved may only read, the `formReadOnly` flag of a read-only or locked form, the
+value the page sends for an `in` field on the tagged field's own form, and the
+scan index built from the table. The browser half of the last two is in
+`exists_return_dom_js.cjs`.
 
 `exists_cross_php.php` covers `"project"`, a lookup in another project. Its
 mocks keep settings, dictionaries, data, rights and `\Project` per project id,

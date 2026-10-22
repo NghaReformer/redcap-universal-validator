@@ -298,6 +298,23 @@ record, lab_donor, lab_ghost`) and the copy list of I20.
 | L17 | `uxw_lab_rec` = L-2, then l-1 | Found; then red "This value is saved, but not in an entry that meets this rule's conditions.": L-1 is North |
 | L18 | Source project: clear the row's copy list (I20), un-flag `lab_donor` as an Identifier, switch the row for 149 to "Any signed-in user of the asking project" and save. Then flag `lab_donor` as an Identifier again and reload the form in pid 149 | `uxw_lab_donor` shows "field "lab_donor" of project SRC is an Identifier there". The Configure dialog would refuse the switch while `lab_donor` is flagged ("is an Identifier, so it can be searched only by users with rights") or while the copy list is filled. Then switch the row back to "Only users who have rights" and restore I20's copy list |
 
+## Section M: data-table reads, groups, rights and locks (2.3.0 review fixes)
+
+These were run offline through the module (`tests/exists_table_php.php`,
+`tests/exists_return_dom_js.cjs`); the live run confirms what a mock cannot:
+that REDCap 17 confines a group user's `getData`, that the data table holds a
+`__GROUPID__` row per record in a group, and the lock tables' columns. Use the
+section K instrument and a second test account in a Data Access Group.
+
+| # | Action | Expect |
+|---|---|---|
+| M1 | As the group account, on a record of its group, type a specimen ID saved in no record | Red "not found"; with `"blockSave":"hard"` the save is blocked. Saving anyway (advisory rule) logs `invalid-id-saved`, `type: exists`, not a rule problem |
+| M2 | As the group account, type a specimen ID saved only in a record of another group | Green "Found." with no record named. A rule with `match` answers amber "could not check" |
+| M3 | In User Rights give the test account "Read Only" on the form with the `return` rule, open a saved record whose entry found now holds other values | The fields keep their saved values; an amber line says "The entry found now holds other values than this saved copy." The form is not marked as changed |
+| M4 | Give the rights back; lock the form (Lock this instrument) and reopen it | Same as M3. Unlock after. Lock the whole record (Record Status Dashboard) and reopen: same |
+| M5 | With "Read Only" on the rule's form, change the `match` field on its own form and save that form | The returned fields keep their values; the module log has a rule problem naming the form ("may not edit the form"). Give the rights back and save again; the fields are then filled |
+| M6 | A rule with `"in"` on its own form (`@UVEXISTS={"in":"[hh_id]"}` on `hh_ref`, both on one form): on a new record type the same ID in both fields | Green "Found."; change `hh_id` and the lookup asks again, answering red. After saving, the audit logs nothing for `hh_ref` |
+
 ## Sign-off
 
 | # | Gate | Result |
@@ -313,6 +330,7 @@ record, lab_donor, lab_ghost`) and the copy list of I20.
 | 9 | Section J: `caseSensitive`, record IDs in another case, the record itself, numbers by value, `@UVUNIQUE` the same way, Save asking again | ☐ |
 | 10 | Section K and I20 to I25: `"return"` fills, empties and leaves fields as documented, on the page and at save; dropdown, radio and D-M-Y targets; rights over every form the lookup reads, on the page and at save; the agreement's copy list, the probe log, the kill switch; the page-open fill does not mark the form as changed | ☐ |
 | 11 | Section L: `"where"` with OR, upper-case AND, a date literal, a checkbox box and a number; the event row beside a repeat instance; `"in":"record"`; the filtered line with and without `whereMessage`; the plain survey wording; setup refusals; rights to the `where` forms; the audit reason `filtered`; the lab project's agreement, probe log and one refusal | ☐ |
+| 12 | Section M: a group user's misses are "not found"; another group's value is found without its record; read-only and locked forms are not filled; a read-only saver's save writes nothing there; `in` on the same form counts the record being edited | ☐ |
 
 ## Cleanup
 
