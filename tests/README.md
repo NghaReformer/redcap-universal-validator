@@ -46,6 +46,11 @@ node tests/delta_dom_js.cjs      # @UVDELTA browser rule (live vs blocks, saved 
 php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
 php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
 node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
+php  tests/writeonce_php.php      # @UVWRITEONCE verdict vs writeonce_fixture.json, and the log reader
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, disabled, a change undone)
+php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, grammar, page, audit, scan
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
+node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -508,6 +513,53 @@ inner spaces.
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
   notes, the registry entry of a field with two modes), so those suites are
   named too.
+
+## `writeonce_*` — values entered once
+
+- `writeonce_php.php` holds `Logic::writeOnceVerdict` to
+  `writeonce_fixture.json`: the lock set by the first save of a value (not a
+  blank, not a Missing Data Code), a change or a clearing after it, a role that
+  moves or releases the lock, "since", a quote the log escaped, a save the log
+  does not spell out, a value it never shows saved, and roles that cannot be
+  read. It also drives `ValueHistory` over a mock of REDCap's log
+  (`writeonce_fake_log.php`): rows newest first in pages, a `DELETE` ending
+  the history, another record of the same name in a loose collation, the cap,
+  a failed read, and save times turned into the project's clock.
+- `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
+  read-only with the note under it, in the rule's own words when it has a
+  message; radio buttons are disabled and the "reset" link hidden; a dropdown
+  is not disabled but takes no clicks, and its autocomplete box is read-only;
+  the slider and the date picker are disabled through jQuery UI; a change made
+  anyway (an event, a jQuery change, a script with no event) is undone and the
+  note says so; a value that cannot be put back holds the save; another mode's
+  item on a locked field never holds the save; a configuration error locks
+  nothing.
+- `writeonce_module_php.php` covers the server side: calc and checkbox fields
+  and `@CALCTEXT`, `@CALCDATE` and `@SETVALUE` refused; each role checked
+  against the project, by name or unique role name, in any letter case, and
+  refused once by name; a lock on a field another rule returns to refused,
+  split off its group; the grammar; the page (only fields holding a value,
+  never for a member of a role, a survey respondent holds none, never on a new
+  record, not before "since", roles and "since" kept off the page); the audit
+  (`changed`, `cleared`, a role moving or releasing the lock, a code saved over
+  a locked value, "since", the lock times kept whatever the log mode, and each
+  rule problem); and the scan with its labels and detail line.
+- `writeonce_live_twin_php.php` runs the module over the live fixture on a copy
+  of pid 149's events with a copy of REDCap's log that gains the row of each
+  save the sheet makes, and checks every answer of
+  `docs/testbed/WRITEONCE_LIVE_ACCEPTANCE.md`: the configuration errors word
+  for word (and the survey's general wording), which fields each page locks,
+  each log entry of each save in order, the Data Import Tool change found by
+  the scan and the next save, and the roles read as they are when the audit
+  or scan runs. It writes the page configs to `writeonce_live_pages.json`.
+- `writeonce_live_twin_js.cjs` boots `js/engine.js` with those configs on a
+  page shaped as REDCap renders the fixture's field types (a date box with its
+  picker, radio buttons with their mirror and "reset" link, a dropdown with its
+  autocomplete box, a notes box, a slider), and checks each lock, each note,
+  each undone change and each save. A refused tag on a dropdown shows its
+  error under the field.
+- `writeonce_mutations.py` applies 61 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them.
 
 ## `growth_*` — growth references (z-scores)
 

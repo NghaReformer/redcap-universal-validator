@@ -971,6 +971,58 @@ and flags a change larger than its limit:
   allowed" or "Fell more than allowed", with the limits in the detail line.
   Configure via field annotation only.
 
+## Values entered once — the `@UVWRITEONCE` tag
+
+Some answers are entered once and then left alone, such as a consent date, a
+randomisation arm or a baseline weight. REDCap's `@READONLY` stops everyone,
+including the first entry. `@UVWRITEONCE` leaves the field open until its
+first save of a value and locks it from then on:
+
+```text
+@UVWRITEONCE
+@UVWRITEONCE={"roles":["Data manager"]}
+@UVWRITEONCE={"roles":["Data manager","PI"],"since":"2026-11-01","message":"Ask the data manager to correct this date."}
+```
+
+- **Locked by the first save.** The first save of a value that is not blank and
+  not a missing data code locks the field, whoever makes it. A blank or a code
+  locks nothing, so a field marked "unknown" can still be filled in later.
+- **Roles.** `roles` names the user roles whose members may still change or
+  clear the value, by the name the User Rights page shows or by the unique
+  role name, in any letter case, up to 20. Each must be a role of the project.
+  A member's change moves the lock to the new value, and clearing it releases
+  the lock. Roles are read when the audit or the scan runs, not as they were at
+  the save, because REDCap's log names who saved but not the role they held.
+  So a change counts as the role's while its maker holds the role, and as a
+  violation once they leave it.
+- **`since`.** A date written YYYY-MM-DD. Saves before it lock nothing, the
+  value held on that day is locked from then on, and the page locks nothing
+  before that day in the project's clock. Use it when the tag is added to a
+  project that already holds data.
+- **Field types.** Text and Notes fields (dates included), dropdown, radio,
+  yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
+  nor a field with `@CALCTEXT`, `@CALCDATE` or `@SETVALUE`, whose value REDCap
+  writes again by itself, nor a field another rule returns a value to.
+- **On the page.** For everyone outside the roles the field keeps the value it
+  opened with, with a short note under it. A text box is read-only, the radio
+  buttons are disabled and their "reset" link hidden, and the slider and the
+  date picker are disabled. A dropdown is not disabled, since REDCap would then
+  save it blank. It takes no clicks, and a change made with the keyboard or a
+  script is undone, and the note says so. A survey respondent holds no role.
+  Another rule on a locked field still shows its note but never holds the
+  save. The roles and `since` never reach the page.
+- **The browser only.** The Data Import Tool and the API are not stopped. What
+  they change is found afterwards from REDCap's log, by the next form save's
+  audit and by the Validation scan.
+- **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
+  or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
+  as "Changed after it was locked" or "Cleared after it was locked" and names
+  when the value was locked. A log that holds more saves of the record than
+  are read (5,000), a save the log does not spell out, a value the log never
+  shows saved, and roles that cannot be read when a change needs them are rule
+  problems, never a pass. The tag takes no `when`, `caseSensitive` or
+  `blockSave`. Configure via field annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -1285,6 +1337,12 @@ php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across even
 php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
 node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
 python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named suite fail
+php  tests/writeonce_php.php      # @UVWRITEONCE verdict and the log reader vs writeonce_fixture.json
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, disabled, a change undone)
+php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, scan
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
+node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
+python3 tests/writeonce_mutations.py   # @UVWRITEONCE: every mutation must make a named suite fail
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file

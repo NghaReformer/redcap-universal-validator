@@ -51,11 +51,15 @@ every save.</p>
     field marked "unknown" can still be filled in later.</li>
 <li>A member of a named role may change the value. The lock then moves to the new
     value. A member who clears it releases the lock, and the next value saved locks it
-    again.</li>
+    again. Roles are read when the audit or the scan runs, not as they were at the
+    save, because REDCap's log names who saved but not the role they held. A change
+    counts as the role's while its maker holds the role.</li>
 <li>On a form or a survey the locked field is read-only for everyone outside the roles,
-    with a short note under it. A text box is made read-only and the radio buttons are
-    disabled. A dropdown, a slider or a date picker cannot be disabled without REDCap
-    saving the field blank, so a change made there is undone and the note says so.</li>
+    with a short note under it. A text box is made read-only, the radio buttons are
+    disabled and their "reset" link hidden, and the slider and the date picker are
+    disabled. A dropdown cannot be disabled without REDCap saving the field blank, so
+    it takes no clicks, and a change made with the keyboard or a script is undone and
+    the note says so.</li>
 <li>Another rule on a locked field still shows its note, but it never holds the save:
     the person cannot change the value it objects to.</li>
 <li>The lock lives in the browser only. A change made through the API, the Data Import

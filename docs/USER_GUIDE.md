@@ -920,7 +920,8 @@ calc or SQL field, the dates date or datetime fields, and an age, length or
 height a Text field with integer or number validation, or a calc. Change
 limits (`@UVDELTA`): Text fields with no, integer or number validation
 (including comma decimals), calc fields and sliders, compared with a field of
-any of those kinds.
+any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
+dropdown, radio, yes/no, true/false, slider and SQL fields.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1102,6 +1103,19 @@ reason `up` or `down`, and the scan labels them "Rose more than allowed" or
 "Fell more than allowed". Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvdelta--how-far-a-number-may-change).
 
+**Can a value be locked once it has been entered?**
+Yes. `@UVWRITEONCE` leaves a field open until its first save of a value, then
+locks it on forms and surveys. `@UVWRITEONCE={"roles":["Data manager"]}` lets
+members of that role still change or clear it, and the lock moves to the new
+value. `"since":"2026-11-01"` locks the value held on that day, for a project
+that already holds data. A blank and a missing data code lock nothing. The
+lock is the browser's only: a change made through the Data Import Tool or the
+API is found afterwards, from REDCap's log, by the next form save's audit
+(`type: writeonce`, reason `changed` or `cleared`) and by the scan. Roles are
+read when the audit or the scan runs, so a change counts as the role's only
+while its maker holds the role. Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
+
 **Can a child's weight or height be checked against the WHO growth standards?**
 Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
 child's sex and age:
@@ -1243,7 +1257,9 @@ validate it, and the module treats it as blank: no check-character, format,
 verdict, on the page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
 an answer, so a field marked "unknown" is not reported as missing. A code in an
 `@UVEXISTS` `match` field, a `@UVWINDOW` "from" date or the value a `@UVDELTA`
-compares with also counts as blank.
+compares with also counts as blank. `@UVWRITEONCE` locks no code, so a field
+marked "unknown" can be filled in later, and reports a code saved over a
+locked value as a clearing.
 In a `when` condition or an `@UVASSERT` expression the code is read as itself,
 the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
 `when` to leave such records out.

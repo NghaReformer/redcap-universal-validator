@@ -247,6 +247,8 @@ namespace {
     check('grammar: an unknown key refused, naming the valid ones', strpos($parse('{"blockSave":"hard"}')['error'] ?? '', 'valid: roles, since, message') !== false);
     check('grammar: JSON that does not parse', strpos($parse('{roles:1}')['error'] ?? '', 'JSON does not parse') !== false);
     check('grammar: "since" must be a string', strpos($parse('{"since":20261101}')['error'] ?? '', '"since" must be a date') !== false);
+    check('grammar: a "since" written day first is quoted as written (got ' . ($parse('{"since":"01/11/2026"}')['error'] ?? '') . ')',
+        ($parse('{"since":"01/11/2026"}')['error'] ?? '') === '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got "01/11/2026".');
     check('grammar: a message in several languages', ($parse('{"message":{"en":"Locked","fr":"Verrouillé"}}')['message'] ?? null) === 'Locked');
 
     // ============================================================================

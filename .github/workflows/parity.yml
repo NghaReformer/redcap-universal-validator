@@ -78,6 +78,10 @@ jobs:
           node tests/delta_js.cjs
           node tests/delta_dom_js.cjs
           node tests/delta_live_twin_js.cjs
+      - name: JS write-once (@UVWRITEONCE) page lock (read-only, disabled, a change undone, other modes never hold the save), and the live run sheet's clicks replayed through the engine
+        run: |
+          node tests/writeonce_dom_js.cjs
+          node tests/writeonce_live_twin_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
       - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
@@ -246,6 +250,12 @@ jobs:
           php tests/delta_module_php.php
           php tests/delta_live_twin_php.php
           python3 tests/delta_mutations.py
+      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 61 mutations the suites must kill
+        run: |
+          php tests/writeonce_php.php
+          php tests/writeonce_module_php.php
+          php tests/writeonce_live_twin_php.php
+          python3 tests/writeonce_mutations.py
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |
           php tests/growth_php.php

@@ -8,7 +8,7 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE` and `@UVDELTA`. The tags and
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE`, `@UVDELTA` and `@UVWRITEONCE`. The tags and
 the dialog are the same rules through different doors, and they mix freely.
 
 ---
@@ -26,6 +26,7 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
 - [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
 - [`@UVDELTA` — how far a number may change](#uvdelta--how-far-a-number-may-change)
+- [`@UVWRITEONCE` — values entered once](#uvwriteonce--values-entered-once)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -62,6 +63,7 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVEXISTS`   | The value is already saved in the project: a record ID, or a value of another field                                     | Text, dropdown, radio, SQL                                     |
 | `@UVRANGE`    | A number lies within usual and plausible limits (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
 | `@UVDELTA`    | A number has not changed more than a limit since an earlier value (the previous visit, baseline, another field)         | Text with no, integer or number validation, calc, slider       |
+| `@UVWRITEONCE` | A value, once saved, is not changed or cleared except by named user roles                                              | Text, Notes, dropdown, radio, yes/no, true/false, slider, SQL  |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -4371,6 +4373,98 @@ cannot name an earlier entry at every event that holds the form (see Level 3).
 
 ---
 
+## `@UVWRITEONCE` — values entered once
+
+A consent date, a randomisation arm or a baseline weight is entered once and
+then left alone. `@UVWRITEONCE` leaves the field open until its first save of
+a value and locks it from then on. Named user roles can still change it.
+
+### Level 1 — lock for everyone
+
+```text
+@UVWRITEONCE
+```
+
+The first save of a value locks the field, whoever makes it. A blank and a
+missing data code lock nothing, so a field marked "unknown" can still be
+filled in later. On a form or a survey the locked field keeps the value it
+opened with, and a note under it reads "This value was saved once and is
+locked. It cannot be changed here."
+
+### Level 2 — roles that may still change it
+
+```text
+@UVWRITEONCE={"roles":["Data manager"]}
+@UVWRITEONCE={"roles":["Data manager","PI"],"message":"Ask the data manager to correct this date."}
+```
+
+- `roles` names user roles by the name the User Rights page shows or by the
+  unique role name, in any letter case, up to 20. Each must be a role of the
+  project, or the field shows a configuration error.
+- A member of a role sees the field open. A change by a member moves the lock
+  to the new value; a member who clears it releases the lock, and the next
+  value saved locks it again.
+- A survey respondent holds no role, so a survey locks the field for everyone.
+- Roles are read when the audit or the scan runs, not as they were at the
+  save, because REDCap's log names who saved but not the role they held. A
+  change counts as the role's while its maker holds the role.
+- `message` replaces the note under the field and the scan's detail line. It
+  may be a map of language ids to texts.
+
+### Level 3 — a project that already holds data
+
+```text
+@UVWRITEONCE={"since":"2026-11-01"}
+```
+
+Saves before `since` lock nothing. The value the field held on that day is
+locked from then on, and the page locks nothing before that day in the
+project's clock. The date is written YYYY-MM-DD.
+
+### Semantics worth knowing
+
+- The lock is the browser's only. A change made with the Data Import Tool or
+  the API is not stopped. It is found afterwards, from REDCap's log, by the
+  next form save's audit and by the Validation scan.
+- A text box is made read-only, the radio buttons are disabled and their
+  "reset" link hidden, and the slider and the date picker are disabled. A
+  dropdown is not disabled, since REDCap would save it blank. It takes no
+  clicks, and a change made with the keyboard or a script is undone, and the
+  note says so.
+- Another tag on a locked field still shows its note but never holds the save,
+  since the person cannot change the value it objects to.
+- The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
+- Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE` or
+  `@SETVALUE`, or a field another rule returns a value to (`@UVEXISTS` or
+  `@UVRANGE` "return"). Each of those is written again by itself.
+- The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
+  `locked_at` and `changed_at`. A log that holds more saves of the record than
+  are read, a save the log does not spell out, a value the log never shows
+  saved, and roles that cannot be read when a change needs them are rule
+  problems, never a pass.
+
+```text invalid
+# refused: takes no value
+@UVWRITEONCE=yes
+# refused: unknown @UVWRITEONCE option(s): when
+@UVWRITEONCE={"when":"[consent]='1'"}
+# refused: unknown @UVWRITEONCE option(s): blockSave
+@UVWRITEONCE={"blockSave":"hard"}
+# refused: must name at least one role
+@UVWRITEONCE={"roles":[]}
+# refused: must be a list of role names
+@UVWRITEONCE={"roles":"Data manager"}
+# refused: "since" must be a date written YYYY-MM-DD
+@UVWRITEONCE={"since":"01/11/2026"}
+```
+
+Once the data dictionary and the user roles are read, the module also refuses a
+role the project does not have, a calc or checkbox field, a field with
+`@CALCTEXT`, `@CALCDATE` or `@SETVALUE`, and a field another rule returns a
+value to.
+
+---
+
 ## Combining tags on one field
 
 Different kinds of tag on one field **compose**: all must pass, and each keeps an
@@ -5582,6 +5676,19 @@ references on.
 @UVDELTA={"vs":"[weight_1]","max":0.2,"unit":"kg","blockSave":"confirm"}
 ```
 
+### `@UVWRITEONCE` recipes
+
+```text
+# on: consent_date — entered once, never changed on a form
+@UVWRITEONCE
+
+# on: rand_arm — only the data manager may correct the arm
+@UVWRITEONCE={"roles":["Data manager"],"message":"Ask the data manager to correct the arm."}
+
+# on: baseline_weight, added to a running study — lock what was held on 1 November
+@UVWRITEONCE={"since":"2026-11-01"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -5991,6 +6098,16 @@ number keeps. `blockSave` is refused.
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `vs` saved elsewhere and a calc never block |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
+### `@UVWRITEONCE`
+
+| Key       | Type          | Default         | Notes                                                                              |
+| --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `roles`   | list          | *(none)*        | User roles that may still change or clear the value; by name or unique role name, any letter case, 1 to 20 |
+| `since`   | string        | *(none)*        | YYYY-MM-DD: saves before it lock nothing; the value held that day is locked         |
+| `message` | string or map | generic line    | The note under a locked field and the scan's detail line                            |
+
+No `when`, `caseSensitive`, `blockSave` or `references`.
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -5998,6 +6115,8 @@ number keeps. `blockSave` is refused.
 | `references` | object | Named bindings used as `{alias}` in `when`/`assert`; at most 20; feature must be enabled |
 | `alternates` | list   | `@UVALIDATE` only: `label`, `pattern`, `algorithm`, `source`, `strip`, `lengths` per entry |
 | `message`    | string or map | Every tag except `@UVALIDATE`: one string, or a map of language id to text ([Messages in several languages](#messages-in-several-languages)) |
+
+`@UVWRITEONCE` takes no `references`.
 
 ### `references` binding keys
 
@@ -6176,6 +6295,11 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"up"}   a rise of at most 50%
 @UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}       at most 15% below baseline
 @UVDELTA={"vs":"previous-event","max":0,"direction":"down"}        may not fall
+
+# ── @UVWRITEONCE — values entered once ───────────────────────────────────────
+@UVWRITEONCE                                                       locked by its first save
+@UVWRITEONCE={"roles":["Data manager"]}                            the data manager may still change it
+@UVWRITEONCE={"since":"2026-11-01"}                                locks what was held on that day
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

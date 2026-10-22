@@ -3136,7 +3136,7 @@ class AnnotationRules
             } else {
                 foreach ($roles as $r) {
                     $len = is_string($r) ? (function_exists('mb_strlen') ? mb_strlen($r, 'UTF-8') : strlen($r)) : 0;
-                    if (!is_string($r) || $r === '' || preg_match('/[ -]/', $r) || $len > self::MAX_ROLE_NAME) {
+                    if (!is_string($r) || $r === '' || preg_match('/[\x00-\x1F\x7F]/', $r) || $len > self::MAX_ROLE_NAME) {
                         $errors[] = '"roles" must hold role names of 1 to ' . self::MAX_ROLE_NAME . ' characters — got ' . json_encode($r) . '.';
                         break;
                     }
@@ -3146,7 +3146,7 @@ class AnnotationRules
         if (array_key_exists('writeonceSince', $frag)) {
             $d = $frag['writeonceSince'];
             $ok = is_string($d) && preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $d, $m) && checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
-            if (!$ok) $errors[] = '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got ' . json_encode($d) . '.';
+            if (!$ok) $errors[] = '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got ' . json_encode($d, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . '.';
         }
         foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"'] as $k => $label) {
             if (array_key_exists($k, $frag)) {
