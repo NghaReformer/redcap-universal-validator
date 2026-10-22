@@ -50,6 +50,13 @@ class CheckCharacter
     const MAX_EXPECTED_IDS = 9999;
     const MAX_KEEP_CHARS  = 64;
     const MAX_POOLED_LEN  = 4096; // absolute pooled scan cap (client QRID_MAX_POOLED_LEN)
+    const MAX_SINGLE_LEN  = 512;  // one ID field, in UTF-16 units (client QRID_MAX_SINGLE_LEN)
+
+    /** The characters JavaScript's String.prototype.trim() removes: WhiteSpace
+     *  (TAB, VT, FF, SP, NBSP, ZWNBSP and Unicode category Zs) and
+     *  LineTerminator (LF, CR, LS, PS). The browser judges input.value.trim(),
+     *  so the server trims the same set (VAL-3). */
+    const JS_TRIM_CLASS = '[\x{0009}-\x{000D}\x{0020}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]';
     // One pooled parse costs about (scanned length) x |PAIRS| x (member length)
     // "char-ops"; this budget bounds the product for every legal config, so an
     // expensive rule shrinks its scan cap instead of stalling the save hook.
@@ -467,23 +474,130 @@ class CheckCharacter
      */
     public static function matchesPattern($value, $pattern)
     {
+        // Kept for callers that want a yes/no: "cannot judge" counts as a match.
+        return self::patternVerdict($value, $pattern) !== false;
+    }
+
+    /**
+     * Whether the value's format matches $pattern, as the browser's
+     * new RegExp("^(?:" + body + ")$").test(normR) decides it: true, false, or
+     * null when the server cannot say what the browser would.
+     *
+     * null covers a catastrophic pattern (never run), one that does not compile,
+     * a PCRE engine error (VAL-10), and a value the two regex engines would read
+     * differently under this pattern (COR-004, dialectSplits). Everywhere else
+     * the answer is exact, non-ASCII values included (VAL-1).
+     */
+    private static function patternVerdict($value, $pattern)
+    {
         if ($pattern === null || $pattern === '') return true;
-        if (self::riskyPattern($pattern)) return true;      // never run a catastrophic pattern
-        $norm = trim(self::normalize($value, '', true, true, null));
-        // JS RegExp (UTF-16 code units) and PCRE /u (code points) count a
-        // non-ASCII character differently — e.g. an astral emoji is two units
-        // to the browser and one to PCRE, so "." patterns flip verdicts. The
-        // proven parity subset is printable ASCII; outside it the server must
-        // fail OPEN (no format log) rather than risk logging a mismatch the
-        // client never showed (COR-004).
-        if (preg_match('/[^\x20-\x7E]/', $norm)) return true;
+        if (self::riskyPattern($pattern)) return null;      // never run a catastrophic pattern
+        $norm = self::browserTrim(self::normalize($value, '', true, true, null));
+        if (self::dialectSplits($pattern, $norm)) return null;
         $body = preg_replace('/^\^/', '', (string) $pattern);
         $body = preg_replace('/\$$/', '', $body);
         $re = self::compilePattern($body);
-        if ($re === null) return true;
-        $m = @preg_match($re, $norm);
-        if ($m === false || preg_last_error() !== PREG_NO_ERROR) return true; // engine error, not a format miss
+        if ($re === null) return null;
+        $m = @preg_match($re, self::jsUnits($norm));
+        if ($m === false || preg_last_error() !== PREG_NO_ERROR) return null; // engine error, not a format miss
         return $m === 1;
+    }
+
+    /** True when the browser would refuse $pattern outright: catastrophic, or not a regex. */
+    private static function patternBroken($pattern)
+    {
+        if (self::riskyPattern($pattern)) return true;
+        $body = preg_replace('/^\^/', '', (string) $pattern);
+        $body = preg_replace('/\$$/', '', $body);
+        return self::compilePattern($body) === null;
+    }
+
+    /**
+     * Whether JS RegExp (no flags, UTF-16 code units) and PCRE /u (code points)
+     * may disagree on $pattern for the value $norm. They read printable ASCII
+     * the same way, and \d \w \b and positive classes of ASCII the same way
+     * for any value. An astral character, two units to JS and one code point to
+     * PCRE, is matched as two placeholder characters (jsUnits), so ".", negated
+     * classes and \D \W \S count it as JS does. They differ only where both of
+     * these hold:
+     *  - the value has whitespace JS's \s knows and PCRE's does not (NBSP,
+     *    U+2000-U+200A, U+3000, U+FEFF ...) and the pattern uses \s or \S;
+     *  - the value has CR, U+2028 or U+2029, which JS's "." refuses and PCRE's
+     *    accepts, and the pattern has ".";
+     *  - the value has any character outside printable ASCII and the pattern
+     *    has a literal outside printable ASCII or an escape the two engines
+     *    read differently (\p \x \u \h \v \R \X \N \c ...).
+     */
+    public static function dialectSplits($pattern, $norm)
+    {
+        $norm = (string) $norm;
+        if (!preg_match('/[^\x20-\x7E]/', $norm)) return false;
+        $p = (string) $pattern;
+        $n = strlen($p);
+        $dot = false; $negated = false; $space = false; $other = false;
+        $inClass = false;
+        for ($i = 0; $i < $n; $i++) {
+            $c = $p[$i];
+            $o = ord($c);
+            if ($o < 0x20 || $o > 0x7E) { $other = true; continue; }
+            if ($c === '\\') {
+                if ($i + 1 >= $n) { $other = true; break; }
+                $e = $p[++$i];
+                if ($e === 's') $space = true;
+                elseif ($e === 'S') { $space = true; $negated = true; }
+                elseif ($e === 'D' || $e === 'W') $negated = true;
+                elseif (strpos('pPxuhHvVRXNcCkKgGQEz', $e) !== false) $other = true;
+                continue;
+            }
+            if ($inClass) {
+                if ($c === ']') $inClass = false;
+                continue;
+            }
+            if ($c === '[') {
+                if ($i + 1 < $n && $p[$i + 1] === '^') { $negated = true; $i++; }
+                $inClass = true;
+                // a "]" right after "[" or "[^" is a literal in both engines
+                if ($i + 1 < $n && $p[$i + 1] === ']') $i++;
+                continue;
+            }
+            if ($c === '.') $dot = true;
+        }
+        if ($other) return true;
+        if ($space && @preg_match('/[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]/u', $norm)) return true;
+        if ($dot && @preg_match('/[\r\x{2028}\x{2029}]/u', $norm)) return true;
+        // not UTF-8: no exact reading is possible
+        if (@preg_match('//u', $norm) !== 1) return true;
+        return false;
+    }
+
+    /**
+     * $s with each astral character (U+10000 and up) replaced by two private-use
+     * characters, U+E000 U+E001: the two UTF-16 units the browser's RegExp sees.
+     * Only a construct that matches any character can match them, as it would
+     * match a surrogate in JS; a literal or ASCII class matches neither.
+     */
+    private static function jsUnits($s)
+    {
+        $t = @preg_replace('/[\x{10000}-\x{10FFFF}]/u', "\u{E000}\u{E001}", (string) $s);
+        return $t === null ? (string) $s : $t;
+    }
+
+    /** $s with JavaScript's String.prototype.trim() whitespace removed from both ends. */
+    public static function browserTrim($s)
+    {
+        $s = (string) $s;
+        $t = @preg_replace('/^' . self::JS_TRIM_CLASS . '+|' . self::JS_TRIM_CLASS . '+$/u', '', $s);
+        return $t === null ? trim($s) : $t;      // not UTF-8: PHP's trim is the best left
+    }
+
+    /** The value's length as the browser's String.length counts it: UTF-16 code units. */
+    public static function jsLength($s)
+    {
+        $s = (string) $s;
+        $cp = @preg_match_all('/./su', $s);
+        if ($cp === false || $cp === null) return strlen($s);
+        $astral = @preg_match_all('/[\x{10000}-\x{10FFFF}]/u', $s);
+        return $cp + ($astral ? $astral : 0);
     }
 
     /**
@@ -494,8 +608,8 @@ class CheckCharacter
      *
      * Pure normalization: total, no gates, no compilation. The gates belong to
      * the caller, because the three consumers have three different failure
-     * policies — validateSingleField fails OPEN, pooledState fails CLOSED, and
-     * AnnotationRules::checkFragment words an error. Conflating them would break
+     * policies — validateSingleField reports "unconfigurable" or "not-checked",
+     * pooledState fails CLOSED, and AnnotationRules::checkFragment words an error. Conflating them would break
      * whichever one it did not match.
      *
      * 'lengths' is null when the alternate does not declare its own; pooledState
@@ -1316,56 +1430,98 @@ class CheckCharacter
     {
         $ALTS = self::alternatesOf($cfg);
         if ($ALTS === null) return ['ok' => true, 'reason' => 'unconfigurable'];
-        // COR-004 lives HERE, not inside matchesPattern. Outside printable ASCII
-        // the browser (UTF-16) and PCRE /u disagree, so the server fails OPEN
-        // rather than log a mismatch the client never showed. Left in
-        // matchesPattern, that fail-open "true" would read as "alternate 1's
-        // pattern matched" and the alternate's CHECK would then run on the value
-        // and fail - converting a deliberate fail-open into a false finding.
-        $norm = trim(self::normalize($value, '', true, true, null));
-        if (preg_match('/[^ -~]/', $norm)) return ['ok' => true, 'reason' => 'valid'];
 
         // An algorithm this engine does not implement is a CONFIGURATION problem,
         // not a data problem: compute() would throw inside validateId and read
         // back as a failed check, filing a false finding against a good ID.
         // pooledState has refused it since the rewrite; this is its twin, and
         // the rule-level gate at UniversalValidator::ruleFindings has no
-        // alternate-level equivalent (COR-002).
+        // alternate-level equivalent (COR-002). A catastrophic or uncompilable
+        // pattern is the same kind of problem: the browser refuses the rule
+        // before it sees a value, so no value can be judged here either.
         foreach ($ALTS as $A) {
             if (!self::knownAlgorithm($A['algorithm'])) {
                 return ['ok' => true, 'reason' => 'unconfigurable'];
             }
+            if ($A['pattern'] !== null && $A['pattern'] !== '' && self::patternBroken($A['pattern'])) {
+                return ['ok' => true, 'reason' => 'unconfigurable'];
+            }
         }
-        // Shape ownership: a value whose shape matches ANY check-bearing
-        // alternate belongs to that family and must pass its check character.
-        // Format-only alternates are consulted only when no check-bearing
-        // shape matched, so they can never accept a mis-scanned check-bearing
-        // ID, whatever the patterns overlap and whatever the declaration
-        // order. Twin of verdict() pass 1 (js).
-        $anyPattern = false; $shapeMatched = false;
-        foreach ($ALTS as $A) {
-            if ($A['algorithm'] === 'none') continue;
+        // The browser judges input.value.trim() (VAL-3): a trailing newline,
+        // tab or no-break space from a copy is not part of the ID there, and
+        // must not be here.
+        $value = self::browserTrim($value);
+        if ($value === '') return ['ok' => true, 'reason' => 'no-op'];
+        // Twin of QRID_MAX_SINGLE_LEN: the browser refuses a longer value
+        // before any check (VAL-12).
+        if (self::jsLength($value) > self::MAX_SINGLE_LEN) return ['ok' => false, 'reason' => 'too-long'];
+        // Each alternate's format test: true, false, or null when the server
+        // cannot say what the browser's RegExp would (patternVerdict). The check
+        // math always runs: a character outside printable ASCII that survives
+        // normalization makes the ID invalid in both runtimes (VAL-1; this used
+        // to return "valid" for any such value, check math skipped).
+        $match = []; $unknown = [];
+        foreach ($ALTS as $i => $A) {
             $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
-            if ($pattern !== null) {
+            $match[$i] = self::patternVerdict($value, $pattern);
+            if ($match[$i] === null) $unknown[] = $i;
+        }
+        $checks = [];
+        $check = function ($i) use ($ALTS, $value, &$checks) {
+            if (!isset($checks[$i])) {
+                $A = $ALTS[$i];
+                $checks[$i] = self::validateId($A['algorithm'], $A['source'], $A['strip'], $value);
+            }
+            return $checks[$i];
+        };
+        if (!$unknown) return self::singleVerdictFor($ALTS, $match, $check);
+        // Try every answer the unknown formats could give. When all agree on
+        // valid or invalid the verdict stands; when they split, the value is
+        // reported as not checked rather than guessed (COR-004).
+        $first = null;
+        $combos = 1 << count($unknown);
+        for ($bits = 0; $bits < $combos; $bits++) {
+            $try = $match;
+            foreach ($unknown as $k => $i) $try[$i] = (bool) (($bits >> $k) & 1);
+            $v = self::singleVerdictFor($ALTS, $try, $check);
+            if ($first === null) { $first = $v; continue; }
+            if ($v['ok'] !== $first['ok']) return ['ok' => true, 'reason' => 'not-checked'];
+        }
+        return $first;
+    }
+
+    /**
+     * The single-field verdict once every alternate's format test is known.
+     * Twin of verdict() passes 1 and 2 (js).
+     *
+     * Shape ownership: a value whose shape matches ANY check-bearing alternate
+     * belongs to that family and must pass its check character. Format-only
+     * alternates are consulted only when no check-bearing shape matched, so
+     * they can never accept a mis-scanned check-bearing ID, whatever the
+     * patterns overlap and whatever the declaration order.
+     */
+    private static function singleVerdictFor(array $ALTS, array $match, callable $check)
+    {
+        $anyPattern = false; $shapeMatched = false;
+        foreach ($ALTS as $i => $A) {
+            if ($A['algorithm'] === 'none') continue;
+            if ($A['pattern'] !== null && $A['pattern'] !== '') {
                 $anyPattern = true;
-                if (!self::matchesPattern($value, $pattern)) continue;
+                if (!$match[$i]) continue;
             }
             $shapeMatched = true;
-            if (self::validateId($A['algorithm'], $A['source'], $A['strip'], $value)) {
-                return ['ok' => true, 'reason' => 'valid'];
-            }
+            if ($check($i)) return ['ok' => true, 'reason' => 'valid'];
         }
         // Reason precedence, byte-identical to the old two-branch order for a
         // single-format rule: a SHAPE that matched but whose check failed is a
         // check-character error; nothing matching any shape is a format error.
         if ($shapeMatched) return ['ok' => false, 'reason' => 'check-character'];
-        foreach ($ALTS as $A) {
+        foreach ($ALTS as $i => $A) {
             if ($A['algorithm'] !== 'none') continue;
             // format-only: the shape IS the whole test
-            $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
-            if ($pattern === null) return ['ok' => true, 'reason' => 'no-op'];
+            if ($A['pattern'] === null || $A['pattern'] === '') return ['ok' => true, 'reason' => 'no-op'];
             $anyPattern = true;
-            if (self::matchesPattern($value, $pattern)) return ['ok' => true, 'reason' => 'valid'];
+            if ($match[$i]) return ['ok' => true, 'reason' => 'valid'];
         }
         if ($anyPattern)   return ['ok' => false, 'reason' => 'format'];
         return ['ok' => false, 'reason' => 'check-character'];
@@ -1742,6 +1898,10 @@ class CheckCharacter
     /** Server-side pooled verdict mirroring the browser render() problem checks. */
     public static function validatePooledField(array $cfg, $raw)
     {
+        // The browser parses input.value.trim(), and whitespace only is blank
+        // to it, which shows nothing (VAL-3).
+        $raw = self::browserTrim($raw);
+        if ($raw === '') return ['ok' => true, 'reason' => 'no-op', 'count' => 0];
         $segs = self::pooledParse($cfg, $raw);
         if ($segs === null) return ['ok' => true, 'reason' => 'unconfigurable', 'count' => 0];
         $ids = 0; $junk = 0; $bad = 0; $dups = 0; $seen = [];

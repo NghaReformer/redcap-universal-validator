@@ -649,6 +649,36 @@ check('published in the namespace', (() => { const t = one('x'); const env = boo
     && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
 }
 
+// ---- 3) a throttled answer holds a rule that blocks (UNQ-3) -------------------
+{
+  const t = one('SP-1', { blockSave: 'hard' });
+  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute — wait a moment', throttled: true };
+  const env = boot([t.spec], t.cfg, t.stub);
+  const msg = xMsg(env, 'spec');
+  check('throttled + hard: says so, and that the save waits',
+    /Could not check this value just now \(too many checks in the last minute — wait a moment\)\. The save waits until it can be checked\./.test(msg.innerHTML));
+  const asked = t.stub.calls.length;
+  check('throttled + hard: the save is held', !saved(env));
+  check('throttled + hard: Save asks again', t.stub.calls.length === asked + 1);
+  check('throttled + hard: the alert says to wait', /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
+  t.stub.next = { state: 'found', record: '7' };
+  check('throttled + hard: once answered, the save goes through', saved(env) && /Found/.test(msg.innerHTML));
+}
+{
+  const t = one('SP-1', {});
+  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute — wait a moment', throttled: true };
+  const env = boot([t.spec], t.cfg, t.stub);
+  check('throttled + blockSave off: never held', saved(env) && !/save waits/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  // Only a throttle holds: an answer the server cannot give still fails open.
+  const t = one('SP-1', { blockSave: 'hard' });
+  t.stub.next = { state: 'unknown', record: null, why: 'the saved values could not be read just now' };
+  const env = boot([t.spec], t.cfg, t.stub);
+  check('unknown, not throttled: never held', saved(env) && !/save waits/.test(xMsg(env, 'spec').innerHTML));
+}
+
 global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; console.error = realConsoleError;
 console.log(`exists_dom_js: ${n} checks, ${fail} failure(s)`);
+
 process.exit(fail === 0 ? 0 : 1);

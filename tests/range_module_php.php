@@ -358,14 +358,15 @@ namespace {
     check('audit: two true conditions are a rule problem, not a finding', !isset($by['hb_cf']) && count($cf) === 1);
 
     // A survey gets the branch already chosen from the saved selector: each
-    // branch keeps its condition text, its answer is a constant, and the
-    // snapshot makes it advisory.
+    // branch's answer is a constant, and the snapshot makes it advisory. The
+    // page source states neither the condition nor the field read (AST-5):
+    // next to the constant, "[sex]='1'" would give the saved sex away.
     $ps = page(mod($DICT, $DATA, $FULL, 'nurse'), 'survey', '2', 'labs_form');
     $pins = [];
-    foreach ((ruleFor($ps, 'hb')['branches'] ?? []) as $x) $pins[$x['when'] ?? ''] = [$x['whenAst'] ?? null, $x['snapshotFields'] ?? null];
-    ksort($pins);
-    check('survey: conditions, constant answers and the snapshot (got ' . json_encode($pins) . ')',
-        $pins === ["[sex]='1'" => [['const', true], ['sex']], "[sex]='2'" => [['const', false], ['sex']]]);
+    foreach ((ruleFor($ps, 'hb')['branches'] ?? []) as $x) $pins[] = [$x['when'] ?? null, $x['whenAst'] ?? null, $x['snapshotFields'] ?? null];
+    usort($pins, function ($a, $b) { return strcmp(json_encode($b), json_encode($a)); });
+    check('survey: placeholder conditions, constant answers, a snapshot without names (got ' . json_encode($pins) . ')',
+        $pins === [['(condition)', ['const', true], ['']], ['(condition)', ['const', false], ['']]]);
 
     // ---- 6) a branched @UVUNIQUE duplicate names its branch ------------------------
     $UD = ['record_id' => f('enrol_form'), 'sex' => f('enrol_form', '', '', 'radio'),

@@ -66,9 +66,11 @@ validate identically here, in Excel, and in the browser (same verified engine).
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. A keyed hash is pseudonymization, not
   anonymity: treat the module log as identifying data in access and retention
-  policies. Format-pattern audits cover printable-ASCII values; other values are
-  left to the client and the check-character math, because JavaScript and PCRE
-  regex semantics are only proven to agree on that subset.
+  policies. The audit trims a value the way the browser does and checks values
+  with characters outside printable ASCII too. Where JavaScript and PCRE regex
+  read such a value differently (for example "." against a carriage return, or
+  `\s` against a no-break space), the value is reported in a
+  `uvalidate-unconfigurable` entry for a manual check, never passed as valid.
 - **Save-time settings validation** — an invalid rule (unknown algorithm,
   catastrophic or non-compiling regex, unsafe pooled lengths, unsupported field
   types) is rejected when the Configure dialog is saved, with a message naming
@@ -266,6 +268,11 @@ Semantics worth knowing before relying on it:
   live case, values you already have the right to read. A survey respondent, or a
   user without rights to that instrument, never receives one. A brand-new record
   has no saved values yet, so such refs resolve as `''`.
+- **On a survey shown one section per page**, a field answered on another page
+  is off-page in the same way: REDCap renders only the current page's fields, so
+  a comparison over that field is settled on the server from the saved response
+  when the page is drawn. A comparison that mixes it with a field of the current
+  page is deferred, as any off-page value on a survey is.
 - **A reference the module cannot resolve is refused, not guessed** (1.6.0).
   Until then an unreadable reference looked exactly like a genuine blank, and the
   rule was checked against a `''` that had never been read. Three cases are now
@@ -354,14 +361,20 @@ enforced with the same message/confirm/block modes as everything else:
 - The condition uses the **same dialect** as `when` (`[field]`/`[checkbox(code)]`
   refs, `= <> != > < >= <=`, `and`/`or`/`not`, parentheses). ISO dates and numbers
   compare correctly; the evaluator is the one parity-locked engine, used here as
-  the *test* rather than a gate.
+  the *test* rather than a gate. A field validated as a number, a calc and a slider
+  are read as the number they hold (a saved `12,5` is 12.5), and two numbers compare
+  by value, so `02` equals `2`.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
-  constraint's. Confirm-a-value ("type it twice") is just `@UVASSERT="[id]=[id_confirm]"`.
+  constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
+  `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
+  the two entries character for character, so `00123` does not confirm `123` and
+  `+237677123456` does not confirm `237677123456`.
 - **Text is compared without regard to case** (2.1.0-rc.1), like every condition in
   the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
-  `"caseSensitive":true` when case carries meaning, such as IDs where `ab12` and
-  `AB12` are different: `@UVASSERT={"assert":"[id]=[id_confirm]","caseSensitive":true}`.
-  The flag covers both the `assert` and the `when` of that tag.
+  `"caseSensitive":true` when case carries meaning, such as codes where `ab12` and
+  `AB12` are different answers: `@UVASSERT={"assert":"[code]='AB12'","caseSensitive":true}`.
+  The flag covers both the `assert` and the `when` of that tag. `"exact":true`
+  counts case too, in the `assert` only.
 - `message` is your own wording, shown on failure (a generic line is used if you
   omit it — recommended to set one, since only you can word an arbitrary relationship).
   Under Multi-Language Management it may be a map of language id to text,
@@ -398,6 +411,16 @@ enforced with the same message/confirm/block modes as everything else:
   happened, and the Validation scan can find it later. Deferring buys privacy at
   the cost of both live feedback and the block — someone has to read the log or
   run the scan.
+- **A survey page's source carries no rule detail.** The link is public, so the
+  page config of a survey states no condition text, no field a value was read
+  from and no reason a rule is not checked: a comparison settled on the server
+  arrives as its answer only, next to the placeholder `(condition)`, and a rule
+  deferred as a whole arrives with a fixed constant. Of the configuration
+  errors, a survey page gets only those of its own fields (of the current page,
+  on a survey shown one section per page), each without its text. Up to
+  2.3.0-rc.2 the page source stated, for example, `"when":"[hiv]='1'"` next to
+  `"whenAst":["const",true]`, and every configuration error of the project.
+  Staff forms keep the full config.
 - **A reference the module cannot resolve is refused** (1.6.0) — a field on a
   different repeating instrument, a field not collected in this event, or a read
   that failed. The rule stops checking, and the reason names the field instead of
@@ -425,7 +448,16 @@ the two things it lacks: a **condition** and a **real block**:
 - Works on **Text, Notes, dropdown, radio, yes/no, true/false and slider**
   fields. Not calc — the person entering data cannot fill a calc, so requiring
   one would trap them (the same reasoning as the read-only exemption: a
-  read-only field shows the notice but never blocks the save).
+  read-only field, a `@READONLY` radio or autocomplete dropdown included, shows
+  the notice but never blocks the save).
+- **A field REDCap hides is not required.** While branching logic or `@HIDDEN`
+  hides the field's row there is no notice and the save goes through, as with
+  REDCap's own required flag; the notice comes back as soon as the row is shown.
+  The audit and the scan read the field's branching logic in the condition
+  dialect above and skip a blank field while that logic is false. Branching
+  logic outside the dialect (functions, smart variables, `[event][field]`
+  prefixes) leaves a blank field unchecked there and is logged as a rule
+  problem, never as a missing value.
 - Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
   conditions true at once is a visible conflict that never blocks.
 - The server audit logs a blank-while-required save as `type: required`,
@@ -435,8 +467,9 @@ the two things it lacks: a **condition** and a **real block**:
 ## No duplicates across records — the `@UVUNIQUE` tag
 
 REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value
-against every other record **as it is typed** (a CSRF-protected module AJAX
-call — no page reload), with the usual message/confirm/block enforcement:
+against every other record **when it is entered or changed** (a CSRF-protected
+module AJAX call, no page reload), with the usual message/confirm/block
+enforcement:
 
 ```text
 @UVUNIQUE                                                unique across the project
@@ -448,7 +481,14 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - `with` makes the key **composite** — the value plus those fields together
   must be unique (a specimen ID within its site). Scopes: `project` (default),
   `dag` (unique within each Data Access Group), `event` (within the same
-  event of a longitudinal project).
+  event of a longitudinal project). A `with` value is read from the same entry
+  as the tagged field, so the rule is refused when a `with` field is collected
+  in no event that also collects the tagged field, or sits on a repeating
+  instrument the tagged field is not on. Up to 2.3.0-rc.2, such a `with` field read
+  as blank: `SP-9` at site 1 and `SP-9` at site 2 counted as duplicates. A
+  `with` value on another form that the module cannot read for one record
+  leaves that check as *could not check*; the save audit logs it as a rule
+  problem instead of comparing a blank.
 - `also` looks for the value in up to 5 other fields too. With
   `@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`, an ID typed there
   counts as used when another record holds it in `study_id_typed` or in
@@ -477,6 +517,11 @@ call — no page reload), with the usual message/confirm/block enforcement:
   and the alternative reading — that an ungrouped record has nothing to be
   compared with — would let the rule lapse exactly where records are hardest to
   attribute. Use `project` scope if you want them compared against everything.
+  The page check, the save audit and the Validation scan apply the same reading.
+  A record not saved yet belongs to its user's group, so a new record made by a
+  user in no group is compared with the ungrouped records. Up to 2.3.0-rc.2 the page
+  and the audit compared an ungrouped record with every group, and the scan
+  refused the rule.
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
@@ -499,13 +544,23 @@ call — no page reload), with the usual message/confirm/block enforcement:
   survey they are filling in. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
+- **Asked on change, not per keystroke.** The page asks when the value is
+  entered or changed (the field loses focus, or a picked option), and Save asks
+  again first. Typing clears the previous answer. The answer is *not used
+  before* (green), *already recorded* (red, enforced per `blockSave`) or *could
+  not check* (amber, staff forms only).
 - **The race is audited, not denied.** Two near-simultaneous saves can both
   pass the live check; the post-save audit re-checks the saved value against
   every other record and logs a collision (`type: unique`,
   `reason: duplicate-value`) — review the module log for races. A failed check
-  fails **open**, so a network error on a first check never traps a save. When
-  Save asks again about an "already used" the page has held for 30 seconds or
-  more and gets no answer, that earlier answer stands and is enforced.
+  fails **open** with *could not check* and its reason, so a network error on a
+  first check never traps a save. The exception is the lookup limit (60 lookups
+  a minute per session, shared with `@UVEXISTS`): a rule that can block holds the
+  save until the server answers again, which takes at most a minute, and Save
+  asks again. When Save asks again about an "already used" the page has held
+  for 30 seconds or more and gets no answer, that earlier answer stands and is
+  enforced. Surveys never show *could not check* and are never held: there a
+  failed check simply lets the save through, and the audit is the net.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
 
@@ -551,6 +606,13 @@ field instead of one near-duplicate field per country:
   refused there rather than half-working). Dropdown filtering physically
   removes and re-inserts `<option>`s because Safari ignores CSS hiding on
   options. Configure via field annotation only in this version.
+- **Enhanced survey choices.** On a survey with "Enhanced radio buttons and
+  checkboxes", REDCap draws each choice again as a button and hides the
+  original list. A filtered choice hides its button as well, and showing it
+  again never brings the original list back beside the buttons. Up to
+  2.3.0-rc.2 the buttons stayed clickable. On any form the filter gives back
+  only the display it took away, so an option row that REDCap or a script hid
+  stays hidden.
 - **Audited like everything else.** A save that lands a hidden choice (API,
   import, a race) is logged by the post-save audit as `type: choices`,
   `reason: hidden-choice`, and the Validation scan reports it retrospectively.
@@ -649,8 +711,11 @@ the specimen ID on the collection form.
   is entered or changed, and once when the form opens. Typing clears the
   previous answer, typing in a text field a `when` condition reads included.
   The answer is *found* (green), *not found* (red, enforced per `blockSave`) or
-  *could not check* (amber, never blocks): a failed read, a `match` field that is
-  blank on another form, or a busy server all answer *could not check*.
+  *could not check* (amber, never blocks): a failed read or a `match` field that
+  is blank on another form answers *could not check*. So does a busy server
+  (more than 60 lookups a minute in the session), but then a rule that can block
+  holds the save until the server answers again, at most a minute later, and
+  Save asks again.
 - **Save waits for the answer.** Clicking Save re-checks the field first. A value
   typed and saved at once is asked before the save is decided, and while an
   answer is on its way the save is held ("still being checked"). After 10
@@ -850,13 +915,18 @@ slip:
   `percentile` and values at a z-score or percentile needs no limits, and
   `decimals`, `returnLimits` or `percentileDecimals` on a rule that neither
   returns nor shows in a page table anything they shape is refused. The page fills the fields as it opens and after each
-  change; the save fills them again, also for an API or import save, writes
-  only the fields that differ, and judges every other rule after that write.
+  change; a save of the form or the survey fills them again, writes only the
+  fields that differ, and judges every other rule after that write. An import
+  or an API write does not: REDCap does not run the module's save hook for a
+  Data Import Tool import (REDCap 17.0.6), so the fields keep what they held.
+  The Validation scan reports a returned field that holds something other than
+  the saved inputs give as "Returned value out of date"; open the form and save
+  it to write the current values.
   A field with nothing to report (sex blank, age outside the reference) is
   emptied. The rule owns its fields, so mark them `@READONLY`. Two references
   on one field each fill their own fields, and a rule that returns values may
   not read a returned field. The project setting "@UVRANGE returned values"
-  turns the save-time write off.
+  turns the save-time write off, and the scan's comparison with it.
 - **A growth chart and a table on the form.** `show` draws the reference's
   curves with this visit's point under the field, and a table under them,
   on the page only:
@@ -974,8 +1044,9 @@ and flags a change larger than its limit:
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
-the **Data Import Tool** or the **API** (where the save-hook audit is
-version-dependent), or records entered **before a rule existed**. The
+the **Data Import Tool** or the **API** (the save-hook audit did not run for a
+Data Import Tool import on REDCap 17.0.6, and may not run for the API), or
+records entered **before a rule existed**. The
 **Validation scan** project page closes that gap: it runs every configured
 rule — check-character/format, constraint, required, unique, and choice
 filtering — over every saved record and lists each violation with a CSV export.
@@ -1291,12 +1362,15 @@ php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key gram
 node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes, withheld, no block)
 php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
 node tests/growth_return_dom_js.cjs  # @UVRANGE "return": values written into fields on the page
-php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches; the scan reports stale ones
 php  tests/growth_curve_php.php   # @UVRANGE "show": chart curves within 0.5 of the exact ones, payload, span, table rows
 php  tests/growth_chart_module_php.php  # @UVRANGE "show": grammar, page curves and cap; --write refreshes growth_chart_fixture.json
 node tests/growth_chart_dom_js.cjs  # @UVRANGE "show": the chart and the table on the page, parity with the server, MLM
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
+php  tests/required_pages_php.php    # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
+php  tests/unique_scope_php.php      # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/survey_shape_php.php      # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

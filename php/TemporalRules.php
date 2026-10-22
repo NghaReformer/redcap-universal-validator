@@ -187,6 +187,13 @@ final class TemporalRules
     }
 
     /** Compile operands to plain live refs or permitted snapshots. $browser=false emits literals only. */
+    /** The text mode of $rule's condition $key: Logic::EXACT for a test of an "exact" rule, else caseSensitive. */
+    private static function textMode(array $rule,$key)
+    {
+        if(!empty($rule['exact'])&&in_array($key,ModeRegistry::condKeys('test'),true))return Logic::EXACT;
+        return !empty($rule['caseSensitive']);
+    }
+
     public static function compile(array $rule,AddressResolver $resolver,ProjectShape $shape,array $context,$browser=false,?callable $mayRead=null)
     {
         $snapshot=false;$problems=[];$live=false;$denied=false;$matched=false;
@@ -194,7 +201,10 @@ final class TemporalRules
             if(($r['state']??null)!=='ok'){$problems[]=$r['state']??'unreadable';return ['unknown'];}
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
             if($onPage){$live=true;$node=['ref',$loc['field'],$loc['code']];}
-            else{$snapshot=$snapshot||$browser;if($browser&&$mayRead&&!$mayRead($loc['instrument']))$denied=true;$node=['lit',$r['value']];}
+            else{$snapshot=$snapshot||$browser;if($browser&&$mayRead&&!$mayRead($loc['instrument']))$denied=true;
+                // A field that holds numbers is read as its number (12,5 as 12.5), as Logic::evaluate reads it (AST-1).
+                $fm=$shape->field($loc['field']);$mark=is_array($fm)?Logic::numberMark($fm['type']??'',$fm['validation']??''):null;
+                $node=['lit',($mark!==null&&($loc['code']??null)===null&&is_string($r['value']))?Logic::numberValue($r['value'],$loc['field'],[$loc['field']=>$mark]):$r['value']];}
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
@@ -239,7 +249,7 @@ final class TemporalRules
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
             $tree=$walk($p['ast']);
             // The browser evaluates its own tree; only saved-data callers need the verdict here.
-            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},in_array($key,ModeRegistry::condKeys('test'),true),self::textMode($rule,$key),$charge);
             if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
         }
@@ -279,7 +289,7 @@ final class TemporalRules
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){
             if($live)$problems[]='unauthorized';
-            else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
+            else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),self::textMode($rule,$key),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
         // Withheld from this viewer alone: the audit, which reads every form, does check it.
         if($browser&&$problems&&array_values(array_unique($problems))===['unauthorized'])$compiled['deferredChecked']=true;

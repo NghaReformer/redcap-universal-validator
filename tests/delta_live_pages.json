@@ -316,7 +316,34 @@
                     }
                 ]
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "visit1_on": {
         "algorithm": "iso7064_mod37_36",
@@ -713,7 +740,34 @@
                 ],
                 "blockSave": "off"
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "baseline_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1106,7 +1160,34 @@
                 ],
                 "blockSave": "off"
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "visit2_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1503,7 +1584,34 @@
                 ],
                 "blockSave": "off"
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "specimen2_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1586,7 +1694,11 @@
                 "blockSave": "off",
                 "extendedAdvisory": true
             }
-        ]
+        ],
+        "numberMarks": {
+            "xs_hb": "point",
+            "ud_rep": "point"
+        }
     },
     "visit1_survey_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1723,7 +1835,7 @@
             {
                 "type": "delta",
                 "deltaMax": "1",
-                "when": "[ud_grp]='1'",
+                "when": "(condition)",
                 "blockSave": "hard",
                 "deltaGroup": "g1",
                 "deltaText": "a change of at most 1",
@@ -1927,7 +2039,34 @@
                 ],
                 "blockSave": "off"
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "sheet_b1": {
         "algorithm": "iso7064_mod37_36",
@@ -2246,7 +2385,34 @@
                     }
                 ]
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "sheet_b1_values": {
         "ud_c": "72,5",
@@ -2659,7 +2825,34 @@
                 ],
                 "blockSave": "off"
             }
-        ]
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        }
     },
     "sheet_c2_values": {
         "ud_c": "72,5",
@@ -2759,7 +2952,11 @@
                 "blockSave": "off",
                 "extendedAdvisory": true
             }
-        ]
+        ],
+        "numberMarks": {
+            "xs_hb": "point",
+            "ud_rep": "point"
+        }
     },
     "sheet_d1_values": {},
     "labels": {

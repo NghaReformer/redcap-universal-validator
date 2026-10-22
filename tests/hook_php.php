@@ -447,8 +447,16 @@ namespace {
     check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
     check('form hook injects context=form', $cfg && isset($cfg['context']) && $cfg['context'] === 'form');
 
-    // survey hook injects context=survey (client uses it to mute technical notices)
+    // A survey page carries no configuration error of fields it does not
+    // show: the notice is muted there, and the rule names other forms (LIVE-2).
     $m = newModule($csvRule, $dd, [], 149);
+    ob_start();
+    $m->redcap_survey_page_top(149, '1', 'id_validation_test', 351, null, 'hash', null, 1);
+    $html = ob_get_clean();
+    check('survey: a configuration error of fields not on the page is not sent (LIVE-2)',
+        strpos($html, 'studyid') === false && strpos($html, 'not in this project') === false);
+    // survey hook injects context=survey (client uses it to mute technical notices)
+    $m = newModule($dialogRules, $dictionary, [], 149);
     ob_start();
     $m->redcap_survey_page_top(149, '1', 'id_validation_test', 351, null, 'hash', null, 1);
     $html = ob_get_clean();
@@ -612,11 +620,12 @@ namespace {
         \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, 'ZZ9-9999') === ['ok' => false, 'reason' => 'format']);
     check('alternates: the format-only family is accepted with no check run',
         \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, $FC) === ['ok' => true, 'reason' => 'valid']);
-    // COR-004: outside printable ASCII the server fails OPEN. Hoisted out of
-    // matchesPattern, whose fail-open "true" would otherwise read as "alternate
-    // 1's pattern matched" and run that alternate's CHECK on the value.
-    check('alternates: a non-ASCII value fails open with no alternate check run',
-        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => true, 'reason' => 'valid']);
+    // VAL-1 (review 2026-10-21): outside printable ASCII the server used to
+    // fail OPEN, returning "valid" before any pattern or check ran. The
+    // browser blocks this value (no alternate's shape matches), so the
+    // server now files the same format finding.
+    check('alternates: a non-ASCII value that matches no shape is a format finding',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => false, 'reason' => 'format']);
 
     // M-02 (review 2026-08-27): an algorithm this engine does not implement is a
     // CONFIGURATION problem. Unguarded, compute() throws inside validateId and
@@ -631,6 +640,38 @@ namespace {
         \INSPIRE\UniversalValidator\CheckCharacter::validatePooledField(
             array_merge($unkCfg, ['alternates' => [['pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',
                 'algorithm' => 'sha256_thing', 'lengths' => [9]]]]), 'SK1-0123D')['reason'] === 'unconfigurable');
+
+    // VAL-1 / VAL-3 through the real save hook: the audit judges the value the
+    // browser judged (trimmed the same way) and never passes a value it could
+    // not check. tests/value_parity_* hold the full row set.
+    $parDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'sid'       => ['field_type' => 'text', 'field_annotation' => '@UVALIDATE', 'form_name' => 'f'],
+        'fdot'      => ['field_type' => 'text', 'form_name' => 'f',
+                        'field_annotation' => '@UVALIDATE={"algorithm":"none","pattern":"FC.[0-9]{4}","strip":""}'],
+    ];
+    $parSave = function (array $values) use ($parDict) {
+        $m = newModule([], $parDict, [7 => [351 => array_merge(['record_id' => '7'], $values)]], 149);
+        $m->redcap_save_record(149, '7', 'f', 351, null, null, null, 1);
+        return $m;
+    };
+    $m = $parSave(['sid' => "FC1-0589C\r\n"]);
+    check('VAL-3: a good ID with a trailing newline logs nothing', count($m->logCalls) === 0);
+    $m = $parSave(['sid' => " \n\t"]);
+    check('VAL-3: a whitespace-only value is blank, as the browser treats it', count($m->logCalls) === 0);
+    $m = $parSave(['sid' => "FC1-0589\u{0421}"]);
+    $logs = invalidLogs($m);
+    check('VAL-1: a Cyrillic look-alike is logged as a failed check, not passed',
+        count($logs) === 1 && $logs[0][1]['field'] === 'sid' && $logs[0][1]['reason'] === 'check-character');
+    $m = $parSave(['sid' => "\u{FEFF}FC1-0589D"]);
+    check('VAL-1: a bad ID behind a byte-order mark is logged', count(invalidLogs($m)) === 1);
+    $m = $parSave(['fdot' => "FC\r1234"]);
+    $unc = logsOf($m, 'uvalidate-unconfigurable');
+    check('VAL-1: a value the two regex engines read differently is reported for a manual check',
+        count(invalidLogs($m)) === 0 && count($unc) === 1
+        && strpos($unc[0][1]['why'], 'check the value by hand') !== false);
+    $m = $parSave(['fdot' => "FC\u{00E9}1234"]);
+    check('VAL-1: "." against a BMP letter is judged, not reported', count($m->logCalls) === 0);
 
     // ---- 13) per-rule isolation: a failure while auditing one rule must not
     //           stop later rules. Simulated by a log backend that throws on the
@@ -662,7 +703,9 @@ namespace {
     check('non-scalar stored setting is ignored, rule still audits (default strip)',
         in_array('main_id_1', loggedFields($m), true));
 
-    // ---- 14) COR-004: non-ASCII value on a format rule fails OPEN (no format log) ----
+    // ---- 14) a non-ASCII value on a format rule is format-audited (VAL-1) ----
+    // This used to pin COR-004's fail-open. The browser blocks the value
+    // ("expected digit"), so passing it here was the audit/browser split.
     $regexRule = [[
         'rule-type' => 'single', 'fields' => ['main_id_1'], 'fields-csv' => '',
         'algorithm' => 'none', 'source' => '', 'pattern' => 'FC[0-9]{4}', 'strip' => '',
@@ -672,7 +715,9 @@ namespace {
     $uniData = [2 => [351 => ['main_id_1' => "FC12\u{0663}4"]]]; // Arabic-Indic digit
     $m = newModule($regexRule, $dictionary, $uniData, 149);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
-    check('non-ASCII value is not format-audited (outside proven parity subset)', count(invalidLogs($m)) === 0);
+    $logs = invalidLogs($m);
+    check('an Arabic-Indic digit is a format finding, as the browser says',
+        count($logs) === 1 && $logs[0][1]['reason'] === 'format');
 
     // ---- 15) COR-003: a dialog rule on a non-text field becomes a config error ----
     $ddRadio = $dictionary;
@@ -1972,15 +2017,14 @@ namespace {
     $res = $m->scanProject(149);
     check('scan: dag-scoped unique ignores cross-DAG repeats', count(scanHits($res, 'unique')) === 0);
 
-    /* M1  a record in NO group cannot be judged by a rule scoped to groups.
+    /* M1, revised by UNQ-1: records in NO group form one group of their own.
      *
-     * The bucket key appends (string) $recDag, and $recDag is null for a record
-     * REDCap returned with no redcap_data_access_group. (string) null is '', so
-     * every ungrouped record in the project fell into ONE bucket and any two of
-     * them sharing a value were reported as duplicates OF EACH OTHER - under a
-     * rule that means "unique within a Data Access Group", for records that are
-     * not in one. Two silent wrongs at once: a violation nobody can act on, and
-     * a green report for a question that was never asked.
+     * The bucket key appends (string) $recDag, '' for a record REDCap returned
+     * with no redcap_data_access_group, so the ungrouped records share one
+     * bucket and are compared with each other only. M1 had the scan refuse
+     * them instead, while the live check compared them with every group and
+     * README described this meaning: three paths, three answers. The live
+     * check and the audit now give the same answer (tests/unique_scope_php.php).
      */
     $scDataNoDag = [
         '1' => [351 => ['record_id' => '1', 'pid' => '70', 'start' => '2024-01-01',
@@ -1992,25 +2036,15 @@ namespace {
                         'redcap_data_access_group' => 'north']],
     ];
     $resND = newModule([], $scDictD, $scDataNoDag, 149)->scanProject(149);
-    check('M1: two records in no group are NOT duplicates of each other',
-        count(scanHits($resND, 'unique')) === 0);
-    // AND IT SAYS SO. Withholding the comparison silently would be the same
-    // false reassurance in the other direction - the report would look clean
-    // for a question nobody answered.
-    check('M1: and the rule is reported as unevaluable for them, not silently skipped',
-        (bool) array_filter($resND['unconfigurable'], function ($u) {
-            return stripos($u['why'], 'not in one') !== false
-                && stripos($u['why'], 'NOT evaluated') !== false;
-        }));
-    // ONE PROBLEM, NOT ONE PER RECORD. $refuse keys $unconf by ruleIndex|suffix,
-    // which is what keeps the report bounded on a project with ten thousand
-    // ungrouped records.
-    check('M1: two ungrouped records produce ONE rule problem, not one each',
-        count(array_filter($resND['unconfigurable'], function ($u) {
-            return stripos($u['why'], 'not in one') !== false;
-        })) === 1);
-    // THE RULE STAYS LIVE. It is the RECORD that cannot be judged, not the rule,
-    // so a genuine within-group duplicate must still be caught in the same run.
+    $ndRecs = [];
+    foreach (scanHits($resND, 'unique') as $v) $ndRecs[(string) $v['record']] = true;
+    check('UNQ-1: two records in no group ARE duplicates of each other',
+        count(scanHits($resND, 'unique')) === 2 && isset($ndRecs['1']) && isset($ndRecs['2']));
+    check('UNQ-1: and the record of group north is not among them', !isset($ndRecs['3']));
+    check('UNQ-1: and the ungrouped records are no rule problem',
+        !array_filter($resND['unconfigurable'], function ($u) { return stripos($u['why'], 'not in one') !== false; }));
+    // A duplicate inside a group is found in the same run, and the two kinds
+    // of group never meet.
     $scDataMixed = $scDataNoDag;
     $scDataMixed['4'] = [351 => ['record_id' => '4', 'pid' => '70', 'start' => '2024-01-01',
                                  'end' => '2024-02-01', 'phone' => '680', 'sid' => 'LOOSE',
@@ -2020,11 +2054,11 @@ namespace {
     foreach (scanHits($resMix, 'unique') as $v) $mixRecs[(string) $v['record']] = true;
     check('M1: a real duplicate INSIDE a group is still found in the same run',
         isset($mixRecs['3']) && isset($mixRecs['4']));
-    check('M1: and the ungrouped records are still not among the duplicates',
-        !isset($mixRecs['1']) && !isset($mixRecs['2']));
+    check('UNQ-1: the ungrouped pair is a duplicate group of its own in the same run',
+        isset($mixRecs['1']) && isset($mixRecs['2']) && count(scanHits($resMix, 'unique')) === 4);
     // THE CONTROL FOR THE SCOPE ITSELF. Under project scope the very same three
-    // records ARE duplicates, so the refusal above is about the dag scope and
-    // not about the fixture.
+    // records ARE all duplicates of one another.
+
     $scDictP = $scDictD;
     $scDictP['sid']['field_annotation'] = '@UVUNIQUE';
     $resProj = newModule([], $scDictP, $scDataNoDag, 149)->scanProject(149);
@@ -2648,14 +2682,21 @@ namespace {
     check('survey budget: spent, a narrowed miss is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
     check('survey budget: ...after the narrowed read alone',
         count(\REDCap::$getDataCalls) === 1 && isset(\REDCap::$getDataCalls[0]['filterLogic']));
-    // A Data Access Group rule never narrows, so its read is budgeted too.
+    // A Data Access Group rule narrows too since its group is read on its own
+    // (UNQ-1): a narrowed hit needs no full read, and a narrowed miss with the
+    // budget spent is "not known".
     $dagDict = $foldDict;
     $dagDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true,"scope":"dag"}';
     $m = newModule([], $dagDict, $f5Data, 149);
     $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
-    check('survey budget: a group rule\'s read is budgeted as well', $r === ['unknown' => true, 'record' => null]);
+    check('survey budget: a group rule\'s narrowed hit is answered', $r === ['used' => true, 'record' => null]);
+    $m = newModule([], $dagDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-404']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: a group rule\'s miss is budgeted as well', $r === ['unknown' => true, 'record' => null]);
     \REDCap::$exactFilter = false;
     // A read that returns no data set settles nothing: live it is "not known",
     // never "free", and after saving it is a rule problem, never a finding.
@@ -2664,7 +2705,9 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => "A'B"]],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     \REDCap::$wholeReadFails = false;
-    check('unique: a failed read answers "not known", not "free"', $r === ['unknown' => true, 'record' => null]);
+    check('unique: a failed read answers "not known", not "free"',
+        ($r['unknown'] ?? null) === true && !isset($r['used']) && is_string($r['why'] ?? null));
+
     $m = newModule([], $f4Dict, [
         '1' => [351 => ['record_id' => '1', 'pid_f' => 'UNIQ-1']],
         '2' => [351 => ['record_id' => '2', 'pid_f' => 'UNIQ-1']],
@@ -3378,6 +3421,59 @@ namespace {
     $ida = array_values(array_filter($dur['candidates'], function ($c) { return $c['field'] === 'idb'; }));
     check('durable: a value with no letters, under two branches that differ only in letter case, is two lookups and no collapse',
         count($ida) === 2 && $ida[0]['lookup'] === 1 && $ida[0]['group_hmac'] !== $ida[1]['group_hmac'] && $dur['collapsed'] === 0);
+
+    // ---- AST-1 / AST-2 / AST-3 (review 2026-10-21) ----
+    // A field that holds numbers is read as its number in the audit, on the
+    // page and in the fold; "exact" makes a double-entry assert tell 00123
+    // from 123. The rows behind these are in tests/when_fixture.json.
+    $comma = ['field_type' => 'text', 'text_validation_type_or_show_slider_number' => 'number_1dp_comma_decimal'];
+    $nDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'lab'],
+        'hb'     => $comma + ['form_name' => 'lab', 'field_annotation' => '@UVASSERT={"assert":"[hb]>=5","blockSave":"hard"}'],
+        'hb_max' => $comma + ['form_name' => 'other', 'field_annotation' => ''],
+        'hb2'    => $comma + ['form_name' => 'lab', 'field_annotation' => '@UVASSERT="[hb2]<=[hb_max]"'],
+        'x'      => ['field_type' => 'text', 'form_name' => 'lab', 'text_validation_type_or_show_slider_number' => 'number',
+                     'field_annotation' => '@UVASSERT="[x]<=100"'],
+        'tx'     => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => '@UVASSERT="[tx]<=100"'],
+        'pid'    => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => ''],
+        'pid_c'  => ['field_type' => 'text', 'form_name' => 'lab',
+                     'field_annotation' => '@UVASSERT={"assert":"[pid]=[pid_c]","exact":true}'],
+        'pid_l'  => ['field_type' => 'text', 'form_name' => 'lab', 'field_annotation' => '@UVASSERT="[pid]=[pid_l]"'],
+    ];
+    $nSave = function (array $values) use ($nDict) {
+        $m = newModule([], $nDict, [7 => [351 => array_merge(['record_id' => '7'], $values)]], 149);
+        $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+        return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m));
+    };
+    check('AST-1: a saved 12,5 passes [hb]>=5', $nSave(['hb' => '12,5']) === []);
+    check('AST-1: a saved 4,5 fails [hb]>=5', $nSave(['hb' => '4,5']) === ['hb']);
+    check('AST-1: two comma fields order by value (9,5 <= 15,0)', $nSave(['hb2' => '9,5', 'hb_max' => '15,0']) === []);
+    check('AST-1: 16,0 <= 15,0 is still a violation', $nSave(['hb2' => '16,0', 'hb_max' => '15,0']) === ['hb2']);
+    check('AST-3: 2.5E1 in a number field is 25', $nSave(['x' => '2.5E1']) === []);
+    check('AST-3: 2.5E1 in a text field stays text (mixed, false)', $nSave(['tx' => '2.5E1']) === ['tx']);
+    check('AST-2: "exact" logs 00123 confirmed as 123', $nSave(['pid' => '00123', 'pid_c' => '123']) === ['pid_c']);
+    check('AST-2: "exact" passes the same ID typed twice', $nSave(['pid' => '00123', 'pid_c' => '00123']) === []);
+    check('AST-2: without "exact", = still compares numbers by value', $nSave(['pid' => '00123', 'pid_l' => '123']) === []);
+
+    // the dialog's "compare exactly" box
+    $exRow = ['rule-type' => 'constraint', 'fields' => ['pid_l'], 'assert' => '[pid]=[pid_l]'];
+    $nd2 = $nDict;
+    $nd2['pid_l']['field_annotation'] = '';
+    $m = newModule([dlgRow($exRow + ['assert-exact' => '1'])], $nd2, [7 => [351 => ['record_id' => '7', 'pid' => '0677', 'pid_l' => '677']]], 149);
+    $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+    check('AST-2: the dialog box "compare exactly" logs 0677 confirmed as 677', count(invalidLogs($m)) === 1);
+    $m = newModule([dlgRow($exRow)], $nd2, [7 => [351 => ['record_id' => '7', 'pid' => '0677', 'pid_l' => '677']]], 149);
+    $m->redcap_save_record(149, '7', 'lab', 351, null, null, null, 1);
+    check('AST-2: unticked, the dialog constraint compares by value', count(invalidLogs($m)) === 0);
+
+    // the page: the marks of this form's number fields, and "exact" shipped
+    // (the bake of an off-page comma value is in tests/crossform_php.php)
+    $m = newModule([], $nDict, [7 => [351 => ['record_id' => '7', 'hb_max' => '15,0']]], 149);
+    $p = pageCfg($m, 'form', '7', 'lab');
+    check('page: numberMarks names the number fields of this form only',
+        isset($p['cfg']['numberMarks']) && $p['cfg']['numberMarks'] === ['hb' => 'comma', 'hb2' => 'comma', 'x' => 'point']);
+    $rc = ruleFor($p, 'pid_c');
+    check('page: an "exact" rule ships the flag', $rc !== null && ($rc['exact'] ?? null) === true);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

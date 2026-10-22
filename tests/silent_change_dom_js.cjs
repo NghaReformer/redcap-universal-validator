@@ -201,5 +201,43 @@ const BMI = { type: 'range', fields: ['bmi'], rangeSoftLo: '16', rangeSoftHi: '3
     && env.win._alerts[0] === 'Cannot save yet — please fix the flagged field(s):\n• Arm circumference (cm)\n• Weight (kg), a span past the reference');
 }
 
+// ---- 6) Save straight after a silent change, before the poll runs ----------------
+// REQ-3, AST-7, VAL-6 (review 2026-10-21): the person types, clicks Save, the
+// change makes REDCap's calculate() rewrite a calc with no event, and the
+// click reaches the guard before the 400 ms poll. Every guard item re-judges
+// itself at save, so the verdict is the one the page now shows.
+{
+  const calc = (name, value) => { const e = numEl(name, value); e.className = 'rci-calc'; e.readOnly = true; return e; };
+  const held = (env) => { const ev = submitEv(); env.doc.fire('submit', ev); return ev._prevented; };
+
+  // @UVREQUIRED with a "when" over a calc
+  let bmi = calc('bmi', '25'), note = numEl('note', '');
+  let env = boot([bmi, note], { rules: [{ type: 'required', fields: ['note'], when: '[bmi]>30', blockSave: 'hard' }] });
+  check('required: BMI 25, the note is not required, Save goes through', !held(env));
+  bmi.value = '35.9';                                    // calculate(): no event, no tick
+  check('required: BMI now 35.9, Save at once is held (REQ-3)', held(env) && /note/.test(env.win._alerts.join('\n')));
+  note.value = 'smoker';                                 // filled from script, no event
+  check('required: the note filled silently, Save at once goes through', !held(env));
+
+  // @UVASSERT over a calc
+  const dose = numEl('dose', '5'), maxd = calc('maxd', '10');
+  env = boot([dose, maxd], { rules: [{ type: 'constraint', fields: ['dose'], assert: '[dose]<=[maxd]', blockSave: 'hard' }] });
+  check('constraint: dose 5 <= 10, Save goes through', !held(env));
+  maxd.value = '3';
+  check('constraint: the maximum is now 3, Save at once is held (AST-7)', held(env));
+
+  // @UVALIDATE single and pooled behind a "when" whose controller changed by script
+  const sid = numEl('sid', 'FC1-0589D'), flag = numEl('flag', '0');
+  env = boot([sid, flag], { rules: [{ type: 'single', fields: ['sid'], when: "[flag]='1'", blockSave: 'hard' }] });
+  check('single: the rule is off, Save goes through', !held(env));
+  flag.value = '1';
+  check('single: the rule now applies to a bad ID, Save at once is held (VAL-6)', held(env));
+  const pool = numEl('pool', 'FC1-0589D'), flag2 = numEl('flag2', '0');
+  env = boot([pool, flag2], { rules: [{ type: 'pooled', fields: ['pool'], when: "[flag2]='1'", blockSave: 'hard' }] });
+  check('pooled: the rule is off, Save goes through', !held(env));
+  flag2.value = '1';
+  check('pooled: the rule now applies to a bad ID, Save at once is held (VAL-6)', held(env));
+}
+
 console.log('silent_change_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);
