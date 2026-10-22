@@ -6711,6 +6711,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       return out;
     }
     function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper row */
+      var buttons = QRID_enhancedChoiceButtons(fieldName);
       for(var i = 0; i < MANAGED.length; i++){
         var code = MANAGED[i];
         /* a checked/selected option is NEVER hidden from under the user. The
@@ -6721,10 +6722,9 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
           : (String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === code);
         var hide = !!hiddenSet[code] && !selected;
         var els = optionWrappers(code);
-        for(var j = 0; j < els.length; j++){
-          var box = els[j].parentNode;
-          if(box && box.style) box.style.display = hide ? "none" : "";
-        }
+        for(var j = 0; j < els.length; j++) QRID_choiceDisplay(els[j].parentNode, hide);
+        var btns = buttons[code] || [];
+        for(var b = 0; b < btns.length; b++) QRID_choiceDisplay(btns[b], hide);
       }
     }
     function render(hiddenSet){
@@ -6835,6 +6835,12 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(recheck);
     }
     check();
+    /* REDCap builds a survey's enhanced choice buttons when the page is
+       ready, which may be after this bind: draw the filter again once the
+       page has loaded. */
+    if(!select && typeof window !== "undefined" && window.addEventListener && document.readyState !== "complete"){
+      window.addEventListener("load", function(){ check(); });
+    }
     if(select && typeof MutationObserver !== "undefined"){
       var optionObserver = new MutationObserver(function(){ check(); });
       optionObserver.observe(select, { childList: true, subtree: true });
@@ -6883,8 +6889,55 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* Hide or show an element the choices filter manages. Showing gives back the
+   display the element had before the filter hid it, so an option row or a
+   button that REDCap or a script hid stays hidden (CHO-4). With enhanced
+   choices REDCap hides the original list, which must not come back beside
+   the buttons. */
+function QRID_choiceDisplay(el, hide){
+  if(!el || !el.style) return;
+  if(hide){
+    if(!el.__qridHidden){ el.__qridDisplay = el.style.display || ""; el.__qridHidden = true; }
+    el.style.display = "none";
+  } else if(el.__qridHidden){
+    el.style.display = el.__qridDisplay;
+    el.__qridHidden = false;
+  }
+}
+/* REDCap's survey option "Enhanced radio buttons and checkboxes" draws each
+   choice again as a button, <div class="enhancedchoice"><label comps=
+   "field,code,1" for="opt-field_1">, and hides the original list. A
+   respondent clicks the button, so a filtered choice hides its button too
+   (CHO-ENH). comps names the field first and the code last (REDCap codes
+   hold no comma); a label without comps is matched by its "for", which names
+   the radio (opt-<field>_<code>) or the checkbox (id-__chk__<field>_RC_<code>).
+   Read on every render: the buttons may be built after the engine bound the
+   field. Returns code => [div.enhancedchoice, ...]. */
+function QRID_enhancedChoiceButtons(fieldName){
+  var out = Object.create(null);
+  if(typeof document === "undefined" || !document.querySelectorAll) return out;
+  var labels;
+  try { labels = document.querySelectorAll(".enhancedchoice label"); } catch(e){ return out; }
+  var radioFor = "opt-" + fieldName + "_", chkFor = "id-__chk__" + fieldName + "_RC_";
+  for(var i = 0; labels && i < labels.length; i++){
+    var lab = labels[i], code = null;
+    var parts = String((lab.getAttribute && lab.getAttribute("comps")) || "").split(",");
+    if(parts.length >= 3){
+      if(parts[0] === fieldName) code = parts[parts.length - 1];
+    } else {
+      var target = String((lab.getAttribute && lab.getAttribute("for")) || "");
+      if(target.indexOf(chkFor) === 0) code = target.slice(chkFor.length);
+      else if(target.indexOf(radioFor) === 0) code = target.slice(radioFor.length);
+    }
+    var box = lab.parentNode;
+    if(code === null || code === "" || !box) continue;
+    (out[code] = out[code] || []).push(box);
+  }
+  return out;
+}
 /* ES5-safe Array#indexOf membership (shared helper for the choices mode). */
 function QRID_inList(list, v){
+
   for(var i = 0; i < list.length; i++){ if(list[i] === v) return true; }
   return false;
 }

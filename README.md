@@ -596,6 +596,13 @@ field instead of one near-duplicate field per country:
   refused there rather than half-working). Dropdown filtering physically
   removes and re-inserts `<option>`s because Safari ignores CSS hiding on
   options. Configure via field annotation only in this version.
+- **Enhanced survey choices.** On a survey with "Enhanced radio buttons and
+  checkboxes", REDCap draws each choice again as a button and hides the
+  original list. A filtered choice hides its button as well, and showing it
+  again never brings the original list back beside the buttons. Up to
+  2.3.0-rc.2 the buttons stayed clickable. On any form the filter gives back
+  only the display it took away, so an option row that REDCap or a script hid
+  stays hidden.
 - **Audited like everything else.** A save that lands a hidden choice (API,
   import, a race) is logged by the post-save audit as `type: choices`,
   `reason: hidden-choice`, and the Validation scan reports it retrospectively.
