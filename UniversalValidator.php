@@ -3570,8 +3570,9 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * @UVWRITEONCE "field" hook: a field whose value REDCap computes
-     * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, so it cannot be
-     * locked.
+     * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, and one with
+     * @SETVALUE is written again each time its form or survey page opens, so
+     * neither can be locked.
      */
     private function annotateWriteonceField(array $frag, $name, array $meta, $pid)
     {
@@ -3579,6 +3580,10 @@ class UniversalValidator extends AbstractExternalModule
         if (preg_match('/@(CALCTEXT|CALCDATE)\b/i', $ann, $m)) {
             return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
                 . ' — REDCap works its value out again whenever the fields it reads change.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@SETVALUE\b/i', $ann)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @SETVALUE'
+                . ' — REDCap writes its value again each time the form or survey page opens.', '_tag' => AnnotationRules::TAG_WRITEONCE];
         }
         return $frag;
     }
@@ -5380,6 +5385,11 @@ class UniversalValidator extends AbstractExternalModule
      * values saved before any is written, so a chain would write a value read
      * one save late, and the page would follow it only a few steps. The rule
      * that reads is refused, naming the rule that writes.
+     *
+     * A rule of a locking mode (@UVWRITEONCE) may not lock a field another
+     * rule returns to: the save writes a returned value again every time, so
+     * the lock would either undo the rule or be broken by it. The lock is
+     * refused, naming the rule that writes.
      */
     private static function markReturnClashes(array $rules)
     {
@@ -5438,6 +5448,17 @@ class UniversalValidator extends AbstractExternalModule
             if (!empty($rules[$i]['configError'])) continue;
             $rules[$i]['configError'] = ModeRegistry::tagOfType(isset($rules[$i]['type']) ? $rules[$i]['type'] : '')
                 . ' "return": ' . implode(' ', array_values(array_unique($list)));
+        }
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            $lockWhy = ModeRegistry::lockReturnWhy(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''));
+            if ($lockWhy === null) continue;
+            foreach (isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [] as $f) {
+                if (!isset($owner[$f]) || $owner[$f] === $i) continue;
+                $by = isset($rules[$owner[$f]]['fields'][0]) ? (string) $rules[$owner[$f]]['fields'][0] : '?';
+                $rules[$i]['configError'] = strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by]);
+                break;
+            }
         }
         return $rules;
     }

@@ -51,7 +51,7 @@ class Page:
 # Ordered as they appear in the nav.
 
 TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists",
-             "uvrange", "uvdelta")
+             "uvrange", "uvdelta", "uvwriteonce")
 
 PAGES = [
     Page(
@@ -191,6 +191,19 @@ PAGES = [
         keywords=("@UVDELTA", "REDCap action tag", "change check", "delta check",
                   "longitudinal data", "previous visit", "repeating instruments"),
         related=("uvrange", "uvassert", "index"),
+    ),
+    Page(
+        slug="uvwriteonce",
+        title="@UVWRITEONCE — lock a REDCap field after its first save",
+        heading="@UVWRITEONCE",
+        description=(
+            "@UVWRITEONCE is a REDCap action tag that locks a field once a value is saved, such as a "
+            "consent date or a randomisation arm, while named user roles can still correct it."
+        ),
+        nav_label="@UVWRITEONCE",
+        keywords=("@UVWRITEONCE", "REDCap action tag", "write once", "lock field",
+                  "read-only after save", "user roles", "audit trail"),
+        related=("uvrequired", "uvassert", "index"),
     ),
     Page(
         slug="install",

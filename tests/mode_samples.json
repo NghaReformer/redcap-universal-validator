@@ -2,7 +2,8 @@
   "_comment": [
     "One working sample per validation mode in php/modes.json, for the tests that must cover every mode.",
     "tests/registry_php.php fails when a mode has no entry here, so a new mode is exercised by those loops",
-    "from the day it is added. tagForm: an annotation with a \"when\" and a %s slot for one more JSON key.",
+    "from the day it is added. tagForm: an annotation with a \"when\" (none for a mode that takes no condition,",
+    "php/modes.json \"when\": false) and a %s slot for one more JSON key.",
     "fragment: the extra keys a fragment of this mode needs to validate clean. client: keys the engine needs",
     "to start the mode's validator with a failing value \"bad\" in field \"target\"."
   ],
@@ -51,6 +52,11 @@
       "tagForm": "@UVDELTA={\"vs\":\"[b]\",\"max\":1,\"when\":\"[a]='x'\",%s}",
       "fragment": {"deltaVs": "[b]", "deltaMax": "1"},
       "client": {"deltaVs": "[earlier]", "deltaMax": "1", "deltaVsOp": ["lit", "100"]}
+    },
+    "writeonce": {
+      "tagForm": "@UVWRITEONCE={\"message\":\"Locked\",%s}",
+      "fragment": {"message": "Locked"},
+      "client": {"message": "Locked"}
     }
   }
 }

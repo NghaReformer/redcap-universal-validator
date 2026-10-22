@@ -1,0 +1,74 @@
+<p>Some answers should be entered once and then left alone: a consent date, a
+randomisation arm, a baseline weight. REDCap can make a field read-only for everyone
+with <code>@READONLY</code>, but then nobody can enter it in the first place.
+<code>@UVWRITEONCE</code> leaves the field open until its first save of a value and locks
+it from then on. Named user roles can still change it.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVWRITEONCE
+
+@UVWRITEONCE={"roles":["Data manager"]}
+
+@UVWRITEONCE={"roles":["Data manager","PI"],"since":"2026-11-01","message":"Ask the data manager to correct this date."}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>roles</code></td><td>The user roles whose members may still change or clear
+    the value, by the name the User Rights page shows or by the unique role name. Letter
+    case does not matter. Up to 20 roles</td></tr>
+<tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>. Saves before
+    it do not lock anything; the value the field held on that date is locked from then
+    on. Use it when the tag is added to a project that already holds data</td></tr>
+<tr><td><code>message</code></td><td>The text shown under a locked field and in the
+    scan. It may be a map of language ids to texts, as for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The tag takes no <code>when</code>, no <code>caseSensitive</code> and no
+<code>blockSave</code>. A value locked by its first save stays locked whatever else the
+form holds.</p>
+
+<h2>Field types</h2>
+
+<p>Text and Notes fields (dates included), <strong>dropdown</strong>,
+<strong>radio</strong>, <strong>yes/no</strong>, <strong>true/false</strong>,
+<strong>slider</strong> and <strong>SQL</strong> fields. Not a calc or a checkbox field,
+nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code> or
+<code>@SETVALUE</code>, whose value REDCap writes again by itself. A field that another
+rule returns a value to (<code>@UVEXISTS</code> or <code>@UVRANGE</code>
+<code>"return"</code>) cannot be locked either, because that value is written again on
+every save.</p>
+
+<h2>What is locked, and where</h2>
+
+<ul>
+<li>The first save of a value locks the field, whoever makes it. A
+    <strong>blank</strong> and a <strong>missing data code</strong> lock nothing, so a
+    field marked "unknown" can still be filled in later.</li>
+<li>A member of a named role may change the value. The lock then moves to the new
+    value. A member who clears it releases the lock, and the next value saved locks it
+    again.</li>
+<li>On a form or a survey the locked field is read-only for everyone outside the roles,
+    with a short note under it. A text box is made read-only and the radio buttons are
+    disabled. A dropdown, a slider or a date picker cannot be disabled without REDCap
+    saving the field blank, so a change made there is undone and the note says so.</li>
+<li>Another rule on a locked field still shows its note, but it never holds the save:
+    the person cannot change the value it objects to.</li>
+<li>The lock lives in the browser only. A change made through the API, the Data Import
+    Tool or a script that bypasses the form is found afterwards, from REDCap's log.</li>
+</ul>
+
+<h2>Audit</h2>
+
+<p>The post-save audit reads the field's saves from REDCap's log and logs a value
+changed or cleared after the lock as <code>type: writeonce</code> with reason
+<code>changed</code> or <code>cleared</code>, plus <code>locked_at</code> (when the lock
+was set) and <code>changed_at</code> (when the current value was saved). The Validation
+scan reports it with the day it was locked. A log that holds more saves of the record
+than the audit reads (5,000), a save the log does not spell out, or user roles that
+cannot be read when a change needs them, are reported as rule problems, never as a
+pass.</p>

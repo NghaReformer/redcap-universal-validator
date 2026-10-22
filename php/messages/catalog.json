@@ -138,6 +138,21 @@
     "staff":  "The value changed more than allowed from the value it is compared with.",
     "survey": "This value changed more than expected. Please check it."
   },
+  "writeonce/changed": {
+    "staff":  "The value was changed after its first save locked it.",
+    "survey": "This answer was changed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
+  "writeonce/cleared": {
+    "staff":  "The value was cleared after its first save locked it.",
+    "survey": "This answer was removed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
+  "writeonce/*": {
+    "staff":  "The value was changed after its first save locked it.",
+    "survey": "This answer was changed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."

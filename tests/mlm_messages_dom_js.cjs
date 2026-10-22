@@ -323,6 +323,12 @@ function frAndBack(label, env, field, en, fr, mlm) {
 }
 {
   const mlm = makeMlm('fr');
+  const env = boot([input('consent_date', '2026-03-01')], { rules: [{ type: 'writeonce', fields: ['consent_date'],
+    message: 'Ask the data manager to correct it', i18n: { message: { fr: 'Demandez au gestionnaire de le corriger' } } }] }, { mlm });
+  frAndBack('writeonce', env, 'consent_date', 'Ask the data manager to correct it', 'Demandez au gestionnaire de le corriger', mlm);
+}
+{
+  const mlm = makeMlm('fr');
   const env = boot([input('visit_date_bl', '01-03-2026'), input('visit_date_2', '15-03-2026')], { rules: [{ type: 'window',
     fields: ['visit_date_2'], windowFrom: '[visit_date_bl]', windowFromOp: ['ref', 'visit_date_bl', null],
     windowLo: 21, windowHi: 35, windowUnit: 'days', dateType: 'date', dateFormat: 'dmy', fromType: 'date', fromFormat: 'dmy',

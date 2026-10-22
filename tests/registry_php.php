@@ -52,10 +52,12 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVEXISTS'   => 'exists',      // 2.3.0
     '@UVRANGE'    => 'range',       // 2.5.0
     '@UVDELTA'    => 'delta',
+    '@UVWRITEONCE' => 'writeonce',
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
           'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
-          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range', 'TAG_DELTA' => 'delta'] as $const => $mode) {
+          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range', 'TAG_DELTA' => 'delta',
+          'TAG_WRITEONCE' => 'writeonce'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -102,6 +104,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // that field's decimal comma), the limits, their words, the branch group
     'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
     'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    // @UVWRITEONCE: the roles that may still change the value, the day the lock starts
+    'writeonceRoles', 'writeonceSince',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -461,7 +465,7 @@ foreach (ModeRegistry::all() as $mode) {
         (bool) preg_match('/private function ' . preg_quote($mode['evaluator'], '/') . '\(/', $uvSource));
     foreach ($mode['hooks'] as $phase => $hook) {
         check($name . ' ' . $phase . ' hook ' . $hook . ' exists in UniversalValidator',
-            in_array($phase, ['field', 'dictionary'], true)
+            in_array($phase, ['field', 'dictionary', 'page'], true)
             && (bool) preg_match('/private function ' . preg_quote($hook, '/') . '\(/', $uvSource));
     }
     foreach ($mode['types'] as $type) {

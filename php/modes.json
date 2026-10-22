@@ -26,7 +26,17 @@
     "Multi-Language Management show) and puts the other languages under \"i18n\" (AnnotationRules::takeTexts), so a",
     "mode that lists textKeys must also list \"i18n\" in its branchKeys and clientKeys.",
     "bareValue (optional): how an unquoted, non-JSON tag value ends: token (the first space, the default) or condition",
-    "(the tag's bare value is a condition, read whole up to the end of the line or the next action tag; see Logic::parsePrefix)."
+    "(the tag's bare value is a condition, read whole up to the end of the line or the next action tag; see Logic::parsePrefix).",
+    "hooks (optional): methods of UniversalValidator the mode adds. field gets one field's rule with its metadata, dictionary",
+    "gets it with the project's field types and choices, and page gets the mode's rules while the page config is built,",
+    "with the record and the viewer known; page may narrow a rule's fields or drop the rule (pageWriteonce).",
+    "findingKeys (optional): keys a finding of the mode may carry, each mapped to the key the audit log entry (log) and",
+    "the scan violation (scan) give it. MessageCatalog reads a scan \"asOf\" into the detail sentence.",
+    "lock (optional): the page keeps the mode's fields at the value they opened with (the engine's LOCKING_TYPES), so",
+    "no other mode's item on such a field holds the save. returnWhy refuses such a rule on a field another rule returns",
+    "a value to, since the save writes that value again: {field} is that field, {by} the other rule's first field.",
+    "when (optional, false only): the mode takes no condition, so its rules carry no \"when\" and no \"caseSensitive\"",
+    "(ModeRegistry::takesWhen). Every other mode takes one."
   ],
   "common": {
     "refKeys": [
@@ -348,6 +358,7 @@
       "defaultType": "writeonce",
       "parser": "parseWriteonceValue",
       "checker": "checkWriteonce",
+      "when": false,
       "hasAlgorithm": false,
       "eligibility": {
         "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "slider", "sql"],
@@ -370,6 +381,7 @@
       "dialog": false,
       "js": {"factories": {"writeonce": "QRIDWriteOnceInit"}},
       "findingKeys": {"lockedAt": {"log": "locked_at", "scan": "asOf"}, "changedAt": {"log": "changed_at"}},
+      "lock": {"returnWhy": "@UVWRITEONCE cannot lock \"[{field}]\": the rule on \"{by}\" returns a value to it, which is written again on every save."},
       "scan": {"issueLabels": {"changed": "Changed after it was locked", "cleared": "Cleared after it was locked", "*": "Changed after it was locked"}}
     }
   ]

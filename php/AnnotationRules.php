@@ -3148,7 +3148,7 @@ class AnnotationRules
             $ok = is_string($d) && preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $d, $m) && checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
             if (!$ok) $errors[] = '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got ' . json_encode($d) . '.';
         }
-        foreach (['when' => '"when"', 'blockSave' => '"blockSave"'] as $k => $label) {
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"'] as $k => $label) {
             if (array_key_exists($k, $frag)) {
                 $errors[] = self::TAG_WRITEONCE . ' takes no ' . $label . ': a value locked after its first save stays locked.';
             }

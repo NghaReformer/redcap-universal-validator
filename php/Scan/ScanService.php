@@ -1619,8 +1619,9 @@ final class ScanService
      *             engine-2 on the scan branch, renumbered when it joined main,
      *             where engine-2 and engine-3 had already shipped)
      *   engine-5  @UVDELTA (a rule type added)
+     *   engine-6  @UVWRITEONCE (a rule type added)
      */
-    const ENGINE_REVISION = 'engine-5';
+    const ENGINE_REVISION = 'engine-6';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;

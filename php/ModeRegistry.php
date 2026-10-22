@@ -146,6 +146,17 @@ final class ModeRegistry
                     }
                 }
             }
+            if (array_key_exists('when', $m) && $m['when'] !== false) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a "when" that is not false (leave it out for a mode that takes a condition)');
+            }
+            if (isset($m['lock'])) {
+                // the page keeps the field's value; returnWhy refuses a lock on a returned field
+                $lk = $m['lock'];
+                if (!is_array($lk) || array_keys($lk) !== ['returnWhy'] || !is_string($lk['returnWhy'])
+                        || strpos($lk['returnWhy'], '{field}') === false || strpos($lk['returnWhy'], '{by}') === false) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a lock that is not {returnWhy: a text naming {field} and {by}}');
+                }
+            }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no eligibility.fieldTypes');
             }
@@ -293,6 +304,13 @@ final class ModeRegistry
     {
         $m = self::mode($mode);
         return isset($m['branchGroup']['key']) ? $m['branchGroup']['key'] : null;
+    }
+
+    /** Whether the mode's rules take a condition ("when", "caseSensitive"); php/modes.json "when": false says no. */
+    public static function takesWhen($mode)
+    {
+        $m = self::mode($mode);
+        return !(is_array($m) && array_key_exists('when', $m) && $m['when'] === false);
     }
 
     /** The option name a branch-group refusal shows ("reference"), or null. */
@@ -457,6 +475,17 @@ final class ModeRegistry
             }
             return $out;
         });
+    }
+
+    /**
+     * The refusal of a rule of a locking mode (php/modes.json "lock") on a
+     * field another rule returns a value to, with {field} and {by} still to
+     * fill; null for a mode that locks nothing.
+     */
+    public static function lockReturnWhy($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['lock']['returnWhy']) ? $m['lock']['returnWhy'] : null;
     }
 
     /** A per-mode method name from the "hooks" block, or null. */

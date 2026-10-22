@@ -762,6 +762,12 @@
     UV_validators[f] = out;
   }
   var UV_guard = { items: [], armed: false };
+  /* Fields a locking mode (@UVWRITEONCE, php/modes.json "lock") holds on this
+     page: field => true, filled before any factory runs. Another mode's guard
+     item on such a field never holds the save, since the person cannot change
+     the value it objects to. (No rule returns a value to such a field: the
+     server refuses the lock, UniversalValidator::markReturnClashes.) */
+  var UV_LOCKED = Object.create(null);
   var UV_lastPooled = null;
 
 function QRID_escapeHtml(t){
@@ -3433,14 +3439,17 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       var item = UV_guard.items[ri];
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
-    var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
+    /* A field a lock holds (UV_LOCKED) keeps its other modes' notes, but only
+       the lock's own item (__qridLock) speaks for it here. */
+    var live = UV_guard.items.filter(function(el){ return el.__qridLock === true || UV_LOCKED[el.__qridFieldName] !== true; });
+    var bad = live.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
        active rule can block, or fills fields from the answer (@UVEXISTS
        "return"), set __qridPending, and they drop it when the answer comes
        or after QRID_PENDING_MS. */
-    var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
+    var pend = live.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
     if(!bad.length && !pend.length) return;
     var label = QRID_guardLabel;
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
@@ -6533,6 +6542,133 @@ function QRIDDeltaInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- write-once lock (@UVWRITEONCE) ----------------------------------------
+   The server sends a write-once rule only with the fields whose saved value
+   is a value (not blank, not a Missing Data Code), and only to a viewer who
+   holds none of its roles (UniversalValidator::pageWriteonce), so every field
+   here is locked. The page keeps the value it opened with. A text box (a
+   date, a slider's number) is made read-only and the visible radio buttons
+   are disabled: REDCap posts the read-only box and the radio's hidden mirror,
+   so the saved value is sent back. A dropdown is not disabled, because a
+   disabled select is left out of the form and REDCap would save it blank.
+   A change made any other way (a dropdown, a slider, a date picker, the
+   radio "reset" link, a script) is undone, and the note says so. At save the
+   value is compared once more; one that cannot be put back holds the save.
+   The lock is the browser's only: an API write or an import is caught
+   afterwards by the audit and the scan, from REDCap's log
+   (UniversalValidator::findingsWriteonce). tests/writeonce_dom_js.cjs locks
+   this contract. */
+function QRIDWriteOnceInit(QRID_CONFIG){
+  var configError = QRID_CONFIG.configErrorOverride || "";
+  var V = { message: (typeof QRID_CONFIG.message === "string") ? QRID_CONFIG.message : "",
+            i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };
+  var NOTE = "This value was saved once and is locked. It cannot be changed here.";
+  var SAVED = Object.create(null);   /* field => the value the page opened with */
+  function lockControls(fieldName, el){
+    var radios = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
+    var tag = (el.tagName || "").toLowerCase();
+    if(radios.length){
+      for(var i = 0; i < radios.length; i++) radios[i].disabled = true;
+      /* REDCap's "reset" link under the buttons clears the hidden mirror */
+      try {
+        var row = document.getElementById(fieldName + "-tr");
+        var links = row && row.getElementsByTagName ? row.getElementsByTagName("a") : [];
+        for(var li = 0; li < links.length; li++){
+          var oc = links[li].getAttribute ? (links[li].getAttribute("onclick") || "") : "";
+          if(oc.indexOf("radioResetVal") >= 0) links[li].style.display = "none";
+        }
+      } catch(e){}
+    } else if(tag === "select"){
+      if(el.setAttribute) el.setAttribute("aria-readonly", "true");
+      if(el.style) el.style.pointerEvents = "none";
+      var comp = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
+      if(comp) comp.readOnly = true;
+    } else {
+      el.readOnly = true;
+    }
+    /* REDCap's slider and date picker are jQuery UI widgets */
+    var jq = typeof window !== "undefined" && window.jQuery;
+    if(jq){
+      try { var sl = jq("#slider-" + fieldName); if(sl.length && sl.slider) sl.slider("disable"); } catch(e){}
+      try { var dp = jq(el); if(dp.hasClass && dp.hasClass("hasDatepicker") && dp.datepicker) dp.datepicker("disable"); } catch(e){}
+    }
+  }
+  function attach(fieldName){
+    var anchor = QRID_findAnchor(fieldName);
+    var el = QRID_returnElement(fieldName);
+    if(!anchor || !el || typeof el.value !== "string") return false;
+    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-o")) return true;   /* per-mode bind marker */
+    if(anchor.setAttribute) anchor.setAttribute("data-qrid-bound-o", "1");
+    UV_LOCKED[fieldName] = true;
+    var saved = el.value;
+    SAVED[fieldName] = saved;
+    var msg = QRID_attachMsgRegion(anchor, fieldName, "o");
+    var undone = false;
+    function show(){
+      msg.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
+        "font-size:12px;font-family:inherit;border:1px solid #d6d6d6;background:#f4f4f4;color:#555";
+      msg.innerHTML = "&#128274; " + (QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE)) +
+        (undone ? ' <span style="opacity:.8">' + QRID_escapeHtml("A change was undone.") + "</span>" : "");
+    }
+    /* Put the saved value back; false when the page cannot (its option is gone). */
+    function restore(){
+      if(el.value === saved) return true;
+      try { QRID_writeReturned(fieldName, saved, true, true); } catch(e){}
+      if(el.value !== saved) return false;
+      undone = true;
+      show();
+      return true;
+    }
+    var GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridLock: true,
+                  __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(anchor, fieldName), __qridLabelEl: anchor,
+                  readOnly: false, disabled: false,
+                  focus: function(){ try { anchor.focus(); } catch(e){} },
+                  __qridRecheck: function(){
+                    var ok = restore();
+                    GITEM.__qridInvalid = !ok;
+                    GITEM.__qridBlockMode = ok ? "off" : "hard";
+                  } };
+    QRID_registerBlocker(GITEM, fieldName, "off");
+    lockControls(fieldName, el);
+    if(el.addEventListener){
+      el.addEventListener("input", function(){ restore(); });
+      el.addEventListener("change", function(){ restore(); });
+    }
+    /* a change no event announces (jQuery, a script, the Today button) */
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ restore(); });
+    show();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    QRID_registerValidator(f, { type: "writeonce", mode: { writeonce: true, configError: configError },
+      test: function(){
+        if(configError || SAVED[f] === undefined) return null;
+        var el = QRID_returnElement(f);
+        return el ? el.value === SAVED[f] : null;
+      } });
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- required validator (@UVREQUIRED) -------------------------------------
    The INVERSE emptiness rule: a BLANK field is the violation (every other mode
    is inert on blank). Optional "when" makes the requirement conditional —
@@ -8481,7 +8617,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "window": "window",
     "exists": "exists",
     "range": "range",
-    "delta": "delta"
+    "delta": "delta",
+    "writeonce": "writeonce"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -8493,13 +8630,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "window": "QRIDWindowInit",
     "exists": "QRIDExistsInit",
     "range": "QRIDRangeInit",
-    "delta": "QRIDDeltaInit"
+    "delta": "QRIDDeltaInit",
+    "writeonce": "QRIDWriteOnceInit"
   };
   var BRANCH_GROUP_OF_TYPE = {
     "range": "rangeReference",
     "delta": "deltaGroup"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\" or \"delta\"";
+  var LOCKING_TYPES = {
+    "writeonce": true
+  };
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\", \"delta\" or \"writeonce\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -8514,7 +8655,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDWindowInit: QRIDWindowInit,
     QRIDExistsInit: QRIDExistsInit,
     QRIDRangeInit: QRIDRangeInit,
-    QRIDDeltaInit: QRIDDeltaInit
+    QRIDDeltaInit: QRIDDeltaInit,
+    QRIDWriteOnceInit: QRIDWriteOnceInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -8610,6 +8752,12 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
         '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
+  /* The fields a locking mode holds are known before any factory runs, so the
+     save guard can tell their other items whatever order the rules boot in. */
+  rules.forEach(function(rule){
+    if(rule.configError || typeof rule.type !== "string" || !own(LOCKING_TYPES, rule.type)) return;
+    (rule.fields || []).forEach(function(f){ if(counts[dupKey(f, rule.type)] === 1) UV_LOCKED[f] = true; });
+  });
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
     /* config-error rules keep their fields as-is (their message is shown once in
@@ -8706,6 +8854,7 @@ window.INSPIREUniversalValidator = {
   existsInit: QRIDExistsInit,           /* @UVEXISTS — locked by tests/exists_dom_js.cjs */
   rangeInit: QRIDRangeInit,             /* @UVRANGE — locked by tests/range_dom_js.cjs */
   deltaInit: QRIDDeltaInit,             /* @UVDELTA — locked by tests/delta_dom_js.cjs */
+  writeOnceInit: QRIDWriteOnceInit,     /* @UVWRITEONCE — locked by tests/writeonce_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

@@ -6,7 +6,8 @@
  * php/modes.json is the one list of validation modes. The server reads it
  * through php/ModeRegistry.php; the engine cannot read a file, so the parts it
  * needs (the keys a rule carries, which type belongs to which mode, which
- * factory a type starts) are written into it here. php/growth_outputs.json is
+ * factory a type starts, which types lock their fields) are written into it
+ * here. php/growth_outputs.json is
  * the one list of values an @UVRANGE growth rule can return; the server reads
  * it through php/GrowthOutputs.php, and the engine gets what it needs to read
  * a "return" key (GrowthOutputs::clientCopy). CI runs this with --check and
@@ -37,6 +38,7 @@ const defaultKeys = [];
 const modeOfType = {};
 const factoryOfType = {};
 const branchGroupOfType = {};
+const lockingTypes = {};
 const types = [];
 for (const m of reg.modes) {
   for (const k of m.clientKeys || []) if (!defaultKeys.includes(k)) defaultKeys.push(k);
@@ -48,6 +50,7 @@ for (const m of reg.modes) {
     if (!f) fail('mode "' + m.mode + '" names no js factory for type "' + t + '"');
     factoryOfType[t] = f;
     if (m.branchGroup && m.branchGroup.key) branchGroupOfType[t] = m.branchGroup.key;
+    if (m.lock) lockingTypes[t] = true;
   }
 }
 
@@ -77,6 +80,7 @@ const block = [
   obj('MODE_OF_TYPE', modeOfType),
   obj('FACTORY_OF_TYPE', factoryOfType),
   obj('BRANCH_GROUP_OF_TYPE', branchGroupOfType),
+  obj('LOCKING_TYPES', lockingTypes),
   '  var KNOWN_TYPES_TEXT = ' + q(list(types)) + ';',
   '  ' + END,
 ].join('\n');
