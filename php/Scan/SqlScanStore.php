@@ -1890,6 +1890,15 @@ final class SqlScanStore implements ScanStore
      * again, so a run that moved between the two is not touched, and its
      * count decides whether there is anything to audit.
      *
+     * THE WRITE AND ITS AUDIT ARE ONE TRANSACTION (review rv10a1-5). The audit
+     * was a statement of its own after the UPDATE had committed, so an audit
+     * insert that failed left a run expired with no record of who expired it,
+     * for ever - the next pass finds nothing stale - while the cron logged the
+     * work as rolled back. Now a failed audit rolls the expiry back with it,
+     * the run is still stale, and the next pass or Start does both. The read
+     * stays outside: in the common case it is the only statement, and it
+     * opens no transaction.
+     *
      * The row is finish()'s for derive(['expired' => true]), column for column,
      * with the lease epoch moved in the same statement (Risk 5).
      */
@@ -1906,9 +1915,14 @@ final class SqlScanStore implements ScanStore
         $bind = array_merge([(int) $pid, ScanPhase::CANCELLING], $w[1]);
         try {
             $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale, $bind);
-            if (!isset($r[0][0])) return 0;
-            $runId = (int) $r[0][0];
-            $o = ScanOutcome::derive(['expired' => true]);
+        } catch (\Throwable $e) {
+            throw $this->unavailable($e);
+        }
+        if (!isset($r[0][0])) return 0;
+        $runId = (int) $r[0][0];
+        $o = ScanOutcome::derive(['expired' => true]);
+        $this->db->begin();
+        try {
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET phase = ?, terminal = ?, coverage = ?, detail = ?, active_slot = NULL,
                     terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = 0,
@@ -1917,14 +1931,16 @@ final class SqlScanStore implements ScanStore
                 array_merge([ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
                     substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'], $at],
                     $bind, [$runId]));
-            if ($this->db->affected() !== 1) return 0;
-        } catch (ScanStoreUnavailable $e) {
-            throw $e;
+            if ($this->db->affected() !== 1) {
+                $this->db->rollback();
+                return 0;
+            }
+            $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
+                json_encode(['stale_hours' => $hours]));
+            $this->db->commit();
         } catch (\Throwable $e) {
-            throw $this->unavailable($e);
+            throw $this->rolledBack($e);
         }
-        $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
-            json_encode(['stale_hours' => $hours]));
         return 1;
     }
 

@@ -333,11 +333,47 @@ $runRow = function ($runId) use ($dbA) {
     check('reap pass: nothing failed', $r['out']['failed'] === 0 && $again['out']['failed'] === 0);
 }
 
+// -- AN EXPIRY AND ITS AUDIT ARE ONE WRITE (review rv10a1-5) --------------------
+//
+// The audit insert fails once. The expiry goes back with it, so the run is
+// still stale for the next pass, which writes both; before, the run stayed
+// expired with no record of who expired it, and no pass ever wrote one.
+{
+    $ab = $plant(976, 1, null, false);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "', lease_expires_at = NULL WHERE run_id = " . (int) $ab['run']);
+    $abStore = new SqlScanStore($dbA);
+    $abEpoch = (int) $abStore->run(976, $ab['run'])['lease_epoch'];
+    $failAudit = true;
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$failAudit) {
+        if ($failAudit && $kind === 'exec' && strpos($sql, 'INSERT INTO ' . Schema::table('scan_audit')) !== false) {
+            throw new \RuntimeException('Lock wait timeout exceeded; try restarting transaction', 1205);
+        }
+    };
+    $expireAudits = function () use ($dbA, $ab) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . ' WHERE project_id = ? AND run_id = ? AND event = ?', array(976, $ab['run'], ScanStore::AUDIT_EXPIRE))[0][0];
+    };
+    $logs = array();
+    $f1 = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($hook, array('policy' => $policyOf,
+        'log' => function ($e, array $c) use (&$logs) { $logs[] = array($e, $c); })))->reap(array(), 60.0);
+    $abRow = $abStore->run(976, $ab['run']);
+    check('expire: an audit that fails takes the expiry back with it, and the pass counts a failure, not an expiry',
+        $abRow['terminal'] === null && (int) $abRow['lease_epoch'] === $abEpoch && $expireAudits() === 0
+        && $f1['out']['runs_expired'] === 0 && $f1['out']['failed'] === 1);
+    $failAudit = false;
+    $f2 = $maint()->reap(array(), 60.0);
+    check('expire: and the next pass writes the expiry and its audit together',
+        $abStore->run(976, $ab['run'])['terminal'] === ScanOutcome::EXPIRED && $expireAudits() === 1
+        && $f2['out']['runs_expired'] === 1);
+}
+
 // -- THE RETENTION PASS: revocation, purge, the value sweep ---------------------
 {
     // The projects above are done with; the lap below starts at the first of
     // these, so the ticking clock's arithmetic is about them alone.
-    foreach (array(970, 971, 972, 973, 974, 975) as $p) uv_clear_project($dbA, $p);
+    foreach (array(970, 971, 972, 973, 974, 975, 976) as $p) uv_clear_project($dbA, $p);
     $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
     // 980: kept raw values under a 30-day window; the project now keeps none.
     $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
