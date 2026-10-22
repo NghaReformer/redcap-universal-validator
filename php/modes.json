@@ -340,6 +340,37 @@
       "js": {"factories": {"delta": "QRIDDeltaInit"}},
       "scan": {"issueLabels": {"up": "Rose more than allowed", "down": "Fell more than allowed", "*": "Changed more than allowed"},
                "detailKeys": ["deltaText", "deltaVsLabel"]}
+    },
+    {
+      "mode": "writeonce",
+      "tag": "@UVWRITEONCE",
+      "types": ["writeonce"],
+      "defaultType": "writeonce",
+      "parser": "parseWriteonceValue",
+      "checker": "checkWriteonce",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "slider", "sql"],
+        "annotationWhy": "@UVWRITEONCE does not support \"{type}\" fields — it locks one saved value: a Text or Notes field, a dropdown, radio, yes/no, true/false, slider or SQL field.",
+        "annotationWhyFor": {
+          "calc": "@UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change.",
+          "checkbox": "@UVWRITEONCE does not support \"checkbox\" fields — it locks one value, and a checkbox field holds one answer per option."
+        },
+        "dialogWhy": "a Write-once rule supports Text, Notes, dropdown, radio, yes/no, true/false, slider and SQL fields"
+      },
+      "hooks": {"field": "annotateWriteonceField", "dictionary": "annotateWriteonceDictionary", "page": "pageWriteonce"},
+      "evaluator": "findingsWriteonce",
+      "missingCodes": "answer",
+      "refKeys": [],
+      "branchKeys": ["writeonceRoles", "writeonceSince", "message", "i18n"],
+      "clientKeys": ["message", "i18n"],
+      "serverKeys": ["writeonceRoles", "writeonceSince"],
+      "textKeys": ["message"],
+      "needs": [],
+      "dialog": false,
+      "js": {"factories": {"writeonce": "QRIDWriteOnceInit"}},
+      "findingKeys": {"lockedAt": {"log": "locked_at", "scan": "asOf"}, "changedAt": {"log": "changed_at"}},
+      "scan": {"issueLabels": {"changed": "Changed after it was locked", "cleared": "Cleared after it was locked", "*": "Changed after it was locked"}}
     }
   ]
 }

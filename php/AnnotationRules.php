@@ -47,6 +47,7 @@ class AnnotationRules
     const TAG_EXISTS = '@UVEXISTS';
     const TAG_RANGE = '@UVRANGE';
     const TAG_DELTA = '@UVDELTA';
+    const TAG_WRITEONCE = '@UVWRITEONCE';
 
     /**
      * @UVDELTA "vs" shorthands: this same field in another entry of the
@@ -65,6 +66,9 @@ class AnnotationRules
 
     /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
     const MAX_RANGE_UNIT = 20;
+    /** Most roles one @UVWRITEONCE may name, and the longest name of one (REDCap's role_name column). */
+    const MAX_WRITEONCE_ROLES = 20;
+    const MAX_ROLE_NAME = 150;
     /** Longest @UVRANGE limit, in characters once any exponent is written out. */
     const MAX_RANGE_BOUND = 64;
     /** With a growth "reference", the limits are z-scores no further than this from 0. */
@@ -1206,6 +1210,67 @@ class AnnotationRules
     public static function deltaGroup($vs, $direction)
     {
         return strtolower(preg_replace('/\s+/', '', (string) $vs)) . ' ' . $direction;
+    }
+
+    /**
+     * Parse one @UVWRITEONCE value into a writeonce fragment:
+     *   @UVWRITEONCE
+     *   @UVWRITEONCE={"roles":["Data manager"],"since":"2026-11-01","message":"..."}
+     * The field is locked at its first save of a value: blank and a Missing
+     * Data Code lock nothing. "roles" names the user roles (by the name the
+     * User Rights page shows, or by the unique role name) whose members may
+     * still change it; a change by one of them moves the lock. "since" starts
+     * the lock on that date for a field that already has a history: saves
+     * before it only say which value the field held then. The verdict is
+     * Logic::writeOnceVerdict, read from REDCap's log (ValueHistory); whether
+     * each role exists is checked with the project in hand
+     * (UniversalValidator::annotateWriteonceDictionary).
+     */
+    private static function parseWriteonceValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        $out = ['type' => 'writeonce'];
+        if ($val !== '') {
+            if ($val[0] !== '{') {
+                return ['error' => self::TAG_WRITEONCE . ' takes no value, or its settings as JSON, e.g. '
+                    . self::TAG_WRITEONCE . '={"roles":["Data manager"]}.'];
+            }
+            $cfg = json_decode($val, true);
+            if (!is_array($cfg)) {
+                return ['error' => self::TAG_WRITEONCE . ' JSON does not parse ('
+                    . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+            }
+            $allowed = ['roles', 'since', 'message'];
+            $unknown = array_diff(array_keys($cfg), $allowed);
+            if ($unknown) {
+                return ['error' => 'unknown ' . self::TAG_WRITEONCE . ' option(s): ' . implode(', ', $unknown)
+                    . ' — valid: ' . implode(', ', $allowed) . '.'];
+            }
+            if (array_key_exists('roles', $cfg)) {
+                if (!is_array($cfg['roles']) || array_values($cfg['roles']) !== $cfg['roles']) {
+                    return ['error' => '"roles" must be a list of role names, e.g. ["Data manager"].'];
+                }
+                $roles = [];
+                foreach ($cfg['roles'] as $r) {
+                    if (!is_string($r)) return ['error' => '"roles" must be a list of role names, e.g. ["Data manager"].'];
+                    $r = trim($r);
+                    // one entry per role, whatever the spacing or letter case
+                    if (!in_array(strtolower($r), array_map('strtolower', $roles), true)) $roles[] = $r;
+                }
+                $out['writeonceRoles'] = $roles;
+            }
+            if (array_key_exists('since', $cfg)) {
+                if (!is_string($cfg['since'])) return ['error' => '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01".'];
+                $out['writeonceSince'] = trim($cfg['since']);
+            }
+            if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+            if (isset($cfg['message'])) {
+                if (!is_string($cfg['message'])) return ['error' => '"message" must be a string.'];
+                $out['message'] = $cfg['message'];
+            }
+        }
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
     /** The "vs" shorthands as a list in words: "previous-event, ... or first-instance". */
@@ -3048,6 +3113,44 @@ class AnnotationRules
             if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
                     || (function_exists('mb_strlen') ? mb_strlen($u, 'UTF-8') : strlen($u)) > self::MAX_RANGE_UNIT) {
                 $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "kg".';
+            }
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Validate a writeonce fragment: each role a name of 1 to MAX_ROLE_NAME
+     * characters with no control character, at most MAX_WRITEONCE_ROLES of
+     * them, and "since" a real date. The lock is the rule, so the tag takes no
+     * "when" and no "blockSave": the page always keeps a locked value.
+     */
+    public static function checkWriteonce(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (array_key_exists('writeonceRoles', $frag)) {
+            $roles = $frag['writeonceRoles'];
+            if (!is_array($roles) || !$roles) {
+                $errors[] = '"roles" must name at least one role — leave it out to lock the field for everyone.';
+            } elseif (count($roles) > self::MAX_WRITEONCE_ROLES) {
+                $errors[] = '"roles" names ' . count($roles) . ' roles — at most ' . self::MAX_WRITEONCE_ROLES . '.';
+            } else {
+                foreach ($roles as $r) {
+                    $len = is_string($r) ? (function_exists('mb_strlen') ? mb_strlen($r, 'UTF-8') : strlen($r)) : 0;
+                    if (!is_string($r) || $r === '' || preg_match('/[ -]/', $r) || $len > self::MAX_ROLE_NAME) {
+                        $errors[] = '"roles" must hold role names of 1 to ' . self::MAX_ROLE_NAME . ' characters — got ' . json_encode($r) . '.';
+                        break;
+                    }
+                }
+            }
+        }
+        if (array_key_exists('writeonceSince', $frag)) {
+            $d = $frag['writeonceSince'];
+            $ok = is_string($d) && preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $d, $m) && checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+            if (!$ok) $errors[] = '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got ' . json_encode($d) . '.';
+        }
+        foreach (['when' => '"when"', 'blockSave' => '"blockSave"'] as $k => $label) {
+            if (array_key_exists($k, $frag)) {
+                $errors[] = self::TAG_WRITEONCE . ' takes no ' . $label . ': a value locked after its first save stays locked.';
             }
         }
         return array_merge($errors, self::checkCommon($frag, $opts));

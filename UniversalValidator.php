@@ -30,6 +30,7 @@ require_once __DIR__ . '/php/GrowthCurve.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ValueStamps.php';
+require_once __DIR__ . '/php/ValueHistory.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
@@ -466,6 +467,10 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($v['reference'])) $extra['reference'] = (string) $v['reference'];
             // A @UVDELTA finding: the reference it compared with (rule text, never a value).
             if (isset($v['vs'])) $extra['vs'] = (string) $v['vs'];
+            // What a mode's findings carry for the log (php/modes.json findingKeys).
+            foreach (ModeRegistry::findingKeys() as $fk => $to) {
+                if (isset($to['log'], $v[$fk]) && is_scalar($v[$fk])) $extra[$to['log']] = (string) $v[$fk];
+            }
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra);
         }
@@ -3448,6 +3453,247 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Write-once mode (@UVWRITEONCE): the saved value must be the value the
+     * field is locked to (Logic::writeOnceVerdict), worked out from every save
+     * of the field on this record, event and instance in REDCap's log
+     * (ValueHistory). The log is the only source, so a value written by the
+     * API or an import is judged like one typed on a form, once the audit or
+     * the scan reads it. The module never writes the locked value back. A log
+     * that cannot be read in full, a save it does not say plainly, a value it
+     * never shows saved, or user roles that cannot be read when a change needs
+     * them, is a rule problem ("not checked"), never a pass.
+     */
+    private function findingsWriteonce(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $instance = isset($meta['instance']) ? max(1, (int) $meta['instance']) : 1;
+        $codes = isset($meta['missingCodes']) && is_array($meta['missingCodes']) ? $meta['missingCodes'] : $this->missingDataCodes($project_id);
+        $isMissing = function ($v) use ($codes) { return self::isMissingCode($v, $codes); };
+        $roles = isset($rule['writeonceRoles']) && is_array($rule['writeonceRoles']) ? $rule['writeonceRoles'] : [];
+        $holds = function ($user) use ($roles, $project_id) { return $this->userHoldsRole($project_id, $user, $roles); };
+        $history = null;
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $state = isset($resolution[$field]) ? $resolution[$field] : 'ok';
+            if ($state !== 'ok') {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved value ' . self::resolutionProblem($state, $field)];
+                continue;
+            }
+            $value = isset($values[$field]) ? $values[$field] : '';
+            if (is_array($value)) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved value is not one value — field not checked'];
+                continue;
+            }
+            if ($history === null) $history = $this->valueHistory($project_id);
+            if ($history === false) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the project log could not be read — field not checked'];
+                continue;
+            }
+            $h = $history->saves($record, $event_id, $instance, $field);
+            if ($h['state'] === 'capped' || $h['state'] === 'unknown') {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => ($h['state'] === 'capped'
+                    ? 'the project log holds more saves of this record than are read, so its first save of this value is not known'
+                    : 'the project log could not be read') . ' — field not checked'];
+                continue;
+            }
+            $since = isset($rule['writeonceSince']) && is_string($rule['writeonceSince']) ? $rule['writeonceSince'] : null;
+            $sinceTs = $since === null ? null : $history->logTimeOf($since);
+            if ($since !== null && $sinceTs === null) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => '"since" is not a date this rule can read — field not checked'];
+                continue;
+            }
+            $r = Logic::writeOnceVerdict($h['saves'], (string) $value, $holds, $isMissing, $sinceTs, $since);
+            if ($r['verdict'] === 'ok') continue;
+            if ($r['verdict'] === 'unknown') {
+                $why = ['ambiguous' => 'the project log does not say plainly what one save of it wrote',
+                        'gap' => 'the project log does not show the save of the value it holds',
+                        'roles' => 'the user roles could not be read to tell whether a change was made by a role that may make it'];
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => (isset($why[$r['why']]) ? $why[$r['why']] : $why['gap']) . ' — field not checked'];
+                continue;
+            }
+            $finding = ['field' => $field, 'value' => $value, 'algo' => 'writeonce', 'type' => 'writeonce', 'reason' => $r['verdict']];
+            // when the value was locked (minutes are enough to find the save in REDCap's log) and when it was changed
+            if (is_string($r['lockedAt'])) $finding['lockedAt'] = substr($r['lockedAt'], 0, 16);
+            if (is_string($r['changedAt'])) $finding['changedAt'] = substr($r['changedAt'], 0, 16);
+            $out['invalid'][] = $finding;
+        }
+        return $out;
+    }
+
+    /**
+     * @UVWRITEONCE "page" hook: a field is locked on the page when its saved
+     * value is a value (not blank, not a Missing Data Code) and the person
+     * looking holds none of the rule's roles. A survey respondent holds no
+     * role. Every other field is left off the page, and so is a rule with no
+     * field left. The roles and "since" never reach the page (serverKeys).
+     * Roles that cannot be read lock nothing: the page does not keep a person
+     * from a change the audit may find was theirs to make.
+     */
+    private function pageWriteonce(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
+    {
+        $out = [];
+        $codes = null;
+        $user = null;
+        foreach ($rules as $r) {
+            if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce' || !empty($r['configError'])) {
+                $out[] = $r;
+                continue;
+            }
+            if ($record === null || $record === '' || $pid === null) continue;   // a new record: nothing saved to lock
+            $roles = isset($r['writeonceRoles']) && is_array($r['writeonceRoles']) ? $r['writeonceRoles'] : [];
+            if ($roles && $context !== 'survey') {
+                if ($user === null) $user = (string) $this->currentUsername();
+                if ($this->userHoldsRole($pid, $user, $roles) !== false) continue;
+            }
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $resolution = [];
+            try {
+                $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if ($codes === null) $codes = $this->missingDataCodes($pid);
+            $locked = [];
+            foreach ($fields as $f) {
+                if ((isset($resolution[$f]) ? $resolution[$f] : 'ok') !== 'ok') continue;
+                $v = isset($values[$f]) ? $values[$f] : '';
+                if (is_array($v) || trim((string) $v, " \t\r\n") === '' || self::isMissingCode($v, $codes)) continue;
+                $locked[] = $f;
+            }
+            if (!$locked) continue;
+            $r['fields'] = $locked;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    /**
+     * @UVWRITEONCE "field" hook: a field whose value REDCap computes
+     * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, so it cannot be
+     * locked.
+     */
+    private function annotateWriteonceField(array $frag, $name, array $meta, $pid)
+    {
+        $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+        if (preg_match('/@(CALCTEXT|CALCDATE)\b/i', $ann, $m)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
+                . ' — REDCap works its value out again whenever the fields it reads change.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        return $frag;
+    }
+
+    /**
+     * @UVWRITEONCE "dictionary" hook: every role it names must be a role of
+     * this project, by the name the User Rights page shows or by its unique
+     * role name, so a misspelt role does not lock out the people it names.
+     * Roles that cannot be read are not refused here (the page then locks
+     * nothing and the audit says when it needed them).
+     */
+    private function annotateWriteonceDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $roles = isset($frag['writeonceRoles']) && is_array($frag['writeonceRoles']) ? $frag['writeonceRoles'] : [];
+        if (!$roles || $pid === null) return $frag;
+        $book = $this->roleBook($pid);
+        if ($book === null) return $frag;
+        $unknown = [];
+        foreach ($roles as $role) if (!isset($book['roles'][strtolower(trim((string) $role))])) $unknown[] = (string) $role;
+        if (!$unknown) return $frag;
+        return ['error' => AnnotationRules::TAG_WRITEONCE . ' on "' . $name . '": ' . (count($unknown) === 1
+            ? '"' . $unknown[0] . '" is not a role of this project'
+            : '"' . implode('", "', $unknown) . '" are not roles of this project')
+            . ' — use the role name the User Rights page shows, or its unique role name.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+    }
+
+    /**
+     * Whether $user holds one of $roles in project $pid: true, false (also for
+     * a user with no rights row in the project, such as a survey respondent or
+     * an administrator who was never added), or null when the roles cannot be
+     * read. Names compare without letter case.
+     */
+    private function userHoldsRole($pid, $user, array $roles)
+    {
+        if (!$roles) return false;
+        $book = $this->roleBook($pid);
+        if ($book === null) return null;
+        $u = strtolower(trim((string) $user));
+        if ($u === '' || !isset($book['users'][$u])) return false;
+        foreach ($roles as $role) {
+            if (in_array(strtolower(trim((string) $role)), $book['users'][$u], true)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The project's user roles, once per request: ['roles' => [lowercase name
+     * => true], 'users' => [lowercase username => [lowercase names of the role
+     * the user holds]]], where a role's names are the one the User Rights page
+     * shows and its unique role name. null when they cannot be read. A REDCap
+     * without unique role names is read without them.
+     */
+    private function roleBook($pid)
+    {
+        if ($this->roleBookOverride !== null) return $this->roleBookOverride === false ? null : $this->roleBookOverride;
+        $key = (string) (int) $pid;
+        if (array_key_exists($key, $this->roleBookMemo)) return $this->roleBookMemo[$key];
+        $db = new Scan\ModuleDb($this);
+        $book = null;
+        foreach ([', r.unique_role_name', ''] as $unique) {
+            try {
+                $roleRows = $db->select('SELECT r.role_name' . $unique . ' FROM redcap_user_roles r WHERE r.project_id = ?', [(int) $pid]);
+                $userRows = $db->select('SELECT u.username, r.role_name' . $unique . ' FROM redcap_user_rights u'
+                    . ' JOIN redcap_user_roles r ON r.role_id = u.role_id WHERE u.project_id = ?', [(int) $pid]);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            $book = ['roles' => [], 'users' => []];
+            foreach ($roleRows as $row) {
+                foreach ([0, 1] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['roles'][strtolower(trim((string) $row[$c]))] = true;
+            }
+            foreach ($userRows as $row) {
+                $u = isset($row[0]) ? strtolower(trim((string) $row[0])) : '';
+                if ($u === '') continue;
+                foreach ([1, 2] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['users'][$u][] = strtolower(trim((string) $row[$c]));
+            }
+            break;
+        }
+        return $this->roleBookMemo[$key] = $book;
+    }
+
+    /**
+     * The project's log reader for @UVWRITEONCE (ValueHistory), once per
+     * request, keeping the fields the project's write-once rules lock; false
+     * when the log cannot be resolved.
+     */
+    private function valueHistory($pid)
+    {
+        if ($this->valueHistoryOverride !== null) return $this->valueHistoryOverride;
+        $key = (string) (int) $pid;
+        if (!array_key_exists($key, $this->valueHistoryMemo)) {
+            $fields = [];
+            foreach ($this->getRules($pid) as $r) {
+                if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce') continue;
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $fields[] = (string) $f;
+            }
+            $server = new \DateTimeZone(date_default_timezone_get());
+            $zone = $this->clockZone($pid);
+            $h = ValueHistory::forProject(new Scan\ModuleDb($this), $pid, $fields, $server, $zone === null ? $server : $zone);
+            $this->valueHistoryMemo[$key] = $h === null ? false : $h;
+        }
+        return $this->valueHistoryMemo[$key];
+    }
+
+    /** What a finding carries for the scan (php/modes.json findingKeys "scan"), as violation key => text. */
+    private static function scanFindingKeys(array $v)
+    {
+        $out = [];
+        foreach (ModeRegistry::findingKeys() as $fk => $to) {
+            if (isset($to['scan'], $v[$fk]) && is_scalar($v[$fk]) && !isset($out[$to['scan']])) $out[$to['scan']] = (string) $v[$fk];
+        }
+        return $out;
+    }
+
+    /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
      * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
@@ -3513,6 +3759,14 @@ class UniversalValidator extends AbstractExternalModule
     private $clockOverride = null;
     /** Tests set a log reader here (ValueStamps or an object with savedAt()). */
     private $valueStampsOverride = null;
+    /** Tests set the @UVWRITEONCE log reader here (ValueHistory, an object with saves() and logTimeOf(), or false). */
+    private $valueHistoryOverride = null;
+    /** pid => ValueHistory|false */
+    private $valueHistoryMemo = [];
+    /** Tests set the user roles here (roleBook's shape, or false for "cannot be read"). */
+    private $roleBookOverride = null;
+    /** pid => roleBook()|null */
+    private $roleBookMemo = [];
     /** pid => ValueStamps|null */
     private $valueStampsMemo = [];
     /** @var array zone name ('' = the server's own) => that clock, read once per request */
@@ -3980,6 +4234,12 @@ class UniversalValidator extends AbstractExternalModule
         ]);
 
         $config['rules'] = $this->foldTemporalRules($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
+        // A mode whose rules depend on the saved entry and on who is looking
+        // (php/modes.json hooks.page) keeps, drops or narrows them here.
+        foreach (ModeRegistry::all() as $m) {
+            $hook = ModeRegistry::hook($m['mode'], 'page');
+            if ($hook !== null) $config['rules'] = $this->$hook($config['rules'], $pid, $context, $record, $instrument, $event_id, $repeat_instance);
+        }
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -10281,6 +10541,8 @@ class UniversalValidator extends AbstractExternalModule
                         ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
                           // the day a today-relative @UVWINDOW part was judged against
                           + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
+                          // what a mode's findings carry for the scan (php/modes.json findingKeys)
+                          + self::scanFindingKeys($v)
                           // A growth finding's reference, and its z-score only
                           // when the scan shows values raw, as the audit log
                           // does. The z-score gives the measurement back, and

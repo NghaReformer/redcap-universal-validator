@@ -132,6 +132,20 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name, surveyOpaque?: bool}');
                 }
             }
+            if (isset($m['findingKeys'])) {
+                // finding key => where it goes: "log" (the audit log entry's key)
+                // and/or "scan" (the scan violation's key)
+                $fk = $m['findingKeys'];
+                if (!is_array($fk) || !$fk || array_values($fk) === $fk) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a findingKeys that is not a finding key => {log, scan} map');
+                }
+                foreach ($fk as $k => $to) {
+                    if (!is_string($k) || $k === '' || !is_array($to) || !$to || array_diff(array_keys($to), ['log', 'scan'])
+                            || array_filter($to, function ($v) { return !is_string($v) || !preg_match('/^[a-z][a-zA-Z_]*$/D', $v); })) {
+                        throw new \RuntimeException('mode "' . $m['mode'] . '" has a findingKeys entry that is not {log?: key, scan?: key}');
+                    }
+                }
+            }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no eligibility.fieldTypes');
             }
@@ -425,6 +439,24 @@ final class ModeRegistry
         if (in_array($fieldType, $e['fieldTypes'], true)) return null;
         if (isset($e['annotationWhyFor'][$fieldType])) return $e['annotationWhyFor'][$fieldType];
         return strtr($e['annotationWhy'], ['{type}' => (string) $fieldType]);
+    }
+
+    /**
+     * What each mode's findings carry besides the common keys, for the audit
+     * log and the scan: finding key => ['log' => log entry key, 'scan' => scan
+     * violation key], either optional (php/modes.json findingKeys). A union
+     * over the modes; a key two modes name goes where the first one says.
+     */
+    public static function findingKeys()
+    {
+        return self::memo('findingKeys', function () {
+            $out = [];
+            foreach (self::all() as $m) {
+                if (!isset($m['findingKeys'])) continue;
+                foreach ($m['findingKeys'] as $k => $to) if (!isset($out[$k])) $out[$k] = $to;
+            }
+            return $out;
+        });
     }
 
     /** A per-mode method name from the "hooks" block, or null. */
