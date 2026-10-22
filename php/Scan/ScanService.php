@@ -308,13 +308,8 @@ final class ScanService
         // unplaceable field is a fixable dictionary problem: the field exists,
         // its form_name does not. A refusal that says only "at least one field"
         // sends an administrator looking through the whole dictionary.
-        $forms = [];
-        $unknown = [];
-        foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
-            $forms[$form] = true;
-        }
-        $auth = ScanAuthorization::mayStart($scope['rights'], array_keys($forms), $unknown);
+        $sets = self::formsOf($ctx);
+        $auth = ScanAuthorization::mayStart($scope['rights'], $sets['forms'], $sets['unknown']);
         if (empty($auth['ok'])) return self::noStart($auth['why']);
         // A STARTER ANOTHER PROJECT REFUSES IS REFUSED THE START (review
         // rv10b1-2). Their plan skips the lookups that project would not
@@ -1054,7 +1049,8 @@ final class ScanService
     public function cancel($pid, $runId)
     {
         // The reader before the run (L8): see readerScope().
-        $no = $this->readerRefusal($pid);
+        // Asked of the host instruments, as mayCancel() asks (formsOf()).
+        $no = $this->readerRefusal($pid, 'cancel');
         if ($no !== null) return ['ok' => false, 'why' => $no['why']];
         $store = $this->store();
         $run = $store->run($pid, $runId);
@@ -1957,8 +1953,11 @@ final class ScanService
      * readerScope()'s refusal, or null for a reader who may go on to ask
      * about a run. FINAL unless the rights could not be READ (review R2O-4),
      * as entitlementNow() says it.
+     *
+     * $verb is 'cancel' for cancel() and 'read' for every other verb: they
+     * are asked about different instrument sets (see formsOf()).
      */
-    private function readerRefusal($pid)
+    private function readerRefusal($pid, $verb = 'read')
     {
         $scope = $this->readerScope($pid);
         if (empty($scope['ok'])) {
@@ -1970,7 +1969,55 @@ final class ScanService
         // mayWork() or mayCancel(), each of which asks the same first.
         $alone = ScanAuthorization::readerAlone($scope['rights']);
         if (empty($alone['ok'])) return ['ok' => false, 'why' => $alone['why'], 'final' => true];
+        // AND THE INSTRUMENTS (W11A-N3). The entitlement was built for the run
+        // row, so a designer barred from an instrument the rules read was
+        // named the barred instruments for an id that is a run and told
+        // NO_RUN for one that is not: the run ids of the project could be
+        // told apart by somebody the scan refuses. Which instruments the
+        // rules read is a fact about the project's rules and dictionary, not
+        // about a run - the plan's ownership map does not depend on the group
+        // it is built for - so it is decided here, from a planning context
+        // for the reader's own scope, before any run row is read. A context
+        // that cannot be built is refused here too, the same for every id;
+        // it is never final, as entitlementNow() says it.
+        $f = $this->readerForms($pid);
+        if (empty($f['ok'])) return ['ok' => false, 'why' => $f['why'], 'final' => false];
+        $auth = ($verb === 'cancel')
+            ? ScanAuthorization::mayStart($scope['rights'], $f['cancelForms'])
+            : ScanAuthorization::mayStart($scope['rights'], $f['forms'], $f['unknown']);
+        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
         return null;
+    }
+
+    /** "<pid>|<user>" => readerForms()'s answer for this request. */
+    private $readerForms = [];
+
+    /**
+     * The instruments this reader's rules read, from a planning context built
+     * for the reader's own scope, once per request.
+     *
+     * THE SAME PLAN AS THE RUN'S, NOT A SECOND ONE. The plan memo is keyed by
+     * the project, the group, the value ceiling and the user, and not by the
+     * generation, so for a group reader - whose only readable runs are their
+     * group's - and for an unrestricted reader of a whole-project run, the
+     * entitlement built after the run row is a memo hit on this one.
+     *
+     * @return array{ok:bool, why?:?string, forms?:string[], unknown?:string[], cancelForms?:string[]}
+     */
+    private function readerForms($pid)
+    {
+        $key = (int) $pid . '|' . $this->username();
+        if (!array_key_exists($key, $this->readerForms)) {
+            $scope = $this->readerScope($pid);
+            $policy = $this->policy($pid);
+            $ctx = $this->module->durableScanContext($pid, $this->planOptions($pid, [
+                'valueCeiling' => $policy['valueMode'], 'generation' => null, 'policy' => $policy,
+            ]), $scope['dag']);
+            $this->readerForms[$key] = empty($ctx['ok'])
+                ? ['ok' => false, 'why' => $ctx['why']]
+                : ['ok' => true, 'why' => null] + self::formsOf($ctx);
+        }
+        return $this->readerForms[$key];
     }
 
     /** @see entitlement() — the answer, worked out. */
@@ -2006,6 +2053,25 @@ final class ScanService
         // could not be read just now.
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
 
+        return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
+                // The CALLER's scope, kept beside the run's own. The two are
+                // equal for any request the authorisation above let through -
+                // they are compared as ids by mayWork() - and keeping both is
+                // what let the seam be asserted rather than assumed.
+                'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
+    }
+
+    /**
+     * The instruments a planning context reads, as the entitlement asks about
+     * them: `forms`, `unknown` (fields no instrument could be found for) and
+     * `cancelForms`. ONE DERIVATION for start(), the pre-run question
+     * (readerForms(), W11A-N3) and the run's entitlement, so the three cannot
+     * be asked about different sets.
+     *
+     * @return array{forms:string[], unknown:string[], cancelForms:string[]}
+     */
+    private static function formsOf(array $ctx)
+    {
         // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
         // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
         // is a field whose access cannot be checked, so it sets $unknown and
@@ -2055,14 +2121,7 @@ final class ScanService
                 if ($form !== null && $form !== '') $cancelForms[$form] = true;
             }
         }
-        return ['ok' => true, 'why' => null, 'rights' => $scope['rights'],
-                'forms' => array_keys($forms), 'unknown' => $unknown,
-                'cancelForms' => array_keys($cancelForms),
-                // The CALLER's scope, kept beside the run's own. The two are
-                // equal for any request the authorisation above let through -
-                // they are compared as ids by mayWork() - and keeping both is
-                // what let the seam be asserted rather than assumed.
-                'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
+        return ['forms' => array_keys($forms), 'unknown' => $unknown, 'cancelForms' => array_keys($cancelForms)];
     }
 
     private function store()

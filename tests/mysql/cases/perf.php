@@ -62,8 +62,18 @@ if (!class_exists('UvPerfModule', false)) {
         private $pid;
         /** @var string[] every statement, in order */
         public $log = array();
-        /** @var int how many times the service asked for a plan */
+        /**
+         * @var int how many plans production would BUILD for what the service
+         * asked. UniversalValidator::scanPlan() keeps a plan in the request's
+         * memo under the project, the group, the value ceiling, the form-rights
+         * flag and the user, so a second ask with the same memo and key is no
+         * second plan. Since W11A-N3 every verb asks for the reader's planning
+         * context before it reads the run row, and the run's entitlement after
+         * it is that plan again; `asks` counts both.
+         */
         public $plans = 0;
+        /** @var int how many times the service asked for a context */
+        public $asks = 0;
 
         public function __construct($c, $pid) { $this->c = $c; $this->pid = (int) $pid; }
 
@@ -99,7 +109,15 @@ if (!class_exists('UvPerfModule', false)) {
          */
         public function durableScanContext($pid, array $opts = array(), $dag = null)
         {
-            $this->plans++;
+            $this->asks++;
+            $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
+            $key = 'counted|' . json_encode(array((int) $pid, $dag === null ? null : (string) $dag,
+                isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
+                !empty($opts['enforceFormRights']), 'alice'));
+            if ($memo === null || !isset($memo[$key])) {
+                $this->plans++;
+                if ($memo !== null) $memo[$key] = true;
+            }
             // WHAT scanPlan() SENDS. Its dictionary and rule reads go through
             // REDCap's own API, not query(); the capability census is the part
             // that reaches the database, so it is asked here exactly as the
@@ -212,6 +230,7 @@ $RECORDS = 6;
     $request = function ($verb) use ($m) {
         $m->log = array();
         $m->plans = 0;
+        $m->asks = 0;
         $limit = ini_get('memory_limit');
         ini_set('memory_limit', '-1');
         try {
@@ -223,7 +242,8 @@ $RECORDS = 6;
         return $answer;
     };
     $report = function ($what) use ($m) {
-        echo '  perf: ' . str_pad($what, 22) . ' ' . $m->breakdown() . " plans=" . $m->plans . "\n";
+        echo '  perf: ' . str_pad($what, 22) . ' ' . $m->breakdown() . " plans=" . $m->plans
+            . " asks=" . $m->asks . "\n";
     };
 
     /* -----------------------------------------------------------------------
