@@ -482,11 +482,19 @@ inner spaces.
   the reference and expects it accepted, including across two arms (a
   relative event, never one arm's event, even when the reference named one),
   on a project of one event, and where nothing works (no suggestion, and the
-  list of what was tried). The refusal of a plain `vs` naming the field
+  list of what was tried, this event included). For the field itself it
+  suggests `[last-instance]` at another event and `[previous-instance]` only
+  at its own, and nothing where only a later visit would work; a relative
+  event as written is kept, an event of another arm as written is not (but
+  is accepted written by hand), another form's field gets its last instance
+  first, an event that always lands on this entry is left to the plain
+  reference, and no suggestion repeats another tag's `vs` and direction under
+  the same condition (review R8). The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
-  form repeats at the visits, and nothing where no other entry of the field
-  exists or the form is designated at no event. A `vs` form designated at no event is refused as such. A plain
+  form repeats at the visits, a written reference when no shorthand fits
+  (saying when it needs references on), and nothing where no other entry of
+  the field exists or the form is designated at no event. A `vs` form designated at no event is refused as such. A plain
   `vs` a save cannot read (the field is not collected in this event, or the
   read failed) is a rule problem in the evaluator. One `vs` with two directions judges both ways (the heart-rate
   recipe), and a deferral only this viewer meets is marked and still checked
@@ -502,7 +510,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 130 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 152 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral

@@ -935,7 +935,8 @@ and flags a change larger than its limit:
   shorthand is refused when no arm has two events with the form, or when an
   event it names holds the form more than once (the form repeats there, or the
   whole event repeats); the refusal gives a reference that names the event and
-  the instance. An instance shorthand is refused unless the form repeats at
+  the instance, such as `[previous-event-name][weight][last-instance]`, when
+  one works from every event. An instance shorthand is refused unless the form repeats at
   every event that holds it. A reference that always names this same entry,
   such as `[event-name][weight]`, is refused. So is one that could not be read
   on any save of some entry: an event, named or not, that does not hold the
@@ -947,12 +948,19 @@ and flags a change larger than its limit:
   repeating event); and a relative event that finds no event from anywhere
   the field is entered. The refusal quotes the reference as written. When a
   reference is found that every event where the field is entered can read,
-  the refusal ends with it; otherwise it lists what it tried (the event as
-  written, the previous, next, first or last event, or an event named outright, each with
-  the instance as written, none, the last or the previous one) and says none
-  of those can be read. An event is named outright only when every event of
-  the field's form is in its arm. A `vs` form designated at no event is said
-  to be so.
+  the refusal ends with it; otherwise it lists the events and instances it
+  tried and says none of those can be read. The search tries the event as
+  written, the previous and first events (with another form, also the last),
+  events named outright, and this event. It never offers the next event, nor,
+  on the field's own form, the last event or a later visit named outright,
+  since each compares with a later entry. For the field itself it offers
+  `[previous-instance]` only at the field's own event and `[last-instance]`
+  only at another, and it offers nothing with the `vs` and direction of
+  another `@UVDELTA` tag on the field under the same condition, which would
+  be refused once written back. An event is named outright only when every
+  event of the field's form is in its arm: an event of another arm holds a
+  value only for a record entered in both arms. Written by hand, such an
+  event is accepted. A `vs` form designated at no event is said to be so.
 - **When it blocks.** A `vs` field on the same page is read as it is typed, and
   the rule blocks as `blockSave` says (default `off`). The note waits while
   the person is still typing in a field the rule reads. An earlier value from

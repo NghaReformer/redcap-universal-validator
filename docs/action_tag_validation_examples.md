@@ -4237,8 +4237,9 @@ instance:
   - An event shorthand is refused when an event it names holds the form more
     than once (the form repeats there, or the whole event repeats): it does not
     say which instance to compare with. The refusal gives a reference that
-    names the event and the instance, such as
-    `[visit1_arm_1][weight][last-instance]`. A form that repeats only at the
+    names the event and the instance and works from every event, such as
+    `[previous-event-name][weight][last-instance]`, when there is one. A form
+    that repeats only at the
     last visit is fine, because no shorthand names that visit.
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
@@ -4262,10 +4263,16 @@ instance:
 - A refusal ends with a reference to write instead only when that reference
   passes the same check from every event where the field is entered. Where
   the field's form is entered in two arms it suggests a relative event such
-  as `[first-event-name][w_enrol]`, never an event of one arm, which would
-  read nothing from the other arm, even when the reference as written named
-  that event. When nothing works it lists what it tried and says none of it
-  can be read.
+  as `[first-event-name][w_enrol]`, never an event of one arm, which holds a
+  value from the other arm only for a record entered in both, even when the
+  reference as written named that event (written by hand, such an event is
+  accepted). It never suggests the next event, nor, on the field's own form,
+  the last event or a later visit named outright, which compare with a later
+  entry, nor a reference with the `vs` and direction of another `@UVDELTA`
+  tag on the field under the same condition. For the field itself it suggests
+  `[previous-instance]` only at the field's own event and `[last-instance]`
+  only at another. When nothing works it lists the events and instances it
+  tried and says none of them can be read.
 - The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
   is refused when `w_rep`'s form is not designated at visit 1, and a plain
   `[w_enrol]` is refused on a visit form when only enrolment collects it; the
