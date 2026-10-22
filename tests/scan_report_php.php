@@ -705,10 +705,20 @@ namespace {
             $rawRow !== null && $rawRow['value'] === 'PATIENT-0042');
 
         $audit = function ($id) use ($key) { return hash_hmac('sha256', (string) $id, $key . '|' . PID); };
-        $map = mapper(['recordIds' => 'hashed', 'hashRecordId' => $audit]);
+        // W7-R2: THE MODULE'S OWN SEAM, not a closure written here. The test
+        // keeps the legacy report's cell as the expected value.
+        $posture = $m->scanRecordIdPosture(PID);
+        $map = mapper($posture);
         $f = $map->toFinding(row(['record_id_bin' => 'PATIENT-0042']));
         check('record ids: the stored report names the record as the legacy report and the audit log do',
             $f['record'] === $shown);
+        check('record ids: the seam takes the posture from log-values, as the legacy report does',
+            $posture['recordIds'] === FindingRowMapper::IDS_HASHED && $posture['recordIdField'] === 'record_id'
+            && is_callable($posture['hashRecordId']) && call_user_func($posture['hashRecordId'], 'PATIENT-0042') === $audit('PATIENT-0042'));
+        $rawPosture = mkMod($dict, $data, [], ['log-values' => 'hashed'])->scanRecordIdPosture(PID);
+        check('record ids (control): any other log mode names records raw, with no hasher',
+            $rawPosture['recordIds'] === FindingRowMapper::IDS_RAW && $rawPosture['hashRecordId'] === null
+            && mapper($rawPosture)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] === 'PATIENT-0042');
         check('record ids: the raw id is nowhere in the mapped finding',
             strpos(json_encode($f), 'PATIENT-0042') === false);
         $line = (new ScanReport($map, dims(), runRow()))->csvLine(row(['record_id_bin' => 'PATIENT-0042']));

@@ -3607,6 +3607,45 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Whether a report names this project's records by their audit-log hash:
+     * under log-values = none, where the record id itself identifies the
+     * participant. ONE PLACE, read by the legacy report's plan and by the
+     * stored report's posture alike (W7-R2).
+     */
+    private function hashesRecordIds($pid)
+    {
+        return $this->logMode($pid) === 'none';
+    }
+
+    /**
+     * How a stored run's report names records for $pid (W7-R2): the
+     * Scan\FindingRowMapper options `recordIds`, `hashRecordId` and
+     * `recordIdField`, from the posture the legacy report reads.
+     *
+     * THE HASHER IS THE AUDIT LOG'S, handed over as a closure because the
+     * formula is private: hash_hmac over the id, keyed by the module key and
+     * the project, which is what the module log and the legacy report show.
+     * Scan\Hmac::P_RECORD is the scan's own record hash and a different
+     * formula; a report hashed with it would name records the log has never
+     * contained. The closure answers null when no key can be read, and the
+     * mapper then shows that the id is unavailable, never the raw id.
+     *
+     * @return array{recordIds:string, hashRecordId:?\Closure, recordIdField:string}
+     */
+    public function scanRecordIdPosture($pid)
+    {
+        $hashed = $this->hashesRecordIds($pid);
+        $module = $this;
+        return [
+            'recordIds'     => $hashed ? Scan\FindingRowMapper::IDS_HASHED : Scan\FindingRowMapper::IDS_RAW,
+            'hashRecordId'  => $hashed
+                ? function ($id) use ($module, $pid) { return $module->hashedIdentifier($pid, (string) $id); }
+                : null,
+            'recordIdField' => (string) $this->recordIdFieldOf($pid),
+        ];
+    }
+
+    /**
      * Record an invalid value found on the server. The "log-values" project
      * setting controls how much identifying material the entry carries (UV-005):
      *   hashed (default) — value as project-keyed HMAC, record ID raw (staff can
@@ -9220,7 +9259,7 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                'hashRecordIds' => $this->hashesRecordIds($pid),
                 // So reportValue() can withhold a finding's value on the field
                 // whose value IS the record id the column above hashes.
                 'recordIdField' => $this->recordIdFieldOf($pid)];
