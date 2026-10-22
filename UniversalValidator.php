@@ -5189,9 +5189,10 @@ class UniversalValidator extends AbstractExternalModule
                 // An administrator reads every instrument, so there is no map
                 // to consult and nothing to bar.
                 if (!$allForms && !array_key_exists($form, $forms)) continue;   // no entry -> no
-                // REDCap form rights: 0 = no access. 1 view/edit, 2 read-only,
-                // 3 edit survey responses all imply the user can read the form.
-                if (!$allForms && (string) $forms[$form] === '0') continue;
+                // REDCap form rights: 1 view/edit, 2 read-only and 3 edit survey
+                // responses imply the user can read the form; any other value
+                // does not (ScanPageView::FORM_READ_LEVELS).
+                if (!$allForms && !ScanPageView::formLevelReads($forms[$form])) continue;
                 $out[$f] = true;
             }
             return $out;
@@ -5356,7 +5357,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($rights === true) return true;
         if (!is_array($rights)) return false;                  // unestablished -> clears nothing
         if (!array_key_exists($form, $rights)) return false;   // no entry -> no
-        return (string) $rights[$form] !== '0';
+        return ScanPageView::formLevelReads($rights[$form]);   // 1, 2 or 3 only (SEC-1)
     }
 
     /**
@@ -11521,7 +11522,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         if ($rights === true) return true;
         if (!is_array($rights) || !array_key_exists($form, $rights)) return false;
-        return in_array((string) $rights[$form], ['1', '3'], true);
+        return ScanPageView::formLevelEdits($rights[$form]);
     }
 
     /**

@@ -357,7 +357,8 @@ final class ScanAuthorization
         $bad = [];
         foreach ($entitlement as $f) {
             $f = (string) $f;
-            if (!array_key_exists($f, $forms) || (string) $forms[$f] === '0') $bad[] = $f;
+            // 1, 2 or 3 reads the form; any other value bars it (SEC-1)
+            if (!array_key_exists($f, $forms) || !\INSPIRE\UniversalValidator\ScanPageView::formLevelReads($forms[$f])) $bad[] = $f;
         }
         return $bad;
     }

@@ -273,6 +273,17 @@ namespace {
     check('read-only rights on the referenced form: value is baked in',
         strpos(json_encode(ruleFor($p9, 'offref')['assertAst']), '["lit","' . SECRET . '"]') !== false);
 
+    // ---- 7b) SEC-1: a level REDCap does not define grants nothing ----------
+    // "Anything but 0" read a blank, "4" or " 1" as access and baked the value in.
+    foreach (['4', '', ' 1', '01'] as $odd) {
+        $po = page(mod($DICT, $DATA, ['nurse' => ['forms' => ['enroll_form' => $odd, 'visit_form' => '1']]], 'nurse'), 'form', '2', 'visit_form');
+        check('SEC-1: an enroll_form level of ' . json_encode($odd) . ' discloses nothing and defers',
+            strpos($po['html'], SECRET) === false && !empty(ruleFor($po, 'offref')['deferred']));
+    }
+    $p3l = page(mod($DICT, $DATA, ['nurse' => ['forms' => ['enroll_form' => '3', 'visit_form' => '1']]], 'nurse'), 'form', '2', 'visit_form');
+    check('SEC-1: level 3 (edit survey responses) still reads the form',
+        strpos(json_encode(ruleFor($p3l, 'offref')['assertAst']), '["lit","' . SECRET . '"]') !== false);
+
     // ---- 8) the server audit is unchanged and still enforces ---------------
     $bad = [2 => [351 => ['record_id' => '2', 'start_date' => '2026-05-10',
                           'staff_code' => SECRET, 'end_date' => '2026-01-01']]];
