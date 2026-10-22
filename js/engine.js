@@ -856,7 +856,8 @@ function QRID_nonJsGroup(p){
    layer so nesting cannot hide the shape. Stage two (QRID_polyOverlap) rejects
    the POLYNOMIAL shapes stage one misses: two or more unbounded quantifiers over
    overlapping character classes with no mandatory separator between them
-   (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). PCRE2 auto-possessifies those and stays
+   (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+), and three or more joined by separators
+   the quantifier before each can also match (.*-.*-.*). PCRE2 auto-possessifies those and stays
    fast, but this browser engine backtracks and would freeze the tab, so they
    must be refused before they ever run. Genuinely linear shapes — disjoint
    adjacent classes ([A-Z]+[0-9]+) and a mandatory separator (.*x.*) — pass.
@@ -866,7 +867,7 @@ function QRID_nonJsGroup(p){
    tests/risky_*.{cjs,php} assert parity. */
 function QRID_riskyPattern(src){
   if(Array.from(String(src)).length > 512) return true;   /* absurd pattern source */
-  var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
+  var s = QRID_riskyEscapes(String(src));                  /* each escape -> an atom of the same reach */
   s = s.replace(/\(\?(<?[=!]|:)/g, "(");                   /* (?: (?= (?! (?<= (?<! -> plain ( */
   /* Whitespace is an explicit ASCII class, NOT \s: JS \s matches Unicode
      whitespace but PCRE \s (no /u) does not, so \s would classify differently
@@ -893,6 +894,48 @@ function QRID_riskyPattern(src){
   if(QRID_polyOverlap(s)) return true;                                                       /* .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+ */
   return false;
 }
+/* Rewrite each escape as an atom that matches at least what it matches, so the
+   stages below see its class (VAL-4). Deleting escapes, as before, dropped \w
+   from a class body ([\w.]+_ read as [.]+_ and passed) and let a quantifier
+   after \d or \. attach to the atom before it ([0-9]+\.[0-9]+ read as
+   [0-9]+[0-9]+ and was refused). Outside a class: \d \w \s become their ASCII
+   classes, \D \W \S and an escaped metacharacter become "." (any character),
+   any other escaped symbol is that symbol, and a letter or digit escape (\b \n
+   \x \u \1 \k ...) is dropped. Inside a class the members are added at the end
+   of the body ("-" last, so it forms no range), and \D \W \S or an escaped "]"
+   make the class match everything. Twin of CheckCharacter::riskyEscapes (php). */
+var QRID_RISKY_ESCAPE_CLASS = { d: "0-9", w: "0-9A-Z_a-z", s: " \t\n\r\f" };
+function QRID_riskyEscapes(src){
+  var out = "", n = src.length, i = 0, inCls = false, body = "", extra = "", dash = false, wide = false;
+  while(i < n){
+    var c = src.charAt(i);
+    if(c === "\\" && i + 1 < n){
+      var e = src.charAt(i + 1), cls = QRID_RISKY_ESCAPE_CLASS.hasOwnProperty(e) ? QRID_RISKY_ESCAPE_CLASS[e] : null;
+      var word = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".indexOf(e) !== -1;
+      i += 2;
+      if(inCls){
+        if(cls !== null) extra += cls;
+        else if(e === "D" || e === "W" || e === "S" || e === "]") wide = true;
+        else if(e === "-") dash = true;
+        else if(!word) extra += e;
+      } else {
+        if(cls !== null) out += "[" + cls + "]";
+        else if(e === "D" || e === "W" || e === "S" || "^$.*+?()[]{}|\\".indexOf(e) !== -1) out += ".";
+        else if(!word) out += e;
+      }
+      continue;
+    }
+    i++;
+    if(inCls){
+      if(c === "]"){ out += "[" + (wide ? "^" : "") + body + extra + (dash ? "-" : "") + "]"; inCls = false; }
+      else body += c;
+    }
+    else if(c === "["){ inCls = true; body = ""; extra = ""; dash = false; wide = false; }
+    else out += c;
+  }
+  if(inCls) out += "[" + body + extra + (dash ? "-" : "");   /* unterminated class: left as written */
+  return out;
+}
 /* Reject two or more unbounded quantifiers (*, +, {n,}) whose atoms overlap with
    no mandatory atom pinning a split between them. Runs on `s` AFTER escape-strip,
    lookaround-unwrap, and the group-collapse loop (groups are already A / X*
@@ -905,6 +948,28 @@ function QRID_polyOverlap(s){
     for(var j=i+1;j<toks.length;j++){
       if(toks[j].unbounded && QRID_classesOverlap(toks[i].cls, toks[j].cls)) return true;
       if(toks[j].mandatory) break;                     /* a must-match atom anchors the split point */
+    }
+  }
+  /* Stage two-c (VAL-4): a must-match atom pins the split only when the
+     unbounded quantifier before it cannot match it too. In .*-.*-.*-.*-.*X each
+     "-" is also matched by ".", so on a run of dashes every placement is tried:
+     one verdict on 200 dashes took 5.6 s in the browser. Follow a chain of
+     unbounded quantifiers whose classes overlap, joined by atoms that may match
+     nothing or that the quantifier before them also matches; three or more in
+     one chain are refused. Two (.*x.*, at most n*n steps on the 512-character
+     input cap) still pass. Twin of CheckCharacter::polynomialOverlap (php). */
+  for(var u=0;u<toks.length;u++){
+    if(!toks[u].unbounded) continue;
+    var chain = 1, last = toks[u].cls;
+    for(var v=u+1;v<toks.length;v++){
+      if(toks[v].unbounded && QRID_classesOverlap(last, toks[v].cls)){
+        if(++chain >= 3) return true;
+        last = toks[v].cls;
+        continue;
+      }
+      if(!toks[v].mandatory) continue;                                 /* may match nothing: does not pin */
+      if(QRID_classesOverlap(last, toks[v].cls)) continue;             /* the quantifier before also matches it */
+      break;                                                           /* a disjoint must-match atom pins the split */
     }
   }
   /* Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
@@ -1085,7 +1150,7 @@ function QRID_gatePattern(raw, label){
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
       "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
-      "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
+      "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, .*-.*-.*, or " +
       "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
       "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class." };
   }

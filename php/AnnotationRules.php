@@ -243,12 +243,27 @@ class AnnotationRules
             }
             if ($pos === false) break;
             $after = $pos + strlen($tag);
-            if ($after >= $len || $ann[$after] !== '=') {
+            // Spaces or tabs may stand before "=", and any whitespace (a line
+            // break before a long JSON value) after it (VAL-2). Read as a bare
+            // tag, "@UVALIDATE = {...}" lost every setting without a word.
+            $eq = $after;
+            while ($eq < $len && ($ann[$eq] === ' ' || $ann[$eq] === "\t")) $eq++;
+            if ($eq >= $len || $ann[$eq] !== '=') {
                 $out[] = ['value' => '', 'error' => null];
                 $offset = $after;
                 continue;
             }
-            $read = self::readValue(substr($ann, $after + 1), $bare);
+            $start = $eq + 1;
+            while ($start < $len && strpos(" \t\r\n", $ann[$start]) !== false) $start++;
+            // "=" with nothing after it, or only the next tag: an empty value,
+            // which each tag's parser judges as it always has
+            if ($start >= $len || $ann[$start] === '@') {
+                $out[] = ['value' => '', 'error' => null];
+                $offset = $start;
+                continue;
+            }
+            $after = $start - 1;
+            $read = self::readValue(substr($ann, $start), $bare);
             $eg = $tag . '="[a]=\'1\' and [b]=\'2\'".';
             $out[] = ['value' => $read['value'], 'error' => !$read['continues'] ? null
                 : (isset($read['hint'])
@@ -333,12 +348,15 @@ class AnnotationRules
      */
     public static function parseFieldAll($annotation, array $opts = [])
     {
-        $tags = self::extractTags($annotation);
+        $tags = self::extractTagsDetailed($annotation, self::TAG);
         if (!$tags) return null;
         $out = [];
-        foreach ($tags as $val) $out[] = self::parseValue($val, $opts);
+        foreach ($tags as $read) {
+            $out[] = $read['error'] !== null ? ['error' => self::TAG . ' ' . $read['error']] : self::parseValue($read['value'], $opts);
+        }
         return $out;
     }
+
 
     /**
      * Parse EVERY module tag on one field's annotation, across all modes

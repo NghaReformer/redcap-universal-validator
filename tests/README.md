@@ -121,7 +121,11 @@ nesting cannot hide the shape. Stage two rejects the *polynomial* class stage
 one misses: two or more unbounded quantifiers (`*`, `+`, `{n,}`) over overlapping
 character classes with no mandatory separator between them, so `.*.*`,
 `[0-9]*[0-9]*` and `[A-Z]+[A-Z0-9]+` are refused while the genuinely-linear
-`[A-Z]+[0-9]+` and `.*x.*` pass. Both stages sit behind a 512-code-point cap on
+`[A-Z]+[0-9]+` and `.*x.*` pass. It also follows a chain of such quantifiers
+joined by characters the quantifier before each can match, and refuses three or
+more (`.*-.*-.*`, VAL-4), while `[A-Z]+-[A-Z]+-[A-Z]+` passes. Before either
+stage, each escape is read as an atom of the same reach (`\d` as `[0-9]`, `\S`
+as any character), so `[\w.]+_` keeps its `_`. Both stages sit behind a 512-code-point cap on
 the pattern source, and a pattern the gate flags is never compiled, so it can
 never run. It deliberately over-rejects (a repeated alternation is refused even
 with disjoint branches; a collapsed group is treated as overlapping everything)

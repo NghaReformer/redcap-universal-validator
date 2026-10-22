@@ -308,6 +308,9 @@ Three forms, from simplest to fullest:
 Rules for the annotation form:
 
 - Use **double quotes** inside the JSON. Single-quoted JSON is rejected.
+- Spaces may stand around the `=`, and a long JSON value may start on the next
+  line: `@UVALIDATE = {"blockSave":"hard"}` reads the same as
+  `@UVALIDATE={"blockSave":"hard"}`. This holds for every tag of the module.
 - `algorithm` accepts case-insensitive **shorthands** (`3736`, `9710`, `mod10`,
   `gs1`, `isbn`, `regex`, …) — see [Appendix B](#appendix-b-algorithm-shorthands).
 - **Fields with identical tags are grouped into one rule** automatically. Tag 50
@@ -752,11 +755,19 @@ Rejected shapes include:
 - **A repeated ambiguous group:** `(a|aa)+`, `(a?)+`, `([0-9]{1,20}){1,20}`
 - **Overlapping unbounded quantifiers with nothing required between them:**
   `.*.*`, `[0-9]*[0-9]*`, `[A-Z]+[A-Z0-9]+`, `A*A*A*9`
+- **Three or more overlapping unbounded quantifiers joined by characters they
+  also match:** `.*-.*-.*`, `[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*`, `\w+_\w+_\w+`.
+  A `.` or `[A-Z0-9-]` matches the `-` too, so on a run of dashes the browser
+  tries every way to split them: one check of `.*-.*-.*-.*-.*X` on 200 dashes
+  took 5.6 seconds.
 
 The fix is almost always to put a **required, non-overlapping** piece between
-quantifiers, or to use bounded lengths. `.*x.*` is fine (the `x` anchors the
-split); `[A-Z]+[0-9]+` is fine (the classes do not overlap); `FC[0-9]{4}` and
-`TB-[0-9]{6}` are fine. See [Appendix D](#appendix-d-safe-vs-risky-patterns) for
+quantifiers, or to use bounded lengths. `[A-Z]+-[A-Z]+-[A-Z]+` is fine
+(`[A-Z]` cannot match the `-`, so each `-` fixes a split); `.*x.*` is fine (two
+quantifiers try at most n × n splits); `[A-Z]+[0-9]+` is fine (the classes do
+not overlap); `FC[0-9]{4}` and `TB-[0-9]{6}` are fine. The guard reads `\d`,
+`\w` and `\s` as the classes they stand for, so `\d+-\d+-\d+` and
+`[0-9]+\.[0-9]+` pass. See [Appendix D](#appendix-d-safe-vs-risky-patterns) for
 the full worked list.
 
 If your pattern is rejected, you do not need to understand the theory — rewrite
@@ -1342,7 +1353,8 @@ time; **safe** patterns pass. Use the safe column as templates.
 | `(a+)+`, `([A-Z]+)*`, `(\d+)+` | `[A-Z]+[0-9]+`, `[0-9A-Z]{9}` |
 | `(a\|aa)+`, `(a?)+`, `((a)\|(aa))+` | `(FC\|TB)[0-9]{4}`, `(?:FC\|TB)-[0-9]{4}` |
 | `([0-9]{1,20}){1,20}` | `\d{8,10}`, `([A-Z]{2,3})[0-9]{4,6}` |
-| `.*.*`, `.*.*.*.*.*b` | `.*x.*` (a required atom separates them) |
+| `.*.*`, `.*.*.*.*.*b` | `.*x.*` (two quantifiers only) |
+| `.*-.*-.*X`, `[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*X` | `[A-Z]+-[A-Z]+-[A-Z]+`, `\d+-\d+-\d+` |
 | `[0-9]*[0-9]*…b`, `a*a*` | `FC[0-9]{4}`, `TB-[0-9]{6}` |
 | `[A-Z]+[A-Z0-9]+`, `A*A*A*9` | `[A-Z]+[0-9]+`, `[A-Z]+-[A-Z]+` |
 | `(abc)+(abc)+` | `(abc)+`, `(19\|20)[0-9]{2}` |

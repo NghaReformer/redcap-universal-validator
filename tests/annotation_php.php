@@ -1222,5 +1222,30 @@ foreach ($fx['normalize'] as $c) {
         $got !== null && json_encode($got) === json_encode($c['entries']));
 }
 
+// ---- VAL-2: spaces around "=" and a line break after it keep the settings ----
+// Read as a bare tag, "@UVALIDATE = {...}" lost its hard block and its pattern
+// without a word, and the field went on validating with the defaults.
+$pat = 'FC[1-9]-[0-9]{4}[0-9A-Z]';
+$tight = AnnotationRules::parseAllTags('@UVALIDATE={"blockSave":"hard","pattern":"' . $pat . '"}');
+foreach (['@UVALIDATE = {"blockSave":"hard","pattern":"' . $pat . '"}',
+          "@UVALIDATE\t={\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}",
+          "@UVALIDATE=\n{\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}",
+          "@UVALIDATE =\r\n  {\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}"] as $spaced) {
+    check('VAL-2: ' . json_encode($spaced) . ' reads as the tight form', AnnotationRules::parseAllTags($spaced) === $tight);
+}
+check('VAL-2: "@UVALIDATE= luhn" keeps its algorithm', AnnotationRules::parseAllTags('@UVALIDATE= luhn') === [['algorithm' => 'luhn']]);
+check('VAL-2: other tags read the same way',
+    AnnotationRules::parseAllTags('@UVUNIQUE = event') === [['type' => 'unique', 'uniqueScope' => 'event']]
+    && AnnotationRules::parseAllTags("@UVASSERT =\n\"[a]>1\"") === [['type' => 'constraint', 'assert' => '[a]>1']]);
+check('VAL-2: the compatibility parser agrees', AnnotationRules::parseField('@UVALIDATE = luhn') === ['algorithm' => 'luhn']);
+check('VAL-2: a bare tag followed by another tag stays bare',
+    AnnotationRules::parseAllTags('@UVALIDATE @UVREQUIRED') === [[], ['type' => 'required']]);
+check('VAL-2: "=" with nothing after it, or only the next tag, is an empty value, as before',
+    AnnotationRules::parseAllTags('@UVALIDATE=') === [[]]
+    && AnnotationRules::parseAllTags('@UVALIDATE= @UVREQUIRED') === [[], ['type' => 'required']]);
+$ex = AnnotationRules::parseAllTags('@UVEXISTS = ');
+check('VAL-2: ...so a tag that needs a value still says so', isset($ex[0]['error']) && strpos($ex[0]['error'], 'where to look') !== false);
+check('VAL-2: a word after a bare tag is not read as its value', AnnotationRules::parseAllTags('@UVALIDATE luhn') === [[]]);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

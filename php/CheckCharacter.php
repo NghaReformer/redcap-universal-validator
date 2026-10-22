@@ -283,7 +283,8 @@ class CheckCharacter
      * layer so nesting cannot hide the shape. Stage two (polynomialOverlap)
      * rejects the POLYNOMIAL shapes stage one misses: two or more unbounded
      * quantifiers over overlapping character classes with no mandatory separator
-     * between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). Those do not blow up on
+     * between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+), and three or more joined
+     * by separators the quantifier before each can also match (.*-.*-.*). Those do not blow up on
      * PCRE2 (it auto-possessifies) but freeze a browser's backtracking engine,
      * so the client needs them refused before they are ever run. Genuinely
      * linear shapes — disjoint adjacent classes ([A-Z]+[0-9]+) and a mandatory
@@ -296,7 +297,7 @@ class CheckCharacter
     public static function riskyPattern($src)
     {
         if (mb_strlen((string) $src, 'UTF-8') > 512) return true;           // absurd pattern source
-        $s = preg_replace('/\\\\./', '', (string) $src);                    // ignore escaped chars
+        $s = self::riskyEscapes((string) $src);                             // each escape -> an atom of the same reach
         $s = preg_replace('/\(\?(<?[=!]|:)/', '(', $s);                     // (?: (?= (?! (?<= (?<! -> plain (
         // Whitespace is an explicit ASCII class, NOT \s: PCRE \s (no /u) and JS \s
         // classify Unicode whitespace differently, which would diverge. Bounded
@@ -322,6 +323,57 @@ class CheckCharacter
         return false;
     }
 
+    /** Members of the \d \w \s classes, for riskyEscapes. */
+    const RISKY_ESCAPE_CLASS = ['d' => '0-9', 'w' => '0-9A-Z_a-z', 's' => " \t\n\r\f"];
+
+    /**
+     * Rewrite each escape as an atom that matches at least what it matches, so
+     * the stages of riskyPattern see its class (VAL-4). Deleting escapes, as
+     * before, dropped \w from a class body ([\w.]+_ read as [.]+_ and passed)
+     * and let a quantifier after \d or \. attach to the atom before it
+     * ([0-9]+\.[0-9]+ read as [0-9]+[0-9]+ and was refused). Outside a class:
+     * \d \w \s become their ASCII classes, \D \W \S and an escaped metacharacter
+     * become "." (any character), any other escaped symbol is that symbol, and a
+     * letter or digit escape (\b \n \x \u \1 \k ...) is dropped. Inside a class
+     * the members are added at the end of the body ("-" last, so it forms no
+     * range), and \D \W \S or an escaped "]" make the class match everything.
+     * Twin of QRID_riskyEscapes (js).
+     */
+    private static function riskyEscapes($src)
+    {
+        $out = ''; $n = strlen($src); $i = 0;
+        $inCls = false; $body = ''; $extra = ''; $dash = false; $wide = false;
+        while ($i < $n) {
+            $c = $src[$i];
+            if ($c === '\\' && $i + 1 < $n) {
+                $e = $src[$i + 1];
+                $cls = self::RISKY_ESCAPE_CLASS[$e] ?? null;
+                $word = strpos('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $e) !== false;
+                $i += 2;
+                if ($inCls) {
+                    if ($cls !== null) $extra .= $cls;
+                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || $e === ']') $wide = true;
+                    elseif ($e === '-') $dash = true;
+                    elseif (!$word) $extra .= $e;
+                } else {
+                    if ($cls !== null) $out .= '[' . $cls . ']';
+                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || strpos('^$.*+?()[]{}|\\', $e) !== false) $out .= '.';
+                    elseif (!$word) $out .= $e;
+                }
+                continue;
+            }
+            $i++;
+            if ($inCls) {
+                if ($c === ']') { $out .= '[' . ($wide ? '^' : '') . $body . $extra . ($dash ? '-' : '') . ']'; $inCls = false; }
+                else $body .= $c;
+            }
+            elseif ($c === '[') { $inCls = true; $body = ''; $extra = ''; $dash = false; $wide = false; }
+            else $out .= $c;
+        }
+        if ($inCls) $out .= '[' . $body . $extra . ($dash ? '-' : '');   // unterminated class: left as written
+        return $out;
+    }
+
     /**
      * Reject two or more unbounded quantifiers (*, +, {n,}) whose atoms have
      * overlapping character sets with no mandatory atom pinning a split between
@@ -345,6 +397,30 @@ class CheckCharacter
                 if ($toks[$j]['mandatory']) break;   // a must-match atom anchors the split point
             }
         }
+        // Stage two-c (VAL-4): a must-match atom pins the split only when the
+        // unbounded quantifier before it cannot match it too. In .*-.*-.*-.*-.*X
+        // each "-" is also matched by ".", so on a run of dashes every placement
+        // is tried: one verdict on 200 dashes took 5.6 s in the browser. Follow a
+        // chain of unbounded quantifiers whose classes overlap, joined by atoms
+        // that may match nothing or that the quantifier before them also matches;
+        // three or more in one chain are refused. Two (.*x.*, at most n*n steps on
+        // the 512-character input cap) still pass. Twin of QRID_polyOverlap (js).
+        for ($u = 0; $u < $m; $u++) {
+            if (!$toks[$u]['unbounded']) continue;
+            $chain = 1;
+            $last = $toks[$u]['cls'];
+            for ($v = $u + 1; $v < $m; $v++) {
+                if ($toks[$v]['unbounded'] && self::classesOverlap($last, $toks[$v]['cls'])) {
+                    if (++$chain >= 3) return true;
+                    $last = $toks[$v]['cls'];
+                    continue;
+                }
+                if (!$toks[$v]['mandatory']) continue;                                 // may match nothing: does not pin
+                if (self::classesOverlap($last, $toks[$v]['cls'])) continue;           // the quantifier before also matches it
+                break;                                                                 // a disjoint must-match atom pins the split
+            }
+        }
+
         // Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
         // overlapping bounded repeats (A{1,20}A{1,20}…) backtracks with the factor
         // count as the exponent — bounded per factor, but still a browser tab
@@ -1372,7 +1448,7 @@ class CheckCharacter
                 $why = 'the format pattern looks catastrophically backtracking (nested '
                     . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
                     . 'long run of overlapping bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / '
-                    . '[0-9]*[0-9]*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
+                    . '[0-9]*[0-9]*, .*-.*-.*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
                     . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
                     . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
                 return null;
