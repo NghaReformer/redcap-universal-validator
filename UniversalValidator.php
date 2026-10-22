@@ -741,7 +741,9 @@ class UniversalValidator extends AbstractExternalModule
      * has its reason given in the same record, event and instance ($values):
      * the reason field named in the rule's justifyBy (applyJustify) holds a
      * reason (Logic::reasonGiven). A reason field that was not read, or could
-     * not be resolved here, leaves the finding open.
+     * not be resolved here, leaves the finding open, and so do Missing Data
+     * Codes that could not be read: a code is no reason, and without the list
+     * no value can be told apart from one.
      */
     private function markJustified(array $out, array $rule, array $values, array $resolution, $project_id)
     {
@@ -752,7 +754,12 @@ class UniversalValidator extends AbstractExternalModule
             $reason = isset($rule['justifyBy'][$f]) && is_string($rule['justifyBy'][$f]) ? $rule['justifyBy'][$f] : '';
             if ($reason === '' || !array_key_exists($reason, $values)) continue;
             if ((isset($resolution[$reason]) ? $resolution[$reason] : 'ok') !== 'ok') continue;
-            if ($codes === null) $codes = $this->missingDataCodes($project_id);
+            if ($codes === null) {
+                $codes = $this->missingDataCodes($project_id);
+                // the codes come from the project object: either read failing leaves them unknown
+                $unread = isset($this->configUnread[(int) $project_id]) ? $this->configUnread[(int) $project_id] : [];
+                if (isset($unread['the missing data codes']) || isset($unread['the project\'s design'])) return $out;
+            }
             if (!Logic::reasonGiven($values[$reason], $codes)) continue;
             $out['invalid'][$k]['justified'] = true;
             $out['invalid'][$k]['justifiedBy'] = $reason;
