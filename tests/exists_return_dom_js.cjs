@@ -532,6 +532,23 @@ function later(ms, fn) {
   check('...an entry whose codes are offered fills them again, without the line',
     f.snapshot() === '2|South|01-03-2026|7.5|1|3|--x' && !/not offered/.test(xMsg(env, 'spec').innerHTML));
 }
+// CHO-2: a radio code an @UVCHOICES filter hides is not offered either. Its
+// row is only hidden, so the page used to tick it; the save leaves it empty.
+{
+  const f = form('SP-2');
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1, 'SP-2': FOUND_2 };
+  const env = boot(f.list, { rules: [rule(),
+    { type: 'choices', fields: ['r_arm'], choicesHide: ['3'], choicesAll: ['1', '2', '3'], blockSave: 'off' }] }, stub);
+  check('CHO-2: the filter hid the row of code 3', f.arms[2].parentNode.style.display === 'none');
+  f.spec.value = 'SP-1'; f.spec.fire('change');
+  check('CHO-2: a code whose row the filter hid is not ticked; the field is emptied (got ' + f.snapshot() + ')',
+    f.armMirror.value === '' && !f.arms[2].checked && f.date.value === '01-03-2026');
+  check('CHO-2: ...and the amber line names the field',
+    xMsg(env, 'spec').innerHTML.indexOf('The value to copy into [r_arm] is not offered on this page, so the field is left empty.') >= 0);
+  f.spec.value = 'SP-2'; f.spec.fire('change');
+  check('CHO-2: a code the filter shows is ticked as before', f.armMirror.value === '1' && f.arms[0].checked);
+}
 {
   const s = select('r<i>', [['', ''], ['1', 'one']]);
   const spec = el('spec', 'SP-1');

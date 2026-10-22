@@ -1949,7 +1949,11 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
 - **A choice the page does not offer.** When `@HIDECHOICE` or `@UVCHOICES`
   took the option off the page, the page empties the dropdown or radio field
   instead of keeping an older code, and an amber line names the field. The
-  save writes the code all the same: the field's choice list holds it.
+  save does the same for a code that an `@UVCHOICES` filter on the field hides
+  in that record: the field is left empty. Up to 2.3.0-rc.2 the save wrote the
+  code, and the choices audit then logged it as a hidden choice. A code that
+  only `@HIDECHOICE` hides is still written by the save, because the field's
+  choice list holds it.
 - **A copy, not a link.** The values are copied when this record is judged. A
   later change to the entry found shows on the page when this form is opened,
   and reaches the saved record when this record is saved again.

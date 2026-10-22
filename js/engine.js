@@ -3044,7 +3044,12 @@ function QRID_writeReturned(name, text, announce, exact, lost){
   var opt = null;   /* the option or button that carries the code */
   if(text !== ""){
     if(isSelect) opt = QRID_selectOption(el, text);
-    else for(var oi = 0; oi < radios.length && !opt; oi++) if(radios[oi].value === text) opt = radios[oi];
+    /* A radio whose row an @UVCHOICES filter hid is not offered either: a
+       dropdown's hidden option is parked off the list, a radio's row only
+       hidden, and the save leaves both empty (CHO-2). */
+    else for(var oi = 0; oi < radios.length && !opt; oi++){
+      if(radios[oi].value === text && !(radios[oi].parentNode && radios[oi].parentNode.__qridHidden)) opt = radios[oi];
+    }
     if(!opt && (isSelect || radios.length)){
       if(lost) lost.push(name);
       text = "";
@@ -6814,12 +6819,8 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(String(select.value) !== cur) select.value = cur;
       syncAutocomplete(changed);
     }
-    function optionWrappers(code){
+    function optionWrappers(code){   /* checkbox: a radio's come from renderOptions */
       var out = [];
-      var els = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
-      for(var i = 0; i < els.length; i++){
-        if(String(els[i].value) === code) out.push(els[i]);
-      }
       /* checkbox: the hidden mirror AND (REDCap 17.x) the visible checkbox both
          sit inside the same choicevert row, so hiding either one's parent hides
          the whole option — include both so the row hides on every rendering. */
@@ -6831,16 +6832,27 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     }
     function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper row */
       var buttons = QRID_enhancedChoiceButtons(fieldName);
+      /* A radio field's options in one pass, and its value read once, per
+         render (CHO-1). Looking each code up by walking every radio made a
+         400-option radio cost 160,803 element visits per change. */
+      var radioRows = null, cur = null;
+      if(!isCheckbox){
+        radioRows = Object.create(null);
+        var radios = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
+        for(var r = 0; r < radios.length; r++){
+          var rc = String(radios[r].value);
+          (radioRows[rc] || (radioRows[rc] = [])).push(radios[r]);
+        }
+        cur = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
+      }
       for(var i = 0; i < MANAGED.length; i++){
         var code = MANAGED[i];
         /* a checked/selected option is NEVER hidden from under the user. The
            checked state is read robustly (QRID_readCheckbox) because a checkbox
            option's .checked cannot be read off the hidden mirror on REDCap 17. */
-        var selected = isCheckbox
-          ? (QRID_readCheckbox(fieldName, code) === "1")
-          : (QRID_whenTrim(QRID_WHEN.readRef(fieldName, null)) === code);
+        var selected = isCheckbox ? (QRID_readCheckbox(fieldName, code) === "1") : (cur === code);
         var hide = !!hiddenSet[code] && !selected;
-        var els = optionWrappers(code);
+        var els = isCheckbox ? optionWrappers(code) : (radioRows[code] || []);
         for(var j = 0; j < els.length; j++) QRID_choiceDisplay(els[j].parentNode, hide);
         var btns = buttons[code] || [];
         for(var b = 0; b < btns.length; b++) QRID_choiceDisplay(btns[b], hide);
@@ -7017,7 +7029,7 @@ function QRID_choiceDisplay(el, hide){
   if(!el || !el.style) return;
   if(hide){
     if(!el.__qridHidden){ el.__qridDisplay = el.style.display || ""; el.__qridHidden = true; }
-    el.style.display = "none";
+    if(el.style.display !== "none") el.style.display = "none";   /* written only when it changes (CHO-1) */
   } else if(el.__qridHidden){
     el.style.display = el.__qridDisplay;
     el.__qridHidden = false;

@@ -626,6 +626,36 @@ namespace {
     save($m);
     check('a later save looks again: the entry found changed since (got ' . json_encode(written()) . ')', written() === ['r_site' => '2']);
     check('...from the kept read, with record 1 read again (' . fullReads() . ' full reads)', fullReads() === 0);
+    // CHO-2: a code the field's own @UVCHOICES filter hides is not written.
+    // The page leaves the field empty and says so; the save does the same.
+    $siteAnn = $DICT['r_site']['field_annotation'];
+    $DICT['r_site']['field_annotation'] = $siteAnn . ' @UVCHOICES={"hide":["1"]}';
+    $m = mod();
+    save($m);
+    $hiddenLogged = (bool) array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved' && ($c[1]['field'] ?? null) === 'r_site'; });
+    check('CHO-2: a code the field\'s filter hides is not written; the field stays empty (got ' . json_encode(written()) . ')',
+        !array_key_exists('r_site', written()) && (written()['r_date'] ?? null) === '2026-03-01');
+    check('CHO-2: ...and no hidden choice is logged for a value the module wrote', !$hiddenLogged);
+    $m = mod();
+    row9(['r_site' => '2']);
+    save($m);
+    check('CHO-2: an answer the field held is emptied, as on the page (got ' . json_encode(written()) . ')',
+        (written()['r_site'] ?? null) === '');
+    $DICT['r_site']['field_annotation'] = $siteAnn . ' @UVCHOICES={"when":"[home]=\'A\'","hide":["1"]}';
+    $m = mod();
+    save($m);
+    check('CHO-2: a filter whose "when" is false in this record lets the code through (home is Z)',
+        (written()['r_site'] ?? null) === '1');
+    $m = mod();
+    row9(['home' => 'A']);
+    save($m);
+    check('CHO-2: ...and while it holds the code is not written (home is A)', !array_key_exists('r_site', written()));
+    $DICT['r_site']['field_annotation'] = $siteAnn . ' @UVCHOICES={"hide":["2"]}';
+    $m = mod();
+    save($m);
+    check('CHO-2: a filter that hides another code changes nothing', (written()['r_site'] ?? null) === '1');
+    $DICT['r_site']['field_annotation'] = $siteAnn;
+
     $EMPTIED = ['r_site' => '', 'r_date' => '', 'r_dose' => '', 'r_from' => ''];
     $m = mod();
     save($m);
