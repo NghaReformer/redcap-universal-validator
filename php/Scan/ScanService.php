@@ -1307,11 +1307,14 @@ final class ScanService
         // deploy, on a project where a when/assert/with operand sits on an
         // instrument the actor cannot read, would become unworkable AND
         // unreadable AND uncancellable at once - and it holds active_slot = 1,
-        // so openRun() answers busy for everyone on that project. The three
-        // paths that release a slot are finish() from a worker pass (gated by
-        // mayWork), reapCancelled() (needs phase `cancelling`, which needs a
-        // successful cancel), and ScanRetention::expireAbandoned(), which has
-        // no caller (tests/scan_wiring_php.php). The exit would be a DBA.
+        // so openRun() answers busy for everyone on that project. Short of
+        // switching the module off, the paths that release a slot are finish()
+        // from a worker pass (gated by mayWork), reapCancelled() (needs phase
+        // `cancelling`, which needs a successful cancel), and
+        // ScanStore::expireAbandoned(), which the reap cron
+        // (ScanMaintenance::reap()) and openRun() run only once the run has
+        // gone staleHours without progress. Until then the whole project
+        // would answer busy, and nobody could stop the run.
         //
         // mayCancel's own docblock forbids this shape in the general case -
         // "Ownership would only add a way for a wedged run to become
