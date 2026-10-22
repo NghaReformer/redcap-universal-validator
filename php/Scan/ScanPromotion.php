@@ -273,29 +273,6 @@ final class ScanPromotion
                 'ruleProblems' => $of(self::RULE_KINDS), 'gaps' => $of(self::GAP_KINDS)];
     }
 
-    /**
-     * Could a working run have left findings out yet (review rv10b1-3)?
-     *
-     * The worker leaves a finding out only when the run row's detail_rows or
-     * detail_bytes has reached its limit (ScanWorker::batch(), H9), and both
-     * only grow, so a row below the limit has left nothing out. The limit
-     * read here is the one the run froze in policy_json. The worker judges by
-     * the settings as they are now, which can only be the same or higher on
-     * a run still working: a lower one is a tightening, and the worker's
-     * policy-revision guard ends the run on it before any batch is judged
-     * (R5-5). A higher one
-     * answers true early, which costs one read and never a wrong count. A
-     * stored policy that cannot be read, or lacks either limit, answers true.
-     */
-    private static function budgetUsed(array $run, $rows)
-    {
-        $raw = isset($run['policy_json']) ? $run['policy_json'] : null;
-        $p = is_string($raw) ? json_decode($raw, true) : null;
-        if (!is_array($p) || !isset($p['maxFindings'], $p['maxBytes'])) return true;
-        $bytes = isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0;
-        return ScanPolicy::budgetSpent($p, $rows, $bytes);
-    }
-
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
     private static function kindTotal(array $aggregates, $kind)
     {
@@ -323,10 +300,20 @@ final class ScanPromotion
      */
     private static function unstoredOf(array $run, array $t)
     {
+        $kept = self::keptUnstored($run);
+        return $kept !== null ? $kept : (int) $t['unstored'];
+    }
+
+    /**
+     * The run row's own count of what the detail budget left out, or null
+     * for a run that began before schema version 6 and keeps none.
+     */
+    private static function keptUnstored(array $run)
+    {
         if (isset($run['open_unstored']) && $run['open_unstored'] !== null) {
             return max(0, (int) $run['open_unstored']);
         }
-        return (int) $t['unstored'];
+        return null;
     }
 
     /**
@@ -363,10 +350,18 @@ final class ScanPromotion
      * its marks, that count and, in its last phase, the summary being built:
      * rows per rule, form, reason and group, never per record.
      *
-     * AND ONLY PAST THE BUDGET. That read is asked only when the run row says
-     * the budget the run froze in policy_json is spent (budgetUsed()). Below
-     * it nothing has been left out, and a status poll reads no aggregates, as
-     * the perf case pins; 79a6cab read them on every poll.
+     * FROM THE RUN ROW, WITH NO GATE (review rvf2-4). A working run's
+     * left-out count is the row's open_unstored, kept by the store in the
+     * commit that leaves the findings out (rvf1-3), so a status poll reads no
+     * aggregates, as the perf case pins. The read used to be gated on the
+     * budget the run froze in policy_json being spent. The worker stores
+     * against the budget in the settings NOW, and lowering
+     * scan-max-detail-findings mid-run does not end the run, so a run past
+     * the new limit and below the frozen one answered its frozen counter
+     * while the worker kept counting. A run that began before schema
+     * version 6 keeps no count on its row and reads the aggregate on every
+     * poll: the correct number, at one read a poll, for runs that were in
+     * flight across the upgrade only.
      *
      * @return int|null null when the run ended before its findings could be counted
      */
@@ -375,7 +370,8 @@ final class ScanPromotion
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
         if ($terminal === null) {
-            if (!self::budgetUsed($run, $rows)) return $rows;
+            $kept = self::keptUnstored($run);
+            if ($kept !== null) return $rows + $kept;
             return $rows + self::kindTotal($store->aggregates((int) $run['run_id']), ScanStore::DETAIL_UNSTORED);
         }
         $t = self::tally($store->aggregates((int) $run['run_id']));

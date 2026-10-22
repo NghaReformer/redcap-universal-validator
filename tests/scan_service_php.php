@@ -1419,8 +1419,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
-    // And reads its aggregates for that only once the budget it froze is
-    // spent: below it nothing was left out, and a status poll reads none.
+    // WHERE THE COUNT IS READ FROM (review rvf2-4). A run from before
+    // version 6 reads its aggregates on every poll, below the budget it froze
+    // too: the worker stores against the budget in the settings now, which
+    // can be lower. A run that keeps the count on its row reads no
+    // aggregates while it works, whatever its counters and budget say.
     $frozen = json_encode(['maxFindings' => 10, 'maxBytes' => 1000]);
     $noAgg = (new FaultyStore($uns))->failFrom('aggregates');
     $askAgg = function (array $over) use ($noAgg, $uns, $uid) {
@@ -1430,14 +1433,17 @@ namespace INSPIRE\UniversalValidator\Scan {
             return 'read';
         }
     };
-    check('rv10b1-3: a working run below the budget it froze reads no aggregates for its count',
+    check('rvf2-4: a working run from before the count reads its aggregates below the budget it froze, too',
         $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
-                 'policy_json' => $frozen]) === 4);
-    check('rv10b1-3: one at the findings limit, or the bytes limit, or with no budget to read, does',
-        $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 0, 'policy_json' => $frozen]) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 1000, 'policy_json' => $frozen]) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => '{']) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => json_encode(['maxBytes' => 1000])]) === 'read');
+                 'policy_json' => $frozen]) === 'read'
+        && $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen]) === 6);
+    check('rvf2-4: a working run that keeps the count reads no aggregates, below the budget or past it',
+        $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen, 'open_unstored' => '3']) === 7
+        && $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 1000,
+                 'policy_json' => $frozen, 'open_unstored' => '0']) === 10
+        && $askAgg(['terminal' => null, 'detail_rows' => 2, 'policy_json' => '{', 'open_unstored' => 5]) === 7);
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
             $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
@@ -1447,6 +1453,58 @@ namespace INSPIRE\UniversalValidator\Scan {
         $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 5]) === 7);
     check('rv10b1-5: a summary larger than the counter is the floor the 2 are added to',
         $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 1]) === 6);
+}
+
+/* =====================================================================
+ * rvf2-4  THE BUDGET LOWERED WHILE A RUN WORKS
+ *
+ * The run froze the default detail budget at Start; the settings now say 2,
+ * and the worker is armed with the settings. It stores two findings and
+ * leaves four out. The working count was gated on the FROZEN budget being
+ * spent, which it is not, so status said 2 while the worker said 6.
+ * ===================================================================== */
+{
+    $frozen = ScanPolicy::resolve([], []);
+    $low = new ArrayScanStore();
+    $lowId = (int) $low->startRun(823, ['created_by' => 'alice',
+        'policy_json' => json_encode($frozen)])['run']['run_id'];
+    $recs = [];
+    foreach (['A', 'B', 'C', 'D', 'E', 'F'] as $id) {
+        $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+    }
+    $low->writeManifest($lowId, $recs);
+    $lowWorker = new ScanWorker($low, [
+        'read' => function ($ids) {
+            $d = [];
+            foreach ($ids as $id) $d[$id] = ['1' => ['x' => '']];
+            return ['ok' => true, 'data' => $d, 'why' => null];
+        },
+        'evaluate' => function ($id, $node) {
+            return ['findings' => [['project_id' => 823, 'generation_id' => 1,
+                        'identity' => hash('sha256', $id, true), 'valid_from_seq' => 1,
+                        'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id, 'host_form' => 'f',
+                        'field' => 'x', 'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
+                        'check_type' => 'required', 'reason_code' => 'required-blank']],
+                    'bytes' => 0, 'contexts' => 1, 'why' => null];
+        },
+        'owner' => 'w1', 'attempts' => 3,
+        'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                                    'min' => 1, 'max' => 10, 'first' => 10]),
+        'limits' => ['maxFindings' => 2, 'maxBytes' => $frozen['maxBytes']]]);
+    $lowRes = $lowWorker->work(823, $lowId);
+    $lowRun = $low->run(823, $lowId);
+    check('rvf2-4: the fixture stored 2 findings under the lowered budget and left 4 out, below the frozen one',
+        (int) $frozen['maxFindings'] > 6 && (int) $lowRun['detail_rows'] === 2
+        && (int) $lowRun['open_unstored'] === 4 && (int) $lowRes['findings'] === 6
+        && $lowRun['terminal'] === null);
+    $lowNoAgg = (new FaultyStore($low))->failFrom('aggregates');
+    try {
+        $lowSaid = ScanPromotion::findingsOf($lowNoAgg, $lowRun);
+    } catch (ScanStoreUnavailable $e) {
+        $lowSaid = 'read';
+    }
+    check('rvf2-4: status counts what the worker counted, 6, and reads no aggregates for it',
+        $lowSaid === 6);
 }
 
 /* =====================================================================
