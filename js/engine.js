@@ -762,11 +762,12 @@
     UV_validators[f] = out;
   }
   var UV_guard = { items: [], armed: false };
-  /* Fields a locking mode (@UVWRITEONCE, php/modes.json "lock") holds on this
-     page: field => true, filled before any factory runs. Another mode's guard
-     item on such a field never holds the save, since the person cannot change
-     the value it objects to. (No rule returns a value to such a field: the
-     server refuses the lock, UniversalValidator::markReturnClashes.) */
+  /* Fields @UVWRITEONCE holds on this page: field => true, set as each lock
+     is bound. The save guard reads it when the save is pressed, so another
+     mode's guard item on such a field never holds the save, whatever order
+     the rules were bound in: the person cannot change the value it objects
+     to. (No rule returns a value to such a field: the server refuses the
+     lock, UniversalValidator::markReturnClashes.) */
   var UV_LOCKED = Object.create(null);
   var UV_lastPooled = null;
 
@@ -8637,9 +8638,6 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "range": "rangeReference",
     "delta": "deltaGroup"
   };
-  var LOCKING_TYPES = {
-    "writeonce": true
-  };
   var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\", \"range\", \"delta\" or \"writeonce\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
@@ -8752,12 +8750,6 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
         '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
-  /* The fields a locking mode holds are known before any factory runs, so the
-     save guard can tell their other items whatever order the rules boot in. */
-  rules.forEach(function(rule){
-    if(rule.configError || typeof rule.type !== "string" || !own(LOCKING_TYPES, rule.type)) return;
-    (rule.fields || []).forEach(function(f){ if(counts[dupKey(f, rule.type)] === 1) UV_LOCKED[f] = true; });
-  });
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
     /* config-error rules keep their fields as-is (their message is shown once in

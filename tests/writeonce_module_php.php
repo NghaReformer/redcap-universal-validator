@@ -233,6 +233,21 @@ namespace {
     check('... and the returning rule itself stands', errOf($p, 'lookup') === '');
     $pu = page(mod($DICT, $DATA, 'nurse', null, false), 'form', '2', 'enrol_form');
     check('roles that cannot be read refuse nothing', errOf($pu, 'bad_role') === '');
+    // the grammar: roles, "since", the keys it takes
+    $parse = function ($v) { $f = \INSPIRE\UniversalValidator\AnnotationRules::parseAllTags('@UVWRITEONCE=' . $v); return $f[0]; };
+    $many = json_encode(['roles' => array_map(function ($i) { return 'r' . $i; }, range(1, 21))]);
+    check('grammar: 21 roles refused, at most 20', strpos($parse($many)['error'] ?? '', 'names 21 roles — at most 20') !== false);
+    check('grammar: 20 roles taken', count($parse(json_encode(['roles' => array_map(function ($i) { return 'r' . $i; }, range(1, 20))]))['writeonceRoles'] ?? []) === 20);
+    check('grammar: a role name past 150 characters refused', strpos($parse(json_encode(['roles' => [str_repeat('a', 151)]]))['error'] ?? '', '1 to 150 characters') !== false);
+    check('grammar: a role name with a control character refused', strpos($parse(json_encode(['roles' => ["Data\tmanager"]]))['error'] ?? '', '1 to 150 characters') !== false);
+    check('grammar: an empty roles list refused', strpos($parse('{"roles":[]}')['error'] ?? '', 'at least one role') !== false);
+    check('grammar: one role per name, whatever the case and spacing', ($parse('{"roles":["PI"," pi ","Pi","Monitor"]}')['writeonceRoles'] ?? null) === ['PI', 'Monitor']);
+    check('grammar: roles must be a list of names', strpos($parse('{"roles":"PI"}')['error'] ?? '', 'must be a list of role names') !== false
+        && strpos($parse('{"roles":{"a":"PI"}}')['error'] ?? '', 'must be a list of role names') !== false);
+    check('grammar: an unknown key refused, naming the valid ones', strpos($parse('{"blockSave":"hard"}')['error'] ?? '', 'valid: roles, since, message') !== false);
+    check('grammar: JSON that does not parse', strpos($parse('{roles:1}')['error'] ?? '', 'JSON does not parse') !== false);
+    check('grammar: "since" must be a string', strpos($parse('{"since":20261101}')['error'] ?? '', '"since" must be a date') !== false);
+    check('grammar: a message in several languages', ($parse('{"message":{"en":"Locked","fr":"Verrouillé"}}')['message'] ?? null) === 'Locked');
 
     // ============================================================================
     // The page

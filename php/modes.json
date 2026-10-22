@@ -32,8 +32,7 @@
     "with the record and the viewer known; page may narrow a rule's fields or drop the rule (pageWriteonce).",
     "findingKeys (optional): keys a finding of the mode may carry, each mapped to the key the audit log entry (log) and",
     "the scan violation (scan) give it. MessageCatalog reads a scan \"asOf\" into the detail sentence.",
-    "lock (optional): the page keeps the mode's fields at the value they opened with (the engine's LOCKING_TYPES), so",
-    "no other mode's item on such a field holds the save. returnWhy refuses such a rule on a field another rule returns",
+    "lock (optional): the mode locks its fields' values. returnWhy refuses such a rule on a field another rule returns",
     "a value to, since the save writes that value again: {field} is that field, {by} the other rule's first field.",
     "when (optional, false only): the mode takes no condition, so its rules carry no \"when\" and no \"caseSensitive\"",
     "(ModeRegistry::takesWhen). Every other mode takes one."
