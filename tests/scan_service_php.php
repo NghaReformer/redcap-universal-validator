@@ -168,6 +168,18 @@ namespace {
             }
             return $out;
         }
+
+        /**
+         * A reader with design rights. Since L8 every verb decides the reader
+         * before it reads the run row, so a fixture with no user is refused
+         * before the store it means to break is reached.
+         */
+        public function getUser()
+        {
+            $u = new \VerbUser();
+            $u->name = 'alice';
+            return $u;
+        }
     }
 
     // A build with no query() method at all. is_callable must answer false, so
@@ -3529,6 +3541,29 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-4 control: the run\'s own group is told why its context could not be built',
         (new ScanService($broken, $os))->status(185, $o31)['why']
         === 'this project has no rules this scan can evaluate');
+
+    // L8: THE READER IS DECIDED BEFORE THE RUN ROW. Every verb read the run
+    // first, so an id that is no run said so, and a run that exists answered
+    // with the reader's own refusal: the ids of the project's runs could be
+    // told apart by a person the scan refuses.
+    $om->user->rights['group_id'] = 31;
+    $om->user->design = false;
+    $refusedNone = $askAll(999);
+    $refusedRun = $askAll($o31);
+    check('L8: a reader without design rights is told the same about a run that exists and an id that is none, by every verb',
+        $refusedRun === $refusedNone
+        && strpos($refusedNone['status']['why'], 'design rights') !== false
+        && $refusedNone['work']['why'] === $refusedNone['status']['why']
+        && $refusedNone['cancel']['why'] === $refusedNone['status']['why']);
+    $om->user->design = true;
+    check('L8 control: with design rights the run is there for its own group',
+        (new ScanService($om, $os))->status(185, $o31)['ok'] === true);
+    $elsewhere = new ScanService($om, $os);
+    $other = ['status' => $elsewhere->status(186, $o31), 'work' => $elsewhere->work(186, $o31),
+              'cancel' => $elsewhere->cancel(186, $o31)];
+    check('L8: another project\'s run id is no run, in the words every verb uses for one',
+        $other['status']['why'] === ScanService::NO_RUN && $other['work']['why'] === ScanService::NO_RUN
+        && $other['cancel']['why'] === ScanService::NO_RUN);
     \REDCap::$groupNames = $keptNames;
 }
 

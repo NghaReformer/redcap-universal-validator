@@ -381,6 +381,9 @@ final class ScanService
         $gate = $this->available($pid);
         if (!$gate['ok']) return ['ok' => false, 'why' => $gate['why']];
 
+        // The reader before the run (L8): see readerScope().
+        $no = $this->readerRefusal($pid);
+        if ($no !== null) return ['ok' => false, 'why' => $no['why']];
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
@@ -718,6 +721,9 @@ final class ScanService
      */
     private function statusOf($pid, $runId, array $known)
     {
+        // The reader before the run (L8): see readerScope().
+        $no = $this->readerRefusal($pid);
+        if ($no !== null) return $no;
         $store = $this->store();
         $run = (isset($known['run']) && is_array($known['run'])) ? $known['run'] : $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
@@ -1004,6 +1010,9 @@ final class ScanService
      */
     public function cancel($pid, $runId)
     {
+        // The reader before the run (L8): see readerScope().
+        $no = $this->readerRefusal($pid);
+        if ($no !== null) return ['ok' => false, 'why' => $no['why']];
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
@@ -1432,10 +1441,45 @@ final class ScanService
         return $this->entitlements[$key];
     }
 
+    /** "<pid>|<user>" => ScanPageView::scanScope() for this request. See readerScope(). */
+    private $readers = [];
+
+    /**
+     * The reader's rights and scope, read once per request and BEFORE any run
+     * row (L8).
+     *
+     * THE ORDER IS THE ORACLE. Every verb read the run first and asked about
+     * the reader after: an id that is no run answered "no scan with that
+     * reference", and an id that IS one answered with the reader's refusal -
+     * "you need project design rights" - so a person refused the scan could
+     * still learn which run ids exist. The reader is decided first now, so a
+     * refused reader gets the same sentence whatever id they send.
+     */
+    private function readerScope($pid)
+    {
+        $key = (int) $pid . '|' . $this->username();
+        if (!array_key_exists($key, $this->readers)) {
+            $this->readers[$key] = ScanPageView::scanScope($this->module, $pid);
+        }
+        return $this->readers[$key];
+    }
+
+    /**
+     * readerScope()'s refusal, or null for a reader who may go on to ask
+     * about a run. FINAL unless the rights could not be READ (review R2O-4),
+     * as entitlementNow() says it.
+     */
+    private function readerRefusal($pid)
+    {
+        $scope = $this->readerScope($pid);
+        if (!empty($scope['ok'])) return null;
+        return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
+    }
+
     /** @see entitlement() — the answer, worked out. */
     private function entitlementNow($pid, array $run)
     {
-        $scope = ScanPageView::scanScope($this->module, $pid);
+        $scope = $this->readerScope($pid);
         if (empty($scope['ok'])) {
             // FINAL unless the rights could not be READ (review R2O-4): a
             // refusal on what they say is a decision, and one on a read that
