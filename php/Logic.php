@@ -1189,6 +1189,20 @@ class Logic
     }
 
     /**
+     * A user role name as @UVWRITEONCE compares it: trimmed, every run of
+     * spaces folded to one, in lowercase in any script ("Équipe  Médicale"
+     * and "équipe médicale" are one role). Text that is not UTF-8 is
+     * lowercased byte by byte.
+     */
+    public static function roleKey($name)
+    {
+        $s = trim((string) $name);
+        $folded = preg_replace('/\s+/u', ' ', $s);
+        if ($folded === null) return strtolower(preg_replace('/\s+/', ' ', $s));
+        return function_exists('mb_strtolower') ? mb_strtolower($folded, 'UTF-8') : strtolower($folded);
+    }
+
+    /**
      * @UVWRITEONCE: whether $current is the value the field is locked to.
      *
      * $saves is every save of the field on one record, event and instance,

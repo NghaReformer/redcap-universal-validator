@@ -1113,14 +1113,20 @@ value. `"since":"2026-11-01"` locks the value held at 00:00 that day in the
 project's time zone, for a project that already holds data. A blank and a
 missing data code lock nothing. The lock is the browser's only: a change made
 through the Data Import Tool or the API is found afterwards, from REDCap's log,
-by the next form save's audit (`type: writeonce`, reason `changed` or
-`cleared`) and by the scan. Roles are read when the audit or the scan runs, so
+by the audit of the next save of the form that holds the field
+(`type: writeonce`, reason `changed` or `cleared`) and by the scan. Roles are read when the audit or the scan runs, so
 a change counts as the role's only while its maker holds the role; expired
 rights and a suspended account hold no role, and an administrator who is not a
 user of the project is locked out too. When the roles cannot be read, the page
-locks the field for everyone and says so. A record whose log runs past 5,000
-rows for the event, or holds a deletion of part of the record (in a project of
-several arms, any deletion), is reported as not checked rather than passed.
+locks the field for everyone and says so; when the saved value cannot be
+read, it locks nothing and tells staff so. Another rule on a locked field holds
+the save only once a field it reads, other than the locked one, has changed on
+the page. An erase of all the project's records starts every history again. A
+record whose log runs past 5,000 rows for the event, holds a deletion of this
+event's data or of an arm (in a project of several arms, any deletion of the
+record), or was renamed, is reported as not checked rather than passed, and so
+is a save written before a field was moved, from the first Text or Notes field
+of that save on.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
 

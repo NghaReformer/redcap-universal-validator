@@ -770,10 +770,11 @@
      person can change (UV_LOCK_READS). (No rule returns a value to such a
      field: the server refuses the lock, UniversalValidator::markReturnClashes.) */
   var UV_LOCKED = Object.create(null);
-  /* field + "\x1F" + mode => true for a rule on a locked field that reads
-     another field (UniversalValidator::markLockReads, the rule's lockReads):
-     its guard item keeps holding the save, since a change to that other
-     field is what makes it fail. */
+  /* field + "\x1F" + mode => {others, base} for a rule on a locked field
+     that reads other fields the person may change here
+     (UniversalValidator::markLockReads, the rule's lockReads): its guard item
+     holds the save once one of them differs from its value as the page
+     opened (base), since that change is what makes it fail. */
   var UV_LOCK_READS = Object.create(null);
   var UV_lastPooled = null;
 
@@ -3413,12 +3414,29 @@ function QRID_answerStale(entry){
    submit event). Native alert/confirm are used deliberately: they are modal
    and announced by assistive tech without custom focus management. */
 /* A control the person cannot edit: @READONLY, or a disabled input. What the
-   write-once lock made read-only or disabled (__qridLockedRO) does not count:
-   a rule on a locked field that reads another field must still get its guard
-   item, whichever binds first, and the guard decides (UV_LOCK_READS). */
+   write-once lock itself made read-only (__qridLockSetRO) or disabled
+   (__qridLockSetDisabled) does not count: a rule on a locked field that reads
+   another field must still get its guard item, whichever binds first, and the
+   guard decides (UV_LOCK_READS). Each state is told apart on its own, so a box
+   the lock made read-only that REDCap then disables (form locking) counts. */
 function QRID_cannotEdit(input){
-  if(input.__qridLockedRO === true) return false;
-  return !!(input.readOnly || input.disabled);
+  return !!((input.readOnly && input.__qridLockSetRO !== true) || (input.disabled && input.__qridLockSetDisabled !== true));
+}
+/* Whether a guard item speaks for its field when Save is pressed. A field a
+   lock holds (UV_LOCKED) keeps its other modes' notes, but only the lock's own
+   item (__qridLock) speaks for it, and the item of a rule that also reads
+   another field the person may change here (UV_LOCK_READS) once one of those
+   fields has changed since the page opened: a violation saved before then
+   must not trap the form. */
+function QRID_guardSpeaks(el){
+  if(el.__qridLock === true || UV_LOCKED[el.__qridFieldName] !== true) return true;
+  var lr = UV_LOCK_READS[el.__qridFieldName + "\x1F" + el.__qridMode];
+  if(!lr) return false;
+  for(var i = 0; i < lr.others.length; i++){
+    var now = QRID_WHEN.readRef(lr.others[i], null);
+    if(String(now === null || now === undefined ? "" : now) !== lr.base[i]) return true;
+  }
+  return false;
 }
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
@@ -3456,13 +3474,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       var item = UV_guard.items[ri];
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
-    /* A field a lock holds (UV_LOCKED) keeps its other modes' notes, but only
-       the lock's own item (__qridLock) and the items of rules that also read
-       another field (UV_LOCK_READS) speak for it here. */
-    var live = UV_guard.items.filter(function(el){
-      return el.__qridLock === true || UV_LOCKED[el.__qridFieldName] !== true
-        || UV_LOCK_READS[el.__qridFieldName + "\x1F" + el.__qridMode] === true;
-    });
+    var live = UV_guard.items.filter(QRID_guardSpeaks);
     var bad = live.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
@@ -6593,9 +6605,25 @@ function QRIDWriteOnceInit(QRID_CONFIG){
             i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };
   var NOTE = "This value was saved once and is locked. It cannot be changed here.";
   var UNREAD = "Your user role could not be checked, so the field is locked for now.";
+  var VALUES_UNREAD = "The saved value could not be read, so this field is not locked here. A change is still checked after the save.";
   var SAVED = Object.create(null);   /* field => the value the page opened with */
-  /* REDCap's buttons and links in the field's row that write the field */
-  var WRITERS = /radioResetVal|setToday|setNow/;
+  /* REDCap's buttons and links that write this field: the field's name is
+     their first argument (an embedded field in the same row has its own) */
+  function writesField(onclick, fieldName){
+    return new RegExp("(?:radioResetVal|setToday|setNow\\w*)\\(\\s*['\"]" + fieldName + "['\"]").test(onclick);
+  }
+  /* Whether an enhanced choice belongs to this field's radios: its label (or
+     a label inside it) is for one of them, or its comps name the field. */
+  function enhancedOf(node, ids, fieldName){
+    var labels = [node].concat(node.getElementsByTagName ? [].slice.call(node.getElementsByTagName("label")) : []);
+    for(var i = 0; i < labels.length; i++){
+      var f = labels[i].getAttribute ? labels[i].getAttribute("for") : null;
+      if(f && ids[f] === true) return true;
+      var c = labels[i].getAttribute ? (labels[i].getAttribute("comps") || "") : "";
+      if(c.split(",")[0] === fieldName) return true;
+    }
+    return false;
+  }
   function lockControls(fieldName, el){
     var radios = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
     var tag = (el.tagName || "").toLowerCase();
@@ -6606,20 +6634,22 @@ function QRIDWriteOnceInit(QRID_CONFIG){
         var links = row && row.getElementsByTagName ? row.getElementsByTagName(kinds[ki]) : [];
         for(var li = 0; li < links.length; li++){
           var oc = links[li].getAttribute ? (links[li].getAttribute("onclick") || "") : "";
-          if(WRITERS.test(oc)) links[li].style.display = "none";
+          if(writesField(oc, fieldName)) links[li].style.display = "none";
         }
       }
     } catch(e){}
     /* what the lock itself makes read-only or disabled is marked, so that
        QRID_cannotEdit tells it from @READONLY */
     if(radios.length){
+      var ids = Object.create(null);
       for(var i = 0; i < radios.length; i++){
-        if(!radios[i].disabled){ radios[i].disabled = true; radios[i].__qridLockedRO = true; }
+        if(radios[i].id) ids[radios[i].id] = true;
+        if(!radios[i].disabled){ radios[i].disabled = true; radios[i].__qridLockSetDisabled = true; }
       }
       /* REDCap's enhanced radio buttons are labels that click the radio */
       try {
         var enh = row && row.querySelectorAll ? row.querySelectorAll(".enhancedchoice, .enhancedchoice_wrapper") : [];
-        for(var ei = 0; ei < enh.length; ei++) enh[ei].style.pointerEvents = "none";
+        for(var ei = 0; ei < enh.length; ei++) if(enhancedOf(enh[ei], ids, fieldName)) enh[ei].style.pointerEvents = "none";
       } catch(e){}
     } else if(tag === "select"){
       if(el.setAttribute) el.setAttribute("aria-readonly", "true");
@@ -6629,21 +6659,26 @@ function QRIDWriteOnceInit(QRID_CONFIG){
       if(comp) comp.readOnly = true;
     } else if(!el.readOnly){
       el.readOnly = true;
-      el.__qridLockedRO = true;
+      el.__qridLockSetRO = true;
     }
-    /* REDCap's slider and date picker are jQuery UI widgets. The picker is
-       kept from opening, not disabled: "disable" sets disabled on the input,
-       which the form then leaves out, and REDCap would save the field blank. */
+    /* REDCap's slider and date picker are jQuery UI widgets, set once per
+       field: the picker's "option" call rewrites the box, so it must not run
+       again at each undo. The picker is kept from opening, not disabled:
+       "disable" sets disabled on the input, which the form then leaves out,
+       and REDCap would save the field blank. */
     var jq = typeof window !== "undefined" && window.jQuery;
-    if(jq){
+    if(jq && el.__qridWidgetsLocked !== true){
       try { var sl = jq("#slider-" + fieldName); if(sl.length && sl.slider) sl.slider("disable"); } catch(e){}
       try {
         var dp = jq(el);
         if(dp.hasClass && dp.hasClass("hasDatepicker") && dp.datepicker){
           dp.datepicker("option", "beforeShow", function(){ return false; });
-          if(dp.nextAll) dp.nextAll(".ui-datepicker-trigger").hide();
+          el.__qridWidgetsLocked = true;
         }
       } catch(e){}
+    }
+    if(jq){
+      try { var tr = jq(el); if(tr.hasClass && tr.hasClass("hasDatepicker") && tr.nextAll) tr.nextAll(".ui-datepicker-trigger").hide(); } catch(e){}
     }
   }
   /* A dropdown whose saved code is no longer a choice shows blank and would
@@ -6663,6 +6698,16 @@ function QRIDWriteOnceInit(QRID_CONFIG){
     if(!anchor || !el || typeof el.value !== "string") return false;
     if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-o")) return true;   /* per-mode bind marker */
     if(anchor.setAttribute) anchor.setAttribute("data-qrid-bound-o", "1");
+    if(QRID_CONFIG.writeonceValuesUnread === true){
+      /* nothing known to lock: staff are told, a survey respondent sees nothing */
+      if(!QRID_IS_SURVEY){
+        var um = QRID_attachMsgRegion(anchor, fieldName, "o");
+        um.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
+          "font-size:12px;font-family:inherit;border:1px solid #d6d6d6;background:#f4f4f4;color:#555";
+        um.innerHTML = QRID_escapeHtml(VALUES_UNREAD);
+      }
+      return true;
+    }
     UV_LOCKED[fieldName] = true;
     /* the value the server read, sent with the rule: a dropdown whose code is
        no longer a choice shows (and reports) blank */
@@ -6710,7 +6755,7 @@ function QRIDWriteOnceInit(QRID_CONFIG){
     show();
     return true;
   }
-  (QRID_CONFIG.fields || []).forEach(function(f){
+  (QRID_CONFIG.writeonceValuesUnread === true ? [] : (QRID_CONFIG.fields || [])).forEach(function(f){
     QRID_registerValidator(f, { type: "writeonce", mode: { writeonce: true, configError: configError },
       test: function(){
         if(configError || SAVED[f] === undefined) return null;
@@ -8676,7 +8721,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
                       "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsComma", "deltaMax",
                       "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText", "deltaGroup",
-                      "deltaComputed", "writeonceRolesUnread", "writeonceSaved"];
+                      "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
+                      "writeonceValuesUnread"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -8819,9 +8865,19 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
         '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
+  /* lockReads: locked field => the other fields the rule reads that the
+     person may change here, kept with their values as the page opened
+     (QRID_guardSpeaks) */
   rules.forEach(function(rule){
-    if(!rule.configError && Array.isArray(rule.lockReads)){
-      rule.lockReads.forEach(function(f){ if(typeof f === "string") UV_LOCK_READS[f + "\x1F" + modeOfType(rule.type)] = true; });
+    if(rule.configError || !rule.lockReads || typeof rule.lockReads !== "object" || Array.isArray(rule.lockReads)) return;
+    for(var lf in rule.lockReads){
+      if(!own(rule.lockReads, lf) || !Array.isArray(rule.lockReads[lf])) continue;
+      var others = rule.lockReads[lf].filter(function(x){ return typeof x === "string"; });
+      if(!others.length) continue;
+      UV_LOCK_READS[lf + "\x1F" + modeOfType(rule.type)] = { others: others, base: others.map(function(x){
+        var v = QRID_WHEN.readRef(x, null);
+        return String(v === null || v === undefined ? "" : v);
+      }) };
     }
   });
   rules.forEach(function(rule){

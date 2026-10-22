@@ -1255,7 +1255,7 @@ class AnnotationRules
                     if (!is_string($r)) return ['error' => '"roles" must be a list of role names, e.g. ["Data manager"].'];
                     $r = trim($r);
                     // one entry per role, whatever the spacing or letter case
-                    if (!in_array(strtolower($r), array_map('strtolower', $roles), true)) $roles[] = $r;
+                    if (!in_array(Logic::roleKey($r), array_map([Logic::class, 'roleKey'], $roles), true)) $roles[] = $r;
                 }
                 $out['writeonceRoles'] = $roles;
             }

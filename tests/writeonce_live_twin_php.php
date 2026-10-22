@@ -167,7 +167,11 @@ namespace {
         $db = new FakeHistoryLog();
         $db->rows = $LOG;
         $utc = new \DateTimeZone('UTC');
-        setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $WO, $utc, $utc));
+        // the reader told what the module tells it: the dictionary's order, its free-text
+        // fields, the record id field and the arms (review W2-4: the order check runs here too)
+        $vo = new \ReflectionMethod(get_class($m), 'valueHistoryOptions');
+        $vo->setAccessible(true);
+        setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $WO, $utc, $utc, $vo->invoke($m, 149)));
         setPrivate($m, 'roleBookOverride', $roles);
         setPrivate($m, 'clockOverride', \INSPIRE\UniversalValidator\UniversalValidator::clockStamp(new \DateTimeImmutable('2026-10-23 10:00:00', $utc)));
         return $m;
@@ -388,6 +392,10 @@ namespace {
         lockedOn($ps) === ['uw_arm', 'uw_consent'], lockedOn($ps));
     check('G3: the survey page names no role', stripos($ps['html'], 'data manager') === false && stripos($ps['html'], 'u-149uvdm') === false);
     check('G3: a respondent holds no role, even on a login that holds one', lockedOn(surveyPage(mod($D, $ROLE_IN), 'XE-4')) === ['uw_arm', 'uw_consent']);
+    // Submit saves the second page: REDCap logs only the form status, which changed
+    logSave('20261023100500', ['uv_writeonce_test_complete' => '2'], '[survey respondent]', 'XE-4');
+    $m = save($D, $ROLE_OUT, 'XE-4');
+    check('G4: Submit saves the second page: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
 
     // ---- Section H: a deletion of the form's data, which the check cannot place -------------------
     logSave('20261023101000', ['uw_consent' => '', 'uw_arm' => '', 'uw_free' => ''], 'tester', 'XE-4', 380, 1, 'DELETE', 'Delete all record data for single form');

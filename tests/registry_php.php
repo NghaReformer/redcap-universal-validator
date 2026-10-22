@@ -105,8 +105,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
     'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
     // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
-    // what the page hook adds: the roles could not be read, a dropdown's saved code
-    'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved',
+    // what the page hook adds: the roles could not be read, a dropdown's saved code,
+    // the saved values could not be read
+    'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -157,8 +158,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // @UVDELTA (the earlier value travels folded, as deltaVsOp)
     'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
     'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
-    // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code
-    'writeonceRolesUnread', 'writeonceSaved',
+    // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code,
+    // the saved values could not be read
+    'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
 ]);
 
 // Branching::modeOfType.

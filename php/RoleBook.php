@@ -14,18 +14,18 @@ use INSPIRE\UniversalValidator\Scan\ScanDb;
  *
  * A user whose rights in the project expire on or before $today (the date
  * REDCap's own clock gives, as REDCap compares it) or whose account is
- * suspended holds no role. Names are kept in lowercase, so they compare
- * without letter case. A REDCap with no unique role names is read without
- * them.
+ * suspended holds no role. Role names are kept as Logic::roleKey makes
+ * them (any letter case, spaces folded), usernames in lowercase. A REDCap
+ * with no unique role names is read without them.
  *
  * PHP 7.4.
  */
 final class RoleBook
 {
     /**
-     * ['roles' => [lowercase name => true], 'users' => [lowercase username =>
-     * [lowercase names of the role the user holds]]], or null when the tables
-     * cannot be read.
+     * ['roles' => [role key => true], 'users' => [lowercase username =>
+     * [role keys of the role the user holds]]], or null when the tables cannot
+     * be read. A role key is Logic::roleKey of the name.
      */
     public static function read(ScanDb $db, $pid, $today)
     {
@@ -42,12 +42,12 @@ final class RoleBook
             }
             $book = ['roles' => [], 'users' => []];
             foreach ($roleRows as $row) {
-                foreach ([0, 1] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['roles'][strtolower(trim((string) $row[$c]))] = true;
+                foreach ([0, 1] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['roles'][Logic::roleKey($row[$c])] = true;
             }
             foreach ($userRows as $row) {
                 $u = isset($row[0]) ? strtolower(trim((string) $row[0])) : '';
                 if ($u === '') continue;
-                foreach ([1, 2] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['users'][$u][] = strtolower(trim((string) $row[$c]));
+                foreach ([1, 2] as $c) if (isset($row[$c]) && trim((string) $row[$c]) !== '') $book['users'][$u][] = Logic::roleKey($row[$c]);
             }
             return $book;
         }

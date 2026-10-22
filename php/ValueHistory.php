@@ -19,9 +19,23 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * DELETES. A row whose description says the whole record was deleted
  * ("Delete record", or "Delete record (API)") ends the history in a project
  * with one arm: a record deleted and made again under the same name starts a
- * new history. Any other DELETE row, and every DELETE in a project with more
- * than one arm (where a record can be deleted from one arm only), makes the
- * history "unknown": the reader cannot tell what it removed.
+ * new history. In a project with more than one arm (where a record can be
+ * deleted from one arm only), that row and any DELETE that names an arm make
+ * the history "unknown". So does a DELETE of this event's own data, or one
+ * that names no event: the reader cannot tell what it removed. A DELETE of
+ * another event's data is no part of this event's history.
+ *
+ * ERASED DATA. "Erase all data" (and deleting every record when a project
+ * moves to production) writes one DELETE row for the whole project, with the
+ * project id as its pk and no event, rather than one per record. Every
+ * history starts after the newest such row (eraseFloor): a record made again
+ * under a name the erased data used does not inherit its saves. A row of a
+ * record named like the project id that deletes the whole record says so in
+ * its description and is not taken for an erase.
+ *
+ * A RENAMED RECORD. An UPDATE row that writes the record id field names the
+ * record's new name. The saves made under its old name are not read, so the
+ * history is "unknown". Such a row is read whatever event it names.
  *
  * A ROW WITH NO EVENT that names a kept field makes the history "unknown"
  * too: it may hold the first save, and it cannot be placed.
@@ -58,6 +72,14 @@ final class ValueHistory
     private $order;
     /** @var bool the project has more than one arm */
     private $multiArm;
+    /** @var array<string,true> the Text and Notes fields of the project, whose value may hold a line break */
+    private $freeText;
+    /** @var string|null the record id field, whose line in an UPDATE row is a rename */
+    private $idField;
+    /** @var string|null|false the id of the newest project-wide erase row: null for none, false when it could not be read; unset until read */
+    private $eraseFloor;
+    /** @var bool whether eraseFloor was read */
+    private $eraseRead = false;
     /** history key => state (read|capped|none|unknown) once the history was read */
     private $state = [];
     /** history key => instance => field => list of [ts, user, value|null], newest first */
@@ -77,14 +99,18 @@ final class ValueHistory
         $this->clockZone = $clockZone;
         $this->order = isset($opts['order']) && is_array($opts['order']) ? $opts['order'] : [];
         $this->multiArm = !empty($opts['multiArm']);
+        $this->freeText = isset($opts['freeText']) && is_array($opts['freeText']) ? $opts['freeText'] : [];
+        $this->idField = isset($opts['recordIdField']) && is_string($opts['recordIdField']) && preg_match('/^[a-z][a-z0-9_]*$/D', $opts['recordIdField'])
+            ? $opts['recordIdField'] : null;
     }
 
     /**
      * A reader for this project's log that keeps $fields, or null when the
      * log table cannot be resolved (or its name could not be read). $opts:
-     * order = every field of the project => its place in the data dictionary
-     * (parseRow refuses a row whose lines are out of that order); multiArm =
-     * the project has more than one arm.
+     * order = every field of the project => its place in the data dictionary,
+     * and freeText = its Text and Notes fields => true (parseRow refuses a
+     * line out of that order after a free-text value); multiArm = the project
+     * has more than one arm; recordIdField = the record id field (a rename).
      */
     public static function forProject(ScanDb $db, $pid, array $fields, \DateTimeZone $logZone, \DateTimeZone $clockZone, array $opts = [])
     {
@@ -105,8 +131,8 @@ final class ValueHistory
      *   MAX_ROWS_PER_RECORD rows; "none" when the log holds no row for them;
      *   "unknown" when the log could not be read, holds a DELETE the reader
      *   cannot place or a row with no event that names a kept field, or the
-     *   field was not named when the reader was made. "why" says which:
-     *   read, delete, noevent or unnamed.
+     *   field was not named when the reader was made, or the record was
+     *   renamed. "why" says which: read, delete, noevent, unnamed or rename.
      *   saves is empty unless the state is "read". value is null for a value
      *   the log does not say plainly (parseRow); at is ts as 'Y-m-d H:i:s' in
      *   the clock zone, or null when ts is not a time.
@@ -159,13 +185,22 @@ final class ValueHistory
         unset($this->kept[$old], $this->state[$old], $this->saves[$old], $this->why[$old]);
     }
 
-    /** One page of the record's rows for $eventId (deletes and rows with no event included), newest first. */
+    /**
+     * One page of the record's rows for $eventId, newest first, after the
+     * newest project-wide erase: deletes, rows with no event, and rows that
+     * may write the record id field (a rename) included.
+     */
     private function page($record, $eventId, $cursor, $limit)
     {
         $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p, `user`, event, description FROM ' . $this->table
              . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\', \'DELETE\')'
-             . ' AND (event = \'DELETE\' OR event_id = ? OR event_id IS NULL)';
+             . ' AND (event = \'DELETE\' OR event_id = ? OR event_id IS NULL' . ($this->idField !== null ? ' OR data_values LIKE ?' : '') . ')';
         $params = [$this->pid, $record, (int) $eventId];
+        if ($this->idField !== null) $params[] = '%' . $this->idField . " = '%";
+        if ($this->eraseFloor !== null && $this->eraseFloor !== false) {
+            $sql .= ' AND log_event_id > ?';
+            $params[] = $this->eraseFloor;
+        }
         if ($cursor !== null) {
             $sql .= ' AND log_event_id < ?';
             $params[] = $cursor;
@@ -180,21 +215,58 @@ final class ValueHistory
         return (bool) preg_match('/^delete record(?: \(api\))?$/iD', $d);
     }
 
+    /** Whether a DELETE row's description names an arm. */
+    private static function armDelete(array $row)
+    {
+        return (bool) preg_match('/\barm\b/i', isset($row[7]) ? (string) $row[7] : '');
+    }
+
+    /**
+     * The id of the newest project-wide erase row (see ERASED DATA), read once
+     * per reader: null when there is none, false when it could not be read.
+     */
+    private function eraseFloor()
+    {
+        if ($this->eraseRead) return $this->eraseFloor;
+        $this->eraseRead = true;
+        try {
+            $rows = $this->db->select('SELECT log_event_id FROM ' . $this->table
+                . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event = \'DELETE\' AND event_id IS NULL'
+                . ' AND (description IS NULL OR description NOT LIKE \'Delete record%\')'
+                . ' ORDER BY log_event_id DESC LIMIT 1', [$this->pid, (string) $this->pid]);
+        } catch (\Throwable $e) {
+            return $this->eraseFloor = false;
+        }
+        if (!is_array($rows)) return $this->eraseFloor = false;
+        if (!$rows) return $this->eraseFloor = null;
+        $id = isset($rows[0][0]) ? (string) $rows[0][0] : '';
+        return $this->eraseFloor = ($id !== '' && ctype_digit($id)) ? $id : false;
+    }
+
     /**
      * Read one row into $saves[$key]. Returns null to read on, or what ends
-     * the read: "read" at a whole-record DELETE; "delete" at any other
-     * DELETE and "noevent" at a row with no event that names a kept field,
+     * the read: "read" at a whole-record DELETE; "delete" at a DELETE of this
+     * event, of no event or of an arm (and at any whole-record DELETE in a
+     * project of several arms); "rename" at an UPDATE that writes the record
+     * id field; "noevent" at a row with no event that names a kept field,
      * which the reader cannot place.
      */
     private function take($key, $record, $eventId, array $row)
     {
         // pk compared as bytes: the column's collation may match "abc" for "ABC".
         if (!isset($row[4]) || (string) $row[4] !== $record) return null;
-        if (isset($row[6]) && strtoupper((string) $row[6]) === 'DELETE') {
-            return !$this->multiArm && self::wholeRecordDelete($row) ? 'read' : 'delete';
-        }
         $event = isset($row[2]) && $row[2] !== null && $row[2] !== '' ? (string) (int) $row[2] : null;
-        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order);
+        $verb = isset($row[6]) ? strtoupper((string) $row[6]) : '';
+        if ($verb === 'DELETE') {
+            $whole = self::wholeRecordDelete($row);
+            // another event's form data: not this event's history
+            if ($event !== null && $event !== $eventId && !$whole && !self::armDelete($row)) return null;
+            return !$this->multiArm && $whole ? 'read' : 'delete';
+        }
+        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText);
+        if ($verb === 'UPDATE' && $this->idField !== null) {
+            foreach ($parsed as $values) if (array_key_exists($this->idField, $values)) return 'rename';
+        }
         if ($event === null) {
             foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) return 'noevent';
             return null;
@@ -215,6 +287,7 @@ final class ValueHistory
     private function read($key, $record, $eventId)
     {
         $this->saves[$key] = [];
+        if ($this->eraseFloor() === false) return 'unknown';
         $cursor = null;
         $rows = 0;
         $any = false;
@@ -277,18 +350,25 @@ final class ValueHistory
      * whole. These map to null (the log does not say plainly what was saved):
      *  - a value that does not end with a quote, or a field written twice;
      *  - every field of a row with a line of no known shape;
-     *  - every field of a row whose fields are out of the data dictionary's
-     *    order ($order, field => place), which is how REDCap writes them: a
-     *    value typed to look like a line of another field ("x',\nsite = 'C")
-     *    reads as a second entry, and is caught here unless that field comes
-     *    later in the dictionary and the row holds no line of it already.
+     *  - the fields of a row from its first free-text value ($freeText,
+     *    field => true: a field whose value a person can type) to its end,
+     *    when a line after that value is out of the data dictionary's order
+     *    ($order, field => place): a value typed to look like lines of other
+     *    fields ("x',\nsite = 'C") reads as more entries. It is caught here
+     *    unless every such line comes later in the dictionary and the row
+     *    holds no line of it already. The lines before the first free-text
+     *    value cannot be typed, so they are kept, and so is a row whose line
+     *    out of order follows no free-text value (the dictionary may have
+     *    changed since the row was written, or the save wrote its fields in
+     *    another order). With no $freeText given, every field counts.
+     * Each line is looked at once, so a long value costs one pass.
      */
-    public static function parseRow($text, array $order = [])
+    public static function parseRow($text, array $order = [], array $freeText = [])
     {
         $out = [];
         if (!is_string($text) || $text === '') return $out;
         $instance = 1;
-        $blocks = [];   // [field, text, is a checkbox line]
+        $blocks = [];   // [field, lines, is a checkbox line, whether the last line ends the value]
         $stray = false;
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
             if ($i === 0 && preg_match('/^\[instance = (\d+)\],?$/D', $line, $m)) {
@@ -296,35 +376,38 @@ final class ValueHistory
                 continue;
             }
             $last = count($blocks) - 1;
-            if ($last >= 0 && !$blocks[$last][2] && !preg_match("/',$/D", $blocks[$last][1])) {
-                $blocks[$last][1] .= "\n" . $line;   // the value goes on
+            if ($last >= 0 && !$blocks[$last][2] && !$blocks[$last][3]) {
+                $blocks[$last][1][] = $line;   // the value goes on
+                $blocks[$last][3] = substr($line, -2) === "',";
                 continue;
             }
             if (preg_match('/^([a-z][a-z0-9_]*)\([^)]*\) = (?:checked|unchecked),?$/D', $line, $m)) {
-                $blocks[] = [$m[1], $line, true];
+                $blocks[] = [$m[1], [$line], true, true];
             } elseif (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
-                $blocks[] = [$m[1], $line, false];
+                $blocks[] = [$m[1], [$line], false, substr($line, -2) === "',"];
             } elseif ($line !== '') {
                 $stray = true;
             }
         }
         $place = -1;
         $prev = null;
-        $broken = false;
-        foreach ($blocks as $b) {
-            if (isset($order[$b[0]])) {
+        $firstFree = null;   // the first block a person may have typed
+        $cut = null;         // the first block the order check does not trust
+        foreach ($blocks as $k => $b) {
+            if ($cut === null && isset($order[$b[0]])) {
                 $p = (int) $order[$b[0]];
                 // a checkbox writes one line per option, so its own lines may follow it
-                if ($p < $place || ($p === $place && !($b[2] && $prev === $b[0]))) $broken = true;
+                if (($p < $place || ($p === $place && !($b[2] && $prev === $b[0]))) && $firstFree !== null) $cut = $firstFree;
                 $place = $p;
             }
+            if ($firstFree === null && !$b[2] && (!$freeText || isset($freeText[$b[0]]))) $firstFree = $k;
             $prev = $b[0];
-            if ($b[2]) continue;
-            $v = preg_match("/^[a-z][a-z0-9_]* = '(.*)',?$/sD", $b[1], $m) ? $m[1] : null;
-            $out[$instance][$b[0]] = (isset($out[$instance]) && array_key_exists($b[0], $out[$instance])) ? null : $v;
         }
-        if ($stray || $broken) {
-            foreach ($out as $inst => $fields) foreach ($fields as $f => $v) $out[$inst][$f] = null;
+        foreach ($blocks as $k => $b) {
+            if ($b[2]) continue;
+            $v = ($stray || ($cut !== null && $k >= $cut)) ? null
+               : (preg_match("/^[a-z][a-z0-9_]* = '(.*)',?$/sD", implode("\n", $b[1]), $m) ? $m[1] : null);
+            $out[$instance][$b[0]] = (isset($out[$instance]) && array_key_exists($b[0], $out[$instance])) ? null : $v;
         }
         return $out;
     }

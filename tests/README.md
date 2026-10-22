@@ -527,16 +527,25 @@ inner spaces.
   applies the event filter and refuses SQL without it; with `$looseEvent` it
   returns every event's rows and the reader must pass over the others); rows
   newest first in pages; a whole-record `DELETE` ending the history in a
-  project of one arm, while a `DELETE` of a form, an event or an arm, and any
-  `DELETE` with several arms, make it unknown; a save with no event that names
-  a kept field; another record of the same name in a loose collation; the cap
-  counted per event, with a history of exactly the cap read in full; a failed
-  read; save times turned into the project's clock; and `parseRow` (a notes
-  value over several lines, checkbox lines, a field written twice, a stray
-  line, and a row out of the data dictionary's order). `RoleBook::read` runs
+  project of one arm, while a `DELETE` of this event's data or of an arm, and
+  any whole-record `DELETE` with several arms, make it unknown, and one of
+  another event's data is passed over; an erase of the project's records
+  starting every history after it (asked once per reader, a failed read making
+  the history unknown); a save that writes the record id field making it
+  unknown; a save with no event that names a kept field, on any instance;
+  another record of the same name in a loose collation, also past the cap; the
+  cap counted per event, with a history of exactly the cap read in full; a
+  failed read; save times turned into the project's clock; and `parseRow` (a
+  notes value over several lines, 130,000 lines in under a second, checkbox
+  lines, a field written twice, a stray line, an instance line that is not the
+  first, and a row out of the data dictionary's order, read up to the first
+  Text or Notes value before the break). `RoleBook::read` runs
   over a mock database: both names of each role, users by lowercase name, the
   project and today bound as parameters, and a REDCap with no unique role
-  names. The SQL of both runs on a real server in `tests/mysql/cases/history.php`.
+  names, and role names kept as `Logic::roleKey` (letter case in any alphabet,
+  spaces folded). The SQL of both runs on a real server in
+  `tests/mysql/cases/history.php`, with an erase, a rename, a `DELETE` of one
+  event and one that names an arm.
 - `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
   read-only with the note under it, in the rule's own words when it has a
   message; radio buttons are disabled and the "reset" link hidden, and the
@@ -548,24 +557,31 @@ inner spaces.
   while the date box stays enabled; a change made anyway (an event, a jQuery
   change, a script with no event) is undone and the note says so; a value that
   cannot be put back holds the save; another mode's item on a locked field
-  never holds the save unless its rule reads another field (`lockReads`), in
-  either order of binding, while a field REDCap made read-only (`@READONLY`)
-  still never holds it; roles that could not be read lock the field and the
-  note says so; a configuration error locks nothing; and every guard item
-  names a mode the registry knows.
+  never holds the save unless its rule reads another field (`lockReads`) and
+  that field has changed since the page opened, in either order of binding
+  and for every mode, while a field REDCap made read-only (`@READONLY`) or
+  disabled still never holds it; a violation saved before the page opened and
+  two locked fields that read each other never hold it; the lock leaves an
+  embedded field's enhanced choices, reset link and Today button alone; the
+  date picker is set once; roles that could not be read lock the field and the
+  note says so; saved values that could not be read lock nothing and staff see
+  a note; a configuration error locks nothing; and every guard item names a
+  mode the registry knows.
 - `writeonce_module_php.php` covers the server side: calc and checkbox fields
   and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
-  `@RICHTEXT` and BioPortal fields refused; a field given the tag twice
-  refused; each role checked against the project, by name or unique role name,
-  in any letter case, and refused once by name; a lock on a field another rule
+  `@RICHTEXT` and ontology fields of any service refused; a field given the
+  tag twice refused; each role checked against the project, by name or unique
+  role name, in any letter case of any alphabet, and refused once by name; a lock on a field another rule
   returns to refused, split off its group with each refusal in field order,
   while a returning rule refused for another reason leaves the lock alone; the
   grammar; the page (only fields holding a value, never for a member of a
   role, the user name compared without letter case, a survey respondent holds
   none, roles that cannot be read lock every rule that names roles and say so,
   never on a new record, not before "since", roles and "since" kept off the
-  page, `lockReads` on a rule that reads another field); what the log reader
-  is told of the project (the data dictionary's order, one arm or several);
+  page, `lockReads` naming only fields of the form that are not locked, saved
+  values that cannot be read flagged, the saved code sent for dropdown and SQL
+  fields); what the log reader is told of the project (the data dictionary's
+  order, its Text and Notes fields, the record id field, one arm or several);
   the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
   saved over a locked value, "since", the lock times kept whatever the log
   mode, and each rule problem, with the reason a history could not be read);
@@ -584,11 +600,11 @@ inner spaces.
   autocomplete box, a notes box, a slider), and checks each lock, each note,
   each undone change and each save. A refused tag on a dropdown shows its
   error under the field.
-- `writeonce_mutations.py` applies 119 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Three mutate
-  the role book's SQL and are killed only by `tests/mysql/run.php`; they run
-  when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are
-  reported as skipped otherwise.
+- `writeonce_mutations.py` applies 160 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Five mutate
+  the SQL (three the role book's, two the erase search) and are killed only by
+  `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
+  variables name a server, and are reported as skipped otherwise.
 
 ## `growth_*` — growth references (z-scores)
 

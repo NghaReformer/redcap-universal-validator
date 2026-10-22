@@ -989,7 +989,8 @@ first save of a value and locks it from then on:
   locks nothing, so a field marked "unknown" can still be filled in later.
 - **Roles.** `roles` names the user roles whose members may still change or
   clear the value, by the name the User Rights page shows or by the unique
-  role name, in any letter case, up to 20. Each must be a role of the project.
+  role name, up to 20. Letter case does not matter in any alphabet, and a run
+  of spaces counts as one. Each must be a role of the project.
   A member's change moves the lock to the new value, and clearing it releases
   the lock. A user whose rights in the project have expired, or whose account
   is suspended, holds no role. An administrator who is not a user of the
@@ -1008,42 +1009,56 @@ first save of a value and locks it from then on:
 - **Field types.** Text and Notes fields (dates included), dropdown, radio,
   yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
   nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE` or `@PREFILL`, whose
-  value REDCap writes again by itself, nor a field with `@RICHTEXT` or a
-  BioPortal ontology search, whose widget keeps its own copy of the text, nor
-  a field another rule returns a value to.
+  value REDCap writes again by itself, nor a field with `@RICHTEXT` or an
+  ontology search (BioPortal, FHIR or any other service), whose widget keeps
+  its own copy of the text, nor a field another rule returns a value to.
 - **On the page.** For everyone outside the roles the field keeps the value it
   opened with, with a short note under it. A text box is read-only, the radio
   buttons are disabled and their "reset" link hidden, the enhanced radio
   buttons take no clicks, the slider is disabled, and the date picker is kept
   from opening, with its button and REDCap's Today and Now buttons hidden.
   Nothing the form posts is disabled, since REDCap would then save the field
-  blank: a dropdown takes no clicks instead, and one whose saved code is no
-  longer one of its choices gets that code back as an option. A change made
-  with the keyboard or a script is undone, and the note says so. A survey
-  respondent holds no role. When the user roles cannot be read the field is
-  locked for everyone, and the note says the role could not be checked.
-  Another rule on a locked field still shows its note, and holds the save only
-  when it also reads another field, which can still be changed. A person's own
+  blank: a dropdown or SQL field takes no clicks instead, and one whose saved
+  code is no longer one of its choices gets that code back as an option. A
+  change made with the keyboard or a script is undone, and the note says so.
+  The lock touches only the field's own controls: a field embedded in its row
+  keeps its own buttons. A survey respondent holds no role. When the user
+  roles cannot be read the field is locked for everyone, and the note says the
+  role could not be checked. When the saved value cannot be read the field is
+  not locked; staff see a note saying so, and the audit still checks a change.
+  Another rule on a locked field still shows its note. It holds the save only
+  when it also reads a field of this form that is not locked, and only once
+  that field has been changed on the page, so a violation already saved when
+  the page opened, or one between two locked fields, never holds it. A person's own
   first answer is locked as soon as it is saved, so after Save & Stay, or Next
   on a multi-page survey, going back finds it locked. The roles and `since`
   never reach the page.
 - **The browser only.** The Data Import Tool and the API are not stopped. What
-  they change is found afterwards from REDCap's log, by the next form save's
-  audit and by the Validation scan.
+  they change is found afterwards from REDCap's log, by the audit of the next
+  save of the form that holds the field and by the Validation scan.
 - **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
   or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
   as "Changed after it was locked" or "Cleared after it was locked" and names
   when the value was locked. Each record and event is read on its own. A
-  deletion of the whole record starts a new history. These are rule problems,
+  deletion of the whole record starts a new history, and so does an erase of
+  all the project's records (Erase all data, or deleting every record when the
+  project moves to production): every history starts after the newest one. A
+  deletion of another event's data changes nothing. These are rule problems,
   never a pass: a log that holds more rows of the record and event than are
-  read (5,000); any other deletion (of a form, an event, or one arm), and in a
-  project of several arms every deletion, since the check cannot tell what it
-  removed; a save the log names no event for; a save the log does not spell
-  out; a value the log never shows saved; and roles that cannot be read when a
-  change needs them. A Notes value typed to look like the log line of another
-  field is caught when that field comes earlier in the data dictionary;
-  otherwise it can read as a save of that field, which gives at worst a false
-  finding or a rule problem, never a pass. The tag takes no `when`,
+  read (5,000); a deletion of this event's data or of one arm, and in a
+  project of several arms every deletion of the record, since the check cannot
+  tell what it removed; a record renamed since its saves, since REDCap logs
+  them under the old name; a save the log names no event for; a save the log
+  does not spell out; a value the log never shows saved; and roles that cannot
+  be read when a change needs them. The log lists a save's fields in the data
+  dictionary's order. A Notes value typed to look like the log line of another
+  field is caught when that field comes earlier in the data dictionary: from
+  the first Text or Notes value before the line out of order, the row's values
+  read as not spelled out. A row written before a field was moved breaks the
+  order in the same way, and so may an import whose columns are in another
+  order, so the fields after that point are rule problems for that save. A
+  forged line that keeps the order can read as a save of that field, which
+  gives at worst a false finding or a rule problem, never a pass. The tag takes no `when`,
   `caseSensitive` or `blockSave`. Configure via field annotation only.
 
 ## The Validation scan — checking data that is already saved
