@@ -158,11 +158,59 @@ final class ScanReport
             'detail'           => (string) $outcome['detail'],
             'coverageSentence' => ScanPageView::coverageSentence($outcome['coverage'], $outcome['detail']),
             'mayCertify'       => ScanOutcome::mayClaimClean($outcome),
-            'suffix'           => ScanOutcome::suffix($outcome),
+            // THE FILENAME'S SUFFIX, from the one place that makes it (review
+            // rv11a2-5). This was ScanOutcome::suffix() alone, so one answer
+            // carried `_CANCELLED` here and `_INCOMPLETE_CANCELLED` in `marks`,
+            // and every terminal state but a certified one disagreed.
+            'suffix'           => self::marksOf($this->run)['suffix'],
             'valuesState'      => (string) $this->run['values_state'],
             'labelsDegraded'   => $this->dims->isDegraded(),
             'degradedSummary'  => $this->dims->degradedSummary(),
             'expectedRows'     => $expectedRows === null ? null : max(0, (int) $expectedRows),
+        ];
+    }
+
+    /**
+     * README's three ways of saying a report is incomplete, from the run row:
+     * a banner above it, a terminal row inside it that survives sorting and
+     * deleting comment lines, and a filename suffix that survives renaming.
+     * The page and the export take them from here (through
+     * ScanService::incompleteMarks()), and runFacts() its suffix.
+     *
+     * Incomplete is a run that did not finish complete, or that finished
+     * complete and did not keep every finding (the detail limit). A complete
+     * run that may still not be called clean is not incomplete: its suffix
+     * says _NOT-CERTIFIED and it carries no banner.
+     *
+     * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
+     */
+    public static function incompleteMarks(array $run)
+    {
+        return self::marksOf($run);
+    }
+
+    /** @see incompleteMarks() — the work, shared with runFacts(). */
+    private static function marksOf(array $run)
+    {
+        $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
+              'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
+              'detail'   => isset($run['detail']) ? $run['detail'] : null,
+              'clean'    => isset($run['clean']) && $run['clean'] !== null && (int) $run['clean'] === 1];
+        $incomplete = $o['terminal'] !== ScanOutcome::COMPLETE || $o['detail'] === ScanOutcome::DETAIL_TRUNCATED;
+        $certified = ScanOutcome::mayClaimClean($o);
+        $suffix = ScanOutcome::suffix($o);
+        if ($incomplete && strpos($suffix, '_INCOMPLETE') === false) $suffix = '_INCOMPLETE' . $suffix;
+        if (!$incomplete && !$certified && $suffix === '') $suffix = '_NOT-CERTIFIED';
+        return [
+            'incomplete' => $incomplete,
+            'certified'  => $certified,
+            'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
+            'row'        => $incomplete
+                ? 'This scan did not cover the whole project. Rows above are real findings over the records '
+                  . 'that WERE examined; absence of a row is not evidence a record is clean. '
+                  . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
+                : null,
+            'suffix'     => $suffix,
         ];
     }
 }

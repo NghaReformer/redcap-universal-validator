@@ -1325,40 +1325,16 @@ final class ScanService
     }
 
     /**
-     * README's three ways of saying a report is incomplete, from the run row:
-     * a banner above it, a terminal row inside it that survives sorting and
-     * deleting comment lines, and a filename suffix that survives renaming.
-     * The page and the export both take them from here.
-     *
-     * Incomplete is a run that did not finish complete, or that finished
-     * complete and did not keep every finding (the detail limit). A complete
-     * run that may still not be called clean is not incomplete: its suffix
-     * says _NOT-CERTIFIED and it carries no banner.
+     * README's three ways of saying a report is incomplete: see
+     * ScanReport::incompleteMarks(), which makes them. The page and the export
+     * take them from here, and the report's own `suffix` from there, so the
+     * two cannot disagree (review rv11a2-5).
      *
      * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
      */
     public static function incompleteMarks(array $run)
     {
-        $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
-              'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
-              'detail'   => isset($run['detail']) ? $run['detail'] : null,
-              'clean'    => isset($run['clean']) && $run['clean'] !== null && (int) $run['clean'] === 1];
-        $incomplete = $o['terminal'] !== ScanOutcome::COMPLETE || $o['detail'] === ScanOutcome::DETAIL_TRUNCATED;
-        $certified = ScanOutcome::mayClaimClean($o);
-        $suffix = ScanOutcome::suffix($o);
-        if ($incomplete && strpos($suffix, '_INCOMPLETE') === false) $suffix = '_INCOMPLETE' . $suffix;
-        if (!$incomplete && !$certified && $suffix === '') $suffix = '_NOT-CERTIFIED';
-        return [
-            'incomplete' => $incomplete,
-            'certified'  => $certified,
-            'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
-            'row'        => $incomplete
-                ? 'This scan did not cover the whole project. Rows above are real findings over the records '
-                  . 'that WERE examined; absence of a row is not evidence a record is clean. '
-                  . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
-                : null,
-            'suffix'     => $suffix,
-        ];
+        return ScanReport::incompleteMarks($run);
     }
 
     /**

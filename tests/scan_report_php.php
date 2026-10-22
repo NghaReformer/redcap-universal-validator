@@ -1026,6 +1026,33 @@ namespace {
             $p['expectedRows'] === null && $facts($partial, null, 12)['expectedRows'] === 12
             && $facts($partial, null, -4)['expectedRows'] === 0);
 
+        // rv11a2-5: ONE SUFFIX. runFacts() said `_CANCELLED` where the marks
+        // beside it in the same answer said `_INCOMPLETE_CANCELLED`, for every
+        // state ScanOutcome::derive() produces except a certified one.
+        $derived = ['failed' => ['failed' => true], 'cancelled' => ['cancelled' => true],
+            'expired' => ['expired' => true], 'empty scope' => ['emptyScope' => true],
+            'blocked' => ['blocked' => true, 'manifestDone' => true, 'fenced' => true],
+            'manifest not done' => ['manifestDone' => false],
+            'manifest only' => ['manifestDone' => true, 'fenced' => false],
+            'manifest only, cut' => ['manifestDone' => true, 'fenced' => false, 'truncated' => true],
+            'fenced, cut' => ['manifestDone' => true, 'fenced' => true, 'truncated' => true,
+                              'violations' => 900, 'ruleProblems' => 0],
+            'found 3' => ['manifestDone' => true, 'fenced' => true, 'violations' => 3, 'ruleProblems' => 0],
+            'clean' => ['manifestDone' => true, 'fenced' => true, 'violations' => 0, 'ruleProblems' => 0]];
+        $disagree = [];
+        foreach ($derived as $name => $f) {
+            $o = ScanOutcome::derive($f);
+            $row = ['terminal' => $o['terminal'], 'coverage' => $o['coverage'], 'detail' => $o['detail'],
+                    'clean' => ScanOutcome::cleanColumn($o), 'values_state' => 'raw'];
+            if ($facts($row)['suffix'] !== ScanReport::incompleteMarks(runRow($row))['suffix']) $disagree[] = $name;
+        }
+        check('rv11a2-5: the report\'s suffix is the marks\' suffix for every state derive() produces',
+            $disagree === []);
+        check('rv11a2-5: so a stopped run\'s report is named incomplete, as README promises',
+            $facts(['terminal' => ScanOutcome::CANCELLED, 'coverage' => ScanOutcome::COV_PARTIAL,
+                    'detail' => ScanOutcome::DETAIL_COMPLETE, 'clean' => null])['suffix'] === '_INCOMPLETE_CANCELLED'
+            && $facts($complete + ['clean' => 0])['suffix'] === '_NOT-CERTIFIED');
+
         $bad = dims(); $bad->degraded = ['events' => 'the event map could not be read'];
         $deg = $facts($complete + ['clean' => 1], $bad);
         check('facts: degraded labels are said, with the source named',
