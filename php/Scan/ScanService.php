@@ -1265,8 +1265,11 @@ final class ScanService
 
     // -- assembly ------------------------------------------------------------
 
-    /** The wording every unknown run gets, whatever the real reason. */
-    const NO_RUN = 'no scan with that reference is running for this project';
+    /**
+     * The wording every unknown run gets, whatever the real reason - and a
+     * run outside the reader's group, which must read the same (rv5b-4).
+     */
+    const NO_RUN = ScanAuthorization::NO_RUN;
 
     /**
      * Rights, entitlement forms and the plan, re-derived NOW.
@@ -1306,6 +1309,15 @@ final class ScanService
             // threw is a moment - see status().
             return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
         }
+        // A RUN OUTSIDE THE READER'S GROUP IS NO RUN, BEFORE ANYTHING IS BUILT
+        // FOR IT (review rv5b-4). The context below is built with the run's
+        // own group, and a build that fails answers with its own sentence -
+        // so a group user asking about another group's run could learn that
+        // it exists from the way the refusal read. Refused here, as a final
+        // answer, in the words an id that is not a run gets. Every verb asks
+        // the same scope question after this; it just cannot be reached first.
+        $touch = ScanAuthorization::mayTouchScope($scope['rights'], $run['scope_dag']);
+        if (empty($touch['ok'])) return ['ok' => false, 'why' => $touch['why'], 'final' => true];
         $policy = $this->policy($pid);
         // The run is in hand, so the evaluator is bound to THIS run's
         // generation and sequence - the numbers its findings are written under

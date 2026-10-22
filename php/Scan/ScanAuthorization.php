@@ -35,6 +35,13 @@ final class ScanAuthorization
     const EXPORT_FULL = '1';
 
     /**
+     * What an id that is not a run gets, and so what a run the reader may not
+     * touch gets too (review rv5b-4). ONE COPY: ScanService::NO_RUN is this
+     * constant, so a refusal on scope cannot drift from "no such run".
+     */
+    const NO_RUN = 'no scan with that reference is running for this project';
+
+    /**
      * May this user START a run over $entitlement?
      *
      * The plan's row: design rights, nonzero read access to EVERY form in the
@@ -168,10 +175,9 @@ final class ScanAuthorization
         $unrestricted = $base['unrestricted'];
 
         if ($runScopeDag === null) {
-            if (!$unrestricted) {
-                return self::no('this run covers the whole project, so only a user without a Data '
-                    . 'Access Group restriction may cancel it');
-            }
+            // A group user is told what an id that is not a run gets (review
+            // rv5b-4): this sentence named the run's scope.
+            if (!$unrestricted) return self::no(self::NO_RUN);
             return $base;
         }
         if ($unrestricted) return $base;                       // may cancel any DAG run
@@ -463,15 +469,14 @@ final class ScanAuthorization
     private static function scopeMatches(array $base, $runScopeDag)
     {
         if ($base['unrestricted']) return $base;
-        if ($runScopeDag === null) {
-            return self::no('this scan covers the whole project, which is wider than your Data '
-                . 'Access Group');
-        }
-        if ((string) $runScopeDag !== (string) $base['scope']) {
-            // Deliberately the SAME wording as "no such run": a distinct message
-            // here would confirm that a run exists for another group.
-            return self::no('that scan is not available to you');
-        }
+        // BOTH ARE "NO SUCH RUN", WORD FOR WORD (review rv5b-4). The comment
+        // here said the other group's refusal used the same wording as a
+        // missing run, and it did not: "that scan is not available to you"
+        // and "...covers the whole project, which is wider than your Data
+        // Access Group" each told a group user that the id they tried was a
+        // run, and which kind, where an id that is not a run gets NO_RUN.
+        if ($runScopeDag === null) return self::no(self::NO_RUN);
+        if ((string) $runScopeDag !== (string) $base['scope']) return self::no(self::NO_RUN);
         return $base;
     }
 

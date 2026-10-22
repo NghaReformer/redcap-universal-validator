@@ -3115,6 +3115,59 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-2: a run over an empty group, which ends before any fence, is not promised its counts',
         $eg->run(184, $egId)['coverage'] === ScanOutcome::EMPTY_SCOPE
         && $egW['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+
+    /* -----------------------------------------------------------------
+     * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
+     * WORD, IN STATUS, WORK AND CANCEL
+     *
+     * The reviewer's repro: a group-7 user asked about group 31's run, a
+     * whole-project run and an id that is no run, and got three different
+     * sentences - so run ids could be probed for other groups' scans. And a
+     * context that could not be built for the run's group answered with its
+     * own sentence before the scope was asked.
+     * ----------------------------------------------------------------- */
+    $os = new ArrayScanStore();
+    $om = $groupModule($os);
+    $om->user->rights['group_id'] = 31;
+    $o31 = (int) (new ScanService($om, $os))->start(185)['run_id'];
+    for ($i = 0; $i < 10 && $os->run(185, $o31)['terminal'] === null; $i++) {
+        (new ScanService($om, $os))->work(185, $o31);
+    }
+    $om->user->rights['group_id'] = null;
+    $oAll = (int) (new ScanService($om, $os))->start(185)['run_id'];
+    $om->user->rights['group_id'] = 7;
+    $askAll = function ($id) use ($om, $os) {
+        $svc = new ScanService($om, $os);
+        return ['status' => $svc->status(185, $id), 'work' => $svc->work(185, $id),
+                'cancel' => $svc->cancel(185, $id)];
+    };
+    $none = $askAll(999);
+    check('rv5b-4: an id that is no run is refused as no such run, by every verb',
+        $none['status']['why'] === ScanService::NO_RUN && $none['work']['why'] === ScanService::NO_RUN
+        && $none['cancel']['why'] === ScanService::NO_RUN && ScanService::NO_RUN === ScanAuthorization::NO_RUN);
+    check('rv5b-4: another group\'s run gets exactly the same answers',
+        $o31 > 0 && $askAll($o31) === $none);
+    check('rv5b-4: and so does a run over the whole project',
+        $oAll > 0 && $oAll !== $o31 && $askAll($oAll) === $none);
+    // The context for another group's run cannot be built just now: the
+    // reader is still told only that there is no such run.
+    $broken = new class($os) extends \E2eModule {
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
+                    'plan' => null, 'evaluate' => null, 'read' => null, 'rules' => [],
+                    'ownership' => [], 'problems' => []];
+        }
+    };
+    $broken->user->rights['group_id'] = 7;
+    $bsvc = new ScanService($broken, $os);
+    check('rv5b-4: a context that cannot be built for another group\'s run does not say so',
+        $bsvc->status(185, $o31) === $none['status'] && $bsvc->cancel(185, $o31) === $none['cancel']
+        && $bsvc->work(185, $o31) === $none['work']);
+    $broken->user->rights['group_id'] = 31;
+    check('rv5b-4 control: the run\'s own group is told why its context could not be built',
+        (new ScanService($broken, $os))->status(185, $o31)['why']
+        === 'this project has no rules this scan can evaluate');
     \REDCap::$groupNames = $keptNames;
 }
 
