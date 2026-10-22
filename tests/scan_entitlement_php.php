@@ -49,7 +49,12 @@ namespace ExternalModules {
         public $logCalls = [];
         public function getSubSettings($k, $pid = null) { return isset($this->subSettings[$k]) ? $this->subSettings[$k] : []; }
         public function getProjectSetting($k, $pid = null) { return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null; }
-        public function getSystemSetting($k) { return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null; }
+        /** @var array key => true: reading that system setting throws (W10BF-4) */
+        public $systemThrowFor = [];
+        public function getSystemSetting($k) {
+            if (isset($this->systemThrowFor[$k])) throw new \RuntimeException('system settings unavailable');
+            return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
+        }
         public function setProjectSetting($k, $v, $pid = null) { $this->projectSettings[$k] = $v; }
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
@@ -220,6 +225,7 @@ namespace {
         $m->projectSettings = ['log-values' => '']
             + (isset($opts['settings']) ? $opts['settings'] : []);
         $m->systemSettings = isset($opts['system']) ? $opts['system'] : [];
+        $m->systemThrowFor = isset($opts['systemThrows']) ? $opts['systemThrows'] : [];
         $m->subSettings = isset($opts['subs']) ? $opts['subs'] : [];
         $ctx = $m->durableScanContext(149, ['generation' => 1, 'runSeq' => 1], null);
         $asked = [];
@@ -885,7 +891,55 @@ namespace {
             $extra['fp'] === $fpWith($rng, [], ['reference-data-dir' => $twin])['fp']);
         check('rv10b1-7: and a project no rule of which names a reference may move the folder freely',
             $fpWith($plain)['fp'] === $fpWith($plain, [], ['reference-data-dir' => $refDir])['fp']);
-        foreach ([$refDir, $twin] as $d) {
+
+        // W10BF-4: A FOLDER THAT COULD NOT BE READ IS AN UNREAD CONFIGURATION,
+        // NOT A RULE PROBLEM (review R5-4). It made every @UVRANGE rule a
+        // configuration error, and a scan went on reporting rules the next
+        // read could check. The refusal stays (the rule cannot be checked);
+        // the context names the read, and ScanService asks again.
+        $unreadOf = function (array $system, array $throws = []) use ($rng) {
+            // A project read in full, so the folder is the only read in question.
+            \Project::$design = ['longitudinal' => false, 'eventsForms' => [41 => ['fa']],
+                                 'repeating' => [], 'missing' => ''];
+            $c = planOf($rng, ['system' => $system, 'systemThrows' => $throws])['ctx'];
+            \Project::$design = null;
+            return ['unread' => isset($c['unread']) ? $c['unread'] : null,
+                    'problems' => json_encode(isset($c['problems']) ? $c['problems'] : [])];
+        };
+        $read = $unreadOf(['reference-data-dir' => $refDir]);
+        check('W10BF-4: a reference folder read in full leaves nothing unread', $read['unread'] === []);
+        $gone = $unreadOf(['reference-data-dir' => $refDir . '_gone']);
+        check('W10BF-4: a folder whose index.json cannot be read is named as unread',
+            $gone['unread'] === ['the growth reference folder']);
+        check('W10BF-4: and the rule is still refused, saying why',
+            strpos($gone['problems'], 'no readable index.json') !== false);
+        check('W10BF-4: a "reference-data-dir" setting that could not be read is named as unread',
+            $unreadOf([], ['reference-data-dir' => true])['unread'] === ['the growth reference folder']);
+        $noTable = $refDir . '_notable';
+        mkdir($noTable);
+        copy($refDir . DIRECTORY_SEPARATOR . 'index.json', $noTable . DIRECTORY_SEPARATOR . 'index.json');
+        check('W10BF-4: a table its index names that cannot be read is named as unread',
+            $unreadOf(['reference-data-dir' => $noTable])['unread'] === ['the growth reference folder']);
+        $badJson = $refDir . '_badjson';
+        mkdir($badJson);
+        file_put_contents($badJson . DIRECTORY_SEPARATOR . 'index.json', '{"format": ');
+        $bad = $unreadOf(['reference-data-dir' => $badJson]);
+        check('W10BF-4: an index that was read and is not JSON is a decision, a rule problem and not unread',
+            $bad['unread'] === [] && strpos($bad['problems'], 'not valid JSON') !== false);
+        // Read once per request: a second read that fails between compiling
+        // the rules and judging a record must not judge it by the bundled tables.
+        $rm = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $rm->systemSettings = ['reference-data-dir' => $refDir];
+        $rd = new \ReflectionMethod($rm, 'referenceDir');
+        $rd->setAccessible(true);
+        $first = $rd->invoke($rm, 149);
+        $rm->systemThrowFor = ['reference-data-dir' => true];
+        $second = $rd->invoke($rm, 149);
+        $cu = new \ReflectionProperty($rm, 'configUnread');
+        $cu->setAccessible(true);
+        check('W10BF-4: the folder read once is the folder for the rest of the request, though a later read fails',
+            $first === $refDir && $second === $refDir && $cu->getValue($rm) === []);
+        foreach ([$refDir, $twin, $noTable, $badJson] as $d) {
             foreach (['flat.json', 'index.json'] as $f) @unlink($d . DIRECTORY_SEPARATOR . $f);
             @rmdir($d);
         }

@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 5;
+    const VERSION = 6;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -139,6 +139,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 6) return self::statementsV6();
         if ((int) $version === 5) return self::statementsV5();
         if ((int) $version === 4) return self::statementsV4();
         if ((int) $version === 3) return self::statementsV3();
@@ -702,6 +703,59 @@ final class Schema
     }
 
     /**
+     * Version 6: what a run holds open (reviews rvf1-3, W5F-N2, W5F-N1).
+     *
+     * uv_scan_record.unstored is how many findings the detail budget left out
+     * of the record's latest examination in the run, and
+     * uv_scan_record.stored_findings how many it stored. They are set when the record is committed done and
+     * zeroed when it leaves done: sent back to be read again, deleted, or out
+     * of the run's group. 0 on every row that exists when they are added,
+     * which is what those rows hold under the old counting too, since nothing
+     * read them per record.
+     *
+     * uv_scan_run.open_unstored and uv_scan_run.open_findings are the run's
+     * sums of them, kept in the same transactions. Each is added as below,
+     * after its row column. NULL ON EVERY RUN THAT EXISTS WHEN IT IS ADDED, and 0 on
+     * every run created after: a run in flight across the upgrade did not
+     * keep the count from its start, and NULL tells ScanPromotion to read it
+     * the old way (the run-wide detail-unstored aggregate). The column is
+     * added NULL with no default, so the rows already there are NULL; the
+     * default is set afterwards, which changes no row. Re-run, the first is
+     * skipped, and so is the second once the default reads 0. Should the
+     * second not take, new runs are NULL too and are read the old way: the
+     * weaker count, never a wrong one.
+     *
+     * uv_unique_candidate.ix_record (project_id, generation_id, record_hash)
+     * is what lets catch-up delete the candidates of a record it sends back
+     * to be read again, deletes or takes out of the run's group (W5F-N1):
+     * record_hash is a prefix of neither uq_candidate_v2 nor ix_group_v2, so
+     * without it that DELETE reads every candidate of the generation. An
+     * index only; skipped once it exists.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV6()
+    {
+        $run = self::table('scan_run');
+        $rec = self::table('scan_record');
+        $uc  = self::table('unique_candidate');
+        return [['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $rec, 'unstored']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
+                 'skipIf' => ['column', $run, 'open_unstored']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_unstored SET DEFAULT 0',
+                 'skipIf' => ['zerodefault', $run, 'open_unstored']],
+                ['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $rec, 'stored_findings']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_findings BIGINT UNSIGNED NULL',
+                 'skipIf' => ['column', $run, 'open_findings']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_findings SET DEFAULT 0',
+                 'skipIf' => ['zerodefault', $run, 'open_findings']],
+                ['sql' => 'ALTER TABLE ' . $uc . ' ADD KEY ix_record (project_id, generation_id, record_hash)',
+                 'skipIf' => ['index', $uc, 'ix_record']]];
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -913,6 +967,22 @@ final class Schema
                                    . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
+            if ($v === 6) {
+                foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
+                          ['scan_record', 'stored_findings'], ['scan_run', 'open_findings']] as $tc) {
+                    if (self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) continue;
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 6 did not verify after it was applied: the ' . $tc[0]
+                                   . ' table has no ' . $tc[1] . ' column. The version is NOT recorded and '
+                                   . 'the scan stays disabled.'];
+                }
+                if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 6 did not verify after it was applied: the unique_candidate '
+                                   . 'table has no ix_record index. The version is NOT recorded and the scan '
+                                   . 'stays disabled.'];
+                }
+            }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')
                     . ' (version, applied_at) VALUES (?, ?)', [$v, date('Y-m-d H:i:s')]);
@@ -1095,6 +1165,12 @@ final class Schema
             $sql = 'SELECT COUNT(*) FROM information_schema.columns
                     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
                       AND is_nullable = "NO"';
+        } elseif ($kind === 'zerodefault') {
+            // '0', not IS NOT NULL: MariaDB reports a nullable column with no
+            // default as the string 'NULL', where MySQL reports SQL NULL.
+            $sql = 'SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+                      AND column_default = "0"';
         } else {
             throw new \RuntimeException('unknown skipIf kind: ' . $kind);
         }

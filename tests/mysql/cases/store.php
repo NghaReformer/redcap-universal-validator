@@ -334,7 +334,7 @@ $REEXAMINED = 730;
     // frozen manifest, so the requeue only exists inside that phase.
     check('store: the run may enter catch-up', $s->advancePhase($rid, $ep, ScanPhase::CATCH_UP));
     check('store: where a finished record may be sent back to pending',
-        $s->requeue($rid, $ep, ['X-1']) === 1);
+        $s->requeue($rid, $ep, [$hash]) === 1);
     $back = $s->claimPending($rid, 'w', $ep, 1);
     check('store: and the straggler sweep offers it again', is_array($back) && count($back) === 1);
 
@@ -1340,6 +1340,256 @@ $SUPER = 787;
         $kFind !== '' && array_slice(uv_index_columns($A, Schema::table('finding'), $kFind), 0, 3)
             === ['project_id', 'generation_id', 'record_hash']);
     echo '  plan depart: ' . $kSel . ' ' . $kUpd . ' ' . $kOf . ' ' . $kFind . "\n";
+
+    // CATCH-UP'S OTHER READS AND WRITES BY RECORD HASH (W5F-N3).
+    // scannedVersions(), requeue() and tombstone() filtered
+    // `record_id_bin IN (...)`, a column no index holds, so each read the
+    // run's whole primary-key range. Asked by hash, each goes through
+    // uq_run_record, as depart() does above.
+    //
+    // ON A RUN LARGE ENOUGH THAT THE PLAN MEANS SOMETHING. Over the forty
+    // rows above, a read of two hashes costs about the same through
+    // PRIMARY's run_id range, and MySQL 8.0 chose it on one run of this case
+    // in three. 400 more pending rows on the run, and fresh statistics, make
+    // the range the cost a real manifest has; pending rows move no counter
+    // the checks below read.
+    $pad = [];
+    for ($i = 0; $i < 400; $i++) {
+        $pad[] = '(' . (int) $drid . ', ' . (1000 + $i) . ", 'PAD" . $i . "', UNHEX(SHA2('PAD" . $i
+               . "', 256)), 0, NOW())";
+    }
+    $A->query('INSERT INTO ' . Schema::table('scan_record')
+        . ' (run_id, ordinal, record_id_bin, record_hash, state, updated_at) VALUES ' . implode(',', $pad));
+    $A->query('ANALYZE TABLE ' . Schema::table('scan_record'));
+    $nrec = new UvRecordingDb($dbA);
+    $nsr = new SqlScanStore($nrec);
+    $nh = function ($id) { return hash('sha256', $id, true); };
+    $nsv = $nsr->scannedVersions($drid, [$nh('DP11'), $nh('DP12'), $nh('NOT-ON-IT')]);
+    $nrq = $nsr->requeue($drid, $dep, [$nh('DP11')]);
+    $ntb = $nsr->tombstone($drid, $dep, [$nh('DP12')]);
+    $nst = $ds->scannedVersions($drid, [$nh('DP11'), $nh('DP12')]);
+    check('W5F-N3 catch-up by hash: the versions come back keyed by hash, the record not on the run left out',
+        array_keys($nsv) === [$nh('DP11'), $nh('DP12')] && $nsv[$nh('DP11')]['version'] === '5');
+    check('W5F-N3 catch-up by hash: requeue and tombstone move the one row each was given',
+        $nrq === 1 && $ntb === 1
+        && $nst[$nh('DP11')]['state'] === ScanStore::REC_PENDING && $nst[$nh('DP11')]['version'] === null
+        && $nst[$nh('DP12')]['state'] === ScanStore::REC_TOMBSTONE);
+    $nKey = function ($kind, array $needles) use ($nrec, $A) {
+        $out = [];
+        foreach ($nrec->matching($kind, $needles) as $q) $out[] = uv_explain_key($A, $q[1], $q[2]);
+        return $out;
+    };
+    $nSel = $nKey('select', ['SELECT record_hash, version_scanned, state FROM ' . $rt]);
+    $nUpd = $nKey('exec', ['UPDATE ' . $rt, 'record_hash IN']);
+    // A one-row UPDATE may be planned as an index merge of uq_run_record
+    // with PRIMARY (MySQL 8.0 says "uq_run_record,PRIMARY"): the unique key
+    // is in it either way, and a filter on record_id_bin plans PRIMARY alone.
+    $viaHash = function (array $keys, $n) {
+        if (count($keys) !== $n) return false;
+        foreach ($keys as $k) {
+            if (!in_array('uq_run_record', explode(',', $k), true)) return false;
+        }
+        return true;
+    };
+    check('W5F-N3 catch-up by hash: scannedVersions() reads through uq_run_record',
+        $viaHash($nSel, 1));
+    check('W5F-N3 catch-up by hash: and requeue() and tombstone() write through it',
+        $viaHash($nUpd, 2));
+    check('W5F-N3 catch-up by hash: no statement filters on the unindexed record id',
+        $nrec->matching('select', ['record_id_bin IN']) === []
+        && $nrec->matching('exec', ['record_id_bin IN']) === []);
+    echo '  plan catch-up: ' . implode(' ', $nSel) . ' ' . implode(' ', $nUpd) . "\n";
+
+    // A CATCH-UP TOMBSTONE CLOSES THE DELETED RECORD'S FINDINGS (W5F-N4), as
+    // depart() does: by a key that begins (project, generation, record), at
+    // the run's sequence, and never a duplicate-value (staged) finding, which
+    // is the finalizer's. DP12 was tombstoned above; DP13's finding is made a
+    // published duplicate here, and DP13 and DP14 are deleted together.
+    $ft = Schema::table('finding');
+    $activeOf = function ($id) use ($dbA, $ft, $DPID, $dgen) {
+        $r = $dbA->select('SELECT COUNT(*) FROM ' . $ft . ' WHERE project_id = ? AND generation_id = ?
+            AND record_id_bin = ? AND active_slot = 1', [$DPID, $dgen, $id]);
+        return (int) $r[0][0];
+    };
+    $endedAt = $dbA->select('SELECT MIN(valid_to_seq), MAX(valid_to_seq) FROM ' . $ft
+        . ' WHERE project_id = ? AND generation_id = ? AND record_id_bin = ?', [$DPID, $dgen, 'DP12']);
+    check('W5F-N4 tombstone: the deleted record\'s finding is closed, at the run\'s sequence',
+        $activeOf('DP12') === 0 && (int) $endedAt[0][0] === $dseq && (int) $endedAt[0][1] === $dseq);
+    check('W5F-N4 tombstone: and the records beside it keep theirs',
+        $activeOf('DP11') === 1 && $activeOf('DP13') === 1 && $activeOf('DP14') === 1);
+    $A->query('UPDATE ' . $ft . " SET stage_epoch = 1 WHERE project_id = $DPID AND record_id_bin = 'DP13'");
+    $trec = new UvRecordingDb($dbA);
+    $tn = (new SqlScanStore($trec))->tombstone($drid, $dep, [$nh('DP13'), $nh('DP14'), $nh('DP12')]);
+    check('W5F-N4 tombstone: two more records deleted, the one already a tombstone not moved again',
+        $tn === 2);
+    check('W5F-N4 tombstone: the plain finding is closed, the duplicate-value one left to the finalizer',
+        $activeOf('DP14') === 0 && $activeOf('DP13') === 1 && $activeOf('DP11') === 1);
+    $tSel = $trec->matching('select', ['FROM ' . $rt, 'record_hash IN', 'FOR UPDATE']);
+    $tFind = $trec->matching('exec', ['UPDATE ' . $ft, 'record_hash IN']);
+    $tFindKey = $tFind ? uv_explain_key($A, $tFind[0][1], $tFind[0][2]) : '';
+    check('W5F-N4 tombstone: the rows that move are chosen through uq_run_record, under their locks',
+        count($tSel) === 1
+        && $viaHash([uv_explain_key($A, str_replace('FOR UPDATE', '', $tSel[0][1]), $tSel[0][2])], 1));
+    check('W5F-N4 tombstone: and the findings are closed through a key that begins (project, generation, record)',
+        count($tFind) === 1 && $tFindKey !== ''
+        && array_slice(uv_index_columns($A, $ft, $tFindKey), 0, 3)
+            === ['project_id', 'generation_id', 'record_hash']);
+    // A requeue closes nothing: the record is read again, and its next
+    // commit supersedes what it had. Of the requeue and the tombstone above,
+    // only the tombstone sent a close.
+    check('W5F-N4 tombstone: a requeue sends no finding close',
+        count($nrec->matching('exec', ['UPDATE ' . $ft])) === 1);
+    echo '  plan tombstone: ' . $tFindKey . "\n";
+}
+
+// WHAT THE DETAIL BUDGET LEFT OUT, AND WHAT THE RUN HOLDS, ON A REAL SERVER
+// (reviews rvf1-3, W5F-N2). The contract above drives the counts; this is
+// the two things only a server shows: a run from before schema version 6
+// (open_unstored and open_findings NULL) keeps NULL through a commit, a
+// requeue and a departure, where `NULL + ?` and the GREATEST(CAST(...))
+// take-back could have errored or started a count; and a take-back larger
+// than the count stops at 0 instead of failing the unsigned column.
+{
+    $UPID = 965;
+    $us = new SqlScanStore($dbA);
+    $ur = $us->startRun($UPID, ['created_by' => 'alice']);
+    $urid = (int) $ur['run']['run_id'];
+    $us->writeManifest($urid, [['id_bin' => 'N1', 'hash' => hash('sha256', 'N1', true), 'dag' => null],
+                               ['id_bin' => 'N2', 'hash' => hash('sha256', 'N2', true), 'dag' => null]]);
+    $uep = (int) $us->run($UPID, $urid)['lease_epoch'];
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = NULL, open_findings = NULL WHERE run_id = ' . $urid);
+    $urow = $us->run($UPID, $urid);
+    $uc = $us->claim($urid, 'w', $uep, 2);
+    $ub = ['bytes' => 0, 'findings' => [], 'records' => [], 'unstored' => []];
+    foreach ($uc as $c) {
+        $ub['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                            'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
+        $ub['unstored'][$c['ordinal']] = 2;
+        $ub['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $UPID,
+            'generation_id' => (int) $urow['generation_id'], 'host_form' => 'fa', 'field' => 'x',
+            'check_type' => 'required', 'reason_code' => 'required-blank', 'record_id_bin' => $c['id_bin'],
+            'identity' => hash('sha256', 'n' . $c['id_bin'], true), 'valid_from_seq' => (int) $urow['run_seq'],
+            'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    }
+    $okU = $us->commitBatch($urid, 'w', $uep, $ub) === true;
+    $afterU = $us->run($UPID, $urid);
+    $nullAfterCommit = $afterU['open_unstored'];
+    $rowsK = $dbA->select('SELECT stored_findings FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
+    $us->advancePhase($urid, $uep, ScanPhase::CATCH_UP);
+    $rq = $us->requeue($urid, $uep, [hash('sha256', 'N1', true)]);
+    $dp = $us->depart($urid, $uep, [hash('sha256', 'N2', true)]);
+    check('rvf1-3 server: a run from before the count keeps NULL through a commit, a requeue and a departure',
+        $okU && $nullAfterCommit === null && $rq === 1 && $dp === 1
+        && $us->run($UPID, $urid)['open_unstored'] === null);
+    check('W5F-N2 server: and keeps no count of what it holds either, while each row says what it stored',
+        $afterU['open_findings'] === null && (int) $afterU['detail_rows'] === 2
+        && (int) $rowsK[0][0] === 1 && (int) $rowsK[1][0] === 1
+        && $us->run($UPID, $urid)['open_findings'] === null);
+    // The rows still say what each reading left out, then nothing once it
+    // left done, whatever the run's count.
+    $rowsU = $dbA->select('SELECT record_id_bin, unstored, stored_findings FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
+    check('rvf1-3 server: and each row\'s own count is zeroed when it leaves done',
+        (int) $rowsU[0][1] === 0 && (int) $rowsU[1][1] === 0);
+    check('W5F-N2 server: and so is each row\'s stored count',
+        (int) $rowsU[0][2] === 0 && (int) $rowsU[1][2] === 0);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = 1, open_findings = 1 WHERE run_id = ' . $urid);
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . ScanStore::REC_DONE
+        . ', unstored = 5, stored_findings = 4 WHERE run_id = ' . $urid . " AND record_id_bin = 'N1'");
+    $tb = $us->tombstone($urid, $uep, [hash('sha256', 'N1', true)]);
+    $afterTb = $us->run($UPID, $urid);
+    check('rvf1-3 server: a take-back larger than the count stops at 0 rather than failing the write',
+        $tb === 1 && (int) $afterTb['open_unstored'] === 0);
+    check('W5F-N2 server: on the held count too',
+        $afterTb['open_findings'] !== null && (int) $afterTb['open_findings'] === 0);
+}
+
+// A RECORD WHOSE READING THE RUN NO LONGER HOLDS TAKES ITS UNIQUENESS
+// CANDIDATES WITH IT (W5F-N1). Sent back to be read again, deleted or out of
+// the run's group, its candidates in the run's generation are deleted in the
+// transaction that moves it, through ix_record (schema version 6): a record
+// read again with a new value kept its old candidate in the old value's
+// group, and a deleted record kept one with nothing behind it, and the
+// duplicate check blocked both groups. 300 other records' candidates in the
+// same generation make the plan the one a real project gets.
+{
+    $CPID = 966;
+    $cs = new SqlScanStore($dbA);
+    $cr = $cs->startRun($CPID, ['created_by' => 'alice'])['run'];
+    $crid = (int) $cr['run_id'];
+    $cgen = (int) $cr['generation_id'];
+    $cep = (int) $cr['lease_epoch'];
+    $ch = function ($id) { return hash('sha256', 'c' . $id, true); };
+    $cs->writeManifest($crid, array_map(function ($id) use ($ch) {
+        return ['id_bin' => $id, 'hash' => $ch($id), 'dag' => null];
+    }, ['C1', 'C2', 'C3', 'C4']));
+    $ct = Schema::table('unique_candidate');
+    $cand = function ($ord, $id, $group, $version) use ($CPID, $cgen, $ch) {
+        return ['ordinal' => $ord, 'project_id' => $CPID, 'generation_id' => $cgen,
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'group_hmac' => hash('sha256', 'g' . $group, true), 'scope_key' => 'project',
+                'record_hash' => $ch($id), 'record_id_bin' => $id, 'event_id' => 1, 'instance' => 1,
+                'host_form' => 'f', 'field' => 'hospno', 'version' => $version];
+    };
+    $cb0 = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+    foreach ($cs->claim($crid, 'w', $cep, 4) as $c) {
+        $cb0['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+                             'state' => ScanStore::REC_DONE, 'claim' => $c['claim']];
+        $cb0['candidates'][] = $cand($c['ordinal'], $c['id_bin'], 'SAME', '100');
+    }
+    $okC = $cs->commitBatch($crid, 'w', $cep, $cb0) === true;
+    $fill = [];
+    for ($i = 0; $i < 300; $i++) {
+        $fill[] = '(' . $CPID . ', ' . $cgen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX(SHA2('g" . $i
+                . "', 256)), 'project', UNHEX(SHA2('f" . $i . "', 256)), 'F" . $i . "', 1, 1, 'f', 'hospno', '1')";
+    }
+    $A->query('INSERT INTO ' . $ct . ' (project_id, generation_id, rule_source_id, rule_revision, group_hmac,
+        scope_key, record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+        VALUES ' . implode(',', $fill));
+    $A->query('ANALYZE TABLE ' . $ct);
+    $candOf = function () use ($dbA, $ct, $CPID, $cgen) {
+        $out = [];
+        foreach ($dbA->select('SELECT record_id_bin, COUNT(*) FROM ' . $ct . " WHERE project_id = ?
+                AND generation_id = ? AND record_id_bin LIKE 'C%' GROUP BY record_id_bin ORDER BY record_id_bin",
+                [$CPID, $cgen]) as $row) {
+            $out[(string) $row[0]] = (int) $row[1];
+        }
+        return $out;
+    };
+    check('W5F-N1 server: the first reading wrote a candidate for each of the four records',
+        $okC && $candOf() === ['C1' => 1, 'C2' => 1, 'C3' => 1, 'C4' => 1]);
+    $cs->advancePhase($crid, $cep, ScanPhase::CATCH_UP);
+    $crec = new UvRecordingDb($dbA);
+    $csr = new SqlScanStore($crec);
+    $moved = [$csr->requeue($crid, $cep, [$ch('C1')]), $csr->tombstone($crid, $cep, [$ch('C2')]),
+              $csr->depart($crid, $cep, [$ch('C3')])];
+    check('W5F-N1 server: a requeue, a tombstone and a departure each take their record\'s candidates, and only those',
+        $moved === [1, 1, 1] && $candOf() === ['C4' => 1]
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . $ct . " WHERE project_id = ? AND generation_id = ?
+            AND record_id_bin LIKE 'F%'", [$CPID, $cgen])[0][0] === 300);
+    $cDel = $crec->matching('exec', ['DELETE FROM ' . $ct]);
+    $cKeys = [];
+    foreach ($cDel as $q) {
+        $cKeys[] = uv_explain_key($A, $q[1], $q[2]);
+    }
+    check('W5F-N1 server: each in one DELETE through ix_record (project_id, generation_id, record_hash)',
+        count($cDel) === 3 && $cKeys === ['ix_record', 'ix_record', 'ix_record']
+        && uv_index_columns($A, $ct, 'ix_record') === ['project_id', 'generation_id', 'record_hash']);
+    // The record sent back is read again with a new value: its candidate is
+    // the new reading's, in the new value's group, and no other.
+    $cc = $cs->claimPending($crid, 'w2', $cep, 10);
+    $okC2 = is_array($cc) && count($cc) === 1 && $cs->commitBatch($crid, 'w2', $cep, ['bytes' => 0,
+        'findings' => [], 'records' => [['ordinal' => $cc[0]['ordinal'], 'record_hash' => $cc[0]['hash'],
+            'version' => '101', 'state' => ScanStore::REC_DONE, 'claim' => $cc[0]['claim']]],
+        'candidates' => [$cand($cc[0]['ordinal'], 'C1', 'NEW', '101')]]) === true;
+    $c1 = $dbA->select('SELECT group_hmac, version_scanned FROM ' . $ct . " WHERE project_id = ?
+        AND generation_id = ? AND record_id_bin = 'C1'", [$CPID, $cgen]);
+    check('W5F-N1 server: read again, the record holds the new reading\'s candidate only',
+        $okC2 && count($c1) === 1 && $c1[0][0] === hash('sha256', 'gNEW', true) && (string) $c1[0][1] === '101');
+    echo '  plan candidates by record: ' . implode(' ', $cKeys) . "\n";
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

@@ -513,10 +513,18 @@ final class ScanWorker
                 // `revisited` is the part of `verified` below the group's
                 // furthest point; only what lies past it is new ground.
                 $revisited = isset($r['revisited']) ? max(0, (int) $r['revisited']) : 0;
+                // AND DROPPING A DEPARTED RECORD'S CANDIDATES IS (review
+                // rvf2-6). That step reads nothing, writes no finding and says
+                // why, so it met the rule below and ended the request with
+                // ok:false over a group "being checked again without it":
+                // every departure needed a Continue, and a page left alone
+                // aged toward the reaper. Each candidate is dropped once, so
+                // counting them cannot keep a run moving for ever.
                 $forward = max(0, (int) $r['groups'])
                          + max(0, max(0, (int) $r['verified']) - $revisited)
                          + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
-                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0)
+                         + (isset($r['dropped']) ? max(0, (int) $r['dropped']) : 0);
                 $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
                 $stepWhy = isset($r['why']) && $r['why'] !== null ? (string) $r['why'] : null;
                 // A STEP THAT DID NOTHING AND SAYS WHY IS AN ANSWER (R3S-N4).

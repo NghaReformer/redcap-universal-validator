@@ -139,6 +139,87 @@ namespace {
             count($m[0]) >= 2 && $bare === []);
     }
 
+    // rvf1-3: A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 has open_unstored
+    // NULL, and keeps it: its count was not kept from its start, so neither
+    // a commit nor a departure may start one. The SQL store's half is the
+    // schema case's upgrade on a real server.
+    {
+        $old = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $orid = (int) $old->startRun(748, ['created_by' => 'alice', 'open_unstored' => null,
+                                           'open_findings' => null])['run']['run_id'];
+        $old->writeManifest($orid, [['id_bin' => 'O1', 'hash' => hash('sha256', 'O1', true), 'dag' => null]]);
+        $orow = $old->run(748, $orid);
+        $oep = (int) $orow['lease_epoch'];
+        $oc = $old->claim($orid, 'w1', $oep, 1);
+        $old->commitBatch($orid, 'w1', $oep, ['bytes' => 0,
+            'findings' => [['ordinal' => $oc[0]['ordinal'], 'project_id' => 748,
+                'generation_id' => (int) $orow['generation_id'], 'host_form' => 'fa', 'field' => 'x',
+                'check_type' => 'required', 'reason_code' => 'required-blank', 'record_id_bin' => 'O1',
+                'identity' => hash('sha256', 'oO1', true), 'valid_from_seq' => (int) $orow['run_seq'],
+                'record_hash' => $oc[0]['hash'], 'rule_source_id' => 'r1',
+                'rule_revision' => str_repeat('c', 64)]],
+            'records' => [['ordinal' => $oc[0]['ordinal'], 'record_hash' => $oc[0]['hash'],
+                           'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'version' => '1',
+                           'claim' => $oc[0]['claim']]],
+            'unstored' => [$oc[0]['ordinal'] => 3]]);
+        $afterCommit = $old->run(748, $orid);
+        $old->advancePhase($orid, $oep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+        $old->depart($orid, $oep, [hash('sha256', 'O1', true)]);
+        check('rvf1-3: a run from before the count keeps no count, through a commit and a departure',
+            $afterCommit['open_unstored'] === null && $old->run(748, $orid)['open_unstored'] === null);
+        check('W5F-N2: nor a count of what it holds, while detail_rows counts the row it wrote',
+            $afterCommit['open_findings'] === null && (int) $afterCommit['detail_rows'] === 1
+            && $old->run(748, $orid)['open_findings'] === null);
+    }
+
+    // W5F-N1: A RECORD WHOSE READING THE RUN NO LONGER HOLDS TAKES ITS
+    // UNIQUENESS CANDIDATES WITH IT, as the SQL store deletes them (its half,
+    // with the plan, is the MySQL store case): sent back to be read again,
+    // deleted, or out of the run's group. Another run's candidates and the
+    // other records' stay.
+    {
+        $cs = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $crow = $cs->startRun(749, ['created_by' => 'alice'])['run'];
+        $crid = (int) $crow['run_id'];
+        $cep = (int) $crow['lease_epoch'];
+        $ch = function ($id) { return hash('sha256', 'c' . $id, true); };
+        $cs->writeManifest($crid, array_map(function ($id) use ($ch) {
+            return ['id_bin' => $id, 'hash' => $ch($id), 'dag' => null];
+        }, ['C1', 'C2', 'C3', 'C4']));
+        $cand = function ($ord, $id, $gen) use ($ch) {
+            return ['ordinal' => $ord, 'project_id' => 749, 'generation_id' => $gen,
+                    'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                    'group_hmac' => hash('sha256', 'gSAME', true), 'scope_key' => 'project',
+                    'record_hash' => $ch($id), 'record_id_bin' => $id, 'event_id' => 1, 'instance' => 1,
+                    'host_form' => 'f', 'field' => 'hospno', 'version' => '100'];
+        };
+        $cb = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+        foreach ($cs->claim($crid, 'w', $cep, 4) as $c) {
+            $cb['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+                                'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'claim' => $c['claim']];
+            $cb['candidates'][] = $cand($c['ordinal'], $c['id_bin'], (int) $crow['generation_id']);
+            // The same record in another generation: not this run's.
+            $cb['candidates'][] = array_merge($cand($c['ordinal'], $c['id_bin'], 99), ['field' => 'other']);
+        }
+        $cs->commitBatch($crid, 'w', $cep, $cb);
+        $cs->advancePhase($crid, $cep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+        $ofRun = function () use ($cs, $crow) {
+            $ids = [];
+            foreach ($cs->candidates() as $c) {
+                if ((int) $c['generation_id'] === (int) $crow['generation_id']) $ids[] = (string) $c['record_id_bin'];
+            }
+            sort($ids);
+            return $ids;
+        };
+        $before = $ofRun();
+        $moved = [$cs->requeue($crid, $cep, [$ch('C1')]), $cs->tombstone($crid, $cep, [$ch('C2')]),
+                  $cs->depart($crid, $cep, [$ch('C3')])];
+        check('W5F-N1: a requeue, a tombstone and a departure each take their record\'s candidates, and only those',
+            $before === ['C1', 'C2', 'C3', 'C4'] && $moved === [1, 1, 1] && $ofRun() === ['C4']);
+        check('W5F-N1: and another generation\'s candidates of the same records stay',
+            count($cs->candidates()) === 5);
+    }
+
     echo "scan_store_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

@@ -33,9 +33,10 @@ namespace INSPIRE\UniversalValidator\Scan;
  *   NEW      not on the manifest -> added, if it is in scope. A DAG-scoped run
  *            must not quietly widen itself, so scope is asked, never assumed.
  *   EDITED   on the manifest, changed after we scanned it -> requeued.
- *   GONE     on the manifest, no longer in the project -> tombstoned. Not
- *            requeued: a deleted record can never be read, so requeueing it
- *            would hold the run open forever (C3's mirror case).
+ *   GONE     on the manifest, no longer in the project -> tombstoned, its
+ *            findings in the run closed (W5F-N4). Not requeued: a deleted
+ *            record can never be read, so requeueing it would hold the run
+ *            open forever (C3's mirror case).
  *   SETTLED  changed within the window but before we scanned it, so the reading
  *            already includes it -> nothing to do. This is the case that makes
  *            the second round cheap and is why the pass converges.
@@ -204,8 +205,19 @@ final class CatchUp
             $ids[] = $row['id'];
             $version[$row['id']] = $row['version'];
         }
-
-        $known  = $this->store->scannedVersions($runId, $ids);
+        // THE STORE IS ASKED BY RECORD HASH (W5F-N3): uq_run_record (run_id,
+        // record_hash) is the index that finds a run's row, and record_id_bin
+        // has none. Each id's hash is made once, here, and the answers are
+        // read back by id.
+        $hashOf = [];
+        foreach ($ids as $id) {
+            if (!isset($hashOf[$id])) $hashOf[$id] = (string) call_user_func($this->deps['hash'], $id);
+        }
+        $byHash = $this->store->scannedVersions($runId, array_values($hashOf));
+        $known = [];
+        foreach ($hashOf as $id => $h) {
+            if (isset($byHash[$h])) $known[$id] = $byHash[$h];
+        }
         // A PROBE THAT THROWS ANSWERS "STILL THERE" FOR THE WHOLE PAGE. It used
         // to escape step() and fail the request, which is the loud direction
         // but not the one RecordManifestSource::exist() commits to: a read
@@ -246,13 +258,13 @@ final class CatchUp
                 // report its reader is not entitled to.
                 if ($stillThere && $in === true) {
                     $add[] = ['id_bin' => $id,
-                              'hash' => call_user_func($this->deps['hash'], $id),
+                              'hash' => $hashOf[$id],
                               'dag' => isset($dags[$id]) ? $dags[$id] : null];
                 }
                 continue;
             }
             if (!$stillThere) {
-                if ($known[$id]['state'] !== ScanStore::REC_TOMBSTONE) $gone[] = $id;
+                if ($known[$id]['state'] !== ScanStore::REC_TOMBSTONE) $gone[] = $hashOf[$id];
                 continue;
             }
             $state = (int) $known[$id]['state'];
@@ -262,7 +274,7 @@ final class CatchUp
                 // after it moved is "settled" by that rule, and what it read
                 // was the other group's data.
                 if ($state !== ScanStore::REC_DEPARTED) {
-                    $depart[] = call_user_func($this->deps['hash'], $id);
+                    $depart[] = $hashOf[$id];
                 }
                 continue;
             }
@@ -271,7 +283,7 @@ final class CatchUp
                 // now. Examined again rather than vouched for: the worker asks
                 // the record's group before it reads it, and sets it aside
                 // while that cannot be answered.
-                $requeue[] = $id;
+                $requeue[] = $hashOf[$id];
                 continue;
             }
             // Edited AFTER we read it. A change that landed before the record's
@@ -281,7 +293,7 @@ final class CatchUp
             $scanned = $known[$id]['version'];
             if ($scanned === null
                     || SourceFence::decCmp((string) $version[$id], (string) $scanned) > 0) {
-                $requeue[] = $id;
+                $requeue[] = $hashOf[$id];
             }
         }
 

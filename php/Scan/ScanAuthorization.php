@@ -295,8 +295,11 @@ final class ScanAuthorization
         // a statement about how many it found: a stopped run read "Some
         // findings were not kept, because the scan reached the limit" while
         // its counts were withheld.
+        // `asOf` is the day the run's date rules are judged as of (W10BF-3): a
+        // fact of the run's configuration, counting nothing.
         $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
-                 'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why'];
+                 'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why',
+                 'asOf'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for

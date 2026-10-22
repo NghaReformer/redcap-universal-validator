@@ -168,6 +168,15 @@ interface ScanStore
         // Whether the run got past catch-up (CAUGHT_UP), which its phase
         // stops saying once it is stopped or ends (review rvf1-1).
         'catchup_dirty',
+        // The findings the detail budget left out of readings the run still
+        // holds (schema version 6, review rvf1-3). NULL on a run that began
+        // before the column existed, and that run is counted the old way.
+        'open_unstored',
+        // The findings stored by readings the run still holds (schema
+        // version 6, review W5F-N2): detail_rows less what catch-up
+        // superseded and what left with a departed or deleted record. NULL
+        // on a run that began before the column, as above.
+        'open_findings',
     ];
 
     /**
@@ -561,6 +570,15 @@ interface ScanStore
      * in the same transaction, behind the same fences: a record lost to
      * another worker is that worker's to count. Absent is none.
      *
+     * AND PER RECORD (reviews rvf1-3, W5F-N2). A held record committed done
+     * keeps its left-out count on its manifest row, and the run's
+     * open_unstored grows by it, in the same transaction; any other committed
+     * state keeps 0. Every held record keeps the count of findings it stored
+     * the same way (`stored_findings`), and open_findings grows by the batch's stored
+     * total. The rows' counts are what requeue(), tombstone() and depart()
+     * take back from the run when the record leaves done, so a finding of a
+     * reading the run no longer holds is no longer counted.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */
@@ -571,6 +589,11 @@ interface ScanStore
      * because its detail budget was spent (H9). ScanPromotion::tally() adds it
      * to what the summary counts, so `violations` is every finding; a run with
      * any is `truncated`, and one with none is not.
+     *
+     * RUN-WIDE AND ONLY EVER ADDED TO, so it cannot take back a record that
+     * left the run (review rvf1-3). A run row whose open_unstored is not NULL
+     * (every run created at schema version 6 or later) is judged on that
+     * instead; this aggregate is read only for a run that began before it.
      */
     const DETAIL_UNSTORED = 'detail-unstored';
 
@@ -957,8 +980,22 @@ interface ScanStore
      * The attempt counter is NOT reset: a record that keeps being edited must
      * still reach its attempt limit and become a blocking exclusion, or a
      * project someone is actively working in could hold a run open forever.
+     *
+     * By RECORD HASH (W5F-N3), as depart() is: uq_run_record (run_id,
+     * record_hash) finds the rows, where record_id_bin has no index and a
+     * filter on it reads every row of the run.
+     *
+     * Each row's counts (commitBatch(), rvf1-3, W5F-N2) are taken back from
+     * the run's open_unstored and open_findings and zeroed, in the same
+     * transaction: the reading that stored and left out those findings is
+     * the one being replaced. Its stored findings stay active until the new
+     * reading supersedes them, so the report is never blank for a record
+     * still being checked; the run's count leaves them out meanwhile, as it
+     * leaves the record out of `done`.
+     *
+     * @param string[] $hashes raw record hashes
      */
-    public function requeue($runId, $epoch, array $recordIds);
+    public function requeue($runId, $epoch, array $hashes);
 
     /**
      * Mark records that no longer exist in the project.
@@ -966,8 +1003,19 @@ interface ScanStore
      * A deleted record can never reach `done`, so without a terminal state of
      * its own it would hold the run incomplete forever - the mirror of the
      * false-complete case, and the reason C3 called it worse.
+     *
+     * ITS FINDINGS GO WITH IT (W5F-N4). In one transaction, each row not
+     * already a tombstone becomes one, and the record's active findings in
+     * this run's generation are closed at the run's sequence, as depart()
+     * and a worker's tombstone commit close them: the run reports on records
+     * the project holds, and counts a deleted one as removed. Duplicate-value
+     * findings (staged) are the finalizer's and are not touched. Its
+     * stored and left-out counts are taken back as requeue() takes them.
+     *
+     * @param string[] $hashes raw record hashes, as requeue() takes them
+     * @return int rows that became tombstones
      */
-    public function tombstone($runId, $epoch, array $recordIds);
+    public function tombstone($runId, $epoch, array $hashes);
 
     /**
      * Take records that left the run's group out of the run (review rv5b-1).
@@ -978,7 +1026,9 @@ interface ScanStore
      * and the record's active findings in this run's generation are closed
      * at the run's sequence, as a re-examination closes them. A deleted
      * record stays a tombstone: gone is the stronger fact. Duplicate-value
-     * findings (staged) are the finalizer's and are not touched.
+     * findings (staged) are the finalizer's and are not touched. Its stored
+     * and left-out counts are taken back as requeue() takes them (rvf1-3,
+     * W5F-N2).
      *
      * Catch-up phase and current lease epoch only, like the other
      * reconciliation writes. A record departing while the worker reads it
@@ -1004,8 +1054,16 @@ interface ScanStore
     /** How many manifest rows are in each state. The input to the coverage predicate. */
     public function recordStates($runId);
 
-    /** The source version each named record was last scanned at, keyed by id. */
-    public function scannedVersions($runId, array $recordIds);
+    /**
+     * The source version and state of each named record, keyed by raw hash.
+     *
+     * By record hash for the reason requeue() gives (W5F-N3). A hash the
+     * run's manifest does not hold is absent from the answer.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return array<string,array{version:?string,state:int}>
+     */
+    public function scannedVersions($runId, array $hashes);
 
     /** Where reconciliation and rollup had reached. Survives the request. */
     public function progressState($runId);

@@ -301,11 +301,11 @@ class FaultyStore implements ScanStore
     public function reconcileAdd($runId, $epoch, array $records)
     { $this->gate('reconcileAdd'); return $this->inner->reconcileAdd($runId, $epoch, $records); }
 
-    public function requeue($runId, $epoch, array $recordIds)
-    { $this->gate('requeue'); return $this->inner->requeue($runId, $epoch, $recordIds); }
+    public function requeue($runId, $epoch, array $hashes)
+    { $this->gate('requeue'); return $this->inner->requeue($runId, $epoch, $hashes); }
 
-    public function tombstone($runId, $epoch, array $recordIds)
-    { $this->gate('tombstone'); return $this->inner->tombstone($runId, $epoch, $recordIds); }
+    public function tombstone($runId, $epoch, array $hashes)
+    { $this->gate('tombstone'); return $this->inner->tombstone($runId, $epoch, $hashes); }
 
     public function depart($runId, $epoch, array $hashes)
     { $this->gate('depart'); return $this->inner->depart($runId, $epoch, $hashes); }
@@ -316,8 +316,8 @@ class FaultyStore implements ScanStore
     public function recordStates($runId)
     { $this->gate('recordStates'); return $this->inner->recordStates($runId); }
 
-    public function scannedVersions($runId, array $recordIds)
-    { $this->gate('scannedVersions'); return $this->inner->scannedVersions($runId, $recordIds); }
+    public function scannedVersions($runId, array $hashes)
+    { $this->gate('scannedVersions'); return $this->inner->scannedVersions($runId, $hashes); }
 
     public function progressState($runId)
     { $this->gate('progressState'); return $this->inner->progressState($runId); }

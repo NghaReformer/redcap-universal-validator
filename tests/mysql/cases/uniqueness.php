@@ -850,11 +850,14 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('rv10b2-1: and all six duplicates are written', (int) $dupes[0][0] === 6);
     // The refresh is one statement, through the candidate key: an equality on
     // its first four columns, so it reads the edited record's rows and no
-    // others however large the group.
+    // others however large the group. Or through ix_record (schema version
+    // 6, W5F-N1), an equality on (project, generation, record): the edited
+    // record's rows in every group, a handful, which MariaDB 10.11 prefers.
     $refresh = $recL->matching('exec', array('SET version_scanned = CASE record_hash'));
     $refreshKeys = $refresh ? uv_explain_keys($A, $refresh[0][1], $refresh[0][2]) : array();
-    check('rv10b2-1: the version refresh is one statement through uq_candidate_v2 ('
-        . implode(',', $refreshKeys) . ')', count($refresh) === 1 && $refreshKeys === array('uq_candidate_v2'));
+    check('rv10b2-1: the version refresh is one statement through uq_candidate_v2 or ix_record ('
+        . implode(',', $refreshKeys) . ')', count($refresh) === 1
+        && ($refreshKeys === array('uq_candidate_v2') || $refreshKeys === array('ix_record')));
 
     // A record edited on every look: the group is blocked as undecidable after
     // MAX_RESTARTS, so the run ends partial instead of never.
@@ -1010,6 +1013,259 @@ $NEIGHBOUR = uv_neighbour($PID);
         $afterW['why'] === \INSPIRE\UniversalValidator\Scan\ScanStore::HOLD_TAKEN_OVER
         && $findingsOf(977, $genW) === $beforeW);
 
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
+// -- a record read again with a new value, and one deleted (W5F-N1) ---------
+//
+// Catch-up sends a record whose value changed back to be read again, and
+// tombstones a deleted one. Their candidates from the first reading used to
+// stay in the run's generation: the old value's group then met a value that
+// no longer matched it, and a record with nothing to re-read, and was
+// blocked as undecidable, so the run could only end partial. A record whose
+// reading the run no longer holds now takes its candidates with it, and the
+// group is decided over what the project holds: R1 alone, a singleton.
+{
+    $KEY = 'w5fn1-key';
+    $UPID = 978;
+    $ust = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $urun = $ust->startRun($UPID, array('created_by' => 'alice'))['run'];
+    $urid = (int) $urun['run_id'];
+    $ugen = (int) $urun['generation_id'];
+    $uep = (int) $urun['lease_epoch'];
+    $uHash = function ($r) use ($UPID, $KEY) {
+        return \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $UPID, $r, $KEY);
+    };
+    $uGroup = function ($v) use ($UPID, $KEY) {
+        return \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $UPID, $v, $KEY);
+    };
+    $ust->writeManifest($urid, array_map(function ($r) use ($uHash) {
+        return array('id_bin' => $r, 'hash' => $uHash($r), 'dag' => null);
+    }, array('R1', 'R2', 'R3')));
+    $uValue = array('R1' => 'SAME', 'R2' => 'SAME', 'R3' => 'SAME');
+    $uCand = function ($c, $v, $version) use ($UPID, $ugen, $uGroup) {
+        return array('ordinal' => $c['ordinal'], 'project_id' => $UPID, 'generation_id' => $ugen,
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+            'group_hmac' => $uGroup($v), 'scope_key' => 'project', 'record_hash' => $c['hash'],
+            'record_id_bin' => $c['id_bin'], 'event_id' => 1, 'instance' => 1, 'host_form' => 'f',
+            'field' => 'hospno', 'version' => $version);
+    };
+    $ub = array('bytes' => 0, 'records' => array(), 'findings' => array(), 'candidates' => array());
+    foreach ($ust->claim($urid, 'w1', $uep, 3) as $c) {
+        $ub['records'][] = array('ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'claim' => $c['claim']);
+        $ub['candidates'][] = $uCand($c, $uValue[$c['id_bin']], '100');
+    }
+    $okU = $ust->commitBatch($urid, 'w1', $uep, $ub) === true;
+    $ust->advancePhase($urid, $uep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+    $uValue['R3'] = 'NEW';
+    $ust->requeue($urid, $uep, array($uHash('R3')));
+    $uc = $ust->claimPending($urid, 'w2', $uep, 10);
+    $okU = $okU && is_array($uc) && count($uc) === 1 && $ust->commitBatch($urid, 'w2', $uep, array('bytes' => 0,
+        'findings' => array(), 'candidates' => array($uCand($uc[0], 'NEW', '101')),
+        'records' => array(array('ordinal' => $uc[0]['ordinal'], 'record_hash' => $uc[0]['hash'],
+            'version' => '101', 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE,
+            'claim' => $uc[0]['claim'])))) === true;
+    unset($uValue['R2']);
+    $okU = $okU && $ust->tombstone($urid, $uep, array($uHash('R2'))) === 1;
+    $uVer = new MovingVersions();
+    $uVer->v = array('R1' => '100', 'R3' => '101');
+    $uFin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $UPID,
+        'seq' => (int) $urun['run_seq'], 'hmacKey' => $KEY, 'versions' => $uVer,
+        'read' => function ($locs) use (&$uValue) {
+            $out = array();
+            foreach ($locs as $l) {
+                if (isset($uValue[$l['record']])) {
+                    $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array($uValue[$l['record']]);
+                }
+            }
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        }));
+    for ($i = 0; $i < 20; $i++) {
+        $us = $uFin->step($ugen, 10, 10);
+        if ($us['done']) break;
+    }
+    $uSame = $dbA->select('SELECT phase, collision_state, distinct_records FROM ' . Schema::table('unique_group')
+        . ' WHERE project_id = ? AND generation_id = ? AND group_hmac = ?', array($UPID, $ugen, $uGroup('SAME')));
+    $uStatus = $uFin->status($ugen);
+    check('W5F-N1 unique: the fixture read R3 again with a new value and deleted R2 during catch-up',
+        $okU && count($uSame) === 1);
+    check('W5F-N1 unique: the old value\'s group holds R1 alone and is decided, not blocked',
+        count($uSame) === 1 && $uSame[0][0] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::G_SINGLETON
+        && (int) $uSame[0][1] === 0 && (int) $uSame[0][2] === 1);
+    check('W5F-N1 unique: so the duplicate check finishes with nothing blocking the run',
+        $uStatus['done'] === true && $uStatus['blocking'] === 0);
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
+// -- departures are not restarts (review rvf2-5) -----------------------------
+//
+// MAX_RESTARTS counts the group's candidate_epoch, and dropping a departed
+// record's candidates moved it too: a group that lost four records to
+// another group was blocked as "kept changing" on the first edit to a record
+// still in it, with no restart. A drop now keeps the epoch, so the edit gets
+// its restart and the group is decided.
+{
+    $KEY = 'rvf2-5-key';
+    $DPID = 979;
+    $GEND = uv_generation('departures-then-an-edit');
+    $dRecs = array('D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8');
+    $dHash = function ($r) use ($DPID, $KEY) {
+        return \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $DPID, $r, $KEY);
+    };
+    $dGroup = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $DPID, 'SAME', $KEY));
+    foreach ($dRecs as $r) {
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $DPID . ", " . $GEND . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $dGroup . "'),
+                    'project', UNHEX('" . bin2hex($dHash($r)) . "'), '" . $r . "', 1, 1, 'f', 'hospno', '100')");
+    }
+    // D1..D4 left the run's group, one met on each verify page.
+    $dGone = array();
+    foreach (array('D1', 'D2', 'D3', 'D4') as $r) $dGone[$dHash($r)] = true;
+    $dDeparted = function (array $hashes) use (&$dGone) {
+        foreach ($hashes as $h) {
+            if (isset($dGone[$h])) {
+                unset($dGone[$h]);
+                return array($h => true);
+            }
+        }
+        return array();
+    };
+    $dVer = new MovingVersions();
+    foreach ($dRecs as $r) $dVer->v[$r] = '100';
+    $dFin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $DPID, 'seq' => 5,
+        'hmacKey' => $KEY, 'versions' => $dVer, 'departed' => $dDeparted,
+        'read' => function ($locs) {
+            $out = array();
+            foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('SAME');
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        }));
+    $dGroupRow = function () use ($dbA, $DPID, $GEND) {
+        return $dbA->select('SELECT phase, candidate_epoch, collision_state, distinct_records FROM '
+            . Schema::table('unique_group') . ' WHERE project_id = ? AND generation_id = ?', array($DPID, $GEND));
+    };
+    $dFin->step($GEND, 10, 2);
+    $dDrops = 0;
+    $dDropped = array();
+    for ($i = 0; $i < 12 && $dGone; $i++) {
+        $s = $dFin->step($GEND, 10, 2);
+        if ($s['why'] !== null && strpos($s['why'], 'left the group') !== false) {
+            $dDrops++;
+            $dDropped[] = $s['dropped'];
+        }
+    }
+    $afterDrops = $dGroupRow();
+    check('rvf2-5: four departures, one a verify page, leave the group at its first epoch with four records',
+        $dDrops === 4 && count($afterDrops) === 1 && (int) $afterDrops[0][1] === 1
+        && (int) $afterDrops[0][3] === 4);
+    check('rvf2-6: each departure step says it dropped its departed record\'s candidate',
+        $dDropped === array(1, 1, 1, 1));
+    // One edit, once, to a record still in the group (D8 is on its last page).
+    $dVer->v['D8'] = '101';
+    $dRestarts = 0;
+    $dLast = null;
+    for ($i = 0; $i < 30; $i++) {
+        $dLast = $dFin->step($GEND, 10, 2);
+        if ($dLast['why'] !== null && strpos($dLast['why'], 'changed while it was being checked') !== false) $dRestarts++;
+        if ($dLast['done']) break;
+    }
+    $afterEdit = $dGroupRow();
+    check('rvf2-5: the edit after them gets its restart, one',
+        $dRestarts === 1 && (int) $afterEdit[0][1] === 2);
+    check('rvf2-5: and the group is decided, not blocked as kept changing',
+        $dLast !== null && $dLast['done'] === true
+        && $afterEdit[0][0] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::G_PUBLISHED
+        && (int) $afterEdit[0][2] === 0);
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
+// -- what the fence costs a group of two (W10BF-5) -----------------------------
+//
+// Each emit page and each publish is one transaction that first holds the run
+// row (rv10a1-1). A group of two was emitted in one page and published by the
+// step after it, which read an empty page and took a second transaction and a
+// second hold. The last page now publishes in its own held transaction: the
+// same hold, the same atomicity, one transaction a group. Counted on 20
+// groups of two through a fenced finalizer, the store over the same recorded
+// connection, transactions included.
+{
+    $KEY = 'w10bf5-key';
+    $FPID = 974;
+    $fRec = new class($dbA) extends UvRecordingDb {
+        public $begins = 0;
+        public $commits = 0;
+        public function begin()  { $this->begins++; parent::begin(); }
+        public function commit() { $this->commits++; parent::commit(); }
+    };
+    $fStore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($fRec);
+    $fRun = $fStore->startRun($FPID, array('created_by' => 'alice', 'fence_open' => '10'));
+    $fRid = (int) $fRun['run']['run_id'];
+    $fStore->writeManifest($fRid, array(array('id_bin' => 'P1', 'hash' => hash('sha256', 'P1', true), 'dag' => null)));
+    $fRow = $fStore->run($FPID, $fRid);
+    $fEp = (int) $fRow['lease_epoch'];
+    foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::SCANNING,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                   \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE) as $to) {
+        $fStore->advancePhase($fRid, $fEp, $to);
+    }
+    $fGen = (int) $fRow['generation_id'];
+    $GROUPS = 20;
+    $fRows = array();
+    for ($i = 1; $i <= $GROUPS; $i++) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $FPID, 'V' . $i, $KEY));
+        foreach (array('a', 'b') as $side) {
+            $rec = 'P' . $i . $side;
+            $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $FPID, $rec, $KEY));
+            $fRows[] = '(' . $FPID . ', ' . $fGen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g
+                     . "'), 'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)";
+        }
+    }
+    $A->query('INSERT INTO ' . Schema::table('unique_candidate') . '
+        (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+         record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+        VALUES ' . implode(',', $fRows));
+    $fFin = (new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($fRec, array('pid' => $FPID, 'hmacKey' => $KEY,
+        'store' => $fStore,
+        'read' => function ($locs) {
+            $out = array();
+            foreach ($locs as $l) {
+                $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array(substr($l['record'], 0, -1));
+            }
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        })))->forRun((int) $fRow['run_seq'], $fRid, $fEp);
+    $fRec->log = array();
+    $fRec->begins = 0;
+    $fRec->commits = 0;
+    $fSteps = 0;
+    $fPublished = 0;
+    for ($i = 0; $i < 200; $i++) {
+        $s = $fFin->step($fGen, 10);
+        $fSteps++;
+        $fPublished += (int) $s['published'];
+        if ($s['done'] || $s['why'] !== null) break;
+    }
+    $fHolds = count($fRec->matching('select', array('SELECT lease_epoch, terminal, phase FROM', 'FOR UPDATE')));
+    $fPages = count($fRec->matching('select', array('FROM ' . Schema::table('unique_candidate'), 'AND lookup = 0')));
+    $fTotal = count($fRec->log) + $fRec->begins + $fRec->commits;
+    $fActive = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1', array($FPID, $fGen));
+    echo '  fence, ' . $GROUPS . ' groups of two: ' . $fTotal . ' statements (' . round($fTotal / $GROUPS, 2)
+        . ' a group), ' . $fHolds . ' holds, ' . $fRec->begins . ' transactions, ' . $fPages . ' emit pages, '
+        . $fSteps . " steps\n";
+    check('W10BF-5: every group of two is published, its 40 duplicates active',
+        $s['done'] === true && $fPublished === $GROUPS && (int) $fActive[0][0] === 2 * $GROUPS);
+    check('W10BF-5: one held transaction a group, its last emit page publishing it',
+        $fHolds === $GROUPS && $fRec->begins === $GROUPS && $fRec->commits === $GROUPS);
+    check('W10BF-5: and one emit page read a group, none read empty to learn it was done',
+        $fPages === $GROUPS);
     foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
         $A->query('DELETE FROM ' . Schema::table($t));
     }

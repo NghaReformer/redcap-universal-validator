@@ -700,6 +700,12 @@ namespace {
             return $this->posture !== null ? $this->posture
                 : ['recordIds' => 'raw', 'hashRecordId' => null, 'recordIdField' => 'record_id'];
         }
+        /** @var ?string the sentence durableScanContext() refuses with, or null for a context (W10BF-4) */
+        public $refuse = null;
+        /** @var ?array the clock the context says it judges by when it is given none (W10BF-3) */
+        public $clock = null;
+        /** @var array the asOf each context was asked with, 'absent' for none (W10BF-3) */
+        public $askedAsOf = [];
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -741,6 +747,7 @@ namespace {
             $key = $this->sys['log-hmac-key'];
             $self = $this;
             $this->contextsBuilt++;
+            $this->askedAsOf[] = array_key_exists('asOf', $opts) ? $opts['asOf'] : 'absent';
             // As buildScanPlan(): a lookup whose project refuses the reader is
             // in crossRefused, and its rule stays in the rule list.
             $refused = $this->planRefused;
@@ -751,6 +758,12 @@ namespace {
                 }
                 $refused = array_values($refused);
             }
+            // W10BF-4: a context that refuses, with whatever it says it could not read.
+            if ($this->refuse !== null) {
+                return ['ok' => false, 'why' => $this->refuse, 'plan' => null, 'evaluate' => null,
+                        'read' => null, 'rules' => [], 'ownership' => [], 'problems' => $this->problems,
+                        'unread' => $this->unread];
+            }
             $plan = ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => $refused,
                      'crossUnread' => $this->planUnread, 'crossLookups' => $this->crossLookups,
                      'crossRecordLookups' => false];
@@ -760,6 +773,8 @@ namespace {
                 'rules' => $this->rules,
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
+                // As the module: the run's clock when it is given one, else this request's.
+                'clock' => (isset($opts['asOf']) && is_array($opts['asOf'])) ? $opts['asOf'] : $this->clock,
                 'verifyFingerprint' => $this->verifyFingerprint,
                 'plan' => $plan,
                 'read' => function (array $ids) use ($self) {
@@ -1439,7 +1454,9 @@ namespace INSPIRE\UniversalValidator\Scan {
  * cancelled during unique-finalize said "Nothing found yet" over the duplicates
  * it had written. The run row cannot say whether a summary was built, so a run
  * with no verdict answers with the larger of the counter and whatever summary
- * exists - and with NULL, "not counted", when both are zero.
+ * exists - and with NULL, "not counted", when both are zero. The counter is
+ * the run row's open_findings, what its records still hold (W5F-N2), and
+ * detail_rows on a run from before schema version 6 (below).
  * ===================================================================== */
 {
     $agg = new ArrayScanStore();
@@ -1452,31 +1469,39 @@ namespace INSPIRE\UniversalValidator\Scan {
     };
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("OC-4: a $how run with nothing stored and nothing summarised is NOT COUNTED, never zero",
-            $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 0]) === null);
+            $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 0]) === null);
         check("OC-4: a $how run whose summary holds findings the counter missed reports them",
-            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 0]) === 2);
+            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 0]) === 2);
         check("OC-4: and a $how run answers with the larger of the two, whichever it is",
-            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 5]) === 5
-            && $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 3]) === 3);
+            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 5]) === 5
+            && $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 3]) === 3);
     }
     check('OC-4: a run that reached a verdict still answers from its summary alone',
-        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 2
-        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
+        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 2
+        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
-        $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+        $as($agg, 820, $aid, ['terminal' => null, 'open_findings' => 4]) === 4);
 
     // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
     // while the worker goes on finding, so every answer adds them: a run
     // still working (review rv10b1-3), and a run with no verdict, whose
     // floor is taken over what was STORED and then has them added (rv10b1-5
     // M1: compared instead, a run that stored 5 and left 2 out said 5).
+    // A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 (open_unstored and
+    // open_findings NULL), which is counted from the run-wide aggregate and
+    // from detail_rows as it always was; the run-row counts that replace
+    // them for later runs are pinned below (rvf1-3, W5F-N2).
     $uns = new ArrayScanStore();
-    $uid = (int) $uns->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
+    $uid = (int) $uns->startRun(822, ['created_by' => 'alice', 'open_unstored' => null,
+                                      'open_findings' => null])['run']['run_id'];
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
-    // And reads its aggregates for that only once the budget it froze is
-    // spent: below it nothing was left out, and a status poll reads none.
+    // WHERE THE COUNT IS READ FROM (review rvf2-4). A run from before
+    // version 6 reads its aggregates on every poll, below the budget it froze
+    // too: the worker stores against the budget in the settings now, which
+    // can be lower. A run that keeps the count on its row reads no
+    // aggregates while it works, whatever its counters and budget say.
     $frozen = json_encode(['maxFindings' => 10, 'maxBytes' => 1000]);
     $noAgg = (new FaultyStore($uns))->failFrom('aggregates');
     $askAgg = function (array $over) use ($noAgg, $uns, $uid) {
@@ -1486,14 +1511,17 @@ namespace INSPIRE\UniversalValidator\Scan {
             return 'read';
         }
     };
-    check('rv10b1-3: a working run below the budget it froze reads no aggregates for its count',
+    check('rvf2-4: a working run from before the count reads its aggregates below the budget it froze, too',
         $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
-                 'policy_json' => $frozen]) === 4);
-    check('rv10b1-3: one at the findings limit, or the bytes limit, or with no budget to read, does',
-        $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 0, 'policy_json' => $frozen]) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 1000, 'policy_json' => $frozen]) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => '{']) === 'read'
-        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => json_encode(['maxBytes' => 1000])]) === 'read');
+                 'policy_json' => $frozen]) === 'read'
+        && $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen]) === 6);
+    check('rvf2-4: a working run that keeps the count reads no aggregates, below the budget or past it',
+        $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen, 'open_unstored' => '3']) === 7
+        && $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 1000,
+                 'policy_json' => $frozen, 'open_unstored' => '0']) === 10
+        && $askAgg(['terminal' => null, 'detail_rows' => 2, 'policy_json' => '{', 'open_unstored' => 5]) === 7);
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
             $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
@@ -1503,6 +1531,58 @@ namespace INSPIRE\UniversalValidator\Scan {
         $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 5]) === 7);
     check('rv10b1-5: a summary larger than the counter is the floor the 2 are added to',
         $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 1]) === 6);
+}
+
+/* =====================================================================
+ * rvf2-4  THE BUDGET LOWERED WHILE A RUN WORKS
+ *
+ * The run froze the default detail budget at Start; the settings now say 2,
+ * and the worker is armed with the settings. It stores two findings and
+ * leaves four out. The working count was gated on the FROZEN budget being
+ * spent, which it is not, so status said 2 while the worker said 6.
+ * ===================================================================== */
+{
+    $frozen = ScanPolicy::resolve([], []);
+    $low = new ArrayScanStore();
+    $lowId = (int) $low->startRun(823, ['created_by' => 'alice',
+        'policy_json' => json_encode($frozen)])['run']['run_id'];
+    $recs = [];
+    foreach (['A', 'B', 'C', 'D', 'E', 'F'] as $id) {
+        $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+    }
+    $low->writeManifest($lowId, $recs);
+    $lowWorker = new ScanWorker($low, [
+        'read' => function ($ids) {
+            $d = [];
+            foreach ($ids as $id) $d[$id] = ['1' => ['x' => '']];
+            return ['ok' => true, 'data' => $d, 'why' => null];
+        },
+        'evaluate' => function ($id, $node) {
+            return ['findings' => [['project_id' => 823, 'generation_id' => 1,
+                        'identity' => hash('sha256', $id, true), 'valid_from_seq' => 1,
+                        'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id, 'host_form' => 'f',
+                        'field' => 'x', 'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
+                        'check_type' => 'required', 'reason_code' => 'required-blank']],
+                    'bytes' => 0, 'contexts' => 1, 'why' => null];
+        },
+        'owner' => 'w1', 'attempts' => 3,
+        'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                                    'min' => 1, 'max' => 10, 'first' => 10]),
+        'limits' => ['maxFindings' => 2, 'maxBytes' => $frozen['maxBytes']]]);
+    $lowRes = $lowWorker->work(823, $lowId);
+    $lowRun = $low->run(823, $lowId);
+    check('rvf2-4: the fixture stored 2 findings under the lowered budget and left 4 out, below the frozen one',
+        (int) $frozen['maxFindings'] > 6 && (int) $lowRun['detail_rows'] === 2
+        && (int) $lowRun['open_unstored'] === 4 && (int) $lowRes['findings'] === 6
+        && $lowRun['terminal'] === null);
+    $lowNoAgg = (new FaultyStore($low))->failFrom('aggregates');
+    try {
+        $lowSaid = ScanPromotion::findingsOf($lowNoAgg, $lowRun);
+    } catch (ScanStoreUnavailable $e) {
+        $lowSaid = 'read';
+    }
+    check('rvf2-4: status counts what the worker counted, 6, and reads no aggregates for it',
+        $lowSaid === 6);
 }
 
 /* =====================================================================
@@ -1894,7 +1974,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $stopRun->invoke($svc, $store, 825, $runId, 'alice', $before, $NOW)['stopped'] === true
         && $isOver($store, 825, $runId));
     check('R2O-5: and catch-up coming back cannot tombstone or requeue into it',
-        $store->tombstone($runId, $epoch, ['A']) === 0 && $store->requeue($runId, $epoch, ['B']) === 0
+        $store->tombstone($runId, $epoch, [$h('A')]) === 0 && $store->requeue($runId, $epoch, [$h('B')]) === 0
         && $store->advancePhase($runId, $epoch, ScanPhase::UNIQUE) === false);
 
     // R2O-3's run: planning died. Stop alone now ends it and frees the slot,
@@ -2411,6 +2491,38 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R5-4 E2E: read in full again, the same run finishes complete',
         $us->run(161, $urun)['terminal'] === ScanOutcome::COMPLETE);
 
+    // W10BF-4: A CONTEXT THAT REFUSES ON A READ THAT FAILED says so. Every
+    // @UVRANGE rule refused because the growth reference folder would not
+    // open left "no rules this scan can evaluate", and the start and every
+    // work request answered with that, about rules the next read could check.
+    $gs = new ArrayScanStore();
+    $gm = new \E2eModule($gs);
+    $g1 = (new ScanService($gm, $gs))->start(166);
+    $grun = (int) $g1['run_id'];
+    $gm->refuse = 'this project has no rules this scan can evaluate';
+    $gm->unread = ['the growth reference folder'];
+    $g0 = (new ScanService($gm, $gs))->start(167);
+    check('W10BF-4 E2E: a start refused on a folder that could not be read is told so, not that there are no rules',
+        empty($g0['ok']) && strpos((string) $g0['why'], 'could not be read just now') !== false
+        && strpos((string) $g0['why'], 'the growth reference folder') !== false
+        && strpos((string) $g0['why'], 'no rules') === false && $g0['run_id'] === null);
+    $gw = (new ScanService($gm, $gs))->work(166, $grun);
+    check('W10BF-4 E2E: and so is a work request, which ends nothing',
+        $gw['ok'] === false && empty($gw['final'])
+        && strpos((string) $gw['why'], 'the growth reference folder') !== false
+        && $gs->run(166, $grun)['terminal'] === null);
+    $gm->unread = [];
+    $gn = (new ScanService($gm, $gs))->start(168);
+    check('W10BF-4 E2E: a refusal resting on no failed read keeps its own sentence',
+        empty($gn['ok']) && $gn['why'] === 'this project has no rules this scan can evaluate');
+    $gm->refuse = null;
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($gm, $gs))->work(166, $grun);
+        if (empty($w['ok']) || $gs->run(166, $grun)['terminal'] !== null) break;
+    }
+    check('W10BF-4 E2E: read in full again, the run finishes complete',
+        $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
+
     // -- a finished run is answered with its status (review R5-8) ---------------
     //
     // A late request from a second tab, sent after a design edit, was told the
@@ -2460,6 +2572,79 @@ namespace INSPIRE\UniversalValidator\Scan {
     $rw = (new ScanService($rm5, $rs5))->work(163, $r5run);
     check('R5-5 E2E: a design change during a run still ends it failed, as a change',
         $rs5->run(163, $r5run)['terminal'] === ScanOutcome::FAILED && $rw['stop'] === 'changed');
+
+    // -- hashed record ids are part of the policy (W10BF-2) ---------------------
+    //
+    // "log-values" = none never reached the policy as hashRecordIds, so
+    // ScanPolicy::tightened()'s branch for it could not fire: a project
+    // switched to hashed record ids mid-run was not a tightening.
+    $hs = new ArrayScanStore();
+    $hm = new \E2eModule($hs);
+    $hm->proj['log-values'] = 'hashed';
+    $h0 = (new ScanService($hm, $hs))->start(164);
+    $hrun = (int) $h0['run_id'];
+    $hpol = json_decode((string) $hs->run(164, $hrun)['policy_json'], true);
+    check('W10BF-2: a run on a project that logs record ids freezes hashRecordIds false',
+        is_array($hpol) && array_key_exists('hashRecordIds', $hpol) && $hpol['hashRecordIds'] === false);
+    $hm->proj['log-values'] = 'none';
+    $hw = (new ScanService($hm, $hs))->work(164, $hrun);
+    $hrow = $hs->run(164, $hrun);
+    check('W10BF-2: switching the project to hashed record ids mid-run stops the run as a privacy tightening',
+        $hrow['terminal'] === ScanOutcome::CANCELLED
+        && strpos((string) $hrow['terminal_reason'], 'privacy settings were tightened') !== false
+        && $hw['ok'] === false && strpos((string) $hw['why'], 'privacy settings changed') !== false
+        && (int) $hrow['manifest_done'] === 0);
+    $ns = new ArrayScanStore();
+    $nm = new \E2eModule($ns);
+    $nm->proj['log-values'] = 'none';
+    $n0 = (new ScanService($nm, $ns))->start(165);
+    $nrun = (int) $n0['run_id'];
+    $npol = json_decode((string) $ns->run(165, $nrun)['policy_json'], true);
+    check('W10BF-2: a run on a "none" project freezes hashRecordIds true',
+        is_array($npol) && isset($npol['hashRecordIds']) && $npol['hashRecordIds'] === true);
+    $nm->proj['log-values'] = 'raw';
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($nm, $ns))->work(165, $nrun);
+        if (empty($w['ok']) || $ns->run(165, $nrun)['terminal'] !== null) break;
+    }
+    check('W10BF-2: and loosening it mid-run is no tightening: the run finishes complete',
+        $ns->run(165, $nrun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- the run's clock is frozen at planning (W10BF-3) -------------------------
+    //
+    // A @UVWINDOW part judged against today changed its answer at midnight
+    // inside one run. The clock the planning context judged by is stored in
+    // the run's policy, every later context is asked with it, and the status
+    // says the day.
+    $cs3 = new ArrayScanStore();
+    $cm3 = new \E2eModule($cs3);
+    $day1 = ['today' => '2026-10-21', 'now' => '2026-10-21 23:59:40'];
+    $cm3->clock = $day1;
+    $c3 = (new ScanService($cm3, $cs3))->start(169);
+    $c3run = (int) $c3['run_id'];
+    $c3pol = json_decode((string) $cs3->run(169, $c3run)['policy_json'], true);
+    check('W10BF-3: a run whose rules read the clock freezes the planning clock into its policy',
+        is_array($c3pol) && isset($c3pol['asOf']) && $c3pol['asOf'] === $day1);
+    $cm3->clock = ['today' => '2026-10-22', 'now' => '2026-10-22 00:00:20'];   // past midnight
+    $cm3->askedAsOf = [];
+    $c3w = (new ScanService($cm3, $cs3))->work(169, $c3run);
+    check('W10BF-3: a work request after midnight asks its context for the frozen clock, not its own',
+        $cm3->askedAsOf && !array_filter($cm3->askedAsOf, function ($a) use ($day1) { return $a !== $day1; }));
+    $c3st = (new ScanService($cm3, $cs3))->status(169, $c3run);
+    check('W10BF-3: and the status says the day the run is judged as of',
+        !empty($c3st['ok']) && $c3st['asOf'] === '2026-10-21'
+        && isset($c3w['status']['asOf']) && $c3w['status']['asOf'] === '2026-10-21');
+    $cs4 = new ArrayScanStore();
+    $cm4 = new \E2eModule($cs4);
+    $c4 = (new ScanService($cm4, $cs4))->start(170);
+    $c4run = (int) $c4['run_id'];
+    $c4pol = json_decode((string) $cs4->run(170, $c4run)['policy_json'], true);
+    $cm4->askedAsOf = [];
+    (new ScanService($cm4, $cs4))->work(170, $c4run);
+    check('W10BF-3: a run whose rules read no clock stores none, is asked with none, and says no day',
+        is_array($c4pol) && !array_key_exists('asOf', $c4pol)
+        && $cm4->askedAsOf && !array_filter($cm4->askedAsOf, function ($a) { return $a !== null; })
+        && (new ScanService($cm4, $cs4))->status(170, $c4run)['asOf'] === null);
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();
@@ -3495,6 +3680,80 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $mo['status']['findings'] === 0 && $mo['findings'] === []);
     }
 
+    // rvf1-3: WHAT A DEPARTED RECORD'S READING LEFT OUT LEAVES WITH IT. The
+    // reviewer's case (C): a detail budget of one finding, R02's finding
+    // stored and R03's left out, then R03 moves to group 31 and departs. The
+    // left-out count was run-wide, so the group's finished report counted
+    // R03's finding and was truncated over a group whose every finding was
+    // stored.
+    $ms = new ArrayScanStore();
+    $mm = $groupModule($ms);
+    $mm->flagged['R02'] = true;
+    $mm->flagged['R03'] = true;
+    $mm->proj['scan-max-detail-findings'] = '1';
+    $rid = (int) (new ScanService($mm, $ms))->start(183)['run_id'];
+    $mm->readSleep = 3.2;
+    (new ScanService($mm, $ms))->work(183, $rid);
+    $leftBefore = (int) $ms->run(183, $rid)['open_unstored'];
+    $mm->dagOf['R03'] = '31';
+    $mm->version['R03'] = '110';
+    $mm->changes['R03'] = '110';
+    $mm->top = '120';
+    for ($i = 0; $i < 15 && $ms->run(183, $rid)['terminal'] === null; $i++) {
+        (new ScanService($mm, $ms))->work(183, $rid);
+    }
+    $row = $ms->run(183, $rid);
+    $st = (new ScanService($mm, $ms))->status(183, $rid);
+    $states = $ms->recordStates($rid);
+    check('rvf1-3: the fixture stored R02\'s finding, left R03\'s out, and R03 then departed',
+        $leftBefore === 1 && (int) $row['detail_rows'] === 1
+        && isset($states[ScanStore::REC_DEPARTED]) && $states[ScanStore::REC_DEPARTED] === 1);
+    check('rvf1-3: the departed reading\'s left-out finding is no longer the run\'s',
+        (int) $row['open_unstored'] === 0);
+    check('rvf1-3: so the group\'s run is not truncated, and counts the one finding it holds',
+        $row['terminal'] === 'complete' && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
+        && $st['ok'] === true && $st['findings'] === 1 && $st['detail'] === ScanOutcome::DETAIL_COMPLETE);
+
+    // W5F-N2: WHILE A SCOPED RUN WORKS, IT COUNTS WHAT IT HOLDS. R02 and R03
+    // are flagged and read in the first request. Then R03 moves to group 31
+    // and departs, and R02 is edited, still flagged, so catch-up reads it
+    // again and its new finding supersedes the old. The run wrote three rows
+    // and holds one. A status the run answered while still working, from
+    // the fence on, counted all three. (Here the run passes the fence and
+    // finishes in one request, so the working count is asked of its final
+    // row with no verdict: the formula status() uses while it works.)
+    $ms = new ArrayScanStore();
+    $mm = $groupModule($ms);
+    $mm->flagged['R02'] = true;
+    $mm->flagged['R03'] = true;
+    $rid = (int) (new ScanService($mm, $ms))->start(186)['run_id'];
+    $mm->readSleep = 3.2;
+    (new ScanService($mm, $ms))->work(186, $rid);
+    $heldBefore = (int) $ms->run(186, $rid)['open_findings'];
+    $mm->dagOf['R03'] = '31';
+    $mm->version['R03'] = '110';
+    $mm->changes['R03'] = '110';
+    $mm->version['R02'] = '111';
+    $mm->changes['R02'] = '111';
+    $mm->top = '120';
+    for ($i = 0; $i < 15 && $ms->run(186, $rid)['terminal'] === null; $i++) {
+        (new ScanService($mm, $ms))->work(186, $rid);
+    }
+    $row = $ms->run(186, $rid);
+    $states = $ms->recordStates($rid);
+    $active = $ms->findings(186, (int) $row['generation_id'], ['dag' => null], [], 0, 100);
+    check('W5F-N2: the fixture held R02\'s and R03\'s findings, then wrote R02\'s again and R03 departed',
+        $heldBefore === 2 && (int) $row['detail_rows'] === 3
+        && isset($states[ScanStore::REC_DEPARTED]) && $states[ScanStore::REC_DEPARTED] === 1
+        && count($active) === 1 && (string) $active[0]['record_id_bin'] === 'R02');
+    check('W5F-N2: the run holds one finding, R02\'s new one, and its row says so',
+        (int) $row['open_findings'] === 1);
+    check('W5F-N2: so the run still working counts 1, not the 3 rows it wrote',
+        ScanPromotion::findingsOf($ms, array_merge($row, ['terminal' => null])) === 1);
+    check('W5F-N2: and finished, it counts the same one finding from its summary',
+        $row['terminal'] === 'complete'
+        && (new ScanService($mm, $ms))->status(186, $rid)['findings'] === 1);
+
     // NO RECORD SOURCE, NO ANSWER. A scoped run whose source cannot be opened
     // can tell no record's group, and cannot tell takes nothing out of it; an
     // unscoped run admits everything, as it did.
@@ -3553,6 +3812,57 @@ namespace INSPIRE\UniversalValidator\Scan {
                          ScanPolicy::resolve([], []), $wctx, 'browser');
     check('rv5b-1 control: an unscoped run\'s worker is not handed the group question',
         !isset($wdU['scope']));
+    $fdU = $fdOf->getValue($wdU['finalizer']);
+    check('rvf1-4: nor is its duplicate check handed a departures question, which it could never answer yes',
+        !isset($fdU['departed']) || $fdU['departed'] === null);
+    // WHAT THAT COSTS, IN STATEMENTS: one verify page of a pair group, on a
+    // store over a database that answers the finalizer and logs every
+    // statement. The scoped run's page reads scan_record once, for its
+    // departures; the unscoped run's reads it not at all.
+    $pageDb = function () {
+        return new class implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+            public $log = [];
+            public function select($sql, array $params = [])
+            {
+                $this->log[] = $sql;
+                if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+                if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+                if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'new', null, 2]];
+                if (strpos($sql, 'ORDER BY candidate_id LIMIT') !== false) {
+                    return [[1, 'A', 0, 1, 'f', null, 'fa', 'hA'], [2, 'B', 0, 1, 'f', null, 'fa', 'hB']];
+                }
+                return [];
+            }
+            public function exec($sql, array $params = []) { $this->log[] = $sql; return 1; }
+            public function execNoCount($sql, array $params = []) { $this->log[] = $sql; }
+            public function affected() { return 1; }
+            public function begin() { }
+            public function commit() { }
+            public function rollback() { }
+        };
+    };
+    $pageReads = function ($scopeDag) use ($pageDb, $wdOf, $fdOf, $wctx) {
+        $db = $pageDb();
+        $store = new SqlScanStore($db);
+        $run = ['run_id' => 41, 'scope_dag' => $scopeDag, 'lease_epoch' => 1, 'generation_id' => 1,
+                'run_seq' => 1, 'phase' => ScanPhase::UNIQUE];
+        $deps = $fdOf->getValue($wdOf->invoke(new ScanService(new \SourceModule()), 149, $store, $run,
+                                              ScanPolicy::resolve([], []), $wctx, 'browser')['finalizer']);
+        $fin = new UniqueFinalizer($db, ['pid' => 149,
+            'departed' => isset($deps['departed']) ? $deps['departed'] : null,
+            'read' => function (array $locs) {
+                $v = [];
+                foreach ($locs as $l) $v[UniqueFinalizer::locKey($l)] = ['x'];
+                return ['ok' => true, 'values' => $v, 'why' => null];
+            }]);
+        $db->log = [];
+        $fin->step(1, 500, 10);
+        return count(array_filter($db->log, function ($q) {
+            return strpos($q, Schema::table('scan_record')) !== false;
+        }));
+    };
+    check('rvf1-4: a verify page of an unscoped run reads scan_record not at all, a scoped run\'s once',
+        $pageReads(null) === 0 && $pageReads('7') === 1);
 
     /* -----------------------------------------------------------------
      * rv5b-2 / rv5b-6  A GROUP-SCOPED RUN THAT ENDS WITHOUT PROVING ITS

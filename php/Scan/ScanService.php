@@ -299,7 +299,7 @@ final class ScanService
         $ctx = $this->module->durableScanContext($pid,
             $this->planOptions($pid, ['valueCeiling' => $policy['valueMode'], 'generation' => null,
                                       'policy' => $policy]), $dag);
-        if (empty($ctx['ok'])) return self::noStart($ctx['why']);
+        if (empty($ctx['ok'])) return self::noStart(self::contextRefusal($ctx));
 
         // Every instrument the run will read, from the plan rather than from a
         // list somebody maintains. A field the plan could not place on an
@@ -372,6 +372,9 @@ final class ScanService
                                && array_key_exists('crossLookups', $ctx['plan']))
                                ? $ctx['plan']['crossLookups'] : null,
             'createdBy' => (string) $this->username(),
+            // The clock every record of the run is judged by (W10BF-3),
+            // frozen into its policy; see durableScanContext().
+            'asOf'      => isset($ctx['clock']) ? $ctx['clock'] : null,
             // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
             // unlocatable, unmapped-instrument and group-unscopable rules are
             // decided before a record is read; the planner records them so
@@ -662,7 +665,8 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id']),
+            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id'],
+                                            $run['scope_dag'] !== null),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -843,6 +847,9 @@ final class ScanService
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            // The day the run's date rules are judged as of (W10BF-3), or
+            // null for a run whose rules read no clock.
+            'asOf'      => ScanPlanner::frozenDay($run),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
@@ -1979,10 +1986,13 @@ final class ScanService
             'generation'   => (int) $run['generation_id'],
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
+            // The clock the run froze at planning (W10BF-3), so a record
+            // judged after midnight is judged as of the same day.
+            'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
         // could not be read just now.
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
+        if (empty($ctx['ok'])) return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false];
 
         // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
         // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
@@ -2193,7 +2203,7 @@ final class ScanService
         ]);
     }
 
-    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null)
+    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null, $scoped = false)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -2215,7 +2225,11 @@ final class ScanService
             'versions' => $this->fence($pid),
             // Which candidates' records left the run's group (review rv5b-1).
             // Their candidates are dropped from the group rather than re-read.
-            'departed' => ($store === null || $runId === null) ? null
+            // A GROUP-SCOPED RUN'S ONLY (review rvf1-4): a run over the whole
+            // project has no group to leave, and the question is a
+            // scan_record read on every verify page, about 250,000 reads on
+            // 500,000 records in pairs.
+            'departed' => (!$scoped || $store === null || $runId === null) ? null
                 : function (array $hashes) use ($store, $runId) {
                     return $store->departedOf((int) $runId, $hashes);
                 },
@@ -2424,7 +2438,22 @@ final class ScanService
         return null;
     }
 
-    /** The effective policy: the system maximum, then whatever the project asked for. */
+    /**
+     * The effective policy: the system maximum, then whatever the project asked for.
+     *
+     * PLUS THE RECORD-ID POSTURE (W10BF-2). "log-values" = none is the mode
+     * for a site whose record ids are themselves identifying, and the legacy
+     * report hashes its ids under it (UniversalValidator::scanPlan()). This
+     * policy never carried it, so ScanPolicy::tightened()'s hashRecordIds
+     * branch could not fire: a project switched to "none" while a run was
+     * working was not a tightening, and the run went on under the posture it
+     * had begun with. Resolved here, as the legacy plan resolves it, and
+     * frozen into policy_json with the rest. Not in ScanPolicy::resolve(),
+     * whose other caller (the maintenance pass) does not read the setting
+     * and would then state a posture it never asked about. A read that fails
+     * is not "none", which is the legacy answer too (logMode()); a run frozen
+     * that way and read as "none" later is a tightening, and stops.
+     */
     private function policy($pid)
     {
         $sys = [];
@@ -2439,7 +2468,9 @@ final class ScanService
                   'scan-max-detail-findings', 'scan-max-detail-bytes'] as $k) {
             $prj[$k] = $this->setting($k, $pid);
         }
-        return ScanPolicy::resolve($sys, $prj);
+        $policy = ScanPolicy::resolve($sys, $prj);
+        $policy['hashRecordIds'] = ($this->setting('log-values', $pid) === 'none');
+        return $policy;
     }
 
     /**
@@ -2530,6 +2561,19 @@ final class ScanService
     private static function configUnread(array $unread)
     {
         return sprintf(self::CONFIG_UNREAD, implode(', ', array_map('strval', $unread)));
+    }
+
+    /**
+     * Why a context that is not ok refuses (W10BF-4): its own sentence, unless
+     * part of the configuration could not be read. Every rule refused because
+     * the growth reference folder would not open is "no rules this scan can
+     * evaluate", and that sentence sent a reader to fix rules the next read
+     * could check.
+     */
+    private static function contextRefusal(array $ctx)
+    {
+        if (!empty($ctx['unread']) && is_array($ctx['unread'])) return self::configUnread($ctx['unread']);
+        return isset($ctx['why']) ? $ctx['why'] : null;
     }
 
     /**

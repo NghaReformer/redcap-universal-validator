@@ -31,8 +31,12 @@ interface DuplicateFinalizer
      * verified already (review rv10b2-1): work the step did, and no ground the
      * run gained. Absent is none.
      *
+     * `dropped` is how many candidates of records that left the run's group
+     * the step deleted (review rvf2-6): ground the run gained, since each
+     * candidate is deleted once. Absent is none.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, read:int, revisited:int, why:?string}
+     *               collisions:int, read:int, revisited:int, dropped:int, why:?string}
      */
     public function step($generationId, $limit = 500, $readLimit = null);
 }
@@ -156,7 +160,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * takes the changed records' versions as the ones it checks against -
      * so this is reached only by a group whose records keep changing while
      * it is decided, and such a group is blocked as undecidable: the run
-     * ends partial instead of checking it for ever.
+     * ends partial instead of checking it for ever. Counted as the group's
+     * candidate_epoch less 1, which only restart() moves (review rvf2-5).
      */
     const MAX_RESTARTS = 3;
 
@@ -346,7 +351,8 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $limit = max(1, min(5000, (int) $limit));
         $readLimit = $readLimit === null ? $limit : max(1, min(5000, (int) $readLimit));
         $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                'published' => 0, 'collisions' => 0, 'read' => 0, 'revisited' => 0, 'why' => null];
+                'published' => 0, 'collisions' => 0, 'read' => 0, 'revisited' => 0, 'dropped' => 0,
+                'why' => null];
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
@@ -366,6 +372,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $r = $this->verify($generationId, $g, $readLimit);
             $out['verified'] += $r['checked'];
             $out['revisited'] += isset($r['revisited']) ? $r['revisited'] : 0;
+            $out['dropped'] += isset($r['dropped']) ? (int) $r['dropped'] : 0;
             $out['read'] += $r['read'];
             $out['collisions'] += $r['collision'] ? 1 : 0;
             $out['why'] = $r['why'];
@@ -576,7 +583,11 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                 }
                 if ($drop) {
                     $this->dropCandidates($generationId, $g, $drop);
-                    return ['checked' => 0, 'collision' => false, 'read' => 0,
+                    // `dropped`, so the worker counts the step as moving the
+                    // run forward (review rvf2-6): it read nothing, wrote no
+                    // finding and said why, which the worker otherwise takes
+                    // as a step that could not proceed, and stopped on.
+                    return ['checked' => 0, 'collision' => false, 'read' => 0, 'dropped' => count($drop),
                             'why' => 'a record in this duplicate group left the group this scan '
                                    . 'covers, so the group is being checked again without it'];
                 }
@@ -834,9 +845,23 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // (held(), review rv10a1-1). A refusal writes neither and reports
         // nothing read: the run has ended or been taken, so the same refusal
         // meets the next step and the worker stops on the why.
+        //
+        // THE LAST PAGE PUBLISHES THE GROUP IN THE SAME TRANSACTION (review
+        // W10BF-5). A page shorter than asked for is the group's last: no
+        // candidate is added while the duplicate check runs (catch-up is
+        // over), and a restart or a drop happens only in verify(), before a
+        // group emits. The group was published by the step after it, which
+        // read an empty page and took a second transaction and a second hold
+        // of the run; a group of two cost two of each. Now the page, the
+        // close of earlier epochs' rows, the activation and the group's
+        // pointer commit together behind the one hold: the same fence, and a
+        // group that becomes visible in the transaction that wrote it. A page
+        // exactly as long as asked for still leaves the publish to the next
+        // step, which reads the empty page as before.
         $db = $this->db;
         $pid = $this->pid;
-        $wrote = $this->held(function () use ($db, $pid, $marks, $flat, $cursor, $g) {
+        $last = count($rows) < $page;
+        $wrote = $this->held(function () use ($db, $pid, $marks, $flat, $cursor, $g, $last, $generationId) {
             $db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
                 (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
                  record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
@@ -844,6 +869,10 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                  dag_key, group_hmac, stage_epoch)
                 VALUES ' . implode(',', $marks) . '
                 ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
+            if ($last) {
+                $this->publishRows($generationId, $g, $cursor);
+                return;
+            }
             $db->execNoCount('UPDATE ' . Schema::table('unique_group')
                 . ' SET emit_cursor = ?
                    WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
@@ -852,7 +881,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         if ($wrote !== true) {
             return ['emitted' => 0, 'published' => false, 'read' => 0, 'why' => $wrote];
         }
-        return ['emitted' => count($marks), 'published' => false, 'read' => $read, 'why' => null];
+        return ['emitted' => count($marks), 'published' => $last, 'read' => $read, 'why' => null];
     }
 
     /**
@@ -878,25 +907,36 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         // The three statements are one transaction held on the run (held(),
         // review rv10a1-1), so a group is published whole into a run that is
         // still running, or not at all.
-        $t = Schema::table('finding');
-        $db = $this->db;
-        $pid = $this->pid;
-        $seq = $this->seq;
-        return $this->held(function () use ($db, $t, $pid, $seq, $generationId, $g) {
-            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
-                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
-                  AND stage_epoch <> ?',
-                [$seq, $pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-            $db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
-                WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
-                  AND active_slot IS NULL',
-                [$pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-            $db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-                SET phase = ?, published_epoch = ?, staged_epoch = ?
-                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
-                [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
-                 $pid, $g['group_id'], $g['candidate_epoch']]);
+        return $this->held(function () use ($generationId, $g) {
+            $this->publishRows($generationId, $g, null);
         });
+    }
+
+    /**
+     * publish()'s three statements, for a caller already inside held():
+     * publish() itself, and the last emit page (review W10BF-5), which also
+     * writes its cursor in the group's UPDATE.
+     */
+    private function publishRows($generationId, array $g, $cursor)
+    {
+        $t = Schema::table('finding');
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
+              AND stage_epoch <> ?',
+            [$this->seq, $this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
+            WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
+              AND active_slot IS NULL',
+            [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $set = 'phase = ?, published_epoch = ?, staged_epoch = ?';
+        $args = [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch']];
+        if ($cursor !== null) {
+            $set .= ', emit_cursor = ?';
+            $args[] = $cursor;
+        }
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . ' SET ' . $set . '
+            WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+            array_merge($args, [$this->pid, $g['group_id'], $g['candidate_epoch']]));
     }
 
     /** The group could not be decided. Terminal, and it blocks the run's coverage. */
@@ -963,7 +1003,16 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
      * one discover() makes for a group, over uq_candidate_v2's leading
      * (project_id, generation_id, group_hmac). A group left with one record,
      * or with lookups only, is a singleton, as discover() would have written
-     * it; otherwise it starts again at a new epoch, as restart() does.
+     * it; otherwise it is verified again from its first candidate.
+     *
+     * AT THE SAME EPOCH (review rvf2-5). This moved candidate_epoch as
+     * restart() does, and MAX_RESTARTS counts candidate_epoch, so a group
+     * that lost four records to another group was blocked as "kept changing"
+     * on the first edit to a record still in it, with no restart. A drop
+     * needs no new epoch: it happens in verify(), before the group has
+     * emitted anything at this epoch, so no staged row is made obsolete by
+     * it, and every later write is fenced on the epoch the group row holds.
+     * candidate_epoch - 1 is the number of restarts and nothing else.
      */
     private function dropCandidates($generationId, array $g, array $candidateIds)
     {
@@ -979,7 +1028,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $phase = ($records > 1 && isset($c[0][1]) && (int) $c[0][1] === 0)
                ? self::G_NEW : self::G_SINGLETON;
         $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
-            SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
+            SET verify_cursor = 0, emit_cursor = 0,
                 representative = NULL, phase = ?, distinct_records = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [$phase, $records, $this->pid, $g['group_id'], $g['candidate_epoch']]);

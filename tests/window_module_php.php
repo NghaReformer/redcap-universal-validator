@@ -715,6 +715,51 @@ namespace {
         === ['text' => 'The date is in the past.', 'source' => 'catalog']);
     check('report issue label: past', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('window', 'past') === 'Date in the past');
 
+    // W10BF-3: A DURABLE RUN IS JUDGED AS OF THE DAY IT FROZE. notFuture on a
+    // value whose saved day the log does not show is judged against today,
+    // and a run that read such values either side of midnight held two
+    // answers. The context takes the run's clock (asOf) and judges by it; the
+    // clock here (CLOCK, 2026-10-09) is the request's.
+    $PF = $DICT + ['nf_date' => f('visit_form', '@UVWINDOW={"notFuture":true}', 'date_ymd')];
+    $frozen = ['today' => '2026-10-07', 'now' => '2026-10-07 23:00:00'];
+    $judge = function ($value, $asOf) use ($PF, $DATA, $FULL, $stamps) {
+        $d = $DATA;
+        $d['2'][351]['nf_date'] = $value;
+        $m = $stamps(mod($PF, $d, $FULL, 'nurse'), []);   // the log holds nothing: the saved day is not known
+        $opts = ['valueCeiling' => 'locations', 'generation' => 7, 'runSeq' => 7];
+        if ($asOf !== null) $opts['asOf'] = $asOf;
+        $ctx = $m->durableScanContext(149, $opts);
+        $out = ['clock' => isset($ctx['clock']) ? $ctx['clock'] : 'none', 'reason' => null];
+        if (!empty($ctx['ok'])) {
+            foreach ($ctx['evaluate']('2', \REDCap::$data['2'])['findings'] as $f) {
+                if ($f['field'] === 'nf_date') $out['reason'] = $f['reason_code'];
+            }
+        }
+        $jc = new \ReflectionProperty($m, 'judgedClock');
+        $jc->setAccessible(true);
+        $out['after'] = $jc->getValue($m);
+        return $out;
+    };
+    $future = \INSPIRE\UniversalValidator\Scan\ReasonCode::code('future');
+    $live = $judge('2026-10-08', null);
+    $kept = $judge('2026-10-08', $frozen);
+    check('W10BF-3: judged by the request\'s clock, a date of yesterday with no saved day is not in the future',
+        $live['reason'] === null);
+    check('W10BF-3: judged as of the day the run froze, the same value is in the future, as it was on that day',
+        $kept['reason'] === $future);
+    check('W10BF-3: a date after the request\'s clock is in the future either way',
+        $judge('2026-10-10', null)['reason'] === $future && $judge('2026-10-10', $frozen)['reason'] === $future);
+    check('W10BF-3: and a date before the frozen day is in the future neither way',
+        $judge('2026-10-06', $frozen)['reason'] === null);
+    check('W10BF-3: the context says the clock it judges by: the run\'s, else the request\'s',
+        $kept['clock'] === $frozen && $live['clock'] === ['today' => $CLOCK['today'], 'now' => $CLOCK['now']]);
+    check('W10BF-3: the frozen clock lasts for the record and no longer',
+        $kept['after'] === null && $live['after'] === null);
+    $noClock = mod(['record_id' => f('baseline_form'), 'plain' => f('visit_form', '@UVREQUIRED', 'date_ymd')], $DATA, $FULL, 'nurse')
+        ->durableScanContext(149, ['valueCeiling' => 'locations', 'generation' => null]);
+    check('W10BF-3: a project no live rule of which reads the clock has no clock to freeze',
+        !empty($noClock['ok']) && array_key_exists('clock', $noClock) && $noClock['clock'] === null);
+
     fwrite(STDOUT, "window_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
 }

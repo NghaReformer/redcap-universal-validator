@@ -1877,6 +1877,20 @@ namespace {
         check('PREFILL: H10 and a withheld status with no sentence still gets one, never a count',
             $V::countsText(['ok' => true, 'withheld' => true, 'total' => 10, 'done' => 3]) === $AZ::WITHHELD);
 
+        // W10BF-3: a finished run says the day its date rules were judged as
+        // of, after the coverage and the decision; a run with no such day,
+        // or a value that is not one, says nothing. A withheld status keeps
+        // the day: it counts nothing.
+        $asOfDone = $V::panelPrefill($esStatus(0) + ['asOf' => '2026-10-21'])['done'];
+        check('PREFILL: W10BF-3 a finished run ends its sentence with the day it was judged as of',
+            substr($asOfDone, -strlen('Dates were judged as of 2026-10-21.')) === 'Dates were judged as of 2026-10-21.'
+            && strpos($asOfDone, $esNever['done']) === 0);
+        check('PREFILL: W10BF-3 and a run with none, or with a value that is not a day, says nothing of it',
+            $esNever['done'] === $V::panelPrefill($esStatus(0) + ['asOf' => null])['done']
+            && $esNever['done'] === $V::panelPrefill($esStatus(0) + ['asOf' => '2026-10-21 x'])['done']);
+        check('PREFILL: W10BF-3 a withheld status keeps the day',
+            $AZ::preFenceStatus(['ok' => true, 'asOf' => '2026-10-21', 'findings' => 3])['asOf'] === '2026-10-21');
+
         // review rv5b-2 / rv5b-6. A withheld run that has ENDED is not
         // promised its counts; a stopped or expired one is not said to have
         // left records unchecked; and none says whether findings passed the
@@ -2094,7 +2108,7 @@ namespace {
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
-                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none'];
+                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2105,7 +2119,7 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none'] as $k) {
+                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

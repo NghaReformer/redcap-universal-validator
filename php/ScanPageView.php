@@ -211,10 +211,12 @@ class ScanPageView
             // scope, which is false of a run whose records were all deleted.
             // It then opened "Nothing was checked", which is false of the
             // commonest of those (review R2O-1): records checked and THEN
-            // deleted, whose findings stay counted - so the panel said nothing
+            // deleted, whose findings stayed counted - so the panel said nothing
             // was checked above "2 findings so far". No record being left is
             // true of all three, and the findings line is accounted for in the
-            // sentence that sits beside it.
+            // sentence that sits beside it. Since W5F-N4 a deleted record's
+            // findings are closed with it, and the sentence still has to read
+            // true over a run stored before that.
             Scan\ScanOutcome::EMPTY_SCOPE => 'This scan has no record left to report on: none was in '
                                            . 'scope, or every one was deleted while it ran, whether '
                                            . 'or not it had been checked. Any findings it counted '
@@ -328,6 +330,22 @@ class ScanPageView
         }
         return self::coverageSentence($coverage, $detail);
     }
+    /**
+     * The day a run's date rules were judged as of (W10BF-3). A durable run
+     * freezes it when it is planned, so a record read after midnight is
+     * judged as of the same day as the rest; a run whose rules read no clock
+     * has none, and says nothing.
+     */
+    const JUDGED_AS_OF = 'Dates were judged as of {date}.';
+
+    /** JUDGED_AS_OF for this status, or null. js/scan.js decides the same way. */
+    public static function asOfText($status)
+    {
+        $d = (is_array($status) && isset($status['asOf']) && is_string($status['asOf'])) ? $status['asOf'] : '';
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $d)) return null;
+        return str_replace('{date}', $d, self::JUDGED_AS_OF);
+    }
+
     const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
                         . 'project.';
     const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
@@ -450,6 +468,7 @@ class ScanPageView
             'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
             'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
             'none'            => self::COUNT_NONE,
+            'asOf'            => self::JUDGED_AS_OF,
         ];
     }
 
@@ -651,10 +670,12 @@ class ScanPageView
             'found'  => self::foundText($status),
             'stored' => self::storedText($status),
             'pct'    => $pct,
-            // ONE STRING, coverage then decision - see verdictText().
+            // ONE STRING, coverage then decision - see verdictText() - then
+            // the day dates were judged as of (asOfText()).
             'done'   => empty($status['terminal']) ? null
                 : self::endedSentence($status)
-                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
+                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status))
+                  . (self::asOfText($status) === null ? '' : ' ' . self::asOfText($status)),
             'active' => !empty($status['active']),
         ];
     }

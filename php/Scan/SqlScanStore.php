@@ -1117,6 +1117,15 @@ final class SqlScanStore implements ScanStore
             // than an accident of timing.
             $held = [];
             $applied = 0;
+            $openLeft = 0;
+            // Each record's findings in this batch (W5F-N2). insertFindings()
+            // stores every finding of a held record or the batch rolls back,
+            // so for a held record this is what it stored.
+            $storedOf = [];
+            foreach ($findings as $f) {
+                $o = (int) $f['ordinal'];
+                $storedOf[$o] = isset($storedOf[$o]) ? $storedOf[$o] + 1 : 1;
+            }
             foreach ($records as $rec) {
                 // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
                 // claimed by claimPending() is in CLAIMED, and must still be
@@ -1129,15 +1138,25 @@ final class SqlScanStore implements ScanStore
                 // errors under a strict one, and the wrap is the worse of the
                 // two - a record tried 255 times would start again at nothing
                 // and the retry cap would silently stop existing.
+                // THE FINDINGS THIS READING STORED AND LEFT OUT go on the row
+                // (reviews W5F-N2, rvf1-3), so the run can take them back when
+                // the record leaves done. A row reaches here below done, where
+                // its counts are 0 (every way out of done zeroes them), so
+                // setting them is the whole change and the run's counts only
+                // grow here.
+                $left = ((int) $rec['state'] === self::REC_DONE && isset($unstored[(int) $rec['ordinal']]))
+                      ? $unstored[(int) $rec['ordinal']] : 0;
+                $kept = isset($storedOf[(int) $rec['ordinal']]) ? $storedOf[(int) $rec['ordinal']] : 0;
                 $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
                     SET state = ?, attempts = LEAST(attempts + 1, 254), version_scanned = ?,
-                        claim_owner = NULL, claim_seq = 0, updated_at = ?
+                        stored_findings = ?, unstored = ?, claim_owner = NULL, claim_seq = 0, updated_at = ?
                     WHERE run_id = ? AND ordinal = ? AND state < ?
                       AND claim_owner = ? AND claim_seq = ?',
-                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
+                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, $kept, $left, self::now(),
                      $runId, $rec['ordinal'], self::REC_DONE, $owner, (int) $rec['claim']]);
                 if ($this->db->affected() !== 1) continue;
                 $held[(int) $rec['ordinal']] = true;
+                $openLeft += $left;
                 // Terminal rows only. A requeued record is written back as
                 // pending, which changes its attempt count and its timestamp -
                 // so it affects a row without having been finished, and
@@ -1270,11 +1289,16 @@ final class SqlScanStore implements ScanStore
             // freezing. The other places are freezeManifest(), a manifest page
             // appended, and setProgressState() when a finishing phase's step
             // moved the run forward (W7-N9) - each of them progress too.
+            // open_findings and open_unstored stay NULL on a run that began
+            // before they existed. detail_rows counts every row written, which
+            // is what the detail budget limits; open_findings counts the rows
+            // the run's records still hold (W5F-N2).
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
-                    detail_bytes = detail_bytes + ?, updated_at = ?';
+                    detail_bytes = detail_bytes + ?, open_findings = open_findings + ?,
+                    open_unstored = open_unstored + ?, updated_at = ?';
             $args = [$applied, $stored, isset($batch['bytes']) ? (int) $batch['bytes'] : 0,
-                     self::now()];
+                     $stored, $openLeft, self::now()];
             if ($applied > 0) {
                 $sql .= ', progress_at = ?';
                 $args[] = self::now();
@@ -1552,6 +1576,47 @@ final class SqlScanStore implements ScanStore
             if ((int) $k > 0) $out[(int) $o] = (int) $k;
         }
         return $out;
+    }
+
+    /**
+     * The SET clause that takes `?` stored and `?` left-out findings back
+     * from a run, in that order (reviews W5F-N2, rvf1-3): the counts of the
+     * readings its records no longer hold. Never below 0, and NULL stays
+     * NULL: a run that began before the columns existed is counted the old
+     * way, and an unsigned column asked to go negative is an error on a
+     * strict server and a wrap on a lenient one.
+     */
+    private static function withdrawReadings()
+    {
+        return 'open_findings = GREATEST(CAST(open_findings AS SIGNED) - ?, 0), '
+             . 'open_unstored = GREATEST(CAST(open_unstored AS SIGNED) - ?, 0)';
+    }
+
+    /**
+     * Delete the uniqueness candidates of records whose reading the run no
+     * longer holds (W5F-N1): sent back to be read again, deleted, or out of
+     * the run's group, in the transaction that moves them.
+     *
+     * A candidate is the record's value as one reading saw it. Left in
+     * place, a record read again with a new value kept its old candidate in
+     * the old value's group beside its new one, and a deleted record kept
+     * one with no record behind it; the duplicate check then met a value
+     * that no longer matched, or nothing to re-read, and blocked the group
+     * as undecidable. The next reading writes the record's candidates
+     * afresh, in commitBatch(). Catch-up runs before the duplicate check
+     * discovers any group, so no group row counts a deleted candidate.
+     *
+     * By ix_record (project_id, generation_id, record_hash), schema version
+     * 6: record_hash is a prefix of no other candidate key.
+     *
+     * @param string[] $hashes raw record hashes
+     */
+    private function dropCandidatesOf($projectId, $generationId, array $hashes)
+    {
+        $this->db->execNoCount('DELETE FROM ' . Schema::table('unique_candidate')
+            . ' WHERE project_id = ? AND generation_id = ? AND record_hash IN ('
+            . implode(',', array_fill(0, count($hashes), '?')) . ')',
+            array_merge([(int) $projectId, (int) $generationId], array_values($hashes)));
     }
 
     /**
@@ -2514,10 +2579,10 @@ final class SqlScanStore implements ScanStore
      * keeps resetting, and the run would never end - so the limit that turns it
      * into a reported exclusion has to survive reconciliation.
      */
-    public function requeue($runId, $epoch, array $recordIds)
+    public function requeue($runId, $epoch, array $hashes)
     {
-        if (!$recordIds) return 0;
-        return $this->reState($runId, $epoch, $recordIds, self::REC_PENDING, true);
+        if (!$hashes) return 0;
+        return $this->reState($runId, $epoch, $hashes, self::REC_PENDING, true);
     }
 
     /**
@@ -2526,11 +2591,13 @@ final class SqlScanStore implements ScanStore
      * Without this a deleted record can never reach a terminal state and holds
      * the run incomplete forever, which C3 called the worse half of the frozen-
      * manifest problem: the false-complete case at least finishes.
+     *
+     * Its findings in the run are closed with it (W5F-N4): see reState().
      */
-    public function tombstone($runId, $epoch, array $recordIds)
+    public function tombstone($runId, $epoch, array $hashes)
     {
-        if (!$recordIds) return 0;
-        return $this->reState($runId, $epoch, $recordIds, self::REC_TOMBSTONE, false);
+        if (!$hashes) return 0;
+        return $this->reState($runId, $epoch, $hashes, self::REC_TOMBSTONE, false);
     }
 
     /**
@@ -2559,15 +2626,19 @@ final class SqlScanStore implements ScanStore
             $marks = implode(',', array_fill(0, count($hashes), '?'));
             // WHICH ROWS MOVE, decided first and under the row locks, so the
             // findings closed below are those of the records that departed
-            // here and of no other. A tombstone's findings are left as
-            // catch-up leaves them (ScanPromotion::facts, R2O-1).
+            // here and of no other. A tombstone already closed its findings
+            // when it became one (reState(), W5F-N4).
             $left = [];
-            foreach ($this->db->select('SELECT record_hash FROM ' . $t
+            $withdrawn = 0;
+            $withdrawnKept = 0;
+            foreach ($this->db->select('SELECT record_hash, unstored, stored_findings FROM ' . $t
                     . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state NOT IN (?, ?)
                     FOR UPDATE',
                     array_merge([$runId], array_values($hashes),
                                 [self::REC_DEPARTED, self::REC_TOMBSTONE])) as $row) {
                 $left[] = $row[0];
+                $withdrawn += (int) $row[1];
+                $withdrawnKept += (int) $row[2];
             }
             if (!$left) {
                 $this->db->commit();
@@ -2576,8 +2647,8 @@ final class SqlScanStore implements ScanStore
             $now = self::now();
             $lm = implode(',', array_fill(0, count($left), '?'));
             $this->db->execNoCount('UPDATE ' . $t . '
-                SET state = ?, version_scanned = NULL, claim_owner = NULL, claim_seq = 0,
-                    updated_at = ?
+                SET state = ?, version_scanned = NULL, stored_findings = 0, unstored = 0, claim_owner = NULL,
+                    claim_seq = 0, updated_at = ?
                 WHERE run_id = ? AND record_hash IN (' . $lm . ')',
                 array_merge([self::REC_DEPARTED, $now, $runId], $left));
             $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
@@ -2586,11 +2657,16 @@ final class SqlScanStore implements ScanStore
                   AND stage_epoch IS NULL
                   AND record_hash IN (' . $lm . ')',
                 array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $left));
+            // And their uniqueness candidates (W5F-N1).
+            $this->dropCandidatesOf((int) $r[0][2], (int) $r[0][3], $left);
             $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
+            // What the departed readings stored, closed above, and left out
+            // is no longer the run's (reviews W5F-N2, rvf1-3). See
+            // withdrawReadings().
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
-                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
-                [isset($d[0][0]) ? (int) $d[0][0] : 0, $now, $runId]);
+                . ' SET manifest_done = ?, ' . self::withdrawReadings() . ', updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $withdrawnKept, $withdrawn, $now, $runId]);
             $this->db->commit();
             return count($left);
         } catch (\Throwable $e) {
@@ -2616,37 +2692,88 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
-    private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
+    /**
+     * BY RECORD HASH (W5F-N3). This filtered `record_id_bin IN (...)`, a
+     * column no index holds, so every call read the run's whole primary-key
+     * range; uq_run_record (run_id, record_hash) reads the rows asked about.
+     */
+    private function reState($runId, $epoch, array $hashes, $state, $clearScan)
     {
         $this->db->begin();
         try {
-            $r = $this->db->select('SELECT phase, lease_epoch FROM ' . Schema::table('scan_run')
-                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            $r = $this->db->select('SELECT phase, lease_epoch, project_id, generation_id, run_seq FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
                     || (int) $r[0][1] !== (int) $epoch) {
                 $this->db->rollback();
                 return 0;
             }
-            $marks = implode(',', array_fill(0, count($recordIds), '?'));
-            $params = [$state, self::now()];
-            foreach ($recordIds as $id) $params[] = $id;
-            $params[] = $runId;
+            $t = Schema::table('scan_record');
+            $marks = implode(',', array_fill(0, count($hashes), '?'));
+            // A TOMBSTONE CLOSES THE RECORD'S FINDINGS (W5F-N4), as depart()
+            // and a worker's own tombstone commit do. Which rows move is
+            // decided first, under the row locks, so the findings closed below
+            // are those of records that became tombstones here, on this run's
+            // manifest, and of no other.
+            //
+            // AND EITHER WAY THE ROWS' COUNTS ARE TAKEN BACK (reviews W5F-N2,
+            // rvf1-3): a record sent back to be read again, or deleted, no
+            // longer holds the reading that stored and left out those
+            // findings. Read here, under the same locks, for both. A
+            // requeued record's stored findings stay active until its next
+            // reading supersedes them, but the run no longer counts them: it
+            // counts the readings of its done records.
+            $closing = ($state === self::REC_TOMBSTONE);
+            $moving = [];
+            $withdrawn = 0;
+            $withdrawnKept = 0;
+            foreach ($this->db->select('SELECT record_hash, unstored, stored_findings FROM ' . $t
+                    . ' WHERE run_id = ? AND record_hash IN (' . $marks . ')'
+                    . ($closing ? ' AND state <> ?' : '') . ' FOR UPDATE',
+                    array_merge([$runId], array_values($hashes),
+                                $closing ? [self::REC_TOMBSTONE] : [])) as $row) {
+                $moving[] = $row[0];
+                $withdrawn += (int) $row[1];
+                $withdrawnKept += (int) $row[2];
+            }
+            if ($closing) {
+                if (!$moving) {
+                    $this->db->commit();
+                    return 0;
+                }
+                $hashes = $moving;
+                $marks = implode(',', array_fill(0, count($hashes), '?'));
+            }
+            $params = [$state, self::now(), $runId];
+            foreach ($hashes as $h) $params[] = $h;
             // THE CLAIM GOES WITH THE STATE. A record sent back to pending
             // while still carrying its token could be committed by the worker
             // that was holding it when catch-up requeued it - and that reading's
             // staleness is the entire reason the record was requeued.
-            $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+            $this->db->exec('UPDATE ' . $t . '
                 SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '')
-                . 'claim_owner = NULL, claim_seq = 0, updated_at = ?
-                WHERE record_id_bin IN (' . $marks . ') AND run_id = ?', $params);
+                . 'stored_findings = 0, unstored = 0, claim_owner = NULL, claim_seq = 0, updated_at = ?
+                WHERE run_id = ? AND record_hash IN (' . $marks . ')', $params);
             $n = $this->db->affected();
+            if ($closing) {
+                // commitBatch()'s close: ix_record_v2, at the run's sequence,
+                // duplicate-value (staged) findings left to the finalizer.
+                $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
+                    SET active_slot = NULL, valid_to_seq = ?
+                    WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                      AND stage_epoch IS NULL
+                      AND record_hash IN (' . $marks . ')',
+                    array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $hashes));
+            }
+            // And the rows' uniqueness candidates, either way (W5F-N1).
+            if ($moving) $this->dropCandidatesOf((int) $r[0][2], (int) $r[0][3], $moving);
             // manifest_done is a counter and this moved rows out of (or into) a
             // terminal state, so it is recounted rather than adjusted.
-            $d = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+            $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
             $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
-                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
-                [isset($d[0][0]) ? (int) $d[0][0] : 0, self::now(), $runId]);
+                . ' SET manifest_done = ?, ' . self::withdrawReadings() . ', updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $withdrawnKept, $withdrawn, self::now(), $runId]);
             $this->db->commit();
             return $n;
         } catch (\Throwable $e) {
@@ -2665,15 +2792,16 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
-    public function scannedVersions($runId, array $recordIds)
+    /** By record hash, through uq_run_record, for the reason reState() gives (W5F-N3). */
+    public function scannedVersions($runId, array $hashes)
     {
-        if (!$recordIds) return [];
-        $marks = implode(',', array_fill(0, count($recordIds), '?'));
+        if (!$hashes) return [];
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
         $params = [$runId];
-        foreach ($recordIds as $id) $params[] = $id;
+        foreach ($hashes as $h) $params[] = $h;
         $out = [];
-        foreach ($this->db->select('SELECT record_id_bin, version_scanned, state FROM '
-                . Schema::table('scan_record') . ' WHERE run_id = ? AND record_id_bin IN ('
+        foreach ($this->db->select('SELECT record_hash, version_scanned, state FROM '
+                . Schema::table('scan_record') . ' WHERE run_id = ? AND record_hash IN ('
                 . $marks . ')', $params) as $r) {
             $out[(string) $r[0]] = ['version' => $r[1], 'state' => (int) $r[2]];
         }
