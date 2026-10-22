@@ -2810,6 +2810,25 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R5-6: so the next request lists the next page rather than being told the walk is held',
         $f2['ok'] === true && $f2['stop'] === 'time' && $f2['listed'] === 1
         && $fs->recordStates($rid6) === [ScanStore::REC_PENDING => 2]);
+
+    // review rv5b-7 (b): A SLICE WHOSE LEASE ANOTHER REQUEST TOOK reports the
+    // pages it appended and not the page it was refused. The start listed
+    // page 1; this slice appends page 2, and before page 3 is appended
+    // another request holds the lease, so that append is refused and the
+    // slice is told the walk is held. It listed one record. Counted with the
+    // refused page it says two, and a held slice that says it listed is one
+    // the page asks again straight away.
+    list($hs, $rid7, $src7, , $db7) = $fresh(6);
+    $db7->onPage = function ($n) use ($hs, $rid7, $leaseOf) {
+        if ($n !== 3) return;
+        $runs = $leaseOf->getValue($hs);
+        $runs[$rid7]['lease_owner'] = 'tabB';
+        $leaseOf->setValue($hs, $runs);
+    };
+    $h7 = $worker($hs, $src7, $wide())->work(300, $rid7);
+    check('rv5b-7: a slice refused its page because another request took the walk reports only what it appended',
+        $h7['ok'] === true && $h7['stop'] === 'held' && $h7['why'] === ScanPlanner::PLAN_HELD
+        && $h7['listed'] === 1 && $hs->recordStates($rid7) === [ScanStore::REC_PENDING => 2]);
 }
 
 /* =====================================================================
@@ -2999,6 +3018,19 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-5: a whole-project answer whose status was refused keeps no counter, and says it moved',
         $dRefused['withheld'] === true && $dRefused['moved'] === true
         && !array_intersect($counters, array_keys($dRefused)));
+
+    // review rv5b-7 (a): A REQUEST WHOSE ONLY MOVEMENT IS A NEW PHASE MOVED
+    // THE RUN. Scanning ends with every counter at zero when the last batch
+    // was examined by an earlier request; the phase it hands on is the only
+    // sign, and a page told nothing moved waits out its idle ladder.
+    $phaseOnly = ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0, 'listed' => 0,
+                  'phase' => ScanPhase::CATCH_UP, 'done' => false, 'stop' => null, 'why' => null];
+    $dPhase = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $phaseOnly, ['ok' => true]);
+    $dSame = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::CATCH_UP], $phaseOnly, ['ok' => true]);
+    check('rv5b-7: a request whose only movement is a new phase answers that it moved, and one in the same phase does not',
+        $dPhase['moved'] === true && $dSame['moved'] === false);
 
     // review rv5b-3. A catch-up pass over a page of other groups' changes
     // counts nothing and still moved the run; the worker says so, and the
