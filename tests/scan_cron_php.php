@@ -307,6 +307,37 @@ $saved = json_decode((string) $m->getSystemSetting('scan-cron-state-retention'),
 check('expire-values: a finished sweep is remembered, so the next starts a day later',
     is_array($saved) && isset($saved['sweep']['finished']) && $saved['sweep']['top'] === null);
 
+// rvf2-3: a project holding a run whose removal has begun is due whatever its
+// runs' age, so the removal is finished. Its oldest finished run here is an
+// hour old, which no runDays makes due; the census's sixth column says a run
+// is being removed. The control row says none is, and nothing is purged.
+$REMOVING = \INSPIRE\UniversalValidator\Scan\ScanStore::REMOVING_WHY;
+foreach ([1 => 'a run being removed', 0 => 'no run being removed'] as $flag => $what) {
+    $m = new UniversalValidator();
+    $m->systemSettings = ['scan-system-enable-durable' => '1'];
+    $m->tables = $tables;
+    $inner = $census([[42, 0, 0, gmdate('Y-m-d H:i:s', time() - 3600), '', $flag]]);
+    $m->responder = function ($sql, $params) use ($inner, $RUN, $REMOVING) {
+        if (strpos($sql, 'SELECT run_id, generation_id, terminal_reason FROM ' . $RUN) !== false) return [[7, 3, $REMOVING]];
+        if (strpos($sql, 'SELECT EXISTS(') !== false) return [[0]];
+        if (strpos($sql, 'SELECT MAX(finding_id)') !== false) return [[0]];
+        return $inner($sql, $params);
+    };
+    $m->uvScanExpireValuesCron(['cron_max_run_time' => '900']);
+    $cen = $m->sent(['GROUP_CONCAT(DISTINCT values_state)', 'terminal_reason = ?']);
+    $dels = $m->sent(['DELETE FROM']);
+    if ($flag === 1) {
+        check('purge rvf2-3: the census asks, in its one statement, which projects hold a run being removed',
+            count($cen) === 1 && in_array($REMOVING, $cen[0][1], true)
+            && count($m->sent(['GROUP_CONCAT(DISTINCT values_state)'])) === 1);
+        check('purge rvf2-3: a project holding a run being removed has it finished, however young its runs',
+            count($dels) >= 8 && count($m->sent(['DELETE FROM ' . $RUN])) === 1);
+    } else {
+        check('purge rvf2-3 control: a project whose runs are an hour old, none being removed, is not purged',
+            $dels === [] && $m->sent(['SELECT run_id, generation_id, terminal_reason FROM ' . $RUN]) === []);
+    }
+}
+
 // ---- 7) a cron never throws ------------------------------------------------
 // A throw out of a cron is mailed to administrators on every tick and nobody
 // can act on it, so a database failure has to come back as a string.

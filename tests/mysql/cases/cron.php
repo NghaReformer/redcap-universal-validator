@@ -1008,6 +1008,43 @@ $runRow = function ($runId) use ($dbA) {
     uv_clear_project($dbA, 2402);
 }
 
+// -- A REMOVAL BEGUN IS FINISHED AFTER THE PROJECT RAISES ITS RETENTION (review rvf2-3)
+//
+// The reviewer's repro: one page of a 100-day-old run's purge at 30 days, and
+// the project then keeps runs for 365. The run stayed marked, no run to any
+// reader, with its findings kept, through every pass: the census judged the
+// project by its oldest run's age, and the purge picked by age alone. A
+// second finished run, an hour old, is due at no window and stays.
+{
+    $sysWas = $SYS;
+    $SYS['scan-system-max-run-retention-days'] = '365';
+    $PRJ[2403] = array('scan-run-retention-days' => '365');
+    $old = $plant(2403, 3);
+    $young = $plant(2403, 1);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '"
+        . gmdate('Y-m-d H:i:s', time() - 100 * 86400) . "' WHERE run_id = " . (int) $old['run']);
+    $c1 = (new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA))->purgeRuns(2403, 30, 1);
+    $store = new SqlScanStore($dbA);
+    check('remove rvf2-3: the old run\'s removal has begun, and it reads as gone with its findings stored',
+        $c1['done'] === false && $store->run(2403, $old['run']) === null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $old['gen'])) === 3);
+    $logs = array();
+    $r = $maint()->retain(array(), 60.0);
+    echo '  rvf2-3 retain at 365 days: ' . json_encode($r['out']) . "\n";
+    check('remove rvf2-3: the next pass at 365 days finishes the removal, run row and findings',
+        $r['out']['runs_purged'] >= 1 && $r['out']['failed'] === 0 && $runRow($old['run']) === null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $old['gen'])) === 0);
+    check('remove rvf2-3: and the hour-old run keeps everything',
+        $store->run(2403, $young['run']) !== null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $young['gen'])) === 1);
+    $again = $maint()->retain(array(), 60.0);
+    check('remove rvf2-3: a pass after it has nothing of the project\'s to purge',
+        $again['out']['runs_purged'] === 0 && $again['out']['rows_purged'] === 0 && $again['out']['failed'] === 0);
+    uv_clear_project($dbA, 2403);
+    unset($PRJ[2403]);
+    $SYS = $sysWas;
+}
+
 // -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
 //
 // 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and

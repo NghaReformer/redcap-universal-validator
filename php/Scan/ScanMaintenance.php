@@ -334,14 +334,19 @@ final class ScanMaintenance
             $kept = self::keptModes($row['modes']);
             // runDays is at least 1, so a run finished within the last day is
             // never due, whatever the project chose: no policy read for it.
-            $mayPurge = $row['oldest'] !== null && strcmp($row['oldest'], self::at($this->now - 86400)) < 0;
+            // A run whose removal has begun is due whatever its age (review
+            // rvf2-3): it reads as gone to every reader, so it is finished.
+            $removing = !empty($row['removing']);
+            $mayPurge = $removing
+                || ($row['oldest'] !== null && strcmp($row['oldest'], self::at($this->now - 86400)) < 0);
             if (!$kept && !$mayPurge) return true;
             $out['projects']++;
             call_user_func($this->enter, $pid);
             $policy = call_user_func($this->policy, $pid);
             if ($kept && !$this->revokeStart($pid, $policy, $kept, $lapUntil, $out)) return false;
             if (isset($this->state['revoke'][$pid])) return true;
-            if (!$mayPurge || strcmp($row['oldest'], self::at($this->now - max(1, (int) $policy['runDays']) * 86400)) >= 0) {
+            if (!$removing && (!$mayPurge
+                    || strcmp($row['oldest'], self::at($this->now - max(1, (int) $policy['runDays']) * 86400)) >= 0)) {
                 return true;
             }
             return $this->purge($pid, (int) $policy['runDays'], $lapUntil, $out);
@@ -824,8 +829,11 @@ final class ScanMaintenance
      * read is one run of one of those projects. uv_scan_run holds a row per
      * run, and retention keeps that number bounded per project.
      *
+     * `removing`: a finished run whose removal ScanRetention::purgeRuns() has
+     * begun (review rvf2-3), which is due whatever the project's runDays.
+     *
      * @return array<int, array{pid:int, stale:bool, stopped:bool, supersede:bool, oldest:?string,
-     *                          modes:string[]}>
+     *                          modes:string[], removing:bool}>
      */
     private function census($after)
     {
@@ -840,17 +848,20 @@ final class ScanMaintenance
             . ' MAX(CASE WHEN terminal = ? AND scope_dag IS NULL AND supersede_cursor < generation_id'
             . '   THEN 1 ELSE 0 END),'
             . ' MIN(CASE WHEN active_slot IS NULL THEN updated_at END),'
-            . ' GROUP_CONCAT(DISTINCT values_state)'
+            . ' GROUP_CONCAT(DISTINCT values_state),'
+            . ' MAX(CASE WHEN active_slot IS NULL AND terminal_reason = ? THEN 1 ELSE 0 END)'
             . ' FROM ' . Schema::table('scan_run') . ' WHERE project_id > ?'
             . ' GROUP BY project_id ORDER BY project_id LIMIT ' . self::CENSUS_PAGE,
-            array_merge($stale[1], [ScanPhase::CANCELLING, ScanOutcome::COMPLETE, (int) $after]));
+            array_merge($stale[1], [ScanPhase::CANCELLING, ScanOutcome::COMPLETE, ScanStore::REMOVING_WHY,
+                                    (int) $after]));
         $out = [];
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;   // the version-1 leftover: no project to act for
             $out[] = ['pid' => (int) $r[0], 'stale' => (int) $r[1] === 1, 'stopped' => (int) $r[1] === 2,
                       'supersede' => (int) $r[2] === 1,
                       'oldest' => $r[3] === null ? null : (string) $r[3],
-                      'modes' => $r[4] === null || $r[4] === '' ? [] : explode(',', (string) $r[4])];
+                      'modes' => $r[4] === null || $r[4] === '' ? [] : explode(',', (string) $r[4]),
+                      'removing' => isset($r[5]) && (int) $r[5] === 1];
         }
         return $out;
     }
