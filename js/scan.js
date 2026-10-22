@@ -124,6 +124,10 @@
         // (H10 part 1); the server says why, and that is the line.
         if (st.withheld) {
             if (typeof st.withheldWhy === 'string' && st.withheldWhy) return st.withheldWhy;
+            // A run that has ended is not promised its counts later (review rv5b-2).
+            if (st.terminal) {
+                return L.withheldEnded || 'This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.';
+            }
             return L.withheld || 'This scan covers one Data Access Group, so its counts are shown once it has confirmed which records belong to that group.';
         }
         if (!st.total) return 'Preparing';
@@ -268,6 +272,21 @@
         return s;
     }
 
+    /**
+     * The coverage half of a finished run's sentence, as
+     * ScanPageView::endedSentence() decides it. A group-scoped run stopped
+     * (or expired) before it proved its scope has coverage `partial`, whose
+     * sentence says records could not be checked; its reader is shown no
+     * counts, so it is told what is known instead (review rv5b-2).
+     */
+    function endedSentence(st) {
+        var L = labels();
+        if (st.withheld && (st.terminal === 'cancelled' || st.terminal === 'expired')) {
+            return L.stoppedWithheld || 'This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group.';
+        }
+        return coverageSentence(st.coverage, st.detail);
+    }
+
     UV.state = {
         runId: null, running: false, stopping: false, starting: false,
         wait: NET_MIN,          // the transport ladder
@@ -380,7 +399,7 @@
             // because a run can finish and still not have covered the project -
             // and a reader given only one of the two draws the wrong conclusion
             // from it.
-            var sentence = coverageSentence(st.coverage, st.detail);
+            var sentence = endedSentence(st);
             var verdict = verdictText(st);
             if (verdict) sentence += ' ' + verdict;
             // Revealed BEFORE it is written. A live region that is display:none

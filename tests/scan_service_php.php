@@ -2843,13 +2843,15 @@ namespace INSPIRE\UniversalValidator\Scan {
 {
     $keptNames = \REDCap::$groupNames;
     \REDCap::$groupNames = [7 => 'site_a', 31 => 'site_b'];
-    $movedRun = function ($pid, $moveFirst) {
-        $ms = new ArrayScanStore();
+    // Ten records, five in group 7, read by a group-7 user, over a record
+    // index that knows each record's group and a change log the case writes.
+    $groupModule = function (ArrayScanStore $ms) {
         $mm = new class($ms) extends \E2eModule {
             public $dagOf = [];
             public $version = [];
             public $changes = [];
             public $top = '100';
+            public $bottom = '1';
             public $reads = [];
             public $readSleep = 0.0;
             public function query($sql, $params = [])
@@ -2878,6 +2880,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                         return array_values($rows);
                     }
                     if (strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) return [[$this->top]];
+                    if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [[$this->bottom]];
                 }
                 if (strpos($sql, 'log_event_table') === false
                         && (strpos($sql, 'information_schema.columns') !== false
@@ -2911,6 +2914,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             $mm->dagOf[$id] = $i <= 5 ? '7' : '31';
         }
         $mm->user->rights['group_id'] = 7;
+        return $mm;
+    };
+    $movedRun = function ($pid, $moveFirst) use ($groupModule) {
+        $ms = new ArrayScanStore();
+        $mm = $groupModule($ms);
         $move = function () use ($mm) {
             $mm->dagOf['R03'] = '31';
             $mm->flagged['R03'] = true;
@@ -3012,6 +3020,83 @@ namespace INSPIRE\UniversalValidator\Scan {
                          ScanPolicy::resolve([], []), $wctx, 'browser');
     check('rv5b-1 control: an unscoped run\'s worker is not handed the group question',
         !isset($wdU['scope']));
+
+    /* -----------------------------------------------------------------
+     * rv5b-2 / rv5b-6  A GROUP-SCOPED RUN THAT ENDS WITHOUT PROVING ITS
+     * SCOPE IS NOT PROMISED ITS COUNTS, AND SAYS NOTHING THAT COUNTS
+     *
+     * The reviewer's repros: stopped by its user after checking all five
+     * of its records; finished over a change log pruned below its opening
+     * fence; stopped over a one-finding detail budget; and an empty group.
+     * Each kept "its counts are shown once it has confirmed..." for good,
+     * the stopped run's coverage line said "Some records could not be
+     * checked" of a run that had checked every one, and the truncated one
+     * still said findings had passed the budget.
+     * ----------------------------------------------------------------- */
+    $ended = function ($pid, $how) use ($groupModule) {
+        $es = new ArrayScanStore();
+        $em = $groupModule($es);
+        $em->flagged['R02'] = true;
+        if ($how === 'truncated') {
+            $em->flagged['R04'] = true;
+            $em->proj['scan-max-detail-findings'] = '1';
+        }
+        $rid = (int) (new ScanService($em, $es))->start($pid)['run_id'];
+        $em->readSleep = 3.2;
+        $running = (new ScanService($em, $es))->work($pid, $rid);
+        if ($how === 'pruned') {
+            $em->bottom = '200';
+            for ($i = 0; $i < 10 && $es->run($pid, $rid)['terminal'] === null; $i++) {
+                (new ScanService($em, $es))->work($pid, $rid);
+            }
+        } else {
+            (new ScanService($em, $es))->cancel($pid, $rid);
+        }
+        return ['running' => $running['status'], 'row' => $es->run($pid, $rid),
+                'status' => (new ScanService($em, $es))->status($pid, $rid)];
+    };
+    $stopped = $ended(181, 'stopped');
+    $pfS = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($stopped['status']);
+    check('rv5b-2: a running group-scoped run is told its counts come once its scope is confirmed',
+        $stopped['running']['withheld'] === true
+        && $stopped['running']['withheldWhy'] === ScanAuthorization::WITHHELD);
+    check('rv5b-2: a stopped one is told they cannot be shown, and the page says so',
+        $stopped['row']['terminal'] === ScanOutcome::CANCELLED && (int) $stopped['row']['manifest_done'] === 5
+        && $stopped['status']['withheld'] === true
+        && $stopped['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED
+        && $pfS['counts'] === ScanAuthorization::WITHHELD_ENDED);
+    check('rv5b-2: and its coverage line says it was stopped, not that records could not be checked',
+        strpos($pfS['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === 0
+        && strpos($pfS['done'], 'could not be checked') === false);
+    $pruned = $ended(182, 'pruned');
+    $pfP = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($pruned['status']);
+    check('rv5b-2: a run that finished over a change log that could not prove its window is not promised its counts',
+        $pruned['row']['terminal'] !== null && empty($pruned['row']['fence_target'])
+        && $pruned['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+    check('rv5b-2 control: and its coverage line is the one its coverage earns',
+        strpos($pfP['done'], \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($pruned['row']['coverage'])) === 0);
+    $trunc = $ended(183, 'truncated');
+    $pfT = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($trunc['status']);
+    check('rv5b-6: a withheld status does not say whether findings passed the detail budget',
+        $trunc['row']['detail'] === ScanOutcome::DETAIL_TRUNCATED
+        && !array_key_exists('detail', $trunc['status'])
+        && strpos($pfT['done'], \INSPIRE\UniversalValidator\ScanPageView::DETAIL_TRUNCATED) === false);
+    // The empty group: planning ends the run before any fence.
+    $eg = new ArrayScanStore();
+    $egm = $groupModule($eg);
+    $egm->records = [];
+    $egm->dagOf = [];
+    for ($i = 1; $i <= 2000; $i++) {
+        $egm->records[] = sprintf('E%04d', $i);
+        $egm->dagOf[sprintf('E%04d', $i)] = '31';
+    }
+    $egm->index = new \MoodySourceDb();
+    $egm->index->slowFor = 3.2;
+    $egId = (int) (new ScanService($egm, $eg))->start(184)['run_id'];
+    $egW = (new ScanService($egm, $eg))->work(184, $egId);
+    check('rv5b-2: a run over an empty group, which ends before any fence, is not promised its counts',
+        $eg->run(184, $egId)['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && $egW['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
     \REDCap::$groupNames = $keptNames;
 }
 

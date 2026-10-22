@@ -223,6 +223,16 @@ final class ScanAuthorization
         . 'confirmed which records belong to that group.';
 
     /**
+     * The same, for a run that has ENDED without proving it (review rv5b-2):
+     * stopped, failed, expired, finished over a change log that could not
+     * prove the window, or over an empty group. WITHHELD promised the counts
+     * later, and for a finished run there is no later. No apostrophes: the
+     * page prints it through json_encode with JSON_HEX_APOS.
+     */
+    const WITHHELD_ENDED = 'This scan covers one Data Access Group and ended before it confirmed '
+        . 'which records belong to that group, so its counts cannot be shown.';
+
+    /**
      * What `scan-status` may disclose about a DAG-scoped run that has NOT yet
      * proved its scope at the target fence (scopeProved()).
      *
@@ -241,14 +251,21 @@ final class ScanAuthorization
      */
     public static function preFenceStatus(array $status)
     {
-        $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'detail', 'values', 'scope',
+        // NOT `detail` (review rv5b-6). Whether the run kept every finding is
+        // a statement about how many it found: a stopped run read "Some
+        // findings were not kept, because the scan reached the limit" while
+        // its counts were withheld.
+        $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
                  'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for
-        // "the scan found nothing".
+        // "the scan found nothing". A run that has ended will never prove its
+        // scope, so it is not told it will (review rv5b-2).
         $out['withheld'] = true;
-        $out['withheldWhy'] = self::WITHHELD;
+        $out['withheldWhy'] = (isset($status['terminal']) && $status['terminal'] !== null
+                               && $status['terminal'] !== '')
+            ? self::WITHHELD_ENDED : self::WITHHELD;
         return $out;
     }
 
