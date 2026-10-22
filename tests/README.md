@@ -453,7 +453,8 @@ inner spaces.
   tags on one field say one line each; a deferral only this viewer meets says
   the save checks it; the public registry composes @UVRANGE and @UVDELTA on
   one field, and an ID check (alone, branched, beside another mode, on a
-  blank field) or a pooled list answers there as the page judges it; a value
+  blank field, part-typed, with a configuration error) answers there as the
+  page judges it, while a pooled list or @UVUNIQUE leaves it open; a value
   written by a script is judged without any event; typing
   in the `vs` field or a field the `when` reads is judged once the field is
   left.
@@ -464,17 +465,21 @@ inner spaces.
   apart by `vs`), across events (previous, first and named event; the first
   visit and an event with nothing saved compare with nothing; saving an earlier
   visit re-checks the later one) and across instances, and the scan with its
-  labels and detail lines. A `vs` that cannot be read (not collected in this
-  event, or unresolved on the event/instance path) is a rule problem, and so
-  is a spent evaluation budget. The shorthand layout is judged at every event
-  that holds the form, arm by arm (a form that repeats at some visits only, a
-  whole repeating event, one event in each of two arms). A written-out
-  reference is refused when it names the same entry, an instance of a form
-  that does not repeat where it lands, a relative instance from a form that
-  does not repeat, no instance of a form that repeats (another repeating form
-  included, with references on or off), or an event that does not hold its
-  form. One `vs` with two directions judges both ways (the heart-rate recipe),
-  and a deferral only this viewer meets is marked and still checked on save.
+  labels and detail lines. A `vs` that cannot be read (unresolved on the
+  event/instance path) is a rule problem, and so is a spent evaluation budget.
+  The shorthand layout is judged at every event that holds the form, arm by
+  arm (a form that repeats at some visits only, a whole repeating event, one
+  event in each of two arms). A reference is refused, with the events named
+  and a working reference suggested, when it names the same entry, an event
+  that does not hold its form (plain, with references on or off, or named),
+  an instance of a form that does not repeat where it lands, a relative
+  instance where the field's own form is held once (each such event named,
+  and not where the event token finds nothing), no instance of a form that
+  repeats (a named or relative event included, but not a form of the same
+  whole repeating event), or a relative event that finds nothing from any
+  event. One `vs` with two directions judges both ways (the heart-rate
+  recipe), and a deferral only this viewer meets is marked and still checked
+  on save.
 - `delta_live_twin_php.php` runs the module over the live fixture on a copy of
   pid 149's events and checks every answer of
   `docs/testbed/DELTA_LIVE_ACCEPTANCE.md`: the configuration errors word for
@@ -486,7 +491,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 101 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 110 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral

@@ -938,12 +938,14 @@ and flags a change larger than its limit:
   the instance. An instance shorthand is refused unless the form repeats at
   every event that holds it. A reference that always names this same entry,
   such as `[event-name][weight]`, is refused. So is one that could not be read
-  on any save of some entry: an instance of a form that does not repeat where
-  the reference lands (`[weight][1]` on a form held once); a relative instance
-  (`[previous-instance]` and the like) on a field whose own form does not
-  repeat; no instance of a form that repeats where it lands, unless it is the
-  field's own form in its own event; and an event named outright that does
-  not hold the `vs` form.
+  on any save of some entry: an event, named or not, that does not hold the
+  `vs` form; an instance of a form that does not repeat where the reference
+  lands (`[weight][1]` on a form held once); a relative instance
+  (`[previous-instance]` and the like) at an event where the field's own form
+  is held once; no instance of a form that repeats where it lands, unless it
+  is the field's own row (its own repeating form, or a form of the same
+  repeating event); and a relative event that finds no event from anywhere
+  the field is entered. The refusal suggests a reference that works.
 - **When it blocks.** A `vs` field on the same page is read as it is typed, and
   the rule blocks as `blockSave` says (default `off`). The note waits while
   the person is still typing in a field the rule reads. An earlier value from

@@ -575,6 +575,35 @@ for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0
   sid.value = 'FC1-0589D';
   check('... a wrong one is not', reg.test().ok === false);
 }
+// round-5 review: a configuration error answers null, a part-typed ID is judged
+// as final, and a mode the server judges leaves the shared answer open.
+{
+  const sid = numEl('sid', 'FC1-0589C');
+  const env = boot([sid], { rules: [{ type: 'single', fields: ['sid'], algorithm: 'bogus_algo' }] });
+  const reg = env.NS.validators.sid;
+  check('an ID check with a configuration error: test() and test(v) do not answer', reg.test() === null && reg.test('FC1-0589C') === null);
+}
+{
+  const sid = numEl('sid', 'FC1-0589C'), stype = numEl('stype', '1');
+  const env = boot([sid, stype], { rules: [{ type: 'single', fields: ['sid'], branches: [{ algorithm: 'bogus_algo', when: "[stype]='1'" }] }] });
+  const reg = env.NS.validators.sid;
+  check('a branched ID check with a configuration error: its branch test does not answer either (got ' + JSON.stringify(reg.branches[0].test('FC1-0589C')) + ')',
+    reg.branches[0].test('FC1-0589C') === null && reg.test() === null);
+}
+{
+  const sid = numEl('sid', 'FC1-05');
+  const env = boot([sid], { rules: [{ type: 'single', fields: ['sid'], algorithm: 'none', idPattern: '^FC1-[0-9]{4}[A-Z]$' }] });
+  check('a part-typed ID: test() judges it as final, not as still being typed (got ' + JSON.stringify(env.NS.validators.sid.test()) + ')',
+    env.NS.validators.sid.test().ok === false);
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '71');
+  const env = boot([w0, w], { rules: [W(), { type: 'unique', fields: ['weight'], scope: 'project' }] });
+  const reg = env.NS.validators.weight;
+  check('@UVDELTA passing beside @UVUNIQUE, which the server judges: the shared answer stays open', reg.byMode.delta.test() === true && reg.test() === null);
+  w.value = '90'; w.fire('change');
+  check('... and false once the change breaks the limit', reg.test() === false);
+}
 {
   const code = numEl('code', '1'.repeat(513));
   const env = boot([code], { rules: [{ type: 'single', fields: ['code'], algorithm: 'none', idPattern: '^[0-9]+$' }] });

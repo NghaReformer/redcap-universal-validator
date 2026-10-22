@@ -724,7 +724,9 @@
      clash, type among them), byMode holds each mode's own entry, and types
      lists them. test() judges the field as the page holds it: every mode
      answers (an ID check reads the field itself), and a mode with no test of
-     its own (a pooled list, which is judged across its fields) cannot answer.
+     its own cannot answer: a pooled list (judged across its fields), and
+     @UVUNIQUE and @UVEXISTS (judged by the server), so a field that carries
+     one of them answers null or false, never true.
      test(v) judges the value v: only a mode that takes a value (takesValue:
      an ID check) answers, since the others read the page. Either way the
      answer is false when any mode says false (an ID check answers {ok:
@@ -4225,7 +4227,7 @@ function QRIDSingleInit(QRID_CONFIG){
     if(IS_BRANCH){
       QRID_registerValidator(f, { type: "single", branch: true, takesValue: true,
         branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode,
-          test: function(v, isFinal){ return judge(V, v, isFinal); } }; }),
+          test: function(v, isFinal){ return configError ? null : judge(V, v, isFinal); } }; }),
         active: function(){ return QRID_activeVariants(VS); },
         test: function(v, isFinal){
           var act = QRID_activeVariants(VS);

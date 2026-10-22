@@ -7137,15 +7137,9 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * @UVDELTA "dictionary" hook. The "vs" field must exist and hold numbers
      * (a Text field with number validation or none, a calc or a slider); its
-     * decimal comma travels as deltaVsComma. A written-out reference the
-     * resolver could only answer "missing" or "invalid" for, on every save of
-     * some entry, is refused: an event named outright that does not hold the
-     * "vs" form, a relative instance ([current-instance], [previous-instance],
-     * [next-instance]) where this field's own form does not repeat
-     * (deltaOwnFlatHosts), an instance of a form that does not repeat at an
-     * event it lands on (deltaFlatTargets), and no instance of a form that
-     * repeats there, unless it is this field's own form in this event
-     * (deltaAmbiguousTargets). So is one that always names
+     * decimal comma travels as deltaVsComma. A reference that could not be
+     * read on any save of some entry, or never finds an entry at all, is
+     * refused (deltaDeadReference). So is one that always names
      * this same entry, since the change would always be 0: [event-name][weight],
      * [weight][current-instance], and the one event the form is on, by its
      * name or as [first-event-name] or [last-event-name] (deltaNamesItself).
@@ -7176,38 +7170,8 @@ class UniversalValidator extends AbstractExternalModule
         $shape = $this->temporalShape($pid, $dd);
         if ($short === null) {
             $vsForm = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
-            $many = count($shape->events()) > 1;
-            $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
-            if ($token !== null && $token !== 'event-name'
-                && !in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true)) {
-                $r = $shape->eventId($token, null, $vsForm);
-                $b = isset($r['state']) && $r['state'] === 'ok' ? $shape->bucket($r['event'], $vsForm) : null;
-                if ($b !== null && isset($b['state']) && $b['state'] === 'missing') {
-                    return $refuse('"vs" names "[' . $token . '][' . $f . ']", but "' . $f . '" is on the form "' . $vsForm
-                        . '", which is not designated at "' . $token . '" — name an event that holds that form.');
-                }
-            }
-            $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
-            $flat = $sel !== null ? self::deltaFlatTargets($shape, $op, $form, $vsForm) : [];
-            if ($flat) {
-                return $refuse('"vs" names an instance of "[' . $f . ']", but its form does not repeat'
-                    . ($many ? ' at "' . implode('", "', $flat) . '"' : '')
-                    . ' — an instance can be named only where the form repeats.');
-            }
-            if (in_array($sel, ['current-instance', 'previous-instance', 'next-instance'], true)) {
-                $own = self::deltaOwnFlatHosts($shape, $form);
-                if ($own) {
-                    return $refuse('"vs" names [' . $sel . '] of "[' . $f . ']", but this field\'s form "' . $form . '" does not repeat'
-                        . ($many ? ' at "' . implode('", "', $own) . '"' : '')
-                        . ' — [current-instance], [previous-instance] and [next-instance] count from this field\'s own instance, so they need a form that repeats.');
-                }
-            }
-            $amb = $sel === null ? self::deltaAmbiguousTargets($shape, $op, $form, $vsForm) : [];
-            if ($amb) {
-                return $refuse('"vs" names "[' . $f . ']" with no instance, but its form "' . $vsForm . '" repeats'
-                    . ($many ? ' at "' . implode('", "', $amb) . '"' : '')
-                    . ', so which instance it means is not said — name one, e.g. "[' . $f . '][last-instance]".');
-            }
+            $dead = self::deltaDeadReference($shape, $op, $f, $form, $vsForm, !empty($this->temporalOptions($pid)['qualified']));
+            if ($dead !== null) return $refuse($dead);
             if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {
                 return $refuse('"vs" names this field in this same entry, so the change would always be 0 — compare it with '
                     . 'another entry, e.g. "vs":"previous-event" or "vs":"[baseline_arm_1][' . $name . ']".');
@@ -7225,7 +7189,7 @@ class UniversalValidator extends AbstractExternalModule
      * (none, [event-name], [first-event-name] where no earlier event of the
      * arm holds the form, or the one event's name), and its instance must be
      * this one: none or [current-instance]. (Any instance of a form that does
-     * not repeat is refused before this, by deltaFlatTargets.) A layout that
+     * not repeat is refused before this, by deltaDeadReference.) A layout that
      * cannot be read answers false; the resolver reports it on each save.
      */
     private static function deltaNamesItself(ProjectShape $shape, array $op, $form)
@@ -7247,80 +7211,93 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The events that hold $form once (it does not repeat there, on its own or
-     * with the whole event): there a relative instance has no instance to
-     * count from, and the resolver (AddressResolver) answers "invalid" on
-     * every save. Names in the project's order; [] when the form repeats
-     * wherever it is, or the layout cannot be read (the resolver reports
-     * that on each save).
+     * Why a "vs" reference ($op, written plain or out) on a field of $form
+     * could not be read on any save of some entry, or null. Each event that
+     * holds $form is asked what AddressResolver::resolve (or, with references
+     * off, the plain read of this event) would answer there, in its order:
+     *  - the reference lands on an event that does not hold the "vs" form
+     *    ($vsForm): "missing";
+     *  - it names an instance of a form held once there: "invalid";
+     *  - it names a relative instance ([current-instance], [previous-instance],
+     *    [next-instance]) where this field's own form is held once: "invalid",
+     *    since a relative instance counts from this field's instance;
+     *  - it names no instance of a form that repeats there, and the row is not
+     *    this field's own (its own repeating form, or a form of the same
+     *    repeating event): "ambiguous";
+     *  - and a relative event token finds no event from any of them, so the
+     *    rule would never compare anything.
+     * An event the token finds nothing from (the first visit has no previous
+     * one) is not a problem by itself. A layout that cannot be read answers
+     * null; the resolver reports it on each save. $refsOn says whether a
+     * reference the refusal suggests can be used as the settings stand.
      */
-    private static function deltaOwnFlatHosts(ProjectShape $shape, $form)
+    private static function deltaDeadReference(ProjectShape $shape, array $op, $f, $form, $vsForm, $refsOn)
     {
-        $flat = [];
+        $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
+        $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
+        $relative = in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true);
+        $named = $token !== null && $token !== 'event-name' && !$relative;
+        $nameOf = function ($id) use ($shape) {
+            $e = $shape->event($id);
+            return isset($e['name']) && $e['name'] !== '' ? (string) $e['name'] : (string) $id;
+        };
+        $add = function (array &$list, $id) use ($nameOf) { $n = $nameOf($id); if (!in_array($n, $list, true)) $list[] = $n; };
+        $missing = $flat = $own = $amb = [];
+        $hosts = 0;
+        $absent = 0;
+        $holds = null;
         foreach ($shape->events() as $id => $e) {
-            if (!isset($e['forms']) || !is_array($e['forms'])) return [];
+            if (!isset($e['forms']) || !is_array($e['forms'])) return null;
+            if ($holds === null && in_array($vsForm, $e['forms'], true)) $holds = $id;
             if (!in_array($form, $e['forms'], true)) continue;
-            $b = $shape->bucket($id, $form);
-            if (!isset($b['state']) || $b['state'] !== 'ok') return [];
-            if ($b['bucket'] !== null) continue;
-            $flat[] = isset($e['name']) && $e['name'] !== '' ? (string) $e['name'] : (string) $id;
-        }
-        return $flat;
-    }
-
-    /**
-     * The events where a "vs" reference with no instance ($op) lands on its
-     * field's form ($vsForm) where that form repeats, from some event that
-     * holds the rule's form ($form) in another row (another form, or another
-     * event): the resolver answers "ambiguous", and the plain path defers
-     * the rule, on every save. Names in the project's order; [] when every
-     * such reference names one row, or the layout cannot be read.
-     */
-    private static function deltaAmbiguousTargets(ProjectShape $shape, array $op, $form, $vsForm)
-    {
-        $event = $op[0] === 'qref' && isset($op[3]) ? $op[3] : null;
-        $out = [];
-        foreach ($shape->events() as $id => $e) {
-            if (!isset($e['forms']) || !is_array($e['forms'])) return [];
-            if (!in_array($form, $e['forms'], true)) continue;
-            $r = $shape->eventId($event, $id, $vsForm);
+            $hosts++;
+            $r = $shape->eventId($token, $id, $vsForm);
+            if (isset($r['state']) && $r['state'] === 'absent') { $absent++; continue; }
             if (!isset($r['state']) || $r['state'] !== 'ok') continue;
             $b = $shape->bucket($r['event'], $vsForm);
-            if (!isset($b['state']) || $b['state'] !== 'ok' || $b['bucket'] === null) continue;
-            $s = $shape->bucket($id, $form);
-            if (!isset($s['state']) || $s['state'] !== 'ok') return [];
-            if ((string) $r['event'] === (string) $id && $s['bucket'] === $b['bucket']) continue;   // this field's own row
-            $t = $shape->event($r['event']);
-            $name = isset($t['name']) && $t['name'] !== '' ? (string) $t['name'] : (string) $r['event'];
-            if (!in_array($name, $out, true)) $out[] = $name;
+            if (isset($b['state']) && $b['state'] === 'missing') { $add($missing, $named ? $r['event'] : $id); continue; }
+            if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b)) continue;
+            $src = $shape->bucket($id, $form);
+            if (!isset($src['state']) || $src['state'] !== 'ok' || !array_key_exists('bucket', $src)) return null;
+            if ($sel === null) {
+                $ownRow = (string) $r['event'] === (string) $id && $src['bucket'] === $b['bucket'];
+                if ($b['bucket'] !== null && !$ownRow) $add($amb, $r['event']);
+            } elseif ($b['bucket'] === null) {
+                $add($flat, $r['event']);
+            } elseif (in_array($sel, ['current-instance', 'previous-instance', 'next-instance'], true) && $src['bucket'] === null) {
+                $add($own, $id);
+            }
         }
-        return $out;
-    }
-
-    /**
-     * The events where a written-out "vs" reference with an instance ($op, a
-     * qref naming one) lands on its field's form ($vsForm) held once, from
-     * some event that holds the rule's form ($form): there the resolver
-     * (AddressResolver) can answer only "invalid", on every save. Names in
-     * the project's order; [] when every event it lands on repeats the form,
-     * or the layout cannot be read (the resolver reports that on each save).
-     */
-    private static function deltaFlatTargets(ProjectShape $shape, array $op, $form, $vsForm)
-    {
-        $event = isset($op[3]) ? $op[3] : null;
-        $flat = [];
-        foreach ($shape->events() as $id => $e) {
-            if (!isset($e['forms']) || !is_array($e['forms'])) return [];
-            if (!in_array($form, $e['forms'], true)) continue;
-            $r = $shape->eventId($event, $id, $vsForm);
-            if (!isset($r['state']) || $r['state'] !== 'ok') continue;
-            $b = $shape->bucket($r['event'], $vsForm);
-            if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b) || $b['bucket'] !== null) continue;
-            $t = $shape->event($r['event']);
-            $name = isset($t['name']) && $t['name'] !== '' ? (string) $t['name'] : (string) $r['event'];
-            if (!in_array($name, $flat, true)) $flat[] = $name;
+        $many = count($shape->events()) > 1;
+        $at = function (array $l) use ($many) { return $many ? ' at "' . implode('", "', $l) . '"' : ''; };
+        $needs = $refsOn ? '' : ' (this needs event and instance references, a project setting)';
+        $ref = ($token !== null ? '[' . $token . ']' : '') . '[' . $f . ']';
+        $there = '[' . ($holds !== null ? $nameOf($holds) : 'event_name') . '][' . $f . ']';
+        if ($missing && $named) {
+            return '"vs" names "' . $ref . '", but "' . $f . '" is on the form "' . $vsForm . '", which is not designated at "'
+                . $missing[0] . '" — name an event that holds that form.';
         }
-        return $flat;
+        if ($missing) {
+            return '"vs" names "' . $ref . '", but "' . $f . '" is on the form "' . $vsForm . '", which is not designated'
+                . $at($missing) . ' where this field is entered — name its event, as "' . $there . '"' . $needs . '.';
+        }
+        if ($flat) {
+            return '"vs" names an instance of "[' . $f . ']", but its form does not repeat' . $at($flat)
+                . ' — an instance can be named only where the form repeats.';
+        }
+        if ($own) {
+            return '"vs" names [' . $sel . '] of "[' . $f . ']", but this field\'s form "' . $form . '" does not repeat' . $at($own)
+                . ' — [current-instance], [previous-instance] and [next-instance] count from this field\'s own instance, so they need a form that repeats.';
+        }
+        if ($amb) {
+            return '"vs" names "' . $ref . '" with no instance, but its form "' . $vsForm . '" repeats' . $at($amb)
+                . ', so which instance it means is not said — name one, e.g. "' . $ref . '[last-instance]"' . $needs . '.';
+        }
+        if ($relative && $hosts > 0 && $absent === $hosts) {
+            return '"vs" names "' . $ref . '", but from no event where this field is entered does "[' . $token . ']" find an event holding "'
+                . $vsForm . '", so nothing would ever be compared — name the event, as "' . $there . '".';
+        }
+        return null;
     }
 
     /**
