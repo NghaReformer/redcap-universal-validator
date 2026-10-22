@@ -371,10 +371,6 @@ def run(suite, cwd):
 
 
 def main():
-    for suite in sorted({m[-1] for m in MUTATIONS}):
-        res = run(suite, ROOT)
-        if res is not None and res.returncode != 0:
-            sys.exit(f'{suite} fails before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
     survived = []
     skipped = []
     with tempfile.TemporaryDirectory(prefix='uv-justify-mutations-') as directory:
@@ -383,6 +379,11 @@ def main():
             shutil.copytree(ROOT / folder, copy / folder)
         for filename in [UV, 'config.json']:
             shutil.copy2(ROOT / filename, copy / filename)
+        # in the copy, so a suite the copy alone breaks stops the run
+        for suite in sorted({m[-1] for m in MUTATIONS}):
+            res = run(suite, copy)
+            if res is not None and res.returncode != 0:
+                sys.exit(f'{suite} fails in the copy before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
         for name, filename, original, replacement, suite in MUTATIONS:
             path = copy / filename
             source = path.read_text(encoding='utf-8')
