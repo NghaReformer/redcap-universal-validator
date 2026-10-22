@@ -1521,6 +1521,10 @@ final class ScanService
                 $after = $through;
             } while ($after !== null);
         } catch (\Throwable $e) {
+            // THE RUN'S OWN ROW TOO (review rv11a2-4). A file that lost rows
+            // carried only INCOMPLETE EXPORT, so once its comment lines were
+            // deleted nothing in it said the scan itself was stopped or cut.
+            if ($terminal !== null) $write($report->csvNoticeLine(self::INCOMPLETE_LABEL, $terminal) . "\r\n");
             $write($report->csvNoticeLine(self::LOST_LABEL, self::ROWS_LOST) . "\r\n");
             $write($report->csvMetaLine(self::ROWS_LOST, 'rows=' . $rows) . "\r\n");
             $flush();
