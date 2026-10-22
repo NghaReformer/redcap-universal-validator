@@ -634,6 +634,11 @@ interface ScanStore
      * judged by progress_at alone, a run finalising for longer than the window
      * was reaped while the page showed it working (review rv10a1-1).
      *
+     * NOT A RUN SOMEBODY STOPPED. A run left `cancelling` ends as cancelled,
+     * by ScanPromotion::finishCancelled() (Start's reap and the cron's), never
+     * as expired: an expiry wrote "abandoned" over the user's stop and over
+     * the reason a disable gave (review rv10a1-2).
+     *
      * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
      * in it on purpose:
      *

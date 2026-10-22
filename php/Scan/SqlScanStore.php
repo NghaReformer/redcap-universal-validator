@@ -1900,8 +1900,10 @@ final class SqlScanStore implements ScanStore
         $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
         $at = gmdate('Y-m-d H:i:s', $t);
         $w = self::staleWhere($cut, $at);
-        $stale = ' WHERE project_id = ? AND ' . $w[0];
-        $bind = array_merge([(int) $pid], $w[1]);
+        // Not a run somebody stopped: it ends as cancelled, by the finisher
+        // Stop uses, never as abandoned (review rv10a1-2).
+        $stale = ' WHERE project_id = ? AND phase <> ? AND ' . $w[0];
+        $bind = array_merge([(int) $pid, ScanPhase::CANCELLING], $w[1]);
         try {
             $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale, $bind);
             if (!isset($r[0][0])) return 0;

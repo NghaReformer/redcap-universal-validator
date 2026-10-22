@@ -268,6 +268,13 @@ $runRow = function ($runId) use ($dbA) {
     $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'unique-finalize', progress_at = '"
         . gmdate('Y-m-d H:i:s', time() - 30 * 3600) . "', updated_at = '" . gmdate('Y-m-d H:i:s', time() - 10)
         . "', lease_expires_at = '" . gmdate('Y-m-d H:i:s', time() - 29 * 3600) . "' WHERE run_id = " . (int) $fin['run']);
+    // 975: stopped by its user while a worker held it, and the worker never
+    // came back (review rv10a1-2). The pass ends it as cancelled, as Stop
+    // would have; an expiry would say it was abandoned.
+    $cx = $plant(975, 1, null, false);
+    (new SqlScanStore($dbA))->cancel(975, $cx['run'], 'alice');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "', lease_expires_at = NULL WHERE run_id = " . (int) $cx['run']);
 
     $logs = array();
     $rec = new UvRecordingDb($dbA);
@@ -282,6 +289,13 @@ $runRow = function ($runId) use ($dbA) {
         function ($s) { return in_array(974, $s[2], true); });
     check('reap pass: a run finalising now is not named by the census, however old its last record',
         $runRow($fin['run'])[0] === null && $named974 === array());
+    $cxRow = (new SqlScanStore($dbA))->run(975, $cx['run']);
+    $cxExpired = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+        . ' WHERE project_id = ? AND event = ?', array(975, ScanStore::AUDIT_EXPIRE));
+    check('reap pass: a stale run its user stopped ends as cancelled with what it found counted, never as abandoned',
+        $cxRow['terminal'] === ScanOutcome::CANCELLED && $r['out']['runs_stopped'] === 1
+        && strpos((string) $cxRow['terminal_reason'], 'abandoned') === false
+        && (int) $cxRow['manifest_done'] === 1 && (int) $cxExpired[0][0] === 0);
     check('reap pass: the free slots above the lowered limit are gone (W1-N1)',
         $r['out']['slots_removed'] === 3
         && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_worker_slot'))[0][0] === 2);
@@ -323,7 +337,7 @@ $runRow = function ($runId) use ($dbA) {
 {
     // The projects above are done with; the lap below starts at the first of
     // these, so the ticking clock's arithmetic is about them alone.
-    foreach (array(970, 971, 972, 973, 974) as $p) uv_clear_project($dbA, $p);
+    foreach (array(970, 971, 972, 973, 974, 975) as $p) uv_clear_project($dbA, $p);
     $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
     // 980: kept raw values under a 30-day window; the project now keeps none.
     $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));

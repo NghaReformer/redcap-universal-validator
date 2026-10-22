@@ -371,7 +371,8 @@ final class ScanRetention
         $w = SqlScanStore::staleWhere(gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600),
             gmdate('Y-m-d H:i:s', $t));
         $rows = $this->db->select('SELECT DISTINCT project_id FROM ' . Schema::table('scan_run')
-            . ' WHERE ' . $w[0] . ' ORDER BY project_id', $w[1]);
+            . ' WHERE phase <> ? AND ' . $w[0] . ' ORDER BY project_id',
+            array_merge([ScanPhase::CANCELLING], $w[1]));
         $n = 0;
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;

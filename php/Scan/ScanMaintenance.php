@@ -167,7 +167,8 @@ final class ScanMaintenance
      * here, so the table says what the limit is within one interval.
      *
      * THEN THE PROJECTS. A project with a stale active run has it expired
-     * (ScanStore::expireAbandoned()); a project with a whole-project run that
+     * (ScanStore::expireAbandoned()), or finished as cancelled when somebody
+     * had stopped it (finishStopped()); a project with a whole-project run that
      * completed and has not closed its older generations has them closed, a
      * page per call (W4-D1). Scoped runs are not listed: they supersede
      * nothing (review R8-1), and one that answers SUPERSEDE_SCOPED anyway is
@@ -181,8 +182,8 @@ final class ScanMaintenance
     {
         $this->begin('reap', $state);
         $until = $this->started + max(0.0, (float) $seconds);
-        $out = ['runs_expired' => 0, 'slots_removed' => 0, 'superseded' => 0, 'projects' => 0,
-                'failed' => 0, 'more' => 0, 'stopped' => 0];
+        $out = ['runs_expired' => 0, 'runs_stopped' => 0, 'slots_removed' => 0, 'superseded' => 0,
+                'projects' => 0, 'failed' => 0, 'more' => 0, 'stopped' => 0];
         $sys = null;
         try {
             $sys = $this->sys = call_user_func($this->policy, null);
@@ -193,9 +194,10 @@ final class ScanMaintenance
         }
         if ($sys === null) return $this->end($out);
         $this->state['after'] = $this->lap($this->cursor(), $until, $out, function (array $row) use ($sys, $until, &$out) {
-            if (!$row['stale'] && !$row['supersede']) return true;
+            if (!$row['stale'] && !$row['stopped'] && !$row['supersede']) return true;
             $out['projects']++;
             call_user_func($this->enter, $row['pid']);
+            if ($row['stopped']) $out['runs_stopped'] += $this->finishStopped($row['pid']);
             if ($row['stale']) {
                 $out['runs_expired'] += $this->store->expireAbandoned($row['pid'], $sys['staleHours'], 'cron',
                     $this->nowGiven ? $this->now : null);
@@ -203,6 +205,32 @@ final class ScanMaintenance
             return !$row['supersede'] || $this->supersede($row['pid'], $until, $out);
         });
         return $this->end($out);
+    }
+
+    /**
+     * Finish a run somebody stopped and nobody finished (review rv10a1-2).
+     *
+     * Stop leaves a run `cancelling` while a worker holds it, for that worker
+     * to finish at its next fence; a worker that never came back, a finish
+     * that failed, or a disable that ran out of time leaves it there, holding
+     * its project's slot and reading "stopping". Start finishes such a run
+     * (ScanService::reapCancelled()); the cron expired it as abandoned once it
+     * was stale, which threw away the user's stop and the reason. It is
+     * finished here the way Stop finishes one, by
+     * ScanPromotion::finishCancelled() with what the run found counted, once
+     * the census finds it past the stale window with its lease lapsed: the
+     * same wait a worker that still holds a run is given to come back.
+     *
+     * @return int runs finished: 0 or 1
+     */
+    private function finishStopped($pid)
+    {
+        $rows = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND active_slot = 1 AND phase = ?', [(int) $pid, ScanPhase::CANCELLING]);
+        if (!isset($rows[0][0])) return 0;
+        $policy = call_user_func($this->policy, $pid);
+        return ScanPromotion::finishCancelled($this->store, $pid, (int) $rows[0][0], [
+            'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']]) ? 1 : 0;
     }
 
     /**
@@ -607,26 +635,31 @@ final class ScanMaintenance
      * read is one run of one of those projects. uv_scan_run holds a row per
      * run, and retention keeps that number bounded per project.
      *
-     * @return array<int, array{pid:int, stale:bool, supersede:bool, oldest:?string, modes:string[]}>
+     * @return array<int, array{pid:int, stale:bool, stopped:bool, supersede:bool, oldest:?string,
+     *                          modes:string[]}>
      */
     private function census($after)
     {
         // The store's predicate, clock and all (review rv10a1-1), so the
         // census names exactly the projects expireAbandoned() will reap.
+        // A stale run somebody stopped is 2, finished as cancelled; any
+        // other stale run is 1, expired (review rv10a1-2). uq_project_active
+        // allows one active run a project, so MAX() sees at most one of them.
         $stale = SqlScanStore::staleWhere($this->staleCut(), self::at($this->now));
         $rows = $this->db->select('SELECT project_id,'
-            . ' MAX(CASE WHEN ' . $stale[0] . ' THEN 1 ELSE 0 END),'
+            . ' MAX(CASE WHEN ' . $stale[0] . ' THEN (CASE WHEN phase = ? THEN 2 ELSE 1 END) ELSE 0 END),'
             . ' MAX(CASE WHEN terminal = ? AND scope_dag IS NULL AND supersede_cursor < generation_id'
             . '   THEN 1 ELSE 0 END),'
             . ' MIN(CASE WHEN active_slot IS NULL THEN updated_at END),'
             . ' GROUP_CONCAT(DISTINCT values_state)'
             . ' FROM ' . Schema::table('scan_run') . ' WHERE project_id > ?'
             . ' GROUP BY project_id ORDER BY project_id LIMIT ' . self::CENSUS_PAGE,
-            array_merge($stale[1], [ScanOutcome::COMPLETE, (int) $after]));
+            array_merge($stale[1], [ScanPhase::CANCELLING, ScanOutcome::COMPLETE, (int) $after]));
         $out = [];
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;   // the version-1 leftover: no project to act for
-            $out[] = ['pid' => (int) $r[0], 'stale' => (int) $r[1] === 1, 'supersede' => (int) $r[2] === 1,
+            $out[] = ['pid' => (int) $r[0], 'stale' => (int) $r[1] === 1, 'stopped' => (int) $r[1] === 2,
+                      'supersede' => (int) $r[2] === 1,
                       'oldest' => $r[3] === null ? null : (string) $r[3],
                       'modes' => $r[4] === null || $r[4] === '' ? [] : explode(',', (string) $r[4])];
         }

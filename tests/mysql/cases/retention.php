@@ -191,6 +191,14 @@ $prefix = function ($key, $table, $n) use ($A) {
     check('retention: a run finalising now is not abandoned, and no project is named for it',
         (new \INSPIRE\UniversalValidator\Scan\ScanRetention($recR))->expireAbandoned(1) === 0
         && $recR->matching('select', array('SELECT run_id FROM')) === array());
+    // Nor is a run somebody stopped, however stale (review rv10a1-2): it ends
+    // as cancelled, by the finisher Stop uses.
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'cancelling', updated_at = '2000-01-01 00:00:00'"
+        . ' WHERE run_id = ' . $rid);
+    $recR = new UvRecordingDb($dbA);
+    check('retention: a stale run left cancelling is not abandoned, and no project is named for it',
+        (new \INSPIRE\UniversalValidator\Scan\ScanRetention($recR))->expireAbandoned(1) === 0
+        && $recR->matching('select', array('SELECT run_id FROM')) === array());
     $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . $phaseWas . "',"
         . ' progress_at = UTC_TIMESTAMP() WHERE run_id = ' . $rid);
 

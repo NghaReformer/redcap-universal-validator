@@ -953,6 +953,8 @@ final class ArrayScanStore implements ScanStore
         $at = gmdate('Y-m-d H:i:s', $t);
         foreach ($this->runs as $id => $r) {
             if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] !== 1) continue;
+            // A stopped run ends as cancelled, never as abandoned (rv10a1-2).
+            if ($r['phase'] === ScanPhase::CANCELLING) return 0;
             // SqlScanStore::staleWhere()'s clock: the later of the progress
             // clock and updated_at in the phases whose work moves only the
             // second (review rv10a1-1).

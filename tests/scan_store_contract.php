@@ -1457,6 +1457,15 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $sl->claimPlan($rl, 'p1', (int) $sl->run(787, $rl)['lease_epoch'], 30 * 3600, 3);
     $C('reap: a run whose lease is still live is not abandoned',
         $sl->expireAbandoned(787, 24, 'cron', $later) === 0);
+    // A RUN SOMEBODY STOPPED IS NOT ABANDONED (review rv10a1-2), however long
+    // it has sat in `cancelling`: it ends as cancelled, by the finisher Stop
+    // uses, and an expiry would write "abandoned" over the stop.
+    $sc = $newStore();
+    $rc = (int) $sc->startRun(792, ['created_by' => 'alice'])['run']['run_id'];
+    $sc->cancel(792, $rc, 'alice');
+    $C('reap: a run left cancelling is not expired, however stale',
+        $sc->expireAbandoned(792, 24, 'cron', $later) === 0
+        && $sc->run(792, $rc)['phase'] === ScanPhase::CANCELLING && $sc->run(792, $rc)['terminal'] === null);
 
     // THE CLOCK IS THE STATUS PAGE'S (review rv10a1-1). In catch-up and the two
     // finalizers nothing moves progress_at and nothing renews the lease, and
