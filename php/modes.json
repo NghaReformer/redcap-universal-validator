@@ -35,7 +35,9 @@
     "lock (optional): the mode locks its fields' values. returnWhy refuses such a rule on a field another rule returns",
     "a value to, since the save writes that value again: {field} is that field, {by} the other rule's first field.",
     "when (optional, false only): the mode takes no condition, so its rules carry no \"when\" and no \"caseSensitive\"",
-    "(ModeRegistry::takesWhen). Every other mode takes one."
+    "(ModeRegistry::takesWhen). Every other mode takes one.",
+    "missingCodes: skip = a field holding a Missing Data Code is left out before the evaluator runs; answer = the",
+    "evaluator is given the code (@UVREQUIRED counts it as an answer, @UVWRITEONCE finds a code saved over a locked value)."
   ],
   "common": {
     "refKeys": [

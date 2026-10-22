@@ -26,6 +26,9 @@ VERDICT = 'tests/writeonce_php.php'
 MODULE = 'tests/writeonce_module_php.php'
 DOM = 'tests/writeonce_dom_js.cjs'
 ANNOTATION = 'tests/annotation_php.php'
+MODES = 'php/modes.json'
+LIVE_PHP = 'tests/writeonce_live_twin_php.php'
+LIVE_JS = 'tests/writeonce_live_twin_js.cjs'
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -113,6 +116,14 @@ MUTATIONS = [
     ('the page locks before the "since" day', UV,
      "                if (strcmp($today, $r['writeonceSince']) < 0) continue;   // the lock starts later\n",
      '', MODULE),
+    ('a refused role says "on field" twice', UV,
+     "        return ['error' => (count($unknown) === 1",
+     "        return ['error' => AnnotationRules::TAG_WRITEONCE . ' on \"' . $name . '\": ' . (count($unknown) === 1", MODULE),
+    ('a code saved over a locked value left out before the verdict', MODES,
+     '"evaluator": "findingsWriteonce",\n      "missingCodes": "answer",', '"evaluator": "findingsWriteonce",\n      "missingCodes": "skip",', MODULE),
+    ('the import the page never sees left out of the scan', UV,
+     "            $h = $history->saves($record, $event_id, $instance, $field);",
+     "            $h = ['state' => 'read', 'saves' => []];", LIVE_PHP),
     ('a refused lock takes its whole group down', UV,
      '            if ($keep) {\n                $rules[$i][\'fields\'] = $keep;', '            if (false) {\n                $rules[$i][\'fields\'] = $keep;', MODULE),
     ('@SETVALUE locked', UV,
@@ -166,6 +177,10 @@ MUTATIONS = [
      '(QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE))', '(V.message || QRID_escapeHtml(NOTE))', DOM),
     ('an undone change not said', ENGINE,
      '      undone = true;\n      show();', '      show();', DOM),
+    ('a configuration error on a dropdown left for the page notice', ENGINE,
+     'var input = QRID_findField(fieldName) || QRID_findAnchor(fieldName);', 'var input = QRID_findField(fieldName);', LIVE_JS),
+    ("every configuration error called an ID check's", ENGINE,
+     '"&#9888; Configuration error: "', '"&#9888; ID-check configuration error: "', LIVE_JS),
     ('test() answers true for a changed value', ENGINE,
      'return el ? el.value === SAVED[f] : null;', 'return el ? true : null;', DOM),
 ]

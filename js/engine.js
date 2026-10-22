@@ -3596,8 +3596,9 @@ function QRID_setInvalidState(input, state){  /* true | false | null (empty fiel
    against a live validator. Returns false when the field is not on this page
    (caller falls back to the page-level notice). */
 function QRID_attachErrorRegion(fieldName, configError){
-  var input = QRID_findField(fieldName);
-  if(!input) return false;
+  /* any field's widget: a refused tag of any mode can sit on a dropdown */
+  var input = QRID_findField(fieldName) || QRID_findAnchor(fieldName);
+  if(!input || !input.parentNode) return false;
   if(input.getAttribute && input.getAttribute("data-qrid-err-bound")) return true;
   if(input.setAttribute) input.setAttribute("data-qrid-err-bound", "1");
   var msg = document.createElement("div");
@@ -3616,7 +3617,7 @@ function QRID_attachErrorRegion(fieldName, configError){
   }
   msg.innerHTML = QRID_IS_SURVEY
     ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
-    : "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
+    : "&#9888; Configuration error: " + QRID_escapeHtml(configError);
   return true;
 }
 /* Show a configuration error that has no field widget to sit under — a rule whose

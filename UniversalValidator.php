@@ -3611,7 +3611,7 @@ class UniversalValidator extends AbstractExternalModule
         $unknown = [];
         foreach ($roles as $role) if (!isset($book['roles'][strtolower(trim((string) $role))])) $unknown[] = (string) $role;
         if (!$unknown) return $frag;
-        return ['error' => AnnotationRules::TAG_WRITEONCE . ' on "' . $name . '": ' . (count($unknown) === 1
+        return ['error' => (count($unknown) === 1
             ? '"' . $unknown[0] . '" is not a role of this project'
             : '"' . implode('", "', $unknown) . '" are not roles of this project')
             . ' — use the role name the User Rights page shows, or its unique role name.', '_tag' => AnnotationRules::TAG_WRITEONCE];

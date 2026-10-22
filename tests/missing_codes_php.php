@@ -139,7 +139,8 @@ namespace {
     $policies = [];
     foreach (ModeRegistry::all() as $m) $policies[$m['mode']] = ModeRegistry::missingCodes($m['mode']);
     check('every mode declares a policy', count($policies) === count(ModeRegistry::all()));
-    check('only @UVREQUIRED counts a code as an answer', array_keys(array_filter($policies, function ($p) { return $p === 'answer'; })) === ['required']);
+    // @UVREQUIRED counts a code as an answer; @UVWRITEONCE must see a code saved over a locked value
+    check('only @UVREQUIRED and @UVWRITEONCE are given a code', array_keys(array_filter($policies, function ($p) { return $p === 'answer'; })) === ['required', 'writeonce']);
 
     // ---- the project -----------------------------------------------------------------
     function f($form, $ann = '', $validation = '', $type = 'text') {

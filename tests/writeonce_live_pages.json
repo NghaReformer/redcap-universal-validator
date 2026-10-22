@@ -1,0 +1,644 @@
+{
+    "a1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "single",
+                "fields": [
+                    "uw_arm"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_arm\": \"UV Data manager\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_site"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_site\": \"UV Data manager\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_yn"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_yn\": \"uv data MANAGER\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "a1_values": {},
+    "b1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "b1_values": {},
+    "errors": {
+        "uw_bad_role": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name.",
+        "uw_bad_calc": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change.",
+        "uw_bad_setvalue": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens.",
+        "uw_bad_when": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message.",
+        "uw_bad_value": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+    },
+    "b2": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_notes",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "b2_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-01",
+        "uw_free": "a",
+        "uw_notes": "First note",
+        "uw_pain": "50",
+        "uw_weight": "70.0",
+        "uw_yn": "1"
+    },
+    "b4": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_notes",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "message": "Ask the data manager to change the site.",
+                "fields": [
+                    "uw_site"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "b4_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-01",
+        "uw_free": "a",
+        "uw_notes": "First note",
+        "uw_pain": "50",
+        "uw_site": "1",
+        "uw_weight": "70.0",
+        "uw_yn": "1"
+    },
+    "c2": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "message": "Ask the data manager to change the site.",
+                "fields": [
+                    "uw_site"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "c2_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-02",
+        "uw_free": "a",
+        "uw_pain": "50",
+        "uw_site": "2",
+        "uw_weight": "71.0",
+        "uw_yn": "1"
+    },
+    "d1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "d1_values": {
+        "uw_arm": "1",
+        "uw_consent": "2026-10-02",
+        "uw_free": "a",
+        "uw_pain": "50",
+        "uw_site": "2",
+        "uw_weight": "71.0",
+        "uw_yn": "1"
+    },
+    "d4": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_consent",
+                    "uw_pain"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_arm"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "message": "Ask the data manager to change the site.",
+                "fields": [
+                    "uw_site"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uw_yn"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_role"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_role\": \"Nobody here\" is not a role of this project — use the role name the User Rights page shows, or its unique role name."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_calc"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_calc\": @UVWRITEONCE does not support \"calc\" fields — REDCap works a calc's value out again whenever the fields it reads change."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_setvalue"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_setvalue\": @UVWRITEONCE cannot lock a field with @SETVALUE — REDCap writes its value again each time the form or survey page opens."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_when"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_when\": unknown @UVWRITEONCE option(s): when — valid: roles, since, message."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uw_bad_value"
+                ],
+                "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
+            }
+        ]
+    },
+    "d4_values": {
+        "uw_arm": "2",
+        "uw_consent": "2026-10-02",
+        "uw_free": "a",
+        "uw_pain": "50",
+        "uw_site": "2",
+        "uw_weight": "71.0",
+        "uw_yn": "1"
+    },
+    "labels": {
+        "uw_consent": "Consent date",
+        "uw_arm": "Study arm",
+        "uw_site": "Site",
+        "uw_yn": "Eligible",
+        "uw_notes": "Screening note",
+        "uw_pain": "Pain at screening",
+        "uw_weight": "Baseline weight (kg)",
+        "uw_free": "Free text (no tag)",
+        "uw_bad_role": "A role the project does not have",
+        "uw_bad_calc": "A calc",
+        "uw_bad_setvalue": "A field with @SETVALUE",
+        "uw_bad_when": "A \"when\"",
+        "uw_bad_value": "A bare value"
+    },
+    "types": {
+        "uw_consent": {
+            "type": "text",
+            "validation": "date_ymd",
+            "choices": ""
+        },
+        "uw_arm": {
+            "type": "radio",
+            "validation": "",
+            "choices": "1, Arm A | 2, Arm B"
+        },
+        "uw_site": {
+            "type": "dropdown",
+            "validation": "",
+            "choices": "1, Douala | 2, Yaounde | 3, Bamenda"
+        },
+        "uw_yn": {
+            "type": "yesno",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_notes": {
+            "type": "notes",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_pain": {
+            "type": "slider",
+            "validation": "number",
+            "choices": "No pain | Some | Worst pain"
+        },
+        "uw_weight": {
+            "type": "text",
+            "validation": "number_1dp",
+            "choices": ""
+        },
+        "uw_free": {
+            "type": "text",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_bad_role": {
+            "type": "text",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_bad_calc": {
+            "type": "calc",
+            "validation": "",
+            "choices": "[uw_weight]*2"
+        },
+        "uw_bad_setvalue": {
+            "type": "text",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_bad_when": {
+            "type": "text",
+            "validation": "",
+            "choices": ""
+        },
+        "uw_bad_value": {
+            "type": "text",
+            "validation": "",
+            "choices": ""
+        }
+    }
+}

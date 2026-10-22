@@ -222,8 +222,8 @@ namespace {
     check('checkbox: refused by eligibility', strpos(errOf($p, 'bad_chk'), 'does not support "checkbox" fields') !== false);
     check('@CALCTEXT: refused, naming it (got ' . errOf($p, 'bad_calctext') . ')', strpos(errOf($p, 'bad_calctext'), 'cannot lock a field with @CALCTEXT') !== false);
     check('@SETVALUE: refused, naming it (got ' . errOf($p, 'bad_setvalue') . ')', strpos(errOf($p, 'bad_setvalue'), 'cannot lock a field with @SETVALUE') !== false);
-    check('roles the project lacks: refused, naming each and no other (got ' . errOf($p, 'bad_role') . ')',
-        strpos(errOf($p, 'bad_role'), '"Nobody", "Ghost" are not roles of this project') !== false && strpos(errOf($p, 'bad_role'), 'Monitor') === false);
+    check('roles the project lacks: refused, naming each and no other, once (got ' . errOf($p, 'bad_role') . ')',
+        errOf($p, 'bad_role') === '@UVWRITEONCE on "bad_role": "Nobody", "Ghost" are not roles of this project — use the role name the User Rights page shows, or its unique role name.');
     check('"when": refused (got ' . errOf($p, 'bad_when') . ')', strpos(errOf($p, 'bad_when'), 'when') !== false);
     check('a "since" that is not a date: refused', strpos(errOf($p, 'bad_since'), '"since" must be a date') !== false);
     check('a bare value: refused', strpos(errOf($p, 'bad_value'), 'takes no value') !== false);
@@ -316,6 +316,13 @@ namespace {
     $keys = array_keys($by);
     sort($keys);
     check('audit: no other field, and nothing of another form (got ' . json_encode($keys) . ')', $keys === ['baseline_wt', 'consent_date', 'notes_w']);
+
+    // a Missing Data Code saved over a locked value is a clearing: the evaluator is given the code (modes.json "answer")
+    $CODE = [[1, '2', 351, '20261001090000', "consent_date = '2026-03-01'", 'nurse', 'INSERT'], [2, '2', 351, '20261002090000', "consent_date = 'UNK'", 'nurse']];
+    $m = mod($DICT, ['2' => [351 => array_merge($ROW, ['consent_date' => 'UNK'])]], 'nurse', history($CODE, $FIELDS));
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('audit: a Missing Data Code saved over a locked value is "cleared" (got ' . json_encode(woBy($m)['consent_date'] ?? null) . ')',
+        (woBy($m)['consent_date']['reason'] ?? null) === 'cleared');
 
     // the log values are only what the log mode allows
     $mh = mod($DICT, $NOW, 'nurse', history($LOG, $FIELDS));
