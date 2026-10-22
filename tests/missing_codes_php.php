@@ -234,6 +234,24 @@ namespace {
     check('control, ordinary bad values with codes configured: still findings (got ' . json_encode($bad) . ')',
         $bad === ['m_after', 'm_assert', 'm_check', 'm_delta', 'm_delta2', 'm_exists', 'm_match', 'm_range', 'm_req', 'm_unique', 'm_window']);
 
+    // ---- 3b) @UVJUSTIFY: a code in the reason field is no reason ------------------------
+    $JDICT = ['record_id' => f('enrol'),
+        'm_jv'   => f('result', '@UVASSERT={"assert":"[m_jv]<=10"} @UVJUSTIFY={"reason":"[m_jwhy]"}', 'number'),
+        'm_jwhy' => f('result')];
+    $jsave = function ($codes, $why) use ($JDICT) {
+        $m = mod($codes);
+        \REDCap::$dictionary = $JDICT;
+        \REDCap::$data = ['5' => [351 => ['record_id' => '5', 'm_jv' => '50', 'm_jwhy' => $why]]];
+        save($m, '5');
+        return json_encode([fieldsOf(logged($m, 'invalid-id-saved')), fieldsOf(logged($m, 'uvalidate-justified'))]);
+    };
+    $j = $jsave($CODES, ' UNK ');
+    check('justify: a code in the reason field, with spaces round it, leaves the finding open (got ' . $j . ')', $j === '[["m_jv"],[]]');
+    $j = $jsave($CODES, 'scale broke');
+    check('justify: a reason written out stands for the finding (got ' . $j . ')', $j === '[[],["m_jv"]]');
+    $j = $jsave('', 'UNK');
+    check('justify: with no codes configured, "UNK" is a reason like any text (got ' . $j . ')', $j === '[[],["m_jv"]]');
+
     // ---- 4) the scan --------------------------------------------------------------------
     $m = mod($CODES);
     $res = $m->scanProject(149);

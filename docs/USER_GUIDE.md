@@ -940,7 +940,9 @@ limits (`@UVDELTA`): Text fields with no, integer or number validation
 any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
 dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
 with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, nor a
-BioPortal ontology search.
+BioPortal ontology search. A reason (`@UVJUSTIFY`) may stand for the rules of
+any field another tag checks, and the reason field itself is a Text, Notes,
+dropdown, radio or SQL field on the same form.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1154,6 +1156,22 @@ a change.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
 
+**Can a value that breaks a rule be saved when it is right?**
+Yes. Add `@UVJUSTIFY={"reason":"[weight_reason]"}` beside the rule, naming a
+field on the same form where the reason is written (Text, Notes, dropdown,
+radio or SQL). While the rule holds the save and the reason field is empty, a
+note under the field asks for a reason and the save message adds "or give a
+reason in" with the reason field's label. Once the reason is written, the
+field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
+`@UVRANGE`, `@UVDELTA` and `@UVEXISTS` rules no longer hold the save. A reason
+never releases `@UVUNIQUE` or `@UVWRITEONCE`, and never turns a warning into a
+block. A blank reason and a missing data code count as no reason. The audit
+logs such a finding as `uvalidate-justified`, naming the reason field but not
+the reason, and the Validation scan counts it apart from the open findings, so
+a scan whose findings all have a reason counts no open violations.
+Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvjustify--values-saved-with-a-reason).
+
 **Can a child's weight or height be checked against the WHO growth standards?**
 Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
 child's sex and age:
@@ -1297,7 +1315,8 @@ an answer, so a field marked "unknown" is not reported as missing. A code in an
 `@UVEXISTS` `match` field, a `@UVWINDOW` "from" date or the value a `@UVDELTA`
 compares with also counts as blank. `@UVWRITEONCE` locks no code, so a field
 marked "unknown" can be filled in later, and reports a code saved over a
-locked value as a clearing.
+locked value as a clearing. A code in a `@UVJUSTIFY` reason field gives no
+reason.
 In a `when` condition or an `@UVASSERT` expression the code is read as itself,
 the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
 `when` to leave such records out.

@@ -82,6 +82,10 @@ jobs:
         run: |
           node tests/writeonce_dom_js.cjs
           node tests/writeonce_live_twin_js.cjs
+      - name: JS reason (@UVJUSTIFY) given vs fixture, and its DOM contract (a reason releases the modes it stands for, the alert and dialog name the reason field, the note, write-once and unique not released)
+        run: |
+          node tests/justify_js.cjs
+          node tests/justify_dom_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
       - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
@@ -260,6 +264,10 @@ jobs:
           php tests/writeonce_module_php.php
           php tests/writeonce_live_twin_php.php
           python3 tests/writeonce_mutations.py
+      - name: PHP @UVJUSTIFY reason given vs fixture, grammar, pairing with the rules it stands for, hooks, audit, legacy and durable scan
+        run: |
+          php tests/justify_php.php
+          php tests/justify_module_php.php
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |
           php tests/growth_php.php

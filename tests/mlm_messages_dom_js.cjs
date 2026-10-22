@@ -328,6 +328,23 @@ function frAndBack(label, env, field, en, fr, mlm) {
   frAndBack('writeonce', env, 'consent_date', 'Ask the data manager to correct it', 'Demandez au gestionnaire de le corriger', mlm);
 }
 {
+  // @UVJUSTIFY: the note under the field that asks for the reason (region "-j"), a tick after each change
+  const mlm = makeMlm('fr');
+  const env = boot([input('wt', '30'), input('wt_why', '')], { rules: [
+    { type: 'constraint', fields: ['wt'], assert: '[wt]>40', blockSave: 'hard' },
+    { type: 'justify', fields: ['wt'], justifyReason: 'wt_why', message: 'Say why this weight is right',
+      i18n: { message: { fr: 'Dites pourquoi ce poids est juste' } } }] }, { mlm });
+  const tick = () => { for (let k = 0; k < 5 && timers.length; k++) { const due = timers; timers = []; due.forEach((t) => t.fn()); } };
+  tick();
+  const note = env.allEls.find((e) => e.id && /^uvalidate-msg-.*wt-j$/.test(e.id)) || null;
+  check('justify: French shown', shown(note) && textOf(note).indexOf('Dites pourquoi ce poids est juste') >= 0
+    && textOf(note).indexOf('Say why') < 0, textOf(note));
+  mlm.switchTo('en');
+  tick();
+  check('justify: default after switching to en', textOf(note).indexOf('Say why this weight is right') >= 0
+    && textOf(note).indexOf('Dites') < 0, textOf(note));
+}
+{
   const mlm = makeMlm('fr');
   const env = boot([input('visit_date_bl', '01-03-2026'), input('visit_date_2', '15-03-2026')], { rules: [{ type: 'window',
     fields: ['visit_date_2'], windowFrom: '[visit_date_bl]', windowFromOp: ['ref', 'visit_date_bl', null],

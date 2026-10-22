@@ -51,6 +51,10 @@ node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing p
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, grammar, page, audit, scan
 php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
+php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.json, grammar, registry flags
+node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
+node tests/justify_dom_js.cjs     # @UVJUSTIFY page (a reason releases the modes it stands for, the alert names the reason field, the note)
+php  tests/justify_module_php.php # @UVJUSTIFY hooks, applyJustify, page config, audit, legacy and durable scan
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -636,6 +640,41 @@ inner spaces.
   `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
   variables name a server, and are reported as skipped otherwise.
 
+## `justify_*` — values saved with a reason
+
+`justify_fixture.json` holds the cases of whether a reason field's value gives
+a reason: blank, every kind of space PHP's `trim()` takes and the ones it
+does not, Missing Data Codes with and without spaces round them, numbers, a
+checkbox map, null and booleans. `justify_php.php` runs them through
+`Logic::reasonGiven` and `justify_js.cjs` through `QRID_reasonGiven`, so the
+two runtimes cannot disagree. `justify_php.php` also pins the grammar (every
+refusal word for word), the registry's `"justify"` flags (the ID checks,
+`@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`,
+`@UVDELTA` and `@UVEXISTS`; never `@UVUNIQUE`, `@UVWRITEONCE` or itself), the
+reason fields `ModeRegistry::refFields` reads, and the sentence a report adds
+to a finding saved with a reason.
+
+- `justify_dom_js.cjs` drives `QRIDJustifyInit` beside the factories of the
+  rules a reason stands for: the save message adds "or give a reason in" with
+  the reason field's label and a note asks for one; a reason releases the
+  field for "hard" and "confirm" in either boot order, and clearing it brings
+  the hold back; a Missing Data Code, a hidden reason row and a reason field
+  not on the page give no reason; a radio or dropdown reason counts, even
+  changed with no event; a rule with blockSave "off", a lookup still in
+  flight, a duplicate and a write-once lock are never lifted; configuration
+  errors release nothing.
+- `justify_module_php.php` covers the server side: the field and dictionary
+  hooks, `applyJustify` (a field no covered rule checks is an error of its
+  own, split from a rule written alike on several fields; two tags on one
+  field refused), the page config (no `justifyBy` reaches the page; a reason
+  field never makes a locked field hold the save), the post-save audit
+  (`uvalidate-justified` with `justified_by`, never the reason; a blank,
+  spaces or a code leaves `invalid-id-saved`; the reason read at the same
+  event and instance only), and the legacy and durable scans (rows, counts,
+  the "Saved with a reason" column and sentence, the stored flag).
+- `missing_codes_php.php` adds a reason field holding a code (no reason) and
+  `mlm_messages_dom_js.cjs` the note in the person's language.
+
 ## `growth_*` — growth references (z-scores)
 
 `growth_fixture.json` holds cases for each step of a z-score: where a value
@@ -828,7 +867,8 @@ a `@UVWINDOW` "from" date and an `@UVEXISTS` `match` field holding a code.
 `missing_codes_php.php` checks REDCap's "CODE, Label" lines, the registry, the
 post-save audit with and without codes configured, the scan (two records
 marked `UNK` are not duplicates), the `unique-check` and `exists-check`
-endpoints, and the page config (codes, never their labels).
+endpoints, the page config (codes, never their labels), and a code in a
+`@UVJUSTIFY` reason field, which gives no reason.
 
 ## `hook_php.php` — the audit-path contract
 

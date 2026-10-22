@@ -27,6 +27,7 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
 - [`@UVDELTA` — how far a number may change](#uvdelta--how-far-a-number-may-change)
 - [`@UVWRITEONCE` — values entered once](#uvwriteonce--values-entered-once)
+- [`@UVJUSTIFY` — values saved with a reason](#uvjustify--values-saved-with-a-reason)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -64,6 +65,7 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVRANGE`    | A number lies within usual and plausible limits (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
 | `@UVDELTA`    | A number has not changed more than a limit since an earlier value (the previous visit, baseline, another field)         | Text with no, integer or number validation, calc, slider       |
 | `@UVWRITEONCE` | A value, once saved, is not changed or cleared except by named user roles                                              | Text, Notes, dropdown, radio, yes/no, true/false, slider, SQL  |
+| `@UVJUSTIFY`  | Not a check: a filled-in reason field lets the field's broken rules save, and the audit and scan report them apart     | Any field another tag checks                                   |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -4538,6 +4540,91 @@ rule returns a value to.
 
 ---
 
+## `@UVJUSTIFY` — values saved with a reason
+
+Some values break a rule and are still right, such as a weight gain of 15%
+after a long hospital stay, or a visit outside its window because the clinic
+was closed. `@UVJUSTIFY` names a second field where the reason is written. Once that field
+holds a reason, the field's broken rules no longer hold the save, and the
+audit and the scan report those findings apart from the open ones.
+
+### Level 1 — a reason field
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
+```
+
+`reason` names one field of the same form: a Text or Notes field, or a
+dropdown, radio or SQL field whose choices are the reasons you allow. While the
+weight breaks the `@UVDELTA` limit and `weight_reason` is empty, a note under
+the weight reads "Fix this value, or say why it is right in “Reason for
+change”." (the reason field's label), and the save message names the field as
+"Weight (or give a reason in “Reason for change”)". Once a reason is written,
+the save goes through.
+
+### Level 2 — your own note
+
+```text
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[sbp_why]","message":{"en":"Say why this reading is right.","fr":"Dites pourquoi cette mesure est juste."}}
+```
+
+`message` replaces the note under the field. It may be a map of language ids
+to texts.
+
+### Semantics worth knowing
+
+- A reason stands for every rule of `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`,
+  `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`, `@UVDELTA` and `@UVEXISTS` on the
+  field, from annotations and from the Configure dialog alike. Each keeps its
+  own `when` and `blockSave`.
+- Never for `@UVUNIQUE`: a reason does not make a duplicate identifier safe.
+  Never for `@UVWRITEONCE`: a locked field stays locked, and only the roles
+  that tag names can change it.
+- A reason is any text left once spaces, tabs and line breaks are taken from
+  both ends. A blank field and a missing data code give none, so a reason field
+  marked "unknown" still asks for one. On the form, a reason field whose row
+  branching logic hides gives none either.
+- The note shows while a covered rule holds the save or asks "Save anyway?"
+  and no reason is given. The rules' own notes stay once the reason is given.
+- A reason never lets anything else through. A rule with `blockSave` `"off"`
+  still only warns, and a lookup still being checked still holds the save.
+- On a survey page that does not carry the reason field, the tag does nothing
+  on that page. The audit after the save still reads the reason.
+- The audit logs a finding whose reason is given, in the same record, event
+  and instance, as `uvalidate-justified` with `justified_by` naming the reason
+  field; open findings stay `invalid-id-saved`. The reason itself is never
+  logged. A reason field that cannot be read, or missing data codes that cannot
+  be read, leave the finding open.
+- The Validation scan counts these findings apart: the summary adds "and N
+  saved with a reason", the findings table has a "Saved with a reason" column,
+  and a scan whose findings all have a reason counts no open violations.
+- The tag takes no `when`, `caseSensitive`, `blockSave` or `references`.
+
+```text invalid
+# refused: needs the field that holds the reason
+@UVJUSTIFY
+# refused: takes its settings as JSON
+@UVJUSTIFY=[weight_reason]
+# refused: needs "reason"
+@UVJUSTIFY={"message":"Say why."}
+# refused: "reason" must be one field reference
+@UVJUSTIFY={"reason":"weight_reason"}
+# refused: with no event or instance
+@UVJUSTIFY={"reason":"[visit_1_arm_1][weight_reason]"}
+# refused: @UVJUSTIFY takes no "when"
+@UVJUSTIFY={"reason":"[weight_reason]","when":"[visit]='2'"}
+# refused: @UVJUSTIFY takes no "blockSave"
+@UVJUSTIFY={"reason":"[weight_reason]","blockSave":"off"}
+```
+
+Once the data dictionary is read, the module also refuses a reason field that
+is not a field of the project, one on another form, one of another type (a
+calc, checkbox, yes/no, true/false, slider or file field), the field itself, a
+field given the tag twice, and a field that no rule a reason stands for checks.
+
+---
+
 ## Combining tags on one field
 
 Different kinds of tag on one field **compose**: all must pass, and each keeps an
@@ -6185,6 +6272,15 @@ number keeps. `blockSave` is refused.
 
 No `when`, `caseSensitive`, `blockSave` or `references`.
 
+### `@UVJUSTIFY`
+
+| Key       | Type          | Default         | Notes                                                                              |
+| --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance |
+| `message` | string or map | generic line    | The note under the field that asks for the reason                                  |
+
+No `when`, `caseSensitive`, `blockSave` or `references`.
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -6193,7 +6289,7 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 | `alternates` | list   | `@UVALIDATE` only: `label`, `pattern`, `algorithm`, `source`, `strip`, `lengths` per entry |
 | `message`    | string or map | Every tag except `@UVALIDATE`: one string, or a map of language id to text ([Messages in several languages](#messages-in-several-languages)) |
 
-`@UVWRITEONCE` takes no `references`.
+`@UVWRITEONCE` and `@UVJUSTIFY` take no `references`.
 
 ### `references` binding keys
 
@@ -6377,6 +6473,10 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVWRITEONCE                                                       locked by its first save
 @UVWRITEONCE={"roles":["Data manager"]}                            the data manager may still change it
 @UVWRITEONCE={"since":"2026-11-01"}                                locks what was held on that day
+
+# ── @UVJUSTIFY — values saved with a reason ──────────────────────────────────
+@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
+                                                                  a change past 10% saves once a reason is written
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

@@ -1155,6 +1155,61 @@ first save of a value and locks it from then on:
   and the forged row stays in the log. The tag takes no `when`,
   `caseSensitive` or `blockSave`. Configure via field annotation only.
 
+## Values saved with a reason — the `@UVJUSTIFY` tag
+
+Some values break a rule and are still right, such as a weight gain of 15%
+after a long hospital stay, or a visit outside its window because the clinic
+was closed. A rule that holds the save then leaves the person two choices, a wrong value
+or an unsaved form. `@UVJUSTIFY` names a second field where the reason is
+written. Once that field holds a reason, the field's broken rules no longer
+hold the save, and the audit and the scan report those findings apart from
+the open ones:
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10} @UVJUSTIFY={"reason":"[weight_reason]"}
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+```
+
+- **`reason`** (required) names one field of the same form: a Text or Notes
+  field, or a dropdown, radio or SQL field whose choices are the reasons you
+  allow. Not the field itself, and no event or instance.
+- **`message`** is the note under the field that asks for the reason (a map of
+  language ids to texts is accepted, as for the other tags). Without it the
+  note reads "Fix this value, or say why it is right in" the reason field's
+  label.
+- **Which rules.** A reason stands for every rule of `@UVALIDATE`,
+  `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`,
+  `@UVDELTA` and `@UVEXISTS` on the field, from annotations and from the
+  Configure dialog alike (`php/modes.json` `"justify"`). Each keeps its own
+  `when` and `blockSave`. Never `@UVUNIQUE`, since a reason does not make a
+  duplicate identifier safe, and never `@UVWRITEONCE`, since a reason gives
+  no role. A `@UVJUSTIFY` on a field none of those rules checks, a bare
+  `@UVJUSTIFY` and a second one on the field are configuration errors.
+- **What counts as a reason.** Any text left once spaces, tabs and line
+  breaks are taken from both ends. A blank field and a missing data code give
+  none, so a reason field marked "unknown" still asks for one. On the form, a
+  reason field whose row branching logic hides gives none either.
+- **On the page.** While a covered rule holds the save, or asks "Save
+  anyway?", and no reason is given, a note under the field asks for one, and
+  the field's line in the save message reads "Weight (or give a reason in
+  “Reason for change”)". Once the reason is given the field no longer holds
+  the save for those rules; their own notes stay. A reason never lets
+  anything else through: a rule with `blockSave` `"off"` still only warns, a
+  lookup still being checked still holds the save, and a field locked by
+  `@UVWRITEONCE` stays locked. On a survey page that does not carry the
+  reason field, the tag does nothing; the audit after the save still reads
+  the reason.
+- **Audited.** The post-save audit logs a broken rule whose reason is given,
+  in the same record, event and instance, as `uvalidate-justified` with
+  `justified_by` naming the reason field; open findings stay
+  `invalid-id-saved`. The reason itself is never logged. A reason field that
+  cannot be read, or missing data codes that cannot be read, leave the
+  finding open. The Validation scan counts these findings apart: the summary
+  adds "and N saved with a reason", the findings table has a "Saved with a
+  reason" column, the durable scan stores `uv_finding.justified` (schema
+  version 6), and a scan whose findings all have a reason counts no open
+  violations. Configure via field annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -1476,6 +1531,10 @@ php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, sc
 php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
 python3 tests/writeonce_mutations.py   # @UVWRITEONCE: every mutation must make a named suite fail
+php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.json, grammar, registry flags
+node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
+node tests/justify_dom_js.cjs     # @UVJUSTIFY page: a reason releases the modes it stands for
+php  tests/justify_module_php.php # @UVJUSTIFY hooks, page config, audit, legacy and durable scan
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file
