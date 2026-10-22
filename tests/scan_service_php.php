@@ -22,6 +22,7 @@
 namespace {
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/ScanCapabilities.php';
+    require_once __DIR__ . '/../php/ScanDimensions.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';
@@ -2121,6 +2122,80 @@ namespace INSPIRE\UniversalValidator\Scan {
     $last = end($c['works']);
     check('E2E clean: the work request that finished it carries the same status',
         isset($last['status']['terminal']) && $last['status']['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- THE LABELS OF THE DAY THE RUN WAS PLANNED (M5, W7-N11) ------------------
+    //
+    // start() builds the module's ScanDimensions over the rule list the
+    // findings' ordinals refer to, the planner stores it under the run's
+    // generation, and the pass that finishes the run reads its state row for
+    // `labelDegraded`, which no caller supplied before.
+    $labelled = function (ArrayScanStore $s) {
+        return new class($s) extends \E2eModule {
+            public $dimsAsked = false;
+            public $dimsFail = false;
+            public function durableScanContext($pid, array $opts = [], $dag = null)
+            {
+                $c = parent::durableScanContext($pid, $opts, $dag);
+                $c['plan']['allRules'] = $this->rules;
+                $c['plan']['ruleIds'] = [0 => ['source_id' => 'r1']];
+                return $c;
+            }
+            public function scanDimensions($pid, ?array $rules = null)
+            {
+                $this->dimsAsked = $rules;
+                if ($this->dimsFail) throw new \RuntimeException('no labels today');
+                $d = new \INSPIRE\UniversalValidator\ScanDimensions();
+                $d->forms = ['fa' => 'Form A'];
+                $d->fieldLabels = ['a_val' => 'Value A'];
+                $d->fieldForms = ['a_val' => 'fa'];
+                $d->identifiers = ['a_val' => true];
+                $d->singleEventProved = true;
+                $d->rules = [1 => ['type' => 'required', 'label' => 'A is required', 'message' => '',
+                                   'messages' => [], 'assert' => '', 'fields' => ['a_val'], 'detail' => []]];
+                return $d;
+            }
+        };
+    };
+    $ds = new ArrayScanStore();
+    $dm = $labelled($ds);
+    $dd = $drive($dm, $ds, 171);
+    $drow = $dd['row'];
+    $dgen = is_array($drow) ? (int) $drow['generation_id'] : 0;
+    $dsnap = \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($ds->dimensions(171, $dgen));
+    check('M5: start stores the labels under the run\'s generation, for this project only',
+        $dd['threw'] === null && $dsnap !== null && $dsnap->forms === ['fa' => 'Form A']
+        && $dsnap->fieldLabels === ['a_val' => 'Value A'] && $dsnap->identifiers === ['a_val' => true]
+        && $dsnap->rules[1]['label'] === 'A is required' && $dsnap->rulesBySource === ['r1' => 1]
+        && $ds->dimensions(172, $dgen) === []);
+    check('M5: built over the rule list the findings\' ordinals refer to', $dm->dimsAsked === $dm->rules);
+    check('W7-N11: a run planned with every label read is certified clean without the labels sentence',
+        is_array($drow) && (int) $drow['clean'] === 1
+        && strpos((string) $drow['terminal_reason'], 'labels could not be read') === false);
+
+    $us2 = new ArrayScanStore();
+    $um2 = $labelled($us2);
+    $um2->dimsFail = true;
+    $u2 = $drive($um2, $us2, 173);
+    $u2row = $u2['row'];
+    $u2snap = is_array($u2row)
+        ? \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($us2->dimensions(173, (int) $u2row['generation_id']))
+        : null;
+    check('W7-N11: labels that could not be read at planning do not stop the scan, and are kept as such',
+        $u2['threw'] === null && is_array($u2row) && $u2row['terminal'] === ScanOutcome::COMPLETE
+        && $u2snap !== null && isset($u2snap->degraded['labels']) && $u2snap->forms === []);
+    check('W7-N11: and the finished run says some labels could not be read',
+        (int) $u2row['clean'] === 1
+        && strpos((string) $u2row['terminal_reason'], 'some labels could not be read') !== false);
+
+    $fi = new ArrayScanStore();
+    $fm = $labelled($fi);
+    $fst = (new ScanService($fm, (new FaultyStore($fi))->failFrom('writeDimensions')))->start(174);
+    $frow = $fi->run(174, 1);
+    check('M5: a start whose labels could not be stored is refused, in words',
+        empty($fst['ok']) && strpos((string) $fst['why'], 'could not keep the names') !== false);
+    check('M5: and its run is ended as failed rather than left holding the project',
+        is_array($frow) && $frow['terminal'] === ScanOutcome::FAILED
+        && !empty((new ScanService($fm, $fi))->start(174)['ok']));
 
     // -- the change log fails to read for one request (H11) ----------------------
     //

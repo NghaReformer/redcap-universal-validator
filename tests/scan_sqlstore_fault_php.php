@@ -1845,6 +1845,34 @@ namespace INSPIRE\UniversalValidator\Scan {
         && (int) $s1->run(88, $rid1)['manifest_total'] === 90);
     check('R5-1: and a slice whose page held none of them still says the walk moved',
         $moved1 === array_fill(0, 9, true));
+
+    // -- A LABEL SNAPSHOT IS ALL OR NOTHING (M5) -------------------------------
+    //
+    // 250 rows are three INSERTs. The second refused: the transaction is
+    // rolled back, nothing is committed, and the store says the storage
+    // failed rather than that the generation already had a snapshot.
+    $dimRows = [];
+    for ($i = 0; $i < 250; $i++) $dimRows[] = ['kind' => 'field', 'key' => 'f' . $i, 'label' => 'L', 'meta' => null];
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[0]];
+    $db->failAt('INSERT INTO', 2);
+    $r = outcomeOf(function () use ($db, $dimRows) { return (new SqlScanStore($db))->writeDimensions(700, 4, $dimRows); });
+    check('M5 fault: a snapshot refused half way is a storage failure',
+        $r['kind'] === 'unavailable');
+    check('M5 fault: and its transaction is rolled back, never committed',
+        $db->rollbacks === 1 && in_array('BEGIN', $db->log, true) && !in_array('COMMIT', $db->log, true));
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[1]];
+    $r = outcomeOf(function () use ($db, $dimRows) { return (new SqlScanStore($db))->writeDimensions(700, 4, $dimRows); });
+    $inserts = 0;
+    foreach ($db->log as $q) if (strpos($q, 'INSERT INTO') !== false) $inserts++;
+    check('M5 fault: a generation that has a snapshot is refused in words, and nothing is sent after the read',
+        $r['kind'] === 'other' && $r['class'] === 'RuntimeException' && $inserts === 0 && $db->rollbacks === 1);
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[0]];
+    $one = (new SqlScanStore($db))->writeDimensions(700, 4, array_slice($dimRows, 0, 100));
+    check('M5 fault: a snapshot of one statement takes no transaction',
+        $one === 100 && !in_array('BEGIN', $db->log, true));
 }
 
 namespace {

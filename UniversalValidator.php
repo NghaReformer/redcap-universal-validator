@@ -7123,14 +7123,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function projectIdentifierFields($pid = null)
     {
+        // The one parser of the flag, shared with the report (W7-R9).
         $dd = $this->dataDictionary($pid);
-        if (!$dd) return null;
-        $out = [];
-        foreach ($dd as $name => $meta) {
-            $flag = isset($meta['identifier']) ? strtolower(trim((string) $meta['identifier'])) : '';
-            if ($flag === 'y' || $flag === 'yes' || $flag === '1' || $flag === 'true') $out[$name] = true;
-        }
-        return $out;
+        return ScanDimensions::identifierFlags(is_array($dd) ? $dd : []);
     }
 
     /** Field name => field type map, or null when the dictionary is unavailable. */

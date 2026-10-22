@@ -754,6 +754,48 @@ interface ScanStore
     /** Windows one filtered page may walk before it answers short. See findings(). */
     const FILTER_WINDOWS = 4;
 
+    /**
+     * Store a generation's label snapshot (M5): the rows
+     * ScanDimensions::toSnapshot() builds, written to uv_scan_dim once, at
+     * planning, with the project id.
+     *
+     * Each row is ['kind' => string of 1..32 bytes, 'key' => string of
+     * 1..191 bytes, 'label' => ?string, 'meta' => ?string]; (kind, key) is
+     * unique within the call. A row that is not that shape throws
+     * InvalidArgumentException before anything is written.
+     *
+     * ONCE PER GENERATION, ALL OR NOTHING. A generation that already has a
+     * snapshot is refused with a RuntimeException and keeps the one it has:
+     * the labels of a stored run are the ones of the day it was planned, and a
+     * second writer of the same generation (an incremental run, which nothing
+     * starts yet) would relabel findings it never produced. The rows go in
+     * DIM_CHUNK at a time, at most DIM_CHUNK_BYTES of text per statement, and
+     * in one transaction when they need more than one statement.
+     *
+     * @return int rows written
+     */
+    public function writeDimensions($projectId, $generationId, array $rows);
+
+    /**
+     * One keyset page of a generation's label snapshot, in (kind, key) byte
+     * order: rows after $after ([kind, key], or null for the first page),
+     * each ['kind', 'key', 'label', 'meta']. $limit is clamped to 1..DIM_PAGE.
+     * [] when the generation has no snapshot, or nothing follows $after.
+     */
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE);
+
+    /** One snapshot row by its kind and key, or null. See dimensions(). */
+    public function dimension($projectId, $generationId, $kind, $key);
+
+    /** Rows one snapshot INSERT carries. See writeDimensions(). */
+    const DIM_CHUNK = 100;
+
+    /** Label and meta bytes one snapshot INSERT carries, at most (after its first row). */
+    const DIM_CHUNK_BYTES = 1048576;
+
+    /** The largest page dimensions() returns. */
+    const DIM_PAGE = 500;
+
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);
 

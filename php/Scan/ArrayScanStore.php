@@ -1082,6 +1082,60 @@ final class ArrayScanStore implements ScanStore
         return $lo;
     }
 
+    /** "<project>:<generation>" => that generation's label snapshot, in (kind, key) byte order. */
+    private $dims = [];
+
+    public function writeDimensions($projectId, $generationId, array $rows)
+    {
+        $pid = (int) $projectId;
+        $gen = (int) $generationId;
+        if ($pid < 1 || $gen < 1) {
+            throw new \InvalidArgumentException('a label snapshot needs its project and its generation');
+        }
+        $rows = FindingRowMapper::dimensionRows($rows);
+        if (!$rows) return 0;
+        $at = $pid . ':' . $gen;
+        if (!empty($this->dims[$at])) {
+            throw new \RuntimeException('this generation already has a label snapshot, and keeps it');
+        }
+        usort($rows, function ($a, $b) {
+            $c = strcmp($a['kind'], $b['kind']);
+            return $c !== 0 ? $c : strcmp($a['key'], $b['key']);
+        });
+        $this->dims[$at] = $rows;
+        return count($rows);
+    }
+
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    {
+        $limit = max(1, min(self::DIM_PAGE, (int) $limit));
+        $after = FindingRowMapper::dimensionAfter($after);
+        $at = (int) $projectId . ':' . (int) $generationId;
+        $out = [];
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($after !== null) {
+                $c = strcmp($r['kind'], $after[0]);
+                if ($c < 0 || ($c === 0 && strcmp($r['key'], $after[1]) <= 0)) continue;
+            }
+            $out[] = $r;
+            if (count($out) === $limit) break;
+        }
+        return $out;
+    }
+
+    public function dimension($projectId, $generationId, $kind, $key)
+    {
+        if (!FindingRowMapper::isDimensionKind($kind)) {
+            throw new \InvalidArgumentException('a label snapshot row is named by a kind of the form '
+                . FindingRowMapper::DIM_KIND);
+        }
+        $at = (int) $projectId . ':' . (int) $generationId;
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($r['kind'] === $kind && $r['key'] === (string) $key) return $r;
+        }
+        return null;
+    }
+
     public function aggregates($runId)
     {
         return isset($this->aggregates[$runId]) ? $this->aggregates[$runId] : [];

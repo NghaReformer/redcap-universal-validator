@@ -8,6 +8,8 @@ namespace INSPIRE\UniversalValidator\Scan;
 // differently from the first.
 use INSPIRE\UniversalValidator\ScanPageView;
 use INSPIRE\UniversalValidator\ScanCapabilities;
+// The report's labels, snapshotted at planning (M5).
+use INSPIRE\UniversalValidator\ScanDimensions;
 
 /**
  * Where the durable scan is assembled, and the only thing the outside world
@@ -341,6 +343,8 @@ final class ScanService
             // ScanOutcome's `ruleProblems` term has a producer at all. Without
             // this line the term is dead and `clean` means only "no findings".
             'ruleProblems' => isset($ctx['problems']) ? $ctx['problems'] : [],
+            // The labels its report will use, as the project is now (M5).
+            'dimensions' => $this->planningLabels($pid, $ctx),
         ]));
         if (empty($r['ok'])) {
             return ['ok' => false, 'busy' => !empty($r['busy']), 'run_id' => null,
@@ -527,6 +531,12 @@ final class ScanService
             // A @UVEXISTS verdict depends on other records, which the catch-up
             // does not re-check when one of them changes (ScanPromotion::facts).
             'crossRecordLookups' => !empty($ctx['plan']['crossRecordLookups']),
+            // W7-N11: whether the report's labels are degraded, from the run's
+            // snapshot. Read only on the pass that can finish, since promotion
+            // refuses before the summary is done and the answer selects
+            // wording only.
+            'labelDegraded' => ($r['phase'] === ScanPhase::ROLLUP && !empty($r['done']))
+                && $this->labelsDegraded($pid, (int) $run['generation_id']),
         ]);
 
         // THE CENSUS PROMOTION READ IS THE ONE THE STATUS NEEDS (P11), and it
@@ -2018,6 +2028,50 @@ final class ScanService
      *
      * @return array the keys ScanPlanner::requestFingerprint() reads
      */
+    /**
+     * The label snapshot a run is planned with (M5, W7-R11): the module's
+     * ScanDimensions over the rule list the findings' ordinals refer to, plus
+     * the source id each rule is stored under, as rows.
+     *
+     * LABELS NEVER STOP A SCAN. A module that cannot build them gives a
+     * snapshot that says so (degraded `labels`), which is what makes the
+     * finished run's `labelDegraded` true and its report say the labels are
+     * raw, rather than a run with no snapshot that reads like one planned
+     * before snapshots existed.
+     */
+    private function planningLabels($pid, array $ctx)
+    {
+        $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
+        $d = null;
+        try {
+            if (is_callable([$this->module, 'scanDimensions'])) {
+                $d = $this->module->scanDimensions($pid,
+                    (isset($plan['allRules']) && is_array($plan['allRules'])) ? $plan['allRules'] : []);
+            }
+        } catch (\Throwable $e) {
+            $d = null;
+        }
+        if (!($d instanceof ScanDimensions)) {
+            $d = new ScanDimensions();
+            $d->degraded['labels'] = 'the project\'s names could not be read when this scan was planned';
+        }
+        $d->rulesBySource = self::ruleOrdinals($plan);
+        return $d->toSnapshot();
+    }
+
+    /**
+     * Whether the report of a run will show raw identifiers for some names
+     * (W7-N11's `labelDegraded`), from the state row of the run's snapshot:
+     * a degraded source recorded at planning, or no snapshot at all, whose
+     * report is labelled from today's project. One point read.
+     */
+    private function labelsDegraded($pid, $generationId)
+    {
+        $row = $this->store()->dimension($pid, $generationId, 'state', 'snapshot');
+        $state = ($row !== null && $row['meta'] !== null) ? json_decode($row['meta'], true) : null;
+        return !is_array($state) || !empty($state['degraded']);
+    }
+
     private function fingerprintInputs(array $ctx, array $policy)
     {
         return [

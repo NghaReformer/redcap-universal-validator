@@ -2073,6 +2073,116 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
+    /**
+     * See ScanStore::writeDimensions(). The generation is asked first, by its
+     * leading key, so a second snapshot is refused in words rather than by
+     * the unique key, which would read as the database failing.
+     */
+    public function writeDimensions($projectId, $generationId, array $rows)
+    {
+        $pid = (int) $projectId;
+        $gen = (int) $generationId;
+        if ($pid < 1 || $gen < 1) {
+            throw new \InvalidArgumentException('a label snapshot needs its project and its generation');
+        }
+        $rows = FindingRowMapper::dimensionRows($rows);
+        if (!$rows) return 0;
+        $t = Schema::table('scan_dim');
+        $chunks = [];
+        $chunk = [];
+        $bytes = 0;
+        foreach ($rows as $r) {
+            $b = strlen((string) $r['label']) + strlen((string) $r['meta']);
+            if ($chunk && (count($chunk) >= self::DIM_CHUNK || $bytes + $b > self::DIM_CHUNK_BYTES)) {
+                $chunks[] = $chunk;
+                $chunk = [];
+                $bytes = 0;
+            }
+            $chunk[] = $r;
+            $bytes += $b;
+        }
+        $chunks[] = $chunk;
+        // ALL OR NOTHING: a transaction when it takes more than one statement.
+        // A snapshot with half its rules in it labels the other half as raw
+        // ordinals and says nothing about why.
+        $tx = count($chunks) > 1;
+        $kept = false;
+        try {
+            if ($tx) $this->db->begin();
+            $has = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . $t
+                . ' WHERE project_id = ? AND generation_id = ?)', [$pid, $gen]);
+            if (!isset($has[0][0])) {
+                // EXISTS always answers; no answer is a read that did not work.
+                throw new \RuntimeException('could not tell whether this generation has a label snapshot');
+            }
+            if ((int) $has[0][0] !== 0) {
+                $kept = true;
+                if ($tx) $this->db->rollback();
+            } else {
+                foreach ($chunks as $c) {
+                    $p = [];
+                    foreach ($c as $r) array_push($p, $pid, $gen, $r['kind'], $r['key'], $r['label'], $r['meta']);
+                    $this->db->execNoCount('INSERT INTO ' . $t
+                        . ' (project_id, generation_id, kind, dim_key, label, meta) VALUES '
+                        . implode(', ', array_fill(0, count($c), '(?, ?, ?, ?, ?, ?)')), $p);
+                }
+                if ($tx) $this->db->commit();
+            }
+        } catch (\Throwable $e) {
+            throw $tx ? $this->rolledBack($e) : $this->unavailable($e);
+        }
+        if ($kept) throw new \RuntimeException('this generation already has a label snapshot, and keeps it');
+        return count($rows);
+    }
+
+    /**
+     * See ScanStore::dimensions(). One statement over uq_dim_v2, whose
+     * leading (project_id, generation_id) bound it to this generation and
+     * whose (kind, dim_key) is the order and the keyset.
+     */
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    {
+        $limit = max(1, min(self::DIM_PAGE, (int) $limit));
+        $after = FindingRowMapper::dimensionAfter($after);
+        $sql = 'SELECT kind, dim_key, label, meta FROM ' . Schema::table('scan_dim')
+             . ' FORCE INDEX (uq_dim_v2) WHERE project_id = ? AND generation_id = ?';
+        $p = [(int) $projectId, (int) $generationId];
+        if ($after !== null) {
+            $sql .= ' AND (kind > ? OR (kind = ? AND dim_key > ?))';
+            array_push($p, $after[0], $after[0], $after[1]);
+        }
+        $out = [];
+        foreach ($this->db->select($sql . ' ORDER BY kind, dim_key LIMIT ' . $limit, $p) as $r) {
+            $out[] = self::dimRow($r);
+        }
+        return $out;
+    }
+
+    /** See ScanStore::dimension(). A point read on uq_dim_v2. */
+    public function dimension($projectId, $generationId, $kind, $key)
+    {
+        if (!FindingRowMapper::isDimensionKind($kind)) {
+            throw new \InvalidArgumentException('a label snapshot row is named by a kind of the form '
+                . FindingRowMapper::DIM_KIND);
+        }
+        $r = $this->db->select('SELECT kind, dim_key, label, meta FROM ' . Schema::table('scan_dim')
+            . ' WHERE project_id = ? AND generation_id = ? AND kind = ? AND dim_key = ? LIMIT 1',
+            [(int) $projectId, (int) $generationId, $kind, (string) $key]);
+        return isset($r[0]) ? self::dimRow($r[0]) : null;
+    }
+
+    /** One uv_scan_dim row as both stores answer it. */
+    private static function dimRow(array $r)
+    {
+        if (count($r) !== 4) {
+            throw new \LogicException('a label snapshot row came back ' . count($r) . ' columns wide, not 4');
+        }
+        $r = array_values($r);
+        return ['kind' => (string) $r[0], 'key' => (string) $r[1],
+                'label' => $r[2] === null ? null : (string) $r[2],
+                'meta' => $r[3] === null ? null : (string) $r[3]];
+    }
+
     /** The key each page axis is walked through: its ix_filter_* (Schema::statementsV2()). */
     private static $axisKeys = [
         'host_form'   => 'ix_filter_form_v2',

@@ -114,6 +114,10 @@ namespace {
         'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
         'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
         'ScanReport::runFacts'                   => 'wave 11 (B5): the heading of the findings page and of the export',
+        'ScanStore::dimensions'                  => 'wave 11 (M5): the report reads the snapshot planning writes, with scan-findings',
+        'ArrayScanStore::dimensions'             => 'wave 11 (M5), with the contract',
+        'SqlScanStore::dimensions'               => 'wave 11 (M5), with the contract',
+        'ScanDimensions::fromSnapshot'           => 'wave 11 (M5): the report on a stored run, with scan-findings',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's

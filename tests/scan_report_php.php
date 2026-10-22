@@ -288,6 +288,33 @@ namespace {
         check('differential: the stored report renders the legacy report, cell for cell',
             $byField($was) === $byField($is));
 
+        // M5: THE SAME LABELS FROM THE SNAPSHOT. What planning stores and a
+        // stored run's report reads back must render every finding, the
+        // finalizer's duplicates included, as the object it was made from.
+        $snapRows = $d->toSnapshot();
+        $fromSnap = ScanDimensions::fromSnapshot(array_reverse($snapRows));
+        $isSnap = [];
+        foreach ($found as $i => $f) $isSnap[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $fromSnap);
+        $dupSnap = [];
+        foreach ($cands as $i => $c) {
+            $o = isset($ordOf[$c['rule_source_id']]) ? $ordOf[$c['rule_source_id']] : 0;
+            $dupSnap[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i, $o)), $fromSnap);
+        }
+        ksort($dupSnap);
+        check('snapshot: read back in any order, it renders the stored report cell for cell',
+            $fromSnap !== null && $byField($isSnap) === $byField($is) && $dupSnap === $isDup);
+        // Maps compare as maps: the store hands rows back in key order.
+        $sorted = function ($a) { if (is_array($a)) ksort($a); return $a; };
+        $same = function ($p) use ($fromSnap, $d, $sorted) { return $sorted($fromSnap->$p) === $sorted($d->$p); };
+        check('snapshot: and it is the object it was made from, property for property',
+            $fromSnap !== null && $fromSnap->rules === $d->rules && $same('rulesBySource')
+            && $same('fieldLabels') && $same('fieldForms') && $same('forms') && $same('events')
+            && $same('identifiers') && $same('degraded')
+            && $fromSnap->hasDags === $d->hasDags && $fromSnap->longitudinal === $d->longitudinal
+            && $fromSnap->singleEventProved === $d->singleEventProved);
+        check('snapshot: every row is one the store takes',
+            count(\INSPIRE\UniversalValidator\Scan\FindingRowMapper::dimensionRows($snapRows)) === count($snapRows));
+
         $cells = $byField($is);
         $kinds = [];
         foreach ($cells as $c) $kinds[$c['check']] = true;
@@ -1052,6 +1079,55 @@ namespace {
             ScanColumns::row($f, new ScanDimensions()) !== ScanColumns::row($f, $built));
         check('dimensions: the rule snapshot reached the wording',
             strpos(ScanColumns::row($f, $hand)['problem'], "[a_val]='OK'") !== false);
+    }
+
+    /* =====================================================================
+     * 10. THE SNAPSHOT IS THE DAY THE RUN WAS PLANNED (M5, W7-R9, W7-R11)
+     * ===================================================================== */
+    {
+        $planned = mkMod(dict(['record_id' => [],
+            'a_val' => ['@UVASSERT={"assert":"[a_val]=\'OK\'","message":"Planned wording","blockSave":"hard"}']]), []);
+        $then = $planned->scanDimensions(PID)->toSnapshot();
+        $renamed = mkMod(dict(['record_id' => [],
+            'a_val' => ['@UVASSERT={"assert":"[a_val]=\'OK\'","message":"Wording since","blockSave":"hard"}']]), []);
+        $f = mapper()->toFinding(row());
+        $snapCell = ScanColumns::row($f, ScanDimensions::fromSnapshot($then))['problem'];
+        $liveCell = ScanColumns::row($f, $renamed->scanDimensions(PID))['problem'];
+        check('snapshot: a rule reworded after planning keeps the wording it had when the run was planned',
+            strpos($snapCell, 'Planned wording') !== false && strpos($snapCell, 'Wording since') === false
+            && strpos($liveCell, 'Wording since') !== false);
+
+        $nd = new ScanDimensions();
+        $nd->identifiers = null;
+        $nd->fieldLabels = ['ok' => 'Fine', str_repeat('k', 192) => 'Too long a name'];
+        $nd->forms = ['fa' => "Bad \xC3 bytes " . str_repeat('x', 70000)];
+        $rows = $nd->toSnapshot();
+        $back = ScanDimensions::fromSnapshot($rows);
+        check('snapshot: a key wider than the column is left out, and the snapshot says so',
+            $back !== null && array_keys($back->fieldLabels) === ['ok'] && isset($back->degraded['snapshot']));
+        check('snapshot: a label is kept as valid UTF-8, cut to the column on a character boundary',
+            $back !== null && mb_check_encoding($back->forms['fa'], 'UTF-8')
+            && strlen($back->forms['fa']) <= 65535 && strpos($back->forms['fa'], 'Bad ') === 0);
+        check('snapshot: flags that could not be read stay unread, not "no identifiers"',
+            $back !== null && $back->identifiers === null);
+        $state = null;
+        foreach ($rows as $r) if ($r['kind'] === 'state') $state = $r;
+        check('snapshot: no state row is no snapshot',
+            ScanDimensions::fromSnapshot(array_values(array_filter($rows, function ($r) { return $r['kind'] !== 'state'; }))) === null
+            && ScanDimensions::fromSnapshot([]) === null);
+        $v2 = $state;
+        $v2['meta'] = str_replace('"v":1', '"v":2', $v2['meta']);
+        check('snapshot: nor is a revision this version does not know',
+            $state !== null && ScanDimensions::fromSnapshot([$v2]) === null);
+        $odd = ScanDimensions::fromSnapshot([$state, ['kind' => 'chart', 'key' => 'x', 'label' => null, 'meta' => null]]);
+        check('snapshot: a kind it does not know marks the labels degraded rather than vanishing',
+            $odd !== null && isset($odd->degraded['snapshot']));
+
+        // W7-R9: ONE PARSER. The scan's redaction and the report read it.
+        $flagDict = dict(['record_id' => [], 'p' => ['', 'y'], 'q' => ['', 'Yes'], 't' => ['', 'n']]);
+        check('identifier flags: one parser, the words REDCap writes, and null for no dictionary',
+            array_keys(ScanDimensions::identifierFlags($flagDict)) === ['p', 'q']
+            && ScanDimensions::identifierFlags([]) === null);
     }
 
     echo "scan_report_php: $n checks, $fail failure(s)\n";

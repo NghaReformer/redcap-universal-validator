@@ -209,3 +209,69 @@ foreach ([['no filter', []], ['a filter naming the other group', ['dag_key' => '
 }
 $north = $walk($PID, $mine['gen'], ['dag' => 'north'], []);
 check('report group: and every north row', count($north['rows']) === $expect($mine['findings'], ['dag_key' => 'north']));
+
+// -- THE LABEL SNAPSHOT, READ BY ITS KEY (M5) -----------------------------------
+//
+// The neighbour stores a larger snapshot under the same generation number. A page
+// of mine walks uq_dim_v2 inside (project, generation) whether it starts at
+// the beginning or after a (kind, key) cursor, sorts nothing, and holds none
+// of the neighbour's rows; the point read the finishing pass makes for
+// labelDegraded is one key lookup.
+$dimRows = function ($tag, $n) {
+    $rows = [['kind' => 'state', 'key' => 'snapshot', 'label' => null, 'meta' => '{"v":1,"degraded":{}}']];
+    for ($i = 0; $i < $n; $i++) {
+        $rows[] = ['kind' => 'field', 'key' => sprintf('f%04d', $i), 'label' => $tag . ' ' . $i, 'meta' => null];
+    }
+    for ($i = 1; $i <= 40; $i++) {
+        $rows[] = ['kind' => 'rule', 'key' => (string) $i, 'label' => $tag . ' rule ' . $i, 'meta' => '{}'];
+    }
+    return $rows;
+};
+$ds = new SqlScanStore($dbA);
+check('report dims: both projects keep a snapshot under generation ' . $mine['gen'],
+    $ds->writeDimensions($NB, $mine['gen'], $dimRows('theirs', 1500)) === 1541
+    && $ds->writeDimensions($PID, $mine['gen'], $dimRows('mine', 1200)) === 1241);
+$rec = new UvRecordingDb($dbA);
+$rs = new SqlScanStore($rec);
+$got = [];
+$after = null;
+for ($p = 0; $p < 10; $p++) {
+    $pg = $rs->dimensions($PID, $mine['gen'], $after);
+    if (!$pg) break;
+    foreach ($pg as $r) $got[] = $r;
+    $last = $pg[count($pg) - 1];
+    $after = [$last['kind'], $last['key']];
+}
+$theirsSeen = 0;
+foreach ($got as $r) if ($r['label'] !== null && strpos($r['label'], 'theirs') === 0) $theirsSeen++;
+check('report dims: my pages read all of mine and none of the neighbour\'s (' . count($got) . ')',
+    count($got) === 1241 && $theirsSeen === 0);
+$crafted = $rs->dimensions($PID, $mine['gen'], ['field', 'f1199']);
+$craftedTheirs = 0;
+foreach ($crafted as $r) if ($r['label'] !== null && strpos($r['label'], 'theirs') === 0) $craftedTheirs++;
+check('report dims: a cursor past my last field, inside the neighbour\'s, reads my rules and none of theirs',
+    count($crafted) === 41 && $crafted[0]['kind'] === 'rule' && $crafted[40]['kind'] === 'state'
+    && $craftedTheirs === 0);
+$bad = [];
+$sorts = [];
+$dimSelects = 0;
+foreach ($rec->log as $q) {
+    if ($q[0] !== 'select' || strpos($q[1], 'FROM ' . Schema::table('scan_dim')) === false) continue;
+    $dimSelects++;
+    $keys = uv_explain_keys($A, $q[1], $q[2]);
+    if ($keys !== ['uq_dim_v2']) $bad[] = implode(',', $keys) . ' <- ' . implode(' ', uv_explain_rows($A, $q[1], $q[2]));
+    if (stripos($extra($q[1], $q[2]), 'filesort') !== false) $sorts[] = $q[1];
+}
+check('report dims: every page reads uq_dim_v2 (' . $dimSelects . ' pages)', $dimSelects >= 3 && $bad === []);
+if ($bad) fwrite(STDERR, '  dims: ' . implode("\n    ", array_unique($bad)) . "\n");
+check('report dims: and none of them sorts', $sorts === []);
+$before = $readNext();
+$pg = $ds->dimensions($PID, $mine['gen'], ['field', 'f0100'], 100);
+$read = $readNext() - $before;
+check('report dims: a page of 100 after a cursor reads no more than 101 entries (read ' . $read . ')',
+    count($pg) === 100 && $read <= 101);
+$rec2 = new UvRecordingDb($dbA);
+$point = (new SqlScanStore($rec2))->dimension($PID, $mine['gen'], 'state', 'snapshot');
+$pq = $rec2->log[0];
+check('report dims: the state row is one lookup on uq_dim_v2',
+    $point !== null && count($rec2->log) === 1 && uv_explain_keys($A, $pq[1], $pq[2]) === ['uq_dim_v2']);

@@ -1322,6 +1322,85 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $firstStage === true && is_string($againStage)
         && strpos($againStage, 'database refused') !== false);
 
+    // -- THE LABEL SNAPSHOT: ONCE PER GENERATION, IN ORDER, THIS PROJECT'S (M5) --
+    //
+    // 230 small rows and 20 of 60,000 bytes: more statements than one, by
+    // count and by bytes, so the SQL store writes in a transaction.
+    $sd = $newStore();
+    $dr = function ($kind, $key, $label = null, $meta = null) {
+        return ['kind' => $kind, 'key' => $key, 'label' => $label, 'meta' => $meta];
+    };
+    $snap = [];
+    for ($i = 229; $i >= 0; $i--) $snap[] = $dr('field', sprintf('f%03d', $i), "Field $i \u{00e9}", '{"form":"fa"}');
+    for ($i = 0; $i < 20; $i++) $snap[] = $dr('form', 'big' . $i, str_repeat("\u{00e9}", 30000));
+    $snap[] = $dr('state', 'snapshot', null, '{"v":1}');
+    $snap[] = $dr('event', 12, 'Visit 1');
+    $snap[] = $dr('rule', '9', 'R9', '{"type":"x"}');
+    $snap[] = $dr('rule', '10', 'R10', null);
+    $C('dims: a snapshot is written whole', $sd->writeDimensions(810, 3, $snap) === count($snap));
+    $walk = [];
+    $after = null;
+    $pages = 0;
+    while ($pages++ < 20) {
+        $pg = $sd->dimensions(810, 3, $after, 100);
+        if (!$pg) break;
+        foreach ($pg as $r) $walk[] = $r;
+        $last = $pg[count($pg) - 1];
+        $after = [$last['kind'], $last['key']];
+    }
+    $want = $snap;
+    usort($want, function ($a, $b) {
+        $c = strcmp($a['kind'], $b['kind']);
+        return $c !== 0 ? $c : strcmp((string) $a['key'], (string) $b['key']);
+    });
+    foreach ($want as $k => $r) $want[$k]['key'] = (string) $r['key'];
+    $C('dims: pages of 100 walk it in (kind, key) byte order, every row once, as written',
+        $walk === $want && $pages === 4);
+    $C('dims: a page is clamped to 1..DIM_PAGE rows',
+        count($sd->dimensions(810, 3, null, 0)) === 1
+        && count($sd->dimensions(810, 3, null, 100000)) === min(ScanStore::DIM_PAGE, count($snap)));
+    $C('dims: one row by its kind and key, the event id as text',
+        $sd->dimension(810, 3, 'event', 12) === $dr('event', '12', 'Visit 1')
+        && $sd->dimension(810, 3, 'rule', '11') === null);
+    $dThrows = function (callable $f, $class) {
+        try { $f(); } catch (\Throwable $e) { return get_class($e) === $class || is_subclass_of($e, $class); }
+        return false;
+    };
+    $C('dims: a second snapshot of the generation is refused, and the first is kept',
+        $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(810, 3, [$dr('form', 'other', 'X')]); },
+                 'RuntimeException')
+        && $sd->dimension(810, 3, 'form', 'other') === null
+        && count($sd->dimensions(810, 3, null, 500)) === count($snap));
+    $C('dims: another generation and another project read none of it',
+        $sd->dimensions(810, 4) === [] && $sd->dimensions(811, 3) === []
+        && $sd->dimension(811, 3, 'event', '12') === null);
+    $C('dims: another project snapshots the same generation number on its own',
+        $sd->writeDimensions(811, 3, [$dr('event', 12, 'Elsewhere')]) === 1
+        && $sd->dimension(811, 3, 'event', '12')['label'] === 'Elsewhere'
+        && $sd->dimension(810, 3, 'event', '12')['label'] === 'Visit 1');
+    $bad = [
+        'a kind in capitals, which the column would fold into another' => [$dr('Rule', '1')],
+        'an empty key'                                => [$dr('rule', '')],
+        'a key wider than the column'                 => [$dr('field', str_repeat('k', 192))],
+        'the same kind and key twice'                 => [$dr('form', 'fa', 'A'), $dr('form', 'fa', 'B')],
+        'a label that is not text'                    => [$dr('form', 'fa', 7)],
+        'a label wider than TEXT'                     => [$dr('form', 'fa', str_repeat('x', 65536))],
+        'a label that is not UTF-8'                   => [$dr('form', 'fa', "bad \xC3")],
+    ];
+    foreach ($bad as $what => $rows) {
+        $C('dims: refused before anything is written: ' . $what,
+            $dThrows(function () use ($sd, $rows, $dr) {
+                $sd->writeDimensions(812, 1, array_merge([$dr('event', '1', 'ok')], $rows));
+            }, 'InvalidArgumentException') && $sd->dimensions(812, 1) === []);
+    }
+    $C('dims: a snapshot needs its project and its generation',
+        $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(0, 1, [$dr('event', '1')]); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(812, 0, [$dr('event', '1')]); }, 'InvalidArgumentException'));
+    $C('dims: a cursor that is not a [kind, key] pair is refused',
+        $dThrows(function () use ($sd) { $sd->dimensions(810, 3, ['rule']); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd) { $sd->dimensions(810, 3, ['RULE', '1']); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd) { $sd->dimension(810, 3, 'STATE', 'snapshot'); }, 'InvalidArgumentException'));
+
     // -- THE PREVIOUS GENERATION IS CLOSED WHEN A RUN COMPLETES (W4-D1) --------
     $sp = $newStore();
     $nb = $scan($sp, 796, [[[], []]], 'complete');
