@@ -137,6 +137,8 @@ final class ArrayScanStore implements ScanStore
         // Bound to the project: a locator that resolves across projects is an
         // authorisation bug wearing a lookup's clothes.
         if ($r === null || (int) $r['project_id'] !== (int) $pid) return null;
+        // A run retention has begun removing is no run (ScanStore::run()).
+        if ($r['terminal_reason'] === self::REMOVING_WHY) return null;
         // EXACTLY THE PROJECTION THE SQL STORE RETURNS, in its order. This used
         // to hand back the whole internal row, so a caller could come to depend
         // on a key - active_slot, a catch-up cursor - that the real store never

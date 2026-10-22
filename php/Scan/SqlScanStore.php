@@ -318,9 +318,11 @@ final class SqlScanStore implements ScanStore
         // THE COLUMNS AND THE KEYS ARE ONE LIST - ScanStore::RUN_COLUMNS, which
         // says why. Every name in it is a column of scan_run, so it can be
         // imploded straight into the statement; nothing here comes from a caller.
+        // Not a run retention has begun removing (see ScanStore::run()).
         $r = $this->db->select('SELECT ' . implode(', ', self::RUN_COLUMNS) . '
-            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?',
-            [$runId, $pid]);
+            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?
+              AND (terminal_reason IS NULL OR terminal_reason <> ?)',
+            [$runId, $pid, self::REMOVING_WHY]);
         if (!isset($r[0])) return null;
         $row = array_values((array) $r[0]);
         if (count($row) !== count(self::RUN_COLUMNS)) {

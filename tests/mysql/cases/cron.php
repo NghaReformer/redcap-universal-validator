@@ -974,6 +974,40 @@ $runRow = function ($runId) use ($dbA) {
     foreach (array(2400, 2401) as $p) uv_clear_project($dbA, $p);
 }
 
+// -- A RUN BEING REMOVED IS NO RUN TO ITS READERS (review rv10a1-3) -------------
+//
+// A large run is purged a page per call across passes, its row last. Pages of
+// one row stand in for a run of 500,000 records. From the first page on,
+// status() answers as it will once the row is gone; before, the run read
+// `complete` with 0 records done and 0 findings while its three were stored.
+{
+    uv_redcap_project($A, 2402);
+    // The policy a planner freezes says which other projects the run asked:
+    // none. A run without that is refused to every reader anyway.
+    $pr = $plant(2402, 3, null, true, array('policy_json' => json_encode(array('crossLookups' => array()))));
+    $A->query('INSERT INTO ' . Schema::table('scan_aggregate') . " (run_id, kind, axis1, axis2, cnt) VALUES ("
+        . (int) $pr['run'] . ", 'rollup-instrument', 'fa', '', 3)");
+    $aged = gmdate('Y-m-d H:i:s', time() - 100 * 86400);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $aged . "' WHERE run_id = " . (int) $pr['run']);
+    $readers = new ScanService(new UvCronModule($A));
+    $before = $readers->status(2402, $pr['run']);
+    $ret = new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA);
+    $c1 = $ret->purgeRuns(2402, 90, 1);
+    $mid = (new ScanService(new UvCronModule($A)))->status(2402, $pr['run']);
+    $markedAge = $dbA->select('SELECT updated_at FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', array($pr['run']));
+    check('remove: a run reads as itself before its purge begins', $before['ok'] === true && $before['findings'] === 3);
+    check('remove: from its first page, a run being removed is no run to status(), while its findings are still stored',
+        $c1['done'] === false && $mid['ok'] === false && $mid['why'] === ScanService::NO_RUN
+        && $countWhere('project_id = ? AND generation_id = ?', array(2402, $pr['gen'])) === 3);
+    check('remove: and the mark leaves the age the purge is judged by alone',
+        isset($markedAge[0][0]) && (string) $markedAge[0][0] === $aged);
+    $calls = 1;
+    while ($calls < 50 && empty($ret->purgeRuns(2402, 90, 1)['done'])) $calls++;
+    check('remove: and the purge still finishes, taking the row last',
+        $runRow($pr['run']) === null && $countWhere('project_id = ?', array(2402)) === 0 && $calls > 3);
+    uv_clear_project($dbA, 2402);
+}
+
 // -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
 //
 // 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and

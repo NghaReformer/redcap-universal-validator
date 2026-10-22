@@ -260,7 +260,7 @@ $m->systemSettings = ['scan-system-enable-durable' => '1'];
 $m->tables = $tables;
 $inner = $census([[42, 0, 0, '2000-01-01 00:00:00', 'locations']]);
 $m->responder = function ($sql, $params) use ($inner, $RUN) {
-    if (strpos($sql, 'SELECT run_id, generation_id FROM ' . $RUN) !== false) return [[7, 3]];
+    if (strpos($sql, 'SELECT run_id, generation_id, terminal_reason FROM ' . $RUN) !== false) return [[7, 3, null]];
     if (strpos($sql, 'SELECT EXISTS(') !== false) return [[0]];
     if (strpos($sql, 'SELECT MAX(finding_id)') !== false) return [[0]];
     return $inner($sql, $params);
@@ -274,6 +274,17 @@ foreach ($deletes as $d) {
     if (!$byProject && !$byRun) $scoped = false;
 }
 check('purge: a project past its retention is purged', count($deletes) >= 8);
+// rv10a1-3: the run reads as gone to every reader from the first page, so it
+// is marked before anything it owns is deleted.
+$firstMark = null;
+$firstDelete = null;
+foreach ($m->bound as $i => $b) {
+    if ($firstMark === null && strpos($b[0], 'UPDATE ' . $RUN . ' SET terminal_reason = ?') !== false
+        && in_array(\INSPIRE\UniversalValidator\Scan\ScanStore::REMOVING_WHY, $b[1], true)) $firstMark = $i;
+    if ($firstDelete === null && strpos($b[0], 'DELETE FROM') !== false) $firstDelete = $i;
+}
+check('purge: the run is marked as being removed before anything it owns is deleted',
+    $firstMark !== null && $firstDelete !== null && $firstMark < $firstDelete);
 check('purge: and every DELETE names that project or its run', $scoped);
 check('purge: findings are deleted by project AND generation, never by generation alone',
     count($m->sent(['DELETE FROM ' . Schema::table('finding'), 'project_id = ?', 'generation_id = ?'])) === 1);
@@ -500,7 +511,7 @@ $m->responder = function ($sql, $params) use ($inner, $RUN, $m, $rightsIn, $memo
         $seen['43'] = $memo->getValue($m);
         $rightsIn->invoke($m, 43);
     }
-    if (strpos($sql, 'SELECT run_id, generation_id FROM ' . $RUN) !== false && $params[0] === 42 && !isset($seen['42'])) {
+    if (strpos($sql, 'SELECT run_id, generation_id, terminal_reason FROM ' . $RUN) !== false && $params[0] === 42 && !isset($seen['42'])) {
         $seen['42'] = $memo->getValue($m);
     }
     return $inner($sql, $params);

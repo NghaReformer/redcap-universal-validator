@@ -1492,6 +1492,19 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
                 $sp->expireAbandoned($pp, 24, 'cron') === 1
                 && $sp->run($pp, $rp)['terminal'] === ScanOutcome::EXPIRED);
         }
+
+        // A RUN RETENTION HAS BEGUN REMOVING IS NO RUN (review rv10a1-3).
+        // purgeRuns() marks the row before its first page and deletes it after
+        // its last; in between, every reader answers as it will afterwards.
+        $sm = $newStore();
+        $rm = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rm, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $rn = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rn, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $C('remove: a finished run reads as itself', $sm->run(793, $rm) !== null);
+        $setRun($sm, $rm, ['terminal_reason' => ScanStore::REMOVING_WHY]);
+        $C('remove: once retention has begun removing it, it reads as no run, and the next run is untouched',
+            $sm->run(793, $rm) === null && $sm->run(793, $rn) !== null);
     }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------

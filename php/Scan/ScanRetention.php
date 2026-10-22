@@ -267,7 +267,7 @@ final class ScanRetention
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
         $cut = self::daysAgo($olderThanDays);
-        $run = $this->db->select('SELECT run_id, generation_id FROM ' . Schema::table('scan_run')
+        $run = $this->db->select('SELECT run_id, generation_id, terminal_reason FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?'
             . ' ORDER BY run_id LIMIT 1', [$pid, $cut]);
         if (!isset($run[0])) {
@@ -275,6 +275,20 @@ final class ScanRetention
         }
         $runId = (int) $run[0][0];
         $gen   = (int) $run[0][1];
+
+        // MARKED BEFORE ANYTHING IT OWNS GOES (review rv10a1-3). A run of
+        // 500,000 records is about a hundred manifest pages and two hundred
+        // finding pages, one or more cron passes, and its row stays until the
+        // last; read in between, it said `complete` with 0 records done and 0
+        // findings while its findings were still stored. ScanStore::run()
+        // answers null for this reason, so every reader says the run is gone
+        // from the first page. One statement per run, on the first call only,
+        // and NOT updated_at: that is the age this purge is judged by.
+        if (!isset($run[0][2]) || (string) $run[0][2] !== ScanStore::REMOVING_WHY) {
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET terminal_reason = ?'
+                . ' WHERE run_id = ? AND project_id = ? AND active_slot IS NULL',
+                [ScanStore::REMOVING_WHY, $runId, $pid]);
+        }
 
         $steps = [
             ['scan_record', 'run_id = ?', [$runId]],
