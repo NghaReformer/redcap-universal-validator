@@ -2836,6 +2836,43 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-1 catchup: a departed record back in the group is examined again',
         $r3['requeued'] >= 1 && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
 
+    // A PAGE OF OTHER GROUPS' CHANGES STILL MOVES THE RUN (review rv5b-3).
+    // listed is 0 for it, so `moved` - computed from the counters - was false
+    // while the cursor advanced, and the page backed off to 30 s and said the
+    // scan was not progressing. catch-up says what it wrote; the worker says
+    // it in its answer.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $log = new Log();
+    $others = [];
+    for ($i = 1; $i <= 40; $i++) $others[sprintf('X%02d', $i)] = '300';
+    $log->changed = $others;
+    $onlyOwn = function (array $ids) {
+        $out = [];
+        foreach ($ids as $id) $out[$id] = ($id[0] !== 'X');
+        return $out;
+    };
+    $cuX = new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $onlyOwn]);
+    $r = $cuX->step(800, $runId, $epoch, 25);          // captures the target fence, too
+    $r2 = $cuX->step(800, $runId, $epoch, 25);         // the next page, nothing else
+    check('rv5b-3 catchup: a page holding only other groups\' changes lists nothing, and says it moved',
+        $r['listed'] === 0 && $r['scanned'] === 25 && $r['moved'] === true && $r['done'] === false
+        && $r2['listed'] === 0 && $r2['scanned'] === 15 && $r2['moved'] === true
+        && $store->progressState($runId)['catchupCursor'] === 'X40');
+    $gone = (new CatchUp(new ArrayScanStore(), ['fence' => $log, 'hash' => $hash]))->step(800, 999, 1, 25);
+    check('rv5b-3 catchup control: a step that wrote nothing does not say it moved',
+        $gone['moved'] === false);
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+        'catchup' => new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $onlyOwn]),
+        'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB,
+            'timeLimit' => null, 'startedAt' => microtime(true),
+            'probe' => $scripted([[65, 65, 66]])->fn])]);
+    $res = $w->work(800, $runId);
+    check('rv5b-3 worker: a request that walked only other groups\' changes answers that it moved',
+        $res['ok'] === true && $res['phase'] === ScanPhase::CATCH_UP
+        && empty($res['listed']) && isset($res['moved']) && $res['moved'] === true);
+
     // THE WORKER ASKS BEFORE IT READS (review rv5b-1). A record moved between
     // planning and its read was read with the other group's data, and the
     // window then called it settled. P2 is in another group: committed
@@ -2861,6 +2898,16 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-1 worker: and the record in the group is read as before',
         in_array('P1', $readIds, true) && $states[0] === ScanStore::REC_DONE
         && $activeOf($store) === ['P1']);
+    // A batch whose every record left the group counts nothing and moved the
+    // run: the answer says so (review rv5b-3).
+    list($store, $runId) = $fixture(['Q1', 'Q2']);
+    $res = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(),
+        'scope' => function (array $ids) { return array_fill_keys($ids, false); }]))->work(800, $runId);
+    check('rv5b-3 worker: a request whose records all left the group answers that it moved',
+        $res['worked'] === 0 && $res['findings'] === 0 && isset($res['moved']) && $res['moved'] === true
+        && $store->recordState($runId, 1) === ScanStore::REC_DEPARTED);
 
     // -- promotion: the one place a run may become finished -------------------
     //

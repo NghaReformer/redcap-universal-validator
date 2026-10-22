@@ -123,14 +123,21 @@ final class CatchUp
      * activity, and `scanned` reported to the page told one group's reader
      * how busy the others had been.
      *
+     * `moved` says whether the step wrote progress: the target fence, the
+     * cursor, a new round, or the reason the run has no window (review
+     * rv5b-3). For a group-scoped run `listed` can be 0 on a page that held
+     * only other groups' changes, and the cursor moved all the same; the page
+     * paces itself by `moved`, and a yes or no counts nothing.
+     *
      * @return array{done:bool, fenced:bool, added:int, requeued:int, gone:int,
-     *               departed:int, scanned:int, listed:int, why:?string}
+     *               departed:int, scanned:int, listed:int, moved:bool, why:?string}
      */
     public function step($pid, $runId, $epoch, $limit = 500)
     {
         $limit = max(1, min(5000, (int) $limit));
         $out = ['done' => false, 'fenced' => false, 'added' => 0, 'requeued' => 0,
-                'gone' => 0, 'departed' => 0, 'scanned' => 0, 'listed' => 0, 'why' => null];
+                'gone' => 0, 'departed' => 0, 'scanned' => 0, 'listed' => 0, 'moved' => false,
+                'why' => null];
 
         $st = $this->store->progressState($runId);
         if ($st === null) {
@@ -176,6 +183,7 @@ final class CatchUp
             $st['catchupCursor'] = null;
             $st['catchupRound'] = 1;
             $st['catchupDirty'] = 0;
+            $out['moved'] = true;
         }
         $out['fenced'] = true;
 
@@ -299,6 +307,7 @@ final class CatchUp
             ['catchupCursor' => $last, 'catchupDirty' => $dirty]);
         $out['scanned'] = count($page);
         $out['listed'] = $listed;
+        $out['moved'] = true;
         return $out;
     }
 
@@ -324,12 +333,14 @@ final class CatchUp
             // partial beats one that never ends.
             $this->store->addAggregate($runId, self::K_CHURN, null, null, 1, 1);
             $out['done'] = true;
+            $out['moved'] = true;
             $out['why'] = 'records kept changing faster than they could be re-examined, so this '
                         . 'scan reports partial coverage';
             return $out;
         }
         $this->store->setProgressState($runId, $epoch,
             ['catchupCursor' => null, 'catchupRound' => $round, 'catchupDirty' => 0]);
+        $out['moved'] = true;
         return $out;
     }
 
@@ -346,6 +357,7 @@ final class CatchUp
             ScanPromotion::sample((string) $why));
         $out['done'] = true;
         $out['fenced'] = false;
+        $out['moved'] = true;
         $out['why'] = $why;
         return $out;
     }

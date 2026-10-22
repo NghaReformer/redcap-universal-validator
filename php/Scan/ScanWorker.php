@@ -60,6 +60,12 @@ final class ScanWorker
     private $deps;
     /** @var array run id => mark key => true: rule problems this worker has already committed */
     private $marked = [];
+    /**
+     * @var bool this request moved the run in a way no counter shows (review
+     * rv5b-3): a catch-up page whose changes were all another group's, or a
+     * batch whose every record left the group. work() answers `moved`.
+     */
+    private $walked = false;
 
     /**
      * @param array $deps {
@@ -88,6 +94,9 @@ final class ScanWorker
      *                                 where a storage failure is recorded. The
      *                                 worker's own answer never carries what
      *                                 the server said - see noteStorageFailure.
+     *   scope:          ?callable(string[] $ids): array<string,?bool>  a
+     *                                 group-scoped run's question: is each
+     *                                 record in the run's group (review rv5b-1)
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -104,11 +113,16 @@ final class ScanWorker
      * along without examining a record still reads as movement (see loop()).
      * It is absent from the answers given before the loop starts.
      *
+     * `moved` is present, and true, when the request moved the run in a way
+     * no counter shows (review rv5b-3) - see $walked.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int,
-     *               listed?:int, phase:string, done:bool, stop:?string, why:?string}
+     *               listed?:int, moved?:bool, phase:string, done:bool, stop:?string,
+     *               why:?string}
      */
     public function work($pid, $runId, array $opts = [])
     {
+        $this->walked = false;
         $run = $this->store->run($pid, $runId);
         if ($run === null) {
             // The same wording a cross-project run id gets. A message that
@@ -297,6 +311,7 @@ final class ScanWorker
             $r = $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $seq, $opts, $keep);
             if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
+            if ($this->walked) $r['moved'] = true;
             return $r;
         } catch (ScanStoreUnavailable $e) {
             // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
@@ -554,6 +569,9 @@ final class ScanWorker
                         // the page; the budget is told the whole page, which
                         // is what it cost (review R5-1).
                         $listed += max(0, (int) $r['listed']);
+                        // The cursor moved even when no change on the page
+                        // was the reader's to count (review rv5b-3).
+                        if (!empty($r['moved'])) $this->walked = true;
                         if (!$r['done']) {
                             $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
@@ -632,6 +650,8 @@ final class ScanWorker
             $requeued += $r['requeued'];
             $blocked  += $r['blocked'];
             $found    += $r['findings'];
+            // Records that left the group are progress no counter shows.
+            if (!empty($r['departed'])) $this->walked = true;
 
             $adj = $budget->observe($mark,
                 max(1, isset($r['examined']) ? (int) $r['examined'] : count($claimed)));
@@ -1042,12 +1062,14 @@ final class ScanWorker
         // reading, as $held does above.
         $findings = count($batch['findings']);
         $candidates = count($batch['candidates']);
+        $departed = count(array_keys($outcome, 'departed', true));
         if (is_array($heldOrd)) {
             $keep = array_flip(array_map('intval', $heldOrd));
             $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0, 'departed' => 0];
             foreach ($outcome as $o => $k) {
                 if (isset($keep[$o])) $tally[$k]++;
             }
+            $departed = $tally['departed'];
             $worked = $tally['worked'];
             $requeued = $tally['requeued'];
             $blocked = $tally['blocked'];
@@ -1081,6 +1103,7 @@ final class ScanWorker
         // taking the dropped record again, alone.
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
+                'departed' => $departed,
                 'examined' => count($claimed) - count($untouched), 'cut' => $cut,
                 'why' => $cut === 'drop' ? WorkBudget::SET_ASIDE
                        : ($cut === 'stop' ? WorkBudget::CUT_SHORT : null)];

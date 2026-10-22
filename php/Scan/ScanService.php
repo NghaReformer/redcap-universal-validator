@@ -518,7 +518,10 @@ final class ScanService
         foreach (['worked', 'requeued', 'blocked', 'findings', 'listed'] as $k) {
             if (isset($r[$k])) $sum += max(0, (int) $r[$k]);
         }
-        $moved = $sum > 0 || $this->planMoved
+        // `moved` from the worker: catch-up walked a page none of whose
+        // changes the reader may count, or a batch's records all left the
+        // group (review rv5b-3).
+        $moved = $sum > 0 || $this->planMoved || !empty($r['moved'])
               || (isset($r['phase']) && isset($before['phase']) && (string) $r['phase'] !== (string) $before['phase']);
         $scoped = isset($before['scope_dag']) && $before['scope_dag'] !== null && $before['scope_dag'] !== '';
         $r['moved'] = $moved;

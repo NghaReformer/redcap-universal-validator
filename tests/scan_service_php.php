@@ -2826,6 +2826,24 @@ namespace INSPIRE\UniversalValidator\Scan {
         $dScoped['withheld'] === true && $dScoped['moved'] === false
         && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage'
         && $dWhole['worked'] === 0 && empty($dWhole['withheld']));
+
+    // review rv5b-3. A catch-up pass over a page of other groups' changes
+    // counts nothing and still moved the run; the worker says so, and the
+    // answer keeps it, withheld or not.
+    $walkedOnly = ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                   'listed' => 0, 'moved' => true, 'phase' => ScanPhase::CATCH_UP, 'done' => false,
+                   'stop' => 'time', 'why' => null];
+    $heldStatus = ['ok' => true, 'withheld' => true, 'withheldWhy' => ScanAuthorization::WITHHELD];
+    $dWalked = $disc->invoke(new ScanService($gm, $gs),
+        ['scope_dag' => '7', 'phase' => ScanPhase::CATCH_UP], $walkedOnly, $heldStatus);
+    check('rv5b-3: a catch-up pass that walked only other groups\' changes is an answer that moved',
+        $dWalked['moved'] === true && $dWalked['withheld'] === true
+        && !array_intersect($counters, array_keys($dWalked)));
+    $dStill = $disc->invoke(new ScanService($gm, $gs),
+        ['scope_dag' => '7', 'phase' => ScanPhase::CATCH_UP], array_merge($walkedOnly, ['moved' => false]),
+        $heldStatus);
+    check('rv5b-3 control: and one that wrote nothing did not',
+        $dStill['moved'] === false);
     \REDCap::$groupNames = $keptNames;
 }
 
