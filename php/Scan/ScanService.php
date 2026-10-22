@@ -50,6 +50,13 @@ final class ScanService
     const SYS_FLAG  = 'scan-system-enable-durable';
     const PROJ_FLAG = 'scan-enable-durable';
 
+    /** The system settings the disable and enable hooks write their unix time to (M17). */
+    const DISABLED_AT = 'scan-disabled-at';
+    const ENABLED_AT  = 'scan-enabled-at';
+
+    /** How long after a disable, with no enable since, Start and work refuse; see disabling(). */
+    const DISABLING_SECONDS = 600;
+
     /** How long a worker's installation slot lease lasts without renewal. */
     const SLOT_TTL = 300;
 
@@ -166,6 +173,9 @@ final class ScanService
         }
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
             return self::no('the durable validation scan is not enabled here');
+        }
+        if ($this->disabling()) {
+            return self::no('the module is being switched off on this server, so no scan can start or carry on');
         }
         $health = Schema::health($this->module);
         if (empty($health['ok'])) {
@@ -1736,6 +1746,28 @@ final class ScanService
     private function owner()
     {
         return substr('u:' . $this->username() . ':' . substr(md5(uniqid('', true)), 0, 8), 0, 64);
+    }
+
+    /**
+     * Is the module being switched off on this server (review rv10a2-3)?
+     *
+     * The disable hook stops every active run, and the module keeps answering
+     * requests until that hook returns. A Start in that window made a run the
+     * hook's walk had already passed, which stayed active through the disable;
+     * a work request took a slot the hook was freeing. So Start and work
+     * refuse from the moment the hook writes DISABLED_AT, until an enable
+     * writes ENABLED_AT after it. DISABLING_SECONDS bounds the refusal: it is
+     * far longer than the hook may run (ScanMaintenance::DISABLE_SECONDS), so
+     * a framework that enabled the module again without calling the enable
+     * hook costs at most that wait, never a module that refuses every scan.
+     */
+    private function disabling()
+    {
+        $off = $this->setting(self::DISABLED_AT, null);
+        if (!is_numeric($off)) return false;
+        $on = $this->setting(self::ENABLED_AT, null);
+        if (is_numeric($on) && (int) $on >= (int) $off) return false;
+        return time() - (int) $off < self::DISABLING_SECONDS;
     }
 
     private function flag($key, $pid)

@@ -7515,6 +7515,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_enable($version = null)
     {
+        // THE ENABLE MARKER FIRST (review rv10a2-3): Start and work refuse
+        // while the disable marker is newer than this one
+        // (ScanService::disabling()), so an enable after a disable is what
+        // lets scans run again at once.
+        try {
+            $this->setSystemSetting(self::SCAN_ENABLED_AT, (string) time());
+        } catch (\Throwable $e) {
+            // Logged, never thrown; without it the refusal ends on its own
+            // after ScanService::DISABLING_SECONDS.
+            $this->scanDisableFailed('enable-marker', $e);
+        }
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
@@ -7544,14 +7555,16 @@ class UniversalValidator extends AbstractExternalModule
      *
      *   1. THE STOP MARKER, first and alone: SCAN_DISABLED_AT, the time. A
      *      maintenance pass that began at or before it stops at its next unit
-     *      (scanMaintenance()'s `stopped`). The framework starts no new pass
-     *      for a disabled module.
-     *   2. EVERY WORKER SLOT RELEASED AND EVERY ACTIVE RUN STOPPED, as
-     *      cancelled with ScanMaintenance::DISABLED_WHY by the finisher Stop
-     *      uses. Only where the scan is switched on and its tables are
-     *      healthy, the crons' own gates: with the switch off no worker runs
-     *      and Start refuses, and an installation that never turned the scan
-     *      on has its schema inspected by nobody.
+     *      (scanMaintenance()'s `stopped`), and Start and work refuse from
+     *      here on (ScanService::disabling()). The framework starts no new
+     *      pass for a disabled module.
+     *   2. EVERY ACTIVE RUN STOPPED, THEN EVERY WORKER SLOT RELEASED
+     *      (ScanMaintenance::disable()): each run cancelled with
+     *      ScanMaintenance::DISABLED_WHY, and as many as its budget allows
+     *      finished by the finisher Stop uses. Only where the scan is switched
+     *      on and its tables are healthy, the crons' own gates: with the switch
+     *      off no worker runs and Start refuses, and an installation that never
+     *      turned the scan on has its schema inspected by nobody.
      *   3. NOTHING DELETED, unless the installation opted in with
      *      SCAN_DROP_ON_DISABLE (off by default). Then every table the module
      *      created is dropped, the version table last, and the crons' saved
@@ -7605,7 +7618,10 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** The system setting the disable hook writes its time to (M17). */
-    const SCAN_DISABLED_AT = 'scan-disabled-at';
+    const SCAN_DISABLED_AT = Scan\ScanService::DISABLED_AT;
+
+    /** The system setting the enable hook writes its time to (review rv10a2-3). */
+    const SCAN_ENABLED_AT = Scan\ScanService::ENABLED_AT;
 
     /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
     const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';

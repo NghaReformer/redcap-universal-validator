@@ -367,7 +367,11 @@ $check9 = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
     $m->systemSettings = $sys + ['scan-cron-state-reap' => '{"after":7}', 'scan-cron-state-retention' => '{"after":9}'];
     $m->tables = $tables;
     $m->responder = function ($sql, $params) use ($RUN) {
-        if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) return [[5, 42]];
+        // Run 5 of project 42 is active; once stopped, the second read
+        // (only runs not yet stopped) finds nothing.
+        if (strpos($sql, 'SELECT run_id, project_id FROM ' . $RUN) !== false) {
+            return strpos($sql, 'phase <> ?') !== false ? [] : [[5, 42]];
+        }
         if (stripos($sql, 'ROW_COUNT()') !== false) return [[1]];
         return null;
     };
@@ -387,11 +391,29 @@ check('disable: every leased worker slot is released, in one statement',
 check('disable: the active runs are read a bounded keyset page at a time',
     count($m->sent(['SELECT run_id, project_id FROM ' . $RUN, 'active_slot = 1 AND run_id > ?', 'LIMIT '])) === 1);
 $cancel = $m->sent(['UPDATE ' . $RUN, 'cancel_requested_at']);
-check('disable: each active run is stopped through the store, in its own project',
-    count($cancel) === 1 && in_array(5, $cancel[0][1], true) && in_array(42, $cancel[0][1], true));
+check('disable: each page of active runs is stopped in one statement, by run id, with the reason on the row',
+    count($cancel) === 1 && in_array(5, $cancel[0][1], true)
+    && strpos($cancel[0][0], 'run_id IN (') !== false && strpos($cancel[0][0], 'lease_epoch = lease_epoch + 1') !== false
+    && in_array(ScanMaintenance::DISABLED_WHY, $cancel[0][1], true));
 check('disable: the stop is audited as the system\'s',
     count(array_filter($m->sent(['INSERT INTO ' . Schema::table('scan_audit')]), function ($b) {
         return in_array('system', $b[1], true); })) === 1);
+// rv10a2-3: the runs are stopped before the slots are freed, and the active
+// runs are read once more after the walk.
+$order = [];
+foreach ($m->bound as $i => $b) {
+    if (strpos($b[0], 'UPDATE ' . $RUN) !== false && strpos($b[0], 'cancel_requested_at') !== false && !isset($order['stop'])) $order['stop'] = $i;
+    if (strpos($b[0], 'UPDATE ' . $SLOT) !== false && strpos($b[0], 'WHERE owner IS NOT NULL') !== false) $order['slots'] = $i;
+    if (strpos($b[0], 'active_slot = 1 AND phase <> ? AND run_id > ?') !== false && !isset($order['late'])) $order['late'] = $i;
+    // finishCancelled() begins with the run's own row.
+    if (strpos($b[0], 'FROM ' . $RUN . ' WHERE run_id = ? AND project_id = ?') !== false && !isset($order['finish'])) $order['finish'] = $i;
+}
+check('disable: every run is stopped before any worker slot is freed',
+    isset($order['stop'], $order['slots']) && $order['stop'] < $order['slots']);
+check('disable: and the active runs not yet stopped are read again after the walk',
+    count($m->sent(['SELECT run_id, project_id FROM ' . $RUN, 'active_slot = 1 AND phase <> ? AND run_id > ?'])) === 1);
+check('disable: and only then is any stopped run finished',
+    isset($order['late'], $order['finish']) && $order['late'] < $order['finish']);
 $dl = $m->logged('scan-disable');
 check('disable: what it did is logged', count($dl) === 1 && $dl[0]['slots_released'] === 1);
 check('disable: with the opt-in off nothing is deleted or dropped',
@@ -424,6 +446,18 @@ check('the drop opt-in is declared, as a checkbox, and off unless ticked',
     count(array_filter($cfg['system-settings'], function ($s) {
         return isset($s['key']) && $s['key'] === UniversalValidator::SCAN_DROP_ON_DISABLE
             && $s['type'] === 'checkbox' && !isset($s['default']); })) === 1);
+
+// rv10a2-3: enabling writes its own marker, which ends the refusal Start and
+// work give while a disable is newer (ScanService::disabling()).
+$m = new UniversalValidator();
+$m->systemSettings = [UniversalValidator::SCAN_DISABLED_AT => (string) (time() - 30)];
+$m->tables = $tables;
+$threw = false;
+try { $m->redcap_module_system_enable('9.9.9'); } catch (\Throwable $e) { $threw = true; }
+$en = $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT);
+check('enable: the enable marker is written, after the disable before it',
+    !$threw && is_numeric($en) && (int) $en >= (int) $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT)
+    && abs((int) $en - time()) <= 5);
 
 // A pass running when the module is switched off stops at its next unit; a
 // marker from an earlier disable stops nothing.

@@ -1065,6 +1065,69 @@ $runRow = function ($runId) use ($dbA) {
         $store->startRun(1001, array('created_by' => 'alice'))['ok'] === true);
 }
 
+// -- A DISABLE OVER MORE THAN ONE PAGE, WITH NO TIME TO FINISH (rv10a2-3, rv10a2-5)
+//
+// DISABLE_PAGE + 1 active runs, and a budget of nothing: every run is stopped,
+// the one on the second page too, in a few statements, and none is finished.
+// A Start in another request lands while the walk stops the last page; the
+// second read stops its run too. What the walk left is finished later, with
+// the disable's sentence, by whichever request reaches it.
+{
+    foreach (array(1001, 1002, 1003) as $p) uv_clear_project($dbA, $p);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA))->provision(2);
+    $store = new SqlScanStore($dbA);
+    $N = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLE_PAGE + 1;
+    $A->query('START TRANSACTION');
+    for ($p = 0; $p < $N; $p++) $store->startRun(3000 + $p, array('created_by' => 'u' . $p));
+    $A->query('COMMIT');
+    $lastId = (int) $dbA->select('SELECT MAX(run_id) FROM ' . Schema::table('scan_run'))[0][0];
+    $late = null;
+    $storeB = new SqlScanStore($dbB);
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$late, $lastId, $storeB) {
+        if ($late === null && $kind === 'exec' && strpos($sql, 'cancel_requested_at') !== false
+            && in_array($lastId, $params, true)) {
+            $late = $storeB->startRun(3999, array('created_by' => 'late-user'));
+        }
+    };
+    $rec = new UvRecordingDb($hook);
+    $d = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf)))->disable(0.0);
+    echo '  disable over ' . ($N + 1) . ' runs, no time to finish: ' . json_encode($d) . ', '
+        . count($rec->log) . " statements\n";
+    $count = function ($where, array $params) use ($dbA) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE ' . $where, $params)[0][0];
+    };
+    $why = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY;
+    check('disable: more runs than one page are every one stopped, the second page too, with the reason on the row',
+        $count('active_slot = 1 AND phase = ? AND terminal_reason = ?', array('cancelling', $why)) === $N + 1
+        && $count('active_slot = 1 AND phase <> ?', array('cancelling')) === 0
+        && $d['runs_left'] === $N + 1 && $d['runs_stopped'] === 0 && $d['failed'] === 0);
+    check('disable: a run started while the walk went on is stopped by the second read',
+        is_array($late) && $late['ok'] === true && $d['late'] === 1
+        && $store->run(3999, (int) $late['run']['run_id'])['phase'] === 'cancelling');
+    check('disable: every stop is audited once, as the system\'s',
+        (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id >= 3000 AND event = 'cancel' AND actor = 'system'")[0][0] === $N + 1);
+    check('disable: and stopping them costs statements by the page, not by the run',
+        count($rec->log) <= 12);
+    // Left for later: a request with no reason of its own finishes the run
+    // with the disable's, Start's reap and the cron's alike.
+    $r0 = (int) $dbA->select('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE project_id = 3000')[0][0];
+    \INSPIRE\UniversalValidator\Scan\ScanPromotion::finishCancelled($store, 3000, $r0, array());
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET created_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "' WHERE project_id = 3001");
+    $rp = $maint()->reap(array('after' => 3000), 60.0);
+    $r1 = (int) $dbA->select('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE project_id = 3001')[0][0];
+    check('disable: a run it left stopping is finished later as cancelled, with the disable\'s sentence',
+        $store->run(3000, $r0)['terminal'] === ScanOutcome::CANCELLED && $store->run(3000, $r0)['terminal_reason'] === $why
+        && $rp['out']['runs_stopped'] === 1
+        && $store->run(3001, $r1)['terminal'] === ScanOutcome::CANCELLED && $store->run(3001, $r1)['terminal_reason'] === $why);
+    foreach (array('scan_run', 'scan_audit') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t) . ' WHERE project_id >= 3000');
+    }
+}
+
 // -- THE OPT-IN DROP, last: it leaves nothing for a section after it -------------
 {
     $ours = function () use ($A) {
