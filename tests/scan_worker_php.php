@@ -3867,6 +3867,24 @@ namespace INSPIRE\UniversalValidator\Scan {
             count($store->allFindings()) === 4 && (int) $store->run(807, $runId)['detail_rows'] === 4);
         check('rv10b1-4: and every finding either of them found is counted',
             $leftOut($store, $runId) === 8 && (int) $aRes['findings'] + (int) $bRes['findings'] === 12);
+
+        // A RECORD TAKEN OVER WHILE IT WAS JUDGED, PAST THE BUDGET (review
+        // rv10b1-5 M4). Its findings were left out and are the new holder's to
+        // count, in the store and in the answer: the store counts the held
+        // record only, and the answer, counting both, reported a finding twice
+        // between the two workers.
+        list($store, $runId) = $fixture(['A', 'B'], 808);
+        $ep808 = (int) $store->run(808, $runId)['lease_epoch'];
+        $took = false;
+        $takeOne = function ($id, $node) use ($store, $runId, $ep808, $finder, &$took) {
+            if (!$took) { $store->claimPending($runId, 'w2', $ep808, 1); $took = true; }
+            return $finder(1)($id, $node);
+        };
+        $res = (new ScanWorker($store, $gated($takeOne, ['maxFindings' => 0, 'maxBytes' => 1000000])))
+            ->work(808, $runId);
+        check('rv10b1-5: a record taken over mid-batch is not this worker\'s to count, stored or not',
+            (int) $res['worked'] === 1 && (int) $res['findings'] === 1 && $leftOut($store, $runId) === 1
+            && count($store->allFindings()) === 0);
     }
 
     /* =====================================================================

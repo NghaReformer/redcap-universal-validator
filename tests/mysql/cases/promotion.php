@@ -299,10 +299,11 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('cancelled in unique-finalize: the page is told they were not counted, never zero',
         \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run) === null);
 
-    // FINDINGS THE DETAIL BUDGET LEFT OUT, read back from the server (review
-    // rv10b1-3). A commit holding a record whose 2 findings were not stored
-    // writes them to the DETAIL_UNSTORED aggregate; the counter says 3 were
-    // stored. While the run works, the count is the 3 and the 2 together.
+    // FINDINGS THE DETAIL BUDGET LEFT OUT, read back from the server (reviews
+    // rv10b1-3, rv10b1-5). A commit holding a record whose 2 findings were not
+    // stored writes them to the DETAIL_UNSTORED aggregate; the counter says 3
+    // were stored. While the run works and once it is cancelled, the count is
+    // the 3 and the 2 together.
     $r = $store->startRun(962, array('created_by' => 'alice', 'fence_open' => '10'));
     $rid = (int) $r['run']['run_id'];
     $store->writeManifest($rid, array(array('id_bin' => 'U1', 'hash' => hash('sha256', 'U1', true), 'dag' => null)));
@@ -321,6 +322,10 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('detail budget: the commit holding a record left out 2 of its findings',
         $okU === true && count($claimed) === 1);
     check('rv10b1-3: a run still working counts the 2 left out with the 3 stored',
+        \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $store->run(962, $rid)) === 5);
+    $store->cancel(962, $rid, 'alice');
+    $store->finish($rid, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    check('rv10b1-5: and so does the run once it is cancelled, with no summary built',
         \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $store->run(962, $rid)) === 5);
 
     list($p, $raw, $states) = $finishEmpty(959, 'emptied');

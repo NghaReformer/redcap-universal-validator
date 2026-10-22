@@ -1359,13 +1359,24 @@ namespace INSPIRE\UniversalValidator\Scan {
         $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
 
     // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
-    // while the worker goes on finding, so a run still working adds them
-    // (review rv10b1-3).
+    // while the worker goes on finding, so every answer adds them: a run
+    // still working (review rv10b1-3), and a run with no verdict, whose
+    // floor is taken over what was STORED and then has them added (rv10b1-5
+    // M1: compared instead, a run that stored 5 and left 2 out said 5).
     $uns = new ArrayScanStore();
     $uid = (int) $uns->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
+    foreach (ScanOutcome::NO_VERDICT as $how) {
+        check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
+            $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
+    }
+    foreach (RollupBuilder::KINDS as $kind) $uns->addAggregate($uid, $kind, 'x', null, 4);
+    check('rv10b1-5: and with a summary of 4 beside a counter of 5, still 5 stored and 2 left out',
+        $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 5]) === 7);
+    check('rv10b1-5: a summary larger than the counter is the floor the 2 are added to',
+        $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 1]) === 6);
 }
 
 /* =====================================================================
