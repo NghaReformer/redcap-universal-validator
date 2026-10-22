@@ -3607,6 +3607,45 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Whether a report names this project's records by their audit-log hash:
+     * under log-values = none, where the record id itself identifies the
+     * participant. ONE PLACE, read by the legacy report's plan and by the
+     * stored report's posture alike (W7-R2).
+     */
+    private function hashesRecordIds($pid)
+    {
+        return $this->logMode($pid) === 'none';
+    }
+
+    /**
+     * How a stored run's report names records for $pid (W7-R2): the
+     * Scan\FindingRowMapper options `recordIds`, `hashRecordId` and
+     * `recordIdField`, from the posture the legacy report reads.
+     *
+     * THE HASHER IS THE AUDIT LOG'S, handed over as a closure because the
+     * formula is private: hash_hmac over the id, keyed by the module key and
+     * the project, which is what the module log and the legacy report show.
+     * Scan\Hmac::P_RECORD is the scan's own record hash and a different
+     * formula; a report hashed with it would name records the log has never
+     * contained. The closure answers null when no key can be read, and the
+     * mapper then shows that the id is unavailable, never the raw id.
+     *
+     * @return array{recordIds:string, hashRecordId:?\Closure, recordIdField:string}
+     */
+    public function scanRecordIdPosture($pid)
+    {
+        $hashed = $this->hashesRecordIds($pid);
+        $module = $this;
+        return [
+            'recordIds'     => $hashed ? Scan\FindingRowMapper::IDS_HASHED : Scan\FindingRowMapper::IDS_RAW,
+            'hashRecordId'  => $hashed
+                ? function ($id) use ($module, $pid) { return $module->hashedIdentifier($pid, (string) $id); }
+                : null,
+            'recordIdField' => (string) $this->recordIdFieldOf($pid),
+        ];
+    }
+
+    /**
      * Record an invalid value found on the server. The "log-values" project
      * setting controls how much identifying material the entry carries (UV-005):
      *   hashed (default) — value as project-keyed HMAC, record ID raw (staff can
@@ -7123,14 +7162,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function projectIdentifierFields($pid = null)
     {
+        // The one parser of the flag, shared with the report (W7-R9).
         $dd = $this->dataDictionary($pid);
-        if (!$dd) return null;
-        $out = [];
-        foreach ($dd as $name => $meta) {
-            $flag = isset($meta['identifier']) ? strtolower(trim((string) $meta['identifier'])) : '';
-            if ($flag === 'y' || $flag === 'yes' || $flag === '1' || $flag === 'true') $out[$name] = true;
-        }
-        return $out;
+        return ScanDimensions::identifierFlags(is_array($dd) ? $dd : []);
     }
 
     /** Field name => field type map, or null when the dictionary is unavailable. */
@@ -9093,10 +9127,15 @@ class UniversalValidator extends AbstractExternalModule
         $bytes = 0;
         foreach ($found as $v) {
             $id = $rule($v['rule']);
+            // THE REASON IS SPLIT ONCE (W7-R1). The row stores a pooled field's
+            // problems as the code `pooled` and a mask, so the summary groups
+            // them under one code; the identity is computed from the code it
+            // has always been computed from, so no finding is renamed.
+            $reason = Scan\ReasonCode::split($v['reason'], isset($v['type']) ? (string) $v['type'] : null);
             $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
                     'instance' => $v['instance'], 'host_form' => $v['instrument'],
                     'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason']),
+                    'reason_code' => $reason['identity'],
                     // The within-location discriminator. See Hmac::findingIdentity.
                     'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
             $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
@@ -9135,7 +9174,10 @@ class UniversalValidator extends AbstractExternalModule
                 'rule_revision' => $id['revision'],
                 'rule_ord' => (int) $v['rule'],
                 'check_type' => (string) $v['type'],
-                'reason_code' => Scan\ReasonCode::code($v['reason']),
+                'reason_code' => $reason['code'],
+                // And the branch that judged it (R3G-2), so the report speaks
+                // with that branch's message and limits. See ReasonCode::bits().
+                'reason_bits' => Scan\ReasonCode::bits($reason, isset($v['branch']) ? $v['branch'] : null),
                 'dag_key' => isset($v['dag']) ? $v['dag'] : null,
                 'value_bin' => $blob,
                 'value_len' => ($val === null) ? null : strlen((string) $val),
@@ -9317,7 +9359,7 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                'hashRecordIds' => $this->hashesRecordIds($pid),
                 // So reportValue() can withhold a finding's value on the field
                 // whose value IS the record id the column above hashes.
                 'recordIdField' => $this->recordIdFieldOf($pid)];
@@ -10686,7 +10728,7 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Thin on purpose. Everything that decides anything - the feature flags,
      * the schema health, the rights, the scope, the run's own state - lives in
-     * ScanService, so this method reads a run id, calls one of four things, and
+     * ScanService, so this method reads a run id, calls one of five things, and
      * hands back what it said. A handler that made decisions would be a second
      * place those decisions live.
      *
@@ -10749,6 +10791,14 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
             if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
+            if ($action === 'scan-findings') {
+                // One keyset page of a finished run's findings (B5). The cursor,
+                // the page size and the filter are handed over as sent; the
+                // service bounds and checks every one of them.
+                $r = $svc->findings($project_id, $runId, is_array($payload) ? $payload : []);
+                $answered = true;
+                return $r;
+            }
             $answered = true;
             return ['ok' => false, 'why' => 'unknown action'];
         } catch (\Throwable $e) {
@@ -10778,14 +10828,14 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
-        // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
+        // THE DURABLE SCAN'S FIVE VERBS. Declared in auth-ajax-actions ONLY - a
         // scan reads and stores record values, so there is no version of it an
         // unauthenticated caller may reach. $user_id is the only value here that
         // means REDCap authenticated this caller; the framework's own action
         // list is a first gate, and this is the second, because
         // redcap_module_ajax() guards the action NAME and hands the identity
         // straight through without checking it.
-        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel'], true)) {
+        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel', 'scan-findings'], true)) {
             if ($user_id === null || $user_id === '') {
                 return ['ok' => false, 'why' => 'you are not signed in'];
             }

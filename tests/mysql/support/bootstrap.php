@@ -31,6 +31,7 @@ require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../../../php/Scan/ArrayScanStore.php';
 // findings() zips its rows with FindingRowMapper::INPUT_KEYS (B5-N1).
 require_once __DIR__ . '/../../../php/Scan/FindingRowMapper.php';
+require_once __DIR__ . '/../../../php/Scan/ReasonCode.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
 require_once __DIR__ . '/../../../php/Scan/SourceFence.php';
@@ -50,6 +51,10 @@ require_once __DIR__ . '/../../../php/Scan/ScanPromotion.php';
 require_once __DIR__ . '/../../../php/Scan/ScanAuthorization.php';
 require_once __DIR__ . '/../../../php/ScanPageView.php';
 require_once __DIR__ . '/../../../php/ScanCapabilities.php';
+require_once __DIR__ . '/../../../php/ScanDimensions.php';
+require_once __DIR__ . '/../../../php/MessageCatalog.php';
+require_once __DIR__ . '/../../../php/ScanColumns.php';
+require_once __DIR__ . '/../../../php/Scan/ScanReport.php';
 require_once __DIR__ . '/../../../php/Scan/ScanService.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;

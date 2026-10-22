@@ -13,7 +13,7 @@
   "framework-version": 14,
   "enable-no-auth-logging": true,
 
-  "auth-ajax-actions": ["unique-check", "exists-check", "scan-start", "scan-work", "scan-status", "scan-cancel"],
+  "auth-ajax-actions": ["unique-check", "exists-check", "scan-start", "scan-work", "scan-status", "scan-cancel", "scan-findings"],
   "no-auth-ajax-actions": ["unique-check", "exists-check"],
 
   "links": {

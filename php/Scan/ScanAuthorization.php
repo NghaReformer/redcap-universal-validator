@@ -64,6 +64,36 @@ final class ScanAuthorization
      */
     public static function mayStart($rights, array $entitlement, $unknownOwnership = false)
     {
+        $base = self::readerAlone($rights);
+        if (!$base['ok']) return $base;
+        if ($unknownOwnership) {
+            // NAMED, for the same reason the export-level refusal in
+            // readerAlone() says which level it read. This arm was unreachable
+            // in production until the entitlement moved onto the read set, and
+            // it names a fixable dictionary problem: the field exists, its
+            // form_name does not. Without the names it is a refusal nobody can
+            // act on - the exact objection that put the instrument names in the
+            // branch below.
+            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
+            return self::no('at least one field a rule depends on could not be located on an '
+                . 'instrument, so access to it cannot be checked and the scan was not started'
+                . ($who === '' ? '' : ': ' . $who));
+        }
+        return self::mayStartForms($base, $rights, $entitlement);
+    }
+
+    /**
+     * The questions every entitlement asks of the reader alone, before any run
+     * or rule: rights that can be read, design rights, and Full Data Set
+     * export. A reader refused here is refused every run, so ScanService asks
+     * it BEFORE it reads a run row (L8, W11A-N2): asked after, "needs Full
+     * Data Set" for a run and "no scan with that reference" for an id that is
+     * none told a de-identified designer which run ids exist.
+     *
+     * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
+     */
+    public static function readerAlone($rights)
+    {
         $base = self::readable($rights);
         if (!$base['ok']) return $base;
 
@@ -82,18 +112,12 @@ final class ScanAuthorization
             return self::no('this scan stores record values, so it needs Full Data Set export '
                 . 'rights; ' . self::exportLevelPhrase($rights));
         }
-        if ($unknownOwnership) {
-            // NAMED, for the same reason the export-level refusal above says
-            // which level it read. This arm was unreachable in production until
-            // the entitlement moved onto the read set, and it names a fixable
-            // dictionary problem: the field exists, its form_name does not.
-            // Without the names it is a refusal nobody can act on - the exact
-            // objection that put the instrument names in the branch below.
-            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
-            return self::no('at least one field a rule depends on could not be located on an '
-                . 'instrument, so access to it cannot be checked and the scan was not started'
-                . ($who === '' ? '' : ': ' . $who));
-        }
+        return $base;
+    }
+
+    /** mayStart()'s last question: the instruments, for a reader readerAlone() let through. */
+    private static function mayStartForms(array $base, $rights, array $entitlement)
+    {
         $barred = self::barredForms($rights, $entitlement);
         if ($barred) {
             // TWO DIFFERENT FAILURES, TWO DIFFERENT SENTENCES.

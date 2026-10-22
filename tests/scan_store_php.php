@@ -107,7 +107,7 @@ namespace {
                 'record_id_bin' => 'R1', 'identity' => hash('sha256', 'wt2', true), 'valid_from_seq' => (int) $run['run_seq'],
                 'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
                 'z_score' => '-1.00', 'growth_reference' => 'who-wfa']]]);
-        $f = $s->findings(700, (int) $run['generation_id'], [], 0, 10);
+        $f = $s->findings(700, (int) $run['generation_id'], ['dag' => null], [], 0, 10);
         check('array-store: the z-score reads back beside its value only (got ' . json_encode($f) . ')',
             count($f) === 2 && $f[0]['z_score'] === '-3.40' && $f[1]['z_score'] === null && $f[1]['growth_reference'] === 'who-wfa');
         $kept = array_values(array_filter($s->allFindings(), function ($r) { return $r['field'] === 'wt2'; }));

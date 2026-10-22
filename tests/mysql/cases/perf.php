@@ -371,11 +371,21 @@ $RECORDS = 6;
     // under a detail budget: the run row read by its key, so the budget is
     // judged on what every worker has stored. The request with records left
     // commits one batch here, and went from 76 to 77.
+    // Wave 11 (M5) put two statements on the start and one on the request
+    // that finishes. The start stores the run's label snapshot: one EXISTS on
+    // uq_dim_v2's leading key, so a second snapshot of a generation is
+    // refused in words, and one INSERT for the rows (this fixture's module
+    // has no labels to give, so its snapshot is the state row; a project's
+    // is one INSERT per 100 rows, in a transaction when it needs more than
+    // one). The finishing request reads that state row by its key for
+    // labelDegraded (W7-N11), on the pass whose summary is done only. With
+    // W10A-N1's revision read that makes the start 48, measured on the
+    // merged tree.
     $bounds = array(
-        'start'                              => array($startCount, 46),
+        'start'                              => array($startCount, 48),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 77),
-        'the work request that finishes'     => array($finishCount, 77),
+        'the work request that finishes'     => array($finishCount, 78),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

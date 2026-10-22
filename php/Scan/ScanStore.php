@@ -765,12 +765,82 @@ interface ScanStore
      * run() zips RUN_COLUMNS, and a row of the wrong width throws.
      *
      * KEYSET ON finding_id: rows come back with finding_id > $afterId, in
-     * finding_id order, so the last row's finding_id is the next page's
-     * $afterId and no row is ever returned on two pages. $limit is clamped to
-     * 1..100. $filter takes host_form, reason_code, dag_key and check_type;
-     * any other key is ignored rather than interpolated.
+     * finding_id order, and no row is ever returned on two pages. $limit is
+     * clamped to 1..100.
+     *
+     * $scope IS MANDATORY (B5): ['dag' => ?string], the reader's group as a
+     * finding stores it (its unique name), or null for a reader confined to
+     * none. An absent dag key throws; see FindingRowMapper::pageAxes(), which
+     * both stores ask, for that and for $filter, whose keys are
+     * FindingRowMapper::PAGE_AXES (host_form, reason_code, check_type,
+     * dag_key). Any other filter key is ignored rather than interpolated.
+     *
+     * $through IS THE NEXT PAGE'S $afterId, or null when nothing follows.
+     * It is the last row's finding_id when a further row exists; when the
+     * page is short it says where the walk stopped. One axis, or none, is one
+     * statement over the key built for it (ix_page_v2, or the axis's
+     * ix_filter_*), reading at most $limit + 1 entries. Two or more axes have
+     * no key that holds them all, so the page walks the first axis's key in
+     * windows of FILTER_WINDOW entries, at most FILTER_WINDOWS of them, and
+     * may come back short with $through at the last window's end: a short
+     * page is not the end of the report unless $through is null. A walk that
+     * filtered rows one by one through a whole axis would read every row of
+     * it for a page that keeps none.
+     *
+     * Only ACTIVE rows of this project and generation: a closed row - departed,
+     * tombstoned, re-examined or superseded - is history, and a staged
+     * duplicate is not yet a finding.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit);
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null);
+
+    /** Index entries one window of a filtered page may walk. See findings(). */
+    const FILTER_WINDOW = 5000;
+
+    /** Windows one filtered page may walk before it answers short. See findings(). */
+    const FILTER_WINDOWS = 4;
+
+    /**
+     * Store a generation's label snapshot (M5): the rows
+     * ScanDimensions::toSnapshot() builds, written to uv_scan_dim once, at
+     * planning, with the project id.
+     *
+     * Each row is ['kind' => string of 1..32 bytes, 'key' => string of
+     * 1..191 bytes, 'label' => ?string, 'meta' => ?string]; (kind, key) is
+     * unique within the call. A row that is not that shape throws
+     * InvalidArgumentException before anything is written.
+     *
+     * ONCE PER GENERATION, ALL OR NOTHING. A generation that already has a
+     * snapshot is refused with a RuntimeException and keeps the one it has:
+     * the labels of a stored run are the ones of the day it was planned, and a
+     * second writer of the same generation (an incremental run, which nothing
+     * starts yet) would relabel findings it never produced. The rows go in
+     * DIM_CHUNK at a time, at most DIM_CHUNK_BYTES of text per statement, and
+     * in one transaction when they need more than one statement.
+     *
+     * @return int rows written
+     */
+    public function writeDimensions($projectId, $generationId, array $rows);
+
+    /**
+     * One keyset page of a generation's label snapshot, in (kind, key) byte
+     * order: rows after $after ([kind, key], or null for the first page),
+     * each ['kind', 'key', 'label', 'meta']. $limit is clamped to 1..DIM_PAGE.
+     * [] when the generation has no snapshot, or nothing follows $after.
+     */
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE);
+
+    /** One snapshot row by its kind and key, or null. See dimensions(). */
+    public function dimension($projectId, $generationId, $kind, $key);
+
+    /** Rows one snapshot INSERT carries. See writeDimensions(). */
+    const DIM_CHUNK = 100;
+
+    /** Label and meta bytes one snapshot INSERT carries, at most (after its first row). */
+    const DIM_CHUNK_BYTES = 1048576;
+
+    /** The largest page dimensions() returns. */
+    const DIM_PAGE = 500;
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);

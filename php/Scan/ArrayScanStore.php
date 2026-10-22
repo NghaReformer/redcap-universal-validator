@@ -132,7 +132,7 @@ final class ArrayScanStore implements ScanStore
             'policy_json' => '{}',
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
-             'fence_open', 'policy_json'])));
+             'fence_open', 'policy_json', 'values_state'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }
@@ -1018,13 +1018,33 @@ final class ArrayScanStore implements ScanStore
      * finding_id order, each row keyed by FindingRowMapper::INPUT_KEYS in that
      * order (B5-N1). This returned the whole internal row, positioned by a
      * count of rows walked, and ignored a dag_key filter the SQL store applies.
+     *
+     * THE SAME WALK AS THE SQL STORE, window for window: the first axis is
+     * the key, and a page of two or more axes reads FILTER_WINDOW rows of
+     * that axis at a time, so $through means the same thing from both
+     * stores. The list is in finding_id order, so the first row after
+     * $afterId is found by halving rather than by walking the rows before it.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
+        $through = null;
         $limit = max(1, min(100, (int) $limit));
+        $page = FindingRowMapper::pageAxes($scope, $filter);
+        if ($page['none']) return [];
+        $axes = $page['axes'];
+        $first = $axes ? (string) key($axes) : null;
+        $windowed = count($axes) > 1;
+        $in = function (array $f, $col, $v) {
+            return $f[$col] !== null && (string) $f[$col] === $v;
+        };
         $out = [];
-        foreach ($this->findings as $f) {
-            if ((int) $f['finding_id'] <= (int) $afterId) continue;
+        $walked = 0;      // rows of the first axis read in this window
+        $windows = 0;
+        $last = (int) $afterId;
+        $n = count($this->findings);
+        for ($i = $this->firstAfter((int) $afterId); $i < $n; $i++) {
+            $f = $this->findings[$i];
             if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
             // Closed rows belong to an earlier reading of a record and are
@@ -1032,9 +1052,26 @@ final class ArrayScanStore implements ScanStore
             // shows the ACTIVE ones; the real store says the same with
             // active_slot = 1 in its WHERE.
             if ($f['active_slot'] === null || (int) $f['active_slot'] !== 1) continue;
-            foreach (['host_form', 'reason_code', 'dag_key', 'check_type'] as $k) {
-                if (isset($filter[$k]) && $filter[$k] !== ''
-                    && ($f[$k] === null || (string) $f[$k] !== (string) $filter[$k])) continue 2;
+            if ($first !== null && !$in($f, $first, $axes[$first])) continue;
+            if ($windowed) {
+                if ($walked === self::FILTER_WINDOW) {
+                    // The window is spent; the next starts after its end.
+                    $walked = 0;
+                    if (++$windows === self::FILTER_WINDOWS) {
+                        $through = $last;
+                        return $out;
+                    }
+                }
+                $walked++;
+                $last = (int) $f['finding_id'];
+            }
+            foreach ($axes as $col => $v) {
+                if ($col !== $first && !$in($f, $col, $v)) continue 2;
+            }
+            if (count($out) === $limit) {
+                // A row beyond the page: there is a next page, after the last row kept.
+                $through = (int) $out[$limit - 1]['finding_id'];
+                return $out;
             }
             $row = [];
             foreach (FindingRowMapper::INPUT_KEYS as $k) {
@@ -1044,9 +1081,80 @@ final class ArrayScanStore implements ScanStore
             // growth z-score gives the measurement back.
             if ($row['value_bin'] === null) $row['z_score'] = null;
             $out[] = $row;
-            if (count($out) >= $limit) break;
+        }
+        // The last window filled exactly as the rows ran out: the SQL store
+        // cannot tell that from more rows waiting, and says where it stopped.
+        if ($windowed && $walked === self::FILTER_WINDOW && $windows === self::FILTER_WINDOWS - 1) {
+            $through = $last;
         }
         return $out;
+    }
+
+    /** The index of the first stored finding whose finding_id is above $afterId. */
+    private function firstAfter($afterId)
+    {
+        $lo = 0;
+        $hi = count($this->findings);
+        while ($lo < $hi) {
+            $mid = ($lo + $hi) >> 1;
+            if ((int) $this->findings[$mid]['finding_id'] <= $afterId) $lo = $mid + 1;
+            else $hi = $mid;
+        }
+        return $lo;
+    }
+
+    /** "<project>:<generation>" => that generation's label snapshot, in (kind, key) byte order. */
+    private $dims = [];
+
+    public function writeDimensions($projectId, $generationId, array $rows)
+    {
+        $pid = (int) $projectId;
+        $gen = (int) $generationId;
+        if ($pid < 1 || $gen < 1) {
+            throw new \InvalidArgumentException('a label snapshot needs its project and its generation');
+        }
+        $rows = FindingRowMapper::dimensionRows($rows);
+        if (!$rows) return 0;
+        $at = $pid . ':' . $gen;
+        if (!empty($this->dims[$at])) {
+            throw new \RuntimeException('this generation already has a label snapshot, and keeps it');
+        }
+        usort($rows, function ($a, $b) {
+            $c = strcmp($a['kind'], $b['kind']);
+            return $c !== 0 ? $c : strcmp($a['key'], $b['key']);
+        });
+        $this->dims[$at] = $rows;
+        return count($rows);
+    }
+
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    {
+        $limit = max(1, min(self::DIM_PAGE, (int) $limit));
+        $after = FindingRowMapper::dimensionAfter($after);
+        $at = (int) $projectId . ':' . (int) $generationId;
+        $out = [];
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($after !== null) {
+                $c = strcmp($r['kind'], $after[0]);
+                if ($c < 0 || ($c === 0 && strcmp($r['key'], $after[1]) <= 0)) continue;
+            }
+            $out[] = $r;
+            if (count($out) === $limit) break;
+        }
+        return $out;
+    }
+
+    public function dimension($projectId, $generationId, $kind, $key)
+    {
+        if (!FindingRowMapper::isDimensionKind($kind)) {
+            throw new \InvalidArgumentException('a label snapshot row is named by a kind of the form '
+                . FindingRowMapper::DIM_KIND);
+        }
+        $at = (int) $projectId . ':' . (int) $generationId;
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($r['kind'] === $kind && $r['key'] === (string) $key) return $r;
+        }
+        return null;
     }
 
     public function aggregates($runId)

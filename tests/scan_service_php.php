@@ -22,6 +22,10 @@
 namespace {
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/ScanCapabilities.php';
+    require_once __DIR__ . '/../php/ScanDimensions.php';
+    require_once __DIR__ . '/../php/MessageCatalog.php';
+    require_once __DIR__ . '/../php/ScanColumns.php';
+    require_once __DIR__ . '/../php/Scan/ScanReport.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';
@@ -167,6 +171,18 @@ namespace {
                 if ($l[0] === $event) $out[] = $l[1];
             }
             return $out;
+        }
+
+        /**
+         * A reader with design rights. Since L8 every verb decides the reader
+         * before it reads the run row, so a fixture with no user is refused
+         * before the store it means to break is reached.
+         */
+        public function getUser()
+        {
+            $u = new \VerbUser();
+            $u->name = 'alice';
+            return $u;
         }
     }
 
@@ -673,6 +689,17 @@ namespace {
         public $logFails = 0;
         /** @var string[] the configuration reads durableScanContext() says failed (R5-4) */
         public $unread = [];
+        /** @var array record id => the group a finding on it stores (dag_key), as getData names it */
+        public $dagNames = [];
+        /** @var array record id => the value a finding on it keeps, for the report tests */
+        public $valueOf = [];
+        /** @var ?array what scanRecordIdPosture() answers (W7-R2); raw names when null */
+        public $posture = null;
+        public function scanRecordIdPosture($pid)
+        {
+            return $this->posture !== null ? $this->posture
+                : ['recordIds' => 'raw', 'hashRecordId' => null, 'recordIdField' => 'record_id'];
+        }
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -758,10 +785,13 @@ namespace {
                     return ['findings' => [['project_id' => (int) $pid, 'generation_id' => (int) $gen,
                         'identity' => hash('sha256', 'f|' . $id, true), 'valid_from_seq' => $seq,
                         'record_hash' => $hash, 'record_id_bin' => $id, 'event_id' => 1,
-                        'instance' => 1, 'dag_key' => null, 'host_form' => 'fa', 'field' => 'a_val',
+                        'instance' => 1, 'dag_key' => isset($self->dagNames[$id]) ? $self->dagNames[$id] : null,
+                        'host_form' => 'fa', 'field' => 'a_val',
                         'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
                         'rule_ord' => 1, 'check_type' => 'required',
-                        'reason_code' => 'required-blank']],
+                        'reason_code' => 'required-blank']
+                        + (isset($self->valueOf[$id])
+                            ? ['value_bin' => $self->valueOf[$id], 'value_len' => strlen($self->valueOf[$id])] : [])],
                         'bytes' => 10, 'contexts' => 1, 'why' => null];
                 },
             ];
@@ -831,7 +861,7 @@ namespace {
             if (strpos($s, 'SELECT finding_id, host_form, reason_code, dag_key, check_type') === 0) {
                 $limit = preg_match('/LIMIT (\d+)/', $sql, $m) ? (int) $m[1] : 100;
                 $out = [];
-                foreach ($this->store->findings($params[0], $params[1], [], $params[2], $limit) as $f) {
+                foreach ($this->store->findings($params[0], $params[1], ['dag' => null], [], $params[2], $limit) as $f) {
                     $out[] = [$f['finding_id'], $f['host_form'], $f['reason_code'], $f['dag_key'],
                               $f['check_type']];
                 }
@@ -2166,6 +2196,161 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('E2E clean: the work request that finished it carries the same status',
         isset($last['status']['terminal']) && $last['status']['terminal'] === ScanOutcome::COMPLETE);
 
+    // -- THE LABELS OF THE DAY THE RUN WAS PLANNED (M5, W7-N11) ------------------
+    //
+    // start() builds the module's ScanDimensions over the rule list the
+    // findings' ordinals refer to, the planner stores it under the run's
+    // generation, and the pass that finishes the run reads its state row for
+    // `labelDegraded`, which no caller supplied before.
+    $labelled = function (ArrayScanStore $s) {
+        return new class($s) extends \E2eModule {
+            public $dimsAsked = false;
+            public $dimsFail = false;
+            /** @var string the form's label in the dictionary now */
+            public $formLabel = 'Form A';
+            /** @var array the identifier flags the dictionary has now */
+            public $liveIds = [];
+            /** @var array the identifier flags the run is planned with */
+            public $snapIds = ['a_val' => true];
+            public function durableScanContext($pid, array $opts = [], $dag = null)
+            {
+                $c = parent::durableScanContext($pid, $opts, $dag);
+                $c['plan']['allRules'] = $this->rules;
+                $c['plan']['ruleIds'] = [0 => ['source_id' => 'r1']];
+                $c['plan']['identifiers'] = $this->liveIds;
+                return $c;
+            }
+            public function scanDimensions($pid, ?array $rules = null)
+            {
+                $this->dimsAsked = $rules;
+                if ($this->dimsFail) throw new \RuntimeException('no labels today');
+                $d = new \INSPIRE\UniversalValidator\ScanDimensions();
+                $d->forms = ['fa' => $this->formLabel];
+                $d->fieldLabels = ['a_val' => 'Value A'];
+                $d->fieldForms = ['a_val' => 'fa'];
+                $d->identifiers = $this->snapIds;
+                $d->singleEventProved = true;
+                $d->rules = [1 => ['type' => 'required', 'label' => 'A is required', 'message' => '',
+                                   'messages' => [], 'assert' => '', 'fields' => ['a_val'], 'detail' => []]];
+                return $d;
+            }
+        };
+    };
+    $ds = new ArrayScanStore();
+    $dm = $labelled($ds);
+    $dd = $drive($dm, $ds, 171);
+    $drow = $dd['row'];
+    $dgen = is_array($drow) ? (int) $drow['generation_id'] : 0;
+    $dsnap = \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($ds->dimensions(171, $dgen));
+    check('M5: start stores the labels under the run\'s generation, for this project only',
+        $dd['threw'] === null && $dsnap !== null && $dsnap->forms === ['fa' => 'Form A']
+        && $dsnap->fieldLabels === ['a_val' => 'Value A'] && $dsnap->identifiers === ['a_val' => true]
+        && $dsnap->rules[1]['label'] === 'A is required' && $dsnap->rulesBySource === ['r1' => 1]
+        && $ds->dimensions(172, $dgen) === []);
+    check('M5: built over the rule list the findings\' ordinals refer to', $dm->dimsAsked === $dm->rules);
+    check('W7-N11: a run planned with every label read is certified clean without the labels sentence',
+        is_array($drow) && (int) $drow['clean'] === 1
+        && strpos((string) $drow['terminal_reason'], 'labels could not be read') === false);
+
+    $us2 = new ArrayScanStore();
+    $um2 = $labelled($us2);
+    $um2->dimsFail = true;
+    $u2 = $drive($um2, $us2, 173);
+    $u2row = $u2['row'];
+    $u2snap = is_array($u2row)
+        ? \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($us2->dimensions(173, (int) $u2row['generation_id']))
+        : null;
+    check('W7-N11: labels that could not be read at planning do not stop the scan, and are kept as such',
+        $u2['threw'] === null && is_array($u2row) && $u2row['terminal'] === ScanOutcome::COMPLETE
+        && $u2snap !== null && isset($u2snap->degraded['labels']) && $u2snap->forms === []);
+    check('W7-N11: and the finished run says some labels could not be read',
+        (int) $u2row['clean'] === 1
+        && strpos((string) $u2row['terminal_reason'], 'some labels could not be read') !== false);
+
+    $fi = new ArrayScanStore();
+    $fm = $labelled($fi);
+    $fst = (new ScanService($fm, (new FaultyStore($fi))->failFrom('writeDimensions')))->start(174);
+    $frow = $fi->run(174, 1);
+    check('M5: a start whose labels could not be stored is refused, in words',
+        empty($fst['ok']) && strpos((string) $fst['why'], 'could not keep the names') !== false);
+    check('M5: and its run is ended as failed rather than left holding the project',
+        is_array($frow) && $frow['terminal'] === ScanOutcome::FAILED
+        && !empty((new ScanService($fm, $fi))->start(174)['ok']));
+
+    // -- THE REPORT OF A FINISHED RUN (B5) ----------------------------------------
+    //
+    // scan-findings names forms and rules as the run was planned (M5), names
+    // records the way the module's audit log does (W7-R2), and withholds a
+    // field flagged as an identifier when the run was planned OR now.
+    $rs = new ArrayScanStore();
+    $rm = $labelled($rs);
+    $rm->flagged = ['R002' => true];
+    $rm->snapIds = [];
+    $rm->proj['scan-value-storage'] = 'raw';
+    $rd = $drive($rm, $rs, 175);
+    $rrun = is_array($rd['row']) ? (int) $rd['row']['run_id'] : 0;
+    $rm->formLabel = 'Form B';
+    $rpage = function () use ($rm, $rs, $rrun) { return (new ScanService($rm, $rs))->findings(175, $rrun); };
+    $cell = function (array $p, $k) {
+        return isset($p['rows'][0]['cells'][$k]) ? $p['rows'][0]['cells'][$k] : null;
+    };
+    $rp = $rpage();
+    check('B5: a finished run\'s page carries its one finding, with values kept raw',
+        !empty($rp['ok']) && count($rp['rows']) === 1 && $cell($rp, 'record') === 'R002'
+        && $rp['report']['valuesState'] === 'raw' && $rp['report']['expectedRows'] === 1);
+    check('B5 (M5): forms are named as the run was planned, not as the project calls them now',
+        $cell($rp, 'instrument') === 'Form A' && $rp['facets']['form'][0]['label'] === 'Form A'
+        && $rp['report']['labelsDegraded'] === false);
+    // A run that kept values with identifiers removed: its values show,
+    // except a field flagged as an identifier then OR now.
+    $is = new ArrayScanStore();
+    $im = $labelled($is);
+    $im->flagged = ['R002' => true];
+    $im->valueOf = ['R002' => 'v-002'];
+    $im->snapIds = [];
+    $im->proj['scan-value-storage'] = 'identifier-redacted';
+    $irun = (int) $drive($im, $is, 176)['row']['run_id'];
+    $ipage = function () use ($im, $is, $irun) { return (new ScanService($im, $is))->findings(176, $irun); };
+    $ip = $ipage();
+    check('B5 (control): in a run kept identifier-redacted, a field flagged neither then nor now shows its value',
+        !empty($ip['ok']) && $ip['report']['valuesState'] === 'identifier-redacted' && $cell($ip, 'value') === 'v-002');
+    $im->liveIds = ['a_val' => true];
+    check('B5: a field flagged as an identifier since the run was planned is withheld',
+        $cell($ipage(), 'value') === '[identifier withheld]');
+    $im->liveIds = [];
+    $im->user->rights['data_export_tool'] = '2';
+    check('B5: a reader below Full Data Set is refused the report of a run that kept values, as status refuses it',
+        $ipage()['ok'] === false && strpos($ipage()['why'], 'Full Data Set') !== false
+        && $ipage()['why'] === (new ScanService($im, $is))->status(176, $irun)['why']);
+    $im->user->rights['data_export_tool'] = '1';
+    $rm->posture = ['recordIds' => FindingRowMapper::IDS_HASHED, 'recordIdField' => 'record_id',
+                    'hashRecordId' => function ($id) { return 'h-' . md5('k|' . $id); }];
+    $hp = $rpage();
+    check('B5 (W7-R2): under hashed ids the page names the record by the module\'s hash and never by the id',
+        $cell($hp, 'record') === 'h-' . md5('k|R002') && strpos(json_encode($hp), 'R002') === false);
+    $rm->posture = 'unknown';
+    $np = $rpage();
+    check('B5: a module that cannot say how records are named shows no report',
+        $np['ok'] === false && strpos($np['why'], 'cannot say how a report names records') !== false);
+    $rm->posture = null;
+    // A run planned before label snapshots were kept: today's names, and the
+    // report says that is what they are.
+    $oi = new ArrayScanStore();
+    $os = new class($oi) extends FaultyStore {
+        public function writeDimensions($projectId, $generationId, array $rows) { return 0; }
+    };
+    $om = $labelled($oi);
+    $om->flagged = ['R002' => true];
+    $orun = (int) (new ScanService($om, $os))->start(177)['run_id'];
+    for ($i = 0; $i < 15 && $orun > 0 && $oi->run(177, $orun)['terminal'] === null; $i++) {
+        (new ScanService($om, $os))->work(177, $orun);
+    }
+    $om->formLabel = 'Form B';
+    $op = (new ScanService($om, $os))->findings(177, $orun);
+    check('B5: a run with no label snapshot is named as the project is now, and says so',
+        !empty($op['ok']) && $cell($op, 'instrument') === 'Form B' && $op['report']['labelsDegraded'] === true
+        && strpos($op['report']['degradedSummary'], 'planned before its labels were kept') !== false);
+
     // -- the change log fails to read for one request (H11) ----------------------
     //
     // SourceFence::forProject() answered a failed read as "no fence", so the
@@ -3290,7 +3475,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
         $row = $ms->run($pid, $rid);
         $ids = [];
-        foreach ($ms->findings($pid, (int) $row['generation_id'], [], 0, 100) as $f) {
+        foreach ($ms->findings($pid, (int) $row['generation_id'], ['dag' => null], [], 0, 100) as $f) {
             $ids[] = (string) $f['record_id_bin'];
         }
         return ['row' => $row, 'states' => $ms->recordStates($rid), 'reads' => $mm->reads,
@@ -3684,6 +3869,264 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-4 control: the run\'s own group is told why its context could not be built',
         (new ScanService($broken, $os))->status(185, $o31)['why']
         === 'this project has no rules this scan can evaluate');
+
+    // L8: THE READER IS DECIDED BEFORE THE RUN ROW. Every verb read the run
+    // first, so an id that is no run said so, and a run that exists answered
+    // with the reader's own refusal: the ids of the project's runs could be
+    // told apart by a person the scan refuses.
+    $om->user->rights['group_id'] = 31;
+    $om->user->design = false;
+    $refusedNone = $askAll(999);
+    $refusedRun = $askAll($o31);
+    check('L8: a reader without design rights is told the same about a run that exists and an id that is none, by every verb',
+        $refusedRun === $refusedNone
+        && strpos($refusedNone['status']['why'], 'design rights') !== false
+        && $refusedNone['work']['why'] === $refusedNone['status']['why']
+        && $refusedNone['cancel']['why'] === $refusedNone['status']['why']);
+    $om->user->design = true;
+    check('L8 control: with design rights the run is there for its own group',
+        (new ScanService($om, $os))->status(185, $o31)['ok'] === true);
+    $elsewhere = new ScanService($om, $os);
+    $other = ['status' => $elsewhere->status(186, $o31), 'work' => $elsewhere->work(186, $o31),
+              'cancel' => $elsewhere->cancel(186, $o31)];
+    check('L8: another project\'s run id is no run, in the words every verb uses for one',
+        $other['status']['why'] === ScanService::NO_RUN && $other['work']['why'] === ScanService::NO_RUN
+        && $other['cancel']['why'] === ScanService::NO_RUN);
+
+    /* -----------------------------------------------------------------
+     * B5  scan-findings: ONE KEYSET PAGE OF A FINISHED RUN'S FINDINGS,
+     * FOR THIS READER, AND NOTHING ELSE
+     * ----------------------------------------------------------------- */
+    $fs = new ArrayScanStore();
+    $fm = $groupModule($fs);
+    foreach ($fm->records as $id) {
+        $fm->flagged[$id] = true;
+        $fm->dagNames[$id] = $fm->dagOf[$id] === '7' ? 'site_a' : 'site_b';
+    }
+    $runTo = function ($pid) use ($fm, $fs) {
+        $rid = (int) (new ScanService($fm, $fs))->start($pid)['run_id'];
+        for ($i = 0; $i < 15 && $rid > 0 && $fs->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($fm, $fs))->work($pid, $rid);
+        }
+        return $rid;
+    };
+    $fm->user->rights['group_id'] = null;
+    $fAll = $runTo(186);
+    // A group-31 run in which one record still carries group 7's name, as a
+    // finding written before a move would: the reader's scope must hold it out.
+    $fm->dagNames['R06'] = 'site_a';
+    $fm->user->rights['group_id'] = 31;
+    $f31 = $runTo(186);
+    $fm->dagNames['R06'] = 'site_b';
+    $fm->user->rights['group_id'] = 7;
+    $f7 = $runTo(186);
+    $read = function ($rid, array $req = [], $group = null, $pid = 186) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = $group;
+        return (new ScanService($fm, $fs))->findings($pid, $rid, $req);
+    };
+    $recs = function (array $page) {
+        $out = [];
+        foreach (isset($page['rows']) ? $page['rows'] : [] as $r) $out[] = $r['cells']['record'];
+        sort($out);
+        return $out;
+    };
+    $whole = $read($fAll, ['limit' => 100]);
+    check('B5: the three fixture runs finished complete',
+        $fs->run(186, $fAll)['terminal'] === ScanOutcome::COMPLETE && $fs->run(186, $f31)['terminal'] === ScanOutcome::COMPLETE
+        && $fs->run(186, $f7)['terminal'] === ScanOutcome::COMPLETE);
+    check('B5: a whole-project reader gets every finding of a whole-project run, with the columns of the export',
+        !empty($whole['ok']) && $recs($whole) === $fm->records && $whole['next'] === null
+        && $whole['columns'][0]['key'] === 'issue'
+        && array_keys($whole['rows'][0]['cells']) === array_column($whole['columns'], 'key')
+        && $whole['report']['schema'] === ScanReport::SCHEMA && $whole['report']['expectedRows'] === 10);
+    $walked = [];
+    $after = 0;
+    $pages = 0;
+    do {
+        $p = $read($fAll, ['after' => $after, 'limit' => 3]);
+        foreach ($p['rows'] as $r) $walked[] = $r['id'];
+        $after = $p['next'];
+        $pages++;
+    } while ($after !== null && $pages < 10);
+    check('B5: pages of 3 walk the run through `next`, every finding once',
+        $pages === 4 && count($walked) === 10 && count(array_unique($walked)) === 10);
+    $bySite = $read($fAll, ['filter' => ['group' => 'site_b']]);
+    check('B5: filtered by group, it is that group\'s findings',
+        $recs($bySite) === ['R06', 'R07', 'R08', 'R09', 'R10'] && $bySite['filter']['group'] === 'site_b');
+    check('B5: filters by form, reason and check type narrow it as the columns say',
+        count($read($fAll, ['filter' => ['form' => 'fa', 'reason' => 'required-blank', 'type' => 'required']])['rows']) === 10
+        && $read($fAll, ['filter' => ['form' => 'zz']])['rows'] === []
+        && $read($fAll, ['filter' => ['type' => 'range']])['rows'] === []);
+    $facets = $whole['facets'];
+    check('B5: the filters offer what the summary counted',
+        $facets['form'] === [['value' => 'fa', 'label' => 'fa', 'count' => 10]]
+        && $facets['group'] === [['value' => 'site_a', 'label' => 'site_a', 'count' => 5],
+                                 ['value' => 'site_b', 'label' => 'site_b', 'count' => 5]]);
+    check('B5: a filter that is not one value is refused',
+        $read($fAll, ['filter' => ['form' => ['fa', 'fb']]])['ok'] === false);
+
+    // THE GROUP. A group reader is held to the group's findings in their own
+    // run, whatever filter or cursor they send, and a run that is not theirs
+    // is no run.
+    $mine = $read($f31, ['limit' => 100], 31);
+    check('B5 group: a group reader sees their group\'s findings and not a row filed under another group',
+        !empty($mine['ok']) && $recs($mine) === ['R07', 'R08', 'R09', 'R10']);
+    check('B5 group (control): an unconfined reader of the same run sees the row filed under the other group',
+        $recs($read($f31, ['limit' => 100])) === ['R06', 'R07', 'R08', 'R09', 'R10']);
+    $crafted = $read($f31, ['filter' => ['group' => 'site_a'], 'limit' => 100], 31);
+    check('B5 group: a filter naming another group reads nothing, rather than that group',
+        !empty($crafted['ok']) && $crafted['rows'] === []);
+    $cursor = $read($f31, ['after' => 0, 'limit' => 1], 31);
+    $fromOther = $read($f31, ['after' => (int) $whole['rows'][0]['id'] - 1, 'limit' => 100], 31);
+    check('B5 group: a cursor taken from another run reads only this run\'s group rows',
+        !empty($cursor['ok']) && count($cursor['rows']) === 1
+        && array_diff($recs($fromOther), ['R07', 'R08', 'R09', 'R10']) === []);
+    check('B5 group: the group filter offers only the reader\'s group',
+        array_column($mine['facets']['group'], 'value') === ['site_b']);
+    $noneF = $read(999, [], 31);
+    check('B5 group: a whole-project run read by a group reader is no run, word for word',
+        $noneF === ['ok' => false, 'why' => ScanService::NO_RUN, 'final' => true]
+        && $read($fAll, [], 31) === $noneF && $read($fAll, ['filter' => ['group' => 'site_b']], 31) === $noneF);
+    check('B5 group: and so is another group\'s run', $read($f7, [], 31) === $noneF);
+    $fm->user->design = false;
+    $noDesign = $read(999, [], 31);
+    check('B5 L8: a reader without design rights is told the same about a run and about no run',
+        $read($f31, [], 31) === $noDesign && $noDesign['ok'] === false && $noDesign['why'] !== ScanService::NO_RUN);
+    $fm->user->design = true;
+    check('B5: another project\'s run is no run', $fm && (new ScanService($fm, $fs))->findings(187, $fAll)['why'] === ScanService::NO_RUN);
+    // W11A-N2. A designer below Full Data Set export is refused every run.
+    // Asked after the run row, the refusal named the export level for a run
+    // and said NO_RUN for an id that is none.
+    $verbs = function ($rid) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = null;
+        return ['status' => (new ScanService($fm, $fs))->status(186, $rid),
+                'work'   => (new ScanService($fm, $fs))->work(186, $rid),
+                'cancel' => (new ScanService($fm, $fs))->cancel(186, $rid),
+                'page'   => (new ScanService($fm, $fs))->findings(186, $rid)];
+    };
+    foreach (['2' => 'De-Identified', '0' => 'No Access'] as $level => $name) {
+        $fm->user->rights['data_export_tool'] = $level;
+        $none = $verbs(999);
+        check('W11A-N2: a reader with ' . $name . ' export is told the same about a run and about no run, by every verb',
+            $verbs($fAll) === $none && $none['status']['ok'] === false
+            && strpos($none['status']['why'], 'Full Data Set') !== false
+            && $none['work']['why'] === $none['status']['why'] && $none['cancel']['why'] === $none['status']['why']
+            && $none['page']['why'] === $none['status']['why']);
+    }
+    $fm->user->rights['data_export_tool'] = '1';
+    check('W11A-N2 (control): with Full Data Set back, the run is there and the id is not',
+        !empty($verbs($fAll)['status']['ok']) && $verbs(999)['status']['why'] === ScanService::NO_RUN
+        && $fs->run(186, $fAll)['terminal'] === ScanOutcome::COMPLETE);
+
+    // A RUN THAT HAS NOT FINISHED HAS NO REPORT, AND ONE THAT HAS NOT PROVED
+    // ITS GROUP SHOWS NO ROW.
+    $fm->user->rights['group_id'] = null;
+    $open = (int) (new ScanService($fm, $fs))->start(188)['run_id'];
+    $unfinished = $read($open, [], null, 188);
+    check('B5: an unfinished run is refused, as one to ask again about',
+        $unfinished['ok'] === false && $unfinished['final'] === false
+        && strpos($unfinished['why'], 'has not finished') !== false);
+    (new ScanService($fm, $fs))->cancel(188, $open);
+    $fm->user->rights['group_id'] = 31;
+    $stopped = (int) (new ScanService($fm, $fs))->start(188)['run_id'];
+    (new ScanService($fm, $fs))->cancel(188, $stopped);
+    $held = $read($stopped, [], 31, 188);
+    check('B5: a group run stopped before it proved its group answers with no rows, no facets, and why',
+        $fs->run(188, $stopped)['terminal'] === ScanOutcome::CANCELLED
+        && !empty($held['ok']) && $held['withheld'] === true && $held['rows'] === [] && $held['facets'] === null
+        && $held['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED && $held['next'] === null);
+    check('B5: and its marks say it is incomplete, three ways',
+        $held['marks']['incomplete'] === true && $held['marks']['banner'] !== null && $held['marks']['row'] !== null
+        && strpos($held['marks']['suffix'], '_INCOMPLETE') === 0);
+    check('B5 (control): a run that finished complete carries no incomplete mark, and is named not certified',
+        $whole['marks']['incomplete'] === false && $whole['marks']['banner'] === null && $whole['marks']['suffix'] === '_NOT-CERTIFIED');
+
+    // THE EXPORT: the same gate, with one question more before the run row.
+    $csv = function ($rid, $group = null, $pid = 186, $store = null) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = $group;
+        $x = (new ScanService($fm, $store === null ? $fs : $store))->exportOpen($pid, $rid);
+        if (empty($x['ok'])) return $x;
+        $buf = '';
+        $flushes = 0;
+        $x['result'] = $x['stream'](function ($s) use (&$buf) { $buf .= $s; },
+                                    function () use (&$flushes) { $flushes++; });
+        $x['text'] = $buf;
+        $x['flushes'] = $flushes;
+        unset($x['stream']);
+        return $x;
+    };
+    $wholeCsv = $csv($fAll);
+    check('B5 export: a whole-project reader downloads every finding of the run, ending on the trailer',
+        !empty($wholeCsv['ok']) && $wholeCsv['result']['rows'] === 10 && $wholeCsv['result']['ok'] === true
+        && strpos($wholeCsv['text'], '"# export_complete=1","rows=10"') !== false
+        && strpos($wholeCsv['text'], '"# expected_rows","10"') !== false
+        && strpos($wholeCsv['text'], '"# scope","whole project"') !== false
+        && strpos($wholeCsv['text'], '"# run","' . $fAll . '"') !== false);
+    check('B5 export: the file is named for the project, the run and the day, and says it does not certify',
+        preg_match('/^uv-scan-186-run' . $fAll . '-\d{8}_NOT-CERTIFIED\.csv$/', $wholeCsv['filename']) === 1
+        && strpos($wholeCsv['text'], 'INCOMPLETE') === false);
+    $mineCsv = $csv($f31, 31);
+    check('B5 export group: a group reader\'s file holds their group\'s findings and not the row filed under another group',
+        !empty($mineCsv['ok']) && $mineCsv['result']['rows'] === 4 && strpos($mineCsv['text'], '"R06"') === false
+        && strpos($mineCsv['text'], '"R07"') !== false);
+    check('B5 export group: and the count it promises is the count it holds',
+        strpos($mineCsv['text'], '"# expected_rows","4"') !== false
+        && strpos($mineCsv['text'], '"# scope","Data Access Group site_b"') !== false);
+    check('B5 group: the findings page promises a group reader the same count',
+        $read($f31, [], 31)['report']['expectedRows'] === 4 && $read($f31)['report']['expectedRows'] === 5);
+    $noneX = $csv(999, 31);
+    check('B5 export group: a whole-project run, another group\'s run and no run are refused alike, as no run',
+        $noneX === ['ok' => false, 'http' => 403, 'why' => ScanService::NO_RUN]
+        && $csv($fAll, 31) === $noneX && $csv($f7, 31) === $noneX);
+    check('B5 export: another project\'s run is no run', $csv($fAll, null, 187) === $noneX);
+    $fm->user->rights['data_export_tool'] = '0';
+    $noExport = $csv(999);
+    check('B5 export L8: a reader without export rights is told the same about a run and about no run',
+        $noExport['ok'] === false && $noExport['http'] === 403 && strpos($noExport['why'], 'Full Data Set') !== false
+        && $csv($fAll) === $noExport);
+    check('B5 export: a stored run is read on screen only with Full Data Set rights, so the page refuses them alike',
+        $read($fAll) === ['ok' => false, 'why' => $noExport['why'], 'final' => true] && $read(999) === $read($fAll));
+    $fm->user->rights['data_export_tool'] = '2';
+    check('W11A-N2: so is a De-Identified exporter, whose download the framework would allow',
+        $csv(999) === $csv($fAll) && $csv(999)['http'] === 403 && strpos($csv(999)['why'], 'De-Identified') !== false);
+    $fm->user->rights['data_export_tool'] = '1';
+    $fm->user->design = false;
+    $noDesignX = $csv(999);
+    check('B5 export L8: a reader without design rights is told the same about a run and about no run',
+        $noDesignX['ok'] === false && $noDesignX['http'] === 403 && $csv($fAll) === $noDesignX
+        && $noDesignX['why'] !== ScanService::NO_RUN);
+    $fm->user->design = true;
+    $fm->user->rights['group_id'] = null;
+    $running = (int) (new ScanService($fm, $fs))->start(189)['run_id'];
+    $notYet = $csv($running, null, 189);
+    check('B5 export: an unfinished run is no download yet, and 503 says to ask again',
+        $notYet['ok'] === false && $notYet['http'] === 503 && strpos($notYet['why'], 'has not finished') !== false);
+    $heldX = $csv($stopped, 31, 188);
+    check('B5 export: a group run that never proved its group is refused, not handed over empty',
+        $heldX === ['ok' => false, 'http' => 403, 'why' => ScanAuthorization::WITHHELD_ENDED]);
+    $fm->user->rights['group_id'] = null;
+    $halted = (int) (new ScanService($fm, $fs))->start(190)['run_id'];
+    (new ScanService($fm, $fs))->cancel(190, $halted);
+    $haltedCsv = $csv($halted, null, 190);
+    check('B5 export (item 10): a stopped run\'s file says it is incomplete three ways',
+        !empty($haltedCsv['ok']) && $fs->run(190, $halted)['terminal'] === ScanOutcome::CANCELLED
+        && preg_match('/_INCOMPLETE_CANCELLED\.csv$/', $haltedCsv['filename']) === 1
+        && strpos($haltedCsv['text'], "\xEF\xBB\xBF\"# INCOMPLETE SCAN") === 0
+        && strpos($haltedCsv['text'], "\r\n\"" . ScanService::INCOMPLETE_LABEL . '","This scan did not cover') !== false
+        && $haltedCsv['result']['ok'] === true);
+    check('B5 export (item 10): and promises no row count, because a stopped run has no verdict',
+        strpos($haltedCsv['text'], '"# expected_rows","unknown"') !== false);
+    $broken = new FaultyStore($fs);
+    $fm->user->rights['group_id'] = null;
+    $bx = (new ScanService($fm, $broken))->exportOpen(186, $fAll);
+    $broken->failFrom('findings');
+    $fm->logs = [];
+    $bbuf = '';
+    $bres = $bx['stream'](function ($s) use (&$bbuf) { $bbuf .= $s; }, function () {});
+    check('B5 export: a store that fails partway ends the file on ROWS WERE LOST, without the trailer',
+        $bres['ok'] === false && strpos($bbuf, 'ROWS WERE LOST') !== false && strpos($bbuf, 'export_complete') === false);
+    check('B5 export: and the failure is in the module log, not in the file',
+        in_array('scan storage failure', array_column($fm->logs, 0), true) && strpos($bbuf, 'Deadlock') === false);
     \REDCap::$groupNames = $keptNames;
 }
 

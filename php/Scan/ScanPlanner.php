@@ -133,6 +133,9 @@ final class ScanPlanner
      *   owner:         string  the planning lease's owner; one is made up when absent
      *   attempts:      int     slices in a row that may die on one page (step())
      *   leaseSeconds:  int     how long the planning lease lasts unrenewed
+     *   dimensions:    ?array  ScanDimensions::toSnapshot() rows, stored with the
+     *                  run's generation (M5); absent, the run has no snapshot
+     *                  and its report says its labels are today's
      * }
      * @return array{ok:bool, busy:bool, run:?array, why:?string, stats:array}
      */
@@ -231,6 +234,21 @@ final class ScanPlanner
             $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
             return self::no('this scan could not record which of the project rules it is unable '
                 . 'to evaluate, so it was not started rather than started without them');
+        }
+
+        // THE LABELS OF THE DAY IT WAS PLANNED (M5): the snapshot the report
+        // on this run is labelled with, under the generation startRun() has
+        // just allocated. Same rule as the marks above: a run that could not
+        // keep them is ended, not left - a report labelled from a later read
+        // of the project would rename the findings this run produced.
+        if (isset($req['dimensions']) && is_array($req['dimensions'])) {
+            try {
+                $this->store->writeDimensions($pid, (int) $run['generation_id'], $req['dimensions']);
+            } catch (\Throwable $e) {
+                $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+                return self::no('this scan could not keep the names its report is labelled with, '
+                    . 'so it was not started');
+            }
         }
 
         // THE FIRST SLICE. Its own budget unless the caller brought one: see

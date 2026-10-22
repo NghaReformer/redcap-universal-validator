@@ -146,9 +146,9 @@ check('store: and counting the findings it retained', (int) $run['detail_rows'] 
 check('store: this project and the neighbour really are in one generation',
     (int) $nb['generation_id'] === $gen);
 check('store: a page of findings answers for the project it was asked about',
-    count($storeA->findings($PID, $gen, [], 0, 100)) === 3);
+    count($storeA->findings($PID, $gen, ['dag' => null], [], 0, 100)) === 3);
 check('store: and the neighbour\'s page for the neighbour\'s',
-    count($storeA->findings($NEIGHBOUR, $gen, [], 0, 100)) === 2);
+    count($storeA->findings($NEIGHBOUR, $gen, ['dag' => null], [], 0, 100)) === 2);
 check('store: still not complete with four records left',
     $storeA->manifestComplete($runId) === false);
 
@@ -1093,7 +1093,7 @@ $PARITY = 786;
             ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
             ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]]]);
         return ['run' => $rid, 'gen' => $gen, 'ok' => $ok,
-                'rows' => $store->findings($pid, $gen, [], 0, 100)];
+                'rows' => $store->findings($pid, $gen, ['dag' => null], [], 0, 100)];
     };
     $flat = function (array $rows) {
         $out = [];
@@ -1137,7 +1137,7 @@ $PARITY = 786;
         (int) $staged[0][0] === 1);
     // THE READ IS THE KEY IT WAS BUILT FOR. Asserted on the statement sent.
     $rec = new UvRecordingDb($dbA);
-    (new SqlScanStore($rec))->findings($PARITY, $sql['gen'], [], 0, 100);
+    (new SqlScanStore($rec))->findings($PARITY, $sql['gen'], ['dag' => null], [], 0, 100);
     $q = $rec->matching('select', ['FROM ' . Schema::table('finding')]);
     $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
     check('parity: a page of findings is read through ix_page_v2',
@@ -1232,7 +1232,7 @@ $SUPER = 787;
     check('supersede: and the run row carries the finished cursor, readable without calling',
         (int) $cur[0][0] === $new['gen']);
     check('supersede: the closing run\'s own rows and the neighbour\'s are untouched',
-        count($sa->findings($SUPER, $new['gen'], [], 0, 100)) === 2
+        count($sa->findings($SUPER, $new['gen'], ['dag' => null], [], 0, 100)) === 2
         && uv_neighbour_findings($dbA, $SUPER) === 2);
 
     // THE PLAN. One more older run to close, recorded, and the page EXPLAINed.
