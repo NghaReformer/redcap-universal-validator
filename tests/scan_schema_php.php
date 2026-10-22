@@ -49,6 +49,9 @@ namespace {
             $m->columns[] = 'uv_scan_record.unstored';
             $m->columns[] = 'uv_scan_run.open_unstored';
             $m->zeroDefault[] = 'uv_scan_run.open_unstored';
+            $m->columns[] = 'uv_scan_record.stored_findings';
+            $m->columns[] = 'uv_scan_run.open_findings';
+            $m->zeroDefault[] = 'uv_scan_run.open_findings';
         }
     }
 
@@ -250,7 +253,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         foreach ($v2sql as $sql) {
             if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
         }
-        // And every later version's: version 6 adds open_unstored (rvf1-3).
+        // And every later version's: version 6 adds open_unstored and
+        // open_findings (rvf1-3, W5F-N2).
         for ($v = 3; $v <= Schema::VERSION; $v++) {
             foreach (Schema::statements($v) as $item) {
                 $sql = is_array($item) ? $item['sql'] : $item;
@@ -683,24 +687,27 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
-     * V6  what a run holds open (review rvf1-3)
+     * V6  what a run holds open (reviews rvf1-3, W5F-N2)
      *
-     * uv_scan_record.unstored, 0 on every row already there; and
-     * uv_scan_run.open_unstored, NULL on every run already there (counted
-     * the old way) and 0 on every run created after (its default is set
-     * once the column exists).
+     * uv_scan_record.unstored and .stored, 0 on every row already there; and
+     * uv_scan_run.open_unstored and .open_findings, NULL on every run already
+     * there (counted the old way) and 0 on every run created after (each
+     * default is set once its column exists).
      * ===================================================================== */
     {
         $v6 = ['ALTER TABLE uv_scan_record ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
                'ALTER TABLE uv_scan_run ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
-               'ALTER TABLE uv_scan_run ALTER COLUMN open_unstored SET DEFAULT 0'];
+               'ALTER TABLE uv_scan_run ALTER COLUMN open_unstored SET DEFAULT 0',
+               'ALTER TABLE uv_scan_record ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
+               'ALTER TABLE uv_scan_run ADD COLUMN open_findings BIGINT UNSIGNED NULL',
+               'ALTER TABLE uv_scan_run ALTER COLUMN open_findings SET DEFAULT 0'];
         $m = new \FakeModule();
         $m->version = '5';
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v6: an installation at version 5 moves to version 6',
             $r['ok'] === true && $r['from'] === 5 && $r['to'] === 6 && Schema::VERSION === 6);
-        check('v6: by adding the row count, the run count with no default, then its default (got '
+        check('v6: by adding each row count, its run count with no default, then that default (got '
             . json_encode($alters) . ')', $alters === $v6);
         check('v6: with no data step, and records version 6',
             !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'UPDATE uv_') === 0; })
@@ -712,13 +719,17 @@ namespace INSPIRE\UniversalValidator\Scan {
             && !array_filter(array_slice($m->sql, $before), function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '5';
-        $half->columns = ['uv_scan_record.unstored', 'uv_scan_run.open_unstored'];
+        $half->columns = ['uv_scan_record.unstored', 'uv_scan_run.open_unstored',
+                          'uv_scan_record.stored_findings', 'uv_scan_run.open_findings'];
+        $half->zeroDefault = ['uv_scan_run.open_unstored'];
         $rh = Schema::migrate($half);
-        check('v6: interrupted after the columns, the resumed run sets the default and nothing else',
+        check('v6: interrupted after the columns, the resumed run sets the default not yet set and nothing else',
             $rh['ok'] === true && $rh['applied'] === 1
-            && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; })) === [$v6[2]]);
+            && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; })) === [$v6[5]]);
         foreach (['ADD COLUMN unstored' => 'scan_record table has no unstored column',
-                  'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column'] as $frag => $why) {
+                  'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column',
+                  'ADD COLUMN stored_findings' => 'scan_record table has no stored_findings column',
+                  'ADD COLUMN open_findings' => 'scan_run table has no open_findings column'] as $frag => $why) {
             $inert = new \FakeModule();
             $inert->version = '5';
             $inert->inertAlter = $frag;
@@ -728,7 +739,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                 && strpos((string) $ri['why'], $why) !== false
                 && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         }
-        check('v6: a fresh install ends with all three statements, in order',
+        check('v6: a fresh install ends with all six statements, in order',
             strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v6)) !== false);
     }
 

@@ -319,7 +319,8 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
     $okU = $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(), 'records' => $rows,
                                                         'unstored' => $left));
-    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 3 WHERE run_id = ' . $rid);
+    // Both counters: every row written, and (W5F-N2) the rows the run holds.
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 3, open_findings = 3 WHERE run_id = ' . $rid);
     check('detail budget: the commit holding a record left out 2 of its findings',
         $okU === true && count($claimed) === 1);
     check('rv10b1-3: a run still working counts the 2 left out with the 3 stored',

@@ -703,17 +703,19 @@ final class Schema
     }
 
     /**
-     * Version 6: what a run holds open (review rvf1-3).
+     * Version 6: what a run holds open (reviews rvf1-3, W5F-N2).
      *
      * uv_scan_record.unstored is how many findings the detail budget left out
-     * of the record's latest examination in the run. It is set when the
-     * record is committed done and zeroed when it leaves done: sent back to
-     * be read again, deleted, or out of the run's group. 0 on every row that
-     * exists when it is added, which is what those rows hold under the old
-     * counting too, since nothing read them per record.
+     * of the record's latest examination in the run, and uv_scan_record.stored_findings
+     * how many it stored. They are set when the record is committed done and
+     * zeroed when it leaves done: sent back to be read again, deleted, or out
+     * of the run's group. 0 on every row that exists when they are added,
+     * which is what those rows hold under the old counting too, since nothing
+     * read them per record.
      *
-     * uv_scan_run.open_unstored is the run's sum of them, kept in the same
-     * transactions. NULL ON EVERY RUN THAT EXISTS WHEN IT IS ADDED, and 0 on
+     * uv_scan_run.open_unstored and uv_scan_run.open_findings are the run's
+     * sums of them, kept in the same transactions. Each is added as below,
+     * after its row column. NULL ON EVERY RUN THAT EXISTS WHEN IT IS ADDED, and 0 on
      * every run created after: a run in flight across the upgrade did not
      * keep the count from its start, and NULL tells ScanPromotion to read it
      * the old way (the run-wide detail-unstored aggregate). The column is
@@ -734,7 +736,13 @@ final class Schema
                 ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
                  'skipIf' => ['column', $run, 'open_unstored']],
                 ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_unstored SET DEFAULT 0',
-                 'skipIf' => ['zerodefault', $run, 'open_unstored']]];
+                 'skipIf' => ['zerodefault', $run, 'open_unstored']],
+                ['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $rec, 'stored_findings']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_findings BIGINT UNSIGNED NULL',
+                 'skipIf' => ['column', $run, 'open_findings']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_findings SET DEFAULT 0',
+                 'skipIf' => ['zerodefault', $run, 'open_findings']]];
     }
 
     /**
@@ -950,7 +958,8 @@ final class Schema
                 }
             }
             if ($v === 6) {
-                foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored']] as $tc) {
+                foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
+                          ['scan_record', 'stored_findings'], ['scan_run', 'open_findings']] as $tc) {
                     if (self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) continue;
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                             'why' => 'schema version 6 did not verify after it was applied: the ' . $tc[0]

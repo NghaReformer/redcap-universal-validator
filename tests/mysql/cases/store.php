@@ -1427,13 +1427,13 @@ $SUPER = 787;
     echo '  plan tombstone: ' . $tFindKey . "\n";
 }
 
-// WHAT THE DETAIL BUDGET LEFT OUT, ON A REAL SERVER (review rvf1-3). The
-// contract above drives the counts; this is the two things only a server
-// shows: a run from before schema version 6 (open_unstored NULL) keeps NULL
-// through a commit, a requeue and a departure, where `NULL + ?` and the
-// GREATEST(CAST(...)) take-back could have errored or started a count; and a
-// take-back larger than the count stops at 0 instead of failing the unsigned
-// column.
+// WHAT THE DETAIL BUDGET LEFT OUT, AND WHAT THE RUN HOLDS, ON A REAL SERVER
+// (reviews rvf1-3, W5F-N2). The contract above drives the counts; this is
+// the two things only a server shows: a run from before schema version 6
+// (open_unstored and open_findings NULL) keeps NULL through a commit, a
+// requeue and a departure, where `NULL + ?` and the GREATEST(CAST(...))
+// take-back could have errored or started a count; and a take-back larger
+// than the count stops at 0 instead of failing the unsigned column.
 {
     $UPID = 965;
     $us = new SqlScanStore($dbA);
@@ -1442,34 +1442,54 @@ $SUPER = 787;
     $us->writeManifest($urid, [['id_bin' => 'N1', 'hash' => hash('sha256', 'N1', true), 'dag' => null],
                                ['id_bin' => 'N2', 'hash' => hash('sha256', 'N2', true), 'dag' => null]]);
     $uep = (int) $us->run($UPID, $urid)['lease_epoch'];
-    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET open_unstored = NULL WHERE run_id = ' . $urid);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = NULL, open_findings = NULL WHERE run_id = ' . $urid);
+    $urow = $us->run($UPID, $urid);
     $uc = $us->claim($urid, 'w', $uep, 2);
     $ub = ['bytes' => 0, 'findings' => [], 'records' => [], 'unstored' => []];
     foreach ($uc as $c) {
         $ub['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                             'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
         $ub['unstored'][$c['ordinal']] = 2;
+        $ub['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $UPID,
+            'generation_id' => (int) $urow['generation_id'], 'host_form' => 'fa', 'field' => 'x',
+            'check_type' => 'required', 'reason_code' => 'required-blank', 'record_id_bin' => $c['id_bin'],
+            'identity' => hash('sha256', 'n' . $c['id_bin'], true), 'valid_from_seq' => (int) $urow['run_seq'],
+            'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
     }
     $okU = $us->commitBatch($urid, 'w', $uep, $ub) === true;
-    $nullAfterCommit = $us->run($UPID, $urid)['open_unstored'];
+    $afterU = $us->run($UPID, $urid);
+    $nullAfterCommit = $afterU['open_unstored'];
+    $rowsK = $dbA->select('SELECT stored_findings FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
     $us->advancePhase($urid, $uep, ScanPhase::CATCH_UP);
     $rq = $us->requeue($urid, $uep, [hash('sha256', 'N1', true)]);
     $dp = $us->depart($urid, $uep, [hash('sha256', 'N2', true)]);
     check('rvf1-3 server: a run from before the count keeps NULL through a commit, a requeue and a departure',
         $okU && $nullAfterCommit === null && $rq === 1 && $dp === 1
         && $us->run($UPID, $urid)['open_unstored'] === null);
+    check('W5F-N2 server: and keeps no count of what it holds either, while each row says what it stored',
+        $afterU['open_findings'] === null && (int) $afterU['detail_rows'] === 2
+        && (int) $rowsK[0][0] === 1 && (int) $rowsK[1][0] === 1
+        && $us->run($UPID, $urid)['open_findings'] === null);
     // The rows still say what each reading left out, then nothing once it
     // left done, whatever the run's count.
-    $rowsU = $dbA->select('SELECT record_id_bin, unstored FROM ' . Schema::table('scan_record')
+    $rowsU = $dbA->select('SELECT record_id_bin, unstored, stored_findings FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
     check('rvf1-3 server: and each row\'s own count is zeroed when it leaves done',
         (int) $rowsU[0][1] === 0 && (int) $rowsU[1][1] === 0);
-    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET open_unstored = 1 WHERE run_id = ' . $urid);
+    check('W5F-N2 server: and so is each row\'s stored count',
+        (int) $rowsU[0][2] === 0 && (int) $rowsU[1][2] === 0);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = 1, open_findings = 1 WHERE run_id = ' . $urid);
     $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . ScanStore::REC_DONE
-        . ', unstored = 5 WHERE run_id = ' . $urid . " AND record_id_bin = 'N1'");
+        . ', unstored = 5, stored_findings = 4 WHERE run_id = ' . $urid . " AND record_id_bin = 'N1'");
     $tb = $us->tombstone($urid, $uep, [hash('sha256', 'N1', true)]);
+    $afterTb = $us->run($UPID, $urid);
     check('rvf1-3 server: a take-back larger than the count stops at 0 rather than failing the write',
-        $tb === 1 && (int) $us->run($UPID, $urid)['open_unstored'] === 0);
+        $tb === 1 && (int) $afterTb['open_unstored'] === 0);
+    check('W5F-N2 server: on the held count too',
+        $afterTb['open_findings'] !== null && (int) $afterTb['open_findings'] === 0);
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

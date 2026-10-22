@@ -363,12 +363,25 @@ final class ScanPromotion
      * poll: the correct number, at one read a poll, for runs that were in
      * flight across the upgrade only.
      *
+     * WHAT THE RUN HOLDS, NOT WHAT IT EVER WROTE (review W5F-N2). The stored
+     * count beside them is the row's open_findings: the findings stored by
+     * the readings its done records hold. detail_rows counts every row the
+     * run wrote, which is what the detail budget limits, and it kept the
+     * findings catch-up superseded and those closed with a record that
+     * departed or was deleted. A group-scoped run shows its count from
+     * unique-finalize on, so it read the closed ones as found. A run from
+     * before schema version 6 has NULL there and is counted from
+     * detail_rows, the old way. Duplicate-value findings are counted from
+     * the summary only, once the run has one, as before.
+     *
      * @return int|null null when the run ended before its findings could be counted
      */
     public static function findingsOf(ScanStore $store, array $run)
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
-        $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
+        $rows = (isset($run['open_findings']) && $run['open_findings'] !== null)
+              ? max(0, (int) $run['open_findings'])
+              : (isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0);
         if ($terminal === null) {
             $kept = self::keptUnstored($run);
             if ($kept !== null) return $rows + $kept;

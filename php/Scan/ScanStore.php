@@ -169,6 +169,11 @@ interface ScanStore
         // holds (schema version 6, review rvf1-3). NULL on a run that began
         // before the column existed, and that run is counted the old way.
         'open_unstored',
+        // The findings stored by readings the run still holds (schema
+        // version 6, review W5F-N2): detail_rows less what catch-up
+        // superseded and what left with a departed or deleted record. NULL
+        // on a run that began before the column, as above.
+        'open_findings',
     ];
 
     /**
@@ -534,12 +539,14 @@ interface ScanStore
      * in the same transaction, behind the same fences: a record lost to
      * another worker is that worker's to count. Absent is none.
      *
-     * AND PER RECORD (review rvf1-3). A held record committed done keeps its
-     * count on its manifest row, and the run's open_unstored grows by it, in
-     * the same transaction. The row's count is what requeue(), tombstone()
-     * and depart() take back from open_unstored when the record leaves
-     * done, so a finding left out of a reading the run no longer holds is no
-     * longer counted. Any other committed state keeps 0.
+     * AND PER RECORD (reviews rvf1-3, W5F-N2). A held record committed done
+     * keeps its left-out count on its manifest row, and the run's
+     * open_unstored grows by it, in the same transaction; any other committed
+     * state keeps 0. Every held record keeps the count of findings it stored
+     * the same way (`stored_findings`), and open_findings grows by the batch's stored
+     * total. The rows' counts are what requeue(), tombstone() and depart()
+     * take back from the run when the record leaves done, so a finding of a
+     * reading the run no longer holds is no longer counted.
      *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
@@ -862,11 +869,13 @@ interface ScanStore
      * record_hash) finds the rows, where record_id_bin has no index and a
      * filter on it reads every row of the run.
      *
-     * Each row's left-out count (commitBatch(), rvf1-3) is taken back from
-     * the run's open_unstored and zeroed, in the same transaction: the
-     * reading that left those findings out is the one being replaced. Its
-     * stored findings stay active until the new reading supersedes them, so
-     * the report is never blank for a record still being checked.
+     * Each row's counts (commitBatch(), rvf1-3, W5F-N2) are taken back from
+     * the run's open_unstored and open_findings and zeroed, in the same
+     * transaction: the reading that stored and left out those findings is
+     * the one being replaced. Its stored findings stay active until the new
+     * reading supersedes them, so the report is never blank for a record
+     * still being checked; the run's count leaves them out meanwhile, as it
+     * leaves the record out of `done`.
      *
      * @param string[] $hashes raw record hashes
      */
@@ -885,7 +894,7 @@ interface ScanStore
      * and a worker's tombstone commit close them: the run reports on records
      * the project holds, and counts a deleted one as removed. Duplicate-value
      * findings (staged) are the finalizer's and are not touched. Its
-     * left-out count is taken back as requeue() takes it.
+     * stored and left-out counts are taken back as requeue() takes them.
      *
      * @param string[] $hashes raw record hashes, as requeue() takes them
      * @return int rows that became tombstones
@@ -901,8 +910,9 @@ interface ScanStore
      * and the record's active findings in this run's generation are closed
      * at the run's sequence, as a re-examination closes them. A deleted
      * record stays a tombstone: gone is the stronger fact. Duplicate-value
-     * findings (staged) are the finalizer's and are not touched. Its left-out
-     * count is taken back as requeue() takes it (rvf1-3).
+     * findings (staged) are the finalizer's and are not touched. Its stored
+     * and left-out counts are taken back as requeue() takes them (rvf1-3,
+     * W5F-N2).
      *
      * Catch-up phase and current lease epoch only, like the other
      * reconciliation writes. A record departing while the worker reads it

@@ -3830,7 +3830,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $lid = (int) $live->startRun(815, ['created_by' => 'alice'])['run']['run_id'];
         $live->addAggregate($lid, $K[0], 'x', null, 40);
         check('findings: a run still working reports what it has stored so far',
-            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['detail_rows' => 7])) === 7);
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['open_findings' => 7])) === 7);
         // OC-4: a run that ended without a verdict answers with the LARGER of
         // its counter and whatever summary it built, because the counter misses
         // every duplicate the uniqueness finalizer wrote.

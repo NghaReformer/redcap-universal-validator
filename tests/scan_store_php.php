@@ -139,20 +139,31 @@ namespace {
     // schema case's upgrade on a real server.
     {
         $old = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
-        $orid = (int) $old->startRun(748, ['created_by' => 'alice', 'open_unstored' => null])['run']['run_id'];
+        $orid = (int) $old->startRun(748, ['created_by' => 'alice', 'open_unstored' => null,
+                                           'open_findings' => null])['run']['run_id'];
         $old->writeManifest($orid, [['id_bin' => 'O1', 'hash' => hash('sha256', 'O1', true), 'dag' => null]]);
-        $oep = (int) $old->run(748, $orid)['lease_epoch'];
+        $orow = $old->run(748, $orid);
+        $oep = (int) $orow['lease_epoch'];
         $oc = $old->claim($orid, 'w1', $oep, 1);
-        $old->commitBatch($orid, 'w1', $oep, ['bytes' => 0, 'findings' => [],
+        $old->commitBatch($orid, 'w1', $oep, ['bytes' => 0,
+            'findings' => [['ordinal' => $oc[0]['ordinal'], 'project_id' => 748,
+                'generation_id' => (int) $orow['generation_id'], 'host_form' => 'fa', 'field' => 'x',
+                'check_type' => 'required', 'reason_code' => 'required-blank', 'record_id_bin' => 'O1',
+                'identity' => hash('sha256', 'oO1', true), 'valid_from_seq' => (int) $orow['run_seq'],
+                'record_hash' => $oc[0]['hash'], 'rule_source_id' => 'r1',
+                'rule_revision' => str_repeat('c', 64)]],
             'records' => [['ordinal' => $oc[0]['ordinal'], 'record_hash' => $oc[0]['hash'],
                            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'version' => '1',
                            'claim' => $oc[0]['claim']]],
             'unstored' => [$oc[0]['ordinal'] => 3]]);
-        $afterCommit = $old->run(748, $orid)['open_unstored'];
+        $afterCommit = $old->run(748, $orid);
         $old->advancePhase($orid, $oep, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
         $old->depart($orid, $oep, [hash('sha256', 'O1', true)]);
         check('rvf1-3: a run from before the count keeps no count, through a commit and a departure',
-            $afterCommit === null && $old->run(748, $orid)['open_unstored'] === null);
+            $afterCommit['open_unstored'] === null && $old->run(748, $orid)['open_unstored'] === null);
+        check('W5F-N2: nor a count of what it holds, while detail_rows counts the row it wrote',
+            $afterCommit['open_findings'] === null && (int) $afterCommit['detail_rows'] === 1
+            && $old->run(748, $orid)['open_findings'] === null);
     }
 
     echo "scan_store_php: $n checks, $fail failure(s)\n";

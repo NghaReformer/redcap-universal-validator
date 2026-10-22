@@ -1380,7 +1380,9 @@ namespace INSPIRE\UniversalValidator\Scan {
  * cancelled during unique-finalize said "Nothing found yet" over the duplicates
  * it had written. The run row cannot say whether a summary was built, so a run
  * with no verdict answers with the larger of the counter and whatever summary
- * exists - and with NULL, "not counted", when both are zero.
+ * exists - and with NULL, "not counted", when both are zero. The counter is
+ * the run row's open_findings, what its records still hold (W5F-N2), and
+ * detail_rows on a run from before schema version 6 (below).
  * ===================================================================== */
 {
     $agg = new ArrayScanStore();
@@ -1393,29 +1395,31 @@ namespace INSPIRE\UniversalValidator\Scan {
     };
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("OC-4: a $how run with nothing stored and nothing summarised is NOT COUNTED, never zero",
-            $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 0]) === null);
+            $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 0]) === null);
         check("OC-4: a $how run whose summary holds findings the counter missed reports them",
-            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 0]) === 2);
+            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 0]) === 2);
         check("OC-4: and a $how run answers with the larger of the two, whichever it is",
-            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 5]) === 5
-            && $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 3]) === 3);
+            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 5]) === 5
+            && $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 3]) === 3);
     }
     check('OC-4: a run that reached a verdict still answers from its summary alone',
-        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 2
-        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
+        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 2
+        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
-        $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+        $as($agg, 820, $aid, ['terminal' => null, 'open_findings' => 4]) === 4);
 
     // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
     // while the worker goes on finding, so every answer adds them: a run
     // still working (review rv10b1-3), and a run with no verdict, whose
     // floor is taken over what was STORED and then has them added (rv10b1-5
     // M1: compared instead, a run that stored 5 and left 2 out said 5).
-    // A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 (open_unstored NULL), which
-    // is counted from the run-wide aggregate as it always was; the run-row
-    // count that replaces it for later runs is pinned below (rvf1-3).
+    // A RUN THAT BEGAN BEFORE SCHEMA VERSION 6 (open_unstored and
+    // open_findings NULL), which is counted from the run-wide aggregate and
+    // from detail_rows as it always was; the run-row counts that replace
+    // them for later runs are pinned below (rvf1-3, W5F-N2).
     $uns = new ArrayScanStore();
-    $uid = (int) $uns->startRun(822, ['created_by' => 'alice', 'open_unstored' => null])['run']['run_id'];
+    $uid = (int) $uns->startRun(822, ['created_by' => 'alice', 'open_unstored' => null,
+                                      'open_findings' => null])['run']['run_id'];
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
@@ -3480,6 +3484,46 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rvf1-3: so the group\'s run is not truncated, and counts the one finding it holds',
         $row['terminal'] === 'complete' && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
         && $st['ok'] === true && $st['findings'] === 1 && $st['detail'] === ScanOutcome::DETAIL_COMPLETE);
+
+    // W5F-N2: WHILE A SCOPED RUN WORKS, IT COUNTS WHAT IT HOLDS. R02 and R03
+    // are flagged and read in the first request. Then R03 moves to group 31
+    // and departs, and R02 is edited, still flagged, so catch-up reads it
+    // again and its new finding supersedes the old. The run wrote three rows
+    // and holds one. A status the run answered while still working, from
+    // the fence on, counted all three. (Here the run passes the fence and
+    // finishes in one request, so the working count is asked of its final
+    // row with no verdict: the formula status() uses while it works.)
+    $ms = new ArrayScanStore();
+    $mm = $groupModule($ms);
+    $mm->flagged['R02'] = true;
+    $mm->flagged['R03'] = true;
+    $rid = (int) (new ScanService($mm, $ms))->start(186)['run_id'];
+    $mm->readSleep = 3.2;
+    (new ScanService($mm, $ms))->work(186, $rid);
+    $heldBefore = (int) $ms->run(186, $rid)['open_findings'];
+    $mm->dagOf['R03'] = '31';
+    $mm->version['R03'] = '110';
+    $mm->changes['R03'] = '110';
+    $mm->version['R02'] = '111';
+    $mm->changes['R02'] = '111';
+    $mm->top = '120';
+    for ($i = 0; $i < 15 && $ms->run(186, $rid)['terminal'] === null; $i++) {
+        (new ScanService($mm, $ms))->work(186, $rid);
+    }
+    $row = $ms->run(186, $rid);
+    $states = $ms->recordStates($rid);
+    $active = $ms->findings(186, (int) $row['generation_id'], [], 0, 100);
+    check('W5F-N2: the fixture held R02\'s and R03\'s findings, then wrote R02\'s again and R03 departed',
+        $heldBefore === 2 && (int) $row['detail_rows'] === 3
+        && isset($states[ScanStore::REC_DEPARTED]) && $states[ScanStore::REC_DEPARTED] === 1
+        && count($active) === 1 && (string) $active[0]['record_id_bin'] === 'R02');
+    check('W5F-N2: the run holds one finding, R02\'s new one, and its row says so',
+        (int) $row['open_findings'] === 1);
+    check('W5F-N2: so the run still working counts 1, not the 3 rows it wrote',
+        ScanPromotion::findingsOf($ms, array_merge($row, ['terminal' => null])) === 1);
+    check('W5F-N2: and finished, it counts the same one finding from its summary',
+        $row['terminal'] === 'complete'
+        && (new ScanService($mm, $ms))->status(186, $rid)['findings'] === 1);
 
     // NO RECORD SOURCE, NO ANSWER. A scoped run whose source cannot be opened
     // can tell no record's group, and cannot tell takes nothing out of it; an

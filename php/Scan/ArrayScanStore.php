@@ -124,12 +124,13 @@ final class ArrayScanStore implements ScanStore
             'created_at' => gmdate('Y-m-d H:i:s'), 'updated_at' => gmdate('Y-m-d H:i:s'),
             'clean' => null, 'gap_count' => 0, 'rule_problem_count' => 0, 'not_examined' => 0,
             'policy_json' => '{}',
-            // Schema version 6 (review rvf1-3): 0 on a run created now. A test
-            // may pass NULL to stand for a run that began before the column.
-            'open_unstored' => 0,
+            // Schema version 6 (reviews rvf1-3, W5F-N2): 0 on a run created
+            // now. A test may pass NULL to stand for a run that began before
+            // the columns.
+            'open_unstored' => 0, 'open_findings' => 0,
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
-             'fence_open', 'policy_json', 'open_unstored'])));
+             'fence_open', 'policy_json', 'open_unstored', 'open_findings'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }
@@ -649,16 +650,24 @@ final class ArrayScanStore implements ScanStore
 
         $applied = 0;
         $openLeft = 0;
+        // Each held record's stored findings (W5F-N2), as the SQL store
+        // counts them: every finding kept is a held record's.
+        $storedOf = [];
+        foreach ($keep as $f) {
+            $k = (int) $f['ordinal'];
+            $storedOf[$k] = isset($storedOf[$k]) ? $storedOf[$k] + 1 : 1;
+        }
         foreach ($records as $rec) {
             $o = $rec['ordinal'];
             if (empty($held[(int) $o])) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
-            // The findings left out of this reading, on the row (review
-            // rvf1-3), as the SQL store keeps them. Below done, where the row
-            // came from, its count is 0.
+            // The findings this reading stored and left out, on the row
+            // (reviews W5F-N2, rvf1-3), as the SQL store keeps them. Below
+            // done, where the row came from, its counts are 0.
             $left = ((int) $rec['state'] === self::REC_DONE && isset($unstored[(int) $o]))
                   ? (int) $unstored[(int) $o] : 0;
             $this->records[$runId][$o]['unstored'] = $left;
+            $this->records[$runId][$o]['stored_findings'] = isset($storedOf[(int) $o]) ? $storedOf[(int) $o] : 0;
             $openLeft += $left;
             // Saturating, as the SQL store's LEAST(attempts + 1, 254) does:
             // attempts is a TINYINT UNSIGNED there, and a store that counted
@@ -713,6 +722,9 @@ final class ArrayScanStore implements ScanStore
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);
+        if ($this->runs[$runId]['open_findings'] !== null) {
+            $this->runs[$runId]['open_findings'] += count($keep);
+        }
         if ($this->runs[$runId]['open_unstored'] !== null) {
             $this->runs[$runId]['open_unstored'] += $openLeft;
         }
@@ -1170,12 +1182,15 @@ final class ArrayScanStore implements ScanStore
         $want = array_fill_keys(array_map('strval', $hashes), true);
         $left = [];
         $withdrawn = 0;
+        $withdrawnKept = 0;
         foreach ($this->records[$runId] as $o => $row) {
             if (!isset($want[(string) $row['hash']])) continue;
             $st = (int) $row['state'];
             if ($st === ScanStore::REC_DEPARTED || $st === ScanStore::REC_TOMBSTONE) continue;
             $withdrawn += isset($row['unstored']) ? (int) $row['unstored'] : 0;
+            $withdrawnKept += isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
             $this->records[$runId][$o]['unstored'] = 0;
+            $this->records[$runId][$o]['stored_findings'] = 0;
             $this->records[$runId][$o]['state'] = ScanStore::REC_DEPARTED;
             $this->records[$runId][$o]['version'] = null;
             $this->records[$runId][$o]['claimed_at'] = null;
@@ -1199,7 +1214,7 @@ final class ArrayScanStore implements ScanStore
             if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
         }
         $this->runs[$runId]['manifest_done'] = $done;
-        $this->withdrawUnstored($runId, $withdrawn);
+        $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
         return count($left);
     }
 
@@ -1227,12 +1242,16 @@ final class ArrayScanStore implements ScanStore
         $n = 0;
         $moved = [];
         $withdrawn = 0;
+        $withdrawnKept = 0;
         foreach ($this->records[$runId] as $o => $row) {
             if (!isset($want[(string) $row['hash']])) continue;
-            // What the row's reading left out is taken back whether or not
-            // the row moves, as the SQL store's requeue takes it (rvf1-3).
+            // What the row's reading stored and left out is taken back whether
+            // or not the row moves, as the SQL store's requeue takes it
+            // (rvf1-3, W5F-N2).
             $withdrawn += isset($row['unstored']) ? (int) $row['unstored'] : 0;
+            $withdrawnKept += isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
             $this->records[$runId][$o]['unstored'] = 0;
+            $this->records[$runId][$o]['stored_findings'] = 0;
             if ((int) $row['state'] === (int) $state) continue;
             $moved[(string) $row['hash']] = true;
             $this->records[$runId][$o]['state'] = $state;
@@ -1266,15 +1285,17 @@ final class ArrayScanStore implements ScanStore
             if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
         }
         $this->runs[$runId]['manifest_done'] = $done;
-        $this->withdrawUnstored($runId, $withdrawn);
+        $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
         return $n;
     }
 
-    /** SqlScanStore::withdrawUnstored(): never below 0, and NULL stays NULL (rvf1-3). */
-    private function withdrawUnstored($runId, $n)
+    /** SqlScanStore::withdrawReadings(): never below 0, and NULL stays NULL (rvf1-3, W5F-N2). */
+    private function withdrawReadings($runId, $stored, $unstored)
     {
-        if ($this->runs[$runId]['open_unstored'] === null) return;
-        $this->runs[$runId]['open_unstored'] = max(0, (int) $this->runs[$runId]['open_unstored'] - (int) $n);
+        foreach (['open_findings' => $stored, 'open_unstored' => $unstored] as $col => $n) {
+            if ($this->runs[$runId][$col] === null) continue;
+            $this->runs[$runId][$col] = max(0, (int) $this->runs[$runId][$col] - (int) $n);
+        }
     }
 
     public function recordStates($runId)
