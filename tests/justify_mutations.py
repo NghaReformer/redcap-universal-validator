@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Mutations of @UVJUSTIFY, applied only to a disposable copy.
+
+Each mutation breaks one guarantee the suites claim to hold. The named suite must then fail;
+a mutation it survives is a hole in the tests. The anchors are exact text and must occur once.
+
+Usage: PHP_BIN=php python tests/justify_mutations.py
+
+The mutations of the SQL (suite tests/mysql/run.php) run only when UV_DB_HOST
+and the other UV_DB_* variables name a MySQL or MariaDB server; without one they
+are reported as skipped, never as killed.
+"""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+PHP = os.environ.get('PHP_BIN', 'php')
+NODE = os.environ.get('NODE_BIN', 'node')
+UV = 'UniversalValidator.php'
+LOGIC = 'php/Logic.php'
+RULES = 'php/AnnotationRules.php'
+MODEREG = 'php/ModeRegistry.php'
+MODES = 'php/modes.json'
+ENGINE = 'js/engine.js'
+SCANJS = 'js/scan.js'
+SCHEMA = 'php/Scan/Schema.php'
+ARRAYSTORE = 'php/Scan/ArrayScanStore.php'
+SQLSTORE = 'php/Scan/SqlScanStore.php'
+MAPPER = 'php/Scan/FindingRowMapper.php'
+ROLLUP = 'php/Scan/RollupBuilder.php'
+PROMOTION = 'php/Scan/ScanPromotion.php'
+COLUMNS = 'php/ScanColumns.php'
+DIMENSIONS = 'php/ScanDimensions.php'
+PAGEVIEW = 'php/ScanPageView.php'
+VERDICT = 'tests/justify_php.php'
+TWIN = 'tests/justify_js.cjs'
+DOM = 'tests/justify_dom_js.cjs'
+MODULE = 'tests/justify_module_php.php'
+REGISTRY = 'tests/registry_php.php'
+MISSING = 'tests/missing_codes_php.php'
+MLM = 'tests/mlm_messages_dom_js.cjs'
+SCHEMA_T = 'tests/scan_schema_php.php'
+STORE_T = 'tests/scan_store_php.php'
+WORKER_T = 'tests/scan_worker_php.php'
+REPORT_T = 'tests/scan_report_php.php'
+PAGE_T = 'tests/scan_page_php.php'
+SCANCLIENT_T = 'tests/scan_client_js.cjs'
+# The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php).
+MYSQL = 'tests/mysql/run.php'
+
+# QRID_reasonGiven's trim, told apart from QRID_isMissingCode's, which reads the same
+REASON_SET = ('    var set = (codes && typeof codes === "object") ? codes : QRID_MISSING_CODES;\n'
+              '    var s = String(value), i = 0, j = s.length;\n')
+# applyJustify's split, told apart from markReturnClashes', which reads the same
+JUSTIFY_SPLIT = ("' . $why]);\n            }\n            if (count($keep) === count($fields)) continue;\n"
+                 "            if ($keep) {\n")
+
+# (name, file, original, replacement, suite)
+MUTATIONS = [
+    # ---- whether a reason was given (Logic::reasonGiven and its browser twin) ----
+    ('a reason not trimmed', LOGIC,
+     '        $t = trim((string) $value);\n        return $t !== \'\' && !isset($codes[$t]);',
+     '        $t = (string) $value;\n        return $t !== \'\' && !isset($codes[$t]);', VERDICT),
+    ('a Missing Data Code taken for a reason', LOGIC,
+     "        return $t !== '' && !isset($codes[$t]);",
+     "        return $t !== '';", VERDICT),
+    ('a blank reason given', LOGIC,
+     "        return $t !== '' && !isset($codes[$t]);",
+     '        return !isset($codes[$t]);', VERDICT),
+    ('a checkbox map, null or a boolean taken for a reason', LOGIC,
+     '        if (!is_string($value) && !is_int($value) && !is_float($value)) return false;\n        $t = trim((string) $value);',
+     '        $t = trim(is_array($value) ? \'x\' : (string) $value);', VERDICT),
+    ('a Missing Data Code taken for a reason by the audit', LOGIC,
+     "        return $t !== '' && !isset($codes[$t]);",
+     "        return $t !== '';", MISSING),
+    ('the browser trims no NUL or vertical tab', ENGINE,
+     REASON_SET + '    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }',
+     REASON_SET + '    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10; }', TWIN),
+    ('the browser trims a no-break space PHP keeps', ENGINE,
+     REASON_SET + '    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }',
+     REASON_SET + '    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11 || c === 160; }', TWIN),
+    ('the browser takes a code for a reason', ENGINE,
+     '    return t !== "" && !(Object.prototype.hasOwnProperty.call(set, t) && set[t] === true);',
+     '    return t !== "";', TWIN),
+    ('the browser takes a number for no reason', ENGINE,
+     '    if(typeof value !== "string" && typeof value !== "number") return false;\n    var set = (codes',
+     '    if(typeof value !== "string") return false;\n    var set = (codes', TWIN),
+    ("the page's Missing Data Codes not read", ENGINE,
+     '    var set = (codes && typeof codes === "object") ? codes : QRID_MISSING_CODES;',
+     '    var set = (codes && typeof codes === "object") ? codes : {};', DOM),
+
+    # ---- the grammar ----
+    ('"when" taken by @UVJUSTIFY', RULES,
+     "foreach (['when' => '\"when\"', 'caseSensitive' => '\"caseSensitive\"', 'blockSave' => '\"blockSave\"', 'references' => '\"references\"'] as $k => $label) {",
+     "foreach (['caseSensitive' => '\"caseSensitive\"', 'blockSave' => '\"blockSave\"', 'references' => '\"references\"'] as $k => $label) {", VERDICT),
+    ('a reason that names an event refused for its shape only', RULES,
+     "            } elseif (preg_match('/^\\[[^\\[\\]]+\\](\\[[^\\[\\]]+\\])+$/D', $ref)) {",
+     '            } elseif (false) {', VERDICT),
+    ('a reason without brackets accepted', RULES,
+     "            if (preg_match('/^\\[([a-z][a-z0-9_]*)\\]$/D', $ref, $m)) {\n                $out['justifyReason'] = $m[1];",
+     "            if (preg_match('/^\\[?([a-z][a-z0-9_]*)\\]?$/D', $ref, $m)) {\n                $out['justifyReason'] = $m[1];", VERDICT),
+    ('checkJustify accepts a fragment with no reason', RULES,
+     "            $errors[] = self::TAG_JUSTIFY . ' needs \"reason\", the field that holds the reason — e.g. \"reason\":\"[weight_reason]\".';\n",
+     '', VERDICT),
+    ('checkJustify accepts "when", "caseSensitive" and "blockSave"', RULES,
+     '            if (array_key_exists($k, $frag)) $errors[] = self::justifyTakesNo($label);',
+     '            if (false) $errors[] = self::justifyTakesNo($label);', VERDICT),
+
+    # ---- the registry ----
+    ('a mode with no "justify" flag accepted', MODEREG,
+     "            if (!array_key_exists('justify', $m) || !is_bool($m['justify'])) {",
+     '            if (false) {', REGISTRY),
+    ('the reason field left out of the fields a rule reads', MODEREG,
+     '            foreach (self::justifyFields($r) as $w) $out[$w] = true;',
+     '', VERDICT),
+    ('the reason field not read by default', MODEREG,
+     "array $kinds = ['cond', 'operand', 'fieldList', 'reason']",
+     "array $kinds = ['cond', 'operand', 'fieldList']", MODULE),
+    ('a reason stands for a duplicate', MODES,
+     '      "evaluator": "findingsUnique",\n      "missingCodes": "skip",\n      "justify": false,',
+     '      "evaluator": "findingsUnique",\n      "missingCodes": "skip",\n      "justify": true,', MODULE),
+    ('a reason does not stand for @UVDELTA', MODES,
+     '      "evaluator": "findingsDelta",\n      "missingCodes": "skip",\n      "justify": true,',
+     '      "evaluator": "findingsDelta",\n      "missingCodes": "skip",\n      "justify": false,', VERDICT),
+
+    # ---- pairing a reason with the rules it stands for (applyJustify) ----
+    ('applyJustify never run', UV,
+     '        $resolved = self::applyJustify(self::markReturnClashes(Branching::resolve($out)));',
+     '        $resolved = self::markReturnClashes(Branching::resolve($out));', MODULE),
+    ('a refused rule paired with a reason', UV,
+     "            if ($by && empty($r['configError'])) $rules[$i]['justifyBy'] = $by;",
+     "            if ($by) $rules[$i]['justifyBy'] = $by;", MODULE),
+    ('a refused rule not counted as one a reason stands for', UV,
+     "            if (!is_array($r) || !ModeRegistry::justifies(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;\n            $by = [];",
+     "            if (!is_array($r) || !empty($r['configError']) || !ModeRegistry::justifies(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;\n            $by = [];", MODULE),
+    ('a field no rule a reason stands for checks kept', UV,
+     '                if (isset($covered[(string) $f])) { $keep[] = $f; continue; }',
+     '                { $keep[] = $f; continue; }', MODULE),
+    ('a split rule keeps every field', UV,
+     JUSTIFY_SPLIT + "                $rules[$i]['fields'] = $keep;\n",
+     JUSTIFY_SPLIT, MODULE),
+    ('the reason cannot be the field itself: not checked', UV,
+     "        if (isset($frag['justifyReason']) && $frag['justifyReason'] === $name) {",
+     '        if (false) {', MODULE),
+    ('a reason field that is not a field of the project accepted', UV,
+     "        if (!isset($dd[$reason])) return $err(",
+     '        if (false) return $err(', MODULE),
+    ('a reason field on another form accepted', UV,
+     '        if ($form !== $there) {',
+     '        if (false) {', MODULE),
+    ('a reason field of another type accepted', UV,
+     '        if (!in_array($type, self::JUSTIFY_REASON_TYPES, true)) {',
+     '        if (false) {', MODULE),
+    ('a reason field makes a locked field hold the save', UV,
+     "            $reads = array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList']));",
+     "            $reads = array_map('strval', ModeRegistry::refFields($r));", MODULE),
+
+    # ---- the audit (markJustified) ----
+    ('a finding marked justified whatever the reason field holds', UV,
+     '            if (!Logic::reasonGiven($values[$reason], $codes)) continue;\n',
+     '', MODULE),
+    # markJustified's test of the reason field's resolution has no mutation: readValues
+    # returns a value only for a field it resolved, so the array_key_exists test before it
+    # already leaves such a finding open.
+    ('Missing Data Codes that could not be read: a reason still stands', UV,
+     "                if (isset($unread['the missing data codes']) || isset($unread['the project\\'s design'])) return $out;\n",
+     '', MODULE),
+    ('no finding ever marked justified', UV,
+     "            $out['invalid'][$k]['justified'] = true;\n",
+     '', MODULE),
+    ('a branched rule never marked justified', UV,
+     '            return $this->markJustified($out, $rule, $values, $resolution, $project_id);',
+     '            return $out;', MODULE),
+    ('a justified finding logged as an open one', UV,
+     "$extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');",
+     "$extra, 'invalid-id-saved');", MODULE),
+    ('the audit entry does not name the reason field', UV,
+     "            if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];\n",
+     '', MODULE),
+
+    # ---- the scans ----
+    ('the legacy scan counts no finding saved with a reason', UV,
+     "                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;\n",
+     '', MODULE),
+    ('the legacy scan counts justified findings as violations', UV,
+     "        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);",
+     "        $result['stats']['violations'] = $sink->count();", MODULE),
+    ('the durable row never carries the flag', UV,
+     "                'justified' => empty($v['justified']) ? 0 : 1,",
+     "                'justified' => 0,", MODULE),
+    ('the array store drops the flag', ARRAYSTORE,
+     "            'justified'         => empty($f['justified']) ? 0 : 1,",
+     "            'justified'         => 0,", MODULE),
+    ('the SQL store drops the flag', SQLSTORE,
+     "            'justified'         => empty($f['justified']) ? 0 : 1,",
+     "            'justified'         => 0,", MODULE),
+    ('a stored row read back as open', MAPPER,
+     "            'justified'     => (string) $stored['justified'] === '1',",
+     "            'justified'     => false,", REPORT_T),
+    ('the rollup files every finding as open', ROLLUP,
+     "            self::K_STANDING => (string) $r[5] === '1' ? self::STANDING_JUSTIFIED : self::STANDING_OPEN,",
+     '            self::K_STANDING => self::STANDING_OPEN,', MODULE),
+    ('justified findings counted as violations in the tally', PROMOTION,
+     "        return ['violations' => $active - $justified, 'justified' => $justified,",
+     "        return ['violations' => $active, 'justified' => $justified,", WORKER_T),
+    ('the "Saved with a reason" column always blank', COLUMNS,
+     "                'render' => function (array $f) { return empty($f['justified']) ? '' : 'Yes'; },",
+     "                'render' => function (array $f) { return ''; },", MODULE),
+    ('the "Saved with a reason" column never shown', DIMENSIONS,
+     "            if ($d->rules[$i + 1]['justifyBy']) $d->justifies = true;\n",
+     '', MODULE),
+    ('the scan page does not say how many were saved with a reason', PAGEVIEW,
+     "        if (is_int($j) && $j > 0) $text .= ', and ' . $j . ' saved with a reason';",
+     '', PAGE_T),
+    ('the scan client does not say how many were saved with a reason', SCANJS,
+     "        if (typeof j === 'number' && j > 0 && j === Math.floor(j)) text += ', and ' + j + ' saved with a reason';",
+     '', SCANCLIENT_T),
+    ('schema 6 stores old findings as justified', SCHEMA,
+     "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',",
+     "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 1',", SCHEMA_T),
+    ('schema 6 recorded without the column', SCHEMA,
+     "            if ($v === 6 && !self::alreadyApplied(",
+     '            if (false && !self::alreadyApplied(', SCHEMA_T),
+
+    # ---- the page ----
+    ('a given reason releases nothing', ENGINE,
+     '      if(!el.__qridInvalid || el.__qridBlockMode === "off" || QRID_justified(el)) return false;',
+     '      if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;', DOM),
+    ('a reason releases a mode it does not stand for', ENGINE,
+     '  return !!UV_JUSTIFY[el.__qridFieldName] && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true;',
+     '  return !!UV_JUSTIFY[el.__qridFieldName];', DOM),
+    ('the save message does not name the reason field', ENGINE,
+     '      return QRID_justifiable(el)\n',
+     '      return false\n', DOM),
+    ('a hidden reason row gives a reason', ENGINE,
+     '    if(row && row.style && row.style.display === "none") return false;\n',
+     '', DOM),
+    ('the note not refreshed when the verdict changes', ENGINE,
+     '  if(typeof jf === "string" && UV_JUSTIFY[jf]) UV_JUSTIFY[jf].later();',
+     '', DOM),
+    ('a reason changed with no event not followed', ENGINE,
+     '    if(watch) watch.onChange(later);',
+     '', DOM),
+    ('the note stays once a reason is given', ENGINE,
+     '      if(!holds || given()){ msg.style.display = "none"; msg.innerHTML = ""; return; }',
+     '      if(!holds){ msg.style.display = "none"; msg.innerHTML = ""; return; }', DOM),
+    ('the note asks for a reason under a rule that only warns', ENGINE,
+     '           && el.__qridInvalid && el.__qridBlockMode !== "off" && QRID_guardSpeaks(el)){ holds = true; break; }',
+     '           && el.__qridInvalid && QRID_guardSpeaks(el)){ holds = true; break; }', DOM),
+    ('the note asks for a reason a duplicate cannot take', ENGINE,
+     '        if(el.__qridFieldName === fieldName && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true\n',
+     '        if(el.__qridFieldName === fieldName\n', DOM),
+    ("the note ignores the rule's own words and is not escaped", ENGINE,
+     '      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", label()));',
+     '      msg.innerHTML = NOTE.replace("{reason}", label());', DOM),
+    ('the modes a reason stands for never read', ENGINE,
+     '  for(var jm in JUSTIFY_OF_MODE) if(own(JUSTIFY_OF_MODE, jm) && JUSTIFY_OF_MODE[jm] === true) QRID_JUSTIFY_OF_MODE[jm] = true;',
+     '', DOM),
+    ('a field paired with a reason field not on the page', ENGINE,
+     '    if(!anchor || !source) return false;\n    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;',
+     '    if(!anchor) return false;\n    if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;', DOM),
+    ('a tag with no reason field releases the save', ENGINE,
+     '  if(!configError && !/^[a-z][a-z0-9_]*$/.test(reason)) configError = "@UVJUSTIFY needs the field that holds the reason.";',
+     '', DOM),
+    ("the note's languages not read", ENGINE,
+     '            i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };\n  var NOTE = "Fix this value',
+     '            i18n: null };\n  var NOTE = "Fix this value', MLM),
+]
+
+
+def run(suite, cwd):
+    """The suite's result, or None for the database suite when no server is named."""
+    if suite == MYSQL:
+        if not os.environ.get('UV_DB_HOST'):
+            return None
+        cmd = [PHP, '-d', 'extension=mysqli', suite]
+    else:
+        cmd = [NODE, suite] if suite.endswith('.cjs') else [PHP, suite]
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+
+
+def main():
+    for suite in sorted({m[-1] for m in MUTATIONS}):
+        res = run(suite, ROOT)
+        if res is not None and res.returncode != 0:
+            sys.exit(f'{suite} fails before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
+    survived = []
+    skipped = []
+    with tempfile.TemporaryDirectory(prefix='uv-justify-mutations-') as directory:
+        copy = Path(directory)
+        for folder in ['php', 'js', 'tests', 'data', 'docs']:
+            shutil.copytree(ROOT / folder, copy / folder)
+        for filename in [UV, 'config.json']:
+            shutil.copy2(ROOT / filename, copy / filename)
+        for name, filename, original, replacement, suite in MUTATIONS:
+            path = copy / filename
+            source = path.read_text(encoding='utf-8')
+            if source.count(original) != 1:
+                sys.exit(f'{name}: the anchor must occur once in {filename}, found {source.count(original)}')
+            path.write_text(source.replace(original, replacement), encoding='utf-8', newline='')
+            if filename.endswith('.php'):
+                subprocess.run([PHP, '-l', str(path)], check=True, stdout=subprocess.DEVNULL)
+            result = run(suite, copy)
+            path.write_text(source, encoding='utf-8', newline='')
+            if result is None:
+                skipped.append(name)
+                print(f'skipped (no UV_DB_HOST): {name}')
+            elif result.returncode == 0:
+                survived.append(name)
+                print(f'SURVIVED: {name} ({suite})')
+            else:
+                print(f'killed: {name}')
+    if survived:
+        sys.exit(f'justify_mutations: {len(survived)} of {len(MUTATIONS)} mutations survived')
+    ran = len(MUTATIONS) - len(skipped)
+    print(f'justify_mutations: {ran} mutations, every one killed' + (f'; {len(skipped)} skipped (no database)' if skipped else ''))
+
+
+if __name__ == '__main__':
+    main()

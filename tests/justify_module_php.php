@@ -234,11 +234,14 @@ namespace {
         'bad_twice'  => f('visit_form', '@UVRANGE={"hard":[0,1]} ' . $J('pair_why') . ' ' . $J('wt_why'), 'integer'),
         'broken'     => f('visit_form', '@UVRANGE={"hard":[10,0]} ' . $J('broken_why'), 'integer'),
         'broken_why' => f('visit_form'),
+        'br'         => f('visit_form', '@UVRANGE={"hard":[0,10],"when":"[br_sw]=\'1\'"} @UVRANGE={"hard":[0,5],"when":"[br_sw]<>\'1\'"} ' . $J('br_why'), 'integer'),
+        'br_sw'      => f('visit_form'),
+        'br_why'     => f('visit_form'),
     ];
     $ROW = ['record_id' => '2', 'enrol_note' => '', 'wt' => '30', 'wt_why' => '', 'vdate' => '2999-01-01', 'v_why' => '',
         'req' => '', 'req_why' => '', 'f1' => '11', 'f2' => '12', 'f3' => '13', 'pair_why' => '', 'pid' => 'P1', 'pid_why' => '',
         'lock' => 'x', 'lock_why' => '', 'bad_self' => '5', 'bad_none' => '5', 'bad_form' => '5', 'bad_type' => '5', 'yn' => '1',
-        'bad_cb' => '5', 'bad_twice' => '5', 'broken' => '5', 'broken_why' => ''];
+        'bad_cb' => '5', 'bad_twice' => '5', 'broken' => '5', 'broken_why' => '', 'br' => '3', 'br_sw' => '1', 'br_why' => ''];
     $data = function (array $over = []) use ($ROW) { return ['2' => [351 => array_merge($ROW, $over)]]; };
 
     // ---- 1) the hooks and applyJustify, as the page sees them ---------------------------
@@ -335,6 +338,13 @@ namespace {
     $m = save($DICT, $data(['pair_why' => 'both above the scale']), 'visit_form');
     check('one reason field stands for two fields (got ' . json_encode([audit($m, 'f1'), audit($m, 'f2')]) . ')',
         audit($m, 'f1') === ['uvalidate-justified:range:hard-high:pair_why'] && audit($m, 'f2') === ['uvalidate-justified:range:hard-high:pair_why']);
+    // a branched rule: judged by the branch its condition picks, then marked
+    $m = save($DICT, $data(['br' => '8', 'br_sw' => '2']), 'visit_form');
+    check('a branched rule, no reason: the branch picked logs it open (got ' . json_encode(audit($m, 'br')) . ')', audit($m, 'br') === ['invalid-id-saved:range:hard-high']);
+    $m = save($DICT, $data(['br' => '8', 'br_sw' => '2', 'br_why' => 'scale reads high']), 'visit_form');
+    check('... a reason given: justified (got ' . json_encode(audit($m, 'br')) . ')', audit($m, 'br') === ['uvalidate-justified:range:hard-high:br_why']);
+    $m = save($DICT, $data(['br' => '8', 'br_sw' => '1', 'br_why' => 'scale reads high']), 'visit_form');
+    check('... the other branch passes it: nothing logged', audit($m, 'br') === []);
     $m = save($DICT, $data(['wt' => '70', 'wt_why' => 'nothing wrong']), 'visit_form');
     check('a reason with nothing broken logs nothing', audit($m, 'wt') === []);
     $m = save($DICT, $data(['wt_why' => 'x']), 'visit_form');

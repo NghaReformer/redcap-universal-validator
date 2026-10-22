@@ -254,6 +254,18 @@ for (const order of ['reason first', 'reason last']) {
   check('... and gets no note asking for a reason', shown(env, 'wt', 'j') === '');
   check('... though its own warning shows', /Too light/.test(shown(env, 'wt', 'c')));
 }
+{
+  // a range whose broken tier only warns: its guard item holds nothing, so no note asks for a reason
+  const wt = text('wt', '120'), why = text('wt_why', '');
+  const env = boot([wt, why], { rules: [{ type: 'range', fields: ['wt'], rangeSoftLo: '40', rangeSoftHi: '100', rangeSoftBlock: 'off',
+    rangeHardLo: '20', rangeHardHi: '250', rangeHardBlock: 'hard', rangeSoftText: '40 to 100', rangeHardText: '20 to 250' }, J(['wt'], 'wt_why')] });
+  wt.fire('blur'); flush();
+  check('a range outside its "off" tier holds nothing', save(env) === 'saved');
+  flush();
+  check('... and gets no note asking for a reason', shown(env, 'wt', 'j') === '', shown(env, 'wt', 'j'));
+  type(env, wt, '300'); wt.fire('blur'); flush();
+  check('... while its "hard" tier holds and asks', save(env) === 'held' && (flush(), shown(env, 'wt', 'j') !== ''));
+}
 
 // ---- 6) a required rule (a mode a reason stands for) ------------------------------------------
 {
@@ -289,6 +301,8 @@ for (const order of ['reason first', 'reason last']) {
   check('a duplicate still holds the save with a reason given', save(env) === 'held');
   check('... and the message does not offer a reason', !/or give a reason in/.test(said(env)), said(env));
   check('... nor does a note ask for one', shown(env, 'pid', 'j') === '');
+  type(env, why, '');
+  check('... not even with the reason field empty', save(env) === 'held' && shown(env, 'pid', 'j') === '', shown(env, 'pid', 'j'));
 }
 {
   // a locked write-once field stays locked; a rule on it that reads another field is released
@@ -327,10 +341,12 @@ for (const order of ['reason first', 'reason last']) {
   const wt = text('wt', '30'); const r = radioField('wt_why', ['1', '2'], '');
   const env = boot([wt].concat(r.els), { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
   check('a radio with nothing picked gives no reason', save(env) === 'held');
+  flush();
+  check('... and the note asks for one', shown(env, 'wt', 'j') !== '');
   r.mirror.value = '2'; r.buttons[1].checked = true;
-  check('a radio code picked with no event gives a reason at the save', save(env) === 'saved');
   env.poll();
-  check('... and the silent-change watch hides the note', shown(env, 'wt', 'j') === '');
+  check('a radio code picked with no event: the silent-change watch hides the note before any save', shown(env, 'wt', 'j') === '');
+  check('... and the code gives a reason at the save', save(env) === 'saved');
 }
 {
   const wt = text('wt', '30'), why = select('wt_why', ['', 'scale', 'other'], '');

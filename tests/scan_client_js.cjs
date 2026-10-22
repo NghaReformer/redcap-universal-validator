@@ -985,6 +985,16 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('found: with no vocabulary handed over it still does not say nothing was found',
     els['uv-scan-found'].textContent.indexOf('not counted') !== -1);
   UV.labels = keptLabels;
+  // @UVJUSTIFY: the findings saved with a reason, said apart once the run is totalled
+  await show(Object.assign({}, ended, { findings: 3, justified: 2 }));
+  check('found: findings saved with a reason are said apart',
+    els['uv-scan-found'].textContent === '3 findings so far, and 2 saved with a reason');
+  await show(Object.assign({}, ended, { findings: 3, justified: 0 }));
+  check('found: ... and nothing is said of none',
+    els['uv-scan-found'].textContent === '3 findings so far');
+  await show(Object.assign({}, ended, { findings: 3, justified: 1.5 }));
+  check('found: ... nor of a count that is not a whole number',
+    els['uv-scan-found'].textContent === '3 findings so far');
 
   // -- P10: what the run has stored ------------------------------------------
   //
