@@ -953,7 +953,14 @@ final class ArrayScanStore implements ScanStore
         $at = gmdate('Y-m-d H:i:s', $t);
         foreach ($this->runs as $id => $r) {
             if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] !== 1) continue;
+            // SqlScanStore::staleWhere()'s clock: the later of the progress
+            // clock and updated_at in the phases whose work moves only the
+            // second (review rv10a1-1).
             $clock = $r['progress_at'] !== null ? (string) $r['progress_at'] : (string) $r['created_at'];
+            if (in_array($r['phase'], ScanPhase::ON_THE_UPDATE_CLOCK, true)
+                && strcmp((string) $r['updated_at'], $clock) > 0) {
+                $clock = (string) $r['updated_at'];
+            }
             if (strcmp($clock, $cut) >= 0) return 0;
             if ($r['lease_expires_at'] !== null && strcmp((string) $r['lease_expires_at'], $at) >= 0) return 0;
             // finish() writes the derived row; the epoch moves beside it, as in

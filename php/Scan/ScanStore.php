@@ -628,6 +628,12 @@ interface ScanStore
      * its request was killed. It becomes terminally `expired` and the slot is
      * free.
      *
+     * THE CLOCK IS THE ONE THE STATUS PAGE READS (ScanService::progressOf()).
+     * In the phases of ScanPhase::ON_THE_UPDATE_CLOCK it is the later of the
+     * progress clock and updated_at, because their work moves only the second;
+     * judged by progress_at alone, a run finalising for longer than the window
+     * was reaped while the page showed it working (review rv10a1-1).
+     *
      * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
      * in it on purpose:
      *

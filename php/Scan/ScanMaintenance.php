@@ -611,17 +611,18 @@ final class ScanMaintenance
      */
     private function census($after)
     {
-        $at = self::at($this->now);
+        // The store's predicate, clock and all (review rv10a1-1), so the
+        // census names exactly the projects expireAbandoned() will reap.
+        $stale = SqlScanStore::staleWhere($this->staleCut(), self::at($this->now));
         $rows = $this->db->select('SELECT project_id,'
-            . ' MAX(CASE WHEN active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-            . '   AND (lease_expires_at IS NULL OR lease_expires_at < ?) THEN 1 ELSE 0 END),'
+            . ' MAX(CASE WHEN ' . $stale[0] . ' THEN 1 ELSE 0 END),'
             . ' MAX(CASE WHEN terminal = ? AND scope_dag IS NULL AND supersede_cursor < generation_id'
             . '   THEN 1 ELSE 0 END),'
             . ' MIN(CASE WHEN active_slot IS NULL THEN updated_at END),'
             . ' GROUP_CONCAT(DISTINCT values_state)'
             . ' FROM ' . Schema::table('scan_run') . ' WHERE project_id > ?'
             . ' GROUP BY project_id ORDER BY project_id LIMIT ' . self::CENSUS_PAGE,
-            [$this->staleCut(), $at, ScanOutcome::COMPLETE, (int) $after]);
+            array_merge($stale[1], [ScanOutcome::COMPLETE, (int) $after]));
         $out = [];
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;   // the version-1 leftover: no project to act for

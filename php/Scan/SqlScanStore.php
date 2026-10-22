@@ -1846,6 +1846,40 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
+     * An active run past the stale window that no worker holds, as a condition
+     * over uv_scan_run's own columns, with its parameters in order.
+     *
+     * ONE DEFINITION FOR EVERY READER THAT DECIDES ABANDONMENT: this store's
+     * read and its write, the cron's census (ScanMaintenance) and
+     * ScanRetention's installation-wide read. They were four copies of one
+     * predicate, and all four judged every phase by `progress_at`.
+     *
+     * THE CLOCK IS THE STATUS PAGE'S (ScanService::progressOf()). In the
+     * phases of ScanPhase::ON_THE_UPDATE_CLOCK - catch-up and the two
+     * finalizers - nothing moves `progress_at` and nothing renews the lease,
+     * while every step moves `updated_at`; so a run finalising for longer than
+     * the window after its last record was expired as abandoned by the cron or
+     * by another user's Start, while the page showed it working (review
+     * rv10a1-1). Those phases are judged by the later of the two. Every other
+     * phase keeps `progress_at` alone: in scanning, claim() moves `updated_at`
+     * on a run whose every batch is refused, which is the wedge the progress
+     * clock exists to catch.
+     *
+     * @param string $cut the window's start, 'Y-m-d H:i:s' UTC
+     * @param string $at  now, the same form, for the lease
+     * @return array{0:string, 1:array}
+     */
+    public static function staleWhere($cut, $at)
+    {
+        $phases = array_values(ScanPhase::ON_THE_UPDATE_CLOCK);
+        return ['active_slot = 1 AND (CASE WHEN phase IN (' . implode(', ', array_fill(0, count($phases), '?')) . ')'
+            . ' THEN GREATEST(COALESCE(progress_at, created_at), updated_at)'
+            . ' ELSE COALESCE(progress_at, created_at) END) < ?'
+            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)',
+            array_merge($phases, [(string) $cut, (string) $at])];
+    }
+
+    /**
      * See ScanStore::expireAbandoned(): one fenced UPDATE, then the audit row.
      *
      * READ, THEN WRITE UNDER THE SAME PREDICATE. The audit has to name the
@@ -1865,11 +1899,11 @@ final class SqlScanStore implements ScanStore
         $hours = max(1, (int) $staleHours);
         $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
         $at = gmdate('Y-m-d H:i:s', $t);
-        $stale = ' WHERE project_id = ? AND active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-               . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)';
+        $w = self::staleWhere($cut, $at);
+        $stale = ' WHERE project_id = ? AND ' . $w[0];
+        $bind = array_merge([(int) $pid], $w[1]);
         try {
-            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale,
-                [(int) $pid, $cut, $at]);
+            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale, $bind);
             if (!isset($r[0][0])) return 0;
             $runId = (int) $r[0][0];
             $o = ScanOutcome::derive(['expired' => true]);
@@ -1878,9 +1912,9 @@ final class SqlScanStore implements ScanStore
                     terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = 0,
                     not_examined = 0, lease_epoch = lease_epoch + 1, updated_at = ?'
                 . $stale . ' AND run_id = ?',
-                [ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
-                 substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'],
-                 $at, (int) $pid, $cut, $at, $runId]);
+                array_merge([ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
+                    substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'], $at],
+                    $bind, [$runId]));
             if ($this->db->affected() !== 1) return 0;
         } catch (ScanStoreUnavailable $e) {
             throw $e;

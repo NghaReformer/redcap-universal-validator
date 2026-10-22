@@ -35,9 +35,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            the run's plan row, which nothing in the module
  *                            does while a run plans (review R5-9). Null skips
  *                            that case.
+ * @param callable|null $setRun (ScanStore $store, int $runId, array $cols) => void:
+ *                            write run columns as stored, standing in for the
+ *                            hours between two writes that the reaper's clocks
+ *                            measure (review rv10a1-1). Null skips those cases.
  */
 function storeContract(callable $newStore, $label, callable $age, ?callable $clocked = null,
-                       ?callable $dropPlan = null)
+                       ?callable $dropPlan = null, ?callable $setRun = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -1453,6 +1457,33 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $sl->claimPlan($rl, 'p1', (int) $sl->run(787, $rl)['lease_epoch'], 30 * 3600, 3);
     $C('reap: a run whose lease is still live is not abandoned',
         $sl->expireAbandoned(787, 24, 'cron', $later) === 0);
+
+    // THE CLOCK IS THE STATUS PAGE'S (review rv10a1-1). In catch-up and the two
+    // finalizers nothing moves progress_at and nothing renews the lease, and
+    // every step moves updated_at: the last record finished thirty hours ago,
+    // the finalizer touched the run five seconds ago, and the page calls it
+    // working. Scanning keeps the progress clock, because there updated_at is
+    // what a claim refreshes on a run whose every batch is refused.
+    if ($setRun !== null) {
+        $long = gmdate('Y-m-d H:i:s', time() - 30 * 3600);
+        $recent = gmdate('Y-m-d H:i:s', time() - 5);
+        foreach (array_merge(ScanPhase::ON_THE_UPDATE_CLOCK, [ScanPhase::SCANNING]) as $i => $ph) {
+            $sp = $newStore();
+            $pp = 788 + $i;
+            $rp = (int) $sp->startRun($pp, ['created_by' => 'alice'])['run']['run_id'];
+            $setRun($sp, $rp, ['phase' => $ph, 'progress_at' => $long, 'updated_at' => $recent,
+                               'lease_expires_at' => null]);
+            $onUpdate = $ph !== ScanPhase::SCANNING;
+            $C('reap: in ' . $ph . ', a run touched seconds ago after thirty hours without a record '
+                . ($onUpdate ? 'is working, not abandoned' : 'is abandoned: a touch is no progress there'),
+                $sp->expireAbandoned($pp, 24, 'cron') === ($onUpdate ? 0 : 1));
+            if (!$onUpdate) continue;
+            $setRun($sp, $rp, ['updated_at' => $long]);
+            $C('reap: and in ' . $ph . ', once nothing has touched it for the window either, it is expired',
+                $sp->expireAbandoned($pp, 24, 'cron') === 1
+                && $sp->run($pp, $rp)['terminal'] === ScanOutcome::EXPIRED);
+        }
+    }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

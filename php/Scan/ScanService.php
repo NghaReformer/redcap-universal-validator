@@ -71,8 +71,13 @@ final class ScanService
      * and `updated_at` (which their cursor writes do move) is the better clock.
      * In scanning it is the WORSE one: claim() refreshes it on a run whose every
      * batch is being refused, which is the wedge `progress_at` exists to show.
+     *
+     * The list is ScanPhase's, because the reaper reads the same clock: a run
+     * this page reported working was expired as abandoned by the cron and by
+     * another user's Start, since the reaper judged every phase by
+     * `progress_at` alone (review rv10a1-1).
      */
-    const PHASES_ON_THE_UPDATE_CLOCK = [ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP];
+    const PHASES_ON_THE_UPDATE_CLOCK = ScanPhase::ON_THE_UPDATE_CLOCK;
 
     /** @var object the module */
     private $module;

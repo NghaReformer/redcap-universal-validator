@@ -261,6 +261,13 @@ $runRow = function ($runId) use ($dbA) {
     // 973: a whole-project scan, then one of a single group, both complete.
     $w1 = $plant(973, 2);
     $s2 = $plant(973, 1, null, true, array('scope_dag' => '7'));
+    // 974: its last record finished thirty hours ago and its finalizer touched
+    // it ten seconds ago (review rv10a1-1). The status page calls it working;
+    // the census must not name it.
+    $fin = $plant(974, 1, null, false);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'unique-finalize', progress_at = '"
+        . gmdate('Y-m-d H:i:s', time() - 30 * 3600) . "', updated_at = '" . gmdate('Y-m-d H:i:s', time() - 10)
+        . "', lease_expires_at = '" . gmdate('Y-m-d H:i:s', time() - 29 * 3600) . "' WHERE run_id = " . (int) $fin['run']);
 
     $logs = array();
     $rec = new UvRecordingDb($dbA);
@@ -271,6 +278,10 @@ $runRow = function ($runId) use ($dbA) {
     check('reap pass: finished in one pass, the lap complete', $r['out']['more'] === 0 && $r['state']['after'] === 0);
     check('reap pass: the abandoned run is expired', $runRow($stale['run'])[0] === ScanOutcome::EXPIRED
         && $r['out']['runs_expired'] === 1);
+    $named974 = array_filter($rec->matching('select', array('SELECT run_id FROM', 'lease_expires_at')),
+        function ($s) { return in_array(974, $s[2], true); });
+    check('reap pass: a run finalising now is not named by the census, however old its last record',
+        $runRow($fin['run'])[0] === null && $named974 === array());
     check('reap pass: the free slots above the lowered limit are gone (W1-N1)',
         $r['out']['slots_removed'] === 3
         && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_worker_slot'))[0][0] === 2);
@@ -312,7 +323,7 @@ $runRow = function ($runId) use ($dbA) {
 {
     // The projects above are done with; the lap below starts at the first of
     // these, so the ticking clock's arithmetic is about them alone.
-    foreach (array(970, 971, 972, 973) as $p) uv_clear_project($dbA, $p);
+    foreach (array(970, 971, 972, 973, 974) as $p) uv_clear_project($dbA, $p);
     $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
     // 980: kept raw values under a 30-day window; the project now keeps none.
     $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));

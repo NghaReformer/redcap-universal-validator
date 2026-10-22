@@ -365,10 +365,13 @@ final class ScanRetention
             return $store->expireAbandoned(self::project($pid), $staleHours, $actor, $now);
         }
         $t = $now === null ? time() : (int) $now;
+        // The store's own predicate, so this read names exactly the projects
+        // the store will reap (review rv10a1-1: it judged every phase by the
+        // progress clock alone).
+        $w = SqlScanStore::staleWhere(gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600),
+            gmdate('Y-m-d H:i:s', $t));
         $rows = $this->db->select('SELECT DISTINCT project_id FROM ' . Schema::table('scan_run')
-            . ' WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY project_id',
-            [gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600), gmdate('Y-m-d H:i:s', $t)]);
+            . ' WHERE ' . $w[0] . ' ORDER BY project_id', $w[1]);
         $n = 0;
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;

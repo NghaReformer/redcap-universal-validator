@@ -180,6 +180,20 @@ $prefix = function ($key, $table, $n) use ($A) {
         . 'however old updated_at looks',
         $ret->expireAbandoned(1) === 0);
 
+    // IN A FINALISING PHASE updated_at IS PROGRESS TOO (review rv10a1-1):
+    // nothing there moves progress_at, every step moves updated_at, and the
+    // status page reads the later of the two. The installation-wide read
+    // names no project for such a run, however old its last record.
+    $phaseWas = $store->run(800, $rid)['phase'];
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'unique-finalize',"
+        . " progress_at = '2000-01-01 00:00:00', updated_at = UTC_TIMESTAMP() WHERE run_id = " . $rid);
+    $recR = new UvRecordingDb($dbA);
+    check('retention: a run finalising now is not abandoned, and no project is named for it',
+        (new \INSPIRE\UniversalValidator\Scan\ScanRetention($recR))->expireAbandoned(1) === 0
+        && $recR->matching('select', array('SELECT run_id FROM')) === array());
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . $phaseWas . "',"
+        . ' progress_at = UTC_TIMESTAMP() WHERE run_id = ' . $rid);
+
     // Now age the PROGRESS clock, which is the one the predicate reads.
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET progress_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
