@@ -393,11 +393,17 @@ $REV = 820;
     $before = $plantRun($dbA, $T, 2, '2999-01-01 00:00:00');
     $ret = new ScanRetention($dbA);
     $ret->revokePreviews($T, 5, null, 50);
-    $after = $plantRun($dbA, $T, 2, '2999-01-01 00:00:00', false, ['values_state' => 'value']);
+    $rec = new UvRecordingDb($dbA);
+    $after = $plantRun($rec, $T, 2, '2999-01-01 00:00:00', false, ['values_state' => 'value']);
     $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
         . ' WHERE run_id = ?', [$after['run']]);
     check('revision: a run started after the bump starts at the revision it wrote',
         is_array($before) && is_array($after) && (int) $row[0][0] === 5 && $row[0][1] === 'value');
+    $read = $rec->matching('select', ['SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')]);
+    $rkey = $read ? uv_explain_key($A, $read[0][1], $read[0][2]) : '';
+    echo '  plan start revision read: ' . ($read ? implode(' ', uv_explain_rows($A, $read[0][1], $read[0][2])) : '-') . "\n";
+    check('revision: and the start reads it in one statement, through a project-leading key',
+        count($read) === 1 && $rkey !== '' && $prefix($rkey, 'scan_run', 1) === ['project_id']);
     $again = $ret->revokePreviews($T, 5, null, 50);
     $row = $dbA->select('SELECT policy_revision, values_state FROM ' . Schema::table('scan_run')
         . ' WHERE run_id = ?', [$after['run']]);
