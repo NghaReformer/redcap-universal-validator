@@ -1368,6 +1368,25 @@ namespace INSPIRE\UniversalValidator\Scan {
     $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
     check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
         $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
+    // And reads its aggregates for that only once the budget it froze is
+    // spent: below it nothing was left out, and a status poll reads none.
+    $frozen = json_encode(['maxFindings' => 10, 'maxBytes' => 1000]);
+    $noAgg = (new FaultyStore($uns))->failFrom('aggregates');
+    $askAgg = function (array $over) use ($noAgg, $uns, $uid) {
+        try {
+            return ScanPromotion::findingsOf($noAgg, array_merge($uns->run(822, $uid), $over));
+        } catch (ScanStoreUnavailable $e) {
+            return 'read';
+        }
+    };
+    check('rv10b1-3: a working run below the budget it froze reads no aggregates for its count',
+        $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen]) === 4);
+    check('rv10b1-3: one at the findings limit, or the bytes limit, or with no budget to read, does',
+        $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 0, 'policy_json' => $frozen]) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 1000, 'policy_json' => $frozen]) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => '{']) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => json_encode(['maxBytes' => 1000])]) === 'read');
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
             $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
