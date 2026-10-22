@@ -369,11 +369,42 @@ $runRow = function ($runId) use ($dbA) {
         && $f2['out']['runs_expired'] === 1);
 }
 
+// -- THE WRITE ASKS THE READ'S QUESTION AGAIN (review rv10a2-6) -----------------
+//
+// The run's worker comes back between expireAbandoned()'s read and its write:
+// on the second connection it commits progress (977), or renews its lease
+// without progress (978). The UPDATE carries the whole predicate again, so
+// neither run is touched and nothing is audited.
+{
+    $races = array(
+        977 => 'progress_at = UTC_TIMESTAMP()',
+        978 => "lease_owner = 'w-back', lease_expires_at = UTC_TIMESTAMP() + INTERVAL 5 MINUTE",
+    );
+    foreach ($races as $rp => $back) {
+        $rr = $plant($rp, 1, null, false);
+        $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+            . "', lease_expires_at = NULL WHERE run_id = " . (int) $rr['run']);
+        $hook = new UvHookDb($dbA);
+        $hook->before = function ($kind, $sql, array $params) use ($B, $rr, $back) {
+            if ($kind === 'exec' && strpos($sql, 'lease_epoch = lease_epoch + 1') !== false) {
+                $B->query('UPDATE ' . Schema::table('scan_run') . ' SET ' . $back . ' WHERE run_id = ' . (int) $rr['run']);
+            }
+        };
+        $n = (new SqlScanStore($hook))->expireAbandoned($rp, 24, 'cron');
+        $after = (new SqlScanStore($dbA))->run($rp, $rr['run']);
+        $aud = (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . ' WHERE project_id = ? AND event = ?', array($rp, ScanStore::AUDIT_EXPIRE))[0][0];
+        check('expire race (' . ($rp === 977 ? 'progress' : 'lease') . '): a run whose worker came back between the read '
+            . 'and the write is left alone, and nothing is audited',
+            $n === 0 && $after['terminal'] === null && $aud === 0);
+    }
+}
+
 // -- THE RETENTION PASS: revocation, purge, the value sweep ---------------------
 {
     // The projects above are done with; the lap below starts at the first of
     // these, so the ticking clock's arithmetic is about them alone.
-    foreach (array(970, 971, 972, 973, 974, 975, 976) as $p) uv_clear_project($dbA, $p);
+    foreach (array(970, 971, 972, 973, 974, 975, 976, 977, 978) as $p) uv_clear_project($dbA, $p);
     $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
     // 980: kept raw values under a 30-day window; the project now keeps none.
     $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
