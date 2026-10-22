@@ -898,6 +898,19 @@ printable ASCII (VAL-1), the regex constructs that JavaScript and PCRE read
 differently (`.`, `\s`, `\S`, negated classes, astral characters) and the
 512-unit length cap (VAL-12).
 
+## `tests/mysql/` — the real-database suite
+
+`tests/mysql/cases/justified.php` checks `uv_finding.justified` (@UVJUSTIFY,
+schema version 6) on a real server. It covers the column on a fresh install
+and after migrating a version-5 installation that holds findings (run again,
+and run with the column added but the version row lost); the 1 and 0 the
+store writes and `FindingRowMapper` reads back, in both stores; the keys
+that leave the flag out of a finding's identity, so a finding saved again
+with its reason given becomes a new version and the same identity twice in
+one batch is refused; the rollup's open and justified counts, every page
+read through `ix_page_v2`; and a run whose only findings are justified,
+promoted clean.
+
 ## CI
 
 `.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite
