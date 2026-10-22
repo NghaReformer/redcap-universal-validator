@@ -2232,6 +2232,43 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R5-5 E2E: a design change during a run still ends it failed, as a change',
         $rs5->run(163, $r5run)['terminal'] === ScanOutcome::FAILED && $rw['stop'] === 'changed');
 
+    // -- hashed record ids are part of the policy (W10BF-2) ---------------------
+    //
+    // "log-values" = none never reached the policy as hashRecordIds, so
+    // ScanPolicy::tightened()'s branch for it could not fire: a project
+    // switched to hashed record ids mid-run was not a tightening.
+    $hs = new ArrayScanStore();
+    $hm = new \E2eModule($hs);
+    $hm->proj['log-values'] = 'hashed';
+    $h0 = (new ScanService($hm, $hs))->start(164);
+    $hrun = (int) $h0['run_id'];
+    $hpol = json_decode((string) $hs->run(164, $hrun)['policy_json'], true);
+    check('W10BF-2: a run on a project that logs record ids freezes hashRecordIds false',
+        is_array($hpol) && array_key_exists('hashRecordIds', $hpol) && $hpol['hashRecordIds'] === false);
+    $hm->proj['log-values'] = 'none';
+    $hw = (new ScanService($hm, $hs))->work(164, $hrun);
+    $hrow = $hs->run(164, $hrun);
+    check('W10BF-2: switching the project to hashed record ids mid-run stops the run as a privacy tightening',
+        $hrow['terminal'] === ScanOutcome::CANCELLED
+        && strpos((string) $hrow['terminal_reason'], 'privacy settings were tightened') !== false
+        && $hw['ok'] === false && strpos((string) $hw['why'], 'privacy settings changed') !== false
+        && (int) $hrow['manifest_done'] === 0);
+    $ns = new ArrayScanStore();
+    $nm = new \E2eModule($ns);
+    $nm->proj['log-values'] = 'none';
+    $n0 = (new ScanService($nm, $ns))->start(165);
+    $nrun = (int) $n0['run_id'];
+    $npol = json_decode((string) $ns->run(165, $nrun)['policy_json'], true);
+    check('W10BF-2: a run on a "none" project freezes hashRecordIds true',
+        is_array($npol) && isset($npol['hashRecordIds']) && $npol['hashRecordIds'] === true);
+    $nm->proj['log-values'] = 'raw';
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($nm, $ns))->work(165, $nrun);
+        if (empty($w['ok']) || $ns->run(165, $nrun)['terminal'] !== null) break;
+    }
+    check('W10BF-2: and loosening it mid-run is no tightening: the run finishes complete',
+        $ns->run(165, $nrun)['terminal'] === ScanOutcome::COMPLETE);
+
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();
     $km = new \E2eModule($ks);

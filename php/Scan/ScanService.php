@@ -1892,7 +1892,22 @@ final class ScanService
         return null;
     }
 
-    /** The effective policy: the system maximum, then whatever the project asked for. */
+    /**
+     * The effective policy: the system maximum, then whatever the project asked for.
+     *
+     * PLUS THE RECORD-ID POSTURE (W10BF-2). "log-values" = none is the mode
+     * for a site whose record ids are themselves identifying, and the legacy
+     * report hashes its ids under it (UniversalValidator::scanPlan()). This
+     * policy never carried it, so ScanPolicy::tightened()'s hashRecordIds
+     * branch could not fire: a project switched to "none" while a run was
+     * working was not a tightening, and the run went on under the posture it
+     * had begun with. Resolved here, as the legacy plan resolves it, and
+     * frozen into policy_json with the rest. Not in ScanPolicy::resolve(),
+     * whose other caller (the maintenance pass) does not read the setting
+     * and would then state a posture it never asked about. A read that fails
+     * is not "none", which is the legacy answer too (logMode()); a run frozen
+     * that way and read as "none" later is a tightening, and stops.
+     */
     private function policy($pid)
     {
         $sys = [];
@@ -1907,7 +1922,9 @@ final class ScanService
                   'scan-max-detail-findings', 'scan-max-detail-bytes'] as $k) {
             $prj[$k] = $this->setting($k, $pid);
         }
-        return ScanPolicy::resolve($sys, $prj);
+        $policy = ScanPolicy::resolve($sys, $prj);
+        $policy['hashRecordIds'] = ($this->setting('log-values', $pid) === 'none');
+        return $policy;
     }
 
     /**
