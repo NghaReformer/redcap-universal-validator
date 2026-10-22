@@ -810,19 +810,20 @@ entry. **Do not assume import/API writes are audited until you have verified it 
 your own instance** (the check is in [`TESTING.md`](TESTING.md)). Browser form and
 survey entry are the paths you can count on.
 
-Since 1.4.0 there is a reliable way to catch what the hook may have missed:
-the **Validation scan** page (left project menu, design rights) re-runs every
-rule over every saved record on demand — run it after bulk imports and before
-data locks/exports, and work through its CSV.
+The Validation scan page (left project menu, design rights) catches what
+the hook may have missed: it re-runs every rule over every saved record on
+demand. Run it after bulk imports and before data locks and exports. An
+administrator has to turn it on first, for the server and for the project
+(README, "The Validation scan"). The page shows how many records it has checked
+and how many findings it has, and whether the result can be called clean. It
+has no list of the findings and no download yet, so it tells you whether a
+project needs attention, not where.
 
-Two things about that page, both since 1.6.2. If you work inside a **Data Access
-Group** and the page says *"Your Data Access Group could not be resolved, so
-there is no scope to scan"*, that is deliberate and it is not a bug in your
-project: the page cannot work out which records are yours, and it will refuse
-rather than scan nothing and report the project clean. Ask an administrator to
-check your group assignment. And the on-screen table stops at **1,000 rows** on
-projects with more violations than that — the count above the table, and the
-downloaded CSV, always cover every violation found.
+If you work inside a Data Access Group and the page says *"Your Data Access
+Group could not be resolved, so there is no scope to scan"*, that is deliberate
+and it is not a bug in your project: the page cannot work out which records are
+yours, and it will refuse rather than scan nothing and report the project clean.
+Ask an administrator to check your group assignment.
 
 ### Privacy modes for the log
 

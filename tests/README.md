@@ -67,6 +67,7 @@ php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the au
 php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
+php  tests/rule_scope_php.php          # a live lookup builds only its field's rules, as the full build has them (PRF-3)
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract

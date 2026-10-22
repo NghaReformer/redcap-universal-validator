@@ -3360,15 +3360,15 @@ var QRID_WHEN = (function(){
      a 500ms interval (max 20 tries) plus a MutationObserver. A target that
      never appears is an off-page ref — the snapshot covers it, so giving up
      quietly is correct. */
-  /* Only a TIMER tick counts as a try. requestField() sweeps once per
-     requested ref, so a rule watching 84 codes used to spend every pending
-     target's 20 tries in one synchronous burst, and a late-rendered
-     autocomplete input then never bound at all. */
+  /* Only a TIMER tick counts as a try. requestField() used to sweep once per
+     requested ref, so a rule watching 84 codes spent every pending target's
+     20 tries in one synchronous burst, and a late-rendered autocomplete input
+     then never bound at all. */
   function sweep(tick){
     var remaining = [];
     for(var i = 0; i < targets.length; i++){
       var t = targets[i];
-      if(tryBind(t)) continue;
+      if(t.dead || bindTarget(t)) continue;
       if(tick) t.tries = (t.tries || 0) + 1;
       if((t.tries || 0) < 20) remaining.push(t);
     }
@@ -3376,27 +3376,63 @@ var QRID_WHEN = (function(){
     if(!targets.length) stopSweep();
     return !targets.length;
   }
+  /* A field's own element tells which of its other targets can ever appear:
+     radio buttons sit beside the hidden input that carries a radio's answer,
+     and REDCap builds the autocomplete box over a dropdown's select. A text
+     input or a textarea has neither, so once it binds those targets are
+     dropped, and no later sweep looks for them again (PRF-4). */
+  function bindTarget(t){
+    if(!tryBind(t)) return false;
+    if(t.siblings){
+      var els = document.getElementsByName(t.name), hidden = false, select = false;
+      for(var i = 0; i < els.length; i++){
+        var tag = (els[i].tagName || "").toLowerCase();
+        if(tag === "select") select = true;
+        else if(tag === "input" && (els[i].type || "").toLowerCase() === "hidden") hidden = true;
+      }
+      if(!hidden) t.siblings.radio.dead = true;
+      if(!select) t.siblings.ac.dead = true;
+    }
+    return true;
+  }
+  /* The new target, or null when that name was already asked for. */
   function queueTarget(name, field, events, byId){
     var key = (byId ? "id:" : "name:") + name;
-    if(queued[key]) return;
+    if(queued[key]) return null;
     queued[key] = true;
-    targets.push({ name: name, id: byId ? name : null, field: field, events: events, tries: 0 });
+    return { name: name, id: byId ? name : null, field: field, events: events, tries: 0 };
   }
+  /* Only the targets this call adds are looked up now. Sweeping every pending
+     target on each call repeated every earlier failed lookup once per field,
+     so a page of n referenced fields made about n squared lookups at boot
+     (PRF-4). A target that is not on the page yet waits for the timer and the
+     MutationObserver. */
   function requestField(f, code){
+    var fresh;
     if(code !== null){
       // classic REDCap: __chk__…_RC_code is the real checkbox and fires events.
-      queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]);
       // REDCap 17.x: that element is a hidden mirror (no events); the VISIBLE
       // checkbox shares the name __chkn__<field> — bind there so a live toggle
       // still re-evaluates the gate (LIVE-FOUND, see QRID_readCheckbox).
-      queueTarget("__chkn__" + f, f, ["change", "click"]);
+      fresh = [queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]),
+               queueTarget("__chkn__" + f, f, ["change", "click"])];
     } else {
-      queueTarget(f, f, ["input", "change"]);
-      queueTarget(f + "___radio", f, ["change", "click"]);
-      queueTarget("rc-ac-input_" + f, f, ["autocompleteselect", "autocompletechange", "change"], true);
+      var own = queueTarget(f, f, ["input", "change"]);
+      var radio = queueTarget(f + "___radio", f, ["change", "click"]);
+      var ac = queueTarget("rc-ac-input_" + f, f, ["autocompleteselect", "autocompletechange", "change"], true);
+      if(own && radio && ac) own.siblings = { radio: radio, ac: ac };
+      fresh = [own, radio, ac];
     }
-    if(typeof document === "undefined" || !document.getElementsByName) return;
-    if(sweep()) return;
+    var lookups = typeof document !== "undefined" && !!document.getElementsByName;
+    var waiting = false;
+    for(var i = 0; i < fresh.length; i++){
+      var t = fresh[i];
+      if(!t) continue;
+      if(lookups && (t.dead || bindTarget(t))) continue;
+      targets.push(t);
+      waiting = true;
+    }
+    if(!lookups || !waiting) return;
     if(timer === null && typeof setInterval === "function"){
       timer = setInterval(function(){ sweep(true); }, 500);
     }

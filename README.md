@@ -1041,91 +1041,63 @@ Data Import Tool import on REDCap 17.0.6, and may not run for the API), or
 records entered **before a rule existed**. The
 **Validation scan** project page closes that gap: it runs every configured
 rule — check-character/format, constraint, required, unique, and choice
-filtering — over every saved record and lists each violation with a CSV export.
+filtering — over every saved record and stores what it finds.
 
-- **Where:** the "Validation scan" link on the project's left menu (visible to
-  users with design rights; the page re-checks). Records are read in chunks, and
-  since 1.7.0 findings are handed to the writer as they are produced rather than
-  collected into one array first.
-- **It is still bounded by the project, and that is not yet fixed.** Three things
-  still grow with the data and are held until the scan ends: the record-id list,
-  the unique-rule candidates, and one note per record that could not be read. The
-  export additionally spools the whole report to a temporary file before sending
-  a byte, so it needs disk for the full report and produces no output until the
-  scan finishes. On a project large enough for that to matter the request will
-  reach a proxy timeout first. Removing these is the durable-scan work, not
-  something this release did. The scan takes a **budget** — 75% of the server's execution
-  limit, 70% of its memory limit — and stops rather than being killed: both
-  limits are uncatchable fatals that would otherwise render a blank page with
-  nothing recording that the project was not examined. A stopped scan reports
-  `incomplete`, counts the records it did not reach, and says plainly that
-  duplicates are under-reported, because uniqueness is the one check that needs
-  the whole project.
-> **The project-wide scan is temporarily withdrawn (1.8.9).** The page explains
-> this and starts nothing; the CSV route answers 503. It is being rebuilt as a
-> resumable background job that can cover a project of any size and record
-> exactly what it covered, per `reports/scan-rebuild-plan-2026-08-17.md`. The
-> description below is what it does when it returns. **Live form validation, the
-> save-time audit and the uniqueness check are unaffected and continue to run.**
-
-- **What the report says.** Record, Data Access Group, event, instrument,
-  instance, field and field label; the **offending value**; the rule number, the
-  rule's own name, and **what is wrong in plain English** rather than a reason
-  code. Columns that do not apply to a project's shape are absent rather than
-  empty: a classic project has no Event column, a project without groups has no
-  DAG column. Dropping the Event column is a claim that every finding is in the
-  same event, so it is kept whenever the event map cannot be read — showing raw
-  event ids, and saying why. The wording comes from `php/messages/catalog.json`, which the
-  browser and the server both read, so the sentence a respondent saw and the
-  sentence in the report cannot drift apart.
-- **Values are a policy choice.** *Validation scan report* in the module's
-  project settings: show locations only (the default), redact the fields REDCap
-  marks as an **Identifier**, or show every value. Whatever the project chooses
-  is capped by the reader's own export rights: raw values reach a user with Full
-  Data Set export rights, and a user with no export rights never sees one.
-  Redaction **fails closed** — an unreadable data dictionary withholds every
-  value, because a dictionary that cannot be read cannot clear a field, and an
-  unreadable setting falls back to locations rather than to disclosure. A report
-  is readable by anyone with design rights, which is a wider audience than
-  REDCap's record-level access control, so choose accordingly. A finding with no
-  value to show, such as a blank required field, renders an empty cell — it never
-  claims something was withheld.
+- **Off until an administrator turns it on.** Two switches must both be on: the
+  system setting *Validation scan — enable the durable, resumable scan on this
+  installation* (`scan-system-enable-durable`), and the project setting *use the
+  durable scan for this project* (`scan-enable-durable`). Turning the system
+  switch on creates the scan's tables. While either is off, the page says the
+  scan is unavailable and reads no records. Pilot it on a real project first
+  ([`docs/TESTING.md`](docs/TESTING.md), "Durable validation scan").
+- **Where:** the "Validation scan" link on the project's left menu. Starting a
+  run needs design rights, read access to every instrument the rules read,
+  Full Data Set export rights (the run stores values), and a Data Access Group
+  the module can resolve, or none.
+- **How it runs.** Start begins a run. The page then asks the server for a few
+  seconds of work at a time, so no request holds the whole project and no proxy
+  timeout ends the scan. Closing the tab pauses the run; the Continue button carries
+  on from where it stopped, and Stop ends it. A project has one run at a time,
+  and `scan-system-max-concurrent-projects` (default 2) caps how many projects
+  are scanned at once. A record that cannot be read is retried
+  (`scan-system-record-attempts`, default 3), then recorded as unread, and the
+  run reports itself incomplete. A run that makes no progress for
+  `scan-system-stale-run-hours` (default 24) counts as abandoned.
+- **What the page shows.** The records checked out of the total, with a
+  percentage; the number of findings so far; how many finding rows, and how many
+  bytes of values, are stored; and, when the run ends, whether the result can be
+  called clean. A run with a rule it could not evaluate, or with records it did
+  not reach, says so and is not called clean.
+- **No findings list and no download yet.** The findings are stored in the
+  scan's tables, but no page lists them and nothing exports them: the download
+  route (`pages/export.php`) answers 503. The exporter will stream a stored run
+  (Task 7 of `reports/scan-rebuild-plan-2026-08-17.md`). Until it ships, the scan
+  tells you whether a project has findings and how many, not where they are.
+- **What is kept, and for how long.** A run keeps at most
+  `scan-system-max-detail-findings` findings (default 1,000,000) and
+  `scan-system-max-detail-bytes` of detail (default 512 MiB); a project may set
+  lower limits. Past either limit the run keeps counting every finding, stops
+  storing detail, and labels itself truncated. Stored values expire after
+  `scan-value-retention-days` and finished runs are purged after
+  `scan-run-retention-days`; the server sets the most days a project may choose
+  (30 and 90 by default).
+- **Values are a policy choice.** The project setting *Validation scan report*
+  decides whether the offending value is stored beside each finding: locations
+  only (the default), Identifier fields redacted, or every value. Redaction
+  **fails closed**: an unreadable data dictionary withholds every value, and an
+  unreadable setting falls back to locations.
 - **Scope must be knowable.** A user confined to a Data Access Group whose
   group name cannot be resolved is **refused**, not silently scoped to
-  nothing: a scan of zero records is not a clean project. Inside a group-scoped
-  scan, a record whose group cannot be established is left out rather than
-  admitted, the count of such records is stated, and the scan reports
-  `incomplete` — a group that cannot be read is not this group.
-- **Nothing is skipped in silence.** A rule the scan cannot evaluate is listed
-  as a rule problem with the reason: a broken configuration, a field that cannot
-  be located on any instrument, a project-scope uniqueness rule under a
-  group-scoped scan, an instrument designated to no event (which collects
-  nothing, so the rules on it can never fire), or an instrument **you** do not
-  have access to.
-- **Design rights are not instrument rights.** The scan reads through REDCap's
-  export API with no user attached, so REDCap's own per-instrument access
-  control never runs on it. A rule that reads an instrument you cannot open is
-  therefore skipped **before** it is evaluated, and named as a rule problem — no
-  finding, no count and no label from that instrument reaches the report, which
-  filtering the rows afterwards could not promise. A rule spanning several
-  instruments is still checked on the ones you can open; a rule whose *condition*
-  reads a barred instrument is skipped outright, because the condition decides
-  every verdict. Rights that cannot be read clear nothing.
-- **The download needs export rights.** A user REDCap bars from its data export
-  tool can read the scan on screen, at whatever their value ceiling allows, and
-  cannot download the file.
+  nothing: a scan of zero records is not a clean project.
+- **Nothing is skipped in silence.** A rule the scan cannot evaluate counts as a
+  rule problem, with the reason: a broken configuration, a field that cannot be
+  located on any instrument, a project-scope uniqueness rule under a
+  group-scoped scan, or an instrument designated to no event (which collects
+  nothing, so the rules on it can never fire).
 - **Same engine, same verdicts.** The scan evaluates through the exact
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one
   aggregate pass over the scanned data (project/DAG/event scopes honored).
-- **A file that cannot certify says so three ways.** The download is a real CSV
-  from its own page, so REDCap's page chrome can never precede it. An incomplete
-  scan is marked by a banner at the top, by a terminal data row that survives
-  deleting the comment lines or sorting the sheet, and by `_INCOMPLETE` in the
-  filename, which survives the file being renamed and forwarded. A refused
-  export is not offered as a download at all. CSV cells are quoted and
-  formula-defused, and record ids follow the same privacy mode the audit log
-  uses.
 
 ## Methods supported
 

@@ -266,6 +266,8 @@ jobs:
         run: php tests/survey_shape_php.php
       - name: PHP condition kinds (an "assert" or "when" literal written as REDCap stores it, fields of one kind)
         run: php tests/condition_kinds_php.php
+      - name: PHP live lookups build only their field's rules; one read of the event/instance setting per build
+        run: php tests/rule_scope_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)
         run: php tests/crossform_php.php
       - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)

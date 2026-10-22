@@ -410,6 +410,11 @@ unmeasured pilot is an opinion.
 
 ## Validation scan and its report
 
+The report and download checks below (*The report*, the `_INCOMPLETE` file, the
+export header) were written for the synchronous scan of 1.8.8. The durable scan
+stores its findings but has no report page or download yet (`pages/export.php`
+answers 503), so skip those checks until its exporter ships.
+
 No mock can prove this section. The suite stands up a fake `REDCap` class, so it
 proves the module's logic and nothing about whether the real one behaves the way
 the module assumes. Everything below has to be done on a server.

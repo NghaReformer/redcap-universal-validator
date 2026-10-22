@@ -420,9 +420,12 @@ class AnnotationRules
      */
     public static function parseAllTags($annotation, array $opts = [])
     {
+        $annotation = (string) $annotation;
         $any = false;
         $out = [];
         foreach (ModeRegistry::tagMap() as $tag => $mode) {
+            // Most fields hold one tag: the others need no scan (PRF-3).
+            if (stripos($annotation, $tag) === false) continue;
             $parser = ModeRegistry::mode($mode)['parser'];
             foreach (self::extractTagsDetailed($annotation, $tag, ModeRegistry::bareValue($mode)) as $read) {
                 $any = true;
