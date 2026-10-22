@@ -1322,16 +1322,35 @@ final class ScanService
      */
     private function facetsOf(array $aggregates, ScanDimensions $dims, array $scope)
     {
+        $dag = $scope['dag'];
         $out = [];
         foreach (self::FINDINGS_FACETS as $name => $kind) {
-            $out[$name] = [];
+            // value => count, in the order the summary holds the values: one
+            // value is several rows when a group run's summary is split by
+            // group (RollupBuilder::step()), and one entry here.
+            $counts = [];
             foreach ($aggregates as $a) {
                 if (!isset($a['kind']) || $a['kind'] !== $kind) continue;
                 $v = (string) $a['axis1'];
                 if ($v === '') continue;
-                if ($name === 'group' && $scope['dag'] !== null && $v !== $scope['dag']) continue;
-                $out[$name][] = ['value' => $v, 'label' => $name === 'form' ? $dims->form($v) : $v,
-                                 'count' => (int) $a['cnt']];
+                // A GROUP READER'S COUNTS ARE THEIR GROUP'S (review rv11a1-4):
+                // the group facet's own row, and of every other facet the
+                // share filed under their group, which is what their pages
+                // hold. A count over every group's rows promised rows the page
+                // never returned, and told the reader how many other groups'
+                // findings each form held. A summary written before it was
+                // split names no group, and counts nothing for them.
+                if ($dag !== null) {
+                    $mine = $name === 'group' ? $v === $dag
+                          : (isset($a['axis2']) && (string) $a['axis2'] === $dag);
+                    if (!$mine) continue;
+                }
+                $counts["\0" . $v] = (isset($counts["\0" . $v]) ? $counts["\0" . $v] : 0) + max(0, (int) $a['cnt']);
+            }
+            $out[$name] = [];
+            foreach ($counts as $k => $c) {
+                $v = substr((string) $k, 1);
+                $out[$name][] = ['value' => $v, 'label' => $name === 'form' ? $dims->form($v) : $v, 'count' => $c];
             }
         }
         return $out;

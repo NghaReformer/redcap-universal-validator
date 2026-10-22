@@ -73,6 +73,8 @@ final class ScanWorker
      * batch whose every record left the group. work() answers `moved`.
      */
     private $walked = false;
+    /** @var bool the run being worked is scoped to one group: its summary is kept per group (rv11a1-4) */
+    private $groupRun = false;
 
     /**
      * @param array $deps {
@@ -341,6 +343,7 @@ final class ScanWorker
             // finalizer is bound to it below; a row without one binds nothing
             // and the finalizer then writes nothing (review R8-5).
             $seq = isset($run['run_seq']) ? (int) $run['run_seq'] : 0;
+            $this->groupRun = isset($run['scope_dag']) && $run['scope_dag'] !== null && $run['scope_dag'] !== '';
             $r = $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $seq, $opts, $keep);
             if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
@@ -592,7 +595,9 @@ final class ScanWorker
                 $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
                 if ($roll instanceof RollupBuilder) {
                     $mark = $budget->mark('rows');
-                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'));
+                    // A group run's counts per group (review rv11a1-4).
+                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'),
+                                     $this->groupRun);
                     $listed += max(0, (int) $r['rows']);
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {

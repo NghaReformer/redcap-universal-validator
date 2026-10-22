@@ -4350,6 +4350,39 @@ namespace INSPIRE\UniversalValidator\Scan {
         $okF['res']['ok'] === true && $okF['res']['rows'] === 10 && !$okF['lost']
         && strpos($okF['text'], '"# export_complete=1","rows=10"') !== false);
 
+    /* rv11a1-4  A GROUP READER'S FILTERS COUNT THEIR GROUP'S ROWS. B5's own
+     * fixture: a group-31 run in which R06 is filed under site_a, as a
+     * duplicate emitted after a move would be. Rows, expectedRows and the
+     * group facet held it out; the form, reason and type facets said 5. */
+    list($s8, $m8) = $wv($all10);
+    $m8->dagNames['R06'] = 'site_a';
+    $g8 = $wvRun($m8, $s8, 209, 31);
+    $mine8 = $wvPage($m8, $s8, 209, $g8, 31, ['limit' => 100]);
+    $one = function ($v, $c) { return [['value' => $v, 'label' => $v, 'count' => $c]]; };
+    check('rv11a1-4: the group reader is shown four rows, and every facet counts four',
+        count($mine8['rows']) === 4 && $mine8['report']['expectedRows'] === 4
+        && $mine8['facets']['form'] === $one('fa', 4) && $mine8['facets']['reason'] === $one('required-blank', 4)
+        && $mine8['facets']['type'] === $one('required', 4) && $mine8['facets']['group'] === $one('site_b', 4));
+    check('rv11a1-4: so a filter returns what its facet promised',
+        count($wvPage($m8, $s8, 209, $g8, 31, ['limit' => 100, 'filter' => ['form' => 'fa']])['rows']) === 4);
+    $other8 = $wvPage($m8, $s8, 209, $g8, null, ['limit' => 100]);
+    check('rv11a1-4 (control): an unconfined reader of the same run counts all five, once per value',
+        count($other8['rows']) === 5 && $other8['facets']['form'] === $one('fa', 5)
+        && $other8['facets']['reason'] === $one('required-blank', 5)
+        && $other8['facets']['group'] === [['value' => 'site_a', 'label' => 'site_a', 'count' => 1],
+                                           ['value' => 'site_b', 'label' => 'site_b', 'count' => 4]]);
+    $split8 = [];
+    foreach ($s8->aggregates($g8) as $a) {
+        if ($a['kind'] === RollupBuilder::K_FORM) $split8[$a['axis2']] = (int) $a['cnt'];
+    }
+    $w8 = $wvRun($m8, $s8, 210, null);
+    $whole8 = [];
+    foreach ($s8->aggregates($w8) as $a) {
+        if ($a['kind'] === RollupBuilder::K_FORM) $whole8[$a['axis2']] = (int) $a['cnt'];
+    }
+    check('rv11a1-4: a group run\'s summary is kept per group, and a whole-project run\'s is not',
+        $split8 === ['site_a' => 1, 'site_b' => 4] && $whole8 === ['' => 10]);
+
     \REDCap::$groupNames = $keptNames;
 }
 
