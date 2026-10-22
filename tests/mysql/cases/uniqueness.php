@@ -614,6 +614,80 @@ $NEIGHBOUR = uv_neighbour($PID);
         }
     }
 
+    // -- a record that left the run's group (review rv5b-1) -------------------
+    //
+    // Its candidate was written while it was in the group. Verifying it would
+    // re-read another group's record; and its version moved when it moved, so
+    // a versions fence would restart the group on every pass. The finalizer
+    // asks which candidates' records departed, deletes those candidates and
+    // settles the group over the rest: a group of three that loses one is a
+    // duplicate of two, and a group of two that loses one is a singleton.
+    $GEN5 = uv_generation('departed');
+    $put5 = function ($group, $rec) use ($A, $GEN5, $KEY, $PID) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $PID . ", " . $GEN5 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
+    };
+    $put5('TRIO', 'D1');
+    $put5('TRIO', 'D2');
+    $put5('TRIO', 'D3');
+    $put5('PAIR', 'D4');
+    $put5('PAIR', 'D5');
+    $gone5 = array();
+    foreach (array('D3', 'D5') as $r5) {
+        $gone5[\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $r5, $KEY)] = true;
+    }
+    $read5 = array();
+    $reader5 = function ($locs) use (&$read5) {
+        $out = array();
+        foreach ($locs as $l) {
+            $read5[$l['record']] = true;
+            $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array(substr($l['record'], 0, 1));
+        }
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    $rec5 = new UvRecordingDb($dbA);
+    $fin5 = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($rec5, array('pid' => $PID, 'seq' => 41,
+        'hmacKey' => $KEY, 'read' => $reader5,
+        'departed' => function (array $hashes) use ($gone5) {
+            return array_intersect_key($gone5, array_flip($hashes));
+        }));
+    for ($i = 0; $i < 50; $i++) {
+        $r = $fin5->step($GEN5, 10);
+        if ($r['done']) break;
+    }
+    $st5 = $fin5->status($GEN5);
+    check('rv5b-1 unique: a group whose departed records are dropped still settles',
+        $st5['done'] === true && $st5['blocking'] === 0 && $st5['published'] === 1);
+    check('rv5b-1 unique: and no departed record was re-read',
+        !isset($read5['D3']) && !isset($read5['D5']) && isset($read5['D1']) && isset($read5['D2']));
+    $dup5 = $dbA->select('SELECT record_id_bin FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1 ORDER BY record_id_bin',
+        array($PID, $GEN5));
+    $dupIds5 = array();
+    foreach ($dup5 as $row) $dupIds5[] = (string) $row[0];
+    check('rv5b-1 unique: the duplicate is reported for the records still in the group, and only them',
+        $dupIds5 === array('D1', 'D2'));
+    $left5 = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN5));
+    $pair5 = $dbA->select('SELECT phase, distinct_records FROM ' . Schema::table('unique_group')
+        . ' WHERE project_id = ? AND generation_id = ? AND distinct_records = 1', array($PID, $GEN5));
+    check('rv5b-1 unique: the departed candidates are gone, and the pair that lost one is a singleton',
+        (int) $left5[0][0] === 3 && count($pair5) === 1
+        && $pair5[0][0] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::G_SINGLETON);
+    $recount5 = $rec5->matching('select', array('COUNT(DISTINCT record_hash), MIN(lookup)', 'group_hmac = ?'));
+    if ($recount5) {
+        $k5 = uv_explain_keys($A, $recount5[0][1], $recount5[0][2]);
+        check('rv5b-1 unique: the recount of a group reads the candidate key, not the table',
+            is_array($k5) && (in_array('ix_group_v2', $k5, true) || in_array('uq_candidate_v2', $k5, true)));
+    } else {
+        check('rv5b-1 unique: the recount of a group reads the candidate key, not the table', false);
+    }
+
     foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
         $A->query('DELETE FROM ' . Schema::table($t));
     }

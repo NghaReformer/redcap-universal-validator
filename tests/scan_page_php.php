@@ -574,7 +574,7 @@ namespace {
 
         // C-1 SEAM. The scope value is compared downstream against three things
         // that all speak the NUMERIC group id: redcap_record_list.dag_id (via
-        // ScanPlanner::stream and RecordManifestSource::inScope) and
+        // ScanPlanner::stream and RecordManifestSource::scopeOf) and
         // $rights['group_id'] (via ScanAuthorization::scopeMatches). It used to
         // be the unique name, so every one of those comparisons failed: a
         // group-scoped run froze an empty manifest and called the project clean,
@@ -1869,6 +1869,42 @@ namespace {
         check('PREFILL: H10 and a withheld status with no sentence still gets one, never a count',
             $V::countsText(['ok' => true, 'withheld' => true, 'total' => 10, 'done' => 3]) === $AZ::WITHHELD);
 
+        // review rv5b-2 / rv5b-6. A withheld run that has ENDED is not
+        // promised its counts; a stopped or expired one is not said to have
+        // left records unchecked; and none says whether findings passed the
+        // detail budget.
+        $endedOf = function ($terminal, $coverage) use ($AZ) {
+            return $AZ::preFenceStatus(['ok' => true, 'phase' => 'terminal', 'terminal' => $terminal,
+                'coverage' => $coverage, 'detail' => 'truncated', 'total' => 5, 'done' => 5,
+                'settled' => 5, 'findings' => 3, 'active' => false, 'clean' => false]);
+        };
+        foreach (['cancelled', 'expired'] as $t) {
+            $pfE = $V::panelPrefill($endedOf($t, 'partial'));
+            check("PREFILL rv5b-2: a withheld run that was $t is told its counts cannot be shown",
+                $pfE['counts'] === $AZ::WITHHELD_ENDED);
+            check("PREFILL rv5b-2: and says it was stopped, not that records went unchecked ($t)",
+                strpos($pfE['done'], $V::STOPPED_WITHHELD) === 0
+                && strpos($pfE['done'], 'could not be checked') === false);
+            check("PREFILL rv5b-6: and says nothing of the detail budget ($t)",
+                strpos($pfE['done'], $V::DETAIL_TRUNCATED) === false);
+        }
+        foreach (['partial' => 'partial', 'failed' => 'failed', 'complete' => 'manifest-complete']
+                 as $t => $cov) {
+            $pfE = $V::panelPrefill($endedOf($t, $cov));
+            check("PREFILL rv5b-2: a withheld run that ended $t is not promised its counts either",
+                $pfE['counts'] === $AZ::WITHHELD_ENDED);
+            check("PREFILL rv5b-2 control: and keeps the sentence its coverage earns ($t)",
+                strpos($pfE['done'], $V::coverageSentence($cov)) === 0);
+            check("PREFILL rv5b-6: without a word about the detail budget ($t)",
+                strpos($pfE['done'], $V::DETAIL_TRUNCATED) === false);
+        }
+        check('PREFILL rv5b-2 control: a stopped run that is not withheld keeps its coverage sentence',
+            $V::endedSentence(['ok' => true, 'terminal' => 'cancelled', 'coverage' => 'partial'])
+            === $V::coverageSentence('partial'));
+        check('PREFILL rv5b-2: a withheld status with no sentence that has ended is not promised its counts',
+            $V::countsText(['ok' => true, 'withheld' => true, 'terminal' => 'cancelled'])
+            === $AZ::WITHHELD_ENDED);
+
         $end = $V::panelPrefill(['ok' => true, 'phase' => 'terminal', 'terminal' => 'complete',
             'coverage' => 'manifest-complete', 'detail' => 'complete', 'total' => 10,
             'done' => 10, 'findings' => 0, 'active' => false]);
@@ -2024,7 +2060,8 @@ namespace {
         $sentences = ['stalled', 'paused', 'stopping',
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
-                      'notCertified', 'ruleProblem', 'ruleProblems', 'withheld'];
+                      'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
+                      'withheldEnded', 'stoppedWithheld'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2035,7 +2072,7 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld'] as $k) {
+                  'withheld', 'withheldEnded', 'stoppedWithheld'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

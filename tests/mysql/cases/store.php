@@ -1289,6 +1289,59 @@ $SUPER = 787;
         && strpos($rec->log[0][1], 'FOR UPDATE') !== false);
 }
 
+// A RECORD THAT LEFT THE RUN'S GROUP (review rv5b-1): every statement depart()
+// and departedOf() send is read through a key. The manifest rows by
+// uq_run_record (run_id, record_hash), the findings by a key that begins
+// (project_id, generation_id, record_hash), as commitBatch()'s close is.
+{
+    $DPID = 964;
+    $ds = new SqlScanStore($dbA);
+    $dr = $ds->startRun($DPID, ['created_by' => 'alice', 'scope_dag' => '7']);
+    $drid = (int) $dr['run']['run_id'];
+    $dids = [];
+    for ($i = 1; $i <= 40; $i++) $dids[] = sprintf('DP%02d', $i);
+    $ds->writeManifest($drid, array_map(function ($id) {
+        return ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => '7'];
+    }, $dids));
+    $dep = (int) $ds->run($DPID, $drid)['lease_epoch'];
+    $dgen = (int) $ds->run($DPID, $drid)['generation_id'];
+    $dseq = (int) uv_run_seq($dbA, $drid);
+    $dbatch = ['bytes' => 0, 'records' => [], 'findings' => []];
+    foreach ($ds->claim($drid, 'w', $dep, 40) as $c) {
+        $dbatch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                                'state' => ScanStore::REC_DONE, 'version' => '5', 'claim' => $c['claim']];
+        $dbatch['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $DPID, 'generation_id' => $dgen,
+            'host_form' => 'fa', 'field' => 'x', 'check_type' => 'required',
+            'reason_code' => 'required-blank', 'record_id_bin' => $c['id_bin'],
+            'identity' => hash('sha256', 'dp' . $c['id_bin'], true), 'valid_from_seq' => $dseq,
+            'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    }
+    $ds->commitBatch($drid, 'w', $dep, $dbatch);
+    $ds->advancePhase($drid, $dep, ScanPhase::CATCH_UP);
+    $drec = new UvRecordingDb($dbA);
+    $dsr = new SqlScanStore($drec);
+    $dn = $dsr->depart($drid, $dep, [hash('sha256', 'DP07', true), hash('sha256', 'DP08', true)]);
+    $dof = $dsr->departedOf($drid, [hash('sha256', 'DP07', true), hash('sha256', 'DP09', true)]);
+    check('rv5b-1 depart: two records of forty leave the run, and departedOf() names the one asked',
+        $dn === 2 && $dof === [hash('sha256', 'DP07', true) => true]);
+    $keyOf = function ($kind, array $needles) use ($drec, $A) {
+        $q = $drec->matching($kind, $needles);
+        if (!$q) return '';
+        return uv_explain_key($A, str_replace('FOR UPDATE', '', $q[0][1]), $q[0][2]);
+    };
+    $rt = Schema::table('scan_record');
+    $kSel = $keyOf('select', ['FROM ' . $rt, 'record_hash IN', 'NOT IN']);
+    $kUpd = $keyOf('exec', ['UPDATE ' . $rt, 'record_hash IN']);
+    $kOf  = $keyOf('select', ['SELECT record_hash, state FROM ' . $rt]);
+    $kFind = $keyOf('exec', ['UPDATE ' . Schema::table('finding'), 'record_hash IN']);
+    check('rv5b-1 depart: the manifest rows are found, moved and asked about through uq_run_record',
+        $kSel === 'uq_run_record' && $kUpd === 'uq_run_record' && $kOf === 'uq_run_record');
+    check('rv5b-1 depart: and the findings are closed through a key that begins (project, generation, record)',
+        $kFind !== '' && array_slice(uv_index_columns($A, Schema::table('finding'), $kFind), 0, 3)
+            === ['project_id', 'generation_id', 'record_hash']);
+    echo '  plan depart: ' . $kSel . ' ' . $kUpd . ' ' . $kOf . ' ' . $kFind . "\n";
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

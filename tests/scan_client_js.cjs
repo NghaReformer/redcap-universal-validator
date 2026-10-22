@@ -141,6 +141,10 @@ UV.labels = {
   ruleProblems: '{n} rules could not be evaluated, so this result does not certify the project.',
   withheld: 'This scan covers one Data Access Group, so its counts are shown once it has confirmed '
           + 'which records belong to that group.',
+  withheldEnded: 'This scan covers one Data Access Group and ended before it confirmed which '
+               + 'records belong to that group, so its counts cannot be shown.',
+  stoppedWithheld: 'This scan was stopped before it confirmed which records belong to this Data '
+                 + 'Access Group, so it is not a complete picture of the group.',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -1063,6 +1067,39 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     els['uv-scan-counts'].textContent === withheld().withheldWhy
     && els['uv-scan-found'].textContent === ''
     && els['uv-scan-bar'].className === 'uv-bar uv-bar-indeterminate');
+
+  // review rv5b-2. A withheld run that has ENDED is not promised its counts,
+  // and a stopped (or expired) one is not said to have left records
+  // unchecked: its reader is shown no counts and cannot tell. The server
+  // sends the counts sentence; the page chooses the coverage one, as
+  // ScanPageView::endedSentence() does.
+  const endedW = (terminal, over) => withheld(Object.assign({ phase: 'terminal', terminal: terminal,
+    coverage: 'partial', active: false, mayCancel: false, clean: false,
+    withheldWhy: UV.labels.withheldEnded }, over || {}));
+  for (const t of ['cancelled', 'expired']) {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: endedW(t) }]);
+    UV.start(); await ticks(6);
+    check('rv5b-2 client: a withheld run that was ' + t + ' says it was stopped, not that records went unchecked',
+      els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedWithheld) === 0
+      && els['uv-scan-done'].textContent.indexOf('could not be checked') === -1
+      && els['uv-scan-counts'].textContent === UV.labels.withheldEnded);
+  }
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedW('partial') }]);
+  UV.start(); await ticks(6);
+  check('rv5b-2 client control: a withheld run that finished partial keeps the sentence its coverage earns',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.partial) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedW('cancelled', { withheldWhy: undefined }) }]);
+  UV.start(); await ticks(6);
+  check('rv5b-2 client: with no sentence from the server, an ended run still is not promised its counts',
+    els['uv-scan-counts'].textContent === UV.labels.withheldEnded);
+  const keptEndedLabels = UV.labels;
+  UV.labels = Object.assign({}, keptEndedLabels, { withheldEnded: undefined, stoppedWithheld: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedW('cancelled', { withheldWhy: undefined }) }]);
+  UV.start(); await ticks(6);
+  check('rv5b-2 client: and without the page\'s labels its own words are the server\'s',
+    els['uv-scan-counts'].textContent === keptEndedLabels.withheldEnded
+    && els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedWithheld) === 0);
+  UV.labels = keptEndedLabels;
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

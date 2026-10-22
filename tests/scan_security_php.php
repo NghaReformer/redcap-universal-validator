@@ -263,6 +263,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('read: the cross-scope refusal does not confirm the run exists',
             strpos($other['why'], '31') === false && strpos($other['why'], 'exist') === false
             && strpos($other['why'], 'another') === false);
+        // WORD FOR WORD (review rv5b-4): the comment above was the intent, and
+        // three different sentences were the code.
+        foreach (['read' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayRead($dagUser, $ENT, $scope);
+                  },
+                  'work' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayWork($dagUser, $ENT, $scope);
+                  },
+                  'cancel' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayCancel($dagUser, $ENT, $scope);
+                  }] as $verb => $ask) {
+            check("rv5b-4 $verb: another group's run is refused in the words a missing run gets",
+                $ask('31')['ok'] === false && $ask('31')['why'] === ScanAuthorization::NO_RUN);
+            check("rv5b-4 $verb: and so is a whole-project run",
+                $ask(null)['ok'] === false && $ask(null)['why'] === ScanAuthorization::NO_RUN);
+            check("rv5b-4 $verb control: the reader's own group's run is not refused",
+                $ask('7')['ok'] === true);
+        }
+        check('rv5b-4: the scope pre-check refuses the same way',
+            ScanAuthorization::mayTouchScope($dagUser, '31')['why'] === ScanAuthorization::NO_RUN
+            && ScanAuthorization::mayTouchScope($dagUser, null)['why'] === ScanAuthorization::NO_RUN
+            && ScanAuthorization::mayTouchScope($dagUser, '7')['ok'] === true
+            && ScanAuthorization::mayTouchScope(rights(), null)['ok'] === true);
 
         // Rights revoked mid-run stop reads; the run id does not restore them.
         check('read: revoked design rights stop reading an existing run',

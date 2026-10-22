@@ -1313,6 +1313,12 @@ namespace INSPIRE\UniversalValidator\Scan {
             public $dataTable = 'redcap_data'; public $hasData = true; public $dataFails = false;
             /** @var bool the data table's any-field read fails (and only that one) */
             public $anyFails = false;
+            /** @var ?string the one data table that holds the project's rows; null: every one does */
+            public $home = null;
+            /** @var int how many of the next reads of redcap_projects fail (rv5a-1) */
+            public $projectsFail = 0;
+            /** @var int how many of the next reads of the data table's __GROUPID__ rows fail (rv5a-2) */
+            public $groupsFail = 0;
             public $pages = ['index' => 0, 'data' => 0]; public $statusReads = 0;
             /** @var ?callable(object $db, string $which, int $n): void, before a page is answered */
             public $onPage = null;
@@ -1331,6 +1337,10 @@ namespace INSPIRE\UniversalValidator\Scan {
                         if ($this->stampColumn) $c[] = ['time_of_list_cache'];
                         return $c;
                     }
+                    if ($t === 'redcap_projects') return [['project_id'], ['data_table']];
+                    if ($this->home !== null && preg_match('/^redcap_data[0-9]*$/', $t)) {
+                        return [['project_id'], ['record'], ['field_name']];
+                    }
                     return [];
                 }
                 if (strpos($sql, 'FROM redcap_record_counts') !== false) {
@@ -1341,9 +1351,24 @@ namespace INSPIRE\UniversalValidator\Scan {
                         ? [$this->status, $this->stamp] : [$this->status]];
                 }
                 if (strpos($sql, 'FROM redcap_projects') !== false) {
+                    if ($this->projectsFail > 0) {
+                        $this->projectsFail--;
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
                     return $this->hasData ? [[$this->dataTable]] : [];
                 }
-                if (in_array('__GROUPID__', $params, true)) return [];
+                if (in_array('__GROUPID__', $params, true)) {
+                    // The data table's group rows: $dags, the same groups the index gives.
+                    if ($this->groupsFail > 0) {
+                        $this->groupsFail--;
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
+                    $o = [];
+                    foreach (array_slice($params, 2) as $w) {
+                        if (isset($this->dags[(string) $w])) $o[] = [(string) $w, $this->dags[(string) $w]];
+                    }
+                    return $o;
+                }
                 preg_match('/LIMIT (\d+)/', $sql, $m);
                 $lim = isset($m[1]) ? (int) $m[1] : PHP_INT_MAX;
                 $isIndex = strpos($sql, 'FROM redcap_record_list') !== false;
@@ -1360,14 +1385,17 @@ namespace INSPIRE\UniversalValidator\Scan {
                     $ids = $this->index;
                 } else {
                     if ($this->dataFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    // Another data table than the one holding the project holds none of its rows.
+                    $away = $this->home !== null && preg_match('/FROM (redcap_data[0-9]*)\b/', $sql, $tm)
+                         && $tm[1] !== $this->home;
                     if (strpos($sql, 'field_name = ?') !== false) {
                         array_shift($p);
-                        $ids = $this->data;
+                        $ids = $away ? [] : $this->data;
                     } else {
                         if ($this->anyFails && strpos($sql, ' IN (') === false) {
                             throw new \RuntimeException('Lock wait timeout exceeded', 1205);
                         }
-                        $ids = array_values(array_unique(array_merge($this->data, $this->extra)));
+                        $ids = $away ? [] : array_values(array_unique(array_merge($this->data, $this->extra)));
                     }
                 }
                 sort($ids, SORT_STRING);
@@ -1575,6 +1603,101 @@ namespace INSPIRE\UniversalValidator\Scan {
     });
     check('R5-2: a walk whose data table moved starts again once, over the new one, and finishes whole',
         $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 14);
+
+    // rv5a-1: THE WRONG DATA TABLE. The project lives in redcap_data2;
+    // redcap_data exists and holds none of its rows. One failed read of
+    // redcap_projects named redcap_data, R5-7 read that table's emptiness as
+    // the end of the list, and the manifest froze at what had been listed.
+    $homed = function () use ($churnDb, $thousand) {
+        $db = $churnDb($thousand);
+        $db->dataTable = 'redcap_data2';
+        $db->home = 'redcap_data2';
+        return $db;
+    };
+    // Begun on the data table (the cache was being rebuilt); request 4 opens
+    // with the cache still rebuilding, and its one redcap_projects read fails.
+    $db = $homed();
+    list($sA, $rA, $nA) = $drive($db, function ($d, $n) {
+        $d->status = 'PROCESSING';
+        if ($n === 4) $d->projectsFail = 1;
+    });
+    check('rv5a-1: a redcap_projects read that failed does not send the walk to redcap_data',
+        $whole($sA, $rA));
+    // The cache complete again by request 4: that request opens the index,
+    // whose data-table name failed to read, and the walk that has used the
+    // data table carries on over the one REDCap names.
+    $db = $homed();
+    list($sA, $rA) = $drive($db, function ($d, $n) {
+        $d->status = $n < 4 ? 'PROCESSING' : 'COMPLETE';
+        if ($n === 4) $d->projectsFail = 1;
+    });
+    check('rv5a-1: nor does one read when the index opened, for a walk carried on over the data table',
+        $whole($sA, $rA));
+    // No failed read at all: REDCap moves the project to redcap_data3 and
+    // resets the cache during page 5 of a slice over the index. The walk moved
+    // to the table it had read at open(), which no longer held the project.
+    $db = $homed();
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 5) {
+            $d->dataTable = 'redcap_data3';
+            $d->home = 'redcap_data3';
+            $d->status = 'NOT_STARTED';
+        }
+    };
+    list($sC, $rC) = $planWhole($db);
+    check('rv5a-1: a project moved to another data table mid-slice is listed whole from the table it moved to',
+        $whole($sC, $rC));
+    // Moved while the walk was reading the data table itself: the old table
+    // reads short, and only an end of list can freeze a manifest.
+    $db = $homed();
+    $db->status = 'PROCESSING';
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'data' && $n === 4) { $d->dataTable = 'redcap_data3'; $d->home = 'redcap_data3'; }
+    };
+    list($sD, $rD) = $planWhole($db);
+    check('rv5a-1: a data-table walk whose project moved under it starts again on the new table and is whole',
+        $whole($sD, $rD));
+    // A source opened over redcap_data2 is asked about a record after the move.
+    $db = $homed();
+    $db->status = 'PROCESSING';
+    $oE = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $db->dataTable = 'redcap_data3';
+    $db->home = 'redcap_data3';
+    check('rv5a-1: a source left on the old table cannot call a live record deleted',
+        $oE['ok'] === true && $oE['source']->exist(['R0500']) === ['R0500' => true]);
+    $db->home = null;
+    $db->data = array_values(array_diff($db->data, ['R0500']));
+    $db->dataTable = 'redcap_data2';
+    check('rv5a-1 control: the table it reads, still the project\'s, does say a deleted record is gone',
+        $oE['source']->exist(['R0500']) === ['R0500' => false]);
+
+    // rv5a-2: A PAGE WHOSE GROUPS COULD NOT BE READ. Every record is group 7's
+    // and the walk is on the data table, so each page's groups come from its
+    // __GROUPID__ rows. One of those reads failed; the page's rows went on
+    // ungrouped, the group-7 slice counted all of them out of scope and moved
+    // past them, and 100 of the group's records never reached the manifest.
+    $db = $churnDb($thousand);
+    $db->status = 'PROCESSING';
+    foreach ($thousand as $id) $db->dags[$id] = '7';
+    $sG = new ArrayScanStore();
+    $pG = (new ScanPlanner($sG, $walkKey))->plan(88, array_merge($walkReq, ['dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $ridG = (int) $pG['run']['run_id'];
+    $failedG = null;
+    for ($i = 1; $i <= 20 && $sG->run(88, $ridG)['phase'] === ScanPhase::PLANNING; $i++) {
+        if ($i === 3) $db->groupsFail = 1;
+        $stG = (new ScanPlanner($sG, $walkKey))->step(88, $ridG, array_merge($walkReq, ['dagFilter' => '7',
+            'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+            'budget' => $spentBudget(), 'owner' => 'req' . $i,
+            'epoch' => (int) $sG->run(88, $ridG)['lease_epoch']]));
+        if ($i === 3) $failedG = $stG;
+    }
+    check('rv5a-2: a page whose groups could not be read is a failed read, and lists nothing',
+        is_array($failedG) && $failedG['ok'] === false && $failedG['stop'] === 'read' && $failedG['listed'] === 0);
+    check('rv5a-2: so every record of the group is on the manifest, once',
+        $whole($sG, ['ok' => true, 'run' => ['run_id' => $ridG]])
+        && count($manifestIds($sG, $ridG)) === 1000);
 
     // R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING. Each later
     // slice could not open the source, because its probe found no rows,

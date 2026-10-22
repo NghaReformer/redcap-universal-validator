@@ -559,6 +559,30 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             ORDER BY candidate_id LIMIT ' . max(1, (int) $limit),
             [$this->pid, $generationId, $g['group_hmac'], $g['verify_cursor']]);
 
+        // A RECORD THAT LEFT THE RUN'S GROUP IS NOT IN THE GROUP'S DUPLICATES
+        // (review rv5b-1). Its candidate was written while it was in the
+        // group; re-reading it would read another group's record, and its
+        // version moved when it moved, so the check below would restart the
+        // group on every pass, for ever. Its candidates are deleted - by
+        // primary key, this page's only - and the group is counted again.
+        if ($rows && isset($this->deps['departed']) && is_callable($this->deps['departed'])) {
+            $hashes = [];
+            foreach ($rows as $r) $hashes[(string) $r[7]] = true;
+            $left = call_user_func($this->deps['departed'], array_keys($hashes));
+            if (is_array($left) && $left) {
+                $drop = [];
+                foreach ($rows as $r) {
+                    if (isset($left[(string) $r[7]])) $drop[] = (int) $r[0];
+                }
+                if ($drop) {
+                    $this->dropCandidates($generationId, $g, $drop);
+                    return ['checked' => 0, 'collision' => false, 'read' => 0,
+                            'why' => 'a record in this duplicate group left the group this scan '
+                                   . 'covers, so the group is being checked again without it'];
+                }
+            }
+        }
+
         if (!$rows) {
             // Every candidate matched the representative. The group is real and
             // may now be emitted.
@@ -929,6 +953,36 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
                 representative = NULL, phase = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_NEW, $this->pid, $g['group_id'], $g['candidate_epoch']]);
+    }
+
+    /**
+     * Delete candidates whose records left the run's group, and settle the
+     * group again over what remains (review rv5b-1).
+     *
+     * The delete is by primary key over one verify page. The recount is the
+     * one discover() makes for a group, over uq_candidate_v2's leading
+     * (project_id, generation_id, group_hmac). A group left with one record,
+     * or with lookups only, is a singleton, as discover() would have written
+     * it; otherwise it starts again at a new epoch, as restart() does.
+     */
+    private function dropCandidates($generationId, array $g, array $candidateIds)
+    {
+        $marks = implode(',', array_fill(0, count($candidateIds), '?'));
+        $this->db->execNoCount('DELETE FROM ' . Schema::table('unique_candidate')
+            . ' WHERE project_id = ? AND candidate_id IN (' . $marks . ')',
+            array_merge([$this->pid], $candidateIds));
+        $c = $this->db->select('SELECT COUNT(DISTINCT record_hash), MIN(lookup) FROM '
+            . Schema::table('unique_candidate')
+            . ' WHERE project_id = ? AND generation_id = ? AND group_hmac = ?',
+            [$this->pid, $generationId, $g['group_hmac']]);
+        $records = isset($c[0][0]) ? (int) $c[0][0] : 0;
+        $phase = ($records > 1 && isset($c[0][1]) && (int) $c[0][1] === 0)
+               ? self::G_NEW : self::G_SINGLETON;
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
+            SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
+                representative = NULL, phase = ?, distinct_records = ?
+            WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+            [$phase, $records, $this->pid, $g['group_id'], $g['candidate_epoch']]);
     }
 
     /**

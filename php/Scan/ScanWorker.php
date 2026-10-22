@@ -68,6 +68,13 @@ final class ScanWorker
     /** @var array run id => mark key => true: rule problems this worker has already committed */
     private $marked = [];
     /**
+     * @var bool this request moved the run in a way no counter shows (review
+     * rv5b-3): a catch-up page whose changes were all another group's, or a
+     * batch whose every record left the group. work() answers `moved`.
+     */
+    private $walked = false;
+
+    /**
      * @param array $deps {
      *   slots:          ?WorkerSlots  installation semaphore; null means unrationed
      *   fence:          ?RecordVersions  null means reads cannot be proved stable
@@ -97,6 +104,13 @@ final class ScanWorker
      *   clock:          ?callable(): float  seconds, for spacing the duplicate
      *                                 phase's progress writes (PROGRESS_EVERY);
      *                                 microtime(true) when absent
+     *   scope:          ?callable(string[] $ids): array<string,?bool>  a
+     *                                 group-scoped run's question: is each
+     *                                 record in the run's group (review rv5b-1)
+     *   planProblems:   ?array        the rule problems of the context `evaluate`
+     *                                 was built from, {rule, fields, why}; marked
+     *                                 with every batch that evaluated a record
+     *                                 (review rv10b1-2)
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -113,11 +127,16 @@ final class ScanWorker
      * along without examining a record still reads as movement (see loop()).
      * It is absent from the answers given before the loop starts.
      *
+     * `moved` is present, and true, when the request moved the run in a way
+     * no counter shows (review rv5b-3) - see $walked.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int,
-     *               listed?:int, phase:string, done:bool, stop:?string, why:?string}
+     *               listed?:int, moved?:bool, phase:string, done:bool, stop:?string,
+     *               why:?string}
      */
     public function work($pid, $runId, array $opts = [])
     {
+        $this->walked = false;
         $run = $this->store->run($pid, $runId);
         if ($run === null) {
             // The same wording a cross-project run id gets. A message that
@@ -325,6 +344,7 @@ final class ScanWorker
             $r = $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $seq, $opts, $keep);
             if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
+            if ($this->walked) $r['moved'] = true;
             return $r;
         } catch (ScanStoreUnavailable $e) {
             // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
@@ -651,6 +671,9 @@ final class ScanWorker
                         // the page; the budget is told the whole page, which
                         // is what it cost (review R5-1).
                         $listed += max(0, (int) $r['listed']);
+                        // The cursor moved even when no change on the page
+                        // was the reader's to count (review rv5b-3).
+                        if (!empty($r['moved'])) $this->walked = true;
                         if (!$r['done']) {
                             $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
@@ -729,6 +752,8 @@ final class ScanWorker
             $requeued += $r['requeued'];
             $blocked  += $r['blocked'];
             $found    += $r['findings'];
+            // Records that left the group are progress no counter shows.
+            if (!empty($r['departed'])) $this->walked = true;
 
             $adj = $budget->observe($mark,
                 max(1, isset($r['examined']) ? (int) $r['examined'] : count($claimed)));
@@ -815,8 +840,34 @@ final class ScanWorker
         $fence = isset($this->deps['fence']) ? $this->deps['fence'] : null;
         $before = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
+        // EACH RECORD'S GROUP, ASKED BEFORE IT IS READ (review rv5b-1). A
+        // group-scoped run's list is the group as planning read it, and a
+        // record moved to another group since then is that group's record:
+        // it leaves the run unread. Asked between the two version reads, so
+        // a move during the read moves the version and the record is
+        // requeued by the stable-read rule below rather than decided on a
+        // stale answer. Cannot tell is set aside with an attempt counted, so
+        // a group that can never be told ends as a reported exclusion.
+        // Only a scoped run has the dependency; an unscoped one asks nothing.
+        $group = [];
+        if (isset($this->deps['scope']) && is_callable($this->deps['scope'])) {
+            try {
+                $ans = call_user_func($this->deps['scope'], $ids);
+            } catch (\Throwable $e) {
+                $ans = [];
+            }
+            foreach ($ids as $id) {
+                $v = (is_array($ans) && array_key_exists((string) $id, $ans)) ? $ans[(string) $id] : null;
+                $group[(string) $id] = ($v === true) ? true : (($v === false) ? false : null);
+            }
+        }
+        $toRead = [];
+        foreach ($ids as $id) {
+            if (!$group || $group[(string) $id] === true) $toRead[] = $id;
+        }
+
         $read = $this->deps['read'];
-        $got = $read($ids);
+        $got = ($toRead || !$group) ? $read($toRead) : ['ok' => true, 'data' => [], 'why' => null];
         if (empty($got['ok'])) {
             // A FAILED READ IS NOT AN EMPTY ONE. Committing these records as
             // examined-and-clean is the exact mistake the module was built to
@@ -861,6 +912,7 @@ final class ScanWorker
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
             if ($moved($id)) continue;
+            if ($group && $group[(string) $id] !== true) continue;    // not read: see above
             if (array_key_exists($id, $data) && is_array($data[$id])) continue;
             $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
             if ($tries + 1 >= $maxAttempts) $lastChance[] = $id;
@@ -960,6 +1012,23 @@ final class ScanWorker
                     $requeued++;
                     $outcome[(int) $c['ordinal']] = 'requeued';
                 }
+                continue;
+            }
+
+            if ($group && $group[(string) $id] === false) {
+                // In another group now, or in none, and its version held
+                // still while that was asked: it leaves the run, unread, and
+                // the store closes what the run found in it before.
+                $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                                       'state' => ScanStore::REC_DEPARTED, 'version' => null,
+                                       'claim' => $claim];
+                $outcome[(int) $c['ordinal']] = 'departed';
+                continue;
+            }
+            if ($group && $group[(string) $id] === null) {
+                // Its group could not be told. Not read and not decided: one
+                // attempt counted, after the commit, as for a set-aside record.
+                $setAside[(int) $c['ordinal']] = $claim;
                 continue;
             }
 
@@ -1112,6 +1181,18 @@ final class ScanWorker
         $got = null;
         if ($cut === 'retry' && $budget !== null) $budget->reclaim();
 
+        // THE CONTEXT'S OWN PROBLEMS GO WITH EVERY BATCH IT EVALUATED (review
+        // rv10b1-2). start() noted the problems of the plan it was built from
+        // and nothing else did, so a rule this request's context could not
+        // evaluate was left out of these records with nothing written to say
+        // so, and the run could finish clean. Behind the record fences, like
+        // the records' own problems; a mark is a presence, so a problem start()
+        // already noted adds nothing.
+        if ($worked > 0) {
+            foreach ($this->planMarks() as $k => $m) {
+                if (!isset($this->marked[$runId][$k])) $marks[$k] = $m;
+            }
+        }
         $batch['marks'] = array_values($marks);
         $batch['unstored'] = $unstored;
         // null when the store does not say how many records it still held (a
@@ -1165,12 +1246,14 @@ final class ScanWorker
         $findings = count($batch['findings']) + array_sum($unstored);
         $candidates = count($batch['candidates']);
         $keep = null;
+        $departed = count(array_keys($outcome, 'departed', true));
         if (is_array($heldOrd)) {
             $keep = array_flip(array_map('intval', $heldOrd));
-            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
+            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0, 'departed' => 0];
             foreach ($outcome as $o => $k) {
                 if (isset($keep[$o])) $tally[$k]++;
             }
+            $departed = $tally['departed'];
             $worked = $tally['worked'];
             $requeued = $tally['requeued'];
             $blocked = $tally['blocked'];
@@ -1206,6 +1289,7 @@ final class ScanWorker
         // taking the dropped record again, alone.
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
+                'departed' => $departed,
                 'examined' => count($claimed) - count($untouched), 'cut' => $cut,
                 'why' => $cut === 'drop' ? WorkBudget::SET_ASIDE
                        : ($cut === 'stop' ? WorkBudget::CUT_SHORT : null)];
@@ -1367,6 +1451,16 @@ final class ScanWorker
     private function owner()
     {
         return isset($this->deps['owner']) ? (string) $this->deps['owner'] : 'worker';
+    }
+
+    /** The context's rule problems as marks, keyed as batch() keys its own. */
+    private function planMarks()
+    {
+        $p = (isset($this->deps['planProblems']) && is_array($this->deps['planProblems']))
+           ? $this->deps['planProblems'] : [];
+        $out = [];
+        foreach (ScanPromotion::marksFor($p) as $m) $out[$m['axis1'] . "\0" . $m['axis2']] = $m;
+        return $out;
     }
 
     private static function stop($why)

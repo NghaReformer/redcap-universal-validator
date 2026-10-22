@@ -35,6 +35,13 @@ final class ScanAuthorization
     const EXPORT_FULL = '1';
 
     /**
+     * What an id that is not a run gets, and so what a run the reader may not
+     * touch gets too (review rv5b-4). ONE COPY: ScanService::NO_RUN is this
+     * constant, so a refusal on scope cannot drift from "no such run".
+     */
+    const NO_RUN = 'no scan with that reference is running for this project';
+
+    /**
      * May this user START a run over $entitlement?
      *
      * The plan's row: design rights, nonzero read access to EVERY form in the
@@ -168,10 +175,9 @@ final class ScanAuthorization
         $unrestricted = $base['unrestricted'];
 
         if ($runScopeDag === null) {
-            if (!$unrestricted) {
-                return self::no('this run covers the whole project, so only a user without a Data '
-                    . 'Access Group restriction may cancel it');
-            }
+            // A group user is told what an id that is not a run gets (review
+            // rv5b-4): this sentence named the run's scope.
+            if (!$unrestricted) return self::no(self::NO_RUN);
             return $base;
         }
         if ($unrestricted) return $base;                       // may cancel any DAG run
@@ -223,6 +229,16 @@ final class ScanAuthorization
         . 'confirmed which records belong to that group.';
 
     /**
+     * The same, for a run that has ENDED without proving it (review rv5b-2):
+     * stopped, failed, expired, finished over a change log that could not
+     * prove the window, or over an empty group. WITHHELD promised the counts
+     * later, and for a finished run there is no later. No apostrophes: the
+     * page prints it through json_encode with JSON_HEX_APOS.
+     */
+    const WITHHELD_ENDED = 'This scan covers one Data Access Group and ended before it confirmed '
+        . 'which records belong to that group, so its counts cannot be shown.';
+
+    /**
      * What `scan-status` may disclose about a DAG-scoped run that has NOT yet
      * proved its scope at the target fence (scopeProved()).
      *
@@ -241,14 +257,21 @@ final class ScanAuthorization
      */
     public static function preFenceStatus(array $status)
     {
-        $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'detail', 'values', 'scope',
+        // NOT `detail` (review rv5b-6). Whether the run kept every finding is
+        // a statement about how many it found: a stopped run read "Some
+        // findings were not kept, because the scan reached the limit" while
+        // its counts were withheld.
+        $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
                  'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for
-        // "the scan found nothing".
+        // "the scan found nothing". A run that has ended will never prove its
+        // scope, so it is not told it will (review rv5b-2).
         $out['withheld'] = true;
-        $out['withheldWhy'] = self::WITHHELD;
+        $out['withheldWhy'] = (isset($status['terminal']) && $status['terminal'] !== null
+                               && $status['terminal'] !== '')
+            ? self::WITHHELD_ENDED : self::WITHHELD;
         return $out;
     }
 
@@ -446,15 +469,14 @@ final class ScanAuthorization
     private static function scopeMatches(array $base, $runScopeDag)
     {
         if ($base['unrestricted']) return $base;
-        if ($runScopeDag === null) {
-            return self::no('this scan covers the whole project, which is wider than your Data '
-                . 'Access Group');
-        }
-        if ((string) $runScopeDag !== (string) $base['scope']) {
-            // Deliberately the SAME wording as "no such run": a distinct message
-            // here would confirm that a run exists for another group.
-            return self::no('that scan is not available to you');
-        }
+        // BOTH ARE "NO SUCH RUN", WORD FOR WORD (review rv5b-4). The comment
+        // here said the other group's refusal used the same wording as a
+        // missing run, and it did not: "that scan is not available to you"
+        // and "...covers the whole project, which is wider than your Data
+        // Access Group" each told a group user that the id they tried was a
+        // run, and which kind, where an id that is not a run gets NO_RUN.
+        if ($runScopeDag === null) return self::no(self::NO_RUN);
+        if ((string) $runScopeDag !== (string) $base['scope']) return self::no(self::NO_RUN);
         return $base;
     }
 

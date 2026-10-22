@@ -226,10 +226,16 @@ namespace {
             }
             // exist(): which of these ids the project still holds. Every
             // parameter after the project id is one of the ids asked about.
+            // dagsOf() and scopeOf() ask the same rows for their group as
+            // well, and get it: this answered the id alone, so every record
+            // read as in no group (review rv5b-1 made that answer matter).
             if (strpos($sql, ' IN (') !== false) {
                 $asked = array_map('strval', array_slice($params, 1));
+                $withDag = strpos($sql, 'dag_id') !== false;
                 $out = [];
-                foreach ($this->rows as $r) if (in_array($r[0], $asked, true)) $out[] = [$r[0]];
+                foreach ($this->rows as $r) {
+                    if (in_array($r[0], $asked, true)) $out[] = $withDag ? [$r[0], $r[1]] : [$r[0]];
+                }
                 return $out;
             }
             $wantsDag = strpos($sql, 'dag_id') !== false;
@@ -651,6 +657,15 @@ namespace {
         public $crossLookups = [];
         /** @var array pid => true: the other project refuses the reader, by decision */
         public $refusedBy = [];
+        /**
+         * @var ?int[] what the reader's plan says crossRefused is; null is the
+         * module's own answer, the lookups' projects that refuse the reader
+         */
+        public $planRefused = null;
+        /** @var int how many contexts were built: the cron test asks for none */
+        public $contextsBuilt = 0;
+        /** @var int[] the part of crossRefused that rests on a failed read */
+        public $planUnread = [];
         /** @var ?string what the run's lease reads as, or null for no lease */
         public $lease = null;
         /** @var int how many reads of the change log's top fail, as a blip does (H11) */
@@ -674,8 +689,11 @@ namespace {
         }
 
         public function getUser() { return $this->user; }
+        /** @var int how many times crossLookupRefusals() was asked */
+        public $refusalAsks = 0;
         public function crossLookupRefusals($pid, array $lookups)
         {
+            $this->refusalAsks++;
             $out = [];
             foreach ($lookups as $l) {
                 if (isset($this->refusedBy[$l['pid']])) {
@@ -694,13 +712,28 @@ namespace {
             $seq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 1;
             $key = $this->sys['log-hmac-key'];
             $self = $this;
+            $this->contextsBuilt++;
+            // As buildScanPlan(): a lookup whose project refuses the reader is
+            // in crossRefused, and its rule stays in the rule list.
+            $refused = $this->planRefused;
+            if ($refused === null) {
+                $refused = [];
+                foreach ($this->crossLookups as $l) {
+                    if (isset($this->refusedBy[$l['pid']])) $refused[(int) $l['pid']] = (int) $l['pid'];
+                }
+                $refused = array_values($refused);
+            }
+            $plan = ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => $refused,
+                     'crossUnread' => $this->planUnread, 'crossLookups' => $this->crossLookups,
+                     'crossRecordLookups' => false];
+            // false: a plan that does not say (fails closed in ScanService).
+            if ($refused === false) unset($plan['crossRefused']);
             return ['ok' => true, 'why' => null,
                 'rules' => $this->rules,
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems, 'unread' => $this->unread,
                 'verifyFingerprint' => $this->verifyFingerprint,
-                'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
-                           'crossLookups' => $this->crossLookups, 'crossRecordLookups' => false],
+                'plan' => $plan,
                 'read' => function (array $ids) use ($self) {
                     $d = [];
                     foreach ($ids as $id) {
@@ -2204,16 +2237,43 @@ namespace INSPIRE\UniversalValidator\Scan {
     $km = new \E2eModule($ks);
     $kl = ['pid' => 300, 'fields' => ['specimen_id']];
     $km->crossLookups = [$kl];
-    // The person who starts it is one project 300 refuses: the lookup is the
-    // rules', not the starter's, so it is recorded all the same.
+    // review rv10b1-2: a starter project 300 refuses is refused the start.
+    // Their plan skips the lookup and keeps the rule, so the run would have
+    // been evaluated without it on their passes and with it on others'.
     $km->refusedBy = [300 => true];
-    $k = $drive($km, $ks, 152);
+    $k0 = (new ScanService($km, $ks))->start(152);
+    check('rv10b1-2 E2E: a starter project 300 refuses is refused the start, in words that name it',
+        empty($k0['ok']) && $k0['run_id'] === null && $ks->run(152, 1) === null
+        && $k0['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                        . 'so you cannot start this scan');
+    // A starter it answers starts it, and the lookup is the rules', recorded
+    // for whoever reads the run later.
+    $km->refusedBy = [];
+    $kRefusedWork = null;
+    $k = $drive($km, $ks, 152, function ($svc, $runId) use ($km, $ks, &$kRefusedWork) {
+        // review rv5b-5 / rv10b1-2: before any pass, a reader 300 refuses
+        // asks to continue the run. Nothing is examined and nothing counted.
+        $km->refusedBy = [300 => true];
+        $kRefusedWork = (new ScanService($km, $ks))->work(152, $runId);
+        $kRefusedWork['_done'] = (int) $ks->run(152, $runId)['manifest_done'];
+        $km->refusedBy = [];
+    });
     check('E2E cross: no verb threw' . ($k['threw'] ? ' (' . $k['threw'] . ')' : ''), $k['threw'] === null);
     $kp = is_array($k['row']) ? json_decode($k['row']['policy_json'], true) : null;
-    check('E2E cross: the run keeps every lookup its rules make, whoever started it',
+    check('E2E cross: the run keeps every lookup its rules make',
         is_array($kp) && isset($kp['crossLookups']) && $kp['crossLookups'] === [$kl]);
     check('E2E cross: and they are not part of the fingerprint, so every pass matched it and the run finished',
         is_array($k['row']) && $k['row']['terminal'] === ScanOutcome::COMPLETE);
+    check('rv5b-5 E2E: a reader project 300 refuses is refused the work, final, and in words that name it',
+        is_array($kRefusedWork) && $kRefusedWork['ok'] === false && $kRefusedWork['final'] === true
+        && $kRefusedWork['why'] === 'this scan looks values up in project 300, which does not answer your '
+                                  . 'lookups, so you cannot continue this scan');
+    check('rv5b-5 E2E: and the refused work answer carries no counter and no status, and examined nothing',
+        is_array($kRefusedWork) && !array_intersect(['worked', 'requeued', 'blocked', 'findings', 'listed', 'status'],
+                                                    array_keys($kRefusedWork))
+        && $kRefusedWork['_done'] === 0);
+    $km->refusedBy = [300 => true];
+    $k['status'] = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
     check('E2E cross: a reader project 300 refuses is refused the run, for good',
         $k['status']['ok'] === false && $k['status']['final'] === true
         && strpos($k['status']['why'], 'project 300') !== false);
@@ -2225,6 +2285,109 @@ namespace INSPIRE\UniversalValidator\Scan {
     $kr = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
     check('E2E cross: removing the rule does not open the stored answers to a reader 300 refuses',
         $kr['ok'] === false && strpos($kr['why'], 'project 300') !== false);
+
+    // review rv5b-5: THE RUN'S OWN LOOKUPS, asked apart from the plan. The
+    // rule that looked in 300 is gone, so the reader's plan refuses nothing;
+    // the run still holds 300's answers, so status() refuses the reader, and
+    // the work is refused with it rather than handing over its counters.
+    $ls = new ArrayScanStore();
+    $lm = new \E2eModule($ls);
+    $lm->crossLookups = [$kl];
+    $lm->flagged = ['R002' => true];
+    $lrun = (int) (new ScanService($lm, $ls))->start(157)['run_id'];
+    $lm->crossLookups = [];
+    $lm->refusedBy = [300 => true];
+    $lw = (new ScanService($lm, $ls))->work(157, $lrun);
+    check('rv5b-5: a reader the run\'s stored lookup refuses is refused the work, though their plan refuses nothing',
+        $lrun > 0 && $lw['ok'] === false && $lw['final'] === true
+        && $lw['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                         . 'so you cannot continue this scan'
+        && !isset($lw['findings']) && !isset($lw['worked']) && (int) $ls->run(157, $lrun)['manifest_done'] === 0);
+    // One request asks the other project once: the work and the status it
+    // returns are the same reader in the same request.
+    $lm->refusedBy = [];
+    $lm->crossLookups = [$kl];
+    $asks = $lm->refusalAsks;
+    $lw = (new ScanService($lm, $ls))->work(157, $lrun);
+    check('rv5b-5: a reader it answers works the run, and the request asked the other project once',
+        $lw['ok'] === true && !empty($lw['status']['ok']) && $lm->refusalAsks === $asks + 1);
+
+    // review rv10b1-2: THE READER'S OWN PLAN, asked apart from the run's
+    // lookups. The run below stored none, so status() and the run-lookup half
+    // of the refusal let the reader through; a plan that says another project
+    // refuses them is a plan that skips a rule, and the work is refused.
+    $ps = new ArrayScanStore();
+    $pm = new \E2eModule($ps);
+    $prun = (int) (new ScanService($pm, $ps))->start(153)['run_id'];
+    $pm->planRefused = [300];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a reader whose plan another project refuses is refused the work, final, though the run stored no lookup',
+        $prun > 0 && $pw['ok'] === false && $pw['final'] === true
+        && $pw['why'] === 'this scan looks values up in project 300, which does not answer your lookups, '
+                         . 'so you cannot continue this scan'
+        && (int) $ps->run(153, $prun)['manifest_done'] === 0);
+    $pm->planRefused = [300, 400];
+    $pm->planUnread = [400];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: one refused by a decision and one by a failed read is not final, and names the decided one',
+        $pw['ok'] === false && $pw['final'] === false
+        && strpos($pw['why'], 'project 300, which does not answer') !== false && strpos($pw['why'], '400') === false);
+    $pm->planRefused = [400];
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a refusal that rests only on a failed read says so, and says yet',
+        $pw['ok'] === false && $pw['final'] === false
+        && $pw['why'] === 'this scan looks values up in project 400, and whether it answers your lookups could '
+                         . 'not be read just now, so you cannot continue this scan yet');
+    $pm->planUnread = [];
+    $pm->planRefused = false;
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: a plan that does not say which projects refuse the reader is refused, not final (fails closed)',
+        $pw['ok'] === false && $pw['final'] === false && strpos($pw['why'], 'could not be read') !== false);
+    $pm->planRefused = null;
+    $pw = (new ScanService($pm, $ps))->work(153, $prun);
+    check('rv10b1-2: the same reader with a plan that refuses nothing works the run', $pw['ok'] === true
+        && (int) $ps->run(153, $prun)['manifest_done'] > 0);
+    $pm->planRefused = false;
+    $p2 = (new ScanService($pm, new ArrayScanStore()))->start(154);
+    check('rv10b1-2: and a start on a plan that does not say is refused too',
+        empty($p2['ok']) && strpos((string) $p2['why'], 'so you cannot start this scan yet') !== false);
+    $pm->planRefused = null;
+
+    // review rv10b1-2: WHAT THIS REQUEST'S CONTEXT CANNOT EVALUATE IS WRITTEN
+    // WITH ITS WORK. The run starts on a plan with no problem; every pass after
+    // it evaluates with a context that has one. start() wrote nothing, so only
+    // the passes can, and a run that skipped a rule may not finish clean.
+    $qs = new ArrayScanStore();
+    $qm = new \E2eModule($qs);
+    $q = $drive($qm, $qs, 155, function ($svc, $runId) use ($qm) {
+        $qm->problems = [['rule' => 1, 'fields' => ['a_val'],
+                          'why' => 'this rule could not be evaluated by this request']];
+    });
+    check('rv10b1-2: a problem only the work passes met is recorded, and the run does not finish clean',
+        $q['threw'] === null && is_array($q['row']) && $q['row']['terminal'] === ScanOutcome::COMPLETE
+        && (int) $q['row']['rule_problem_count'] === 1 && (int) $q['row']['clean'] === 0);
+
+    // THE CRON PATH (review rv10b1-2). No cron in config.json does scan work:
+    // the two that exist reap abandoned runs and clear expired values, and the
+    // module's one work() call is the browser endpoint. A work request with no
+    // signed-in user - which is what a cron pass would be - is refused at the
+    // entitlement, before any plan is built, so it can skip no rule.
+    $cs2 = new ArrayScanStore();
+    $cm2 = new \E2eModule($cs2);
+    $crun = (int) (new ScanService($cm2, $cs2))->start(156)['run_id'];
+    $cm2->user = null;
+    $built = $cm2->contextsBuilt;
+    $cw = (new ScanService($cm2, $cs2))->work(156, $crun, 'cron');
+    check('rv10b1-2 cron: a work request with no signed-in user is refused before a plan is built, and examines nothing',
+        $crun > 0 && $cw['ok'] === false
+        && $cw['why'] === 'You need project design rights to run the validation scan.'
+        && $cm2->contextsBuilt === $built && (int) $cs2->run(156, $crun)['manifest_done'] === 0
+        && !array_intersect(['worked', 'findings', 'status'], array_keys($cw)));
+    $cron = json_decode(file_get_contents(__DIR__ . '/../config.json'), true);
+    $methods = array_map(function ($c) { return $c['method']; }, $cron['crons']);
+    sort($methods);
+    check('rv10b1-2 cron: the crons are the reap and the value expiry, and neither is a work pass',
+        $methods === ['uvScanExpireValuesCron', 'uvScanReapCron']);
 
     // -- a run with a finding ---------------------------------------------------
     $fs = new ArrayScanStore();
@@ -2728,6 +2891,25 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R5-6: so the next request lists the next page rather than being told the walk is held',
         $f2['ok'] === true && $f2['stop'] === 'time' && $f2['listed'] === 1
         && $fs->recordStates($rid6) === [ScanStore::REC_PENDING => 2]);
+
+    // review rv5b-7 (b): A SLICE WHOSE LEASE ANOTHER REQUEST TOOK reports the
+    // pages it appended and not the page it was refused. The start listed
+    // page 1; this slice appends page 2, and before page 3 is appended
+    // another request holds the lease, so that append is refused and the
+    // slice is told the walk is held. It listed one record. Counted with the
+    // refused page it says two, and a held slice that says it listed is one
+    // the page asks again straight away.
+    list($hs, $rid7, $src7, , $db7) = $fresh(6);
+    $db7->onPage = function ($n) use ($hs, $rid7, $leaseOf) {
+        if ($n !== 3) return;
+        $runs = $leaseOf->getValue($hs);
+        $runs[$rid7]['lease_owner'] = 'tabB';
+        $leaseOf->setValue($hs, $runs);
+    };
+    $h7 = $worker($hs, $src7, $wide())->work(300, $rid7);
+    check('rv5b-7: a slice refused its page because another request took the walk reports only what it appended',
+        $h7['ok'] === true && $h7['stop'] === 'held' && $h7['why'] === ScanPlanner::PLAN_HELD
+        && $h7['listed'] === 1 && $hs->recordStates($rid7) === [ScanStore::REC_PENDING => 2]);
 }
 
 /* =====================================================================
@@ -2886,7 +3068,9 @@ namespace INSPIRE\UniversalValidator\Scan {
 
     // A status that could not be read at all is no proof of the scope: the
     // answer to a request whose storage failed, for a group-scoped run, keeps
-    // no counter either, while the same answer for a whole-project run does.
+    // no counter either. Since review rv5b-5 neither does the same answer for
+    // a whole-project run: a status not given is not one the counters may
+    // stand beside.
     $disc = new \ReflectionMethod(ScanService::class, 'disclosed');
     $disc->setAccessible(true);
     $failed = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
@@ -2899,8 +3083,377 @@ namespace INSPIRE\UniversalValidator\Scan {
         ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $failed, $unread);
     check('H10: a group-scoped answer whose status could not be read withholds its counters',
         $dScoped['withheld'] === true && $dScoped['moved'] === false
-        && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage'
-        && $dWhole['worked'] === 0 && empty($dWhole['withheld']));
+        && !array_intersect($counters, array_keys($dScoped)) && $dScoped['stop'] === 'storage');
+    check('rv5b-5: so does a whole-project answer whose status could not be read',
+        $dWhole['withheld'] === true && $dWhole['moved'] === false
+        && !array_intersect($counters, array_keys($dWhole)) && $dWhole['stop'] === 'storage');
+    // And one whose status was refused rather than unread, with counters that
+    // are not zero: the refusal is the reader's, so the counts are not theirs.
+    $busy = ['worked' => 10, 'findings' => 3] + $failed;
+    $busy['ok'] = true;
+    $busy['stop'] = null;
+    $dRefused = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $busy,
+        ['ok' => false, 'final' => true, 'why' => 'this scan looks values up in project 500, which does not '
+            . 'answer your lookups, so its results are not shown to you']);
+    check('rv5b-5: a whole-project answer whose status was refused keeps no counter, and says it moved',
+        $dRefused['withheld'] === true && $dRefused['moved'] === true
+        && !array_intersect($counters, array_keys($dRefused)));
+
+    // review rv5b-7 (a): A REQUEST WHOSE ONLY MOVEMENT IS A NEW PHASE MOVED
+    // THE RUN. Scanning ends with every counter at zero when the last batch
+    // was examined by an earlier request; the phase it hands on is the only
+    // sign, and a page told nothing moved waits out its idle ladder.
+    $phaseOnly = ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0, 'listed' => 0,
+                  'phase' => ScanPhase::CATCH_UP, 'done' => false, 'stop' => null, 'why' => null];
+    $dPhase = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::SCANNING], $phaseOnly, ['ok' => true]);
+    $dSame = $disc->invoke(new ScanService($um, $us),
+        ['scope_dag' => null, 'phase' => ScanPhase::CATCH_UP], $phaseOnly, ['ok' => true]);
+    check('rv5b-7: a request whose only movement is a new phase answers that it moved, and one in the same phase does not',
+        $dPhase['moved'] === true && $dSame['moved'] === false);
+
+    // review rv5b-3. A catch-up pass over a page of other groups' changes
+    // counts nothing and still moved the run; the worker says so, and the
+    // answer keeps it, withheld or not.
+    $walkedOnly = ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                   'listed' => 0, 'moved' => true, 'phase' => ScanPhase::CATCH_UP, 'done' => false,
+                   'stop' => 'time', 'why' => null];
+    $heldStatus = ['ok' => true, 'withheld' => true, 'withheldWhy' => ScanAuthorization::WITHHELD];
+    $dWalked = $disc->invoke(new ScanService($gm, $gs),
+        ['scope_dag' => '7', 'phase' => ScanPhase::CATCH_UP], $walkedOnly, $heldStatus);
+    check('rv5b-3: a catch-up pass that walked only other groups\' changes is an answer that moved',
+        $dWalked['moved'] === true && $dWalked['withheld'] === true
+        && !array_intersect($counters, array_keys($dWalked)));
+    $dStill = $disc->invoke(new ScanService($gm, $gs),
+        ['scope_dag' => '7', 'phase' => ScanPhase::CATCH_UP], array_merge($walkedOnly, ['moved' => false]),
+        $heldStatus);
+    check('rv5b-3 control: and one that wrote nothing did not',
+        $dStill['moved'] === false);
+    \REDCap::$groupNames = $keptNames;
+}
+
+/* =====================================================================
+ * rv5b-1  A RECORD THAT LEAVES THE RUN'S GROUP LEAVES THE RUN
+ *
+ * The reviewer's repro, end to end. A group-7 user scans; R03 is one of the
+ * group's five records. An administrator then moves R03 to group 31 and a
+ * group-31 user blanks its a_val - two log entries for R03 inside the
+ * window. Catch-up requeued it as an edit, the worker read it with group
+ * 31's value, and the proved status showed the group-7 user total=5 and one
+ * finding, on group 31's record. Twice: moved after the run read it (catch-up
+ * must take it out) and moved before (the worker must not read it).
+ * ===================================================================== */
+{
+    $keptNames = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'site_a', 31 => 'site_b'];
+    // Ten records, five in group 7, read by a group-7 user, over a record
+    // index that knows each record's group and a change log the case writes.
+    $groupModule = function (ArrayScanStore $ms) {
+        $mm = new class($ms) extends \E2eModule {
+            public $dagOf = [];
+            public $version = [];
+            public $changes = [];
+            public $top = '100';
+            public $bottom = '1';
+            public $reads = [];
+            public $readSleep = 0.0;
+            public function query($sql, $params = [])
+            {
+                if (strpos($sql, 'FROM redcap_log_event') !== false) {
+                    $s = ltrim($sql);
+                    if (strpos($sql, 'pk IN (') !== false) {
+                        $out = [];
+                        foreach (array_slice($params, 1) as $id) {
+                            $id = (string) $id;
+                            if (in_array($id, $this->records, true)) {
+                                $out[] = [$id, isset($this->version[$id]) ? $this->version[$id] : '50'];
+                            }
+                        }
+                        return $out;
+                    }
+                    if (strpos($sql, 'log_event_id > ?') !== false) {
+                        $rows = [];
+                        $cursor = isset($params[3]) ? (string) $params[3] : null;
+                        foreach ($this->changes as $id => $v) {
+                            if ((int) $v <= (int) $params[1] || (int) $v > (int) $params[2]) continue;
+                            if ($cursor !== null && strcmp($id, $cursor) <= 0) continue;
+                            $rows[$id] = [$id, (string) $v];
+                        }
+                        ksort($rows, SORT_STRING);
+                        return array_values($rows);
+                    }
+                    if (strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) return [[$this->top]];
+                    if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [[$this->bottom]];
+                }
+                if (strpos($sql, 'log_event_table') === false
+                        && (strpos($sql, 'information_schema.columns') !== false
+                            || strpos($sql, 'redcap_record_list') !== false
+                            || strpos($sql, 'redcap_projects') !== false
+                            || strpos($sql, 'FROM redcap_data') !== false)) {
+                    $rows = [];
+                    foreach ($this->records as $id) $rows[] = [$id, $this->dagOf[$id]];
+                    $this->index->rows = $rows;
+                    return $this->index->select($sql, $params);
+                }
+                return parent::query($sql, $params);
+            }
+            public function durableScanContext($pid, array $opts = [], $dag = null)
+            {
+                $ctx = parent::durableScanContext($pid, $opts, $dag);
+                $read = $ctx['read'];
+                $self = $this;
+                $ctx['read'] = function (array $ids) use ($read, $self) {
+                    foreach ($ids as $id) $self->reads[] = (string) $id;
+                    if ($self->readSleep > 0) { usleep((int) ($self->readSleep * 1e6)); $self->readSleep = 0.0; }
+                    return $read($ids);
+                };
+                return $ctx;
+            }
+        };
+        $mm->records = [];
+        for ($i = 1; $i <= 10; $i++) {
+            $id = sprintf('R%02d', $i);
+            $mm->records[] = $id;
+            $mm->dagOf[$id] = $i <= 5 ? '7' : '31';
+        }
+        $mm->user->rights['group_id'] = 7;
+        return $mm;
+    };
+    $movedRun = function ($pid, $moveFirst) use ($groupModule) {
+        $ms = new ArrayScanStore();
+        $mm = $groupModule($ms);
+        $move = function () use ($mm) {
+            $mm->dagOf['R03'] = '31';
+            $mm->flagged['R03'] = true;
+            $mm->version['R03'] = '110';
+            $mm->changes['R03'] = '110';
+            $mm->top = '120';
+            $mm->reads = [];
+        };
+        $rid = (int) (new ScanService($mm, $ms))->start($pid)['run_id'];
+        if ($moveFirst) {
+            $move();
+        } else {
+            // The first request examines the group's five records, then the
+            // budget stops it: R03 is read while it is still group 7's.
+            $mm->readSleep = 3.2;
+            (new ScanService($mm, $ms))->work($pid, $rid);
+            $move();
+        }
+        for ($i = 0; $i < 12 && $ms->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($mm, $ms))->work($pid, $rid);
+        }
+        $row = $ms->run($pid, $rid);
+        $ids = [];
+        foreach ($ms->findings($pid, (int) $row['generation_id'], [], 0, 100) as $f) {
+            $ids[] = (string) $f['record_id_bin'];
+        }
+        return ['row' => $row, 'states' => $ms->recordStates($rid), 'reads' => $mm->reads,
+                'status' => (new ScanService($mm, $ms))->status($pid, $rid), 'findings' => $ids];
+    };
+    foreach (['after the run read it' => [178, false], 'before the run read it' => [179, true]]
+             as $when => $c) {
+        $mo = $movedRun($c[0], $c[1]);
+        check('rv5b-1: a record moved to another group ' . $when . ' is never read with that group\'s data',
+            !in_array('R03', $mo['reads'], true));
+        check('rv5b-1: it leaves the run (' . $when . '), and the run still finishes through its fence',
+            isset($mo['states'][ScanStore::REC_DEPARTED]) && $mo['states'][ScanStore::REC_DEPARTED] === 1
+            && $mo['row']['terminal'] === 'complete' && !empty($mo['row']['fence_target']));
+        check('rv5b-1: the group\'s reader is shown the group\'s four records and no finding (' . $when . ')',
+            $mo['status']['ok'] === true && empty($mo['status']['withheld'])
+            && $mo['status']['total'] === 4 && $mo['status']['done'] === 4
+            && $mo['status']['findings'] === 0 && $mo['findings'] === []);
+    }
+
+    // NO RECORD SOURCE, NO ANSWER. A scoped run whose source cannot be opened
+    // can tell no record's group, and cannot tell takes nothing out of it; an
+    // unscoped run admits everything, as it did.
+    $ns = new ArrayScanStore();
+    $nm = new class($ns) extends \E2eModule {
+        public function query($sql, $params = [])
+        {
+            if (strpos($sql, 'log_event_table') === false
+                    && (strpos($sql, 'information_schema.columns') !== false
+                        || strpos($sql, 'redcap_record_list') !== false
+                        || strpos($sql, 'redcap_projects') !== false
+                        || strpos($sql, 'FROM redcap_data') !== false)) {
+                throw new \RuntimeException('the record list could not be read');
+            }
+            return parent::query($sql, $params);
+        }
+    };
+    $probe = new \ReflectionMethod(ScanService::class, 'scopeProbe');
+    $probe->setAccessible(true);
+    $nsvc = new ScanService($nm, $ns);
+    check('rv5b-1: with no record source a scoped run can tell no record\'s group, so takes none out',
+        call_user_func($probe->invoke($nsvc, 180, '7'), ['R1']) === ['R1' => null]);
+    check('rv5b-1 control: and an unscoped run with no source still admits every record',
+        call_user_func($probe->invoke($nsvc, 180, null), ['R1']) === ['R1' => true]);
+
+    // THE SERVICE WIRES BOTH HALVES: a scoped run's worker is handed the
+    // group question, and its duplicate check the run's departures. An
+    // unscoped run's worker asks nothing.
+    $wdOf = new \ReflectionMethod(ScanService::class, 'workerDeps');
+    $wdOf->setAccessible(true);
+    $fdOf = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
+    $fdOf->setAccessible(true);
+    $wctx = ['read' => function (array $ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+             'evaluate' => function ($id, $node) {
+                 return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+             }];
+    $wsS = new ArrayScanStore();
+    $wsId = (int) $wsS->startRun(149, ['created_by' => 'alice', 'scope_dag' => '7'])['run']['run_id'];
+    $wsS->writeManifest($wsId, [['id_bin' => 'W1', 'hash' => hash('sha256', 'W1', true), 'dag' => '7'],
+                                ['id_bin' => 'W2', 'hash' => hash('sha256', 'W2', true), 'dag' => '7']]);
+    $wsEp = (int) $wsS->run(149, $wsId)['lease_epoch'];
+    $wsS->advancePhase($wsId, $wsEp, ScanPhase::CATCH_UP);
+    $wsS->depart($wsId, $wsEp, [hash('sha256', 'W1', true)]);
+    $wdS = $wdOf->invoke(new ScanService(new \SourceModule()), 149, $wsS, $wsS->run(149, $wsId),
+                         ScanPolicy::resolve([], []), $wctx, 'browser');
+    $fdS = $fdOf->getValue($wdS['finalizer']);
+    check('rv5b-1: a scoped run\'s worker is handed the group question',
+        isset($wdS['scope']) && is_callable($wdS['scope']));
+    check('rv5b-1: and its duplicate check is handed the run\'s departures, and only them',
+        isset($fdS['departed']) && is_callable($fdS['departed'])
+        && call_user_func($fdS['departed'], [hash('sha256', 'W1', true), hash('sha256', 'W2', true)])
+           === [hash('sha256', 'W1', true) => true]);
+    $wsU = new ArrayScanStore();
+    $wuId = (int) $wsU->startRun(149, ['created_by' => 'alice'])['run']['run_id'];
+    $wdU = $wdOf->invoke(new ScanService(new \SourceModule()), 149, $wsU, $wsU->run(149, $wuId),
+                         ScanPolicy::resolve([], []), $wctx, 'browser');
+    check('rv5b-1 control: an unscoped run\'s worker is not handed the group question',
+        !isset($wdU['scope']));
+
+    /* -----------------------------------------------------------------
+     * rv5b-2 / rv5b-6  A GROUP-SCOPED RUN THAT ENDS WITHOUT PROVING ITS
+     * SCOPE IS NOT PROMISED ITS COUNTS, AND SAYS NOTHING THAT COUNTS
+     *
+     * The reviewer's repros: stopped by its user after checking all five
+     * of its records; finished over a change log pruned below its opening
+     * fence; stopped over a one-finding detail budget; and an empty group.
+     * Each kept "its counts are shown once it has confirmed..." for good,
+     * the stopped run's coverage line said "Some records could not be
+     * checked" of a run that had checked every one, and the truncated one
+     * still said findings had passed the budget.
+     * ----------------------------------------------------------------- */
+    $ended = function ($pid, $how) use ($groupModule) {
+        $es = new ArrayScanStore();
+        $em = $groupModule($es);
+        $em->flagged['R02'] = true;
+        if ($how === 'truncated') {
+            $em->flagged['R04'] = true;
+            $em->proj['scan-max-detail-findings'] = '1';
+        }
+        $rid = (int) (new ScanService($em, $es))->start($pid)['run_id'];
+        $em->readSleep = 3.2;
+        $running = (new ScanService($em, $es))->work($pid, $rid);
+        if ($how === 'pruned') {
+            $em->bottom = '200';
+            for ($i = 0; $i < 10 && $es->run($pid, $rid)['terminal'] === null; $i++) {
+                (new ScanService($em, $es))->work($pid, $rid);
+            }
+        } else {
+            (new ScanService($em, $es))->cancel($pid, $rid);
+        }
+        return ['running' => $running['status'], 'row' => $es->run($pid, $rid),
+                'status' => (new ScanService($em, $es))->status($pid, $rid)];
+    };
+    $stopped = $ended(181, 'stopped');
+    $pfS = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($stopped['status']);
+    check('rv5b-2: a running group-scoped run is told its counts come once its scope is confirmed',
+        $stopped['running']['withheld'] === true
+        && $stopped['running']['withheldWhy'] === ScanAuthorization::WITHHELD);
+    check('rv5b-2: a stopped one is told they cannot be shown, and the page says so',
+        $stopped['row']['terminal'] === ScanOutcome::CANCELLED && (int) $stopped['row']['manifest_done'] === 5
+        && $stopped['status']['withheld'] === true
+        && $stopped['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED
+        && $pfS['counts'] === ScanAuthorization::WITHHELD_ENDED);
+    check('rv5b-2: and its coverage line says it was stopped, not that records could not be checked',
+        strpos($pfS['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === 0
+        && strpos($pfS['done'], 'could not be checked') === false);
+    $pruned = $ended(182, 'pruned');
+    $pfP = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($pruned['status']);
+    check('rv5b-2: a run that finished over a change log that could not prove its window is not promised its counts',
+        $pruned['row']['terminal'] !== null && empty($pruned['row']['fence_target'])
+        && $pruned['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+    check('rv5b-2 control: and its coverage line is the one its coverage earns',
+        strpos($pfP['done'], \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($pruned['row']['coverage'])) === 0);
+    $trunc = $ended(183, 'truncated');
+    $pfT = \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($trunc['status']);
+    check('rv5b-6: a withheld status does not say whether findings passed the detail budget',
+        $trunc['row']['detail'] === ScanOutcome::DETAIL_TRUNCATED
+        && !array_key_exists('detail', $trunc['status'])
+        && strpos($pfT['done'], \INSPIRE\UniversalValidator\ScanPageView::DETAIL_TRUNCATED) === false);
+    // The empty group: planning ends the run before any fence.
+    $eg = new ArrayScanStore();
+    $egm = $groupModule($eg);
+    $egm->records = [];
+    $egm->dagOf = [];
+    for ($i = 1; $i <= 2000; $i++) {
+        $egm->records[] = sprintf('E%04d', $i);
+        $egm->dagOf[sprintf('E%04d', $i)] = '31';
+    }
+    $egm->index = new \MoodySourceDb();
+    $egm->index->slowFor = 3.2;
+    $egId = (int) (new ScanService($egm, $eg))->start(184)['run_id'];
+    $egW = (new ScanService($egm, $eg))->work(184, $egId);
+    check('rv5b-2: a run over an empty group, which ends before any fence, is not promised its counts',
+        $eg->run(184, $egId)['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && $egW['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+
+    /* -----------------------------------------------------------------
+     * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
+     * WORD, IN STATUS, WORK AND CANCEL
+     *
+     * The reviewer's repro: a group-7 user asked about group 31's run, a
+     * whole-project run and an id that is no run, and got three different
+     * sentences - so run ids could be probed for other groups' scans. And a
+     * context that could not be built for the run's group answered with its
+     * own sentence before the scope was asked.
+     * ----------------------------------------------------------------- */
+    $os = new ArrayScanStore();
+    $om = $groupModule($os);
+    $om->user->rights['group_id'] = 31;
+    $o31 = (int) (new ScanService($om, $os))->start(185)['run_id'];
+    for ($i = 0; $i < 10 && $os->run(185, $o31)['terminal'] === null; $i++) {
+        (new ScanService($om, $os))->work(185, $o31);
+    }
+    $om->user->rights['group_id'] = null;
+    $oAll = (int) (new ScanService($om, $os))->start(185)['run_id'];
+    $om->user->rights['group_id'] = 7;
+    $askAll = function ($id) use ($om, $os) {
+        $svc = new ScanService($om, $os);
+        return ['status' => $svc->status(185, $id), 'work' => $svc->work(185, $id),
+                'cancel' => $svc->cancel(185, $id)];
+    };
+    $none = $askAll(999);
+    check('rv5b-4: an id that is no run is refused as no such run, by every verb',
+        $none['status']['why'] === ScanService::NO_RUN && $none['work']['why'] === ScanService::NO_RUN
+        && $none['cancel']['why'] === ScanService::NO_RUN && ScanService::NO_RUN === ScanAuthorization::NO_RUN);
+    check('rv5b-4: another group\'s run gets exactly the same answers',
+        $o31 > 0 && $askAll($o31) === $none);
+    check('rv5b-4: and so does a run over the whole project',
+        $oAll > 0 && $oAll !== $o31 && $askAll($oAll) === $none);
+    // The context for another group's run cannot be built just now: the
+    // reader is still told only that there is no such run.
+    $broken = new class($os) extends \E2eModule {
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
+                    'plan' => null, 'evaluate' => null, 'read' => null, 'rules' => [],
+                    'ownership' => [], 'problems' => []];
+        }
+    };
+    $broken->user->rights['group_id'] = 7;
+    $bsvc = new ScanService($broken, $os);
+    check('rv5b-4: a context that cannot be built for another group\'s run does not say so',
+        $bsvc->status(185, $o31) === $none['status'] && $bsvc->cancel(185, $o31) === $none['cancel']
+        && $bsvc->work(185, $o31) === $none['work']);
+    $broken->user->rights['group_id'] = 31;
+    check('rv5b-4 control: the run\'s own group is told why its context could not be built',
+        (new ScanService($broken, $os))->status(185, $o31)['why']
+        === 'this project has no rules this scan can evaluate');
     \REDCap::$groupNames = $keptNames;
 }
 

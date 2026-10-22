@@ -2496,6 +2496,69 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('rv10a1-1: a run bound without a valid id and epoch is refused when bound', $badBind === 4);
 
+    // A CANDIDATE WHOSE RECORD LEFT THE RUN'S GROUP (review rv5b-1) is
+    // deleted from its group, not re-read, and the group is counted again.
+    /** One group of three candidates on three records, one of which departed. */
+    class DepartVerifyDb implements ScanDb
+    {
+        public $left = 2;
+        public $writes = [];
+        public $deleted = [];
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+            if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+            if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'new', null, 3]];
+            if (strpos($sql, 'COUNT(DISTINCT record_hash), MIN(lookup)') !== false) {
+                return [[$this->left, 0]];
+            }
+            if (strpos($sql, 'ORDER BY candidate_id LIMIT') !== false) {
+                $rows = [];
+                foreach ([1, 2, 3] as $i) {
+                    if (in_array($i, $this->deleted, true)) continue;
+                    $rows[] = [$i, 'R' . $i, 0, 1, 'f', null, 'fa', 'h' . $i];
+                }
+                return $rows;
+            }
+            return [];
+        }
+        public function exec($sql, array $params = []) { $this->execNoCount($sql, $params); return 1; }
+        public function execNoCount($sql, array $params = [])
+        {
+            $this->writes[] = [$sql, $params];
+            if (strpos($sql, 'DELETE FROM') !== false && strpos($sql, 'unique_candidate') !== false) {
+                $this->deleted = array_merge($this->deleted, array_slice($params, 1));
+            }
+        }
+        public function affected() { return 1; }
+        public function begin() { }
+        public function commit() { }
+        public function rollback() { }
+    }
+    foreach (['a group of two records left' => [2, UniqueFinalizer::G_NEW],
+              'a group of one record left' => [1, UniqueFinalizer::G_SINGLETON]] as $what => $case) {
+        $ddb = new DepartVerifyDb();
+        $ddb->left = $case[0];
+        $dRead = [];
+        $ufd = new UniqueFinalizer($ddb, ['pid' => 800,
+            'read' => function (array $locs) use (&$dRead) {
+                foreach ($locs as $l) $dRead[] = (string) $l['record'];
+                return ['ok' => true, 'values' => [], 'why' => null];
+            },
+            'departed' => function (array $hashes) {
+                return in_array('h3', $hashes, true) ? ['h3' => true] : [];
+            }]);
+        $ufd->step(1, 500, 10);
+        $settle = null;
+        foreach ($ddb->writes as $wr) {
+            if (strpos($wr[0], 'distinct_records = ?') !== false) $settle = $wr[1];
+        }
+        check('rv5b-1 finalizer: a departed record\'s candidate is deleted, by its id, and nothing is re-read ('
+            . $what . ')', $ddb->deleted === [3] && $dRead === []);
+        check('rv5b-1 finalizer: and the group starts again over what is left (' . $what . ')',
+            is_array($settle) && $settle[0] === $case[1] && $settle[1] === $case[0]);
+    }
+
     // -- the duplicate phase is entered, not skipped -------------------------
     //
     // A project with no unique rules still passes through it. "We checked and
@@ -2927,6 +2990,149 @@ namespace INSPIRE\UniversalValidator\Scan {
     $withOthers = $listedBy($log->changed);
     check('R5-1 catchup: a scoped run\'s work answers never list more than its own scope moved',
         $withOthers > 0 && $withOthers === $listedBy($own));
+
+    // A LISTED RECORD THAT LEFT THE GROUP LEAVES THE RUN (review rv5b-1).
+    // Catch-up used to ask the scope of new records only, so a record moved to
+    // another group was requeued like any edit and read again with the other
+    // group's data - or, read after the move, was "settled" by the version
+    // rule and kept. Three records examined with a finding each, at version
+    // 900; the window then lists all three, inside the reading (400). B is in
+    // another group now, C's group cannot be told, A is still in the group.
+    $examined = function (array $ids) use ($hash, $finder) {
+        $store = new ArrayScanStore();
+        $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => '1']);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach ($ids as $id) $recs[] = ['id_bin' => $id, 'hash' => $hash($id), 'dag' => '7'];
+        $store->writeManifest($runId, $recs);
+        $epoch = (int) $store->run(800, $runId)['lease_epoch'];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($store->claim($runId, 'w1', $epoch, count($ids)) as $c) {
+            $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                                   'state' => ScanStore::REC_DONE, 'version' => '900',
+                                   'claim' => $c['claim']];
+            foreach ($finder(1)($c['id_bin'], [])['findings'] as $f) {
+                $f['ordinal'] = $c['ordinal'];
+                $batch['findings'][] = $f;
+            }
+        }
+        $store->commitBatch($runId, 'w1', $epoch, $batch);
+        $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+        return [$store, $runId, $epoch];
+    };
+    $activeOf = function ($store) {
+        $ids = [];
+        foreach ($store->findings(800, 1, [], 0, 100) as $f) $ids[] = (string) $f['record_id_bin'];
+        sort($ids);
+        return $ids;
+    };
+    list($store, $runId, $epoch) = $examined(['A', 'B', 'C']);
+    $log = new Log();
+    $log->changed = ['A' => '400', 'B' => '400', 'C' => '400'];
+    $where = ['A' => true, 'B' => false];        // C left out: cannot tell
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash,
+        'scope' => function (array $ids) use (&$where) {
+            return array_intersect_key($where, array_flip($ids));
+        }]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('rv5b-1 catchup: a listed record now in another group leaves the run, though its reading is current',
+        $r['departed'] === 1 && $store->recordState($runId, 2) === ScanStore::REC_DEPARTED);
+    check('rv5b-1 catchup: and what the run found in it is closed, and nothing else',
+        $activeOf($store) === ['A', 'C']);
+    check('rv5b-1 catchup: a listed record whose group cannot be told is examined again, never taken out',
+        $r['requeued'] === 1 && $store->recordState($runId, 3) === ScanStore::REC_PENDING
+        && $store->recordState($runId, 1) === ScanStore::REC_DONE);
+    check('rv5b-1 catchup: a record that left the group is not counted as the group\'s activity',
+        $r['listed'] === 2);
+    $kinds = [];
+    foreach ($store->aggregates($runId) as $a) $kinds[$a['kind']] = (int) $a['cnt'];
+    check('rv5b-1 catchup: the departure is counted where the report can read it',
+        isset($kinds[CatchUp::K_DEPARTED]) && $kinds[CatchUp::K_DEPARTED] === 1);
+    // The next round over the same window: B is still out and stays departed,
+    // and moves nothing; once it is back in the group it is examined again.
+    $store->setProgressState($runId, $epoch, ['catchupCursor' => null]);
+    $where['C'] = true;
+    $r2 = $cu->step(800, $runId, $epoch, 100);
+    check('rv5b-1 catchup: a record already departed is not departed again',
+        $r2['departed'] === 0 && $store->recordState($runId, 2) === ScanStore::REC_DEPARTED);
+    $store->setProgressState($runId, $epoch, ['catchupCursor' => null]);
+    $where['B'] = true;
+    $r3 = $cu->step(800, $runId, $epoch, 100);
+    check('rv5b-1 catchup: a departed record back in the group is examined again',
+        $r3['requeued'] >= 1 && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
+
+    // A PAGE OF OTHER GROUPS' CHANGES STILL MOVES THE RUN (review rv5b-3).
+    // listed is 0 for it, so `moved` - computed from the counters - was false
+    // while the cursor advanced, and the page backed off to 30 s and said the
+    // scan was not progressing. catch-up says what it wrote; the worker says
+    // it in its answer.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $log = new Log();
+    $others = [];
+    for ($i = 1; $i <= 40; $i++) $others[sprintf('X%02d', $i)] = '300';
+    $log->changed = $others;
+    $onlyOwn = function (array $ids) {
+        $out = [];
+        foreach ($ids as $id) $out[$id] = ($id[0] !== 'X');
+        return $out;
+    };
+    $cuX = new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $onlyOwn]);
+    $r = $cuX->step(800, $runId, $epoch, 25);          // captures the target fence, too
+    $r2 = $cuX->step(800, $runId, $epoch, 25);         // the next page, nothing else
+    check('rv5b-3 catchup: a page holding only other groups\' changes lists nothing, and says it moved',
+        $r['listed'] === 0 && $r['scanned'] === 25 && $r['moved'] === true && $r['done'] === false
+        && $r2['listed'] === 0 && $r2['scanned'] === 15 && $r2['moved'] === true
+        && $store->progressState($runId)['catchupCursor'] === 'X40');
+    $gone = (new CatchUp(new ArrayScanStore(), ['fence' => $log, 'hash' => $hash]))->step(800, 999, 1, 25);
+    check('rv5b-3 catchup control: a step that wrote nothing does not say it moved',
+        $gone['moved'] === false);
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+        'catchup' => new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $onlyOwn]),
+        'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB,
+            'timeLimit' => null, 'startedAt' => microtime(true),
+            'probe' => $scripted([[65, 65, 66]])->fn])]);
+    $res = $w->work(800, $runId);
+    check('rv5b-3 worker: a request that walked only other groups\' changes answers that it moved',
+        $res['ok'] === true && $res['phase'] === ScanPhase::CATCH_UP
+        && empty($res['listed']) && isset($res['moved']) && $res['moved'] === true);
+
+    // THE WORKER ASKS BEFORE IT READS (review rv5b-1). A record moved between
+    // planning and its read was read with the other group's data, and the
+    // window then called it settled. P2 is in another group: committed
+    // departed, never read. P3's group cannot be told: set aside, one attempt.
+    list($store, $runId) = $fixture(['P1', 'P2', 'P3']);
+    $readIds = [];
+    $w = new ScanWorker($store, ['fence' => new Versions(),
+        'read' => function ($ids) use ($reader, &$readIds) {
+            foreach ($ids as $id) $readIds[] = (string) $id;
+            return $reader($ids);
+        },
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(),
+        'scope' => function (array $ids) { return ['P1' => true, 'P2' => false]; }]);
+    $w->work(800, $runId);
+    $states = [];
+    foreach ([1, 2, 3] as $o) $states[] = $store->recordState($runId, $o);
+    check('rv5b-1 worker: a record in another group is not read, and leaves the run',
+        !in_array('P2', $readIds, true) && $states[1] === ScanStore::REC_DEPARTED);
+    check('rv5b-1 worker: a record whose group cannot be told is not read and not decided',
+        !in_array('P3', $readIds, true) && $states[2] !== ScanStore::REC_DONE
+        && $states[2] !== ScanStore::REC_DEPARTED);
+    check('rv5b-1 worker: and the record in the group is read as before',
+        in_array('P1', $readIds, true) && $states[0] === ScanStore::REC_DONE
+        && $activeOf($store) === ['P1']);
+    // A batch whose every record left the group counts nothing and moved the
+    // run: the answer says so (review rv5b-3).
+    list($store, $runId) = $fixture(['Q1', 'Q2']);
+    $res = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(),
+        'scope' => function (array $ids) { return array_fill_keys($ids, false); }]))->work(800, $runId);
+    check('rv5b-3 worker: a request whose records all left the group answers that it moved',
+        $res['worked'] === 0 && $res['findings'] === 0 && isset($res['moved']) && $res['moved'] === true
+        && $store->recordState($runId, 1) === ScanStore::REC_DEPARTED);
 
     // -- promotion: the one place a run may become finished -------------------
     //
@@ -3373,6 +3579,46 @@ namespace INSPIRE\UniversalValidator\Scan {
             count($lost->offered) >= 2 && $lost->offered[0] === 1 && $lost->offered[1] === 1);
         check('problems: and it is recorded once the next batch commits what it holds',
             ScanPromotion::tally($inner5->aggregates($run5))['ruleProblems'] === 1);
+
+        // THE CONTEXT'S OWN PROBLEMS (review rv10b1-2). A rule the plan of this
+        // request could not evaluate is met by no record - evaluate() never
+        // runs it - so only the worker's `planProblems` can put it on the run.
+        // Written with the first batch that examined a record, once per worker.
+        list($inner7, $run7) = $fixture(['A', 'B', 'C', 'D'], 821);
+        $seen7 = new class($inner7) extends FaultyStore {
+            public $offered = [];
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                        &$heldOrdinals = null) {
+                $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount, $heldOrdinals);
+            }
+        };
+        $PP = ['rule' => 3, 'fields' => ['x'], 'why' => 'this rule looks the value up in another project, '
+              . 'but you do not have rights there, so the rule was NOT evaluated.'];
+        $w7 = new ScanWorker($seen7, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor([]), 'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 5,
+            'finalizer' => $fin(), 'planProblems' => [$PP, $PP]]);
+        $res7 = $w7->work(821, $run7);
+        $rows7 = array_values(array_filter($inner7->aggregates($run7), function ($a) {
+            return $a['kind'] === ScanPromotion::RULE_KINDS;
+        }));
+        check('rv10b1-2 worker: the plan\'s problem is recorded by the batches that examined records',
+            $res7['worked'] === 4 && count($rows7) === 1 && $rows7[0]['axis1'] === '3'
+            && ScanPromotion::tally($inner7->aggregates($run7))['ruleProblems'] === 1);
+        check('rv10b1-2 worker: once, with the first batch, and not offered again by the same worker',
+            $seen7->offered === [1, 0]);
+        // A batch that examined nothing writes nothing: every record of this
+        // one is gone from the project, so no rule was skipped for it.
+        list($inner8, $run8) = $fixture(['G1', 'G2'], 822);
+        $w8 = new ScanWorker($inner8, ['fence' => new Versions(),
+            'read' => function (array $ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+            'exists' => function (array $ids) { return array_fill_keys($ids, false); },
+            'evaluate' => $problemFor([]), 'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 1,
+            'finalizer' => $fin(), 'planProblems' => [$PP]]);
+        $res8 = $w8->work(822, $run8);
+        check('rv10b1-2 worker: a batch that examined no record writes no plan problem',
+            $res8['worked'] === 0
+            && ScanPromotion::tally($inner8->aggregates($run8))['ruleProblems'] === 0);
 
         // A RECORD THAT KILLS PHP. A worker killed by memory_limit or
         // max_execution_time inside the read or the evaluation runs nothing

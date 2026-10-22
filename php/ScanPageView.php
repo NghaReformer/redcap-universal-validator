@@ -280,6 +280,32 @@ class ScanPageView
      * No apostrophes, for the reason given at STALLED.
      */
     const NOT_CERTIFIED = 'This result does not certify the project.';
+
+    /**
+     * The coverage sentence of a group-scoped run that was stopped (or
+     * expired) before it proved its scope (review rv5b-2). Its coverage is
+     * `partial`, whose sentence says records could not be checked - false of
+     * a run stopped after checking every one, and a reader shown no counts
+     * cannot tell which it was. This says what is known. No apostrophes.
+     */
+    const STOPPED_WITHHELD = 'This scan was stopped before it confirmed which records belong to '
+                           . 'this Data Access Group, so it is not a complete picture of the group.';
+
+    /**
+     * The coverage half of a finished run's sentence: STOPPED_WITHHELD for a
+     * withheld run that was stopped or expired, coverageSentence() for every
+     * other. js/scan.js decides the same way.
+     */
+    public static function endedSentence($status)
+    {
+        $t = (is_array($status) && isset($status['terminal'])) ? (string) $status['terminal'] : '';
+        if (!empty($status['withheld'])
+                && ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED)) {
+            return self::STOPPED_WITHHELD;
+        }
+        return self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
+                                      isset($status['detail']) ? $status['detail'] : null);
+    }
     const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
                         . 'project.';
     const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
@@ -391,6 +417,8 @@ class ScanPageView
             'ruleProblem'     => self::RULE_PROBLEM,
             'ruleProblems'    => self::RULE_PROBLEMS,
             'withheld'        => Scan\ScanAuthorization::WITHHELD,
+            'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
+            'stoppedWithheld' => self::STOPPED_WITHHELD,
         ];
     }
 
@@ -483,9 +511,12 @@ class ScanPageView
         // A group-scoped run that has not proved its scope says so in place of
         // its counts (H10 part 1), in the server's words.
         if (is_array($status) && !empty($status['withheld'])) {
-            return (isset($status['withheldWhy']) && is_string($status['withheldWhy'])
-                    && $status['withheldWhy'] !== '')
-                ? $status['withheldWhy'] : Scan\ScanAuthorization::WITHHELD;
+            if (isset($status['withheldWhy']) && is_string($status['withheldWhy'])
+                    && $status['withheldWhy'] !== '') {
+                return $status['withheldWhy'];
+            }
+            return empty($status['terminal'])
+                ? Scan\ScanAuthorization::WITHHELD : Scan\ScanAuthorization::WITHHELD_ENDED;
         }
         $total = $i('total');
         if ($total <= 0) return 'Preparing';
@@ -591,8 +622,7 @@ class ScanPageView
             'pct'    => $pct,
             // ONE STRING, coverage then decision - see verdictText().
             'done'   => empty($status['terminal']) ? null
-                : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
-                                         isset($status['detail']) ? $status['detail'] : null)
+                : self::endedSentence($status)
                   . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
             'active' => !empty($status['active']),
         ];
@@ -640,7 +670,7 @@ class ScanPageView
      *
      * 'dag' is the NUMERIC group id, because that is the identity every
      * comparison downstream actually speaks: ScanPlanner::stream() matches it
-     * against redcap_record_list.dag_id, RecordManifestSource::inScope() against
+     * against redcap_record_list.dag_id, RecordManifestSource::scopeOf() against
      * the same column or the data table's __GROUPID__ rows, and
      * ScanAuthorization::scopeMatches() against $rights['group_id'] from the
      * framework. It used to be the unique NAME, so all three compared "site_a"
@@ -728,7 +758,7 @@ class ScanPageView
             // 'dag' is stored verbatim as uv_scan_run.scope_dag and is then
             // compared, unchanged, against three id-shaped values:
             // redcap_record_list.dag_id (ScanPlanner::stream and
-            // RecordManifestSource::inScope) and $rights['group_id']
+            // RecordManifestSource::scopeOf) and $rights['group_id']
             // (ScanAuthorization::readable). Returning the friendly name here
             // meant a group-scoped run listed every record, appended none,
             // called an empty manifest complete and promoted to

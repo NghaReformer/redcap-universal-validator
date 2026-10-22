@@ -101,6 +101,12 @@ final class ScanService
     private $fences = [];
     /** @var array entitlement key (see entitlement()) => its answer */
     private $entitlements = [];
+    /**
+     * @var array crossRefusal() key => what the module answered: a work
+     * request asks it for the work and again for the status it returns, and
+     * both are the same reader in the same request (see entitlement()).
+     */
+    private $crossAnswers = [];
     /** @var \ArrayObject the plans durableScanContext() built for this request */
     private $plans;
     /** @var ?ScanStore the store a test handed in; null is SqlScanStore over $db */
@@ -273,6 +279,13 @@ final class ScanService
         }
         $auth = ScanAuthorization::mayStart($scope['rights'], array_keys($forms), $unknown);
         if (empty($auth['ok'])) return self::noStart($auth['why']);
+        // A STARTER ANOTHER PROJECT REFUSES IS REFUSED THE START (review
+        // rv10b1-2). Their plan skips the lookups that project would not
+        // answer, and a run started on it was evaluated without those rules
+        // on this person's passes and with them on everybody else's. status()
+        // already refused them the run they had started (crossRefusal()).
+        $cross = self::planCrossRefusal($ctx, 'start');
+        if ($cross !== null) return self::noStart($cross['why']);
 
         $src = RecordManifestSource::open($this->db, $pid,
             ['pk' => $this->recordIdField($pid)]);
@@ -446,6 +459,22 @@ final class ScanService
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'changed',
                     'why' => $why, 'status' => $this->statusOf($pid, $runId, [])];
         }
+        // A READER ANOTHER PROJECT REFUSES DOES NOT WORK THE RUN (reviews
+        // rv5b-5, rv10b1-2). Two questions, one refusal:
+        //   - the run's own lookups, asked for this reader as status() asks
+        //     them. A reader refused the results was still let work, and the
+        //     work answer's counters - findings among them - are results;
+        //   - this reader's plan. A lookup it is refused is a rule its context
+        //     skips, and the rule stays in the list, so the fingerprint above
+        //     matched. The pass examined records without the rule and
+        //     committed them as checked, and the run could finish clean.
+        // Asked here, after the branches above that end a run or answer with
+        // its status: those evaluate nothing, and a run must stay stoppable.
+        $cross = $this->crossRefusal($pid, $run, 'work');
+        if ($cross === null) $cross = self::planCrossRefusal($ctx, 'work');
+        if ($cross !== null) {
+            return ['ok' => false, 'why' => $cross['why'], 'final' => !empty($cross['final'])];
+        }
         $this->planMoved = false;
         $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode,
                                                            $config['policyRevisionNow'],
@@ -523,8 +552,13 @@ final class ScanService
      *
      * A RUN THAT HAS NOT PROVED ITS SCOPE GIVES NO COUNTS (H10 part 1). The
      * counters are what the run's counts are summed from, so a status that
-     * withholds the counts withholds them here too - and so does a status that
-     * could not be given at all, for a group-scoped run: unread is not proved.
+     * withholds the counts withholds them here too.
+     *
+     * A STATUS THAT WAS REFUSED GIVES NO COUNTS EITHER, ON ANY RUN (review
+     * rv5b-5). This held only for a group-scoped run, where unread is not
+     * proved; on any other run a reader refused the status was still handed
+     * what the request examined and found. What the reader may not be shown
+     * as the run's counts they may not be shown as this request's.
      *
      * @param array $before the run row as this request first read it
      */
@@ -534,11 +568,13 @@ final class ScanService
         foreach (['worked', 'requeued', 'blocked', 'findings', 'listed'] as $k) {
             if (isset($r[$k])) $sum += max(0, (int) $r[$k]);
         }
-        $moved = $sum > 0 || $this->planMoved
+        // `moved` from the worker: catch-up walked a page none of whose
+        // changes the reader may count, or a batch's records all left the
+        // group (review rv5b-3).
+        $moved = $sum > 0 || $this->planMoved || !empty($r['moved'])
               || (isset($r['phase']) && isset($before['phase']) && (string) $r['phase'] !== (string) $before['phase']);
-        $scoped = isset($before['scope_dag']) && $before['scope_dag'] !== null && $before['scope_dag'] !== '';
         $r['moved'] = $moved;
-        if (!empty($status['withheld']) || ($scoped && empty($status['ok']))) {
+        if (!empty($status['withheld']) || empty($status['ok'])) {
             $r = ScanAuthorization::preFenceWork($r, $moved);
         }
         $r['status'] = $status;
@@ -574,7 +610,7 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx, $store),
+            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id']),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -604,6 +640,10 @@ final class ScanService
             'note'      => function ($event, array $context) {
                 $this->note($event, $context);
             },
+            // What this request's context could not evaluate, written beside
+            // every batch it evaluates (review rv10b1-2). start() noted only
+            // the problems of the plan it was built from.
+            'planProblems' => (isset($ctx['problems']) && is_array($ctx['problems'])) ? $ctx['problems'] : [],
         ];
         // The privacy policy revision as the settings make it now (review
         // R5-5). The worker compares it with the run's and, when it moved,
@@ -618,6 +658,14 @@ final class ScanService
             // And the evaluator revision it was built with, so the guard can
             // say an upgrade ended the run (review rv10b1-6).
             $deps['engine'] = $this->engineVersion();
+        }
+        // A GROUP-SCOPED RUN ASKS EACH RECORD'S GROUP BEFORE IT READS IT
+        // (review rv5b-1), the question catch-up asks, of the same source. A
+        // record moved to another group since planning is that group's
+        // record, and reading it would put that group's data into this run.
+        // An unscoped run asks nothing and pays nothing.
+        if (isset($run['scope_dag']) && $run['scope_dag'] !== null) {
+            $deps['scope'] = $this->scopeProbe($pid, $run['scope_dag']);
         }
         return $deps;
     }
@@ -715,7 +763,10 @@ final class ScanService
             'coverage'  => $run['coverage'],
             'detail'    => $run['detail'],
             'values'    => $run['values_state'],
-            'total'     => (int) $run['manifest_total'],
+            // Less the records that left the group (review rv5b-1): the
+            // manifest keeps their rows, and the group's reader is shown the
+            // group's records only.
+            'total'     => max(0, (int) $run['manifest_total'] - $progress['departed']),
             // EXAMINED, and only examined. This was every terminal state summed,
             // so a run in which every record failed to store read "12 of 12
             // records (100%)" above a report with nothing in it. What was not
@@ -843,6 +894,10 @@ final class ScanService
         $excluded = 0;
         foreach (ScanStore::NOT_EXAMINED as $state) $excluded += $n($state);
         $removed = $n(ScanStore::REC_TOMBSTONE);
+        // Records that left a group-scoped run's group (review rv5b-1). In no
+        // figure a reader is shown: statusOf() takes them off the total, and
+        // they are not settled, because they are not the run's any more.
+        $departed = $n(ScanStore::REC_DEPARTED);
 
         $phase = isset($run['phase']) ? (string) $run['phase'] : '';
         $at = function ($k) use ($run) { return self::clock($run, $k); };
@@ -869,6 +924,7 @@ final class ScanService
         $driven = self::workerHolds($run, $now, $threshold);
 
         return ['done' => $done, 'excluded' => $excluded, 'removed' => $removed,
+                'departed' => $departed,
                 'settled' => $done + $excluded + $removed,
                 'stalled' => $quiet && $driven,
                 'paused' => $quiet && !$driven,
@@ -1032,12 +1088,15 @@ final class ScanService
      *   - refused: final only when every refused lookup was refused by a
      *     decision (review R3U-1). One that rests on a read that failed is
      *     asked again, because the next ask may show the run.
+     *
+     * $verb is what the reader asked to do, and only the end of the sentence
+     * depends on it: 'read' (status) or 'work' (advanceRun(), review rv5b-5).
      */
-    private function crossRefusal($pid, array $run)
+    private function crossRefusal($pid, array $run, $verb = 'read')
     {
         $unreadable = ['ok' => false, 'final' => false,
-            'why' => 'which other projects this scan looked values up in could not be read, so its results '
-                   . 'are not shown to you yet'];
+            'why' => 'which other projects this scan looked values up in could not be read, '
+                   . self::crossTail($verb, true)];
         $raw = array_key_exists('policy_json', $run) ? $run['policy_json'] : null;
         $policy = is_string($raw) ? json_decode($raw, true) : null;
         if (!is_array($policy)) return $unreadable;
@@ -1048,13 +1107,17 @@ final class ScanService
         }
         if (!is_array($policy['crossLookups'])) return $unreadable;
         if (!$policy['crossLookups']) return null;
-        try {
-            $refused = is_callable([$this->module, 'crossLookupRefusals'])
-                     ? $this->module->crossLookupRefusals((int) $pid, array_values($policy['crossLookups']))
-                     : null;
-        } catch (\Throwable $e) {
-            $refused = null;
+        $lookups = array_values($policy['crossLookups']);
+        $key = json_encode([(int) $pid, $lookups, $this->username()]);
+        if (!array_key_exists($key, $this->crossAnswers)) {
+            try {
+                $this->crossAnswers[$key] = is_callable([$this->module, 'crossLookupRefusals'])
+                    ? $this->module->crossLookupRefusals((int) $pid, $lookups) : null;
+            } catch (\Throwable $e) {
+                $this->crossAnswers[$key] = null;
+            }
         }
+        $refused = $this->crossAnswers[$key];
         if (!is_array($refused)) return $unreadable;
         if (!$refused) return null;
         $decided = [];
@@ -1067,17 +1130,71 @@ final class ScanService
                 $unread[$b] = true;
             }
         }
-        ksort($decided);
-        ksort($unread);
-        $why = $decided
-            ? 'this scan looks values up in project ' . implode(', ', array_keys($decided))
-              . ', which does not answer your lookups, so its results are not shown to you'
-            : 'this scan looks values up in project ' . implode(', ', array_keys($unread))
-              . ', and whether it answers your lookups could not be read just now, so its results '
-              . 'are not shown to you yet';
         // A decision is as final as an instrument the reader cannot read:
         // polling again asks the same rights the same question.
-        return ['ok' => false, 'why' => $why, 'final' => !$unread];
+        return ['ok' => false, 'why' => self::crossWhy(array_keys($decided), array_keys($unread), $verb),
+                'final' => !$unread];
+    }
+
+    /**
+     * The refusal for a reader whose own plan skips a lookup into another
+     * project, or null when it skips none (review rv10b1-2).
+     *
+     * The plan marks such a rule skipped, or such a branch refused, and keeps
+     * it in the rule list, so the fingerprint is the same whoever builds it.
+     * A work pass by this reader would then examine records without the rule
+     * and commit them as checked, beside records another reader checked with
+     * it. start() and advanceRun() ask this; crossRefused is the plan's list
+     * of the projects that refuse this reader, crossUnread the part of it
+     * that rests on a read that failed.
+     *
+     * A PLAN THAT DOES NOT SAY IS REFUSED. buildScanPlan() sets both lists on
+     * every return, so a context without them is not one to evaluate with.
+     */
+    private static function planCrossRefusal(array $ctx, $verb)
+    {
+        $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
+        if (!isset($plan['crossRefused']) || !is_array($plan['crossRefused'])) {
+            return ['ok' => false, 'final' => false,
+                'why' => 'which other projects this scan looks values up in could not be read, '
+                       . self::crossTail($verb, true)];
+        }
+        if (!$plan['crossRefused']) return null;
+        $unread = (isset($plan['crossUnread']) && is_array($plan['crossUnread']))
+                ? array_map('intval', $plan['crossUnread']) : array_map('intval', $plan['crossRefused']);
+        $decided = array_diff(array_map('intval', $plan['crossRefused']), $unread);
+        return ['ok' => false, 'why' => self::crossWhy($decided, $unread, $verb), 'final' => !$unread];
+    }
+
+    /**
+     * The sentence for a run another project will not answer this reader's
+     * lookups for. The decided projects are named when there are any; a
+     * refusal that rests only on failed reads says so and says "yet".
+     *
+     * @param int[] $decided
+     * @param int[] $unread
+     */
+    private static function crossWhy(array $decided, array $unread, $verb)
+    {
+        $decided = array_values(array_unique(array_map('intval', $decided)));
+        $unread = array_values(array_unique(array_map('intval', $unread)));
+        sort($decided);
+        sort($unread);
+        return $decided
+            ? 'this scan looks values up in project ' . implode(', ', $decided)
+              . ', which does not answer your lookups, ' . self::crossTail($verb, false)
+            : 'this scan looks values up in project ' . implode(', ', $unread)
+              . ', and whether it answers your lookups could not be read just now, '
+              . self::crossTail($verb, true);
+    }
+
+    /** How a cross-project refusal ends, by what the reader asked to do. */
+    private static function crossTail($verb, $yet)
+    {
+        if ($verb === 'start') $t = 'so you cannot start this scan';
+        elseif ($verb === 'work') $t = 'so you cannot continue this scan';
+        else $t = 'so its results are not shown to you';
+        return $yet ? $t . ' yet' : $t;
     }
 
     /**
@@ -1271,8 +1388,11 @@ final class ScanService
 
     // -- assembly ------------------------------------------------------------
 
-    /** The wording every unknown run gets, whatever the real reason. */
-    const NO_RUN = 'no scan with that reference is running for this project';
+    /**
+     * The wording every unknown run gets, whatever the real reason - and a
+     * run outside the reader's group, which must read the same (rv5b-4).
+     */
+    const NO_RUN = ScanAuthorization::NO_RUN;
 
     /**
      * Rights, entitlement forms and the plan, re-derived NOW.
@@ -1312,6 +1432,15 @@ final class ScanService
             // threw is a moment - see status().
             return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
         }
+        // A RUN OUTSIDE THE READER'S GROUP IS NO RUN, BEFORE ANYTHING IS BUILT
+        // FOR IT (review rv5b-4). The context below is built with the run's
+        // own group, and a build that fails answers with its own sentence -
+        // so a group user asking about another group's run could learn that
+        // it exists from the way the refusal read. Refused here, as a final
+        // answer, in the words an id that is not a run gets. Every verb asks
+        // the same scope question after this; it just cannot be reached first.
+        $touch = ScanAuthorization::mayTouchScope($scope['rights'], $run['scope_dag']);
+        if (empty($touch['ok'])) return ['ok' => false, 'why' => $touch['why'], 'final' => true];
         $policy = $this->policy($pid);
         // The run is in hand, so the evaluator is bound to THIS run's
         // generation and sequence - the numbers its findings are written under
@@ -1496,6 +1625,25 @@ final class ScanService
         };
     }
 
+    /**
+     * "Is each record in this run's group", as a callable: true, false, or
+     * null for cannot tell (RecordManifestSource::scopeOf, review rv5b-1).
+     *
+     * Catch-up asks it of the change log's records, and the worker of each
+     * batch before it reads one. With no source an unscoped run admits
+     * everything and a scoped one can tell nothing: no group can be
+     * established, and cannot tell neither admits a record nor takes one out.
+     */
+    private function scopeProbe($pid, $dag)
+    {
+        $source = $this->openSource($pid);
+        return function (array $ids) use ($source, $dag) {
+            $ids = array_map('strval', $ids);
+            if ($source === null) return array_fill_keys($ids, $dag === null ? true : null);
+            return $source->scopeOf($ids, $dag);
+        };
+    }
+
     private function catchUp($pid, ScanStore $store, $dag)
     {
         $source = $this->openSource($pid);
@@ -1506,20 +1654,14 @@ final class ScanService
                 return Hmac::raw(Hmac::P_RECORD, $pid, (string) $id, $key);
             },
             'exists' => $this->existsProbe($pid),
-            'scope'  => function (array $ids) use ($source, $dag) {
-                // No source means no way to establish a group. For a scoped run
-                // that is a refusal to admit; for an unscoped one it is
-                // irrelevant, and inScope() draws that distinction.
-                if ($source === null) return array_fill_keys($ids, $dag === null);
-                return $source->inScope($ids, $dag);
-            },
+            'scope'  => $this->scopeProbe($pid, $dag),
             'dag'    => function (array $ids) use ($source) {
                 return $source === null ? array_fill_keys($ids, null) : $source->dagsOf($ids);
             },
         ]);
     }
 
-    private function finalizer($pid, array $ctx, ScanStore $store)
+    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1539,6 +1681,12 @@ final class ScanService
             'store'    => $store,
             'hmacKey'  => $this->key(),
             'versions' => $this->fence($pid),
+            // Which candidates' records left the run's group (review rv5b-1).
+            // Their candidates are dropped from the group rather than re-read.
+            'departed' => ($store === null || $runId === null) ? null
+                : function (array $hashes) use ($store, $runId) {
+                    return $store->departedOf((int) $runId, $hashes);
+                },
             // Re-reading a duplicate group goes through the SAME read the worker
             // uses, so a group is verified against the values the scan would
             // have seen rather than a second, differently-shaped export.

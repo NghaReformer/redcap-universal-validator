@@ -151,7 +151,7 @@ final class RecordManifestSource
         $dt = self::dataTable($db, $pid);
         if ($dt === null) {
             return ['ok' => false, 'source' => null,
-                    'why' => $noIndex . ' and no recognisable data table, so '
+                    'why' => $noIndex . ' and its data table could not be identified, so '
                            . 'its records cannot be listed without exporting the whole project'];
         }
         if ($pk === null) {
@@ -247,13 +247,24 @@ final class RecordManifestSource
      * The data table is slower and always whole, and it is not a cache, so a
      * walk that has moved onto it has no reason to move back.
      *
+     * THE TABLE REDCAP NAMES NOW, NOT THE ONE READ AT open() (review rv5a-1).
+     * REDCap moves a project to another data table and resets its record-list
+     * cache in the same operation, so the untrusted page that sends a walk here
+     * is the moment the name read at open() is most likely to be stale: the
+     * walk moved onto a table that no longer held the project, read it as
+     * empty, and froze the manifest at what the index had listed. So the name
+     * is read again. A data-table walk is handed back as itself only while it
+     * still reads the table REDCap names.
+     *
      * @return ?RecordManifestSource
      */
     public function dataWalk()
     {
-        if ($this->pkField !== null) return $this;
-        if ($this->dataTable === null || $this->pk === null) return null;
-        $o = self::overData($this->db, $this->pid, $this->dataTable, $this->pk);
+        if ($this->pk === null) return null;
+        $dt = self::dataTable($this->db, $this->pid);
+        if ($dt === null) return null;
+        if ($this->pkField !== null && $dt === $this->table) return $this;
+        $o = self::overData($this->db, $this->pid, $dt, $this->pk);
         return empty($o['ok']) ? null : $o['source'];
     }
 
@@ -326,12 +337,20 @@ final class RecordManifestSource
      * DISTINCT and `project_id = ? AND record IN (...)` is the leading part of
      * the data table's own (project_id, record, ...) index.
      *
+     * ONLY THE TABLE REDCAP NAMES NOW CAN SAY "GONE" (review rv5a-1). The name
+     * was read when the source was opened, and a project REDCap has since
+     * moved holds nothing in the old table, so every id would have come back
+     * absent and catch-up would have tombstoned live records. One primary-key
+     * read, and only when some id is absent.
+     *
      * @param string[] $ids
+     * @param bool $named the caller confirmed the name in this same call
      * @return array<string,true>|null
      */
-    private function heldInData(array $ids)
+    private function heldInData(array $ids, $named = false)
     {
         if ($this->dataTable === null || !$ids) return null;
+        if (!$named && self::dataTable($this->db, $this->pid) !== $this->dataTable) return null;
         $marks = implode(',', array_fill(0, count($ids), '?'));
         try {
             $rows = $this->db->select('SELECT DISTINCT record FROM ' . $this->dataTable
@@ -455,38 +474,82 @@ final class RecordManifestSource
     }
 
     /**
-     * Is each record inside a run scoped to $dag?
+     * Is each record inside a run scoped to $dag: yes, no, or cannot tell?
+     * (review rv5b-1)
      *
-     * FAILS CLOSED, unlike exist(). A record whose group cannot be established
-     * is NOT admitted to a group-scoped run: admitting it would put another
-     * group's record into a report its reader is not entitled to, which is the
-     * same fail-open the page-level DAG filter was hardened against. Leaving it
-     * out costs coverage, and coverage is reported.
+     * ONE RESOLUTION FOR BOTH HALVES OF THE RUN (B3b), and for both of
+     * catch-up's questions. It replaces inScope(), which answered only
+     * whether a record may be ADDED, with false as its safe answer. A record
+     * already on a run's list needs three answers, because false now takes
+     * it out of the run: true, the record is in the group; false, the
+     * project holds the record and it is in another group or in none; null,
+     * the question could not be answered. Null is never false here - a read
+     * that failed must not take a record out of a run, any more than it may
+     * put one in - and catch-up admits a new record on true only, which is
+     * inScope()'s fail-closed direction.
      *
-     * @return array<string,bool>
+     * False needs evidence that the record exists: a row in the record index
+     * (its group column says where it is), or a __GROUPID__ row, or any row
+     * in the data table REDCap names for the project now. A record nobody
+     * lists is null, and whether it was deleted is exist()'s question.
+     *
+     * One index read, then one data-table read for the records the index
+     * did not list (or for all of them on a source with no group column),
+     * plus one primary-key read to confirm the data table is still the
+     * project's (rv5a-1), and one more only when a record has no group row.
+     *
+     * @return array<string,?bool>
      */
-    public function inScope(array $ids, $dag = null)
+    public function scopeOf(array $ids, $dag = null)
     {
-        if ($dag === null) {
-            // An unscoped run admits everything the project holds.
-            return array_fill_keys(array_map('strval', $ids), true);
+        $ids = array_map('strval', $ids);
+        if ($dag === null) return array_fill_keys($ids, true);
+        $out = array_fill_keys($ids, null);
+        if (!$ids) return $out;
+        $want = (string) $dag;
+        $rest = $ids;
+        if ($this->dagCol !== null) {
+            $marks = implode(',', array_fill(0, count($ids), '?'));
+            try {
+                $rows = $this->db->select('SELECT ' . $this->recordCol . ', ' . $this->dagCol
+                    . ' FROM ' . $this->table . ' WHERE project_id = ? AND ' . $this->recordCol
+                    . ' IN (' . $marks . ')', array_merge([$this->pid], $ids));
+            } catch (\Throwable $e) {
+                return $out;
+            }
+            $listed = [];
+            foreach ($rows as $row) {
+                $listed[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
+            }
+            $rest = [];
+            foreach ($ids as $id) {
+                if (!array_key_exists($id, $listed)) {
+                    $rest[] = $id;
+                    continue;
+                }
+                $out[$id] = ($listed[$id] !== null && $listed[$id] === $want);
+            }
+            if (!$rest) return $out;
         }
-        // ONE RESOLUTION FOR BOTH HALVES OF THE RUN. This used to refuse every
-        // record whenever dagCol was null, which on the data-table fallback
-        // meant a group-scoped run admitted nothing at catch-up while its
-        // manifest had been built from exactly the group information this
-        // branch claimed was unavailable. dagsOf() now answers on both sources,
-        // so both halves ask the same question of the same rows. A record whose
-        // group still cannot be established comes back null and is refused
-        // below - the fail-closed direction this method's docblock commits to,
-        // reached by an answer rather than by an assumption.
-        if ($this->dagCol === null && $this->dataTable === null) {
-            // No way at all to establish a group: fail closed, as documented.
-            return array_fill_keys(array_map('strval', $ids), false);
+        if ($this->dataTable === null) return $out;
+        if (self::dataTable($this->db, $this->pid) !== $this->dataTable) return $out;
+        $map = $this->groupsFromDataTable($rest);
+        if ($map === null) return $out;
+        $unplaced = [];
+        foreach ($rest as $id) {
+            if (!array_key_exists($id, $map)) {
+                $unplaced[] = $id;
+                continue;
+            }
+            // A __GROUPID__ row is evidence the record exists; '' (folded to
+            // null by groupsFromDataTable) is a record in no group.
+            $out[$id] = ($map[$id] !== null && $map[$id] === $want);
         }
-        $out = [];
-        foreach ($this->dagsOf($ids) as $id => $g) {
-            $out[$id] = ($g !== null && (string) $g === (string) $dag);
+        if ($unplaced) {
+            $held = $this->heldInData($unplaced, true);
+            if ($held !== null) {
+                foreach ($unplaced as $id) if (isset($held[$id])) $out[$id] = false;
+            }
         }
         return $out;
     }
@@ -590,6 +653,8 @@ final class RecordManifestSource
         // record after the cursor was missing from it for good.
         if (!$out) {
             if (!$this->stillTrusted()) return $this->untrusted($after, $emitted);
+            $held = $this->tableHeld($after, $emitted);
+            if ($held !== null) return $held;
             return ['ok' => true, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted,
                     'done' => true, 'why' => null];
         }
@@ -642,8 +707,22 @@ final class RecordManifestSource
         // list reads as the end of the project, and a full one can still have
         // a hole in the middle. One primary-key read per page.
         if (!$this->stillTrusted()) return $this->untrusted($after, $emitted);
+        if ($done) {
+            $held = $this->tableHeld($after, $emitted);
+            if ($held !== null) return $held;
+        }
 
-        if ($this->dagCol === null && $out) $this->fillGroups($out);
+        // A PAGE WHOSE GROUPS COULD NOT BE READ IS NOT USED (review rv5a-2).
+        // Its rows went on with no group, a group-scoped slice counted every
+        // one of them out of scope, committed the page and moved the cursor
+        // past it, so those records never reached the manifest - 100 of 1000,
+        // all in the run's group, for one failed read. The page is a failed
+        // read now: the attempt is counted and the same page asked again.
+        if ($this->dagCol === null && $out && !$this->fillGroups($out)) {
+            return ['ok' => false, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted,
+                    'done' => false,
+                    'why' => 'the group of each record on this page could not be read, so the page was not used'];
+        }
 
         return ['ok' => true, 'rows' => $out, 'cursor' => $cursor, 'emitted' => $carry,
                 'done' => $done, 'why' => null];
@@ -658,28 +737,64 @@ final class RecordManifestSource
      * this walk opened. Not a read failure: the walk carries on from the
      * project's data table (ScanPlanner::step()).
      */
-    private function untrusted($after, array $emitted)
+    private function untrusted($after, array $emitted, $why = self::UNTRUSTED)
     {
         return ['ok' => false, 'untrusted' => true, 'rows' => [], 'cursor' => $after,
-                'emitted' => $emitted, 'done' => false, 'why' => self::UNTRUSTED];
+                'emitted' => $emitted, 'done' => false, 'why' => $why];
+    }
+
+    /** What a data table REDCap moved the project off is told as. */
+    const MOVED = 'REDCap moved this project to another data table while its records were being read, '
+        . 'so that page was not used';
+
+    /**
+     * May a walk that reads the data table say it is done? (review rv5a-1)
+     *
+     * Null when it may: the walk reads no data table (an index with a group
+     * column), or redcap_projects still names the table it reads. Otherwise
+     * the page that would end the walk, and with it the manifest: `untrusted`
+     * when the project now lives in another table, so the walk moves there
+     * and starts again (ScanPlanner::step()); a failed read when the name
+     * cannot be read, so the attempt is counted and the page asked again.
+     *
+     * WHY ONLY AT THE END. A project REDCap moves leaves the old table short
+     * or empty, so a walk over it reaches its end early - and nothing but an
+     * end freezes a manifest. Asked there, it is one primary-key read per walk;
+     * the pages before it were read from a table that held the project, and
+     * any it missed are listed again from the first record of the new one.
+     */
+    private function tableHeld($after, array $emitted)
+    {
+        if ($this->dataTable === null || ($this->pkField === null && $this->dagCol !== null)) return null;
+        $now = self::dataTable($this->db, $this->pid);
+        if ($now === $this->dataTable) return null;
+        if ($now !== null) return $this->untrusted($after, $emitted, self::MOVED);
+        return ['ok' => false, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted, 'done' => false,
+                'why' => 'the record list could not be read to its end (this project\'s data table '
+                       . 'could not be confirmed)'];
     }
 
     /**
      * Groups for one page, from the data table's `__GROUPID__` rows.
      *
      * One query per page, never per record. A record with no row is ungrouped,
-     * which is a real answer and not a missing one.
+     * which is a real answer and not a missing one. False when the groups
+     * could not be read at all, which page() refuses the page on: nothing
+     * reported "the degradation" the old comment here promised.
+     *
+     * @return bool
      */
     private function fillGroups(array &$rows)
     {
-        if ($this->dataTable === null) return;
+        if ($this->dataTable === null) return false;
         $ids = [];
         foreach ($rows as $r) $ids[] = $r['id'];
         $map = $this->groupsFromDataTable($ids);
-        if ($map === null) return;    // caller sees null groups and reports the degradation
+        if ($map === null) return false;
         foreach ($rows as $i => $r) {
             if (isset($map[$r['id']])) $rows[$i]['dag'] = $map[$r['id']];
         }
+        return true;
     }
 
     /**
@@ -710,7 +825,7 @@ final class RecordManifestSource
         // index branch at page() already folds both onto null. Doing it here
         // rather than in each caller is what keeps the two sources answering
         // the same shape: dagsOf() reads this method on the fallback, and
-        // inScope() then refuses null - so an unfolded '' would be compared
+        // scopeOf() then answers null as no group - so an unfolded '' would be compared
         // against a group id as a value rather than refused as an absence.
         foreach ($q as $row) {
             $map[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
@@ -789,17 +904,39 @@ final class RecordManifestSource
      * not a fact. The column holding the name may itself not exist on older
      * builds, which is why the read is wrapped rather than branched on a version
      * number - a version number is a claim, and a failed query is an answer.
+     * Null when the table cannot be named, which every caller refuses on.
      */
     public static function dataTable(ScanDb $db, $pid)
     {
+        // ONLY A BUILD WITH NO data_table COLUMN FALLS BACK (review rv5a-1).
+        // This fell back to redcap_data on ANY failure of this read, and on a
+        // name the allowlist refused. A project kept in redcap_data2 whose one
+        // read of redcap_projects hit a lock wait was then walked over
+        // redcap_data, which holds none of its rows: since R5-7 an empty walk
+        // ends the listing, so the manifest froze at what had been listed, and
+        // exist() on the same source called every live record deleted. So the
+        // catalogue is asked why the read failed. A redcap_projects it lists
+        // without the column is an older build, and the default is right.
+        // Anything else - the column is there, the catalogue does not list
+        // the table, or cannot be read - leaves the table unknown, and every
+        // caller refuses on null rather than reading the wrong one.
         try {
             $r = $db->select('SELECT data_table FROM redcap_projects WHERE project_id = ?', [$pid]);
-            $t = isset($r[0][0]) ? (string) $r[0][0] : '';
-            if ($t !== '' && preg_match('/^redcap_data[0-9]*\z/', $t)) return $t;
         } catch (\Throwable $e) {
-            // No such column on this build: fall through to the default, which
-            // is then itself proved to exist.
+            $cols = self::catalogue($db, 'redcap_projects');
+            if (!is_array($cols) || isset($cols['data_table'])) return null;
+            return self::defaultDataTable($db);
         }
+        $t = isset($r[0][0]) ? (string) $r[0][0] : '';
+        // NULL or '' is REDCap's own default, which is what it reads them as.
+        if ($t === '') return self::defaultDataTable($db);
+        // A name that is not a data table's is not a reason to read redcap_data.
+        return preg_match('/^redcap_data[0-9]*\z/', $t) ? $t : null;
+    }
+
+    /** `redcap_data`, proved to exist with the columns a walk reads, or null. */
+    private static function defaultDataTable(ScanDb $db)
+    {
         $cols = self::columnsOf($db, 'redcap_data');
         if ($cols !== null && isset($cols['project_id']) && isset($cols['record'])
                 && isset($cols['field_name'])) {
@@ -819,12 +956,25 @@ final class RecordManifestSource
      */
     private static function columnsOf(ScanDb $db, $table)
     {
-        if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $table)) return null;
+        $c = self::catalogue($db, $table);
+        return $c === false ? null : $c;
+    }
+
+    /**
+     * columnsOf(), telling the two nulls apart: null when the catalogue says
+     * the table does not exist, false when the catalogue could not be read.
+     * dataTable() decides on the difference (review rv5a-1).
+     *
+     * @return array<string,true>|null|false
+     */
+    private static function catalogue(ScanDb $db, $table)
+    {
+        if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $table)) return false;
         try {
             $rows = $db->select('SELECT column_name FROM information_schema.columns
                 WHERE table_schema = DATABASE() AND table_name = ?', [$table]);
         } catch (\Throwable $e) {
-            return null;
+            return false;
         }
         if (!$rows) return null;
         $out = [];

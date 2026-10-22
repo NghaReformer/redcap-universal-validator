@@ -1161,7 +1161,11 @@ final class SqlScanStore implements ScanStore
                 // gone. A record REQUEUED because it moved commits no new
                 // findings, so closing its rows would blank the report for a
                 // record that still violates.
-                if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+                // A record that LEFT the run's group (review rv5b-1) is closed
+                // too: what the run found in it was found while it was in the
+                // group, and the group's report no longer covers it.
+                if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE
+                        || $st === self::REC_DEPARTED) {
                     $closing[] = $rec['record_hash'];
                 }
             }
@@ -2274,6 +2278,89 @@ final class SqlScanStore implements ScanStore
     {
         if (!$recordIds) return 0;
         return $this->reState($runId, $epoch, $recordIds, self::REC_TOMBSTONE, false);
+    }
+
+    /**
+     * Take records that left the run's group out of the run (review rv5b-1).
+     *
+     * By record hash, so both statements are index-backed: uq_run_record
+     * (run_id, record_hash) for the manifest rows, and ix_record_v2
+     * (project_id, generation_id, record_hash, active_slot) for the
+     * findings, the same close commitBatch() makes. The run row is locked
+     * first, as in reState(), so a concurrent commit of the same records
+     * serialises behind this one.
+     */
+    public function depart($runId, $epoch, array $hashes)
+    {
+        if (!$hashes) return 0;
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch, project_id, generation_id, run_seq FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
+                    || (int) $r[0][1] !== (int) $epoch) {
+                $this->db->rollback();
+                return 0;
+            }
+            $t = Schema::table('scan_record');
+            $marks = implode(',', array_fill(0, count($hashes), '?'));
+            // WHICH ROWS MOVE, decided first and under the row locks, so the
+            // findings closed below are those of the records that departed
+            // here and of no other. A tombstone's findings are left as
+            // catch-up leaves them (ScanPromotion::facts, R2O-1).
+            $left = [];
+            foreach ($this->db->select('SELECT record_hash FROM ' . $t
+                    . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state NOT IN (?, ?)
+                    FOR UPDATE',
+                    array_merge([$runId], array_values($hashes),
+                                [self::REC_DEPARTED, self::REC_TOMBSTONE])) as $row) {
+                $left[] = $row[0];
+            }
+            if (!$left) {
+                $this->db->commit();
+                return 0;
+            }
+            $now = self::now();
+            $lm = implode(',', array_fill(0, count($left), '?'));
+            $this->db->execNoCount('UPDATE ' . $t . '
+                SET state = ?, version_scanned = NULL, claim_owner = NULL, claim_seq = 0,
+                    updated_at = ?
+                WHERE run_id = ? AND record_hash IN (' . $lm . ')',
+                array_merge([self::REC_DEPARTED, $now, $runId], $left));
+            $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
+                SET active_slot = NULL, valid_to_seq = ?
+                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                  AND stage_epoch IS NULL
+                  AND record_hash IN (' . $lm . ')',
+                array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $left));
+            $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
+                . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
+                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $now, $runId]);
+            $this->db->commit();
+            return count($left);
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
+
+    public function departedOf($runId, array $hashes)
+    {
+        if (!$hashes) return [];
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
+        $out = [];
+        // The state is compared here rather than in the WHERE clause: with
+        // `state = ?` beside it the optimiser may take ix_run_state, which
+        // reads every departed row of the run, where uq_run_record reads the
+        // hashes asked about and no more.
+        foreach ($this->db->select('SELECT record_hash, state FROM ' . Schema::table('scan_record')
+                . ' WHERE run_id = ? AND record_hash IN (' . $marks . ')',
+                array_merge([$runId], array_values($hashes))) as $row) {
+            if ((int) $row[1] === self::REC_DEPARTED) $out[(string) $row[0]] = true;
+        }
+        return $out;
     }
 
     private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
