@@ -1357,6 +1357,15 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
         $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+
+    // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
+    // while the worker goes on finding, so a run still working adds them
+    // (review rv10b1-3).
+    $uns = new ArrayScanStore();
+    $uid = (int) $uns->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
+    $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
+    check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
+        $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
 }
 
 /* =====================================================================

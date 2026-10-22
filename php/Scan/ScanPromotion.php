@@ -292,9 +292,15 @@ final class ScanPromotion
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
      *
-     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN BOTH ANSWERS (H9): they were
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
      * found and not stored, so the summary cannot count them and the floor is
-     * taken over what was stored, with them added.
+     * taken over what was stored, with them added. A run still working adds
+     * them to its counter too (review rv10b1-3): the counter stops growing
+     * at the budget, so "N findings so far" froze there while the worker kept
+     * finding, and jumped when the run ended. The run's aggregates are one
+     * read on uq_aggregate's leading column, and while a run works they are
+     * its marks, that count and, in its last phase, the summary being built:
+     * rows per rule, form, reason and group, never per record.
      *
      * @return int|null null when the run ended before its findings could be counted
      */
@@ -302,7 +308,9 @@ final class ScanPromotion
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
-        if ($terminal === null) return $rows;
+        if ($terminal === null) {
+            return $rows + self::kindTotal($store->aggregates((int) $run['run_id']), ScanStore::DETAIL_UNSTORED);
+        }
         $t = self::tally($store->aggregates((int) $run['run_id']));
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
             $floor = max($rows, $t['stored']) + $t['unstored'];
