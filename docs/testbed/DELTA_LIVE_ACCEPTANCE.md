@@ -141,7 +141,7 @@ rule shows a red note but never blocks a save:
 | Field | Error |
 |---|---|
 | `ud_bad_email` | @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has "email"). |
-| `ud_bad_self` | "vs" names this field itself — compare it with another entry, e.g. "vs":"previous-event" or "vs":"[baseline_arm_1][ud_bad_self]". |
+| `ud_bad_self` | References off: "vs" names this field itself — compare it with another entry, as "vs":"previous-event" (this needs event and instance references, a project setting). References on: the same, ending at "previous-event". |
 | `ud_bad_vs` | "vs" field "xv_date" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider. |
 | `ud_bad_nofield` | "vs" names "[ud_nope]", which is not a field in this project. |
 | `ud_bad_nolimit` | @UVDELTA needs a limit: "max" (the most the value may change, in its own unit) or "maxPct" (the most it may change as a percent of the earlier value), e.g. "maxPct":10. |

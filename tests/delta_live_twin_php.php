@@ -181,7 +181,6 @@ namespace {
     // Section F and C0 word for word: what the sheet prints is what the module says.
     $F = [
         'ud_bad_email' => '@UVDELTA needs a number field — give this Text field integer or number validation, or none (it has "email").',
-        'ud_bad_self' => '"vs" names this field itself — compare it with another entry, e.g. "vs":"previous-event" or "vs":"[baseline_arm_1][ud_bad_self]".',
         'ud_bad_vs' => '"vs" field "xv_date" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider.',
         'ud_bad_nofield' => '"vs" names "[ud_nope]", which is not a field in this project.',
         'ud_bad_nolimit' => '@UVDELTA needs a limit: "max" (the most the value may change, in its own unit) or "maxPct" (the most it may change as a percent of the earlier value), e.g. "maxPct":10.',
@@ -194,6 +193,9 @@ namespace {
         'ud_twoev' => $SHORT_OFF('previous-event'),
         'ud_bl' => 'a "vs" value in another event or instance needs event and instance references — enable them in project settings first.',
     ];
+    // a "vs" naming the field itself: the advice is a shorthand this form's events accept, which needs references on
+    $SELF = '"vs" names this field itself — compare it with another entry, as "vs":"previous-event"';
+    $want['ud_bad_self'] = $SELF . ' (this needs event and instance references, a project setting).';
     foreach ($want as $f => $text) check("references off: $f refused word for word", errOf($off, $f) === '@UVDELTA on "' . $f . '": ' . $text, errOf($off, $f));
     foreach (['ud_w2', 'ud_sbp2', 'ud_ht', 'ud_htcalc', 'ud_pct', 'ud_c', 'ud_pain', 'ud_two', 'ud_when', 'ud_snap'] as $f) {
         check("references off: $f configures", ruleOf($off, $f) !== null && errOf($off, $f) === '', errOf($off, $f));
@@ -204,7 +206,7 @@ namespace {
     check('references on: previous-instance on a form that repeats nowhere is refused, naming each event',
         errOf($on, 'ud_bad_inst') === '@UVDELTA on "ud_bad_inst": "vs": "previous-instance" needs a form that repeats — "uv_delta_test" does not repeat at "baseline_arm_1", "visit_1_arm_1" and "visit_2_arm_1".',
         errOf($on, 'ud_bad_inst'));
-    foreach ($F as $f => $text) check("references on: $f refused word for word", errOf($on, $f) === '@UVDELTA on "' . $f . '": ' . $text, errOf($on, $f));
+    foreach ($F + ['ud_bad_self' => $SELF . '.'] as $f => $text) check("references on: $f refused word for word", errOf($on, $f) === '@UVDELTA on "' . $f . '": ' . $text, errOf($on, $f));
 
     // ---- Section A, B: the page fold at visit_1 -------------------------------------------
     $r = ruleOf($off, 'ud_w2');

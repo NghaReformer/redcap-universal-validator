@@ -252,8 +252,8 @@ namespace {
     check('date validation: refused', strpos($err('bad_date'), '(it has "date_ymd")') !== false);
     check('radio: refused by eligibility', strpos($err('bad_radio'), 'does not support "radio" fields') !== false);
     check('notes: refused by eligibility', strpos($err('bad_notes'), 'does not support "notes" fields') !== false);
-    check('"vs" naming the field itself: refused, says how to name another entry (got ' . $err('bad_self') . ')',
-        strpos($err('bad_self'), '"vs" names this field itself') !== false && strpos($err('bad_self'), '"vs":"previous-event"') !== false);
+    check('"vs" naming the field itself on a classic project, where it has no other entry: refused, suggesting none (got ' . $err('bad_self') . ')',
+        $err('bad_self') === '@UVDELTA on "bad_self": "vs" names this field itself — compare it with another entry.');
     check('every refusal names @UVDELTA', strpos($err('bad_email'), '@UVDELTA on "bad_email"') === 0
         && strpos($err('bad_self'), '@UVDELTA on "bad_self"') === 0);
     check('a shorthand without event and instance references: refused (got ' . $err('bad_short') . ')',
@@ -663,7 +663,7 @@ namespace {
     // Every reference a refusal suggests is accepted when written in its place
     // (round-6 review L1-L4).
     $sug = function ($ref) { return ' — write it as "' . $ref . '".'; };
-    $none = function ($f) { return ' — and no other reference to "[' . $f . ']" was found that can be read from every event where this field is entered.'; };
+    $none = function ($f) { return ' — and none of the references to "[' . $f . ']" this check tried (the event as written, the previous, next, first or last event, or an event named outright, with the instance as written, none, the last or the previous one) can be read from every event where this field is entered.'; };
     $roundTrip = function (array $dict, $field, $form, $evt, $err, $rights, $settings) {
         if (!preg_match('/ — write it as "([^"]+)"/u', $err, $mm)) return false;
         $dict[$field]['field_annotation'] = '@UVDELTA={"vs":"' . $mm[1] . '","max":1}';
@@ -735,7 +735,8 @@ namespace {
     $one = ['record_id' => f('enrol_form'), 'n_cl' => f('enrol_form', '@UVDELTA={"vs":"[n_cl][1]","max":1}', 'number')];
     $pc = page(mod($one, ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form');
     check('... a classic project: refused, with no event named (got ' . json_encode(ruleFor($pc, 'n_cl')['configError'] ?? null) . ')',
-        (ruleFor($pc, 'n_cl')['configError'] ?? '') === '@UVDELTA on "n_cl": "vs" names "[n_cl][1]", but its form "enrol_form" does not repeat, and an instance can be named only where the form repeats.');
+        (ruleFor($pc, 'n_cl')['configError'] ?? '') === '@UVDELTA on "n_cl": "vs" names "[n_cl][1]", but its form "enrol_form" does not repeat, and an instance can be named only where the form repeats'
+        . ' — and none of the references to "[n_cl]" this check tried (with the instance as written, none, the last or the previous one) can be read.');
     // A relative instance counts from this field's own instance, and an event
     // named outright must hold the "vs" form: anything else the resolver
     // answers "invalid" or "missing" on every save (round-4 review 5).
@@ -949,6 +950,83 @@ namespace {
         check('L4: ' . $lf . ' on a form designated at no event: said so, nothing suggested (got ' . json_encode($errAt($L4, $lf, 'visit_form', 2)) . ')',
             $errAt($L4, $lf, 'visit_form', 2) === '@UVDELTA on "' . $lf . '": "vs" names "' . $w . '", but "w_b" is on the form "b_form", which is not designated at any event.');
     }
+    // Round-7 review. N1: an event named outright as written is kept for the
+    // suggestion only when every event of the field's form is in its arm.
+    $layout([1 => ['enrol_form', 'rep_form'], 2 => ['visit_form'], 5 => ['enrol_form', 'rep_form'], 6 => ['visit_form']], []);
+    \Project::$eventInfoAll = $twoArms;
+    $N1 = ['record_id' => f('enrol_form'), 'w_rep' => f('rep_form', '', 'number'),
+        'n1' => f('visit_form', '@UVDELTA={"vs":"[enrol_arm_1][w_rep][1]","max":1}', 'number')];
+    $e = $errAt($N1, 'n1', 'visit_form', 6);
+    check('N1: two arms: an instance named on one arm\'s event is refused with a relative event, not that event without the instance (got ' . json_encode($e) . ')',
+        strpos($e, '"vs" names "[enrol_arm_1][w_rep][1]", but its form "rep_form" does not repeat') !== false
+        && substr($e, -strlen($sug('[first-event-name][w_rep]'))) === $sug('[first-event-name][w_rep]'));
+    check('... which is accepted', $roundTrip($N1, 'n1', 'visit_form', 6, $e, $FOUR, $REFS));
+    $layout([1 => ['enrol_form', 'rep_form'], 2 => ['visit_form'], 3 => ['visit_form'], 4 => ['visit_form']], []);
+    $e = $errAt($N1, 'n1', 'visit_form', 2);
+    check('... in one arm the event as written is kept (got ' . json_encode($e) . ')', substr($e, -strlen($sug('[enrol_arm_1][w_rep]'))) === $sug('[enrol_arm_1][w_rep]'));
+    // N3: the next event is tried too. Two arms; b_form repeats before and
+    // after the field in arm 1 and is held once everywhere in arm 2, so only
+    // the next event reads it the same way from both.
+    $layout([1 => ['b_form'], 2 => ['enrol_form'], 3 => ['b_form'], 4 => ['b_form'], 5 => ['b_form'], 6 => ['enrol_form'], 7 => ['b_form'], 8 => ['b_form']],
+        [1 => ['b_form' => ''], 4 => ['b_form' => '']]);
+    \Project::$eventInfoAll = [];
+    foreach ([1, 2, 3, 4, 5, 6, 7, 8] as $ev) \Project::$eventInfoAll[$ev] = ['unique_event_name' => 'e' . $ev . '_arm_' . ($ev < 5 ? 1 : 2), 'arm_num' => $ev < 5 ? 1 : 2];
+    $N3 = ['record_id' => f('enrol_form'), 'w_b' => f('b_form', '', 'number'), 'n3' => f('enrol_form', '@UVDELTA={"vs":"[w_b]","max":1}', 'number')];
+    $e = $errAt($N3, 'n3', 'enrol_form', 6);
+    check('N3: only the next event reads the "vs" form the same way from every arm: it is suggested (got ' . json_encode($e) . ')',
+        substr($e, -strlen($sug('[next-event-name][w_b]'))) === $sug('[next-event-name][w_b]'));
+    check('... which is accepted', $roundTrip($N3, 'n3', 'enrol_form', 6, $e, $FOUR, $REFS));
+    // N2: a project of one event tries this event with each instance.
+    classic();
+    \Project::$repeats = [351 => ['visit_form' => '']];
+    $N2r = ['record_id' => f('enrol_form'), 'n2r' => f('visit_form', '@UVDELTA={"vs":"[n2r][current-instance]","max":1}', 'number')];
+    $e = ruleFor(page(mod($N2r, ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form'), 'n2r')['configError'] ?? '';
+    check('N2: the field itself on a repeating form of a classic project: the previous instance, never the last, which is this entry at the last (got ' . json_encode($e) . ')',
+        $e === '@UVDELTA on "n2r": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry, as "[n2r][previous-instance]".');
+    \Project::$repeats = [];
+    $N2 = ['record_id' => f('enrol_form'), 'w_src' => f('enrol_form', '', 'number'),
+        'n2' => f('visit_form', '@UVDELTA={"vs":"[w_src][1]","max":1}', 'number')];
+    $e = ruleFor(page(mod($N2, ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form'), 'n2')['configError'] ?? '';
+    check('N2: a classic project: an instance of a form that does not repeat is refused, suggesting the plain field (got ' . json_encode($e) . ')',
+        $e === '@UVDELTA on "n2": "vs" names "[w_src][1]", but its form "enrol_form" does not repeat, and an instance can be named only where the form repeats' . $sug('[w_src]'));
+    $N2ok = $N2; $N2ok['n2']['field_annotation'] = '@UVDELTA={"vs":"[w_src]","max":1}';
+    check('... which is accepted with references off', empty(ruleFor(page(mod($N2ok, ['2' => [351 => ['record_id' => '2']]], $FULL, []), 'form', '2', 'visit_form'), 'n2')['configError']));
+    // N4: the field hook's refusal of a plain "vs" naming the field itself
+    // suggests only what the dictionary hook accepts.
+    $N4 = ['record_id' => f('enrol_form'), 'n4' => f('visit_form', '@UVDELTA={"vs":"[n4]","max":1}', 'number')];
+    $n4At = function ($settings, $evt) use ($N4, $FOUR) {
+        return ruleFor(page(mod($N4, ['2' => [1 => ['record_id' => '2'], 351 => ['record_id' => '2']]], $FOUR, $settings), 'form', '2', 'visit_form', $evt), 'n4')['configError'] ?? '';
+    };
+    $SELF = '@UVDELTA on "n4": "vs" names this field itself — compare it with another entry';
+    check('N4: a classic project, nothing repeats: no suggestion (got ' . json_encode($n4At($REFS, 351)) . ')', $n4At($REFS, 351) === $SELF . '.');
+    \Project::$repeats = [351 => ['visit_form' => '']];
+    check('N4: a classic project where the form repeats: previous-instance (got ' . json_encode($n4At($REFS, 351)) . ')',
+        $n4At($REFS, 351) === $SELF . ', as "vs":"previous-instance".');
+    longitudinal();
+    check('N4: visits of one form: previous-event (got ' . json_encode($n4At($REFS, 2)) . ')', $n4At($REFS, 2) === $SELF . ', as "vs":"previous-event".');
+    check('... with references off it says they are needed', $n4At([], 2) === $SELF . ', as "vs":"previous-event"' . ' (this needs event and instance references, a project setting).');
+    $layout([1 => ['enrol_form', 'visit_form'], 5 => ['enrol_form', 'visit_form']], []);
+    \Project::$eventInfoAll = [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1], 5 => ['unique_event_name' => 'enrol_arm_2', 'arm_num' => 2]];
+    check('N4: the form on one event in each of two arms: nothing to suggest (got ' . json_encode($n4At($REFS, 1)) . ')', $n4At($REFS, 1) === $SELF . '.');
+    // The previous event is where visit_form repeats, so "previous-event" is
+    // refused there; the previous instance is offered instead.
+    $layout([1 => ['enrol_form'], 2 => ['visit_form'], 3 => ['visit_form'], 4 => ['visit_form']],
+        [2 => ['visit_form' => ''], 3 => ['visit_form' => ''], 4 => ['visit_form' => '']]);
+    check('N4: visits where the form repeats: previous-instance, not the previous-event the dictionary hook refuses (got ' . json_encode($n4At($REFS, 3)) . ')',
+        $n4At($REFS, 3) === $SELF . ', as "vs":"previous-instance".');
+    // A form designated at no event: no shorthand and no reference can be
+    // checked, so none is offered.
+    $layout([1 => ['enrol_form'], 2 => ['a_form'], 3 => ['a_form']], []);
+    check('N4: the field\'s form designated at no event: nothing to suggest (got ' . json_encode($n4At($REFS, 2)) . ')', $n4At($REFS, 2) === $SELF . '.');
+    // N1 again: in one arm the event as written is kept even where another
+    // event holding the "vs" form comes first.
+    $layout([1 => ['enrol_form', 'rep_form'], 2 => ['visit_form'], 3 => ['visit_form', 'rep_form'], 4 => ['visit_form']], []);
+    $N1b = ['record_id' => f('enrol_form'), 'w_rep' => f('rep_form', '', 'number'),
+        'n1' => f('visit_form', '@UVDELTA={"vs":"[visit2_arm_1][w_rep][1]","max":1}', 'number')];
+    $e = $errAt($N1b, 'n1', 'visit_form', 2);
+    check('N1: one arm, the "vs" form at two events: the event as written is kept, not the first one holding the form (got ' . json_encode($e) . ')',
+        substr($e, -strlen($sug('[visit2_arm_1][w_rep]'))) === $sug('[visit2_arm_1][w_rep]'));
+    check('... which is accepted', $roundTrip($N1b, 'n1', 'visit_form', 2, $e, $FOUR, $REFS));
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

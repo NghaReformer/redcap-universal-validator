@@ -243,7 +243,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\" (this needs event and instance references, a project setting)."
             },
             {
                 "type": "single",
@@ -592,7 +592,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",
@@ -987,7 +987,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",
@@ -1382,7 +1382,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",
@@ -1534,7 +1534,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",
@@ -2173,7 +2173,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\" (this needs event and instance references, a project setting)."
             },
             {
                 "type": "single",
@@ -2538,7 +2538,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",
@@ -2707,7 +2707,7 @@
                 "fields": [
                     "ud_bad_self"
                 ],
-                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, e.g. \"vs\":\"previous-event\" or \"vs\":\"[baseline_arm_1][ud_bad_self]\"."
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
             },
             {
                 "type": "single",

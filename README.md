@@ -947,8 +947,12 @@ and flags a change larger than its limit:
   repeating event); and a relative event that finds no event from anywhere
   the field is entered. The refusal quotes the reference as written. When a
   reference is found that every event where the field is entered can read,
-  the refusal ends with it; otherwise it says none was found. A `vs` form
-  designated at no event is said to be so.
+  the refusal ends with it; otherwise it lists what it tried (the event as
+  written, the previous, next, first or last event, or an event named outright, each with
+  the instance as written, none, the last or the previous one) and says none
+  of those can be read. An event is named outright only when every event of
+  the field's form is in its arm. A `vs` form designated at no event is said
+  to be so.
 - **When it blocks.** A `vs` field on the same page is read as it is typed, and
   the rule blocks as `blockSave` says (default `off`). The note waits while
   the person is still typing in a field the rule reads. An earlier value from
