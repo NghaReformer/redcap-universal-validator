@@ -469,15 +469,21 @@ inner spaces.
   event/instance path) is a rule problem, and so is a spent evaluation budget.
   The shorthand layout is judged at every event that holds the form, arm by
   arm (a form that repeats at some visits only, a whole repeating event, one
-  event in each of two arms). A reference is refused, with the events named
-  and a working reference suggested, when it names the same entry, an event
+  event in each of two arms). A reference is refused, with the events named,
+  when it names the same entry, an event
   that does not hold its form (plain, with references on or off, or named),
   an instance of a form that does not repeat where it lands, a relative
   instance where the field's own form is held once (each such event named,
   and not where the event token finds nothing), no instance of a form that
   repeats (a named or relative event included, but not a form of the same
   whole repeating event), or a relative event that finds nothing from any
-  event. One `vs` with two directions judges both ways (the heart-rate
+  event. A refusal ends with a reference to write instead only when that
+  reference passes the same check; the suite writes each one back in place of
+  the reference and expects it accepted, including across two arms (a
+  relative event, never one arm's event) and where nothing works (no
+  suggestion). A `vs` form designated at no event is refused as such. A plain
+  `vs` a save cannot read (the field is not collected in this event, or the
+  read failed) is a rule problem in the evaluator. One `vs` with two directions judges both ways (the heart-rate
   recipe), and a deferral only this viewer meets is marked and still checked
   on save.
 - `delta_live_twin_php.php` runs the module over the live fixture on a copy of
@@ -491,7 +497,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 110 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 119 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral

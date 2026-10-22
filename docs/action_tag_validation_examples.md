@@ -4259,6 +4259,11 @@ instance:
   repeating event). `[w_rep]` read from a form held once does not say which
   instance it means, and neither does `[enrol_arm_1][w_rep]`; the refusal
   suggests `[enrol_arm_1][w_rep][last-instance]`.
+- A refusal ends with a reference to write instead only when that reference
+  passes the same check from every event where the field is entered. On a
+  project with two arms it suggests a relative event such as
+  `[first-event-name][w_enrol]`, never one arm's event, which would read
+  nothing from the other arm. When nothing works it says so.
 - The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
   is refused when `w_rep`'s form is not designated at visit 1, and a plain
   `[w_enrol]` is refused on a visit form when only enrolment collects it; the

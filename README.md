@@ -945,7 +945,10 @@ and flags a change larger than its limit:
   is held once; no instance of a form that repeats where it lands, unless it
   is the field's own row (its own repeating form, or a form of the same
   repeating event); and a relative event that finds no event from anywhere
-  the field is entered. The refusal suggests a reference that works.
+  the field is entered. The refusal quotes the reference as written. When a
+  reference is found that every event where the field is entered can read,
+  the refusal ends with it; otherwise it says none was found. A `vs` form
+  designated at no event is said to be so.
 - **When it blocks.** A `vs` field on the same page is read as it is typed, and
   the rule blocks as `blockSave` says (default `off`). The note waits while
   the person is still typing in a field the rule reads. An earlier value from

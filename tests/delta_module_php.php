@@ -660,6 +660,17 @@ namespace {
     check('the last visit, which repeats, compares each instance with the visit before (got ' . json_encode(deltaBy($m, 4)) . ')',
         (deltaBy($m, 4, 1)['weight']['reason'] ?? null) === 'up' && !problems($m, 'weight'));
 
+    // Every reference a refusal suggests is accepted when written in its place
+    // (round-6 review L1-L4).
+    $sug = function ($ref) { return ' — write it as "' . $ref . '".'; };
+    $none = function ($f) { return ' — and no other reference to "[' . $f . ']" was found that can be read from every event where this field is entered.'; };
+    $roundTrip = function (array $dict, $field, $form, $evt, $err, $rights, $settings) {
+        if (!preg_match('/ — write it as "([^"]+)"/u', $err, $mm)) return false;
+        $dict[$field]['field_annotation'] = '@UVDELTA={"vs":"' . $mm[1] . '","max":1}';
+        $r = ruleFor(page(mod($dict, ['2' => [1 => ['record_id' => '2']]], $rights, $settings), 'form', '2', $form, $evt), $field);
+        return $r !== null && empty($r['configError']);
+    };
+
     // A written-out reference that always names this same entry (review S2).
     longitudinal();
     $self = ['record_id' => f('enrol_form'),
@@ -681,18 +692,29 @@ namespace {
         $e = ruleFor($pg, $sf)['configError'] ?? '';
         check('"vs" ' . $sf . ' names this same entry: refused (got ' . $e . ')', strpos($e, '"vs" names this field in this same entry') !== false);
     }
+    $e = ruleFor($p, 's_evt')['configError'] ?? '';
+    check('... the refusal suggests another entry (got ' . $e . ')',
+        $e === '@UVDELTA on "s_evt": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry, as "[previous-event-name][s_evt]".');
+    check('... and only another entry: none where the form is on one event and does not repeat',
+        (ruleFor($pe, 's_one')['configError'] ?? '') === '@UVDELTA on "s_one": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry.');
     check('... a named event on a form at several events is another entry there: accepted', empty(ruleFor($p, 's_ok')['configError']));
     check('... and so is the first event of a form at several events, which is this entry at the first one only',
         empty(ruleFor($p, 's_vfe')['configError']));
     // An instance of a form that does not repeat: the resolver can only say
     // "invalid" there, on every save (round-3 review F4).
-    $flatWhy = function ($f, $events) { return '@UVDELTA on "' . $f . '": "vs" names an instance of "[' . $f . ']", but its form does not repeat at "'
-        . implode('", "', $events) . '" — an instance can be named only where the form repeats.'; };
-    foreach (['s_inst' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']], 's_both' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']],
-              'n_vis' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']],
-              's_fi' => [$pe, ['enrol_arm_1']], 's_li' => [$pe, ['enrol_arm_1']], 'n_one' => [$pe, ['enrol_arm_1']]] as $sf => $c) {
+    $flatWhy = function ($f, $written, $form, $events, $tail) { return '@UVDELTA on "' . $f . '": "vs" names "' . $written . '", but its form "' . $form
+        . '" does not repeat at "' . implode('", "', $events) . '", and an instance can be named only where the form repeats' . $tail; };
+    $V3 = ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1'];
+    foreach (['s_inst' => [$p, '[s_inst][current-instance]', 'visit_form', $V3, $sug('[previous-event-name][s_inst]'), 3],
+              's_both' => [$p, '[event-name][s_both][current-instance]', 'visit_form', $V3, $sug('[previous-event-name][s_both]'), 3],
+              'n_vis' => [$p, '[n_vis][2]', 'visit_form', $V3, $sug('[previous-event-name][n_vis]'), 3],
+              's_fi' => [$pe, '[s_fi][first-instance]', 'enrol_form', ['enrol_arm_1'], $none('s_fi'), 1],
+              's_li' => [$pe, '[s_li][last-instance]', 'enrol_form', ['enrol_arm_1'], $none('s_li'), 1],
+              'n_one' => [$pe, '[n_one][1]', 'enrol_form', ['enrol_arm_1'], $none('n_one'), 1]] as $sf => $c) {
         $e = ruleFor($c[0], $sf)['configError'] ?? '';
-        check('"vs" ' . $sf . ' names an instance of a form that does not repeat: refused, naming the events (got ' . $e . ')', $e === $flatWhy($sf, $c[1]));
+        check('"vs" ' . $sf . ' names an instance of a form that does not repeat: refused, naming the events (got ' . $e . ')',
+            $e === $flatWhy($sf, $c[1], $c[2], $c[3], $c[4]));
+        if ($c[4] !== $none($sf)) check('... and the reference it suggests is accepted', $roundTrip($self, $sf, $c[2], $c[5], $e, $FULL, $REFS));
     }
     longitudinal([1 => ['enrol_form' => '']]);
     $pr = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
@@ -707,21 +729,21 @@ namespace {
     longitudinal([4 => ['visit_form' => '']]);
     $pm = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
     check('... a form that repeats at some events only: the others are named (got ' . json_encode(ruleFor($pm, 'n_vis')['configError'] ?? null) . ')',
-        (ruleFor($pm, 'n_vis')['configError'] ?? '') === $flatWhy('n_vis', ['visit1_arm_1', 'visit2_arm_1']));
+        (ruleFor($pm, 'n_vis')['configError'] ?? '') === $flatWhy('n_vis', '[n_vis][2]', 'visit_form', ['visit1_arm_1', 'visit2_arm_1'], $sug('[previous-event-name][n_vis]')));
     // one event: no event to name
     classic();
     $one = ['record_id' => f('enrol_form'), 'n_cl' => f('enrol_form', '@UVDELTA={"vs":"[n_cl][1]","max":1}', 'number')];
     $pc = page(mod($one, ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form');
     check('... a classic project: refused, with no event named (got ' . json_encode(ruleFor($pc, 'n_cl')['configError'] ?? null) . ')',
-        (ruleFor($pc, 'n_cl')['configError'] ?? '') === '@UVDELTA on "n_cl": "vs" names an instance of "[n_cl]", but its form does not repeat — an instance can be named only where the form repeats.');
+        (ruleFor($pc, 'n_cl')['configError'] ?? '') === '@UVDELTA on "n_cl": "vs" names "[n_cl][1]", but its form "enrol_form" does not repeat, and an instance can be named only where the form repeats.');
     // A relative instance counts from this field's own instance, and an event
     // named outright must hold the "vs" form: anything else the resolver
     // answers "invalid" or "missing" on every save (round-4 review 5).
     longitudinal([1 => ['rep_form' => '']]);
     \Project::$eventsFormsAll[1] = ['enrol_form', 'rep_form'];
     \REDCap::$mappings[] = ['event_id' => 1, 'form' => 'rep_form'];
-    $ownWhy = function ($f, $sel) { return '@UVDELTA on "' . $f . '": "vs" names [' . $sel . '] of "[w_rep]", but this field\'s form "enrol_form" does not repeat at "enrol_arm_1"'
-        . ' — [current-instance], [previous-instance] and [next-instance] count from this field\'s own instance, so they need a form that repeats.'; };
+    $ownWhy = function ($f, $sel) { return '@UVDELTA on "' . $f . '": "vs" names "[w_rep][' . $sel . ']", but this field\'s form "enrol_form" does not repeat at "enrol_arm_1"'
+        . ', and [current-instance], [previous-instance] and [next-instance] count from this field\'s own instance — write it as "[w_rep][last-instance]".'; };
     $REP = ['record_id' => f('enrol_form'), 'w0' => f('enrol_form', '', 'number'), 'w_rep' => f('rep_form', '', 'number'),
         'o_prev' => f('enrol_form', '@UVDELTA={"vs":"[w_rep][previous-instance]","max":1}', 'number'),
         'o_cur'  => f('enrol_form', '@UVDELTA={"vs":"[w_rep][current-instance]","max":1}', 'number'),
@@ -736,11 +758,13 @@ namespace {
     foreach (['o_prev' => 'previous-instance', 'o_cur' => 'current-instance', 'o_next' => 'next-instance'] as $sf => $sel) {
         check('"vs" ' . $sf . ': a relative instance from a form that does not repeat: refused (got ' . json_encode(ruleFor($po, $sf)['configError'] ?? null) . ')',
             (ruleFor($po, $sf)['configError'] ?? '') === $ownWhy($sf, $sel));
+        check('... and the reference it suggests is accepted', $roundTrip($REP, $sf, 'enrol_form', 1, ruleFor($po, $sf)['configError'] ?? '', $RFULL, $REFS));
     }
     check('... a numbered or last instance of a form that repeats there is read from any form: accepted',
         empty(ruleFor($po, 'o_two')['configError']) && empty(ruleFor($po, 'o_last')['configError']));
     check('"vs" names an event that does not hold its form: refused (got ' . json_encode(ruleFor($po, 'o_ev')['configError'] ?? null) . ')',
-        (ruleFor($po, 'o_ev')['configError'] ?? '') === '@UVDELTA on "o_ev": "vs" names "[visit1_arm_1][w_rep]", but "w_rep" is on the form "rep_form", which is not designated at "visit1_arm_1" — name an event that holds that form.');
+        (ruleFor($po, 'o_ev')['configError'] ?? '') === '@UVDELTA on "o_ev": "vs" names "[visit1_arm_1][w_rep][1]", but "w_rep" is on the form "rep_form", which is not designated at "visit1_arm_1" — write it as "[enrol_arm_1][w_rep][1]".');
+    check('... and the reference it suggests is accepted', $roundTrip($REP, 'o_ev', 'enrol_form', 1, ruleFor($po, 'o_ev')['configError'] ?? '', $RFULL, $REFS));
     check('... an event that holds it: accepted', empty(ruleFor($po, 'o_evok')['configError']));
     $pq = page(mod($REP, ['2' => [1 => ['record_id' => '2']]], $RFULL, $REFS), 'form', '2', 'rep_form', 1);
     check('... and a relative instance on the form that repeats: accepted', empty(ruleFor($pq, 'r_prev')['configError']));
@@ -759,7 +783,8 @@ namespace {
         $po = page(mod($OFF, $V, $FULL, $c[0]), 'form', '2', 'visit_form', 3);
         check('a plain "vs" collected in no event of this field, ' . $how . ': refused (got ' . json_encode(ruleFor($po, 'w_off')['configError'] ?? null) . ')',
             (ruleFor($po, 'w_off')['configError'] ?? '') === '@UVDELTA on "w_off": "vs" names "[w_enrol]", but "w_enrol" is on the form "enrol_form", which is not designated at '
-            . '"visit1_arm_1", "visit2_arm_1", "visit3_arm_1" where this field is entered — name its event, as "[enrol_arm_1][w_enrol]"' . $c[1] . '.');
+            . '"visit1_arm_1", "visit2_arm_1", "visit3_arm_1" where this field is entered — write it as "[enrol_arm_1][w_enrol]"' . $c[1] . '.');
+        check('... and the reference it suggests is accepted', $roundTrip($OFF, 'w_off', 'visit_form', 3, ruleFor($po, 'w_off')['configError'] ?? '', $FULL, $REFS));
     }
     $m = mod($OFF, $V, $FULL, $REFS);
     $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
@@ -786,8 +811,13 @@ namespace {
         $pa = page(mod($AMB, $V, $FULL, $c[0]), 'form', '2', 'enrol_form');
         check('a "vs" on another repeating form with no instance, ' . $how . ': refused (got ' . json_encode(ruleFor($pa, 'e_w')['configError'] ?? null) . ')',
             (ruleFor($pa, 'e_w')['configError'] ?? '') === '@UVDELTA on "e_w": "vs" names "[weight]" with no instance, but its form "visit_form" repeats, '
-            . 'so which instance it means is not said — name one, e.g. "[weight][last-instance]"' . $c[1] . '.');
+            . 'so which instance it means is not said — write it as "[weight][last-instance]"' . $c[1] . '.');
     }
+    $pa = page(mod($AMB, $V, $FULL, $REFS), 'form', '2', 'enrol_form');
+    $e = ruleFor($pa, 'e_w')['configError'] ?? '';
+    $AMBt = $AMB; $AMBt['e_w']['field_annotation'] = '@UVDELTA={"vs":"[weight][last-instance]","max":1}';
+    check('... and the reference it suggests is accepted',
+        empty(ruleFor(page(mod($AMBt, $V, $FULL, $REFS), 'form', '2', 'enrol_form'), 'e_w')['configError']) && strpos($e, '"[weight][last-instance]"') !== false);
     $m = mod($AMB, $V, $FULL, $REFS);
     $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('... and a save logs no finding for it', !isset(deltaBy($m)['e_w']));
@@ -803,7 +833,8 @@ namespace {
     $pa = page(mod($AMB2, ['2' => [1 => ['record_id' => '2']]], $RFULL, $REFS), 'form', '2', 'enrol_form', 1);
     check('a named event where the "vs" form repeats, with no instance: refused, naming it (got ' . json_encode(ruleFor($pa, 'a_ev')['configError'] ?? null) . ')',
         (ruleFor($pa, 'a_ev')['configError'] ?? '') === '@UVDELTA on "a_ev": "vs" names "[enrol_arm_1][w_rep]" with no instance, but its form "rep_form" repeats at "enrol_arm_1", '
-        . 'so which instance it means is not said — name one, e.g. "[enrol_arm_1][w_rep][last-instance]".');
+        . 'so which instance it means is not said — write it as "[enrol_arm_1][w_rep][last-instance]".');
+    check('... and the reference it suggests is accepted', $roundTrip($AMB2, 'a_ev', 'enrol_form', 1, ruleFor($pa, 'a_ev')['configError'] ?? '', $RFULL, $REFS));
     $pa = page(mod($AMB2, ['2' => [1 => ['record_id' => '2']]], $RFULL, $REFS), 'form', '2', 'rep_form', 1);
     check('... a field of the same repeating form, in its own row: accepted', empty(ruleFor($pa, 'a_own')['configError']));
 
@@ -833,7 +864,8 @@ namespace {
         'n4ok' => f('visit_form', '@UVDELTA={"vs":"[first-event-name][w_enrol]","max":1}', 'number')];
     check('N4: a relative event that finds nothing from any event: refused (got ' . json_encode($errAt($N4, 'n4', 'visit_form', 2)) . ')',
         $errAt($N4, 'n4', 'visit_form', 2) === '@UVDELTA on "n4": "vs" names "[next-event-name][w_enrol]", but from no event where this field is entered does "[next-event-name]" '
-        . 'find an event holding "enrol_form", so nothing would ever be compared — name the event, as "[enrol_arm_1][w_enrol]".');
+        . 'find an event holding "enrol_form", so nothing would ever be compared — write it as "[enrol_arm_1][w_enrol]".');
+    check('... and the reference it suggests is accepted', $roundTrip($N4, 'n4', 'visit_form', 2, $errAt($N4, 'n4', 'visit_form', 2), $FOUR, $REFS));
     check('... one that finds an event: accepted', $errAt($N4, 'n4ok', 'visit_form', 2) === '');
     // N7 (a, b): a named event, and a relative one, where the "vs" form repeats, read with no instance
     $layout([1 => ['enrol_form', 'rep_form'], 2 => ['visit_form', 'rep_form'], 3 => ['visit_form', 'rep_form'], 4 => ['visit_form']],
@@ -858,6 +890,65 @@ namespace {
         'wc' => f('c_form', '@UVDELTA={"vs":"[wd]","max":1}', 'number')];
     check('N8: a form of the same whole repeating event, read with no instance: accepted (got ' . json_encode($errAt($N8, 'wc', 'c_form', 4)) . ')',
         $errAt($N8, 'wc', 'c_form', 4) === '');
+
+    // Round-6 review. L1: the instance written stays in the quote and in the
+    // suggestion, and the suggestion is checked like any reference.
+    $layout([1 => ['enrol_form', 'rep_form'], 2 => ['visit_form'], 3 => ['visit_form'], 4 => ['visit_form']], [1 => ['rep_form' => '']]);
+    $L1 = ['record_id' => f('enrol_form'), 'w_rep' => f('rep_form', '', 'number'),
+        'l1'  => f('visit_form', '@UVDELTA={"vs":"[w_rep][last-instance]","max":1}', 'number'),
+        'l1p' => f('visit_form', '@UVDELTA={"vs":"[w_rep]","max":1}', 'number'),
+        'l1e' => f('visit_form', '@UVDELTA={"vs":"[event-name][w_rep][2]","max":1}', 'number'),
+        'l1n' => f('visit_form', '@UVDELTA={"vs":"[next-event-name][w_rep][2]","max":1}', 'number')];
+    foreach (['l1' => ['[w_rep][last-instance]', '[enrol_arm_1][w_rep][last-instance]'], 'l1p' => ['[w_rep]', '[enrol_arm_1][w_rep][last-instance]'],
+              'l1e' => ['[event-name][w_rep][2]', '[enrol_arm_1][w_rep][2]'], 'l1n' => ['[next-event-name][w_rep][2]', '[enrol_arm_1][w_rep][2]']] as $lf => $c) {
+        $e = $errAt($L1, $lf, 'visit_form', 2);
+        check('L1: ' . $lf . ' quotes "' . $c[0] . '" and suggests "' . $c[1] . '" (got ' . json_encode($e) . ')',
+            strpos($e, '"vs" names "' . $c[0] . '", but') !== false && substr($e, -strlen($sug($c[1]))) === $sug($c[1]));
+        check('... which is accepted', $roundTrip($L1, $lf, 'visit_form', 2, $e, $FOUR, $REFS));
+    }
+    $e = ruleFor(page(mod($L1, ['2' => [1 => ['record_id' => '2']]], $FOUR, []), 'form', '2', 'visit_form', 2), 'l1p')['configError'] ?? '';
+    check('... with references off the suggestion says it needs them (got ' . json_encode($e) . ')',
+        substr($e, -strlen(' — write it as "[enrol_arm_1][w_rep][last-instance]" (this needs event and instance references, a project setting).'))
+        === ' — write it as "[enrol_arm_1][w_rep][last-instance]" (this needs event and instance references, a project setting).');
+    // L2: with two arms, an event named outright would read nothing from the
+    // other arm, so the suggestion is a relative event every arm resolves.
+    $layout([1 => ['enrol_form'], 2 => ['visit_form'], 5 => ['enrol_form'], 6 => ['visit_form']], []);
+    \Project::$eventInfoAll = $twoArms;
+    $L2 = ['record_id' => f('enrol_form'), 'w_enrol' => f('enrol_form', '', 'number'),
+        'l2' => f('visit_form', '@UVDELTA={"vs":"[w_enrol]","max":1}', 'number')];
+    $e = $errAt($L2, 'l2', 'visit_form', 6);
+    check('L2: two arms: the suggestion is an event each arm finds, not one arm\'s event (got ' . json_encode($e) . ')',
+        substr($e, -strlen($sug('[first-event-name][w_enrol]'))) === $sug('[first-event-name][w_enrol]'));
+    check('... which is accepted', $roundTrip($L2, 'l2', 'visit_form', 6, $e, $FOUR, $REFS));
+    $L2ok = $L2; $L2ok['l2']['field_annotation'] = '@UVDELTA={"vs":"[first-event-name][w_enrol]","max":1}';
+    $m = mod($L2ok, ['2' => [5 => ['record_id' => '2', 'w_enrol' => '50'], 6 => ['l2' => '99']]], $FOUR, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('... and it compares a save in the second arm (got ' . json_encode(deltaBy($m, 6)) . ')', (deltaBy($m, 6)['l2']['reason'] ?? null) === 'up');
+    // L3: a form that repeats at one visit and is held once at the others:
+    // [last-instance] would be refused at the others, so the visit is named.
+    $layout([1 => ['enrol_form'], 2 => ['visit_form', 'rep_form'], 3 => ['visit_form', 'rep_form'], 4 => ['visit_form', 'rep_form']], [2 => ['rep_form' => '']]);
+    $L3 = ['record_id' => f('enrol_form'), 'w_rep' => f('rep_form', '', 'number'),
+        'l3' => f('visit_form', '@UVDELTA={"vs":"[w_rep]","max":1}', 'number')];
+    $e = $errAt($L3, 'l3', 'visit_form', 2);
+    check('L3: the suggestion names the visit where the form repeats (got ' . json_encode($e) . ')',
+        strpos($e, 'repeats at "visit1_arm_1"') !== false && substr($e, -strlen($sug('[visit1_arm_1][w_rep][last-instance]'))) === $sug('[visit1_arm_1][w_rep][last-instance]'));
+    check('... which is accepted', $roundTrip($L3, 'l3', 'visit_form', 2, $e, $FOUR, $REFS));
+    // ... and across two arms, where the form repeats in one and is held once
+    // in the other, no reference reads it from both: nothing is suggested.
+    $layout([1 => ['visit_form', 'rep_form'], 2 => ['enrol_form'], 5 => ['visit_form', 'rep_form'], 6 => ['enrol_form']], [1 => ['rep_form' => '']]);
+    \Project::$eventInfoAll = $twoArms;
+    $e = $errAt($L3, 'l3', 'visit_form', 1);
+    check('... with no reference that works, none is suggested (got ' . json_encode($e) . ')',
+        $e === '@UVDELTA on "l3": "vs" names "[w_rep]" with no instance, but its form "rep_form" repeats at "enrol_arm_1", so which instance it means is not said' . $none('w_rep'));
+    // L4: a "vs" form designated at no event
+    $layout([1 => ['enrol_form'], 2 => ['visit_form'], 3 => ['visit_form'], 4 => ['visit_form']], []);
+    $L4 = ['record_id' => f('enrol_form'), 'w_b' => f('b_form', '', 'number'),
+        'l4'  => f('visit_form', '@UVDELTA={"vs":"[w_b]","max":1}', 'number'),
+        'l4p' => f('visit_form', '@UVDELTA={"vs":"[previous-event-name][w_b]","max":1}', 'number')];
+    foreach (['l4' => '[w_b]', 'l4p' => '[previous-event-name][w_b]'] as $lf => $w) {
+        check('L4: ' . $lf . ' on a form designated at no event: said so, nothing suggested (got ' . json_encode($errAt($L4, $lf, 'visit_form', 2)) . ')',
+            $errAt($L4, $lf, 'visit_form', 2) === '@UVDELTA on "' . $lf . '": "vs" names "' . $w . '", but "w_b" is on the form "b_form", which is not designated at any event.');
+    }
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.
