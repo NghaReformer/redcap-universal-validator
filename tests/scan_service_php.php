@@ -3764,6 +3764,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         $read($f31, [], 31) === $noDesign && $noDesign['ok'] === false && $noDesign['why'] !== ScanService::NO_RUN);
     $fm->user->design = true;
     check('B5: another project\'s run is no run', $fm && (new ScanService($fm, $fs))->findings(187, $fAll)['why'] === ScanService::NO_RUN);
+    // W11A-N2. A designer below Full Data Set export is refused every run.
+    // Asked after the run row, the refusal named the export level for a run
+    // and said NO_RUN for an id that is none.
+    $verbs = function ($rid) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = null;
+        return ['status' => (new ScanService($fm, $fs))->status(186, $rid),
+                'work'   => (new ScanService($fm, $fs))->work(186, $rid),
+                'cancel' => (new ScanService($fm, $fs))->cancel(186, $rid),
+                'page'   => (new ScanService($fm, $fs))->findings(186, $rid)];
+    };
+    foreach (['2' => 'De-Identified', '0' => 'No Access'] as $level => $name) {
+        $fm->user->rights['data_export_tool'] = $level;
+        $none = $verbs(999);
+        check('W11A-N2: a reader with ' . $name . ' export is told the same about a run and about no run, by every verb',
+            $verbs($fAll) === $none && $none['status']['ok'] === false
+            && strpos($none['status']['why'], 'Full Data Set') !== false
+            && $none['work']['why'] === $none['status']['why'] && $none['cancel']['why'] === $none['status']['why']
+            && $none['page']['why'] === $none['status']['why']);
+    }
+    $fm->user->rights['data_export_tool'] = '1';
+    check('W11A-N2 (control): with Full Data Set back, the run is there and the id is not',
+        !empty($verbs($fAll)['status']['ok']) && $verbs(999)['status']['why'] === ScanService::NO_RUN
+        && $fs->run(186, $fAll)['terminal'] === ScanOutcome::COMPLETE);
 
     // A RUN THAT HAS NOT FINISHED HAS NO REPORT, AND ONE THAT HAS NOT PROVED
     // ITS GROUP SHOWS NO ROW.
@@ -3829,9 +3852,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $fm->user->rights['data_export_tool'] = '0';
     $noExport = $csv(999);
     check('B5 export L8: a reader without export rights is told the same about a run and about no run',
-        $noExport === ['ok' => false, 'http' => 403, 'why' => ScanService::NO_EXPORT] && $csv($fAll) === $noExport);
-    check('B5 export: a stored run is read on screen only with Full Data Set rights, so the page refuses them too',
-        $read($fAll)['ok'] === false && strpos($read($fAll)['why'], 'Full Data Set') !== false);
+        $noExport['ok'] === false && $noExport['http'] === 403 && strpos($noExport['why'], 'Full Data Set') !== false
+        && $csv($fAll) === $noExport);
+    check('B5 export: a stored run is read on screen only with Full Data Set rights, so the page refuses them alike',
+        $read($fAll) === ['ok' => false, 'why' => $noExport['why'], 'final' => true] && $read(999) === $read($fAll));
+    $fm->user->rights['data_export_tool'] = '2';
+    check('W11A-N2: so is a De-Identified exporter, whose download the framework would allow',
+        $csv(999) === $csv($fAll) && $csv(999)['http'] === 403 && strpos($csv(999)['why'], 'De-Identified') !== false);
     $fm->user->rights['data_export_tool'] = '1';
     $fm->user->design = false;
     $noDesignX = $csv(999);

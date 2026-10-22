@@ -1312,9 +1312,6 @@ final class ScanService
     /** Findings one export page reads: the most a store page holds. */
     const EXPORT_PAGE = 100;
 
-    /** README: a user REDCap bars from its data export tool reads the scan on screen only. */
-    const NO_EXPORT = 'You need data export rights in this project to download the scan report.';
-
     /** The Issue cell of the terminal data row of a run that cannot certify (README). */
     const INCOMPLETE_LABEL = 'INCOMPLETE SCAN';
 
@@ -1327,9 +1324,10 @@ final class ScanService
     /**
      * The CSV of a finished run's findings for THIS reader, or why not.
      *
-     * THE PAGE'S GATE (reportOf()), with one question more, asked before the
-     * run row so that its answer is the same for a run and for no run (L8):
-     * may this reader export at all. A run that has not proved its group is
+     * THE PAGE'S GATE (reportOf()). A stored run is read on screen or as a
+     * file only by a reader with Full Data Set export rights, asked before the
+     * run row (readerRefusal(), W11A-N2), so the download needs no question of
+     * its own about export rights. A run that has not proved its group is
      * refused rather than handed over as a file with no rows, which would
      * read as the report of a clean run.
      *
@@ -1344,11 +1342,6 @@ final class ScanService
     public function exportOpen($pid, $runId)
     {
         try {
-            $no = $this->readerRefusal($pid);
-            if ($no !== null) return self::exportRefusal($no);
-            if (empty($this->readerScope($pid)['mayExport'])) {
-                return self::exportRefusal(['why' => self::NO_EXPORT, 'final' => true]);
-            }
             $r = $this->reportOf($pid, $runId);
             if (empty($r['ok'])) return self::exportRefusal($r['answer']);
             if ($r['withheld'] !== null) return self::exportRefusal(['why' => $r['withheld'], 'final' => true]);
@@ -1904,8 +1897,16 @@ final class ScanService
     private function readerRefusal($pid)
     {
         $scope = $this->readerScope($pid);
-        if (!empty($scope['ok'])) return null;
-        return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
+        if (empty($scope['ok'])) {
+            return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
+        }
+        // AND WHAT EVERY RUN WOULD SAY OF THIS READER (W11A-N2): the export
+        // level is a question about the reader alone, so it is answered before
+        // the run row too. Every verb that asks this goes on to mayRead(),
+        // mayWork() or mayCancel(), each of which asks the same first.
+        $alone = ScanAuthorization::readerAlone($scope['rights']);
+        if (empty($alone['ok'])) return ['ok' => false, 'why' => $alone['why'], 'final' => true];
+        return null;
     }
 
     /** @see entitlement() — the answer, worked out. */
