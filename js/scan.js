@@ -1058,6 +1058,7 @@
                 reportBody(false);
                 text(el('uv-scan-report-summary'), '');
                 text(el('uv-scan-report-count'), '');
+                reportMarks(null);
                 show(el('uv-scan-report-degraded'), false);
                 show(el('uv-scan-report-withheld'), false);
                 reportNote((a && a.why) ? a.why : (L.reportFailed || 'The findings of this scan could not be read just now.'));
@@ -1069,10 +1070,12 @@
         r.wait = 0;
         show(el('uv-scan-report'), true);
         reportSummary(a);
+        reportMarks(a);
         if (a.withheld) {
             // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO TABLE (H10): a row
             // is a count of one. Its sentence, and nothing to download.
             reportBody(false);
+            reportExport(a);
             var held = el('uv-scan-report-withheld');
             text(held, (typeof a.withheldWhy === 'string' && a.withheldWhy) ? a.withheldWhy
                 : (L.withheldEnded || 'This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.'));
@@ -1153,6 +1156,26 @@
         show(deg, said !== '');
     }
 
+    /**
+     * README's three marks of a report that cannot certify (item 10), as the
+     * file carries them: marks.banner above the table, marks.row below it -
+     * the page's terminal row - and the file name's suffix beside the
+     * download (reportExport()). The server decides all three
+     * (ScanService::incompleteMarks()); a run that is not incomplete shows
+     * none of them.
+     */
+    function reportMarks(a) {
+        var m = (a && a.marks) || {}, on = m.incomplete === true;
+        var banner = el('uv-scan-report-banner'), row = el('uv-scan-report-row');
+        var bannerOn = on && typeof m.banner === 'string' && m.banner !== '';
+        text(banner, bannerOn ? m.banner : '');
+        show(banner, bannerOn);
+        // A withheld run has no rows for a terminal row to come after.
+        var rowOn = on && !(a && a.withheld) && typeof m.row === 'string' && m.row !== '';
+        text(row, rowOn ? m.row : '');
+        show(row, rowOn);
+    }
+
     /** The page: its column heads, its rows, its caption and the two controls. */
     function reportTable(a, rows) {
         var r = UV.report, L = labels(), i, j;
@@ -1210,16 +1233,26 @@
 
     /** The download, offered only beside an answer that showed the report. */
     function reportExport(a) {
-        var r = UV.report, link = el('uv-scan-report-export');
+        var r = UV.report, link = el('uv-scan-report-export'), L = labels();
         var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
         var ok = a && a.ok === true && !a.withheld && url !== '' && isRunId(r.runId) && a.run_id === r.runId;
+        var suffix = el('uv-scan-report-suffix');
         if (!ok) {
             attr(link, 'href', null);
             show(el('uv-scan-report-export-wrap'), false);
+            text(suffix, '');
+            show(suffix, false);
             return;
         }
         attr(link, 'href', url + (url.indexOf('?') === -1 ? '?' : '&') + 'run_id=' + r.runId);
         show(el('uv-scan-report-export-wrap'), true);
+        // The third mark: the file's name says it, wherever the file goes.
+        var m = a.marks || {};
+        var said = (m.incomplete === true && typeof m.suffix === 'string' && m.suffix !== '')
+            ? fill(L.reportSuffix || 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.', { suffix: m.suffix })
+            : '';
+        text(suffix, said);
+        show(suffix, said !== '');
     }
 
     function reportNext() {

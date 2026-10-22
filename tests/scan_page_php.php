@@ -1480,6 +1480,20 @@ namespace {
             && preg_match_all('/<select id="uv-scan-filter-(form|reason|type|group)"/', $fin) === 4);
         check('REPORT: the panel says what it is doing in a polite live region',
             strpos($fin, '<p id="uv-scan-report-note" role="status" aria-live="polite" aria-atomic="true"') !== false);
+        // README's three marks of an incomplete report (item 10), where the
+        // file has them: the banner above the table, the terminal row below
+        // it, and the file name's suffix beside the download.
+        $at = function ($needle) use ($fin) { return strpos($fin, $needle); };
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
+        check('REPORT item 10: the banner sits above the table, the terminal row below it, before the controls',
+            $at('id="uv-scan-report-banner"') !== false && $at('id="uv-scan-report-row"') !== false
+            && $at('id="uv-scan-report-banner"') < $at('id="uv-scan-report-table"')
+            && $at('id="uv-scan-report-table"') < $at('id="uv-scan-report-row"')
+            && $at('id="uv-scan-report-row"') < $at('id="uv-scan-report-nav"'));
+        check('REPORT item 10: and the suffix is said beside the download',
+            preg_match('/<p id="uv-scan-report-export-wrap"[^>]*>\s*<a id="uv-scan-report-export">[^<]*<\/a>\s*<span id="uv-scan-report-suffix"/', $fin) === 1);
+        check('REPORT item 10: the suffix sentence names the suffix it is handed',
+            strpos($V::REPORT_SUFFIX, '{suffix}') !== false && $V::labels()['reportSuffix'] === $V::REPORT_SUFFIX);
         check('REPORT: and the page itself offers no download: the client does, beside an answer',
             strpos($fin, '<a id="uv-scan-report-export">') !== false
             && preg_match('/id="uv-scan-report-export"[^>]*href=/', $fin) === 0);
@@ -2169,7 +2183,7 @@ namespace {
                       'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none',
                       'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
-                      'filterAll'];
+                      'filterAll', 'reportSuffix'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2182,7 +2196,8 @@ namespace {
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
                   'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none',
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
-                  'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll'] as $k) {
+                  'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
+                  'reportSuffix'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

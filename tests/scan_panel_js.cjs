@@ -65,7 +65,8 @@ const IDS = ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume
   'uv-scan-report-head', 'uv-scan-report-body', 'uv-scan-report-nav', 'uv-scan-report-prev',
   'uv-scan-report-next', 'uv-scan-report-note', 'uv-scan-report-export-wrap', 'uv-scan-report-export',
   'uv-scan-filter-form-wrap', 'uv-scan-filter-form', 'uv-scan-filter-reason-wrap', 'uv-scan-filter-reason',
-  'uv-scan-filter-type-wrap', 'uv-scan-filter-type', 'uv-scan-filter-group-wrap', 'uv-scan-filter-group'];
+  'uv-scan-filter-type-wrap', 'uv-scan-filter-type', 'uv-scan-filter-group-wrap', 'uv-scan-filter-group',
+  'uv-scan-report-banner', 'uv-scan-report-row', 'uv-scan-report-suffix'];
 let els = {};
 function freshDom() {
   els = {};
@@ -117,6 +118,7 @@ UV.labels = {
   reportRetry: 'Trying again shortly.',
   reportFailed: 'The findings of this scan could not be read just now.',
   filterAll: 'All',
+  reportSuffix: 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.',
   coverage: {}, phase: {},
 };
 
@@ -440,6 +442,46 @@ function noZero(label) {
   check('summary: a certified run says what it checked and nothing more, and an uncounted report says so',
     els['uv-scan-report-summary'].textContent === 'Every record was checked, including changes made while it ran.'
     && els['uv-scan-report-count'].textContent === UV.labels.foundUnknown);
+
+  // -- README's three marks of an incomplete report (item 10) ---------------
+  // The words are ScanService::incompleteMarks()'s, which tests/scan_service_php.php
+  // and tests/scan_export_php.php pin; the page shows them where the file has them.
+  const MARKS = {
+    incomplete: true, certified: false,
+    banner: 'INCOMPLETE SCAN - this report does NOT certify the project as clean',
+    row: 'This scan did not cover the whole project. Rows above are real findings over the records that WERE '
+       + 'examined; absence of a row is not evidence a record is clean. Some records could not be checked. '
+       + 'This is not a complete picture of the project.',
+    suffix: '_INCOMPLETE_CANCELLED',
+  };
+  reset([page({ marks: MARKS, next: null })]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  check('marks: an incomplete report carries its banner above the table',
+    shown('uv-scan-report-banner') && els['uv-scan-report-banner'].textContent === MARKS.banner);
+  check('marks: its terminal row below it',
+    shown('uv-scan-report-row') && els['uv-scan-report-row'].textContent === MARKS.row);
+  check('marks: and the file name\'s suffix beside the download',
+    shown('uv-scan-report-suffix') && els['uv-scan-report-suffix'].textContent
+      === 'Its file name ends in _INCOMPLETE_CANCELLED, so the file says it is incomplete wherever it is saved.');
+  reset([page({ next: null })]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  check('marks (control): a report that is not incomplete carries none of the three',
+    !shown('uv-scan-report-banner') && !shown('uv-scan-report-row') && !shown('uv-scan-report-suffix')
+    && els['uv-scan-report-banner'].textContent === '' && shown('uv-scan-report-export-wrap'));
+  reset([page({ withheld: true, withheldWhy: UV.labels.withheldEnded, rows: [], next: null, facets: null, marks: MARKS })]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  check('marks: a withheld run keeps its banner, and has no rows for a terminal row to follow, nor a file',
+    shown('uv-scan-report-banner') && !shown('uv-scan-report-row') && !shown('uv-scan-report-suffix'));
+  reset([page({ marks: MARKS, next: 3 }), { ok: false, why: 'no scan with that reference is running for this project', final: true }]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  els['uv-scan-report-next'].click();
+  await ticks();
+  check('marks: a final refusal takes all three down with the report',
+    !shown('uv-scan-report-banner') && !shown('uv-scan-report-row') && !shown('uv-scan-report-export-wrap'));
 
   // -- the panel and the run ------------------------------------------------
   // A run this tab watches to its end opens its report; a new Start puts it away.

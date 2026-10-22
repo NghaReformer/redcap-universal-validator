@@ -459,6 +459,13 @@ class ScanPageView
     const REPORT_RETRY     = 'Trying again shortly.';
     const REPORT_FAILED    = 'The findings of this scan could not be read just now.';
     const FILTER_ALL       = 'All';
+    /**
+     * The third of README's three marks of an incomplete report, said beside
+     * the download (item 10): the banner and the terminal row are on the page
+     * and in the file, and the suffix is in the file's name. {suffix} is the
+     * run's (ScanService::incompleteMarks()), e.g. _INCOMPLETE_CANCELLED.
+     */
+    const REPORT_SUFFIX    = 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.';
 
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
@@ -498,6 +505,7 @@ class ScanPageView
             'reportRetry'     => self::REPORT_RETRY,
             'reportFailed'    => self::REPORT_FAILED,
             'filterAll'       => self::FILTER_ALL,
+            'reportSuffix'    => self::REPORT_SUFFIX,
         ];
     }
 

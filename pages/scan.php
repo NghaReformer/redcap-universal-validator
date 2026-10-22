@@ -329,6 +329,11 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
 <section id="uv-scan-report" aria-labelledby="uv-scan-report-heading" aria-busy="false"
          style="display:none;max-width:1100px;margin-top:14px;border:1px solid #ddd;border-radius:6px;padding:14px">
   <h5 id="uv-scan-report-heading" style="margin-top:0">Findings of the last finished scan</h5>
+  <?php // README's three marks of a report that cannot certify, on the page as in
+        // the file (item 10): this banner above the table, the terminal row
+        // below it, and the file name's suffix beside the download. ?>
+  <p id="uv-scan-report-banner" role="note"
+     style="display:none;margin:6px 0;padding:6px 10px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;font-weight:600"></p>
   <p id="uv-scan-report-summary" style="font-size:13px;margin:4px 0"></p>
   <p id="uv-scan-report-count" style="font-size:13px;margin:4px 0"></p>
   <p id="uv-scan-report-degraded" style="display:none;font-size:12px;color:#666;margin:4px 0"></p>
@@ -348,6 +353,8 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
       <tbody id="uv-scan-report-body"></tbody>
     </table>
   </div>
+  <p id="uv-scan-report-row" role="note"
+     style="display:none;margin:6px 0;padding:6px 10px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;font-size:13px"></p>
   <div id="uv-scan-report-nav" style="display:none;margin-top:6px">
     <button type="button" id="uv-scan-report-prev" class="btn btn-secondary btn-sm">Previous page</button>
     <button type="button" id="uv-scan-report-next" class="btn btn-secondary btn-sm">Next page</button>
@@ -356,6 +363,7 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
      style="margin-top:8px;font-size:13px;color:#444"></p>
   <p id="uv-scan-report-export-wrap" style="display:none;margin-top:8px;font-size:13px">
     <a id="uv-scan-report-export">Download these findings as a CSV file</a>
+    <span id="uv-scan-report-suffix" style="display:none"></span>
   </p>
 </section>
 
