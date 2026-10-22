@@ -2401,6 +2401,21 @@ final class SqlScanStore implements ScanStore
         return (int) $r[0][2];
     }
 
+    /**
+     * A locking read on the primary key and nothing else, in the caller's
+     * transaction, for the reason holdRollupCursor() gives.
+     */
+    public function holdRun($runId, $epoch, $phase)
+    {
+        $r = $this->db->select('SELECT lease_epoch, terminal, phase FROM '
+            . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+        if (!isset($r[0])) return self::HOLD_NO_RUN;
+        if ((int) $r[0][0] !== (int) $epoch) return self::HOLD_TAKEN_OVER;
+        if ($r[0][1] !== null) return self::HOLD_FINISHED;
+        if ((string) $r[0][2] !== (string) $phase) return self::HOLD_MOVED;
+        return true;
+    }
+
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
         $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_aggregate') . '

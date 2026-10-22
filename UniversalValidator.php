@@ -8856,9 +8856,82 @@ class UniversalValidator extends AbstractExternalModule
         return [
             'structure' => array_merge($this->temporalScanStructure($pid, $plan['live']), [
                 'fields' => $fields, 'longitudinal' => $longitudinal,
-                'events' => $events, 'repeating' => $repeating]),
+                'events' => $events, 'repeating' => $repeating],
+                $this->scanVerdictSettings($pid, $plan['live'])),
             'choices' => ['fields' => $codes, 'missing' => self::sortedNames($missing)],
         ];
+    }
+
+    /**
+     * The settings that decide a verdict and are written on no rule (review
+     * rv10b1-7), for the fingerprint: a run whose verdicts one of them moves
+     * between two requests ends instead of finishing judged both ways.
+     *
+     * EVERY SETTING WAS CHECKED; TWO WERE MISSING. "window-week-start" is
+     * already an input: annotateWindowField() writes it on the rule
+     * (windowWeekStart), so the rule's revision moves with it. So are
+     * "enable-event-instance-refs" (it changes how every operand parses, and
+     * the temporal digest names it), the @UVEXISTS aliases and
+     * "exists-system-cross-project" (both decided while the rule compiles,
+     * into existsPid or a configuration error) and "scan-value-storage"
+     * (valueMode). The two below are read only while a record is judged:
+     *
+     *   clockZone   "window-timezone", which sets the day a @UVWINDOW rule
+     *               compares with (notFuture, notPast, today) and the zone the
+     *               log's save times are read in, beside the server's own
+     *               zone. Only when a live rule needs the clock.
+     *   references  each growth reference a live @UVRANGE rule names, as the
+     *               catalog resolves it under "reference-data-dir": a folder
+     *               named, changed or emptied there replaces the table a
+     *               z-score is read from. The entry carries the table's pinned
+     *               sha256, so an edited table is one too. Its labels and its
+     *               folder's path are left out: two folders holding the same
+     *               tables judge alike. Only when a live rule names one.
+     *
+     * NOT INPUTS, because they decide no verdict: the rate limits on lookups
+     * into other projects (an answer they refuse is reported, never judged),
+     * "qualified-audit-max-contexts" (the save-time audit only), "log-values",
+     * "debug-log" and the return-on-save switches.
+     *
+     * @return array  [] when no live rule reads either
+     */
+    private function scanVerdictSettings($pid, array $live)
+    {
+        $out = [];
+        if (ModeRegistry::rulesNeed($live, 'clock')) {
+            $zone = $this->clockZone($pid);
+            $server = date_default_timezone_get();
+            $out['clockZone'] = ['compare' => $zone === null ? $server : $zone->getName(), 'server' => $server];
+        }
+        $ids = [];
+        foreach ($live as $r) {
+            if (!is_array($r)) continue;
+            $branched = isset($r['branches']) && is_array($r['branches']);
+            foreach ($branched ? $r['branches'] : [$r] as $n) {
+                if (is_array($n) && isset($n['rangeReference']) && is_string($n['rangeReference'])) {
+                    $ids[$n['rangeReference']] = true;
+                }
+            }
+        }
+        if ($ids) {
+            $dir = $this->referenceDir();
+            $refs = [];
+            foreach (array_keys($ids) as $id) {
+                $e = GrowthReference::entry((string) $id, $dir);
+                if ($e === null) {
+                    $why = GrowthReference::unavailableWhy((string) $id, $dir);
+                    $refs[(string) $id] = 'unavailable: ' . ($why === null ? 'unknown' : $why);
+                    continue;
+                }
+                unset($e['title'], $e['sourceTitle']);
+                $e['dir'] = (isset($e['dir']) && $e['dir'] === GrowthReference::bundledDir()) ? 'bundled' : 'extra';
+                ksort($e, SORT_STRING);
+                $refs[(string) $id] = $e;
+            }
+            ksort($refs, SORT_STRING);
+            $out['references'] = $refs;
+        }
+        return $out;
     }
 
     /** Scalar names as distinct strings in byte order, so a list's order is no part of a comparison. */

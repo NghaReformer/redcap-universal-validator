@@ -205,8 +205,30 @@ final class ScanPromotion
      * Problem codes that mean a record was only partly examined (W7-N6). Their
      * marks block coverage. Each must be a code UniversalValidator writes as
      * the second segment of a problem key, which problemList() hands over.
+     *
+     * `temporal` AND `temporal-group` ARE NOT HERE, and that was decided, not
+     * missed (review rv10b1, design question). They mean an event/instance
+     * rule could not be judged at one event or instance of the record - a
+     * reference that does not resolve there, a branch selector that cannot be
+     * read - and the evaluator says so and goes on to every other rule and
+     * context. Coverage says every record in scope was examined: every rule
+     * was asked of every context. These codes are an answer to that question
+     * ("this rule cannot be judged here"), and the run reports them as rule
+     * problems, so it is never clean and the report names the rule, the event
+     * and the instance. `temporal-budget` is different in kind: the evaluator
+     * stopped asking, and the rules after it were never put to the record.
+     * The record's data decides a temporal code, as it decides the budget,
+     * but a rerun meets the same code at the same context for as long as the
+     * project is designed that way. Blocking it would make such a project
+     * partial forever, and partial would no longer mean "the scan did not get
+     * to part of it".
      */
     const PARTLY_EXAMINED = ['temporal-budget'];
+
+    /** The stored reason of a run an upgrade of this module ended (review rv10b1-6). */
+    const ENGINE_UPGRADED = 'this module was upgraded while this scan was running, to a version that judges '
+        . 'some values differently, so the scan was ended rather than finished half under each version; '
+        . 'run it again';
 
     /**
      * What a run's aggregates say was found: active findings, rule problems, gaps.
@@ -251,6 +273,29 @@ final class ScanPromotion
                 'ruleProblems' => $of(self::RULE_KINDS), 'gaps' => $of(self::GAP_KINDS)];
     }
 
+    /**
+     * Could a working run have left findings out yet (review rv10b1-3)?
+     *
+     * The worker leaves a finding out only when the run row's detail_rows or
+     * detail_bytes has reached its limit (ScanWorker::batch(), H9), and both
+     * only grow, so a row below the limit has left nothing out. The limit
+     * read here is the one the run froze in policy_json. The worker judges by
+     * the settings as they are now, which can only be the same or higher on
+     * a run still working: a lower one is a tightening, and the worker's
+     * policy-revision guard ends the run on it before any batch is judged
+     * (R5-5). A higher one
+     * answers true early, which costs one read and never a wrong count. A
+     * stored policy that cannot be read, or lacks either limit, answers true.
+     */
+    private static function budgetUsed(array $run, $rows)
+    {
+        $raw = isset($run['policy_json']) ? $run['policy_json'] : null;
+        $p = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($p) || !isset($p['maxFindings'], $p['maxBytes'])) return true;
+        $bytes = isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0;
+        return ScanPolicy::budgetSpent($p, $rows, $bytes);
+    }
+
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
     private static function kindTotal(array $aggregates, $kind)
     {
@@ -287,9 +332,20 @@ final class ScanPromotion
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
      *
-     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN BOTH ANSWERS (H9): they were
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
      * found and not stored, so the summary cannot count them and the floor is
-     * taken over what was stored, with them added.
+     * taken over what was stored, with them added. A run still working adds
+     * them to its counter too (review rv10b1-3): the counter stops growing
+     * at the budget, so "N findings so far" froze there while the worker kept
+     * finding, and jumped when the run ended. The run's aggregates are one
+     * read on uq_aggregate's leading column, and while a run works they are
+     * its marks, that count and, in its last phase, the summary being built:
+     * rows per rule, form, reason and group, never per record.
+     *
+     * AND ONLY PAST THE BUDGET. That read is asked only when the run row says
+     * the budget the run froze in policy_json is spent (budgetUsed()). Below
+     * it nothing has been left out, and a status poll reads no aggregates, as
+     * the perf case pins; 79a6cab read them on every poll.
      *
      * @return int|null null when the run ended before its findings could be counted
      */
@@ -297,7 +353,10 @@ final class ScanPromotion
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
-        if ($terminal === null) return $rows;
+        if ($terminal === null) {
+            if (!self::budgetUsed($run, $rows)) return $rows;
+            return $rows + self::kindTotal($store->aggregates((int) $run['run_id']), ScanStore::DETAIL_UNSTORED);
+        }
         $t = self::tally($store->aggregates((int) $run['run_id']));
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
             $floor = max($rows, $t['stored']) + $t['unstored'];
@@ -328,6 +387,8 @@ final class ScanPromotion
      *   uniqueBlocking:     int
      *   rollupDone:         bool
      *   fingerprintNow:     ?string
+     *   engineNow:          ?string  the evaluator's revision now; with it, a
+     *                                fingerprint moved by an upgrade says so
      *   policyRevisionNow:  ?int
      *   maxFindings:        ?int
      *   maxBytes:           ?int
@@ -372,6 +433,14 @@ final class ScanPromotion
         $polNow = $g('policyRevisionNow');
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
+        // WHICH MOVED IT (review rv10b1-6). The evaluator's revision is one of
+        // the fingerprint's inputs, so an upgrade to a build that judges
+        // differently ends every run in flight - and the stored sentence then
+        // said the PROJECT's rules or design had changed, on a project nobody
+        // touched. The run keeps the revision it began under, so an upgrade is
+        // told apart and named.
+        $engNow = $g('engineNow');
+        $engineMoved = $fpBad && is_string($engNow) && $engNow !== '' && self::engineOf($run) !== $engNow;
 
         // NO RECORD IS LEFT DONE: none is `done`, none is still waiting, and
         // nothing is blocked. That is the question `emptyScope` answers, and it
@@ -501,7 +570,24 @@ final class ScanPromotion
         return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
                 'notExamined' => $unread,
                 // Which configuration moved, for the stored reason (conclude()).
-                'configChanged' => $fpBad ? 'rules' : ($polBad ? 'privacy' : null)];
+                'configChanged' => $fpBad ? ($engineMoved ? 'engine' : 'rules') : ($polBad ? 'privacy' : null)];
+    }
+
+    /**
+     * The evaluator revision a run began under, as its stored policy records
+     * it (review rv10b1-6), or null when the policy does not say.
+     *
+     * NULL MEANS AN OLDER EVALUATOR. ScanPlanner::storedPolicy() has written
+     * it since engine-5, so a run without one was begun by a build whose
+     * evaluator was engine-4 or older, and differs from any build that reads
+     * this.
+     */
+    public static function engineOf(array $run)
+    {
+        $raw = isset($run['policy_json']) && is_string($run['policy_json']) ? $run['policy_json'] : null;
+        $p = $raw === null ? null : json_decode($raw, true);
+        return (is_array($p) && isset($p['engine']) && is_string($p['engine']) && $p['engine'] !== '')
+            ? $p['engine'] : null;
     }
 
     /**
@@ -636,8 +722,9 @@ final class ScanPromotion
             $outcome['why'] = $f['configChanged'] === 'rules'
                 ? 'the project\'s validation rules or design changed while this scan was running, so its '
                   . 'results would describe two different configurations; run it again'
+                : ($f['configChanged'] === 'engine' ? self::ENGINE_UPGRADED
                 : 'the project\'s privacy settings were tightened while this scan was running, so it was '
-                  . 'ended rather than finished under the settings it started with; run it again';
+                  . 'ended rather than finished under the settings it started with; run it again');
         }
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
         // What finish() persists beside the terminal. `gaps` is already there.

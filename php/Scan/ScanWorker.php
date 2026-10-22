@@ -54,20 +54,19 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 final class ScanWorker
 {
+    /**
+     * Seconds between the duplicate phase's progress writes in one request
+     * (review rv10b2-2). Well inside the two minutes after which the page
+     * calls a run stalled, and far inside the reaper's staleHours.
+     */
+    const PROGRESS_EVERY = 30;
+
     /** @var ScanStore */
     private $store;
     /** @var array */
     private $deps;
     /** @var array run id => mark key => true: rule problems this worker has already committed */
     private $marked = [];
-    /**
-     * @var array run id => {rows:int, bytes:int}: the finding rows and value
-     * bytes the run has stored, as this worker last knew them - the run row's
-     * counters when the request began, plus what its own commits held. What
-     * the detail budget is judged against (H9).
-     */
-    private $detail = [];
-
     /**
      * @param array $deps {
      *   slots:          ?WorkerSlots  installation semaphore; null means unrationed
@@ -95,6 +94,9 @@ final class ScanWorker
      *                                 where a storage failure is recorded. The
      *                                 worker's own answer never carries what
      *                                 the server said - see noteStorageFailure.
+     *   clock:          ?callable(): float  seconds, for spacing the duplicate
+     *                                 phase's progress writes (PROGRESS_EVERY);
+     *                                 microtime(true) when absent
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -195,8 +197,15 @@ final class ScanWorker
         // service's check; a worker built anywhere else is held to it alone.
         if (isset($this->deps['fingerprint'])
                 && !ScanPlanner::fingerprintMatches($run['fingerprint'], $this->deps['fingerprint'])) {
+            // The evaluator revision, when the composition root says which it
+            // is, so an upgrade is named as one (review rv10b1-6).
+            $engine = isset($this->deps['engine']) && is_string($this->deps['engine']) ? $this->deps['engine'] : null;
             ScanPromotion::promote($this->store, $pid, $runId, array_merge($this->limits(),
-                ['fingerprintNow' => (string) $this->deps['fingerprint']]));
+                ['fingerprintNow' => (string) $this->deps['fingerprint'], 'engineNow' => $engine]));
+            if ($engine !== null && ScanPromotion::engineOf($run) !== $engine) {
+                return self::stop('this module was upgraded during this scan, so it was stopped and '
+                    . 'must be run again');
+            }
             return self::stop('the validation rules changed during this scan, so it was stopped '
                 . 'and must be run again');
         }
@@ -309,15 +318,6 @@ final class ScanWorker
                 $phase = (string) $p['phase'];
             }
 
-            // What the run has stored so far, for the detail budget (H9). Read
-            // from the row this request began with; another worker's commits
-            // after it are not seen, so two workers can take the run past its
-            // budget by at most a batch each - the finding rows they store are
-            // then all kept, and nothing is counted as left out that was not.
-            $this->detail[(int) $runId] = [
-                'rows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
-                'bytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0];
-
             // The run_seq is what a duplicate finding is stamped with, so the
             // finalizer is bound to it below; a row without one binds nothing
             // and the finalizer then writes nothing (review R8-5).
@@ -396,6 +396,9 @@ final class ScanWorker
         // already counts `listed` as movement (planning lists records and
         // examines none), so the movement is reported there.
         $listed = 0;
+        // When this request last moved progress_at in the duplicate phase,
+        // by $this->now(); null until it has (review rv10b2-2).
+        $clockAt = null;
 
         while (true) {
             // admit(), not mustStop() (review BU-2). Asked before the first
@@ -452,9 +455,12 @@ final class ScanWorker
                 // THE FINDINGS IT WRITES ARE THIS RUN'S. A finalizer that
                 // writes is bound to the run's sequence here, the one place
                 // that has the run row, so no caller can build one that dates
-                // duplicates to some other run (review R8-5).
+                // duplicates to some other run (review R8-5). And to the run
+                // id and the lease epoch this request holds, so a write after
+                // a cancel, a reap or another user's Start is refused rather
+                // than added to a run already reported ended (review rv10a1-1).
                 if ($fin instanceof SequencedFinalizer && $runSeq >= 1) {
-                    $fin = $fin->forRun($runSeq);
+                    $fin = $fin->forRun($runSeq, (int) $runId, (int) $epoch);
                 }
                 // TWO CLAIMS, because a step is one of two different things
                 // and nobody knows which until it has run (review BU-1). A page
@@ -477,7 +483,18 @@ final class ScanWorker
                 // undecidable: the run nearer its end. A step that only re-read
                 // records (a group restarted because a record changed) did
                 // work and moved nothing forward.
-                $forward = max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                //
+                // NOR DID VERIFYING AGAIN WHAT AN EARLIER EPOCH VERIFIED
+                // (review rv10b2-1). A group restarted on a later page went
+                // back over page 1, every candidate of it counted as verified,
+                // and the clock moved on every request while the group
+                // restarted for ever: the reaper never saw the run as idle, and
+                // the browser, told something moved, asked again at once.
+                // `revisited` is the part of `verified` below the group's
+                // furthest point; only what lies past it is new ground.
+                $revisited = isset($r['revisited']) ? max(0, (int) $r['revisited']) : 0;
+                $forward = max(0, (int) $r['groups'])
+                         + max(0, max(0, (int) $r['verified']) - $revisited)
                          + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
                          + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
                 $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
@@ -515,8 +532,24 @@ final class ScanWorker
                 // wedged finalizer still ages. Refused means this worker no
                 // longer holds the run, which is the scanning phase's fence
                 // refusal and gets its answer.
-                if ($forward > 0 && !$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
-                    return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                //
+                // AT MOST ONCE PER PROGRESS_EVERY SECONDS (review rv10b2-2).
+                // Every forward step wrote it, and a write costs about three
+                // statements through the framework (the UPDATE, its
+                // ROW_COUNT(), and in the same second the SELECT that tells
+                // "unchanged" from "refused"): 100 groups of two cost 301
+                // writes and 290 such reads. The first forward step of a
+                // request writes it, then one each PROGRESS_EVERY seconds.
+                // Emit and publish no longer lean on this write to notice a
+                // lost lease: each holds the run itself (review rv10a1-1).
+                if ($forward > 0) {
+                    $t = $this->now();
+                    if ($clockAt === null || $t - $clockAt >= self::PROGRESS_EVERY) {
+                        if (!$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
+                            return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                        }
+                        $clockAt = $t;
+                    }
                 }
                 // A step that re-read records WAS a batch of records, and is
                 // measured as one, so the next verify page is sized by what
@@ -867,14 +900,33 @@ final class ScanWorker
         // time, they are counted again, because a count has no row to close.
         // Only records edited after the budget was spent are affected, and the
         // run is already truncated and so never clean.
+        //
+        // WHAT THE RUN HAS STORED IS READ FOR EVERY BATCH (review rv10b1-4),
+        // from the run row, after this batch's records were read. It was read
+        // once, when the request began, and moved only by this worker's own
+        // commits, so a second worker's request running beside it stored a
+        // whole request of findings past the budget - the budget times the
+        // workers, where W10-N2 said a batch each. Read here, it holds what
+        // every worker had committed by the time this batch is judged; two
+        // batches judged at the same moment can still both store theirs,
+        // which is the batch each. One read of the run row by its key. A row
+        // that cannot be read leaves no room: the commit after it is refused
+        // anyway, and an unread counter is never taken for room left.
         $limits = $this->limits();
         $gated = isset($limits['maxFindings']) || isset($limits['maxBytes']);
-        $soFar = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId]
-               : ['rows' => 0, 'bytes' => 0];
-        $rowsNow = (int) $soFar['rows'];
-        $bytesNow = (int) $soFar['bytes'];
+        $rowsNow = 0;
+        $bytesNow = 0;
+        if ($gated) {
+            $now = $this->store->run($pid, $runId);
+            if (is_array($now)) {
+                $rowsNow = isset($now['detail_rows']) ? max(0, (int) $now['detail_rows']) : 0;
+                $bytesNow = isset($now['detail_bytes']) ? max(0, (int) $now['detail_bytes']) : 0;
+            } else {
+                $rowsNow = PHP_INT_MAX;
+                $bytesNow = PHP_INT_MAX;
+            }
+        }
         $unstored = [];    // ordinal => findings found and left out
-        $offered = [];     // ordinal => [finding rows, value bytes] offered for it
 
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
@@ -982,7 +1034,6 @@ final class ScanWorker
             // left out: the counter must not grow by bytes nobody stored.
             $recBytes = isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
             $left = 0;
-            $keptRows = 0;
             $keptBytes = 0;
             foreach ($ev['findings'] as $f) {
                 if ($gated && ScanPolicy::budgetSpent($limits, $rowsNow, $bytesNow)) {
@@ -992,7 +1043,6 @@ final class ScanWorker
                 $cost = (isset($f['value_bin']) && is_string($f['value_bin'])) ? strlen($f['value_bin']) : 0;
                 $rowsNow++;
                 $bytesNow += $cost;
-                $keptRows++;
                 $keptBytes += $cost;
                 // WHICH CLAIMED RECORD THIS CAME FROM. The store needs it to
                 // decide whether to write the finding at all: evidence about a
@@ -1006,7 +1056,6 @@ final class ScanWorker
                 $unstored[(int) $c['ordinal']] = $left;
                 $recBytes = $keptBytes;
             }
-            $offered[(int) $c['ordinal']] = [$keptRows, $recBytes];
             // A uniqueness rule produces a CANDIDATE rather than a finding: no
             // record can be a duplicate on its own evidence. They travel in the
             // same batch so that a rolled-back read leaves no candidate behind
@@ -1111,8 +1160,8 @@ final class ScanWorker
         // reading, as $held does above.
         //
         // FINDINGS ARE WHAT WAS FOUND, stored or not (H9): the ones the detail
-        // budget left out are counted with them. What the run has stored grows
-        // by the held records' rows and bytes only, for the next batch's gate.
+        // budget left out are counted with them, for the held records only.
+        // What the run has stored is the next batch's read of the run row.
         $findings = count($batch['findings']) + array_sum($unstored);
         $candidates = count($batch['candidates']);
         $keep = null;
@@ -1137,14 +1186,6 @@ final class ScanWorker
                 if (isset($keep[(int) $f['ordinal']])) $candidates++;
             }
         }
-        $stored = isset($this->detail[(int) $runId]) ? $this->detail[(int) $runId] : ['rows' => 0, 'bytes' => 0];
-        foreach ($offered as $o => $rb) {
-            if ($keep !== null && !isset($keep[$o])) continue;
-            $stored['rows'] += $rb[0];
-            $stored['bytes'] += $rb[1];
-        }
-        $this->detail[(int) $runId] = $stored;
-
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of
         // its own (noteAttempts, the same door a failed read or a refused
@@ -1314,6 +1355,13 @@ final class ScanWorker
     private function limits()
     {
         return (isset($this->deps['limits']) && is_array($this->deps['limits'])) ? $this->deps['limits'] : [];
+    }
+
+    /** Seconds, from the `clock` dep when a test gives one. */
+    private function now()
+    {
+        $c = isset($this->deps['clock']) ? $this->deps['clock'] : null;
+        return is_callable($c) ? (float) $c() : microtime(true);
     }
 
     private function owner()

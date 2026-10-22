@@ -712,3 +712,231 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query('DELETE FROM ' . Schema::table($t));
     }
 }
+
+// -- a record edited during the duplicate phase (review rv10b2-1) -------------
+//
+// restart() reset the group and never refreshed the edited record's
+// version_scanned, so every later verify met the same mismatch: a group with
+// one record edited after it was scanned restarted for ever and the run never
+// left unique-finalize. With the record on a later page, page 1 was verified
+// again on every cycle and counted as progress.
+{
+    $KEY = 'rv10b2-livelock-key';
+    $plant = function ($gen, $group, $rec, $ver) use ($A, $KEY, $PID) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $PID . ", " . $gen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', '" . $ver . "')");
+    };
+    $same = function ($locs) {
+        $out = array();
+        foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('SAME');
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    $groupRow = function ($gen) use ($dbA, $PID) {
+        return $dbA->select('SELECT phase, candidate_epoch, verify_cursor, emit_cursor, collision_state FROM '
+            . Schema::table('unique_group') . ' WHERE project_id = ? AND generation_id = ?', array($PID, $gen));
+    };
+
+    // Six records, pages of two; R6 (page 3) was edited after it was scanned.
+    $GENL = uv_generation('edited-on-a-later-page');
+    foreach (array('L1', 'L2', 'L3', 'L4', 'L5', 'L6') as $rec) $plant($GENL, 'SAME', $rec, '100');
+    $ver = new MovingVersions();
+    $ver->v = array('L1' => '100', 'L2' => '100', 'L3' => '100', 'L4' => '100', 'L5' => '100', 'L6' => '101');
+    $recL = new UvRecordingDb($dbA);
+    $finL = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($recL, array('pid' => $PID, 'seq' => 41,
+        'hmacKey' => $KEY, 'read' => $same, 'versions' => $ver));
+    $stepsL = array();
+    for ($i = 0; $i < 30; $i++) {
+        $s = $finL->step($GENL, 10, 2);
+        $stepsL[] = $s;
+        if ($s['done']) break;
+    }
+    $stL = $finL->status($GENL);
+    $rowL = $groupRow($GENL);
+    check('rv10b2-1: a group whose record was edited after the scan is decided, not restarted for ever',
+        $stL['done'] === true && $stL['published'] === 1 && $stL['blocking'] === 0 && count($stepsL) < 30);
+    check('rv10b2-1: it started again once, and the edited record now carries the version it has',
+        (int) $rowL[0][1] === 2 && $dbA->select('SELECT version_scanned FROM ' . Schema::table('unique_candidate')
+            . " WHERE project_id = ? AND generation_id = ? AND record_id_bin = 'L6'", array($PID, $GENL))[0][0] === '101');
+    $revisited = 0;
+    $restarts = 0;
+    foreach ($stepsL as $s) {
+        $revisited += (int) $s['revisited'];
+        if ($s['verified'] === 0 && $s['read'] > 0 && $s['why'] !== null) $restarts++;
+    }
+    check('rv10b2-1: the two pages it had verified before the edit are told apart as verified again',
+        $restarts === 1 && $revisited === 4);
+    $dupes = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . " WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND check_type = 'unique'",
+        array($PID, $GENL));
+    check('rv10b2-1: and all six duplicates are written', (int) $dupes[0][0] === 6);
+    // The refresh is one statement, through the candidate key: an equality on
+    // its first four columns, so it reads the edited record's rows and no
+    // others however large the group.
+    $refresh = $recL->matching('exec', array('SET version_scanned = CASE record_hash'));
+    $refreshKeys = $refresh ? uv_explain_keys($A, $refresh[0][1], $refresh[0][2]) : array();
+    check('rv10b2-1: the version refresh is one statement through uq_candidate_v2 ('
+        . implode(',', $refreshKeys) . ')', count($refresh) === 1 && $refreshKeys === array('uq_candidate_v2'));
+
+    // A record edited on every look: the group is blocked as undecidable after
+    // MAX_RESTARTS, so the run ends partial instead of never.
+    $GENM = uv_generation('edited-on-every-look');
+    foreach (array('M1', 'M2') as $rec) $plant($GENM, 'MOVING', $rec, '1');
+    $every = new class implements \INSPIRE\UniversalValidator\Scan\RecordVersions {
+        public $n = 1;
+        public function versions(array $ids)
+        {
+            $this->n++;
+            $out = array();
+            foreach ($ids as $id) $out[(string) $id] = (string) $this->n;
+            return $out;
+        }
+    };
+    $finM = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'seq' => 41,
+        'hmacKey' => $KEY, 'read' => $same, 'versions' => $every));
+    $nM = 0;
+    while ($nM++ < 30) { if ($finM->step($GENM, 10, 2)['done']) break; }
+    $stM = $finM->status($GENM);
+    $rowM = $groupRow($GENM);
+    check('rv10b2-1: a group whose records keep changing is blocked after '
+        . \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::MAX_RESTARTS . ' restarts',
+        $stM['done'] === true && $stM['blocking'] === 1 && $rowM[0][0] === 'collision'
+        && (int) $rowM[0][1] === \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::MAX_RESTARTS + 1 && $nM < 30);
+    $dupesM = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GENM));
+    check('rv10b2-1: and nothing is reported about it', (int) $dupesM[0][0] === 0);
+
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
+// -- a duplicate page for a run that has ended (review rv10a1-1) --------------
+//
+// emit() and publish() were fenced on the group's candidate_epoch only. A
+// request that was mid-finalize when the cron expired its run went on writing
+// duplicates into the expired run's generation (1 finding became 3 in the
+// reviewer's repro). Each page is now one transaction that first holds the run
+// row: same lease epoch, not ended, still in unique-finalize. The reaper's
+// epoch bump lives on another branch, so it is made here as it makes it.
+{
+    $KEY = 'rv10a1-fence-key';
+    $storeF = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $T = function ($t) { return Schema::table($t); };
+    $liveRun = function ($pid) use ($storeF) {
+        $r = $storeF->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $storeF->writeManifest($rid, array(
+            array('id_bin' => 'F1', 'hash' => hash('sha256', 'F1', true), 'dag' => null)));
+        $run = $storeF->run($pid, $rid);
+        $ep = (int) $run['lease_epoch'];
+        foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::SCANNING,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE) as $to) {
+            $storeF->advancePhase($rid, $ep, $to);
+        }
+        return array($rid, $ep, (int) $run['generation_id'], (int) $run['run_seq']);
+    };
+    $plantF = function ($pid, $gen, $rec) use ($A, $KEY) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $pid, 'SAME', $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $pid, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (" . $pid . ", " . $gen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
+    };
+    $same = function ($locs) {
+        $out = array();
+        foreach ($locs as $l) $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('SAME');
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    $findingsOf = function ($pid, $gen) use ($dbA) {
+        $r = $dbA->select('SELECT COUNT(*), COALESCE(SUM(active_slot = 1), 0) FROM ' . Schema::table('finding')
+            . ' WHERE project_id = ? AND generation_id = ?', array($pid, $gen));
+        return array((int) $r[0][0], (int) $r[0][1]);
+    };
+    $cursorOf = function ($pid, $gen) use ($dbA) {
+        $r = $dbA->select('SELECT emit_cursor FROM ' . Schema::table('unique_group')
+            . ' WHERE project_id = ? AND generation_id = ?', array($pid, $gen));
+        return isset($r[0]) ? (int) $r[0][0] : null;
+    };
+    // Steps until a page of duplicates has been written, so the next one is
+    // the late write.
+    $toFirstPage = function ($fin, $gen) {
+        for ($i = 0; $i < 20; $i++) {
+            $s = $fin->step($gen, 2);
+            if ($s['emitted'] > 0 || $s['done'] || $s['why'] !== null) return $s;
+        }
+        return null;
+    };
+
+    // The reap: a page written, then the epoch moves, then the next page.
+    list($ridF, $epF, $genF, $seqF) = $liveRun(975);
+    foreach (array('F1', 'F2', 'F3', 'F4') as $rec) $plantF(975, $genF, $rec);
+    $finF = (new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => 975,
+        'hmacKey' => $KEY, 'read' => $same, 'store' => $storeF)))->forRun($seqF, $ridF, $epF);
+    $first = $toFirstPage($finF, $genF);
+    $before = $findingsOf(975, $genF);
+    $cursorBefore = $cursorOf(975, $genF);
+    check('rv10a1-1: a live run in unique-finalize takes a page of duplicates',
+        $first !== null && $first['emitted'] === 2 && $before === array(2, 0) && $cursorBefore > 0);
+    $A->query('UPDATE ' . $T('scan_run') . ' SET lease_epoch = lease_epoch + 1 WHERE run_id = ' . $ridF);
+    $late = $finF->step($genF, 2);
+    check('rv10a1-1: after the epoch bump of a reap the next page is refused and nothing is written',
+        $late['emitted'] === 0 && $late['why'] === \INSPIRE\UniversalValidator\Scan\ScanStore::HOLD_TAKEN_OVER
+        && $findingsOf(975, $genF) === $before);
+    check('rv10a1-1: and the cursor of the group stays where the last held page left it',
+        $cursorOf(975, $genF) === $cursorBefore);
+
+    // An ended run: every page staged, then the run finishes before publish.
+    list($ridE, $epE, $genE, $seqE) = $liveRun(976);
+    foreach (array('E1', 'E2') as $rec) $plantF(976, $genE, $rec);
+    $finE = (new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => 976,
+        'hmacKey' => $KEY, 'read' => $same, 'store' => $storeF)))->forRun($seqE, $ridE, $epE);
+    $staged = $toFirstPage($finE, $genE);
+    $storeF->finish($ridE, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('failed' => true)));
+    $pub = $finE->step($genE, 2);
+    $stE = $finE->status($genE);
+    check('rv10a1-1: a group staged before its run ended is not published after it',
+        $staged !== null && $staged['emitted'] === 2 && $pub['published'] === 0
+        && $pub['why'] === \INSPIRE\UniversalValidator\Scan\ScanStore::HOLD_FINISHED
+        && $findingsOf(976, $genE) === array(2, 0) && $stE['published'] === 0);
+
+    // THE HOLD IS A LOCK. B is ending the run and has not committed; the page
+    // on A waits on the row instead of reading the epoch B is replacing. One
+    // second, then A gives up with nothing written.
+    list($ridW, $epW, $genW, $seqW) = $liveRun(977);
+    foreach (array('W1', 'W2', 'W3', 'W4') as $rec) $plantF(977, $genW, $rec);
+    $finW = (new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => 977,
+        'hmacKey' => $KEY, 'read' => $same, 'store' => $storeF)))->forRun($seqW, $ridW, $epW);
+    $toFirstPage($finW, $genW);
+    $beforeW = $findingsOf(977, $genW);
+    $dbB->begin();
+    $B->query('UPDATE ' . $T('scan_run') . ' SET lease_epoch = lease_epoch + 1 WHERE run_id = ' . $ridW);
+    $A->query('SET SESSION innodb_lock_wait_timeout = 1');
+    $waitedW = false;
+    try {
+        $mid = $finW->step($genW, 2);
+        $waitedW = $mid['emitted'] === 0;
+    } catch (\Throwable $e) {
+        $waitedW = true;
+    }
+    $A->query('SET SESSION innodb_lock_wait_timeout = DEFAULT');
+    $duringW = $findingsOf(977, $genW);
+    $dbB->commit();
+    $afterW = $finW->step($genW, 2);
+    check('rv10a1-1: a page cannot be written while another connection is ending the run',
+        $waitedW && $duringW === $beforeW);
+    check('rv10a1-1: and once it has, the page is refused as taken over',
+        $afterW['why'] === \INSPIRE\UniversalValidator\Scan\ScanStore::HOLD_TAKEN_OVER
+        && $findingsOf(977, $genW) === $beforeW);
+
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}

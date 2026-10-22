@@ -1357,6 +1357,45 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
         $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+
+    // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
+    // while the worker goes on finding, so every answer adds them: a run
+    // still working (review rv10b1-3), and a run with no verdict, whose
+    // floor is taken over what was STORED and then has them added (rv10b1-5
+    // M1: compared instead, a run that stored 5 and left 2 out said 5).
+    $uns = new ArrayScanStore();
+    $uid = (int) $uns->startRun(822, ['created_by' => 'alice'])['run']['run_id'];
+    $uns->addAggregate($uid, ScanStore::DETAIL_UNSTORED, '', '', 2);
+    check('rv10b1-3: a run still working counts the findings it left out beside the ones it stored',
+        $as($uns, 822, $uid, ['terminal' => null, 'detail_rows' => 3]) === 5);
+    // And reads its aggregates for that only once the budget it froze is
+    // spent: below it nothing was left out, and a status poll reads none.
+    $frozen = json_encode(['maxFindings' => 10, 'maxBytes' => 1000]);
+    $noAgg = (new FaultyStore($uns))->failFrom('aggregates');
+    $askAgg = function (array $over) use ($noAgg, $uns, $uid) {
+        try {
+            return ScanPromotion::findingsOf($noAgg, array_merge($uns->run(822, $uid), $over));
+        } catch (ScanStoreUnavailable $e) {
+            return 'read';
+        }
+    };
+    check('rv10b1-3: a working run below the budget it froze reads no aggregates for its count',
+        $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
+                 'policy_json' => $frozen]) === 4);
+    check('rv10b1-3: one at the findings limit, or the bytes limit, or with no budget to read, does',
+        $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 0, 'policy_json' => $frozen]) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 1000, 'policy_json' => $frozen]) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => '{']) === 'read'
+        && $askAgg(['terminal' => null, 'detail_rows' => 4, 'policy_json' => json_encode(['maxBytes' => 1000])]) === 'read');
+    foreach (ScanOutcome::NO_VERDICT as $how) {
+        check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
+            $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
+    }
+    foreach (RollupBuilder::KINDS as $kind) $uns->addAggregate($uid, $kind, 'x', null, 4);
+    check('rv10b1-5: and with a summary of 4 beside a counter of 5, still 5 stored and 2 left out',
+        $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 5]) === 7);
+    check('rv10b1-5: a summary larger than the counter is the floor the 2 are added to',
+        $as($uns, 822, $uid, ['terminal' => ScanOutcome::CANCELLED, 'detail_rows' => 1]) === 6);
 }
 
 /* =====================================================================
@@ -2977,6 +3016,60 @@ namespace INSPIRE\UniversalValidator\Scan {
     $w = (new ScanService($m, $fs))->work(193, $rid);
     check('B7: so does a rule added',
         $w['why'] === ScanService::CONFIG_CHANGED && $in->run(193, $rid)['terminal'] === ScanOutcome::FAILED);
+    // rv10b1-1: a field added to a SETTINGS rule. Its name leaves the fields
+    // out, so only the fingerprint's rule entry can notice the edit.
+    $inner = new ArrayScanStore();
+    $m = new \E2eModule($inner);
+    $m->structure = $b7design;
+    $m->choices = $b7codes;
+    $m->rules = [['type' => 'required', 'fields' => ['a_val'], '_origin' => 'settings']];
+    $rid = (int) (new ScanService($m, $inner))->start(196)['run_id'];
+    $m->rules[0]['fields'][] = 'b_val';
+    $w = (new ScanService($m, $inner))->work(196, $rid);
+    check('rv10b1-1: a field added to a settings rule between two requests ends the run failed',
+        $w['why'] === ScanService::CONFIG_CHANGED && $inner->run(196, $rid)['terminal'] === ScanOutcome::FAILED
+        && (int) $inner->run(196, $rid)['manifest_done'] === 0);
+
+    // rv10b1-6: AN UPGRADE IS SAID TO BE ONE. A run begun under an older
+    // evaluator, on a project nobody touched, is ended - and its reason names
+    // the upgrade, not the project's rules or design.
+    $upgraded = function ($pid, $oldEngine) use ($b7design, $b7codes) {
+        $inner = new ArrayScanStore();
+        $m = new \E2eModule($inner);
+        $m->structure = $b7design;
+        $m->choices = $b7codes;
+        $rid = (int) (new ScanService($m, $inner))->start($pid)['run_id'];
+        $began = $inner->run($pid, $rid);
+        $bag = new \ReflectionMethod(ScanService::class, 'fingerprintInputs');
+        $bag->setAccessible(true);
+        $in = $bag->invoke(new ScanService($m, $inner), $m->durableScanContext($pid, ['generation' => null]),
+                           ScanPolicy::resolve([], []));
+        $policy = json_decode($began['policy_json'], true);
+        if ($oldEngine === null) unset($policy['engine']); else $policy['engine'] = $oldEngine;
+        $p = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+        $p->setAccessible(true);
+        $runs = $p->getValue($inner);
+        $runs[$rid]['fingerprint'] = ScanPlanner::requestFingerprint(
+            array_merge($in, ['engine' => $oldEngine === null ? 'engine-4' : $oldEngine]));
+        $runs[$rid]['policy_json'] = json_encode($policy);
+        $p->setValue($inner, $runs);
+        $w = (new ScanService($m, $inner))->work($pid, $rid);
+        return [$began, $inner->run($pid, $rid), $w];
+    };
+    list($began, $row, $w) = $upgraded(197, 'engine-4');
+    check('rv10b1-6: a run keeps the evaluator revision it began under',
+        ScanPromotion::engineOf($began) === ScanService::ENGINE_REVISION);
+    check('rv10b1-6: a run begun under an older evaluator is ended failed, as before',
+        $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    check('rv10b1-6: and its stored reason says the module was upgraded, not that the project changed',
+        $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED);
+    check('rv10b1-6: and so does the answer to the request that ended it',
+        empty($w['ok']) && $w['why'] === ScanService::ENGINE_CHANGED);
+    list(, $row, $w) = $upgraded(198, null);
+    check('rv10b1-6: a run whose policy names no revision was begun by an older build, and says so too',
+        $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED && $w['why'] === ScanService::ENGINE_CHANGED);
+    check('rv10b1-6 (control): a run the project changed under, same evaluator, still says the project changed',
+        strpos((string) $inner->run(196, $rid)['terminal_reason'], 'validation rules or design changed') !== false);
     // A setting that decides what is stored, loosened: not a privacy stop (it
     // shows more, it does not tighten), and still a different configuration.
     list($in, $fs, $m, $rid) = $b7(194);
@@ -3075,10 +3168,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $svcR = new ScanService(new \SourceModule());
     $finOf = new \ReflectionMethod(ScanService::class, 'finalizer');
     $finOf->setAccessible(true);
-    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan]);
+    $storeR = new ArrayScanStore();
+    $finR = $finOf->invoke($svcR, 149, ['read' => $read, 'plan' => $plan], $storeR);
     $depsP = new \ReflectionProperty(UniqueFinalizer::class, 'deps');
     $depsP->setAccessible(true);
     $fd = $depsP->getValue($finR);
+    check('rv10a1-1: the service gives its finalizer the worker\'s store to hold the run through',
+        isset($fd['store']) && $fd['store'] === $storeR);
     check('W7-R4: the service gives its finalizer the plan\'s ordinals and a groups reader',
         isset($fd['ordinals']) && $fd['ordinals'] === ['src-a' => 1, 'src-b' => 2]
         && isset($fd['dags']) && is_callable($fd['dags']));

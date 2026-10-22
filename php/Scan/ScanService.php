@@ -437,11 +437,14 @@ final class ScanService
         // guard workerDeps() never armed, so it could not be reached.
         if ($config['moved'] && !$config['privacyMoved']) {
             ScanPromotion::promote($store, $pid, $runId, array_merge($limits, [
-                'fingerprintNow' => $config['fingerprintNow'],
+                'fingerprintNow' => $config['fingerprintNow'], 'engineNow' => $this->engineVersion(),
                 'policyRevisionNow' => $config['policyRevisionNow']]));
+            // rv10b1-6: an upgrade of the module is said to be one.
+            $why = ScanPromotion::engineOf($run) !== $this->engineVersion()
+                 ? self::ENGINE_CHANGED : self::CONFIG_CHANGED;
             return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'changed',
-                    'why' => self::CONFIG_CHANGED, 'status' => $this->statusOf($pid, $runId, [])];
+                    'why' => $why, 'status' => $this->statusOf($pid, $runId, [])];
         }
         $this->planMoved = false;
         $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode,
@@ -468,7 +471,7 @@ final class ScanService
         // It refuses until the run really is finishable, so asking early costs
         // one predicate - while not asking at all is how a run ends up complete
         // in every respect except the row that says so.
-        $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
+        $u = $this->finalizer($pid, $ctx, $store)->status((int) $run['generation_id']);
         $p = ScanPromotion::promote($store, $pid, $runId, [
             // WHAT WAS FOUND IS NOT PASSED. Violations, rule problems, gaps,
             // what blocks coverage and the window's changes are read from the
@@ -490,6 +493,7 @@ final class ScanService
             // this pass they decide nothing; they are here so that promotion is
             // never again judged without them.
             'fingerprintNow'    => $config['fingerprintNow'],
+            'engineNow'         => $this->engineVersion(),
             'policyRevisionNow' => $config['policyRevisionNow'],
             // A @UVEXISTS verdict depends on other records, which the catch-up
             // does not re-check when one of them changes (ScanPromotion::facts).
@@ -570,7 +574,7 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx),
+            'finalizer' => $this->finalizer($pid, $ctx, $store),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -609,7 +613,12 @@ final class ScanService
         // The fingerprint configurationNow() built from fingerprintInputs(), so
         // the worker's own guard is armed with the value the service compared
         // (B7). Null, and the guard unarmed, when the context does not ask.
-        if ($fingerprint !== null) $deps['fingerprint'] = (string) $fingerprint;
+        if ($fingerprint !== null) {
+            $deps['fingerprint'] = (string) $fingerprint;
+            // And the evaluator revision it was built with, so the guard can
+            // say an upgrade ended the run (review rv10b1-6).
+            $deps['engine'] = $this->engineVersion();
+        }
         return $deps;
     }
 
@@ -1510,7 +1519,7 @@ final class ScanService
         ]);
     }
 
-    private function finalizer($pid, array $ctx)
+    private function finalizer($pid, array $ctx, ScanStore $store)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -1522,6 +1531,12 @@ final class ScanService
         $seen = new \ArrayObject();
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
+            // The store its emit and publish transactions hold the run row
+            // through (review rv10a1-1): the worker's own, as RollupBuilder
+            // is given it. Unless a test gave its own store, that store is
+            // built over $this->db, so the hold and the writes are one
+            // transaction on one connection.
+            'store'    => $store,
             'hmacKey'  => $this->key(),
             'versions' => $this->fence($pid),
             // Re-reading a duplicate group goes through the SAME read the worker
@@ -1812,6 +1827,11 @@ final class ScanService
         return self::ENGINE_REVISION;
     }
 
+    /** What a work request answers when an upgrade of this module ended the run (review rv10b1-6). */
+    const ENGINE_CHANGED = 'This module was upgraded while this scan was running, and the new version judges '
+        . 'some values differently, so the scan was ended rather than finished half under each version. '
+        . 'Start a new scan.';
+
     /** What a work request answers when the run it was sent for has just been ended for this. */
     const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '
         . 'this scan was running, so the scan was ended rather than finished against two '
@@ -1854,6 +1874,9 @@ final class ScanService
     {
         return [
             'rules'     => isset($ctx['rules']) && is_array($ctx['rules']) ? $ctx['rules'] : [],
+            // rv10b1-1: the instruments each rule is judged on, keyed as `rules`.
+            'hosts'     => isset($ctx['plan']['hostFields']) && is_array($ctx['plan']['hostFields'])
+                           ? $ctx['plan']['hostFields'] : [],
             'ownership' => isset($ctx['ownership']) && is_array($ctx['ownership']) ? $ctx['ownership'] : [],
             // M8: the project's design, as durableScanContext() reports it.
             'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],

@@ -1046,6 +1046,38 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('and a cancel takes the summary away from the worker that held it',
         $s11->holdRollupCursor($rid11, $ep11) === ScanStore::ROLLUP_TAKEN_OVER);
 
+    // -- A FINISHING PHASE WRITES ONLY FOR A RUN IT STILL HOLDS (rv10a1-1) -----
+    //
+    // UniqueFinalizer asks this as the first statement of each emit and publish
+    // transaction. A request mid-finalize when its run was expired kept
+    // writing duplicates into the expired run; both stores refuse it now, in
+    // the same four sentences and the same order.
+    $s12 = $newStore();
+    $rid12 = (int) $s12->startRun(755, [])['run']['run_id'];
+    $s12->writeManifest($rid12, [$mk5('X')]);
+    $ep12 = (int) $s12->run(755, $rid12)['lease_epoch'];
+    foreach ([ScanPhase::SCANNING, ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $to12) {
+        $s12->advancePhase($rid12, $ep12, $to12);
+    }
+    $C('rv10a1-1: a live run in unique-finalize may be written for, on its own epoch',
+        $s12->holdRun($rid12, $ep12, ScanPhase::UNIQUE) === true);
+    $C('rv10a1-1: the epoch after a cancel or a reap may not write for it',
+        $s12->holdRun($rid12, $ep12 + 1, ScanPhase::UNIQUE) === ScanStore::HOLD_TAKEN_OVER);
+    $C('rv10a1-1: nor may a run that does not exist',
+        $s12->holdRun($rid12 + 999, $ep12, ScanPhase::UNIQUE) === ScanStore::HOLD_NO_RUN);
+    $C('rv10a1-1: nor a write for a phase the run has left',
+        $s12->holdRun($rid12, $ep12, ScanPhase::ROLLUP) === ScanStore::HOLD_MOVED);
+    $s12->finish($rid12, ScanOutcome::derive(['failed' => true]));
+    $C('rv10a1-1: nor a run that has ended, on the epoch it ended with',
+        $s12->holdRun($rid12, $ep12, ScanPhase::UNIQUE) === ScanStore::HOLD_FINISHED);
+    $s13 = $newStore();
+    $rid13 = (int) $s13->startRun(756, [])['run']['run_id'];
+    $s13->writeManifest($rid13, [$mk5('Y')]);
+    $ep13 = (int) $s13->run(756, $rid13)['lease_epoch'];
+    $s13->cancel(756, $rid13, 'admin');
+    $C('rv10a1-1: and a cancel takes the run away from the worker that was writing for it',
+        $s13->holdRun($rid13, $ep13, $s13->run(756, $rid13)['phase']) === ScanStore::HOLD_TAKEN_OVER);
+
     // -- A RUN NOBODY CAN FIND IS NOT COMPLETE (W6-N1) ------------------------
     //
     // The SQL store answered true here - no unfinished row, because no row at
