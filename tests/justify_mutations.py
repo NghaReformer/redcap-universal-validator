@@ -33,6 +33,7 @@ SQLSTORE = 'php/Scan/SqlScanStore.php'
 MAPPER = 'php/Scan/FindingRowMapper.php'
 ROLLUP = 'php/Scan/RollupBuilder.php'
 PROMOTION = 'php/Scan/ScanPromotion.php'
+SERVICE = 'php/Scan/ScanService.php'
 COLUMNS = 'php/ScanColumns.php'
 DIMENSIONS = 'php/ScanDimensions.php'
 PAGEVIEW = 'php/ScanPageView.php'
@@ -49,7 +50,7 @@ WORKER_T = 'tests/scan_worker_php.php'
 REPORT_T = 'tests/scan_report_php.php'
 PAGE_T = 'tests/scan_page_php.php'
 SCANCLIENT_T = 'tests/scan_client_js.cjs'
-# The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php).
+# The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php, cases "justified" and "perf").
 MYSQL = 'tests/mysql/run.php'
 
 # QRID_reasonGiven's trim, told apart from QRID_isMissingCode's, which reads the same
@@ -194,16 +195,22 @@ MUTATIONS = [
      "                'justified' => 0,", MODULE),
     ('the array store drops the flag', ARRAYSTORE,
      "            'justified'         => empty($f['justified']) ? 0 : 1,",
-     "            'justified'         => 0,", MODULE),
+     "            'justified'         => 0,", MYSQL),
     ('the SQL store drops the flag', SQLSTORE,
      "            'justified'         => empty($f['justified']) ? 0 : 1,",
-     "            'justified'         => 0,", MODULE),
+     "            'justified'         => 0,", MYSQL),
     ('a stored row read back as open', MAPPER,
      "            'justified'     => (string) $stored['justified'] === '1',",
      "            'justified'     => false,", REPORT_T),
     ('the rollup files every finding as open', ROLLUP,
      "            self::K_STANDING => (string) $r[5] === '1' ? self::STANDING_JUSTIFIED : self::STANDING_OPEN,",
-     '            self::K_STANDING => self::STANDING_OPEN,', MODULE),
+     '            self::K_STANDING => self::STANDING_OPEN,', MYSQL),
+    ('the rollup page left to the optimizer', ROLLUP,
+     " FORCE INDEX (ix_page_v2)",
+     '', MYSQL),
+    ("a finished run's summary read twice on each poll", SERVICE,
+     "'findings'  => ScanPromotion::findingsOf($store, $run, $aggregates),",
+     "'findings'  => ScanPromotion::findingsOf($store, $run),", MYSQL),
     ('justified findings counted as violations in the tally', PROMOTION,
      "        return ['violations' => $active - $justified, 'justified' => $justified,",
      "        return ['violations' => $active, 'justified' => $justified,", WORKER_T),
@@ -274,13 +281,15 @@ MUTATIONS = [
 
 def run(suite, cwd):
     """The suite's result, or None for the database suite when no server is named."""
+    env = None
     if suite == MYSQL:
         if not os.environ.get('UV_DB_HOST'):
             return None
         cmd = [PHP, '-d', 'extension=mysqli', suite]
+        env = dict(os.environ, UV_CASES='justified,perf')
     else:
         cmd = [NODE, suite] if suite.endswith('.cjs') else [PHP, suite]
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
 
 
 def main():

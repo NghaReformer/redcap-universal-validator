@@ -264,10 +264,11 @@ jobs:
           php tests/writeonce_module_php.php
           php tests/writeonce_live_twin_php.php
           python3 tests/writeonce_mutations.py
-      - name: PHP @UVJUSTIFY reason given vs fixture, grammar, pairing with the rules it stands for, hooks, audit, legacy and durable scan
+      - name: PHP @UVJUSTIFY reason given vs fixture, grammar, pairing with the rules it stands for, hooks, audit, legacy and durable scan, and 66 mutations the suites must kill (the 5 of the SQL run where UV_DB_HOST names a server)
         run: |
           php tests/justify_php.php
           php tests/justify_module_php.php
+          python3 tests/justify_mutations.py
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |
           php tests/growth_php.php
