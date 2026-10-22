@@ -2620,7 +2620,7 @@ final class ScanService
 
     /**
      * The evaluator's revision: BUMP IT WHENEVER A VERDICT CAN CHANGE (review
-     * R3G-4).
+     * R3G-4), OR THE FORM A STORED FINDING OR SUMMARY IS READ IN (rv11a2-9).
      *
      * It is the `engine` input of every run's fingerprint, so a durable run
      * started under one evaluator and worked under another is refused ("the
@@ -2646,8 +2646,17 @@ final class ScanService
      *   engine-5  a duplicate the scan's finalizer writes carries its rule's
      *             ordinal, its record's Data Access Group and the reason
      *             `duplicate-value`, which is part of its identity (W7-R4)
+     *   engine-6  what a finding STORES moved, though no verdict or identity
+     *             did (review rv11a2-9): a pooled finding's reason is kept as
+     *             `pooled` with a mask, and a branched rule's finding names
+     *             its branch (wave 11); a group run's summary is kept per
+     *             group (rv11a1-4). A run that spanned the upgrade held both
+     *             forms in one generation: one rule's findings in two reason
+     *             buckets with two wordings, and a summary its group's reader
+     *             counted short. The revision ends such a run, so the rule
+     *             above reads "a verdict, or the form a report reads it in".
      */
-    const ENGINE_REVISION = 'engine-5';
+    const ENGINE_REVISION = 'engine-6';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;

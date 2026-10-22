@@ -2944,6 +2944,12 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R3G-4: the duplicates\' new ordinal, group and reason moved the revision past engine-4',
         ScanService::ENGINE_REVISION !== 'engine-4'
         && !ScanPlanner::fingerprintMatches($gfp('engine-4'), $gfp(ScanService::ENGINE_REVISION)));
+    // rv11a2-9: wave 11 stores a pooled reason as `pooled` with a mask and a
+    // branched rule's branch, and rv11a1-4 keeps a group run's summary per
+    // group, so a run engine-5 began is not finished by this build.
+    check('rv11a2-9: the stored reason, branch and per-group summary moved the revision past engine-5',
+        ScanService::ENGINE_REVISION !== 'engine-5'
+        && !ScanPlanner::fingerprintMatches($gfp('engine-5'), $gfp(ScanService::ENGINE_REVISION)));
     check('R3G-4: start() fingerprints the run with this revision',
         !empty($gst['ok']) && ScanPlanner::fingerprintMatches($gs->run(160, $gid)['fingerprint'],
                                                              $gfp(ScanService::ENGINE_REVISION)));
