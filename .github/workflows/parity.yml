@@ -107,6 +107,10 @@ jobs:
         run: node tests/dispatch_notice_js.cjs
       - name: JS field DOM contract (a11y, debounce, survey muting, readonly)
         run: node tests/a11y_dom_js.cjs
+      - name: JS save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
+        run: node tests/save_guard_enter_dom_js.cjs
+      - name: JS browser half of the value parity rows (trim, non-ASCII, regex dialect, length)
+        run: node tests/value_parity_dom_js.cjs
       - name: Algorithm set is complete (fixture == JS registry == dropdown)
         run: node tests/algorithm_coverage_js.cjs
       - name: Derivation tracers match compute() on every fixture row
@@ -244,13 +248,13 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 130 mutations the suites must kill
+      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 152 mutations the suites must kill
         run: |
           php tests/delta_php.php
           php tests/delta_module_php.php
           php tests/delta_live_twin_php.php
           python3 tests/delta_mutations.py
-      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 160 mutations the suites must kill (the 5 of the SQL run where UV_DB_HOST names a server)
+      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 165 mutations the suites must kill (the 5 of the SQL run where UV_DB_HOST names a server)
         run: |
           php tests/writeonce_php.php
           php tests/writeonce_module_php.php
@@ -270,6 +274,14 @@ jobs:
         run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
+      - name: PHP server half of the value parity rows (trim, non-ASCII, regex dialect, length)
+        run: php tests/value_parity_php.php
+      - name: PHP @UVREQUIRED and what REDCap shows (branching logic in the audit and scan, survey pages)
+        run: php tests/required_pages_php.php
+      - name: PHP @UVUNIQUE scope and reads (group records, "with" placement, throttle answer, one read per save)
+        run: php tests/unique_scope_php.php
+      - name: PHP survey page config (no rule detail, only this page's configuration errors)
+        run: php tests/survey_shape_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)
         run: php tests/crossform_php.php
       - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)

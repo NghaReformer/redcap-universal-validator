@@ -401,6 +401,33 @@ for (const order of ['lock first', 'lock last']) {
   check('... which holds the save once that field has changed', save(env) === 'held');
 }
 
+for (const order of ['lock first', 'lock last']) {
+  // a dropdown with an autocomplete box: the box the lock made read-only is not @READONLY's,
+  // so a rule on the dropdown that reads another field keeps its guard item (QRID_fieldLocked)
+  const s = select('grp', ['', '1', '2', '9'], '9');
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_grp'; ac.value = '9';
+  const legacy = text('legacy', '1');
+  const lock = WO(['grp']);
+  const rule = { type: 'choices', fields: ['grp'], choicesHide: ['9'], choicesAll: ['1', '2', '9'], when: "[legacy]='0'",
+    blockSave: 'hard', lockReads: { grp: ['legacy'] } };
+  const env = boot([s, ac, legacy], { rules: order === 'lock first' ? [lock, rule] : [rule, lock] });
+  check(order + ': the autocomplete box the lock made read-only is marked so', ac.readOnly === true && ac.__qridLockSetRO === true);
+  check(order + ': ... the save goes through while the saved code is allowed', save(env) === 'saved', env.win._alerts);
+  legacy.value = '0'; legacy.fire('change');
+  check(order + ': ... and is held once the other field hides the saved code', save(env) === 'held', env.win._alerts);
+}
+{
+  // an autocomplete box REDCap made read-only (@READONLY) before the lock still counts
+  const s = select('grp', ['', '1', '2', '9'], '9');
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_grp'; ac.value = '9'; ac.readOnly = true;
+  const legacy = text('legacy', '1');
+  const env = boot([s, ac, legacy], { rules: [WO(['grp']), { type: 'choices', fields: ['grp'], choicesHide: ['9'],
+    choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard', lockReads: { grp: ['legacy'] } }] });
+  check('an autocomplete box already read-only is not marked as the lock\'s', ac.__qridLockSetRO !== true);
+  legacy.value = '0'; legacy.fire('change');
+  check('... and the dropdown never holds the save (UX-003)', save(env) === 'saved', env.win._alerts);
+}
+
 // ---- 10) roles that could not be read (review M8) --------------------------------------
 {
   const f = text('rv', 'x');

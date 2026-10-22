@@ -581,10 +581,12 @@ namespace {
         for ($i = 0; $i < 60; $i++) $last = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
         check('throttle: 60 lookups a minute are answered', ($last['state'] ?? null) === 'found');
         $r = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
-        check('throttle: the 61st answers unknown', ($r['state'] ?? null) === 'unknown' && strpos($r['why'], 'too many checks') !== false);
+        check('throttle: the 61st answers unknown, flagged as throttled', ($r['state'] ?? null) === 'unknown'
+            && strpos($r['why'], 'too many checks') !== false && ($r['throttled'] ?? null) === true);
         $r = $m->redcap_module_ajax('unique-check', ['field' => 'res_uniq', 'values' => ['res_uniq' => 'U-1']],
             149, '1', 'result', 351, 1, null, null, null, '', '', 'nurse', null);
-        check('throttle: one budget covers unique-check too', ($r['error'] ?? null) === 'too many checks — slow down');
+        check('throttle: one budget covers unique-check too, answered as exists-check is (UNQ-3)',
+            ($r['unknown'] ?? null) === true && ($r['throttled'] ?? null) === true && strpos((string) ($r['why'] ?? ''), 'too many checks') !== false);
         $_SESSION = [];
         $r = $m->redcap_module_ajax('unique-check', ['field' => 'res_uniq', 'values' => ['res_uniq' => 'U-1']],
             149, '1', 'result', 351, 1, null, null, null, '', '', 'nurse', null);

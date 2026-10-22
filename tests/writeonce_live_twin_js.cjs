@@ -91,8 +91,11 @@ function boot(cfg, values) {
     fire(type, ev) { (this._handlers[type] || []).forEach((fn) => fn(ev)); },
   };
   const calls = [];
+  const submits = [];
   const win = { _alerts: [], _confirms: [], confirmAnswer: false,
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
+    /* REDCap's own, which the Enter key in a text field calls */
+    dataEntrySubmit(ob) { submits.push(ob); return 'redcap-save'; },
     INSPIRE_VALIDATOR_CONFIG: JSON.parse(JSON.stringify(cfg)) };
   const jq = function (sel) {
     const el = typeof sel === 'string' ? (sel[0] === '#' ? doc.getElementById(sel.slice(1)) : null) : sel;
@@ -117,7 +120,7 @@ function boot(cfg, values) {
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
   require(enginePath);
-  return { doc, win, holders, ctl, calls, poll() { intervals.forEach((fn) => fn()); } };
+  return { doc, win, holders, ctl, calls, submits, poll() { intervals.forEach((fn) => fn()); } };
 }
 function region(env, f, suffix) {
   for (const k of env.holders[f].children) if (k.id && new RegExp('-' + suffix + '$').test(k.id)) return k;
@@ -139,6 +142,11 @@ function save(env) {
   if (env.win._alerts.length > a) return 'held: ' + env.win._alerts[env.win._alerts.length - 1].replace(/\s+/g, ' ');
   if (env.win._confirms.length > c) return 'asked';
   return ev._prevented ? 'prevented' : 'saved';
+}
+/* Enter in a text field, as REDCap's keydown handler does it: blur, then dataEntrySubmit. */
+function pressEnter(env, f) {
+  env.ctl[f].el.fire('blur');
+  return env.win.dataEntrySubmit('submit-btn-saverecord');
 }
 /* What a person does to a control: type and leave, pick a radio button, pick a dropdown option. */
 function type(env, f, v) { const el = env.ctl[f].el; el.value = v; el.fire('input'); el.fire('change'); el.fire('blur'); }
@@ -206,6 +214,10 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
   // a change no event announces, put back before the save
   env.ctl.uw_notes.el.value = 'Edited';
   check('B2 a silent change to the note is put back at the save, which goes through', save(env) === 'saved' && env.ctl.uw_notes.el.value === 'First note\nsecond line', env.ctl.uw_notes.el.value);
+  // B2d: a change no event announces, then Enter in another field
+  env.ctl.uw_consent.el.value = '2026-12-31';
+  check('B2d Enter in uw_free saves, with the date put back first', pressEnter(env, 'uw_free') === 'redcap-save'
+    && env.submits.length === 1 && env.ctl.uw_consent.el.value === '2026-10-01', [env.submits, env.ctl.uw_consent.el.value]);
   pick(env, 'uw_site', '1');
   check('B3 the site takes its first value and the record saves', env.ctl.uw_site.el.value === '1' && save(env) === 'saved');
 }

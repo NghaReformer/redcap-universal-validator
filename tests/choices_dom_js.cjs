@@ -705,5 +705,98 @@ function r17chk(field, code) {
   check('50,000 spaces in a choice value: checked in under 250 ms (took ' + ms + ' ms)', ms < 250);
 }
 
+// ---- enhanced survey choices (CHO-ENH) and display kept (CHO-4) -------------
+// REDCap's survey option "Enhanced radio buttons and checkboxes" draws each
+// choice again as <div class="enhancedchoice"><label comps="field,code,1"
+// for="opt-field_1">, hides the original rows inline, and the respondent
+// clicks the button. A filtered choice must hide its button, and showing it
+// again must not bring the original rows back beside the buttons.
+function enhancedButton(field, code, attrs) {
+  const box = makeEl('div'); box.className = 'enhancedchoice';
+  const wrap = makeEl('div'); wrap.className = 'enhancedchoice_wrapper';
+  const lab = makeEl('label');
+  for (const k in attrs) lab.setAttribute(k, attrs[k]);
+  box.appendChild(lab); wrap.appendChild(box);
+  return { box, lab, shown: () => box.style.display !== 'none' };
+}
+function withButtons(labels) {
+  return (win, doc) => {
+    doc.querySelectorAll = (sel) => (sel === '.enhancedchoice label' ? labels() : []);
+  };
+}
+{
+  const country = makeEl('select'); country.name = 'country'; country.value = '1';
+  const mirror = makeEl('input'); mirror.name = 'region'; mirror.type = 'hidden'; mirror.value = '';
+  const codes = ['101', '102', '201', '202'];
+  const radios = codes.map((v) => {
+    const r = makeEl('input'); r.name = 'region___radio'; r.type = 'radio'; r.value = v; r.id = 'opt-region_' + v; return r;
+  });
+  const buttons = {};
+  for (const v of codes) buttons[v] = enhancedButton('region', v, { comps: 'region,code,' + v, for: 'opt-region_' + v });
+  // A button of another field with the same code is never touched.
+  const other = enhancedButton('district', '201', { comps: 'district,code,201', for: 'opt-district_201' });
+  const labels = () => codes.map((v) => buttons[v].lab).concat([other.lab]);
+  const env = boot([country, mirror, ...radios], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'choices', fields: ['region'], when: "[country]='1'", choicesShow: ['101', '102'],
+              choicesAll: codes, blockSave: 'off' }],
+  }, (win, doc) => {
+    withButtons(labels)(win, doc);
+    for (const r of radios) r.parentNode.style.display = 'none';   // REDCap hides the original rows
+  });
+  const shownButtons = () => codes.filter((v) => buttons[v].shown()).join(',');
+  check('enhanced: a filtered choice hides its button', shownButtons() === '101,102');
+  check('enhanced: another field\'s button with the same code is left alone', other.shown());
+  check('enhanced: the original rows stay hidden', radios.every((r) => r.parentNode.style.display === 'none'));
+  country.value = '2'; country.fire('change');
+  check('enhanced: no filter, every button back', shownButtons() === '101,102,201,202');
+  check('enhanced: the original rows do not come back beside the buttons',
+    radios.every((r) => r.parentNode.style.display === 'none'));
+  mirror.value = '201'; radios[2].checked = true; radios[2].fire('click');
+  country.value = '1'; country.fire('change');
+  check('enhanced: a selected hidden choice keeps its button', shownButtons() === '101,102,201');
+  void env;
+}
+{
+  // Checkbox buttons named only by "for", and a button built after the bind.
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '1';
+  const rows = ['1', '2', '9'].map((c) => r17chk('reach', c));
+  const buttons = {};
+  for (const r of rows) buttons[r.code] = enhancedButton('reach', r.code, { for: 'id-__chk__reach_RC_' + r.code });
+  let built = ['1', '2'];
+  const labels = () => built.map((c) => buttons[c].lab);
+  const els = [pilot];
+  for (const r of rows) els.push(r.hidden, r.visible);
+  const env = boot(els, {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'choices', fields: ['reach'], when: "[pilot]='1'", choicesHide: ['2', '9'],
+              choicesAll: ['1', '2', '9'], blockSave: 'off' }],
+  }, withButtons(labels));
+  check('enhanced checkbox: a button named by "for" hides', !buttons['2'].shown() && buttons['1'].shown());
+  built = ['1', '2', '9'];
+  pilot.value = '0'; pilot.fire('change');
+  pilot.value = '1'; pilot.fire('change');
+  check('enhanced checkbox: a button built after the bind is filtered at the next draw', !buttons['9'].shown());
+  void env;
+}
+{
+  // CHO-4 on a plain form: a row something else hid stays hidden after the
+  // filter shows its choices again.
+  const country = makeEl('select'); country.name = 'country'; country.value = '1';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const radios = ['1', '2', '3'].map((v) => {
+    const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
+  });
+  boot([country, mirror, ...radios], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], when: "[country]='1'", choicesHide: ['2', '3'],
+              choicesAll: ['1', '2', '3'], blockSave: 'off' }],
+  }, () => { radios[2].parentNode.style.display = 'none'; });
+  country.value = '2'; country.fire('change');
+  check('CHO-4: a row the filter hid comes back', radios[1].parentNode.style.display !== 'none');
+  check('CHO-4: a row hidden by something else stays hidden', radios[2].parentNode.style.display === 'none');
+}
+
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
+
 process.exit(fail === 0 ? 0 : 1);

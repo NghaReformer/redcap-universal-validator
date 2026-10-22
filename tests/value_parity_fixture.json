@@ -1,0 +1,300 @@
+{
+  "note": "Shared corpus: the browser verdict (js/engine.js, the field the user sees) and the server verdict (CheckCharacter::validateSingleField / validatePooledField as UniversalValidator::findingsCheck calls them) for the same value. browser is \"blank\" (no message), \"valid\" or \"invalid\". server is \"skip\" (findingsCheck skips the value as blank), \"valid\", \"not-checked\" (the server cannot tell what the browser RegExp makes of the value and reports it for a manual check) or the reason of the finding. Locks VAL-1 (no fail-open on characters outside printable ASCII), VAL-3 (both sides trim the same whitespace) and VAL-12 (the 512-unit cap). Expectations were written from the definitions and checked against both runtimes; a row that changes is a parity change, not a fixture refresh.",
+  "groups": [
+    {
+      "why": "the default rule (mod 37,36 hybrid, default strip, no pattern): whitespace the browser trims is not part of the ID; any other character outside printable ASCII makes the check fail on both sides",
+      "rule": { "type": "single" },
+      "rows": [
+        ["FC1-0589C", "valid", "valid"],
+        ["FC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\n", "valid", "valid"],
+        ["FC1-0589C\r\n", "valid", "valid"],
+        ["\tFC1-0589C", "valid", "valid"],
+        ["FC1-0589C\f", "valid", "valid"],
+        [" ", "blank", "skip"],
+        ["\n", "blank", "skip"],
+        ["\t", "blank", "skip"],
+        ["FC1-0589C\u00A0", "valid", "valid"],
+        ["FC1-0589D\u00A0", "invalid", "check-character"],
+        ["\uFEFFFC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\u3000", "valid", "valid"],
+        ["FC1-0589\u0421", "invalid", "check-character"],
+        ["FC1-0589C\u200B", "invalid", "check-character"],
+        ["FC1-\uFF10589C", "invalid", "check-character"],
+        ["garbage\nvalue", "invalid", "check-character"],
+        ["FC1-0589C\nFC1-0589D", "invalid", "check-character"],
+        ["FC1\t0589D", "invalid", "check-character"],
+        ["FC1-0589D\u007F", "invalid", "check-character"],
+        ["FC1-0589C\uD83D\uDE00", "invalid", "check-character"]
+      ]
+    },
+    {
+      "why": "the same with strip \"-\": the delimiter set does not change how the edges are trimmed",
+      "rule": {
+        "type": "single",
+        "strip": "-"
+      },
+      "rows": [
+        ["FC1-0589C", "valid", "valid"],
+        ["FC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\n", "valid", "valid"],
+        ["FC1-0589C\r\n", "valid", "valid"],
+        ["\tFC1-0589C", "valid", "valid"],
+        ["FC1-0589C\f", "valid", "valid"],
+        [" ", "blank", "skip"],
+        ["\n", "blank", "skip"],
+        ["\t", "blank", "skip"],
+        ["FC1-0589C\u00A0", "valid", "valid"],
+        ["FC1-0589D\u00A0", "invalid", "check-character"],
+        ["\uFEFFFC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\u3000", "valid", "valid"],
+        ["FC1-0589\u0421", "invalid", "check-character"],
+        ["FC1-0589C\u200B", "invalid", "check-character"],
+        ["FC1-\uFF10589C", "invalid", "check-character"],
+        ["garbage\nvalue", "invalid", "check-character"],
+        ["FC1-0589C\nFC1-0589D", "invalid", "check-character"],
+        ["FC1\t0589D", "invalid", "check-character"],
+        ["FC1-0589D\u007F", "invalid", "check-character"],
+        ["FC1-0589C\uD83D\uDE00", "invalid", "check-character"]
+      ]
+    },
+    {
+      "why": "a format-only rule: the pattern decides alone, and a character outside printable ASCII that the pattern cannot match is a format miss on both sides",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC[0-9]-[0-9]{4}[0-9A-Z]"
+      },
+      "rows": [
+        ["FC1-0589C", "valid", "valid"],
+        ["FC1-0589D", "valid", "valid"],
+        ["FC1-0589C\n", "valid", "valid"],
+        ["FC1-0589C\r\n", "valid", "valid"],
+        ["\tFC1-0589C", "valid", "valid"],
+        ["FC1-0589C\f", "valid", "valid"],
+        [" ", "blank", "skip"],
+        ["\n", "blank", "skip"],
+        ["\t", "blank", "skip"],
+        ["FC1-0589C\u00A0", "valid", "valid"],
+        ["FC1-0589D\u00A0", "valid", "valid"],
+        ["\uFEFFFC1-0589D", "valid", "valid"],
+        ["FC1-0589C\u3000", "valid", "valid"],
+        ["FC1-0589\u0421", "invalid", "format"],
+        ["FC1-0589C\u200B", "invalid", "format"],
+        ["FC1-\uFF10589C", "invalid", "format"],
+        ["garbage\nvalue", "invalid", "format"],
+        ["FC1-0589C\nFC1-0589D", "invalid", "format"],
+        ["FC1\t0589D", "invalid", "format"],
+        ["FC1-0589D\u007F", "invalid", "format"],
+        ["FC1-0589C\uD83D\uDE00", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "a pattern plus a check: the format is judged first, then the check character",
+      "rule": {
+        "type": "single",
+        "idPattern": "FC[0-9]-[0-9]{4}[0-9A-Z]"
+      },
+      "rows": [
+        ["FC1-0589C", "valid", "valid"],
+        ["FC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\n", "valid", "valid"],
+        ["FC1-0589C\r\n", "valid", "valid"],
+        ["\tFC1-0589C", "valid", "valid"],
+        ["FC1-0589C\f", "valid", "valid"],
+        [" ", "blank", "skip"],
+        ["\n", "blank", "skip"],
+        ["\t", "blank", "skip"],
+        ["FC1-0589C\u00A0", "valid", "valid"],
+        ["FC1-0589D\u00A0", "invalid", "check-character"],
+        ["\uFEFFFC1-0589D", "invalid", "check-character"],
+        ["FC1-0589C\u3000", "valid", "valid"],
+        ["FC1-0589\u0421", "invalid", "format"],
+        ["FC1-0589C\u200B", "invalid", "format"],
+        ["FC1-\uFF10589C", "invalid", "format"],
+        ["garbage\nvalue", "invalid", "format"],
+        ["FC1-0589C\nFC1-0589D", "invalid", "format"],
+        ["FC1\t0589D", "invalid", "format"],
+        ["FC1-0589D\u007F", "invalid", "format"],
+        ["FC1-0589C\uD83D\uDE00", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "a pooled field: the whole value is trimmed the browser's way before it is split into IDs",
+      "rule": {
+        "type": "pooled"
+      },
+      "rows": [
+        ["FC1-0589C", "valid", "valid"],
+        ["FC1-0589D", "invalid", "no-id;junk"],
+        ["FC1-0589C\n", "valid", "valid"],
+        ["FC1-0589C\r\n", "valid", "valid"],
+        ["\tFC1-0589C", "valid", "valid"],
+        ["FC1-0589C\f", "valid", "valid"],
+        [" ", "blank", "skip"],
+        ["\n", "blank", "skip"],
+        ["\t", "blank", "skip"],
+        ["FC1-0589C\u00A0", "valid", "valid"],
+        ["FC1-0589D\u00A0", "invalid", "no-id;junk"],
+        ["\uFEFFFC1-0589D", "invalid", "no-id;junk"],
+        ["FC1-0589C\u3000", "valid", "valid"],
+        ["FC1-0589\u0421", "invalid", "no-id;junk"],
+        ["FC1-0589C\u200B", "valid", "valid"],
+        ["FC1-\uFF10589C", "invalid", "no-id;junk"],
+        ["garbage\nvalue", "invalid", "no-id;junk"],
+        ["FC1-0589C\nFC1-0589D", "invalid", "junk"],
+        ["FC1\t0589D", "invalid", "no-id;junk"],
+        ["FC1-0589D\u007F", "invalid", "no-id;junk"],
+        ["FC1-0589C\uD83D\uDE00", "valid", "valid"]
+      ]
+    },
+    {
+      "why": "\".\" differs between the engines only for CR, U+2028 and U+2029 (JavaScript refuses them, PCRE accepts them); the server reports those as not checked; an astral character is two units to JavaScript and fails the one-unit \".\" on both sides",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC.[0-9]{4}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC-1234", "valid", "valid"],
+        ["FC\r1234", "invalid", "not-checked"],
+        ["FC\u20281234", "invalid", "not-checked"],
+        ["FC\u00A01234", "valid", "valid"],
+        ["FC 1234", "valid", "valid"],
+        ["FC\u00E91234", "valid", "valid"],
+        ["FC\uD83D\uDE001234", "invalid", "format"],
+        ["FC\u30001234", "valid", "valid"],
+        ["FC1234", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "\"\\s\" differs only for whitespace JavaScript knows and PCRE does not (no-break space, U+2000-U+200A, U+3000 ...); the server reports those as not checked",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC\\s[0-9]{4}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC-1234", "invalid", "format"],
+        ["FC\r1234", "valid", "valid"],
+        ["FC\u20281234", "valid", "not-checked"],
+        ["FC\u00A01234", "valid", "not-checked"],
+        ["FC 1234", "valid", "valid"],
+        ["FC\u00E91234", "invalid", "format"],
+        ["FC\uD83D\uDE001234", "invalid", "format"],
+        ["FC\u30001234", "valid", "not-checked"],
+        ["FC1234", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "\"\\S\" is the mirror image of \"\\s\"",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC\\S[0-9]{4}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC-1234", "valid", "valid"],
+        ["FC\r1234", "invalid", "format"],
+        ["FC\u20281234", "invalid", "not-checked"],
+        ["FC\u00A01234", "invalid", "not-checked"],
+        ["FC 1234", "invalid", "format"],
+        ["FC\u00E91234", "valid", "valid"],
+        ["FC\uD83D\uDE001234", "invalid", "format"],
+        ["FC\u30001234", "invalid", "not-checked"],
+        ["FC1234", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "a negated class reads a BMP character the same way in both engines; an astral character is two units to JavaScript, so it fails a one-unit class on both sides",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC[^0-9][0-9]{4}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC-1234", "valid", "valid"],
+        ["FC\r1234", "valid", "valid"],
+        ["FC\u20281234", "valid", "valid"],
+        ["FC\u00A01234", "valid", "valid"],
+        ["FC 1234", "valid", "valid"],
+        ["FC\u00E91234", "valid", "valid"],
+        ["FC\uD83D\uDE001234", "invalid", "format"],
+        ["FC\u30001234", "valid", "valid"],
+        ["FC1234", "invalid", "format"]
+      ]
+    }
+  ],
+  "length": {
+    "why": "the browser refuses a single value longer than 512 UTF-16 units before any check, after trimming; the server refuses it the same way with the reason \"too-long\"",
+    "cases": [
+      {
+        "rule": {
+          "type": "single",
+          "algorithm": "none",
+          "idPattern": "FC[0-9]-[0-9]{4}[0-9A-Z]"
+        },
+        "value": {
+          "repeat": "A",
+          "times": 513
+        },
+        "browser": "invalid",
+        "server": "too-long"
+      },
+      {
+        "rule": {
+          "type": "single",
+          "algorithm": "none",
+          "idPattern": "FC[0-9]-[0-9]{4}[0-9A-Z]"
+        },
+        "value": {
+          "repeat": "A",
+          "times": 512
+        },
+        "browser": "invalid",
+        "server": "format"
+      },
+      {
+        "rule": { "type": "single" },
+        "value": {
+          "prefix": "FC1-0589C",
+          "repeat": " ",
+          "times": 600
+        },
+        "browser": "valid",
+        "server": "valid"
+      },
+      {
+        "rule": { "type": "single" },
+        "value": {
+          "repeat": "\u00E9",
+          "times": 513
+        },
+        "browser": "invalid",
+        "server": "too-long"
+      },
+      {
+        "rule": { "type": "single" },
+        "value": {
+          "repeat": "\uD83D\uDE00",
+          "times": 257
+        },
+        "browser": "invalid",
+        "server": "too-long"
+      },
+      {
+        "rule": { "type": "single" },
+        "value": {
+          "repeat": "\uD83D\uDE00",
+          "times": 256
+        },
+        "browser": "invalid",
+        "server": "check-character"
+      }
+    ]
+  }
+}

@@ -573,10 +573,12 @@ class AnnotationRules
     /**
      * Parse one @UVASSERT value into a constraint fragment. The value is EITHER
      * the condition itself (@UVASSERT="[end]>=[start]") or a JSON object
-     * {assert, message, blockSave, when, caseSensitive}. The field is invalid
-     * whenever the condition is false; an empty field is inert (that is
-     * @UVREQUIRED's job). Text compares case-insensitively ('Yes' = 'yes')
+     * {assert, message, blockSave, when, caseSensitive, exact}. The field is
+     * invalid whenever the condition is false; an empty field is inert (that
+     * is @UVREQUIRED's job). Text compares case-insensitively ('Yes' = 'yes')
      * unless "caseSensitive" is true, in the "assert" and the "when" alike.
+     * "exact": true makes = and <> in the "assert" compare character for
+     * character, so a double-entry check tells 00123 from 123 (AST-2).
      */
     private static function parseAssertValue($val, array $opts = [])
     {
@@ -596,7 +598,7 @@ class AnnotationRules
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
         $strings = ['assert', 'message', 'blockSave', 'when'];
-        $allowed = array_merge($strings, ['caseSensitive', 'references']);
+        $allowed = array_merge($strings, ['caseSensitive', 'exact', 'references']);
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_ASSERT . ' option(s): ' . implode(', ', $unknown)
@@ -611,6 +613,8 @@ class AnnotationRules
             }
         }
         self::takeCaseSensitive($cfg, $out);
+        // An explicit false IS the default, so it is dropped, as caseSensitive is.
+        if (array_key_exists('exact', $cfg) && $cfg['exact'] !== false) $out['exact'] = $cfg['exact'];
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -1915,7 +1919,7 @@ class AnnotationRules
         // "caseSensitive" means the same thing in every mode — how text compares
         // in the rule's conditions — so it is checked once, here, and merged into
         // whichever mode validator answers below.
-        $caseErrors = self::caseSensitiveErrors($frag);
+        $caseErrors = array_merge(self::caseSensitiveErrors($frag), self::exactErrors($frag, $type));
 
         // "alternates" describes accepted ID FORMATS, which only the check
         // modes read. Left unremarked on the others it validates clean, is
@@ -2594,6 +2598,23 @@ class AnnotationRules
     {
         return (array_key_exists('caseSensitive', $frag) && !is_bool($frag['caseSensitive']))
             ? ['"caseSensitive" must be true or false (unquoted).'] : [];
+    }
+
+    /**
+     * "exact" (AST-2) belongs to a constraint's TEST: = and <> in its "assert"
+     * compare the values character for character. Strict boolean, like
+     * "caseSensitive"; on any other mode it would read as active configuration
+     * that nothing consults.
+     */
+    private static function exactErrors(array $frag, $type)
+    {
+        if (!array_key_exists('exact', $frag)) return [];
+        if (!is_bool($frag['exact'])) return ['"exact" must be true or false (unquoted).'];
+        if ($type !== 'constraint') {
+            return ['"exact" applies only to ' . self::TAG_ASSERT . ': it makes = and <> in the "assert" condition '
+                . 'compare the values character for character.'];
+        }
+        return [];
     }
 
     /**

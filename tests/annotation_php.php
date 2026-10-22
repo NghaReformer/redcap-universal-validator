@@ -334,6 +334,19 @@ check('assert caseSensitive quoted -> error', isset($f[0]['error'])
     && strpos($f[0]['error'], 'caseSensitive') !== false && $f[0]['_tag'] === '@UVASSERT');
 $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":1}');
 check('assert caseSensitive:1 -> error', isset($f[0]['error']));
+// "exact" (AST-2): = and <> of the assert compare character for character
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}');
+check('assert exact:true carried', !isset($f[0]['error']) && ($f[0]['exact'] ?? null) === true);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[id]=[id_confirm]","exact":false}');
+check('assert exact:false dropped (it is the default)', !isset($f[0]['error']) && !array_key_exists('exact', $f[0]));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[id]=[id_confirm]","exact":"true"}');
+check('assert exact quoted -> error', isset($f[0]['error']) && strpos($f[0]['error'], '"exact" must be true or false') !== false);
+$f = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"[a]=\'1\'","exact":true}');
+check('exact on @UVREQUIRED -> unknown option', isset($f[0]['error']) && strpos($f[0]['error'], 'exact') !== false);
+check('checkFragment: exact on a non-constraint fragment is refused',
+    strpos(implode(' ', AnnotationRules::checkFragment(['type' => 'required', 'exact' => true])), 'applies only to @UVASSERT') !== false);
+check('checkFragment: exact on a constraint is fine',
+    AnnotationRules::checkFragment(['type' => 'constraint', 'assert' => '[a]=[b]', 'exact' => true]) === []);
 // Every tag with a "when" takes the flag; each refuses a non-boolean. One
 // sample per mode in php/modes.json (tests/mode_samples.json), so a new mode
 // is covered here the day it is added.

@@ -82,7 +82,16 @@
  *     the caller's default, with no tri-state on the wire;
  *   - = and <> never consult the polarity: '' is a perfectly good string to
  *     test identity against, and [field]<>'' is the documented "is this filled
- *     in" idiom. It answers the same in both roles.
+ *     in" idiom. It answers the same in both roles;
+ *   - a field that holds NUMBERS (the caller's $numbers map, from
+ *     numberMark: a calc, a slider, a Text field validated as an integer or
+ *     a number) is read as its number before it is compared: 12,5 on a
+ *     comma-decimal field is 12.5, and 2.5E1 is 25. A Text field without
+ *     number validation is read as typed (AST-1, AST-3);
+ *   - a rule with "exact": true passes EXACT as its text mode: = and <>
+ *     compare the trimmed values byte for byte, so 00123 is not 123 and
+ *     AB12 is not ab12; the ordered operators read it as case-sensitive
+ *     (AST-2).
  *
  * Caps (parse errors beyond): MAX_EXPR_LEN chars, MAX_REFS field references,
  * MAX_DEPTH nesting levels (parentheses + not).
@@ -130,6 +139,13 @@ class Logic
     // down, so a condition and its negation agree.
     const BLANK_PASSES = true;
     const BLANK_INERT  = false;
+
+    // The text mode of a rule with "exact": true, passed where a caller passes
+    // its "caseSensitive" flag: = and <> then compare the two values character
+    // for character, never as numbers and never with case folded, so a
+    // double-entry check tells 00123 from 123 (AST-2). Ordered comparisons
+    // read it as case-sensitive. Twin: QRID_WHEN_EXACT.
+    const EXACT = 'exact';
 
     /**
      * Parse one condition. Returns ['ok'=>true, 'ast'=>array] or
@@ -302,17 +318,22 @@ class Logic
      * Evaluate a parsed condition against a value map (field => string, or
      * field => [code => '0'|'1'] for checkboxes). Missing fields resolve to ''
      * (checkbox refs to '0'), so the caller may pass a sparse map.
+     *
+     * $caseSensitive is the rule's text mode: false (fold A-Z), true, or
+     * self::EXACT. $numbers maps a field that holds numbers to its decimal
+     * mark, 'point' or 'comma' (numberMark): its value is read as a number
+     * first, so a saved 12,5 compares as 12.5 and 2.5E1 as 25 (AST-1, AST-3).
      */
-    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false)
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [])
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers)) return false; }
                 return true;
             case 'not':
                 // THE FLIP. "No answer" has to mean the same thing about the
@@ -323,12 +344,12 @@ class Logic
                 // which is the original defect wearing a different spelling.
                 // Case sensitivity does NOT flip: it describes how two strings
                 // are matched, not what "no answer" means.
-                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive);
+                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers);
             case 'cmp':
                 return self::compare(
                     $ast[1],
-                    self::operandValue($ast[2], $values),
-                    self::operandValue($ast[3], $values),
+                    self::operandValue($ast[2], $values, $numbers),
+                    self::operandValue($ast[3], $values, $numbers),
                     $blank,
                     $caseSensitive
                 );
@@ -392,20 +413,20 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false)
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [])
     {
         if (self::qualifiedRefs($ast)) throw new \LogicException('Resolve extended references before folding.');
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers);
                 return [$ast[0], $out];
             case 'not':
                 // Flipped exactly as evaluate() flips it, so a comparison
                 // settled into a ['const', b] here sits under the same number
                 // of "not"s as the live one it replaced and agrees with it.
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive)];
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -446,7 +467,9 @@ class Logic
                     if ($ok) {
                         foreach ($offPage as $slot) {
                             $snapshot[$ast[$slot][1]] = true;   // read once, at render
-                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values)];
+                            // baked as the number it holds (12,5 as 12.5): the
+                            // browser compares a literal as written
+                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values, $numbers)];
                         }
                         return $ast;
                     }
@@ -473,7 +496,7 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive)];
+                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
     }
@@ -809,7 +832,7 @@ class Logic
     }
 
     /** Resolve one operand against the value map (see evaluate()). */
-    private static function operandValue(array $op, array $values)
+    private static function operandValue(array $op, array $values, array $numbers = [])
     {
         if ($op[0] === 'lit') return $op[1];
         if ($op[0] === 'qref' || $op[0] === 'binding') {
@@ -817,7 +840,8 @@ class Logic
             if (!array_key_exists($key, $values) || !is_scalar($values[$key])) {
                 throw new \UnexpectedValueException('Unresolved extended reference.');
             }
-            return (string) $values[$key];
+            $v = (string) $values[$key];
+            return ($op[0] === 'qref' && $op[2] === null) ? self::numberValue($v, $op[1], $numbers) : $v;
         }
         $f = $op[1];
         $code = $op[2];
@@ -827,7 +851,38 @@ class Logic
             return '0';
         }
         if ($v === null || is_array($v)) return ''; // checkbox without (code) never reaches here via config gates
-        return (string) $v;
+        return self::numberValue((string) $v, $f, $numbers);
+    }
+
+    /**
+     * The value of $field as a condition reads it: a field that holds numbers
+     * ($numbers names its decimal mark) as the number, written as NUM_RE
+     * (normalizeNumber), and anything else, or a value that is not a number,
+     * unchanged. Twin: QRID_numberValue.
+     */
+    public static function numberValue($value, $field, array $numbers)
+    {
+        if (!isset($numbers[$field])) return $value;
+        $n = self::normalizeNumber($value, $numbers[$field] === 'comma');
+        return ($n === null || $n === '') ? $value : $n;
+    }
+
+    /**
+     * The decimal mark of a field that holds numbers, from its REDCap field
+     * type and validation: 'point' for a calc, a slider, or a Text field
+     * validated as an integer or a number; 'comma' for the *_comma_decimal
+     * validations; null for anything else (text). One source for conditions,
+     * lookups and the scan. Twin of the server's page map (numberMarks).
+     */
+    public static function numberMark($type, $validation)
+    {
+        $type = (string) $type;
+        if ($type === 'calc' || $type === 'slider') return 'point';
+        if ($type !== 'text') return null;
+        $v = strtolower(trim((string) $validation));
+        if (preg_match('/^(?:int|integer|float|number(?:_[1-9]dp)?)$/', $v)) return 'point';
+        if (preg_match('/^number(?:_[1-9]dp)?_comma_decimal$/', $v)) return 'comma';
+        return null;
     }
 
     /**
@@ -1290,6 +1345,11 @@ class Logic
     {
         $a = trim((string) $a, " \t\r\n");
         $b = trim((string) $b, " \t\r\n");
+        // "exact": identity of the two strings, before any reading as numbers
+        // or folding of case (AST-2).
+        if ($caseSensitive === self::EXACT && ($op === '=' || $op === '<>')) {
+            return ($a === $b) === ($op === '=');
+        }
         if (preg_match(self::NUM_RE, $a) && preg_match(self::NUM_RE, $b)) {
             $c = self::decCmp($a, $b);
             switch ($op) {

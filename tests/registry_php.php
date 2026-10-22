@@ -67,7 +67,10 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'keepChars',
     'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'suggestFix', 'note',
-    'assert', 'caseSensitive', 'message', 'references',
+    'assert', 'caseSensitive',
+    // @UVASSERT "exact" (AST-2 of the 2026-10-21 review)
+    'exact',
+    'message', 'references',
     // a rule message's other languages (modes.json textKeys)
     'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys',
@@ -115,7 +118,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'suggestFix',
     'keepChars', 'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'when', 'whenAst',
-    'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy',
+    'assert', 'assertAst', 'caseSensitive',
+    // @UVASSERT "exact" (AST-2 of the 2026-10-21 review)
+    'exact',
+    'message', 'deferred', 'deferredWhy',
     // a deferral only this viewer meets: the save checks the rule
     'deferredChecked', 'snapshotFields',
     // a rule message's other languages (modes.json textKeys)
@@ -286,10 +292,11 @@ check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check
 // @UVRANGE "return" (2.7.0): a mode that writes values names the method that
 // works them out, the rule key holding value name => field name, the project
 // setting that turns the write on save off, and whether every returned field
-// is compared as a number ("7.80" is "7.8") whatever its validation.
+// is compared as a number ("7.80" is "7.8") whatever its validation, and
+// whether the scan compares them with what the record holds (RNG-1).
 check('range returns values through returnsRange, from rangeReturn',
     ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn',
-                                        'noSave' => 'range-return-no-save', 'sameNumber' => 'always']);
+                                        'noSave' => 'range-return-no-save', 'sameNumber' => 'always', 'scanCompare' => true]);
 // @UVEXISTS "return": values of the entry found. A Text field holding "007"
 // is not "7", so only fields that hold numbers compare as numbers. They come
 // from other records, so a survey respondent's save writes none.
@@ -392,8 +399,11 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
-check('kept off survey pages: the @UVEXISTS "whereMessage", and what @UVDELTA compares with',
-    ModeRegistry::staffOnlyKeys() === ['whereMessage', 'deltaVs', 'deltaVsLabel']);
+check('kept off survey pages: the window diagnostics, the @UVEXISTS "whereMessage", and what @UVDELTA compares with',
+    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage', 'deltaVs', 'deltaVsLabel']);
+check('survey shape: reasons dropped, snapshot and chart reasons kept as present',
+    ModeRegistry::surveyShape()['drop'] === ['deferredWhy'] && ModeRegistry::surveyShape()['presence'] === ['snapshotFields', 'growthChartWhy']
+    && ModeRegistry::surveyShape()['conditionText'] === '(condition)');
 // Every mode that may defer a rule says when the save still checks it, and
 // every mode with branch groups carries the server's "selector blocked" mark.
 foreach (ModeRegistry::all() as $m) {

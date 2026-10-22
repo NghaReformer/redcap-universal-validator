@@ -20,7 +20,8 @@
       "values": {
         "t": "02"
       },
-      "expect": true
+      "expect": true,
+      "expectExact": false
     },
     {
       "name": "eq_case_sensitive",
@@ -143,7 +144,8 @@
         "n": "2.5"
       },
       "expect": true,
-      "expectCi": true
+      "expectCi": true,
+      "expectExact": false
     },
     {
       "name": "ci_mixed_domain_still_unordered",
@@ -519,6 +521,135 @@
       "expr": "([a]='1' and [b]='2') or ([c]='3' and not [d]='4')",
       "values": { "a": "1", "b": "0", "c": "3", "d": "5" },
       "expect": true
+    },
+    { "_comment": "AST-1 / AST-3 (review 2026-10-21): 'numbers' names the fields of a row that hold numbers, with their decimal mark, as the caller's $numbers map does (Logic::numberMark). Such a value is read as its number before it is compared: 12,5 on a comma-decimal field is 12.5, 2.5E1 is 25. Without the map the same value is text." },
+    {
+      "name": "num_comma_decimal_against_literal",
+      "expr": "[hb]>=5",
+      "values": { "hb": "12,5" },
+      "numbers": { "hb": "comma" },
+      "expect": true
+    },
+    {
+      "name": "num_comma_decimal_without_marks_is_text",
+      "expr": "[hb]>=5",
+      "values": { "hb": "12,5" },
+      "expect": false
+    },
+    {
+      "name": "num_two_comma_fields_order_by_value",
+      "expr": "[hb2]<=[hb_max]",
+      "values": { "hb2": "9,5", "hb_max": "15,0" },
+      "numbers": { "hb2": "comma", "hb_max": "comma" },
+      "expect": true
+    },
+    {
+      "name": "num_comma_field_equals_point_literal",
+      "expr": "[hb]='12.5'",
+      "values": { "hb": "12,5" },
+      "numbers": { "hb": "comma" },
+      "expect": true
+    },
+    {
+      "name": "num_comma_field_saved_with_point_still_reads",
+      "expr": "[hb]>=5",
+      "values": { "hb": "12.5" },
+      "numbers": { "hb": "comma" },
+      "expect": true
+    },
+    {
+      "name": "num_exponent_in_number_field",
+      "expr": "[x]<=100",
+      "values": { "x": "2.5E1" },
+      "numbers": { "x": "point" },
+      "expect": true
+    },
+    {
+      "name": "num_exponent_in_text_field_stays_text",
+      "expr": "[x]<=100",
+      "values": { "x": "2.5E1" },
+      "expect": false
+    },
+    {
+      "name": "num_comma_in_point_field_is_not_a_number",
+      "expr": "[x]>=5",
+      "values": { "x": "12,5" },
+      "numbers": { "x": "point" },
+      "expect": false
+    },
+    {
+      "name": "num_blank_number_field_is_blank",
+      "expr": "[x]>=5",
+      "values": { "x": "" },
+      "numbers": { "x": "comma" },
+      "expect": true,
+      "expectGate": false
+    },
+    { "_comment": "AST-2 (review 2026-10-21): 'expectExact' is the verdict of the test under \"exact\": true, where = and <> compare the trimmed values character for character. It defaults to 'expect'." },
+    {
+      "name": "exact_leading_zero_id",
+      "expr": "[id]=[id_confirm]",
+      "values": { "id": "00123", "id_confirm": "123" },
+      "expect": true,
+      "expectExact": false
+    },
+    {
+      "name": "exact_not_equal_leading_zero_id",
+      "expr": "[id]<>[id_confirm]",
+      "values": { "id": "00123", "id_confirm": "123" },
+      "expect": false,
+      "expectExact": true
+    },
+    {
+      "name": "exact_trailing_point_zero",
+      "expr": "[id]=[id_confirm]",
+      "values": { "id": "1002", "id_confirm": "1002.0" },
+      "expect": true,
+      "expectExact": false
+    },
+    {
+      "name": "exact_plus_sign_phone",
+      "expr": "[phone]=[phone_confirm]",
+      "values": { "phone": "+237677123456", "phone_confirm": "237677123456" },
+      "expect": true,
+      "expectExact": false
+    },
+    {
+      "name": "exact_letter_case_counts",
+      "expr": "[id]=[id_confirm]",
+      "values": { "id": "AB12", "id_confirm": "ab12" },
+      "expect": false,
+      "expectCi": true,
+      "expectExact": false
+    },
+    {
+      "name": "exact_edges_trimmed",
+      "expr": "[id]=[id_confirm]",
+      "values": { "id": " 00123 ", "id_confirm": "00123" },
+      "expect": true,
+      "expectExact": true
+    },
+    {
+      "name": "exact_ordering_still_numeric",
+      "expr": "[a]<[b]",
+      "values": { "a": "9", "b": "10" },
+      "expect": true,
+      "expectExact": true
+    },
+    {
+      "name": "exact_ordering_case_sensitive",
+      "expr": "[a]<[b]",
+      "values": { "a": "b", "b": "C" },
+      "expect": false,
+      "expectCi": true,
+      "expectExact": false
+    },
+    {
+      "name": "exact_identical_ids_pass",
+      "expr": "[id]=[id_confirm]",
+      "values": { "id": "00123", "id_confirm": "00123" },
+      "expect": true,
+      "expectExact": true
     }
   ],
   "errors": [

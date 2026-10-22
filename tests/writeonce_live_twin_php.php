@@ -310,6 +310,9 @@ namespace {
         lockedOn($p) === ['uw_arm', 'uw_consent', 'uw_notes', 'uw_pain', 'uw_yn'], lockedOn($p));
     check('B2: the roles and "since" never reach the page', strpos($p['html'], 'UV Data manager') === false && stripos($p['html'], 'u-149uvdm') === false
         && strpos($p['html'], '2099') === false && strpos($p['html'], 'writeonceRoles') === false);
+    // B2d: Enter saves the form with every value as it was, so REDCap logs nothing
+    $m = save($D, $ROLE_OUT);
+    check('B2d: an Enter save with the date put back: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     $D['XE-3'][380]['uw_site'] = '1';
     logSave('20261023090500', ['uw_site' => '1']);
     $m = save($D, $ROLE_OUT);

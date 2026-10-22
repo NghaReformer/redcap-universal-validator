@@ -72,7 +72,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "a1_values": {},
     "b1": {
@@ -127,7 +132,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b1_values": {},
     "errors": {
@@ -209,7 +219,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b2_values": {
         "uw_arm": "1",
@@ -302,7 +317,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "b4_values": {
         "uw_arm": "1",
@@ -395,7 +415,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "c2_values": {
         "uw_arm": "1",
@@ -465,7 +490,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "d1_values": {
         "uw_arm": "1",
@@ -557,7 +587,12 @@
                 ],
                 "configError": "@UVWRITEONCE on \"uw_bad_value\": @UVWRITEONCE takes no value, or its settings as JSON, e.g. @UVWRITEONCE={\"roles\":[\"Data manager\"]}."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "d4_values": {
         "uw_arm": "2",
@@ -632,7 +667,12 @@
                 ],
                 "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
             }
-        ]
+        ],
+        "numberMarks": {
+            "uw_pain": "point",
+            "uw_weight": "point",
+            "uw_bad_calc": "point"
+        }
     },
     "labels": {
         "uw_consent": "Consent date",

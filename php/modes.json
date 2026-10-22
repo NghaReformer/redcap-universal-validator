@@ -42,7 +42,20 @@
   "common": {
     "refKeys": [
       {"key": "when", "kind": "cond", "role": "gate", "ast": "whenAst"}
-    ]
+    ],
+    "surveyShape": {
+      "_comment": ["What a survey page's config keeps of a rule and of each branch (ModeRegistry::clientShape). The page is public,",
+                   "so it carries nothing a respondent must not read; the page shows none of it on a survey anyway.",
+                   "drop: keys removed. presence: keys the page only tests for being there; a list becomes [\"\"], an object",
+                   "keeps its keys with \"\" as each value. conditionText: the text that replaces a condition (a refKeys entry of",
+                   "kind cond with an ast) whose AST is sent, since the page evaluates the AST. A rule deferred as a whole",
+                   "(deferred, not deferredOnSave) never reads its conditions: it sends conditionText with [\"const\", true]. A rule with a",
+                   "configError keeps only its type, its fields and configErrorText."],
+      "drop": ["deferredWhy"],
+      "presence": ["snapshotFields", "growthChartWhy"],
+      "conditionText": "(condition)",
+      "configErrorText": "this check is not set up correctly; the study team can see the details on the data entry form."
+    }
   },
   "modes": [
     {
@@ -93,8 +106,8 @@
       "refKeys": [
         {"key": "assert", "kind": "cond", "role": "test", "ast": "assertAst"}
       ],
-      "branchKeys": ["assert", "caseSensitive", "message", "references", "i18n"],
-      "clientKeys": ["assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields", "i18n"],
+      "branchKeys": ["assert", "caseSensitive", "exact", "message", "references", "i18n"],
+      "clientKeys": ["assert", "assertAst", "caseSensitive", "exact", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields", "i18n"],
       "textKeys": ["message"],
       "needs": [],
       "dialog": true,
@@ -215,8 +228,10 @@
                      "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi", "windowWeekStart", "windowNotPast",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields",
                      "snapshotGate", "windowNotFutureOff", "i18n"],
+      "staffOnlyKeys": ["windowFromOpWhy", "windowNotFutureOff"],
       "textKeys": ["message"],
       "needs": ["clock"],
+
       "dialog": false,
       "js": {"factories": {"window": "QRIDWindowInit"}},
       "scan": {"issueLabels": {"future": "Date in the future", "past": "Date in the past", "*": "Date outside allowed window"},
@@ -305,7 +320,7 @@
                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked", "i18n",
                      "rangeShow", "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource"],
       "textKeys": ["message", "show.chart.labels.*", "show.table.labels.*"],
-      "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always"},
+      "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always", "scanCompare": true},
       "needs": [],
       "dialog": false,
       "js": {"factories": {"range": "QRIDRangeInit"}},
@@ -313,6 +328,7 @@
                                "hard-low": "Implausible value", "hard-high": "Implausible value",
                                "not-a-number": "Not a number", "not-positive": "Not a positive measurement",
                                "plausible-low": "Implausible value", "plausible-high": "Implausible value",
+                               "returned-stale": "Returned value out of date",
                                "*": "Implausible value"},
                "detailKeys": ["rangeSoftText", "rangeHardText", "rangePlausibleText"]}
     },
