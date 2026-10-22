@@ -43,6 +43,12 @@ namespace ExternalModules {
             return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
         }
         public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
+        /** For each project setting written, how many statements had run before it. */
+        public $projectSettingAt = [];
+        public function setProjectSetting($k, $v, $pid = null) {
+            $this->projectSettings[(int) $pid][$k] = $v;
+            $this->projectSettingAt[$k] = count($this->sql);
+        }
         public function query($sql, $params = []) {
             $this->sql[] = $sql;
             $this->bound[] = [$sql, $params];
@@ -105,6 +111,7 @@ require_once __DIR__ . '/../UniversalValidator.php';
 
 use INSPIRE\UniversalValidator\UniversalValidator;
 use INSPIRE\UniversalValidator\Scan\ScanMaintenance;
+use INSPIRE\UniversalValidator\Scan\ScanService;
 use INSPIRE\UniversalValidator\Scan\ScanDb;
 use INSPIRE\UniversalValidator\Scan\Schema;
 
@@ -487,6 +494,14 @@ $checkP = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
     check($label . ': the project disable hook never throws', !$threw);
     check($label . ': and writes no stop marker, since the module is still on elsewhere',
         $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT) === null);
+    // rvf2-1: the project's own marker, on that project, whatever else happens.
+    $at = $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 42);
+    check($label . ': rvf2-1: the project\'s stop marker is written, on that project alone',
+        is_numeric($at) && abs((int) $at - time()) <= 5 && $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 43) === null
+        && $m->getProjectSetting(ScanService::PROJECT_ENABLED_AT, 42) === null);
+    check($label . ': rvf2-1: and before the hook sends any statement',
+        isset($m->projectSettingAt[ScanService::PROJECT_DISABLED_AT])
+        && $m->projectSettingAt[ScanService::PROJECT_DISABLED_AT] === 0);
     return $m;
 };
 $m = $checkP('project disable', $on);
@@ -527,6 +542,18 @@ $en = $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT);
 check('enable: the enable marker is written, after the disable before it',
     !$threw && is_numeric($en) && (int) $en >= (int) $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT)
     && abs((int) $en - time()) <= 5);
+
+// rvf2-1: enabling for one project writes that project's enable marker, which
+// ends the refusal its disable marker started.
+$m = new UniversalValidator();
+$m->projectSettings = [42 => [ScanService::PROJECT_DISABLED_AT => (string) (time() - 30)]];
+$threw = false;
+try { $m->redcap_module_project_enable('9.9.9', 42); } catch (\Throwable $e) { $threw = true; }
+$en = $m->getProjectSetting(ScanService::PROJECT_ENABLED_AT, 42);
+check('project enable rvf2-1: the project\'s enable marker is written, after its disable, on that project alone',
+    !$threw && is_numeric($en) && (int) $en >= (int) $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 42)
+    && abs((int) $en - time()) <= 5 && $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT) === null
+    && array_keys($m->projectSettings) === [42] && $m->sql === []);
 
 // A pass running when the module is switched off stops at its next unit; a
 // marker from an earlier disable stops nothing.

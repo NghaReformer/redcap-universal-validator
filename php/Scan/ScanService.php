@@ -54,6 +54,19 @@ final class ScanService
     const DISABLED_AT = 'scan-disabled-at';
     const ENABLED_AT  = 'scan-enabled-at';
 
+    /**
+     * The same pair as project settings, written by the hooks that switch the
+     * module off and on for one project (review rvf2-1). Their own keys: a
+     * project value under the system keys would be read as the system's
+     * wherever the framework lets a project setting stand in for one.
+     */
+    const PROJECT_DISABLED_AT = 'scan-project-disabled-at';
+    const PROJECT_ENABLED_AT  = 'scan-project-enabled-at';
+
+    /** What Start and work answer while the module is being switched off; see disabling(). */
+    const OFF_SERVER = 'the module is being switched off on this server, so no scan can start or carry on';
+    const OFF_PROJECT = 'the module is being switched off for this project, so no scan can start or carry on';
+
     /** How long after a disable, with no enable since, Start and work refuse; see disabling(). */
     const DISABLING_SECONDS = 600;
 
@@ -186,9 +199,8 @@ final class ScanService
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
             return self::no('the durable validation scan is not enabled here');
         }
-        if ($this->disabling()) {
-            return self::no('the module is being switched off on this server, so no scan can start or carry on');
-        }
+        $off = $this->disabling($pid);
+        if ($off !== null) return self::no($off === 'project' ? self::OFF_PROJECT : self::OFF_SERVER);
         $health = Schema::health($this->module);
         if (empty($health['ok'])) {
             // Reported, never repaired on the fly. A migration that runs
@@ -370,6 +382,10 @@ final class ScanService
         }
         $runId = (int) $r['run']['run_id'];
         $this->store()->audit($pid, $runId, 'start', (string) $this->username(), null);
+        // A RUN MADE WHILE THE MODULE WAS BEING SWITCHED OFF IS ENDED AGAIN
+        // (review rvf2-1). Asked afresh, never from available()'s memo.
+        $off = $this->disabling($pid);
+        if ($off !== null) return self::noStart($this->endUnderDisable($pid, $runId, $off));
         return ['ok' => true, 'busy' => false, 'run_id' => $runId, 'why' => null];
     }
 
@@ -2133,14 +2149,69 @@ final class ScanService
      * far longer than the hook may run (ScanMaintenance::DISABLE_SECONDS), so
      * a framework that enabled the module again without calling the enable
      * hook costs at most that wait, never a module that refuses every scan.
+     *
+     * AND FOR ONE PROJECT (review rvf2-1). The project disable hook wrote no
+     * marker, so a Start in its window made a run its one read of the
+     * project's active run had passed. It writes PROJECT_DISABLED_AT first
+     * now, and the project enable hook PROJECT_ENABLED_AT, with the same rule.
+     *
+     * NEVER MEMOIZED. available() keeps its answer for the request, and
+     * openRun() asks this again once its run exists; see endUnderDisable().
+     *
+     * @return ?string 'server' or 'project' while one is being switched off, else null
      */
-    private function disabling()
+    private function disabling($pid)
     {
-        $off = $this->setting(self::DISABLED_AT, null);
+        if (self::marked($this->setting(self::DISABLED_AT, null), $this->setting(self::ENABLED_AT, null))) {
+            return 'server';
+        }
+        if ($pid !== null && self::marked($this->setting(self::PROJECT_DISABLED_AT, $pid),
+                                          $this->setting(self::PROJECT_ENABLED_AT, $pid))) {
+            return 'project';
+        }
+        return null;
+    }
+
+    /** A disable marker newer than its enable marker, and inside DISABLING_SECONDS. */
+    private static function marked($off, $on)
+    {
         if (!is_numeric($off)) return false;
-        $on = $this->setting(self::ENABLED_AT, null);
         if (is_numeric($on) && (int) $on >= (int) $off) return false;
         return time() - (int) $off < self::DISABLING_SECONDS;
+    }
+
+    /**
+     * End the run this Start has just made, because the module is being
+     * switched off (review rvf2-1), and say why the Start is refused.
+     *
+     * available() is asked before the run exists, and once per request. A
+     * Start past it when the disable hook wrote its marker could commit its
+     * run after the hook's second walk, while the hook finished what it had
+     * stopped, or after the hook returned; and the project hook reads the
+     * project's active run once. Such a run held the project's slot through
+     * the disable, and was expired as abandoned staleHours later. So the
+     * Start asks again once its run exists. The marker is written before the
+     * hook reads any run, so a run committed before it is the hook's to stop,
+     * and one committed after it is found here.
+     *
+     * Stopped and finished as the hook stops and finishes one: cancelled,
+     * audited as the system's, with the hook's sentence. A run the hook (or
+     * anyone) stopped first is finished with the reason on its row.
+     *
+     * @param string $by 'server' or 'project', as disabling() answered
+     */
+    private function endUnderDisable($pid, $runId, $by)
+    {
+        $store = $this->store();
+        $row = $store->run($pid, $runId);
+        $ours = $row !== null && $row['phase'] !== ScanPhase::CANCELLING && $row['phase'] !== ScanPhase::TERMINAL
+                && $store->cancel($pid, $runId, 'system');
+        $in = $this->limits($pid);
+        if ($ours) {
+            $in['why'] = $by === 'project' ? ScanMaintenance::PROJECT_DISABLED_WHY : ScanMaintenance::DISABLED_WHY;
+        }
+        ScanPromotion::finishCancelled($store, $pid, $runId, $in);
+        return $by === 'project' ? self::OFF_PROJECT : self::OFF_SERVER;
     }
 
     private function flag($key, $pid)
