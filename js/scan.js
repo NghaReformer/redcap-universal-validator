@@ -130,7 +130,9 @@
             }
             return L.withheld || 'This scan covers one Data Access Group, so its counts are shown once it has confirmed which records belong to that group.';
         }
-        if (!st.total) return 'Preparing';
+        // A finished run with no record left in its total is not preparing
+        // anything (review rvf1-2).
+        if (!st.total) return st.terminal ? (L.none || '0 records') : 'Preparing';
         var excluded = st.excluded | 0, removed = st.removed | 0, line;
         if (excluded <= 0 && removed <= 0) {
             line = fill(L.plain || '{done} of {total} records', { done: st.done, total: st.total });
@@ -277,12 +279,24 @@
      * ScanPageView::endedSentence() decides it. A group-scoped run stopped
      * (or expired) before it proved its scope has coverage `partial`, whose
      * sentence says records could not be checked; its reader is shown no
-     * counts, so it is told what is known instead (review rv5b-2).
+     * counts, so it is told what is known instead (review rv5b-2). An empty
+     * scope that records LEFT says they moved to another group, not that they
+     * were deleted (review rvf1-2).
      */
     function endedSentence(st) {
         var L = labels();
         if (st.withheld && (st.terminal === 'cancelled' || st.terminal === 'expired')) {
             return L.stoppedWithheld || 'This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group.';
+        }
+        if (st.coverage === 'empty-scope' && st.leftGroup) {
+            var s = (st.removed | 0) > 0
+                ? (L.emptyLeftDeleted || 'This scan has no record left to report on: every record it listed moved to another Data Access Group or was deleted while it ran. Any findings it counted are on records no longer in the group. This result says nothing about the group.')
+                : (L.emptyLeft || 'This scan has no record left to report on: every record it listed moved to another Data Access Group while it ran. Any findings it counted are on records no longer in the group. This result says nothing about the group.');
+            if (st.detail === 'truncated') {
+                s += ' ' + (L.truncated || 'Some findings were not kept, because the scan reached the '
+                                         + 'limit this project allows.');
+            }
+            return s;
         }
         return coverageSentence(st.coverage, st.detail);
     }

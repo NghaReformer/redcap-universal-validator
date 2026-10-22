@@ -550,3 +550,61 @@ $PUR = 830;
         $count($dbA, 'project_id = ? AND generation_id = ?', [840, $base['gen']]) === 3
         && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE project_id = ?', [840])[0][0] === 1);
 }
+
+// -- A REMOVAL THAT HAS BEGUN IS FINISHED, WHATEVER THE RUN'S AGE (review rvf2-3)
+//
+// The reviewer's repro: a run's purge began at 30 days, one page, and the
+// project then raised its retention to 365 days. The run kept REMOVING_WHY,
+// read as no run to every reader, and kept its findings, because the purge
+// picked runs by age alone. $old is 100 days old; $mid is a young run marked
+// the same way, standing for a second removal begun; $young is due at no
+// window and is never marked.
+$RM = 850;
+{
+    $store = new SqlScanStore($dbA);
+    $old = $plantRun($dbA, $RM, 3, null);
+    $mid = $plantRun($dbA, $RM, 2, null);
+    $young = $plantRun($dbA, $RM, 1, null);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '"
+        . gmdate('Y-m-d H:i:s', time() - 100 * 86400) . "' WHERE run_id = " . (int) $old['run']);
+    $genLeft = function ($run) use ($dbA, $count, $RM) {
+        $r = (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
+            [$run['run']])[0][0];
+        return [$r, $count($dbA, 'project_id = ? AND generation_id = ?', [$RM, $run['gen']])];
+    };
+    $first = (new ScanRetention($dbA))->purgeRuns($RM, 30, 1);
+    check('rvf2-3: the 100-day-old run\'s removal begins at 30 days, and it reads as gone',
+        $first['done'] === false && $first['cursor'] === $old['run'] && $store->run($RM, $old['run']) === null
+        && $genLeft($old) === [1, 3]);
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET terminal_reason = '
+        . "'" . $A->real_escape_string(ScanStore::REMOVING_WHY) . "' WHERE run_id = " . (int) $mid['run']);
+
+    $rec = new UvRecordingDb($dbA);
+    $ret = new ScanRetention($rec);
+    $calls = [];
+    $oldDone = null;
+    do {
+        $p = $ret->purgeRuns($RM, 365, 1);
+        $calls[] = $p['cursor'] . ':' . $p['rows'] . '/' . $p['runs'] . ($p['done'] ? '.' : '');
+        if ($p['runs'] === 1 && $p['cursor'] === $old['run']) $oldDone = $p;
+    } while (!$p['done'] && count($calls) < 50);
+    echo '  rvf2-3 purge at 365 days, cursor:rows/runs per call: ' . implode(',', $calls) . "\n";
+    check('rvf2-3: at 365 days the run whose removal began is finished, run row and findings',
+        $oldDone !== null && $genLeft($old) === [0, 0]);
+    check('rvf2-3: and the call that ends it says another begun removal is left, not done',
+        $oldDone !== null && $oldDone['done'] === false);
+    check('rvf2-3: the second begun removal is finished in the same walk, whatever its age',
+        $p['done'] === true && $p['cursor'] === $mid['run'] && $genLeft($mid) === [0, 0]);
+    check('rvf2-3: and a run due at no window and never marked keeps everything',
+        $genLeft($young) === [1, 1] && $store->run($RM, $young['run']) !== null);
+    $an = $A->query('ANALYZE TABLE ' . Schema::table('scan_run'));
+    if ($an instanceof \mysqli_result) $an->free();
+    $pick = $rec->matching('select', ['terminal_reason = ? ORDER BY run_id LIMIT 1']);
+    $keys = $pick ? uv_explain_keys($A, $pick[0][1], $pick[0][2]) : [];
+    echo '  plan rvf2-3 begun-removal pick: ' . ($pick ? implode(' ', uv_explain_rows($A, $pick[0][1], $pick[0][2])) : '-') . "\n";
+    check('rvf2-3: a begun removal is looked for through uq_project_active',
+        $keys === ['uq_project_active']);
+    check('rvf2-3: and with nothing begun or due the purge has nothing to do',
+        (new ScanRetention($dbA))->purgeRuns($RM, 365, 1) === ['done' => true, 'rows' => 0, 'runs' => 0, 'cursor' => null]);
+    uv_clear_project($dbA, $RM);
+}

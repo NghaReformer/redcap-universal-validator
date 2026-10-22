@@ -292,9 +292,25 @@ class ScanPageView
                            . 'this Data Access Group, so it is not a complete picture of the group.';
 
     /**
+     * The empty-scope sentence of a group-scoped run whose records left the
+     * group while it ran (review rvf1-2). EMPTY_SCOPE says none was in scope
+     * or every one was deleted, and of a run whose whole group moved to
+     * another group neither is true. The second is for a run where some moved
+     * and the rest were deleted. No apostrophes.
+     */
+    const EMPTY_SCOPE_LEFT = 'This scan has no record left to report on: every record it listed moved '
+                           . 'to another Data Access Group while it ran. Any findings it counted are '
+                           . 'on records no longer in the group. This result says nothing about the group.';
+    const EMPTY_SCOPE_LEFT_DELETED = 'This scan has no record left to report on: every record it listed '
+                           . 'moved to another Data Access Group or was deleted while it ran. Any findings '
+                           . 'it counted are on records no longer in the group. This result says nothing '
+                           . 'about the group.';
+
+    /**
      * The coverage half of a finished run's sentence: STOPPED_WITHHELD for a
-     * withheld run that was stopped or expired, coverageSentence() for every
-     * other. js/scan.js decides the same way.
+     * withheld run that was stopped or expired, EMPTY_SCOPE_LEFT or
+     * EMPTY_SCOPE_LEFT_DELETED for an empty scope that records left,
+     * coverageSentence() for every other. js/scan.js decides the same way.
      */
     public static function endedSentence($status)
     {
@@ -303,8 +319,14 @@ class ScanPageView
                 && ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED)) {
             return self::STOPPED_WITHHELD;
         }
-        return self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
-                                      isset($status['detail']) ? $status['detail'] : null);
+        $coverage = isset($status['coverage']) ? $status['coverage'] : '';
+        $detail = isset($status['detail']) ? $status['detail'] : null;
+        if ($coverage === Scan\ScanOutcome::EMPTY_SCOPE && !empty($status['leftGroup'])) {
+            $s = (isset($status['removed']) && (int) $status['removed'] > 0)
+                ? self::EMPTY_SCOPE_LEFT_DELETED : self::EMPTY_SCOPE_LEFT;
+            return (string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED ? $s . ' ' . self::DETAIL_TRUNCATED : $s;
+        }
+        return self::coverageSentence($coverage, $detail);
     }
     const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
                         . 'project.';
@@ -366,6 +388,12 @@ class ScanPageView
      * line is then exactly what it was before these existed.
      */
     const COUNT_PLAIN    = '{done} of {total} records';
+    /**
+     * The progress line of a FINISHED run with no record left in its total
+     * (review rvf1-2): a group whose every record moved away. It read
+     * "Preparing", the line of a run that has not listed its records yet.
+     */
+    const COUNT_NONE     = '0 records';
     const COUNT_CHECKED  = '{done} of {total} records checked';
     const COUNT_EXCLUDED = '{n} could not be checked';
     const COUNT_REMOVED  = '{n} deleted during the scan';
@@ -419,6 +447,9 @@ class ScanPageView
             'withheld'        => Scan\ScanAuthorization::WITHHELD,
             'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
             'stoppedWithheld' => self::STOPPED_WITHHELD,
+            'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
+            'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
+            'none'            => self::COUNT_NONE,
         ];
     }
 
@@ -519,7 +550,7 @@ class ScanPageView
                 ? Scan\ScanAuthorization::WITHHELD : Scan\ScanAuthorization::WITHHELD_ENDED;
         }
         $total = $i('total');
-        if ($total <= 0) return 'Preparing';
+        if ($total <= 0) return empty($status['terminal']) ? 'Preparing' : self::COUNT_NONE;
         $done = $i('done');
         $excluded = $i('excluded');
         $removed = $i('removed');

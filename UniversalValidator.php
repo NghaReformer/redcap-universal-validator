@@ -7607,12 +7607,23 @@ class UniversalValidator extends AbstractExternalModule
      * project's slot until the reaper expired it, staleHours later, as
      * abandoned. Under the system disable's gates; nothing deleted; never
      * thrown.
+     *
+     * THE PROJECT'S STOP MARKER FIRST (review rvf2-1), as the system hook
+     * writes its own: PROJECT_DISABLED_AT, the time, before the project's
+     * active run is read. From then on Start refuses for the project, and a
+     * Start already past that check ends the run it made
+     * (ScanService::disabling()), so no run is made behind the one read.
      */
     public function redcap_module_project_disable($version = null, $project_id = null)
     {
         try {
             $pid = (int) $project_id;
             if ($pid < 1) return;
+            try {
+                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, (string) time(), $pid);
+            } catch (\Throwable $e) {
+                $this->scanDisableFailed('project-marker', $e);
+            }
             $why = $this->scanDisableGate();
             if ($why !== null) {
                 $this->log('scan-project-disable', ['project_id' => $pid, 'stopped' => 0, 'why' => $why]);
@@ -7622,6 +7633,22 @@ class UniversalValidator extends AbstractExternalModule
                 ['project_id' => $pid] + $this->scanDisabler('disable-project')->disableProject($pid));
         } catch (\Throwable $e) {
             $this->scanDisableFailed('project-disable', $e);
+        }
+    }
+
+    /**
+     * The module enabled for one project: its enable marker, so a Start right
+     * after a project disable and enable is not refused for
+     * ScanService::DISABLING_SECONDS (review rvf2-1). Never thrown.
+     */
+    public function redcap_module_project_enable($version = null, $project_id = null)
+    {
+        $pid = (int) $project_id;
+        if ($pid < 1) return;
+        try {
+            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, (string) time(), $pid);
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('project-enable-marker', $e);
         }
     }
 

@@ -925,6 +925,10 @@ final class ArrayScanStore implements ScanStore
         if (!ScanPhase::may($r['phase'], $to)) return false;
         $this->runs[$runId]['phase'] = $to;
         $this->runs[$runId]['cursor_ordinal'] = 0;
+        // With the phase it outlives (ScanStore::CAUGHT_UP), as the SQL store.
+        if ($r['phase'] === ScanPhase::CATCH_UP && $to === ScanPhase::next(ScanPhase::CATCH_UP)) {
+            $this->runs[$runId]['catchup_dirty'] = self::CAUGHT_UP;
+        }
         return true;
     }
 

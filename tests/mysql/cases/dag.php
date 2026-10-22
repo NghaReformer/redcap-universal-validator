@@ -256,6 +256,59 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
         isset($alive[0]) && $alive[0][0] === null);
     $store->finish($safeId,
         \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+
+    /* -----------------------------------------------------------------------
+     * CASE 5  the data-table answers that take a record out of a run (rvf1-5)
+     *
+     * On a source with no record index, scopeOf() reads a record's group from
+     * the data table, and `false` takes a listed record out of a run. Two of
+     * its rules survived every suite. A __GROUPID__ row holding '' is how a
+     * record removed from its group can look, and it is out of the group, not
+     * "cannot tell": answered null, the record ended unreadable and the run
+     * partial. And the table is read only while REDCap still names it for the
+     * project: a source opened on redcap_data, with the project since moved to
+     * another data table, read the rows left behind in the old one and called
+     * a record of the group out of it.
+     * -------------------------------------------------------------------- */
+    $NG = 905;   // a record removed from its group, data-table fallback
+    $MT = 906;   // moved to another data table after the source opened
+    uv_redcap_project($A, $NG);
+    uv_redcap_project($A, $MT);
+    foreach (array(array($NG, 'G1', '7'), array($NG, 'G2', ''), array($MT, 'M1', '31')) as $r) {
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (" . $r[0] . ", 1, '" . $r[1] . "', 'record_id', '" . $r[1] . "')");
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (" . $r[0] . ", 1, '" . $r[1] . "', '__GROUPID__', '" . $r[2] . "')");
+    }
+    $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+        VALUES (" . $MT . ", 1, 'M2', 'record_id', 'M2')");
+    $ng = RecordManifestSource::open($dbA, $NG, array('pk' => 'record_id'));
+    check('dag rvf1-5: the project with no record index falls through to the data table',
+        $ng['ok'] === true && strpos($ng['source']->via(), 'redcap_data') === 0);
+    check('dag rvf1-5: a record whose __GROUPID__ row is empty is out of the group, not cannot-tell',
+        $ng['source']->scopeOf(array('G1', 'G2'), '7') === array('G1' => true, 'G2' => false));
+
+    $mt = RecordManifestSource::open($dbA, $MT, array('pk' => 'record_id'));
+    check('dag rvf1-5: a source opened on redcap_data reads it while REDCap names it',
+        $mt['ok'] === true
+        && $mt['source']->scopeOf(array('M1', 'M2'), '7') === array('M1' => false, 'M2' => false));
+    // REDCap moves the project to redcap_data5, where M1 and M2 are now in
+    // group 7, and the old rows are left where they were.
+    $A->query('DROP TABLE IF EXISTS redcap_data5');
+    $A->query('CREATE TABLE redcap_data5 LIKE redcap_data');
+    $A->query('INSERT INTO redcap_data5 SELECT * FROM redcap_data WHERE project_id = ' . $MT);
+    $A->query("UPDATE redcap_data5 SET `value` = '7' WHERE project_id = " . $MT
+        . " AND record = 'M1' AND field_name = '__GROUPID__'");
+    $A->query("INSERT INTO redcap_data5 (project_id, event_id, record, field_name, `value`)
+        VALUES (" . $MT . ", 1, 'M2', '__GROUPID__', '7')");
+    $A->query("UPDATE redcap_projects SET data_table = 'redcap_data5' WHERE project_id = " . $MT);
+    check('dag rvf1-5: once the project has moved, the old table answers nothing about its group',
+        $mt['source']->scopeOf(array('M1', 'M2'), '7') === array('M1' => null, 'M2' => null));
+    $fresh = RecordManifestSource::open($dbA, $MT, array('pk' => 'record_id'));
+    check('dag rvf1-5 control: and a source opened now reads the new one',
+        $fresh['ok'] === true
+        && $fresh['source']->scopeOf(array('M1', 'M2'), '7') === array('M1' => true, 'M2' => true));
+    $A->query('DROP TABLE redcap_data5');
 }
 
 /**

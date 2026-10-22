@@ -48,6 +48,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
+    require_once __DIR__ . '/../php/Scan/ScanMaintenance.php';
     // The finalizer's re-read compares values as Logic::lookupKey (W7-R4 block).
     require_once __DIR__ . '/../php/Logic.php';
     require_once __DIR__ . '/scan_fault_support.php';
@@ -906,6 +907,19 @@ namespace INSPIRE\UniversalValidator\Scan {
     $dis->sys[ScanService::DISABLED_AT] = (string) (time() - ScanService::DISABLING_SECONDS - 1);
     $dv = (new ScanService($dis))->available(1);
     check('service: and with no enable hook it ends by itself, so a missed hook cannot refuse every scan',
+        strpos((string) $dv['why'], 'being switched off') === false);
+    // rvf2-1: the project disable hook's own marker refuses the same way, in
+    // the project's words, until the project enable hook's marker.
+    $pdis = new \FakeModule();
+    $pdis->sys[ScanService::SYS_FLAG] = '1';
+    $pdis->proj[ScanService::PROJ_FLAG] = '1';
+    $pdis->proj[ScanService::PROJECT_DISABLED_AT] = (string) time();
+    $dv = (new ScanService($pdis))->available(1);
+    check('service rvf2-1: while the module is being switched off for the project, Start and work are refused',
+        $dv['ok'] === false && $dv['why'] === ScanService::OFF_PROJECT);
+    $pdis->proj[ScanService::PROJECT_ENABLED_AT] = (string) time();
+    $dv = (new ScanService($pdis))->available(1);
+    check('service rvf2-1: and the project enable after it lifts that refusal',
         strpos((string) $dv['why'], 'being switched off') === false);
 
     // -- the flag answer discloses nothing about the installation ------------
@@ -3431,6 +3445,192 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv5b-2: a run over an empty group, which ends before any fence, is not promised its counts',
         $eg->run(184, $egId)['coverage'] === ScanOutcome::EMPTY_SCOPE
         && $egW['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED);
+
+    /* -----------------------------------------------------------------
+     * rvf1-1  A GROUP-SCOPED RUN THAT PASSED ITS TARGET FENCE AND IS THEN
+     * STOPPED OR EXPIRED KEEPS ITS COUNTS
+     *
+     * The reviewer's repro: catch-up had walked the window, the run showed
+     * its counts in unique-finalize, and Stop took them away with two
+     * sentences saying it had never confirmed its group. A run stopped
+     * inside catch-up is the control: it has confirmed nothing.
+     * ----------------------------------------------------------------- */
+    $afterFence = function ($pid, $leave, $end) use ($groupModule) {
+        $ps = new ArrayScanStore();
+        $pm = $groupModule($ps);
+        $pm->flagged['R02'] = true;
+        $rid = (int) (new ScanService($pm, $ps))->start($pid)['run_id'];
+        $pm->readSleep = 3.2;
+        (new ScanService($pm, $ps))->work($pid, $rid);
+        $ep = (int) $ps->run($pid, $rid)['lease_epoch'];
+        $ps->advancePhase($rid, $ep, ScanPhase::CATCH_UP);
+        $ps->setProgressState($rid, $ep, ['fenceTarget' => '120', 'catchupCursor' => null,
+                                          'catchupRound' => 1, 'catchupDirty' => 0]);
+        if ($leave) $ps->advancePhase($rid, $ep, ScanPhase::UNIQUE);
+        $before = (new ScanService($pm, $ps))->status($pid, $rid);
+        if ($end === 'stopped') {
+            (new ScanService($pm, $ps))->cancel($pid, $rid);
+        } else {
+            $ps->expireAbandoned($pid, 1, 'cron', time() + 2 * 86400);
+        }
+        $st = (new ScanService($pm, $ps))->status($pid, $rid);
+        return ['before' => $before, 'row' => $ps->run($pid, $rid), 'status' => $st,
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    foreach (['stopped' => [191, ScanOutcome::CANCELLED], 'expired' => [192, ScanOutcome::EXPIRED]] as $end => $c) {
+        $af = $afterFence($c[0], true, $end);
+        check('rvf1-1: a group run past its target fence shows its counts in unique-finalize (' . $end . ' next)',
+            $af['before']['phase'] === ScanPhase::UNIQUE && empty($af['before']['withheld'])
+            && $af['before']['total'] === 5 && $af['before']['findings'] === 1);
+        check('rvf1-1: and still shows them once ' . $end,
+            $af['row']['terminal'] === $c[1] && !empty($af['row']['fence_target'])
+            && $af['status']['ok'] === true && empty($af['status']['withheld'])
+            && $af['status']['total'] === 5 && $af['status']['done'] === 5 && $af['status']['findings'] === 1
+            && strpos($af['pf']['counts'], '5 of 5 records') === 0);
+        check('rvf1-1: with no word of a group it never confirmed (' . $end . ')',
+            strpos($af['pf']['counts'], ScanAuthorization::WITHHELD_ENDED) === false
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false
+            && strpos((string) $af['pf']['done'],
+                      \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($af['row']['coverage'])) === 0);
+    }
+    $inCu = $afterFence(193, false, 'stopped');
+    check('rvf1-1 control: a group run stopped inside catch-up is still not shown its counts',
+        $inCu['row']['terminal'] === ScanOutcome::CANCELLED && !empty($inCu['row']['fence_target'])
+        && $inCu['status']['withheld'] === true
+        && $inCu['status']['withheldWhy'] === ScanAuthorization::WITHHELD_ENDED
+        && strpos((string) $inCu['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === 0);
+
+    /* -----------------------------------------------------------------
+     * rvf1-2  A GROUP THAT LEFT IS NOT A GROUP THAT WAS DELETED
+     *
+     * The reviewer's repro: every record of the group moved to another
+     * group after the run read it. The run ends as an empty scope, which
+     * is right, and said its records had been deleted, under "Preparing".
+     * ----------------------------------------------------------------- */
+    $leftRun = function ($pid, array $moved, array $deleted) use ($groupModule) {
+        $ls = new ArrayScanStore();
+        $lm = $groupModule($ls);
+        $lm->flagged['R02'] = true;
+        $rid = (int) (new ScanService($lm, $ls))->start($pid)['run_id'];
+        $lm->readSleep = 3.2;
+        (new ScanService($lm, $ls))->work($pid, $rid);
+        foreach ($moved as $id) {
+            $lm->dagOf[$id] = '31';
+            $lm->version[$id] = '110';
+            $lm->changes[$id] = '110';
+        }
+        foreach ($deleted as $id) {
+            $lm->records = array_values(array_diff($lm->records, [$id]));
+            $lm->changes[$id] = '111';
+        }
+        $lm->top = '120';
+        for ($i = 0; $i < 15 && $ls->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($lm, $ls))->work($pid, $rid);
+        }
+        $st = (new ScanService($lm, $ls))->status($pid, $rid);
+        return ['row' => $ls->run($pid, $rid), 'states' => $ls->recordStates($rid), 'status' => $st,
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    $V = '\INSPIRE\UniversalValidator\ScanPageView';
+    $gone = $leftRun(194, ['R01', 'R02', 'R03', 'R04', 'R05'], []);
+    check('rvf1-2: a run whose whole group moved away ends as an empty scope',
+        $gone['row']['terminal'] === ScanOutcome::PARTIAL && $gone['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && isset($gone['states'][ScanStore::REC_DEPARTED]) && $gone['states'][ScanStore::REC_DEPARTED] === 5);
+    check('rvf1-2: and its stored reason says they moved, not that they were deleted',
+        strpos((string) $gone['row']['terminal_reason'], 'moved to another Data Access Group while it ran') !== false
+        && strpos((string) $gone['row']['terminal_reason'], 'deleted') === false);
+    check('rvf1-2: the status says records left the group, and counts none of them',
+        $gone['status']['leftGroup'] === true && $gone['status']['total'] === 0
+        && $gone['status']['removed'] === 0);
+    check('rvf1-2: the panel says every record moved to another group, and 0 records, not Preparing',
+        strpos((string) $gone['pf']['done'], $V::EMPTY_SCOPE_LEFT) === 0
+        && strpos((string) $gone['pf']['done'], 'deleted') === false
+        && $gone['pf']['counts'] === $V::COUNT_NONE);
+    $mixed = $leftRun(195, ['R01', 'R02', 'R03'], ['R04', 'R05']);
+    check('rvf1-2: a group that partly moved and was partly deleted says both',
+        $mixed['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && strpos((string) $mixed['row']['terminal_reason'], 'moved to another Data Access Group or was deleted') !== false
+        && strpos((string) $mixed['pf']['done'], $V::EMPTY_SCOPE_LEFT_DELETED) === 0
+        && $mixed['status']['removed'] === 2);
+    $kept = $leftRun(196, ['R03'], []);
+    check('rvf1-2 control: a group one record left still finishes on the records it kept',
+        $kept['row']['coverage'] === ScanOutcome::FENCED && $kept['status']['leftGroup'] === true
+        && strpos((string) $kept['pf']['done'], $V::coverageSentence(ScanOutcome::FENCED)) === 0);
+
+    /* -----------------------------------------------------------------
+     * rvf2-1  A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING
+     * SWITCHED OFF ENDS THAT RUN
+     *
+     * The reviewer's repro: a Start past available() when the disable hook
+     * wrote its marker saved its run after the hook's walks, and the run
+     * held the project's slot through the disable. Here the marker is
+     * written while Start plans, after available() said yes and before the
+     * run is saved. A run somebody stopped before Start asked again keeps
+     * that stop.
+     * ----------------------------------------------------------------- */
+    $offStart = function ($pid, $by, $stopBy = null) {
+        $os = new ArrayScanStore();
+        $om = new class($os) extends \E2eModule {
+            /** @var ?string 'server' or 'project': the disable marked while Start plans */
+            public $offBy = null;
+            public $offAt = null;
+            /** @var ?string a user who stops the run before Start asks again */
+            public $stopBy = null;
+            public function durableScanContext($pid, array $opts = [], $dag = null)
+            {
+                if ($this->offBy !== null && array_key_exists('generation', $opts) && $opts['generation'] === null) {
+                    $this->offAt = (string) time();
+                    if ($this->offBy === 'server') $this->sys[ScanService::DISABLED_AT] = $this->offAt;
+                    else $this->proj[ScanService::PROJECT_DISABLED_AT] = $this->offAt;
+                }
+                return parent::durableScanContext($pid, $opts, $dag);
+            }
+            public function getProjectSetting($k, $pid = null)
+            {
+                if ($k === ScanService::PROJECT_DISABLED_AT && $this->stopBy !== null) {
+                    foreach ($this->store->allAudits() as $a) {
+                        if ($a['event'] !== 'start') continue;
+                        $this->store->cancel($a['pid'], $a['run_id'], $this->stopBy);
+                        $this->stopBy = null;
+                    }
+                }
+                return parent::getProjectSetting($k, $pid);
+            }
+        };
+        $om->offBy = $by;
+        $om->stopBy = $stopBy;
+        $start = (new ScanService($om, $os))->start($pid);
+        $audits = $os->allAudits();
+        $rid = $audits ? (int) $audits[0]['run_id'] : 0;
+        $row = $rid > 0 ? $os->run($pid, $rid) : null;
+        // The disable over: its enable marker lets the next Start run.
+        $om->offBy = null;
+        if ($by === 'server') $om->sys[ScanService::ENABLED_AT] = $om->offAt;
+        else $om->proj[ScanService::PROJECT_ENABLED_AT] = $om->offAt;
+        $again = (new ScanService($om, $os))->start($pid);
+        $trail = [];
+        foreach ($audits as $a) $trail[] = $a['event'] . ':' . $a['actor'];
+        return ['start' => $start, 'row' => $row, 'trail' => $trail, 'again' => $again, 'rid' => $rid];
+    };
+    foreach (['server' => [197, ScanService::OFF_SERVER, ScanMaintenance::DISABLED_WHY],
+              'project' => [198, ScanService::OFF_PROJECT, ScanMaintenance::PROJECT_DISABLED_WHY]] as $by => $c) {
+        $os1 = $offStart($c[0], $by);
+        check('rvf2-1: a Start that saves its run while the module is being switched off (' . $by . ') is refused, and says why',
+            $os1['start']['ok'] === false && $os1['start']['run_id'] === null && $os1['start']['why'] === $c[1]);
+        check('rvf2-1: and its run is ended as the disable ends one: cancelled, with the disable\'s sentence (' . $by . ')',
+            $os1['rid'] > 0 && $os1['row']['phase'] === ScanPhase::TERMINAL
+            && $os1['row']['terminal'] === ScanOutcome::CANCELLED && $os1['row']['terminal_reason'] === $c[2]);
+        check('rvf2-1: its trail names the starter, then the system\'s stop (' . $by . ')',
+            $os1['trail'] === ['start:alice', 'cancel:system']);
+        check('rvf2-1: and the project\'s slot is free once the disable is over (' . $by . ')',
+            $os1['again']['ok'] === true && (int) $os1['again']['run_id'] > $os1['rid']);
+    }
+    $os2 = $offStart(199, 'project', 'bob');
+    check('rvf2-1: a run somebody stopped before the Start asked again keeps their stop',
+        $os2['start']['ok'] === false && $os2['start']['why'] === ScanService::OFF_PROJECT
+        && $os2['row']['terminal'] === ScanOutcome::CANCELLED
+        && $os2['row']['terminal_reason'] === ScanOutcome::derive(['cancelled' => true])['why']
+        && $os2['trail'] === ['start:alice', 'cancel:bob']);
 
     /* -----------------------------------------------------------------
      * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR

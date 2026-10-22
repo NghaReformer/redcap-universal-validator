@@ -258,7 +258,8 @@ final class ScanRetention
      *
      * uv_scan_audit is not a child. It is the record that the run existed.
      *
-     * @param int $olderThanDays a run last touched longer ago than this goes
+     * @param int $olderThanDays a run last touched longer ago than this goes;
+     *                           a run whose removal began goes first, whatever its age
      * @param int $limit         rows per statement, at most PAGE
      * @return array{done:bool, rows:int, runs:int, cursor:?int} `rows` child
      *         rows deleted by this call, `runs` run rows removed by it, `cursor`
@@ -269,9 +270,18 @@ final class ScanRetention
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
         $cut = self::daysAgo($olderThanDays);
-        $run = $this->db->select('SELECT run_id, generation_id, terminal_reason FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?'
-            . ' ORDER BY run_id LIMIT 1', [$pid, $cut]);
+        // A REMOVAL THAT HAS BEGUN IS FINISHED FIRST, WHATEVER THE RUN'S AGE
+        // (review rvf2-3). Once marked, a run reads as gone to every reader;
+        // picked by age alone, a run whose project raised its retention after
+        // the first page was never picked again, and stayed hidden with its
+        // findings kept. Both reads go through uq_project_active.
+        $pick = 'SELECT run_id, generation_id, terminal_reason FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND active_slot IS NULL AND ';
+        $run = $this->db->select($pick . 'terminal_reason = ? ORDER BY run_id LIMIT 1',
+            [$pid, ScanStore::REMOVING_WHY]);
+        if (!isset($run[0])) {
+            $run = $this->db->select($pick . 'updated_at < ? ORDER BY run_id LIMIT 1', [$pid, $cut]);
+        }
         if (!isset($run[0])) {
             return ['done' => true, 'rows' => 0, 'runs' => 0, 'cursor' => null];
         }
@@ -321,7 +331,8 @@ final class ScanRetention
             . ' WHERE run_id = ? AND project_id = ? AND active_slot IS NULL', [$runId, $pid]);
         $gone = (int) $this->db->affected();
         $more = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?)', [$pid, $cut]);
+            . ' WHERE project_id = ? AND active_slot IS NULL AND (updated_at < ? OR terminal_reason = ?))',
+            [$pid, $cut, ScanStore::REMOVING_WHY]);
         if (!isset($more[0][0])) {
             throw new \RuntimeException('could not tell whether more runs are due for removal');
         }
@@ -410,7 +421,7 @@ final class ScanRetention
      * count every expired preview on the installation, so an administrator of
      * a small project was shown the consequence of somebody else's data.
      * `runs_to_purge` is the finished runs purgeRuns() would remove at
-     * $policy['runDays'].
+     * $policy['runDays'], with any whose removal has begun (review rvf2-3).
      *
      * ONE READ OF THIS PROJECT'S FINDINGS, NOT A PAGE. value_expires_at has no
      * index, so the count reads the project's rows once, through a
@@ -426,8 +437,8 @@ final class ScanRetention
             . ' WHERE project_id = ? AND value_expires_at IS NOT NULL'
             . ' AND value_expires_at <= ?', [$pid, self::now()]);
         $runs = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?',
-            [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90)]);
+            . ' WHERE project_id = ? AND active_slot IS NULL AND (updated_at < ? OR terminal_reason = ?)',
+            [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90), ScanStore::REMOVING_WHY]);
         // COUNT(*) always answers one row. No row is a read that did not work,
         // and showing it as 0 would tell the administrator nothing is affected.
         if (!isset($vals[0][0], $runs[0][0])) {

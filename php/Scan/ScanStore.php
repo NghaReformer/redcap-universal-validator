@@ -165,7 +165,25 @@ interface ScanStore
         // other projects the run looked values up in from it (review R3U-N1):
         // the reader's plan can no longer say once the rule is gone.
         'policy_json',
+        // Whether the run got past catch-up (CAUGHT_UP), which its phase
+        // stops saying once it is stopped or ends (review rvf1-1).
+        'catchup_dirty',
     ];
+
+    /**
+     * catchup_dirty of a run that has left catch-up for the phase after it
+     * (review rvf1-1).
+     *
+     * 0 and 1 are catch-up's own "this round changed nothing" and "it
+     * changed something", and nothing reads them once the phase has moved
+     * on. So the column carries the one fact that outlives the phase: the run
+     * walked its window to the target fence. Stop moves the phase to
+     * `cancelling`, and expiry and failure write `terminal`, so without this a
+     * group-scoped run stopped in unique-finalize read as one that had never
+     * confirmed which records belong to its group, and lost its counts.
+     * advancePhase() writes it with the phase change, and nothing sets it back.
+     */
+    const CAUGHT_UP = 2;
 
     /**
      * The keys every finding handed to commitBatch() must carry, non-null.
@@ -646,6 +664,10 @@ interface ScanStore
      * no next phase" and reports the run DONE, so an implementation that
      * answered false over a failed write would certify a project on the
      * strength of a transaction that never ran.
+     *
+     * LEAVING CATCH-UP IS WRITTEN DOWN (review rvf1-1). The move from catch-up
+     * to the phase after it also sets catchup_dirty to CAUGHT_UP, in the same
+     * write, so a run stopped or ended later still says it got that far.
      *
      * @return bool false when the transition was refused or the fence had moved
      * @throws ScanStoreUnavailable when the storage failed rather than refused

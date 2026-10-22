@@ -86,6 +86,8 @@ final class ScanOutcome
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
      *   emptyScope:    bool  no record is left: none in scope, or all deleted, checked or not
+     *   departed:      int   records that moved to another Data Access Group; wording only
+     *   removed:       int   records deleted while it ran; wording only
      *   lookupsMoved:  bool  @UVEXISTS verdicts may have moved with a change in the window
      *   violations:    int   ABSENT IS UNKNOWN, and unknown is never clean
      *   ruleProblems:  int   ABSENT IS UNKNOWN, and unknown is never clean
@@ -166,6 +168,15 @@ final class ScanOutcome
         // one listed was deleted, checked or not - and whatever it found is
         // about records the project no longer has.
         if ($b('emptyScope')) {
+            // EVERY RECORD LEFT THE GROUP (review rvf1-2). A group-scoped run
+            // whose records all moved to another group was stored as having
+            // had them deleted; none was.
+            if ($i('departed') > 0) {
+                return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
+                    'no record is left for it to report on - every record it listed moved to another '
+                    . 'Data Access Group' . ($i('removed') > 0 ? ' or was deleted' : '') . ' while it ran'
+                    . ' - so it says nothing about the group');
+            }
             return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
                 'no record is left for it to report on - none was in scope, or every one was '
                 . 'deleted while it ran, whether or not it had been examined, and any findings it '
