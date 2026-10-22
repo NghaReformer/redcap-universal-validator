@@ -3641,10 +3641,25 @@ class UniversalValidator extends AbstractExternalModule
      * under log-values = none, where the record id itself identifies the
      * participant. ONE PLACE, read by the legacy report's plan and by the
      * stored report's posture alike (W7-R2).
+     *
+     * A SETTING THAT CANNOT BE READ HASHES (review rvc2-4). This asked
+     * logMode(), which answers a read that throws with "hashed" - the right
+     * answer for the log, where it keeps values out, and the wrong one here,
+     * where "hashed" means raw record ids. So for that one request a
+     * "none" project's report and its file named every record raw. A read
+     * that throws, and a stored value this build does not know, now hash:
+     * neither can say the ids may be shown. An unset setting is the default
+     * mode ("hashed"), which names records raw, as before.
      */
     private function hashesRecordIds($pid)
     {
-        return $this->logMode($pid) === 'none';
+        try {
+            $mode = $this->getProjectSetting('log-values', $pid);
+        } catch (\Throwable $e) {
+            return true;
+        }
+        if ($mode === null || $mode === '') return false;
+        return !in_array($mode, ['hashed', 'raw', 'off'], true);
     }
 
     /**
@@ -8651,9 +8666,16 @@ class UniversalValidator extends AbstractExternalModule
         // field put that same id, raw, in the Value cell beside it. Withheld
         // under every mode, because the hashing is the project's posture and
         // the reader's ceiling cannot lift it.
-        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
-            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
-            return self::REPORT_REDACTED;
+        //
+        // AND EVERY VALUE WHEN THE RECORD-ID FIELD IS NOT KNOWN (review
+        // rvc2-4). recordIdFieldOf() answers '' when neither the dictionary
+        // nor REDCap names it, and this skipped the check, so the field whose
+        // value is the id went out raw beside the hashed Record cell. A field
+        // this cannot tell from the id is withheld, as FindingRowMapper
+        // refuses to build hashed without one.
+        if (!empty($plan['hashRecordIds'])) {
+            $idField = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
+            if ($idField === '' || $field === $idField) return self::REPORT_REDACTED;
         }
 
         if (!mb_check_encoding($val, 'UTF-8')) {
@@ -8686,10 +8708,9 @@ class UniversalValidator extends AbstractExternalModule
      * How the scan report may show values: 'raw' | 'identifier-redacted' | 'locations'.
      *
      * A settings read that throws must not decide between showing values and
-     * withholding them, so a failure lands on the most permissive documented
-     * default rather than silently switching policy — the same posture logMode()
-     * takes, and for the same reason: a quietly-changed privacy mode is worse
-     * than a wrong one, because nobody can tell it happened.
+     * withholding them, so a failure lands on the least disclosing mode,
+     * locations only, as an unset or unknown setting does. The record-id
+     * posture fails the same way (hashesRecordIds(), review rvc2-4).
      */
     private function scanValueMode($pid)
     {

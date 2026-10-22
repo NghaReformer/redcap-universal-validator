@@ -2573,8 +2573,11 @@ final class ScanService
      * frozen into policy_json with the rest. Not in ScanPolicy::resolve(),
      * whose other caller (the maintenance pass) does not read the setting
      * and would then state a posture it never asked about. A read that fails
-     * is not "none", which is the legacy answer too (logMode()); a run frozen
-     * that way and read as "none" later is a tightening, and stops.
+     * is not "none" here: this value only decides whether a run stops, and
+     * read as "none" a blip in one work request would stop the run as a
+     * tightening. A run frozen that way and read as "none" later is one, and
+     * stops. The report, which discloses, hashes on a read that fails
+     * (UniversalValidator::hashesRecordIds(), review rvc2-4).
      */
     private function policy($pid)
     {

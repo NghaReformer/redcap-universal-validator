@@ -719,6 +719,40 @@ namespace {
         check('record ids (control): any other log mode names records raw, with no hasher',
             $rawPosture['recordIds'] === FindingRowMapper::IDS_RAW && $rawPosture['hashRecordId'] === null
             && mapper($rawPosture)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] === 'PATIENT-0042');
+        // rvc2-4: A "log-values" READ THAT THROWS HASHES. The posture asked
+        // logMode(), whose answer to a failed read is "hashed" - for the log,
+        // values kept out; for a report, raw record ids.
+        $failing = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+            public $logValuesThrows = true;
+            public function getProjectSetting($k, $pid = null) {
+                if ($k === 'log-values' && $this->logValuesThrows) throw new \RuntimeException('settings read failed');
+                return parent::getProjectSetting($k, $pid);
+            }
+        };
+        $failing->projectSettings = ['log-values' => 'hashed', 'scan-value-storage' => 'raw'];
+        $failing->projectIdReturn = PID;
+        $fp = $failing->scanRecordIdPosture(PID);
+        check('record ids rvc2-4: a log-values read that throws names records hashed, not raw',
+            $fp['recordIds'] === FindingRowMapper::IDS_HASHED && is_callable($fp['hashRecordId'])
+            && mapper($fp)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] !== 'PATIENT-0042');
+        $legacyFail = $failing->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
+        $legacyShown = isset($legacyFail['violations'][0]['record']) ? $legacyFail['violations'][0]['record'] : null;
+        check('record ids rvc2-4: and so does the legacy report',
+            is_string($legacyShown) && $legacyShown !== 'PATIENT-0042' && strpos(json_encode($legacyFail), 'PATIENT-0042') === false);
+        $failing->logValuesThrows = false;
+        check('record ids rvc2-4 (control): the same project read in full names records as its mode says',
+            $failing->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_RAW);
+        check('record ids rvc2-4: a stored mode this build does not know hashes too',
+            mkMod($dict, $data, [], ['log-values' => 'NONE '])->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_HASHED
+            && mkMod($dict, $data, [], ['log-values' => 'off'])->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_RAW);
+        // And the legacy Value cell: a record-id field nobody could name is any field.
+        $rv = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'reportValue');
+        $rv->setAccessible(true);
+        $hashedPlan = ['valueMode' => 'raw', 'identifiers' => [], 'hashRecordIds' => true, 'recordIdField' => ''];
+        check('record ids rvc2-4: under hashed ids with the record-id field unknown, a value is withheld',
+            $rv->invoke(null, ['field' => 'req', 'value' => 'PATIENT-0042'], $hashedPlan) === '[identifier withheld]');
+        check('record ids rvc2-4 (control): with the field known, another field\'s value is shown',
+            $rv->invoke(null, ['field' => 'req', 'value' => 'PATIENT-0042'], ['recordIdField' => 'record_id'] + $hashedPlan) === 'PATIENT-0042');
         check('record ids: the raw id is nowhere in the mapped finding',
             strpos(json_encode($f), 'PATIENT-0042') === false);
         $line = (new ScanReport($map, dims(), runRow()))->csvLine(row(['record_id_bin' => 'PATIENT-0042']));
