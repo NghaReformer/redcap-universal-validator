@@ -31,6 +31,7 @@ MODEREG = 'php/ModeRegistry.php'
 REQUIRED_DOM = 'tests/required_dom_js.cjs'
 CHOICES_DOM = 'tests/choices_dom_js.cjs'
 GROWTH_DOM = 'tests/growth_dom_js.cjs'
+GROWTH_MODULE = 'tests/growth_module_php.php'
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -262,21 +263,40 @@ MUTATIONS = [
      "if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $h) return false;",
      "if (!isset($r['state']) || $r['state'] !== 'ok' || ($event !== null && $event !== 'event-name' && $event !== $shape->event($h)['name'])) return false;",
      MODULE),
-    ('[first-instance] on a form held once is another entry', UV,
-     "if ($instance !== null && !in_array($instance, ['current-instance', 'first-instance', 'last-instance'], true)) return false;",
-     "if ($instance !== null && $instance !== 'current-instance') return false;", MODULE),
-    ('[first-instance] on a repeating form is this entry', UV,
-     "if ($instance !== null && $instance !== 'current-instance') {\n                $b = $shape->bucket($h, $form);",
-     "if (false) {\n                $b = $shape->bucket($h, $form);", MODULE),
+    ('[current-instance] on a repeating form not read as this entry', UV,
+     "if ($instance !== null && $instance !== 'current-instance') return false;",
+     "if ($instance !== null) return false;", MODULE),
+    # ---- the third review's fixes ----
+    ('an instance of a form that does not repeat accepted', UV,
+     "            if ($flat) {", "            if (false) {", MODULE),
+    ('an instance of a form that repeats refused', UV,
+     "|| !array_key_exists('bucket', $b) || $b['bucket'] !== null) continue;\n            $t = $shape->event($r['event']);",
+     "|| !array_key_exists('bucket', $b)) continue;\n            $t = $shape->event($r['event']);", MODULE),
+    ('the one event of a classic project named in the refusal', UV,
+     "(count($shape->events()) > 1 ? ' at", "(true ? ' at", MODULE),
+    ('test(v) asks the modes that read the page', ENGINE,
+     'if(typeof e.test !== "function" || (given && e.takesValue !== true)) continue;',
+     'if(typeof e.test !== "function") continue;', DOM),
+    ("test() hands an ID check no value", ENGINE,
+     '(e.takesValue === true ? e.test(QRID_WHEN.readRef(f, null)) : e.test())', 'e.test()', DOM),
+    ("an ID check not marked as taking a value", ENGINE,
+     'QRID_registerValidator(f, { type: "single", takesValue: true,', 'QRID_registerValidator(f, { type: "single",', DOM),
+    ('the slow trim back in the Missing Data Code check', ENGINE,
+     '    var s = String(value), i = 0, j = s.length;\n    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }\n'
+     '    while(i < j && ws(s.charCodeAt(i))) i++;\n    while(j > i && ws(s.charCodeAt(j - 1))) j--;\n    var t = s.slice(i, j);',
+     '    var t = String(value).replace(/^[ \\t\\r\\n\\0\\x0B]+|[ \\t\\r\\n\\0\\x0B]+$/g, "");', DOM),
+    ('a survey told why the growth table cap deferred a rule', UV,
+     "        if ($context === 'survey') {\n            foreach ($config['rules'] as $i => $r) {\n                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);",
+     "        if (false) {\n            foreach ($config['rules'] as $i => $r) {\n                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);", GROWTH_MODULE),
     ('a survey told a @UVDELTA configuration error word for word', MODEREG,
      "if (empty($def['serverKeys']) && empty($def['staffOnlyKeys'])) continue;",
      "if (empty($def['serverKeys'])) continue;", REGISTRY),
     ('a survey sent the deferral texts', MODEREG,
-     "array_merge(self::serverKeys(), self::staffOnlyKeys(), ['deferredWhy'])",
+     "array_merge(self::serverKeys(), self::staffOnlyKeys(), self::SURVEY_DROP)",
      'array_merge(self::serverKeys(), self::staffOnlyKeys())', REGISTRY),
     ('the shared entry drops the value given to test(v)', ENGINE,
-     'try { r = byMode[m].test.apply(byMode[m], args); } catch(e){ r = null; }',
-     'try { r = byMode[m].test(); } catch(e){ r = null; }', DOM),
+     'r = given ? e.test.apply(e, args) :',
+     'r = given ? e.test() :', DOM),
     ("the shared entry misreads an ID check's {ok}", ENGINE,
      '        if(r && typeof r === "object" && typeof r.ok === "boolean") r = r.ok;\n', '', DOM),
     ("the shared entry keeps one mode's keys", ENGINE,

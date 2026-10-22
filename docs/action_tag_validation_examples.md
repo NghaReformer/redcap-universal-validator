@@ -4243,10 +4243,12 @@ instance:
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
 - A reference that always names this same entry is refused, since the change
-  would always be 0: `[event-name][weight]`, `[weight][current-instance]`, the
-  one event the form is on by name or as `[first-event-name]` or
-  `[last-event-name]`, and `[weight][first-instance]` or
-  `[weight][last-instance]` on a form that does not repeat.
+  would always be 0: `[event-name][weight]`, `[weight][current-instance]` on a
+  form that repeats, and the one event the form is on by name or as
+  `[first-event-name]` or `[last-event-name]`.
+- A reference that names an instance (`[weight][1]`, `[weight][first-instance]`)
+  is refused where the form does not repeat at an event it lands on: there is
+  only one entry there, and the refusal names those events.
 - An earlier value from another event or instance is read when the page opens.
   That check shows a red note but never blocks, and its note says it is
   re-checked after the save.
@@ -4335,9 +4337,10 @@ These are refused, with a configuration error under the field:
 ```
 
 Once the data dictionary is read, the module also refuses a field that does not
-hold numbers, a `vs` that is not a field, does not hold numbers, or always names
-this same entry, and a shorthand that cannot name an earlier entry at every
-event that holds the form (see Level 3).
+hold numbers, a `vs` that is not a field, does not hold numbers, always names
+this same entry or names an instance of a form that does not repeat, and a
+shorthand that cannot name an earlier entry at every event that holds the form
+(see Level 3).
 
 ---
 

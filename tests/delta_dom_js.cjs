@@ -527,8 +527,10 @@ for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0
   check('... true once both pass', reg.test() === true);
 }
 
-// The shared entry asks every mode with the value it is handed, reads an ID
-// check's {ok} answer, and keeps every mode's own keys (round-2 review N1).
+// The shared entry: test(v) judges v by the modes that take a value, test()
+// judges the page by every mode, handing an ID check the field's value; an
+// ID check's {ok} answer is read, and every mode's own keys are kept
+// (round-2 review N1, round-3 review F1).
 {
   const w0 = numEl('w0', ''), sid = numEl('sid', 'FC1-0589C');
   const env = boot([w0, sid], { singleFields: ['sid'], rules: [W({ fields: ['sid'] })] });
@@ -536,8 +538,28 @@ for (const [typed, want] of [['+70', '70'], ['070', '70'], ['70.', '70'], ['70.0
   check('an ID check and a delta rule on one field: both listed (got ' + JSON.stringify(reg.types) + ')',
     Array.isArray(reg.types) && reg.types.indexOf('single') >= 0 && reg.types.indexOf('delta') >= 0);
   check('... test(v) hands the value to the ID check: a wrong check character is false', reg.test('FC1-0589D') === false);
-  check('... a right one leaves the answer to the delta rule, which has nothing to compare (null)', reg.test('FC1-0589C') === null);
+  check('... a right one is true: the delta rule reads the page, not v, so it does not answer for v', reg.test('FC1-0589C') === true);
   check('... the ID check answers on its own entry', reg.byMode.single.test('FC1-0589D').ok === false);
+  check('... test() judges the page: a right ID, and a delta rule with nothing to compare (null)', reg.test() === null);
+  sid.value = 'FC1-0589D';
+  check('... test() hands the ID check what the field holds: a wrong ID is false', reg.test() === false);
+}
+{
+  const w0 = numEl('w0', '70'), code = numEl('code', '72');
+  const env = boot([w0, code], { rules: [{ type: 'single', fields: ['code'], algorithm: 'none', idPattern: '^[0-9]+$' }, W({ fields: ['code'] })] });
+  const reg = env.NS.validators.code;
+  check('... test() is true when the format check and the delta rule both pass', reg.test() === true);
+  code.value = '7x';
+  check('... and false when the field no longer fits the format', reg.test() === false);
+}
+// A Missing Data Code is read in linear time (round-3 review F2).
+{
+  const w0 = numEl('w0', '70' + ' '.repeat(50000) + '1'), w = numEl('weight', '72');
+  const t0 = Date.now();
+  const env = boot([w0, w], { missingCodes: ['UNK'], rules: [W()] });
+  env.NS.validators.weight.test();
+  const ms = Date.now() - t0;
+  check('50,000 inner spaces in the earlier value, with codes set: checked in under 250 ms (took ' + ms + ' ms)', ms < 250);
 }
 {
   const w0 = numEl('w0', '70'), ids = numEl('ids', '');

@@ -672,20 +672,48 @@ namespace {
         's_fi'   => f('enrol_form', '@UVDELTA={"vs":"[s_fi][first-instance]","max":1}', 'number'),
         's_li'   => f('enrol_form', '@UVDELTA={"vs":"[s_li][last-instance]","max":1}', 'number'),
         's_vfe'  => f('visit_form', '@UVDELTA={"vs":"[first-event-name][s_vfe]","max":1}', 'number'),
-        's_ok'   => f('visit_form', '@UVDELTA={"vs":"[visit1_arm_1][s_ok]","max":1}', 'number')];
+        's_ok'   => f('visit_form', '@UVDELTA={"vs":"[visit1_arm_1][s_ok]","max":1}', 'number'),
+        'n_one'  => f('enrol_form', '@UVDELTA={"vs":"[n_one][1]","max":1}', 'number'),
+        'n_vis'  => f('visit_form', '@UVDELTA={"vs":"[n_vis][2]","max":1}', 'number')];
     $p = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
     $pe = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
-    foreach (['s_inst' => $p, 's_evt' => $p, 's_both' => $p, 's_one' => $pe, 's_fe' => $pe, 's_le' => $pe, 's_fi' => $pe, 's_li' => $pe] as $sf => $pg) {
+    foreach (['s_evt' => $p, 's_one' => $pe, 's_fe' => $pe, 's_le' => $pe] as $sf => $pg) {
         $e = ruleFor($pg, $sf)['configError'] ?? '';
         check('"vs" ' . $sf . ' names this same entry: refused (got ' . $e . ')', strpos($e, '"vs" names this field in this same entry') !== false);
     }
     check('... a named event on a form at several events is another entry there: accepted', empty(ruleFor($p, 's_ok')['configError']));
     check('... and so is the first event of a form at several events, which is this entry at the first one only',
         empty(ruleFor($p, 's_vfe')['configError']));
+    // An instance of a form that does not repeat: the resolver can only say
+    // "invalid" there, on every save (round-3 review F4).
+    $flatWhy = function ($f, $events) { return '@UVDELTA on "' . $f . '": "vs" names an instance of "[' . $f . ']", but its form does not repeat at "'
+        . implode('", "', $events) . '" — an instance can be named only where the form repeats.'; };
+    foreach (['s_inst' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']], 's_both' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']],
+              'n_vis' => [$p, ['visit1_arm_1', 'visit2_arm_1', 'visit3_arm_1']],
+              's_fi' => [$pe, ['enrol_arm_1']], 's_li' => [$pe, ['enrol_arm_1']], 'n_one' => [$pe, ['enrol_arm_1']]] as $sf => $c) {
+        $e = ruleFor($c[0], $sf)['configError'] ?? '';
+        check('"vs" ' . $sf . ' names an instance of a form that does not repeat: refused, naming the events (got ' . $e . ')', $e === $flatWhy($sf, $c[1]));
+    }
     longitudinal([1 => ['enrol_form' => '']]);
     $pr = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
     check('... the first instance of a form that repeats is another entry: accepted (got ' . json_encode(ruleFor($pr, 's_fi')['configError'] ?? null) . ')',
         empty(ruleFor($pr, 's_fi')['configError']) && empty(ruleFor($pr, 's_li')['configError']));
+    check('... and so is instance 1 of it', empty(ruleFor($pr, 'n_one')['configError']));
+    $selfR = $self + ['s_cur' => f('enrol_form', '@UVDELTA={"vs":"[s_cur][current-instance]","max":1}', 'number')];
+    $pr = page(mod($selfR, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form', 1);
+    check('... while the current instance of a form that repeats is this same entry: refused (got ' . json_encode(ruleFor($pr, 's_cur')['configError'] ?? null) . ')',
+        strpos(ruleFor($pr, 's_cur')['configError'] ?? '', '"vs" names this field in this same entry') !== false);
+    // visit_form repeats at the last visit only: an instance named from the others is refused, naming them
+    longitudinal([4 => ['visit_form' => '']]);
+    $pm = page(mod($self, ['2' => [1 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'visit_form', 3);
+    check('... a form that repeats at some events only: the others are named (got ' . json_encode(ruleFor($pm, 'n_vis')['configError'] ?? null) . ')',
+        (ruleFor($pm, 'n_vis')['configError'] ?? '') === $flatWhy('n_vis', ['visit1_arm_1', 'visit2_arm_1']));
+    // one event: no event to name
+    classic();
+    $one = ['record_id' => f('enrol_form'), 'n_cl' => f('enrol_form', '@UVDELTA={"vs":"[n_cl][1]","max":1}', 'number')];
+    $pc = page(mod($one, ['2' => [351 => ['record_id' => '2']]], $FULL, $REFS), 'form', '2', 'enrol_form');
+    check('... a classic project: refused, with no event named (got ' . json_encode(ruleFor($pc, 'n_cl')['configError'] ?? null) . ')',
+        (ruleFor($pc, 'n_cl')['configError'] ?? '') === '@UVDELTA on "n_cl": "vs" names an instance of "[n_cl]", but its form does not repeat — an instance can be named only where the form repeats.');
     longitudinal();
 
     // ============================================================================

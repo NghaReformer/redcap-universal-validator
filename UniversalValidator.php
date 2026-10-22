@@ -4021,6 +4021,14 @@ class UniversalValidator extends AbstractExternalModule
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
         }
+        // A survey page never shows why a rule is not checked on it, and a
+        // step after clientShape (the growth table cap) may have said why:
+        // the last pass takes every such text off (ModeRegistry::SURVEY_DROP).
+        if ($context === 'survey') {
+            foreach ($config['rules'] as $i => $r) {
+                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);
+            }
+        }
         return $config;
     }
 
@@ -7127,10 +7135,13 @@ class UniversalValidator extends AbstractExternalModule
      * @UVDELTA "dictionary" hook. The "vs" field must exist and hold numbers
      * (a Text field with number validation or none, a calc or a slider); its
      * decimal comma travels as deltaVsComma. A written-out reference that
-     * always names this same entry ([event-name][weight], [weight][current-
-     * instance], or the one event the form is on) is refused: the change
-     * would always be 0. A shorthand must name something in every entry it
-     * can: deltaShorthandProblem.
+     * names an instance of a form that does not repeat at an event it lands
+     * on is refused (deltaFlatTargets), and so is one that always names this
+     * same entry, since the change would always be 0: [event-name][weight],
+     * [weight][current-instance], and the one event the form is on, by its
+     * name or as [first-event-name] or [last-event-name] (deltaNamesItself).
+     * A shorthand must name something in every entry it can:
+     * deltaShorthandProblem.
      */
     private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -7155,6 +7166,12 @@ class UniversalValidator extends AbstractExternalModule
         $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
         $shape = $this->temporalShape($pid, $dd);
         if ($short === null) {
+            $flat = $op[0] === 'qref' && isset($op[4]) ? self::deltaFlatTargets($shape, $op, $form, isset($meta['form_name']) ? (string) $meta['form_name'] : '') : [];
+            if ($flat) {
+                return $refuse('"vs" names an instance of "[' . $f . ']", but its form does not repeat'
+                    . (count($shape->events()) > 1 ? ' at "' . implode('", "', $flat) . '"' : '')
+                    . ' — an instance can be named only where the form repeats.');
+            }
             if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {
                 return $refuse('"vs" names this field in this same entry, so the change would always be 0 — compare it with '
                     . 'another entry, e.g. "vs":"previous-event" or "vs":"[baseline_arm_1][' . $name . ']".');
@@ -7171,15 +7188,15 @@ class UniversalValidator extends AbstractExternalModule
      * that holds the form, its event token must resolve to that same event
      * (none, [event-name], [first-event-name] where no earlier event of the
      * arm holds the form, or the one event's name), and its instance must be
-     * this one: none, [current-instance], or [first-instance] or
-     * [last-instance] where the form is held once. A layout that cannot be
-     * read answers false; the resolver reports it on each save.
+     * this one: none or [current-instance]. (Any instance of a form that does
+     * not repeat is refused before this, by deltaFlatTargets.) A layout that
+     * cannot be read answers false; the resolver reports it on each save.
      */
     private static function deltaNamesItself(ProjectShape $shape, array $op, $form)
     {
         $event = isset($op[3]) ? $op[3] : null;
         $instance = isset($op[4]) ? $op[4] : null;
-        if ($instance !== null && !in_array($instance, ['current-instance', 'first-instance', 'last-instance'], true)) return false;
+        if ($instance !== null && $instance !== 'current-instance') return false;
         $hosts = [];
         foreach ($shape->events() as $id => $e) {
             if (!isset($e['forms']) || !is_array($e['forms'])) return false;
@@ -7189,13 +7206,34 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($hosts as $h) {
             $r = $shape->eventId($event, $h, $form);
             if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $h) return false;
-            // the first or last instance is this one only where the form is held once
-            if ($instance !== null && $instance !== 'current-instance') {
-                $b = $shape->bucket($h, $form);
-                if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b) || $b['bucket'] !== null) return false;
-            }
         }
         return true;
+    }
+
+    /**
+     * The events where a written-out "vs" reference with an instance ($op, a
+     * qref naming one) lands on its field's form ($vsForm) held once, from
+     * some event that holds the rule's form ($form): there the resolver
+     * (AddressResolver) can answer only "invalid", on every save. Names in
+     * the project's order; [] when every event it lands on repeats the form,
+     * or the layout cannot be read (the resolver reports that on each save).
+     */
+    private static function deltaFlatTargets(ProjectShape $shape, array $op, $form, $vsForm)
+    {
+        $event = isset($op[3]) ? $op[3] : null;
+        $flat = [];
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms'])) return [];
+            if (!in_array($form, $e['forms'], true)) continue;
+            $r = $shape->eventId($event, $id, $vsForm);
+            if (!isset($r['state']) || $r['state'] !== 'ok') continue;
+            $b = $shape->bucket($r['event'], $vsForm);
+            if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b) || $b['bucket'] !== null) continue;
+            $t = $shape->event($r['event']);
+            $name = isset($t['name']) && $t['name'] !== '' ? (string) $t['name'] : (string) $r['event'];
+            if (!in_array($name, $flat, true)) $flat[] = $name;
+        }
+        return $flat;
     }
 
     /**

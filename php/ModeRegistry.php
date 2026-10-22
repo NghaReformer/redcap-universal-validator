@@ -345,7 +345,7 @@ final class ModeRegistry
                 }
             }
         }
-        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys(), ['deferredWhy']) : self::serverKeys();
+        $drop = $survey ? array_merge(self::serverKeys(), self::staffOnlyKeys(), self::SURVEY_DROP) : self::serverKeys();
         $strip = function (array $x) use ($drop, $survey) {
             foreach ($drop as $k) unset($x[$k]);
             if ($survey && isset($x['i18n']) && is_array($x['i18n'])) {
@@ -378,6 +378,21 @@ final class ModeRegistry
             $r = $hide($r);
             if (isset($r['branches']) && is_array($r['branches'])) {
                 foreach ($r['branches'] as $i => $b) if (is_array($b)) $r['branches'][$i] = $hide($b);
+            }
+        }
+        return $r;
+    }
+
+    /** Rule keys no survey page is sent, in any mode: why a rule is not checked on the page. */
+    const SURVEY_DROP = ['deferredWhy'];
+
+    /** $r without SURVEY_DROP, on the rule and on each branch. */
+    public static function withoutSurveyTexts(array $r)
+    {
+        foreach (self::SURVEY_DROP as $k) unset($r[$k]);
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $i => $b) {
+                if (is_array($b)) foreach (self::SURVEY_DROP as $k) unset($r['branches'][$i][$k]);
             }
         }
         return $r;

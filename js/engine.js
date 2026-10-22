@@ -671,9 +671,17 @@
     for(var i = 0; i < list.length; i++){ if(typeof list[i] === "string" && list[i] !== "") set[list[i]] = true; }
     return set;
   })();
+  var QRID_HAS_MISSING_CODES = (function(){ for(var k in QRID_MISSING_CODES) return true; return false; })();
+  /* PHP's trim() set (UniversalValidator::isMissingCode), scanned from each
+     end: an end-anchored pattern is retried from every space of a long run
+     (1.8 seconds for 50,000 spaces), and every mode asks this on each check. */
   function QRID_isMissingCode(value){
-    if(value === null || value === undefined) return false;
-    var t = String(value).replace(/^[ \t\r\n\0\x0B]+|[ \t\r\n\0\x0B]+$/g, "");
+    if(!QRID_HAS_MISSING_CODES || value === null || value === undefined) return false;
+    var s = String(value), i = 0, j = s.length;
+    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }
+    while(i < j && ws(s.charCodeAt(i))) i++;
+    while(j > i && ws(s.charCodeAt(j - 1))) j--;
+    var t = s.slice(i, j);
     return t !== "" && QRID_MISSING_CODES[t] === true;
   }
   /* The date and datetime fields of this form shown day- or month-first
@@ -713,11 +721,14 @@
      validators.weight answered for the delta rule while the range rule held
      the save. A second mode turns the entry into a composite: it carries
      every mode's own keys (parse, clean, branches...; the first mode's on a
-     clash, type among them), byMode holds each mode's own entry, types lists
-     them, and test(v) asks every mode with the same arguments: false when any
-     says false (an ID check answers {ok: false}), else null when any cannot
-     answer, else true. The same mode again (a branch rebuilt) replaces its
-     own entry. */
+     clash, type among them), byMode holds each mode's own entry, and types
+     lists them. test() judges the field as the page holds it: every mode
+     answers, and a mode that judges a value it is handed (takesValue: an ID
+     check) is handed the field's value. test(v) judges the value v: only a
+     mode that takes a value answers, since the others read the page. Either
+     way the answer is false when any mode says false (an ID check answers
+     {ok: false}), else null when any cannot answer, else true. The same mode
+     again (a branch rebuilt) replaces its own entry. */
   function QRID_registerValidator(f, entry){
     var prev = UV_validators[f];
     if(!prev || (!prev.byMode && prev.type === entry.type)){ UV_validators[f] = entry; return; }
@@ -731,12 +742,15 @@
     out.types = [];
     for(t in byMode) out.types.push(t);
     out.test = function(){
-      var open = false, any = false, args = arguments;
+      var open = false, any = false, args = arguments, given = arguments.length > 0;
       for(var m in byMode){
-        if(typeof byMode[m].test !== "function") continue;
+        var e = byMode[m];
+        if(typeof e.test !== "function" || (given && e.takesValue !== true)) continue;
         any = true;
         var r;
-        try { r = byMode[m].test.apply(byMode[m], args); } catch(e){ r = null; }   /* a mode that cannot answer leaves it open */
+        try {
+          r = given ? e.test.apply(e, args) : (e.takesValue === true ? e.test(QRID_WHEN.readRef(f, null)) : e.test());
+        } catch(x){ r = null; }   /* a mode that cannot answer leaves it open */
         if(r && typeof r === "object" && typeof r.ok === "boolean") r = r.ok;
         if(r === false) return false;
         if(r !== true) open = true;
@@ -4205,7 +4219,7 @@ function QRIDSingleInit(QRID_CONFIG){
       return;
     }
     var V0 = VS.all[0];
-    QRID_registerValidator(f, { type: "single",
+    QRID_registerValidator(f, { type: "single", takesValue: true,
       mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError,
               guidance: V0.mode.guidance, blockSave: V0.blockSave },
       test: function(v, isFinal){ return (configError || QRID_isMissingCode(v)) ? null : V0.verdict(v, isFinal !== false); } });

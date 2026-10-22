@@ -467,7 +467,8 @@ inner spaces.
   is a rule problem, and so is a spent evaluation budget. The shorthand layout
   is judged at every event that holds the form, arm by arm (a form that repeats
   at some visits only, a whole repeating event, one event in each of two arms),
-  a written-out reference to the same entry is refused, one `vs` with two
+  a written-out reference to the same entry, or to an instance of a form that
+  does not repeat where it lands, is refused, one `vs` with two
   directions judges both ways (the heart-rate recipe), and a deferral only
   this viewer meets is marked and still checked on save.
 - `delta_live_twin_php.php` runs the module over the live fixture on a copy of
@@ -481,7 +482,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 83 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 90 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
