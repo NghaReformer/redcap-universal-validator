@@ -4073,6 +4073,16 @@ namespace INSPIRE\UniversalValidator\Scan {
                     'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
         }
     }
+    /** Counts the progress-clock writes it passes on (review rv10b2-2). */
+    class BumpCountingStore extends FaultyStore
+    {
+        public $bumps = 0;
+        public function setProgressState($runId, $epoch, array $state)
+        {
+            if (!empty($state['progress'])) $this->bumps++;
+            return parent::setProgressState($runId, $epoch, $state);
+        }
+    }
     {
         $poke = function (ArrayScanStore $store, $runId, array $set) {
             $p = new \ReflectionProperty(ArrayScanStore::class, 'runs');
@@ -4175,6 +4185,31 @@ namespace INSPIRE\UniversalValidator\Scan {
             check("rv10b2-3: a step that only $kind moves progress_at",
                 $res['ok'] === true && $f->calls === 2 && $store->run(850 + $i, $runId)['progress_at'] !== $OLD);
         }
+
+        // THE CLOCK IS WRITTEN AT MOST ONCE PER PROGRESS_EVERY SECONDS IN A
+        // REQUEST (review rv10b2-2). Each write is about three statements
+        // through the framework, and every forward step paid them.
+        $t = 1000.0;
+        $clock = function () use (&$t) { return $t; };
+        $driveAt = function ($store, $pid, $runId, $f) use ($reader, $finder, $wide, $clock) {
+            return (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+                'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+                'finalizer' => $f, 'clock' => $clock]))->work($pid, $runId);
+        };
+        list($inner, $runId) = $inUnique(847);
+        $cs = new BumpCountingStore($inner);
+        $ten = array_fill(0, 10, ['groups' => 1]);
+        $ten[] = ['done' => true];
+        $res = $driveAt($cs, 847, $runId, new ScriptedFinalizer($ten));
+        check('rv10b2-2: ten forward steps inside PROGRESS_EVERY write the clock once, on the first',
+            $res['ok'] === true && $cs->bumps === 1 && $inner->run(847, $runId)['progress_at'] !== $OLD);
+        list($inner, $runId) = $inUnique(848);
+        $cs = new BumpCountingStore($inner);
+        $res = $driveAt($cs, 848, $runId, new ScriptedFinalizer($ten, function ($n) use (&$t) {
+            if ($n === 6) $t += ScanWorker::PROGRESS_EVERY;
+        }));
+        check('rv10b2-2: and again once PROGRESS_EVERY seconds have passed since that write',
+            $res['ok'] === true && $cs->bumps === 2);
     }
 
     // -- a finished run takes no more work -----------------------------------

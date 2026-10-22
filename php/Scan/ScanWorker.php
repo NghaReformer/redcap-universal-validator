@@ -54,6 +54,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 final class ScanWorker
 {
+    /**
+     * Seconds between the duplicate phase's progress writes in one request
+     * (review rv10b2-2). Well inside the two minutes after which the page
+     * calls a run stalled, and far inside the reaper's staleHours.
+     */
+    const PROGRESS_EVERY = 30;
+
     /** @var ScanStore */
     private $store;
     /** @var array */
@@ -87,6 +94,9 @@ final class ScanWorker
      *                                 where a storage failure is recorded. The
      *                                 worker's own answer never carries what
      *                                 the server said - see noteStorageFailure.
+     *   clock:          ?callable(): float  seconds, for spacing the duplicate
+     *                                 phase's progress writes (PROGRESS_EVERY);
+     *                                 microtime(true) when absent
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -386,6 +396,9 @@ final class ScanWorker
         // already counts `listed` as movement (planning lists records and
         // examines none), so the movement is reported there.
         $listed = 0;
+        // When this request last moved progress_at in the duplicate phase,
+        // by $this->now(); null until it has (review rv10b2-2).
+        $clockAt = null;
 
         while (true) {
             // admit(), not mustStop() (review BU-2). Asked before the first
@@ -519,8 +532,24 @@ final class ScanWorker
                 // wedged finalizer still ages. Refused means this worker no
                 // longer holds the run, which is the scanning phase's fence
                 // refusal and gets its answer.
-                if ($forward > 0 && !$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
-                    return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                //
+                // AT MOST ONCE PER PROGRESS_EVERY SECONDS (review rv10b2-2).
+                // Every forward step wrote it, and a write costs about three
+                // statements through the framework (the UPDATE, its
+                // ROW_COUNT(), and in the same second the SELECT that tells
+                // "unchanged" from "refused"): 100 groups of two cost 301
+                // writes and 290 such reads. The first forward step of a
+                // request writes it, then one each PROGRESS_EVERY seconds.
+                // Emit and publish no longer lean on this write to notice a
+                // lost lease: each holds the run itself (review rv10a1-1).
+                if ($forward > 0) {
+                    $t = $this->now();
+                    if ($clockAt === null || $t - $clockAt >= self::PROGRESS_EVERY) {
+                        if (!$this->store->setProgressState($runId, $epoch, ['progress' => true])) {
+                            return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
+                        }
+                        $clockAt = $t;
+                    }
                 }
                 // A step that re-read records WAS a batch of records, and is
                 // measured as one, so the next verify page is sized by what
@@ -1326,6 +1355,13 @@ final class ScanWorker
     private function limits()
     {
         return (isset($this->deps['limits']) && is_array($this->deps['limits'])) ? $this->deps['limits'] : [];
+    }
+
+    /** Seconds, from the `clock` dep when a test gives one. */
+    private function now()
+    {
+        $c = isset($this->deps['clock']) ? $this->deps['clock'] : null;
+        return is_callable($c) ? (float) $c() : microtime(true);
     }
 
     private function owner()
