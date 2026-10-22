@@ -1316,6 +1316,7 @@ php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, en
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
+php  tests/docs_claims_php.php # scan docs name only settings, tables, crons, pages and actions that exist
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
 node tests/config_notice_js.cjs     # page-level config-error notice
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
