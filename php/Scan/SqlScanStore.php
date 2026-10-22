@@ -2481,6 +2481,21 @@ final class SqlScanStore implements ScanStore
         }
     }
 
+    /**
+     * See ScanStore::supersededBy(). The run by its primary key, bound to the
+     * project, and the later runs through ix_project_created's project_id.
+     */
+    public function supersededBy($pid, $runId)
+    {
+        $t = Schema::table('scan_run');
+        $r = $this->db->select('SELECT n.run_id FROM ' . $t . ' o JOIN ' . $t . ' n
+                ON n.project_id = o.project_id AND n.generation_id > o.generation_id
+            WHERE o.run_id = ? AND o.project_id = ? AND n.terminal = ? AND n.scope_dag IS NULL
+            ORDER BY n.generation_id, n.run_id LIMIT 1',
+            [(int) $runId, (int) $pid, ScanOutcome::COMPLETE]);
+        return isset($r[0][0]) ? (int) $r[0][0] : null;
+    }
+
     /** Why a supersede page was given back rather than kept. */
     const SUPERSEDE_MOVED = 'the supersede cursor moved under this page, so nothing was closed; ask again';
 

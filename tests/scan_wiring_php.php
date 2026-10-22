@@ -102,10 +102,9 @@ namespace {
         // ScanAuthorization::preFenceStatus stood here until ScanService::
         // statusOf() called it (H10 part 1, with review R5-1).
 
-        // -- wave 11, the report. It could not have been built earlier:
-        //    findings() filters on generation_id alone and generation_id was
-        //    the literal 1 for every run of every project until wave 4.
-        'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
+        // ScanAuthorization::projectionStillValid stood here until ScopeDrift::
+        // check() called it for ScanService::reportOf() (H10 part 2, review
+        // rv11a1-2).
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's

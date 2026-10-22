@@ -295,6 +295,9 @@ class FaultyStore implements ScanStore
     public function supersedePrevious($pid, $runId, $limit)
     { $this->gate('supersedePrevious'); return $this->inner->supersedePrevious($pid, $runId, $limit); }
 
+    public function supersededBy($pid, $runId)
+    { $this->gate('supersededBy'); return $this->inner->supersededBy($pid, $runId); }
+
     public function audit($pid, $runId, $event, $actor, $detail)
     { $this->gate('audit'); return $this->inner->audit($pid, $runId, $event, $actor, $detail); }
 

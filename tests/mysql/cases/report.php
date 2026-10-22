@@ -320,6 +320,86 @@ $pq = $rec2->log[0];
 check('report dims: the state row is one lookup on uq_dim_v2',
     $point !== null && count($rec2->log) === 1 && uv_explain_keys($A, $pq[1], $pq[2]) === ['uq_dim_v2']);
 
+// -- A REPORT ANOTHER RUN REPLACED, AND A FILE THAT EARNS ITS TRAILER ---------
+//
+// Reviews rv11a1-5 and rv11a2-1. A later whole-project run that completes
+// closes the older run's rows a page at a time; retention removes a run a page
+// at a time. Either one under way while the older run's file was written cut
+// the walk short, and the file still ended on export_complete=1. With the run
+// to read again, streamFindings() ends such a file as one that lost rows.
+// supersededBy() reads the project's own runs, never a finding.
+$finishWhole = \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+                                                                    'violations' => 1, 'ruleProblems' => 0]);
+$streamOf = function ($pid, $run, callable $flush) use ($dbA) {
+    $store = new SqlScanStore($dbA);
+    $d = new \INSPIRE\UniversalValidator\ScanDimensions();
+    $d->singleEventProved = true;
+    $report = new \INSPIRE\UniversalValidator\Scan\ScanReport(new FindingRowMapper([
+        'pid' => $pid, 'now' => gmdate('Y-m-d H:i:s'), 'valuesState' => 'none', 'readerCeiling' => 'raw',
+        'identifiers' => [], 'recordIds' => FindingRowMapper::IDS_RAW, 'recordIdField' => 'record_id']),
+        $d, $store->run($pid, $run['run']));
+    $text = '';
+    $out = \INSPIRE\UniversalValidator\Scan\ScanService::streamFindings($store, $report, $pid, $run['gen'],
+        ['dag' => null], [['expected_rows', '1200']], ['banner' => null, 'row' => null],
+        function ($s) use (&$text) { $text .= $s; }, $flush, ['run' => $run['run'], 'expected' => 1200]);
+    $lines = explode("\r\n", rtrim(substr($text, 3), "\r\n"));
+    return ['out' => $out, 'last' => end($lines),
+            'lost' => strpos($text, 'export_complete') === false
+                      && strpos(end($lines), '"# ' . \INSPIRE\UniversalValidator\Scan\ScanService::ROWS_LOST . '"') === 0];
+};
+$SUP = 884;
+$old = $plant($SUP, 1200, 'OLD');
+(new SqlScanStore($dbA))->finish($old['run'], $finishWhole);
+$whole0 = $streamOf($SUP, $old, function () {});
+check('report supersede (control): the older run read whole earns the trailer',
+    $whole0['out']['ok'] === true && $whole0['out']['rows'] === 1200
+    && strpos($whole0['last'], '"# export_complete=1","rows=1200"') === 0);
+$new = $plant($SUP, 3, 'NEW');
+check('report supersede: nothing replaces a run while the later one is open',
+    (new SqlScanStore($dbA))->supersededBy($SUP, $old['run']) === null);
+(new SqlScanStore($dbA))->finish($new['run'], $finishWhole);
+$rec = new UvRecordingDb($dbA);
+check('report supersede: once the later run completes, it is the run that replaced the older',
+    (new SqlScanStore($rec))->supersededBy($SUP, $old['run']) === $new['run']
+    && (new SqlScanStore($dbA))->supersededBy($SUP, $new['run']) === null
+    && (new SqlScanStore($dbA))->supersededBy($SUP + 1, $old['run']) === null);
+$sq = $rec->log[0];
+$supKeys = uv_explain_keys($A, $sq[1], $sq[2]);
+check('report supersede: the question reads the run by its key and the project\'s runs by theirs ('
+    . implode(',', $supKeys) . ')',
+    count($rec->log) === 1 && in_array('PRIMARY', $supKeys, true) && count($supKeys) === 2
+    && count(array_intersect($supKeys, ['ix_project_created', 'uq_project_active'])) === 1);
+$closed = 0;
+$f = 0;
+$mid = $streamOf($SUP, $old, function () use (&$f, &$closed, $dbB, $SUP, $new) {
+    if (++$f !== 2) return;
+    $s = new SqlScanStore($dbB);
+    do {
+        $p = $s->supersedePrevious($SUP, $new['run'], ScanStore::PAGE);
+        $closed += $p['rows'];
+    } while (!$p['done']);
+});
+check('report supersede: a file whose rows were closed after its first page ends as lost, not whole ('
+    . $mid['out']['rows'] . ' rows, ' . $closed . ' closed)',
+    $closed === 1200 && $mid['out']['rows'] === 100 && $mid['out']['ok'] === false && $mid['lost']);
+
+$PUR = 886;
+$gone = $plant($PUR, 1200, 'PUR');
+(new SqlScanStore($dbA))->finish($gone['run'], $finishWhole);
+$dbA->execNoCount('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '2020-01-01 00:00:00' WHERE run_id = ?",
+                  [$gone['run']]);
+$f = 0;
+$purged = 0;
+$midP = $streamOf($PUR, $gone, function () use (&$f, &$purged, $dbB, $PUR) {
+    if (++$f !== 2) return;
+    $p = (new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbB))->purgeRuns($PUR, 90, 500);
+    $purged += $p['rows'];
+});
+check('report purge: a file whose run retention began removing after its first page ends as lost ('
+    . $midP['out']['rows'] . ' rows, ' . $purged . ' removed)',
+    $purged > 0 && (new SqlScanStore($dbA))->run($PUR, $gone['run']) === null
+    && $midP['out']['ok'] === false && $midP['lost']);
+
 // -- THE RUN THE FINDINGS PANEL OPENS ON (B5) -----------------------------------
 //
 // ScanService::finishedRun(): the newest finished run of the reader's own

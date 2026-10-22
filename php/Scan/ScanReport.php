@@ -177,7 +177,11 @@ final class ScanReport
                 'removed'   => $count('removed'),
             ]),
             'mayCertify'       => ScanOutcome::mayClaimClean($outcome),
-            'suffix'           => ScanOutcome::suffix($outcome),
+            // THE FILENAME'S SUFFIX, from the one place that makes it (review
+            // rv11a2-5). This was ScanOutcome::suffix() alone, so one answer
+            // carried `_CANCELLED` here and `_INCOMPLETE_CANCELLED` in `marks`,
+            // and every terminal state but a certified one disagreed.
+            'suffix'           => self::marksOf($this->run)['suffix'],
             'valuesState'      => (string) $this->run['values_state'],
             'labelsDegraded'   => $this->dims->isDegraded(),
             'degradedSummary'  => $this->dims->degradedSummary(),
@@ -187,5 +191,91 @@ final class ScanReport
             // without its policy).
             'asOf'             => ScanPlanner::frozenDay($this->run),
         ];
+    }
+
+    /**
+     * README's three ways of saying a report is incomplete, from the run row:
+     * a banner above it, a terminal row inside it that survives sorting and
+     * deleting comment lines, and a filename suffix that survives the file
+     * being forwarded (renaming it is what removes it). The page and the
+     * export take them from here (through ScanService::incompleteMarks()),
+     * and runFacts() its suffix.
+     *
+     * Incomplete is a run that did not finish complete, or that finished
+     * complete and did not keep every finding (the detail limit). A complete
+     * run that may still not be called clean is not incomplete: its suffix
+     * says _NOT-CERTIFIED and it carries no banner.
+     *
+     * The row ends on the run's coverage sentence, chosen as the panel and
+     * runFacts() choose it: $emptied is the same pair runFacts() takes, so a
+     * group whose records moved away is not told they were deleted (review
+     * rvf1-2).
+     *
+     * @param array|null $emptied ['departed' => int, 'removed' => int] from the census, or null
+     * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
+     */
+    public static function incompleteMarks(array $run, ?array $emptied = null)
+    {
+        return self::marksOf($run, $emptied);
+    }
+
+    /** @see incompleteMarks() — the work, shared with runFacts(). */
+    private static function marksOf(array $run, ?array $emptied = null)
+    {
+        $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
+              'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
+              'detail'   => isset($run['detail']) ? $run['detail'] : null,
+              'clean'    => isset($run['clean']) && $run['clean'] !== null && (int) $run['clean'] === 1];
+        $incomplete = $o['terminal'] !== ScanOutcome::COMPLETE || $o['detail'] === ScanOutcome::DETAIL_TRUNCATED;
+        $certified = ScanOutcome::mayClaimClean($o);
+        $suffix = ScanOutcome::suffix($o);
+        if ($incomplete && strpos($suffix, '_INCOMPLETE') === false) $suffix = '_INCOMPLETE' . $suffix;
+        if (!$incomplete && !$certified && $suffix === '') $suffix = '_NOT-CERTIFIED';
+        return [
+            'incomplete' => $incomplete,
+            'certified'  => $certified,
+            'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
+            'row'        => $incomplete
+                ? self::rowOpening($o['coverage'], $o['detail']) . ' '
+                  . ScanPageView::endedSentence([
+                        'coverage'  => $o['coverage'],
+                        'detail'    => $o['detail'],
+                        'leftGroup' => is_array($emptied) && isset($emptied['departed']) && (int) $emptied['departed'] > 0,
+                        'removed'   => (is_array($emptied) && isset($emptied['removed'])) ? max(0, (int) $emptied['removed']) : 0,
+                    ])
+                : null,
+            'suffix'     => $suffix,
+        ];
+    }
+
+    /** The terminal row's opening for a run that did not reach every record. */
+    const ROW_UNCOVERED = 'This scan did not cover the whole project. Rows above are real findings over the '
+        . 'records that WERE examined; absence of a row is not evidence a record is clean.';
+
+    /** ...for a run that examined every record and did not keep every finding. */
+    const ROW_CUT = 'This file does not hold every finding this scan made. Rows above are real findings; '
+        . 'absence of a row is not evidence a record is clean.';
+
+    /** ...for a run that examined every record on its list and still cannot certify. */
+    const ROW_UNCERTIFIED = 'This scan does not certify the project. Rows above are real findings over the '
+        . 'records it examined; absence of a row is not evidence a record is clean.';
+
+    /**
+     * The terminal row's opening, CHOSEN BY COVERAGE (review rv11a2-3). It was
+     * ROW_UNCOVERED for every incomplete run, so a run that examined every
+     * record and passed the detail limit - `partial`, complete through its
+     * fence, truncated - read "This scan did not cover the whole project"
+     * and, two sentences on, "Every record was checked"; a manifest-only run
+     * read the same ahead of "Every record on the opening list was checked".
+     * The coverage sentence that follows says what was checked; the opening
+     * says why the file does not certify, without contradicting it.
+     */
+    private static function rowOpening($coverage, $detail)
+    {
+        if ($coverage === ScanOutcome::FENCED) {
+            return $detail === ScanOutcome::DETAIL_TRUNCATED ? self::ROW_CUT : self::ROW_UNCERTIFIED;
+        }
+        if ($coverage === ScanOutcome::MANIFEST) return self::ROW_UNCERTIFIED;
+        return self::ROW_UNCOVERED;
     }
 }

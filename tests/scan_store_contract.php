@@ -1469,6 +1469,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('supersede: a run still in progress closes nothing, and is NOT done - it may yet complete',
         $live['done'] === false && $live['rows'] === 0 && is_string($live['why'])
         && count($sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100)) === 2);
+    $C('superseded by: nothing has replaced a run while the later one is still in progress',
+        $sp->supersededBy(795, $g1['run']) === null);
     $sp->finish($g2['run'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
                                                  'violations' => 1]));
     $C('supersede: the fixture run really did complete',
@@ -1527,6 +1529,18 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && count($sp->findings(795, $gy['gen'], ['dag' => null], [], 0, 100)) === 1);
     $C('supersede: a run id nobody has is done with nothing to do',
         $sp->supersedePrevious(795, 987654321, 10)['done'] === true);
+    // WHICH RUN REPLACED A REPORT (reviews rv11a1-5, rv11a2-1): the earliest
+    // later whole-project run that completed. The partial and the cancelled
+    // run between the second and the last replace nothing.
+    $C('superseded by: a run is replaced by the next run of its project that completed',
+        $sp->supersededBy(795, $g1['run']) === $g2['run'] && $sp->supersededBy(795, $g2['run']) === $gy['run']);
+    $C('superseded by: a run that did not complete is replaced too, and replaces nothing',
+        $sp->supersededBy(795, $gx['run']) === $gy['run']);
+    $C('superseded by: the newest complete run is replaced by nothing',
+        $sp->supersededBy(795, $gy['run']) === null);
+    $C('superseded by: another project\'s id, and an id that is no run, are replaced by nothing',
+        $sp->supersededBy(796, $g1['run']) === null && $sp->supersededBy(795, 987654321) === null
+        && $sp->supersededBy(796, $nb['run']) === null);
 
     // ONLY A WHOLE-PROJECT RUN SUPERSEDES (review R8-1). A run scoped to one
     // data access group read that group's records and no others; it closed
@@ -1550,7 +1564,12 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('scope: and asking again changes nothing',
         $sd->supersedePrevious(797, $group['run'], 100) === $g
         && count($sd->findings(797, $whole['gen'], ['dag' => null], [], 0, 100)) === 3);
+    $C('superseded by: a run of one group replaces no report',
+        $sd->supersededBy(797, $whole['run']) === null && $sd->supersededBy(797, $group['run']) === null);
     $next = $scan($sd, 797, [[[]]], 'complete');
+    $C('superseded by: the next whole-project run replaces both, the group\'s run included',
+        $sd->supersededBy(797, $whole['run']) === $next['run']
+        && $sd->supersededBy(797, $group['run']) === $next['run'] && $sd->supersededBy(797, $next['run']) === null);
     $closed = 0;
     $calls = 0;
     do {

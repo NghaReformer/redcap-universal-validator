@@ -254,3 +254,49 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('rollup: a second worker cannot read it while the page is open', $waited);
     check('rollup: and can once the page is closed', $storeB->holdRollupCursor($rid, $epoch) === 0);
 }
+
+// A GROUP RUN'S SUMMARY IS KEPT PER GROUP (review rv11a1-4). Its form, reason
+// and check rows carry each finding's group in axis2, so the group's reader
+// counts their group's share; the group axis is not split, and every axis
+// still totals the run's active findings. Twelve findings, eight filed under
+// site_a and four under site_b, in pages of five.
+{
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $r = $store->startRun(958, array('created_by' => 'alice', 'fence_open' => '10', 'scope_dag' => '7'));
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $store->writeManifest($rid, array(
+        array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => '7')));
+    $epoch = (int) $store->run(958, $rid)['lease_epoch'];
+    $rows = array();
+    for ($i = 1; $i <= 12; $i++) {
+        $rows[] = "(958, " . $gen . ", UNHEX(SHA2('g" . $i . "', 256)), 1, 1,
+            UNHEX(SHA2('R1', 256)), 'R1', 'x', '" . ($i % 2 ? 'fa' : 'fb') . "', 0, 'assert',
+            'required-blank', '" . ($i <= 8 ? 'site_a' : 'site_b') . "', '" . str_repeat('c', 64) . "', 'r1')";
+    }
+    $A->query('INSERT INTO ' . Schema::table('finding') . '
+        (project_id, generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
+         record_id_bin, field, host_form, rule_ord, check_type, reason_code, dag_key,
+         rule_revision, rule_source_id) VALUES ' . implode(',', $rows));
+    $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbA, $store);
+    for ($p = 0; $p < 10; $p++) {
+        if ($roll->step(958, $rid, $epoch, $gen, 5, true)['done']) break;
+    }
+    $cell = array();
+    $total = array();
+    foreach ($store->aggregates($rid) as $a) {
+        $cell[$a['kind'] . '|' . $a['axis1'] . '|' . $a['axis2']] = (int) $a['cnt'];
+        $total[$a['kind']] = (isset($total[$a['kind']]) ? $total[$a['kind']] : 0) + (int) $a['cnt'];
+    }
+    $K = '\INSPIRE\UniversalValidator\Scan\RollupBuilder';
+    check('rollup by group: each form is counted per group',
+        $cell[$K::K_FORM . '|fa|site_a'] === 4 && $cell[$K::K_FORM . '|fb|site_a'] === 4
+        && $cell[$K::K_FORM . '|fa|site_b'] === 2 && $cell[$K::K_FORM . '|fb|site_b'] === 2
+        && $cell[$K::K_REASON . '|required-blank|site_b'] === 4 && $cell[$K::K_TYPE . '|assert|site_a'] === 8);
+    check('rollup by group: the group axis is not split',
+        $cell[$K::K_DAG . '|site_a|'] === 8 && $cell[$K::K_DAG . '|site_b|'] === 4);
+    check('rollup by group: and every axis still totals the run\'s twelve',
+        $total[$K::K_FORM] === 12 && $total[$K::K_REASON] === 12 && $total[$K::K_DAG] === 12
+        && $total[$K::K_TYPE] === 12
+        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::tally($store->aggregates($rid))['stored'] === 12);
+}

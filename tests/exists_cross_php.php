@@ -912,6 +912,15 @@ namespace {
     // M2: a stored run is not shown to a reader the other project would not answer.
     class CrossRunModule extends \INSPIRE\UniversalValidator\UniversalValidator {
         public $runRow = null;
+        // A stored run is read only while the durable scan is switched on
+        // (review rv11a1, observation (a)); these runs are read with it on.
+        public function getSystemSetting($k) {
+            return $k === \INSPIRE\UniversalValidator\Scan\ScanService::SYS_FLAG ? '1' : parent::getSystemSetting($k);
+        }
+        public function getProjectSetting($k, $pid = null) {
+            return $k === \INSPIRE\UniversalValidator\Scan\ScanService::PROJ_FLAG ? '1'
+                : parent::getProjectSetting($k, $pid);
+        }
         public function query($sql, $params = []) {
             if (strpos($sql, 'FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')) !== false
                     && strpos($sql, 'WHERE run_id = ?') !== false) {

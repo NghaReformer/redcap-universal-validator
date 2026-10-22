@@ -53,6 +53,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
+    // ScanService::incompleteMarks() is made by ScanReport (review rv11a2-5).
+    require_once __DIR__ . '/../php/Scan/ScanReport.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
