@@ -7678,7 +7678,7 @@ class UniversalValidator extends AbstractExternalModule
         // (ScanService::disabling()), so an enable after a disable is what
         // lets scans run again at once.
         try {
-            $this->setSystemSetting(self::SCAN_ENABLED_AT, (string) time());
+            $this->setSystemSetting(self::SCAN_ENABLED_AT, Scan\ScanService::markerNow());
         } catch (\Throwable $e) {
             // Logged, never thrown; without it the refusal ends on its own
             // after ScanService::DISABLING_SECONDS.
@@ -7733,7 +7733,7 @@ class UniversalValidator extends AbstractExternalModule
     public function redcap_module_system_disable($version = null)
     {
         try {
-            $this->setSystemSetting(self::SCAN_DISABLED_AT, (string) time());
+            $this->setSystemSetting(self::SCAN_DISABLED_AT, Scan\ScanService::markerNow());
         } catch (\Throwable $e) {
             $this->scanDisableFailed('marker', $e);
         }
@@ -7778,7 +7778,7 @@ class UniversalValidator extends AbstractExternalModule
             $pid = (int) $project_id;
             if ($pid < 1) return;
             try {
-                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, (string) time(), $pid);
+                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, Scan\ScanService::markerNow(), $pid);
             } catch (\Throwable $e) {
                 $this->scanDisableFailed('project-marker', $e);
             }
@@ -7804,7 +7804,7 @@ class UniversalValidator extends AbstractExternalModule
         $pid = (int) $project_id;
         if ($pid < 1) return;
         try {
-            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, (string) time(), $pid);
+            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, Scan\ScanService::markerNow(), $pid);
         } catch (\Throwable $e) {
             $this->scanDisableFailed('project-enable-marker', $e);
         }

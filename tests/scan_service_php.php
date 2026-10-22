@@ -1002,6 +1002,38 @@ namespace INSPIRE\UniversalValidator\Scan {
     $dv = (new ScanService($pdis))->available(1);
     check('service rvf2-1: and the project enable after it lifts that refusal',
         strpos((string) $dv['why'], 'being switched off') === false);
+    // rvfix-N4: THE ORDER IS EXACT. The markers were whole seconds and the
+    // enable won a tie, so a disable in the same second as an earlier enable
+    // was ignored. They carry microseconds now, and whole-second markers
+    // written before still read.
+    $sec = (string) time();
+    $offFor = function (array $sys, array $proj) {
+        $fm = new \FakeModule();
+        $fm->sys = [ScanService::SYS_FLAG => '1'] + $sys;
+        $fm->proj = [ScanService::PROJ_FLAG => '1'] + $proj;
+        $why = (string) (new ScanService($fm))->available(1)['why'];
+        return strpos($why, 'being switched off') !== false;
+    };
+    foreach (['server' => [ScanService::DISABLED_AT, ScanService::ENABLED_AT, 'sys'],
+              'project' => [ScanService::PROJECT_DISABLED_AT, ScanService::PROJECT_ENABLED_AT, 'proj']] as $pair => $k) {
+        $at = function ($off, $on) use ($k, $offFor) {
+            $m = [$k[0] => $off, $k[1] => $on];
+            return $k[2] === 'sys' ? $offFor($m, []) : $offFor([], $m);
+        };
+        check('rvfix-N4 (' . $pair . '): a disable later in the same second as the enable refuses',
+            $at($sec . '.600000', $sec . '.100000') === true);
+        check('rvfix-N4 (' . $pair . '): an enable later in the same second lifts it',
+            $at($sec . '.100000', $sec . '.600000') === false);
+        check('rvfix-N4 (' . $pair . '): whole-second markers still read, a tie going to the enable as before',
+            $at($sec, $sec) === false && $at($sec, (string) ((int) $sec - 1)) === true);
+        check('rvfix-N4 (' . $pair . '): a whole-second enable is the start of its second',
+            $at($sec . '.000001', $sec) === true && $at($sec, $sec . '.000001') === false);
+        check('rvfix-N4 (' . $pair . '): a marker that is no time is none',
+            $at('soon', null) === false && $at($sec . '.5x', null) === false && $at($sec . '.5', null) === true);
+    }
+    $mk = ScanService::markerNow();
+    check('rvfix-N4: a marker is the time now to the microsecond',
+        preg_match('/^\d+\.\d{6}$/D', $mk) === 1 && abs((int) $mk - time()) <= 2);
 
     // -- the flag answer discloses nothing about the installation ------------
     //

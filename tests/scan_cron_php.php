@@ -586,6 +586,27 @@ check('project enable rvf2-1: the project\'s enable marker is written, after its
     && abs((int) $en - time()) <= 5 && $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT) === null
     && array_keys($m->projectSettings) === [42] && $m->sql === []);
 
+// rvfix-N4: every hook writes its marker to the microsecond, so a disable
+// right after an enable is the later of the two, in the same second or not.
+$m = new UniversalValidator();
+$m->systemSettings = $on;
+$m->tables = $tables;
+$m->redcap_module_system_enable('9.9.9');
+$m->redcap_module_system_disable('9.9.9');
+$m->redcap_module_project_enable('9.9.9', 42);
+$m->redcap_module_project_disable('9.9.9', 42);
+$marks = [$m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT), $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT),
+          $m->getProjectSetting(ScanService::PROJECT_ENABLED_AT, 42), $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 42)];
+$us = function ($s) { return is_string($s) && preg_match('/^\d+\.\d{6}$/D', $s) === 1; };
+$after = function ($a, $b) {
+    $x = explode('.', $a); $y = explode('.', $b);
+    return (int) $x[0] > (int) $y[0] || ((int) $x[0] === (int) $y[0] && (int) $x[1] > (int) $y[1]);
+};
+check('rvfix-N4: the four hooks write their markers to the microsecond',
+    count(array_filter($marks, $us)) === 4);
+check('rvfix-N4: and a disable after an enable is the later, for the server and for the project',
+    count(array_filter($marks, $us)) === 4 && $after($marks[1], $marks[0]) && $after($marks[3], $marks[2]));
+
 // A pass running when the module is switched off stops at its next unit; a
 // marker from an earlier disable stops nothing.
 $m = new UniversalValidator();

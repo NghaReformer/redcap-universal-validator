@@ -2961,12 +2961,49 @@ final class ScanService
         return null;
     }
 
-    /** A disable marker newer than its enable marker, and inside DISABLING_SECONDS. */
+    /**
+     * A disable marker newer than its enable marker, and inside DISABLING_SECONDS.
+     *
+     * IN MICROSECONDS (review rvfix-N4). The markers were whole seconds and an
+     * enable won a tie, so a disable written in the same second as an earlier
+     * enable was ignored, and a Start in its window made a run the hook had
+     * walked past. markerNow() writes the time to the microsecond now. A
+     * marker written before, in whole seconds, still reads: it is the start
+     * of its second, so against a new marker of the same second the new one
+     * is the later, which it is. A tie still goes to the enable, as before.
+     */
     private static function marked($off, $on)
     {
-        if (!is_numeric($off)) return false;
-        if (is_numeric($on) && (int) $on >= (int) $off) return false;
-        return time() - (int) $off < self::DISABLING_SECONDS;
+        $o = self::markerParts($off);
+        if ($o === null) return false;
+        $n = self::markerParts($on);
+        if ($n !== null && ($n[0] > $o[0] || ($n[0] === $o[0] && $n[1] >= $o[1]))) return false;
+        return time() - $o[0] < self::DISABLING_SECONDS;
+    }
+
+    /**
+     * The value an enable or disable hook writes as its marker: the time now,
+     * "<seconds>.<six digits>" (review rvfix-N4). Taken from microtime()'s
+     * string, not its float, so no digit is rounded.
+     */
+    public static function markerNow()
+    {
+        $p = explode(' ', microtime());
+        $us = (isset($p[0]) && preg_match('/^0\.(\d{6})/', $p[0], $m)) ? $m[1] : '000000';
+        return (isset($p[1]) ? $p[1] : (string) time()) . '.' . $us;
+    }
+
+    /**
+     * [seconds, microseconds] of a marker, or null for none. Reads the
+     * markers markerNow() writes and the whole seconds written before it.
+     *
+     * @return ?int[]
+     */
+    private static function markerParts($m)
+    {
+        if (is_int($m)) $m = (string) $m;
+        if (!is_string($m) || !preg_match('/^\s*(\d{1,15})(?:\.(\d{1,6})\d*)?\s*$/D', $m, $x)) return null;
+        return [(int) $x[1], isset($x[2]) ? (int) str_pad($x[2], 6, '0') : 0];
     }
 
     /**
