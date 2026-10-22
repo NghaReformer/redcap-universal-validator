@@ -1016,7 +1016,9 @@ the window is checked when the record is saved. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
 judge a saved value against the day it was saved, so an old record never turns
-red because time has passed. Annotation-only; see the README section and
+red because time has passed. `notFuture` does too after saving; on the form it
+still flags a saved date after today, and shows no "OK" for a saved date that
+passes. Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Can a specimen ID on a result form be checked against the registered specimens?**

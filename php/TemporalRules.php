@@ -269,7 +269,7 @@ final class TemporalRules
             $r=$resolver->resolve($op,$context);
             if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
             //  - One that cannot be resolved, of a rule that checks something without it
-            //    (ModeRegistry::withholds: @UVWINDOW "notFuture"), is withheld with its
+            //    (ModeRegistry::withholds: @UVWINDOW "notFuture" or "notPast"), is withheld with its
             //    reason, and the rule stays live for the rest.
             if(!isset($r['members'])&&($r['state']??null)!=='ok'&&ModeRegistry::withholds($rk,$rule)){
                 $why='Extended reference unavailable: '.($r['state']??'unreadable').'.';

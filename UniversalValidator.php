@@ -4122,11 +4122,14 @@ class UniversalValidator extends AbstractExternalModule
             if ($marks) $config['numberMarks'] = $marks;
         }
         // The saved value of each field a today-relative @UVWINDOW part judges (a
-        // "from" of today or now, notPast). The page judges those parts only for
-        // a value that is new or changed: a saved value is judged against the
-        // day it was saved, after saving (findingsWindow). A field whose saved
-        // value could not be read, or is not valid UTF-8, maps to null, and the
-        // page judges none of those parts on it.
+        // "from" of today or now, notPast, notFuture). The page judges a "from"
+        // of today or now and notPast only for a value that is new or changed:
+        // a saved value is judged against the day it was saved, after saving
+        // (findingsWindow). notFuture still flags an unchanged value after
+        // today (it was after every earlier day too), but a pass shows no
+        // green "OK": the value may have been in the future on its save day
+        // (WIN-2). A field whose saved value could not be read, or is not
+        // valid UTF-8, maps to null, and the page treats it as unchanged.
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
@@ -4134,11 +4137,11 @@ class UniversalValidator extends AbstractExternalModule
         return $config;
     }
 
-    /** Whether a @UVWINDOW rule or branch has a part judged against today: a "from" of today or now, or notPast. */
+    /** Whether a @UVWINDOW rule or branch has a part judged against today: a "from" of today or now, notPast or notFuture. */
     private static function windowTodayRelative(array $r)
     {
         $a = isset($r['windowAnchor']) ? $r['windowAnchor'] : null;
-        return $a === 'today' || $a === 'now' || !empty($r['windowNotPast']);
+        return $a === 'today' || $a === 'now' || !empty($r['windowNotPast']) || !empty($r['windowNotFuture']);
     }
 
     /** The fields of the page's @UVWINDOW rules with a part judged against today. */
@@ -4737,10 +4740,10 @@ class UniversalValidator extends AbstractExternalModule
         //                      without rights to that form must not see the
         //                      value, and a window built from it would show it.
         //                      The rule stays live for what does not need it
-        //                      ("notFuture"); the browser says the rest is
+        //                      ("notFuture", "notPast"); the browser says the rest is
         //                      checked after saving.
         // $withhold (ModeRegistry::withholds): the rule checks something that
-        // does not need this operand (@UVWINDOW "notFuture"), so an unresolved
+        // does not need this operand (@UVWINDOW "notFuture" or "notPast"), so an unresolved
         // one is withheld, with its reason ('withheldWhy'), and the rule stays live.
         $foldOperand = function ($text, $withhold = false) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
             $out = ['op' => null, 'deferred' => true, 'why' => [], 'snapshot' => []];

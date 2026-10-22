@@ -150,7 +150,7 @@ final class ModeRegistry
                 if (!isset($rk['key'], $rk['kind']) || !in_array($rk['kind'], ['cond', 'fieldList', 'operand'], true)
                     || ($rk['kind'] === 'operand' && (!isset($rk['op'], $rk['value'])
                         || !is_string($rk['op']) || !is_string($rk['value'])))
-                    || (isset($rk['withholdIf']) && (!is_string($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
+                    || (isset($rk['withholdIf']) && (!self::isKeyList($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a malformed refKeys entry');
                 }
             }
@@ -584,7 +584,26 @@ final class ModeRegistry
      */
     public static function withholds(array $rk, array $rule)
     {
-        return isset($rk['withholdIf']) && !empty($rule[$rk['withholdIf']]);
+        if (!isset($rk['withholdIf'])) return false;
+        foreach ((array) $rk['withholdIf'] as $k) {
+            if (!empty($rule[$k])) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A rule key, or a non-empty list of them (withholdIf). @UVWINDOW lists
+     * notFuture and notPast: either one is checked without the "from" date,
+     * so either keeps the rule live when that date cannot be read (WIN-1).
+     */
+    private static function isKeyList($v)
+    {
+        if (is_string($v)) return $v !== '';
+        if (!is_array($v) || !$v || array_values($v) !== $v) return false;
+        foreach ($v as $k) {
+            if (!is_string($k) || $k === '') return false;
+        }
+        return true;
     }
 
     /**

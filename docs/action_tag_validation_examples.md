@@ -1519,8 +1519,10 @@ are judged against the day the value was saved, not the day someone looks at it.
 - On the form, only a value that is new or changed is judged against today. A
   saved value shows nothing when the record is opened again, so a visit date
   entered last month does not turn red because a month has passed. `notFuture`
-  still checks a saved value on the form, against today. A value filled in by
-  `@TODAY` or `@NOW` counts as new.
+  still flags a saved value after today, since it was after its save day too.
+  A saved value that passes shows no green "OK": it may have been in the future
+  on the day it was saved, which only the check after saving can tell. A value
+  filled in by `@TODAY` or `@NOW` counts as new.
 - After a save, the module reads REDCap's own log to find when each value was
   saved, and judges the value against that day. REDCap writes its log entry for
   a save before the module's check runs, so a value just saved is found there.

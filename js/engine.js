@@ -4675,7 +4675,10 @@ function QRIDConstraintInit(QRID_CONFIG){
    new or changed value only (config.windowSaved holds the saved values): a
    saved value is judged against the day it was saved, after saving
    (UniversalValidator::findingsWindow), so opening an old record never flags
-   it. tests/window_dom_js.cjs locks this factory. */
+   it. notFuture still flags an unchanged value after today, as it was after
+   every earlier day too, but a pass of an unchanged value shows no green OK:
+   the value may have been in the future on the day it was saved, which the
+   audit judges (WIN-2). tests/window_dom_js.cjs locks this factory. */
 function QRIDWindowInit(QRID_CONFIG){
   function styleMsg(el, ok){
     var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -4764,8 +4767,8 @@ function QRIDWindowInit(QRID_CONFIG){
                      fromType: anchorKw !== null ? anchorType : (cfg.fromType == null ? null : cfg.fromType) },
              fromOp: fromOp,
              anchorKw: anchorKw, clockAnchor: clockAnchor,
-             /* the parts judged against today: a "from" of today or now, notPast */
-             todayRelative: clockAnchor || notPast,
+             /* the parts judged against today: a "from" of today or now, notPast, notFuture */
+             todayRelative: clockAnchor || notPast || notFuture,
              fromFormat: (fromOp && fromOp[0] === "ref") ? (cfg.fromFormat || "ymd") : "ymd",
              fromName: anchorKw === null ? ((typeof cfg.windowFrom === "string") ? cfg.windowFrom : "")
                      : clockAnchor ? anchorKw : QRID_temporalFormat(anchorKw, anchorType, cfg.dateFormat || "ymd"),
@@ -4785,8 +4788,8 @@ function QRIDWindowInit(QRID_CONFIG){
 
   /* Whether the field's value is new or changed since the page was built.
      config.windowSaved holds the saved value of each field a today-relative
-     part judges; only a new or changed value is judged against today, as a
-     saved one was judged against the day it was saved, after saving. A field
+     part judges; only a new or changed value is judged in full against today,
+     as a saved one was judged against the day it was saved, after saving. A field
      the server could not read (null) counts as unchanged, so nothing is
      judged against today there. Without windowSaved (a record not saved yet,
      a hand-written config) every value is new. */
@@ -4807,7 +4810,10 @@ function QRIDWindowInit(QRID_CONFIG){
      end counts from pastNow and its late end from futureNow. A period counted
      from "now" takes the plain now: a period is whole calendar days, and a
      margin would let it reach into the period before or after. r.skipped marks
-     a value whose today-relative parts were left out (an unchanged value). */
+     a value whose today-relative parts were left out (an unchanged value):
+     notPast and a window counted from today or now are dropped, notFuture is
+     kept (a value after today was after its save day too), and a pass shows
+     no green OK. */
   function verdictOf(V, fieldName){
     var val = QRID_WHEN.readRef(fieldName, null);
     var spec = V.spec, op = V.fromOp, anchor = null, anchorHi, skipped = false;

@@ -8,8 +8,8 @@
     "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
     "the verdict itself); fieldList = a list of field names the rule reads; operand = one field reference whose",
     "value the verdict reads (op = the key the browser gets the folded operand under, value = the key the",
-    "server's extended compile writes the resolved value to). An operand's optional withholdIf names a rule key:",
-    "when that key is true and the operand cannot be resolved, only the operand is withheld (the page checks what",
+    "server's extended compile writes the resolved value to). An operand's optional withholdIf names a rule key,",
+    "or a list of them: when one is true and the operand cannot be resolved, only the operand is withheld (the page checks what",
     "does not need it and says why the rest is not checked, under <op>Why; the audit judges the rest and logs",
     "the operand's part as not checked) instead of the whole rule being switched off.",
     "snapshotAdvisory (optional): the mode's page factory turns only the parts that read a snapshot advisory",
@@ -210,7 +210,7 @@
       "missingCodes": "skip",
       "refKeys": [
         {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue",
-         "withholdIf": "windowNotFuture"}
+         "withholdIf": ["windowNotFuture", "windowNotPast"]}
       ],
       "snapshotAdvisory": true,
       "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
