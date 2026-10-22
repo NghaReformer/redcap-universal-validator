@@ -15,6 +15,21 @@
  * The previous exporter ran a complete scan of its own inside this request;
  * it is in the history at 1.8.8 and is not coming back. This one reads only
  * what a run already stored, a page at a time.
+ *
+ * A GET WITH NO TOKEN, AND WHAT THAT LEAVES (review rv11a1, observation (b)).
+ * The external-module framework checks a `redcap_csrf_token` on POST requests
+ * to module pages from framework version 8 (this module declares 14), and
+ * $module->getCSRFToken() gives the token; it checks nothing on a GET, and
+ * offers no token for one. The panel downloads this page through a link, so
+ * a page on another site can send a signed-in user here by a top-level
+ * navigation, which carries the session cookie under SameSite=Lax as well as
+ * with none set. What that gets: the user's browser downloads a file the
+ * user may already read, which the other site cannot see, and the server
+ * streams one report. Every check in exportOpen() still applies; nothing is
+ * written. REDCap's own SameSite setting was not confirmed. The residual
+ * closes when the panel posts a form (run_id and redcap_csrf_token) in
+ * place of the link, and this page then reads run_id from $_POST and refuses
+ * a GET.
  */
 
 namespace INSPIRE\UniversalValidator;
