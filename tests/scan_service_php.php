@@ -4131,6 +4131,89 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * W11 REVIEW ROUND (rv11a1, rv11a2): THE STORED REPORT SAYS WHAT THE RUN
+ * WAS, AND ONLY WHAT ITS READER MAY BE TOLD
+ *
+ * The reviewers' repros over the B5 fixture: ten records, R01-R05 in group
+ * 7 (site_a) and R06-R10 in group 31 (site_b), the a_val rule, and the
+ * change log the group module writes.
+ * ===================================================================== */
+{
+    $keptNames = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'site_a', 31 => 'site_b'];
+    $PV = '\INSPIRE\UniversalValidator\ScanPageView';
+    $wv = function (array $flag) use ($groupModule) {
+        $s = new ArrayScanStore();
+        $m = $groupModule($s);
+        foreach ($m->records as $id) $m->dagNames[$id] = $m->dagOf[$id] === '7' ? 'site_a' : 'site_b';
+        foreach ($flag as $id) $m->flagged[$id] = true;
+        return [$s, $m];
+    };
+    $wvRun = function ($m, $s, $pid, $group) {
+        $m->user->rights['group_id'] = $group;
+        $rid = (int) (new ScanService($m, $s))->start($pid)['run_id'];
+        for ($i = 0; $i < 15 && $rid > 0 && $s->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($m, $s))->work($pid, $rid);
+        }
+        return $rid;
+    };
+    $wvCsv = function ($m, $s, $pid, $rid, $group) {
+        $m->user->rights['group_id'] = $group;
+        $x = (new ScanService($m, $s))->exportOpen($pid, $rid);
+        if (empty($x['ok'])) return $x;
+        $buf = '';
+        $x['result'] = $x['stream'](function ($t) use (&$buf) { $buf .= $t; }, function () {});
+        $x['text'] = $buf;
+        unset($x['stream']);
+        return $x;
+    };
+    $wvPage = function ($m, $s, $pid, $rid, $group, array $req = []) {
+        $m->user->rights['group_id'] = $group;
+        return (new ScanService($m, $s))->findings($pid, $rid, $req);
+    };
+    $headOf = function ($text, $key) {
+        foreach (explode("\r\n", $text) as $l) {
+            if (strpos($l, '"# ' . $key . '"') === 0) return str_getcsv($l)[1];
+        }
+        return null;
+    };
+
+    /* rv11a1-1  THE FILE'S SCOPE IS THE RUN'S, NOT THE READER'S. A clean
+     * run over group 31 downloaded by an unconfined reader said "whole
+     * project", "Every record was checked" and "certified yes" while group
+     * 7's two findings were never examined. */
+    list($s1, $m1) = $wv(['R01', 'R02']);
+    $g31 = $wvRun($m1, $s1, 201, 31);
+    $all = $wvRun($m1, $s1, 202, null);
+    $unconf = $wvCsv($m1, $s1, 201, $g31, null);
+    check('rv11a1-1: the group run is clean, and its file read by an unconfined reader names its group',
+        (int) $s1->run(201, $g31)['clean'] === 1 && !empty($unconf['ok'])
+        && $headOf($unconf['text'], 'scope') === 'Data Access Group site_b');
+    check('rv11a1-1: its coverage line says the run covered that group only, and its certificate is that group\'s',
+        $headOf($unconf['text'], 'coverage') === $PV::coverageSentence(ScanOutcome::FENCED) . ' '
+            . sprintf(ScanService::GROUP_ONLY, 'Data Access Group site_b')
+        && $headOf($unconf['text'], 'certified') === 'yes, for Data Access Group site_b only');
+    $own = $wvCsv($m1, $s1, 201, $g31, 31);
+    check('rv11a1-1: the group\'s own reader gets the same head lines',
+        $headOf($own['text'], 'scope') === 'Data Access Group site_b'
+        && $headOf($own['text'], 'certified') === $headOf($unconf['text'], 'certified')
+        && $headOf($own['text'], 'coverage') === $headOf($unconf['text'], 'coverage'));
+    $wholeX = $wvCsv($m1, $s1, 202, $all, null);
+    check('rv11a1-1 (control): a whole-project run says whole project, with no group sentence and a plain no',
+        $headOf($wholeX['text'], 'scope') === 'whole project'
+        && $headOf($wholeX['text'], 'coverage') === $PV::coverageSentence(ScanOutcome::FENCED)
+        && $headOf($wholeX['text'], 'certified') === 'no');
+    $p31 = $wvPage($m1, $s1, 201, $g31, null);
+    $pAll = $wvPage($m1, $s1, 202, $all, null);
+    check('rv11a1-1: the findings answer carries the run\'s scope, for the page to say the same',
+        $p31['runScope'] === ['kind' => 'group', 'group' => 'site_b', 'label' => 'Data Access Group site_b']
+        && $wvPage($m1, $s1, 201, $g31, 31)['runScope'] === $p31['runScope']
+        && $pAll['runScope'] === ['kind' => 'project', 'group' => null, 'label' => 'whole project']);
+
+    \REDCap::$groupNames = $keptNames;
+}
+
+/* =====================================================================
  * M8  A PROJECT REDESIGNED UNDER A RUNNING SCAN ENDS IT
  *
  * Through ScanService: start() fingerprints the structure and choice sets

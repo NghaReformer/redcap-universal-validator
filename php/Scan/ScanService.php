@@ -1135,7 +1135,10 @@ final class ScanService
         $limit = max(1, min(self::FINDINGS_PAGE_MAX, $limit));
 
         $run = $r['run'];
+        // `runScope`: what the run covered (review rv11a1-1), so the page can
+        // say a coverage sentence is about one group, as the file now does.
         $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
+                'runScope' => self::runScope($run),
                 'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
                 'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($run)]
              + self::decisionOf($run);
@@ -1392,16 +1395,20 @@ final class ScanService
         }
         $run = $r['run'];
         $facts = $r['report']->runFacts($r['expected']);
-        $reader = $this->readerScope($pid);
+        // THE RUN'S SCOPE, NOT THE READER'S (review rv11a1-1). This line was
+        // the reader's, so an unconfined reader's file of a clean run over one
+        // group said "whole project" above "Every record was checked" and
+        // "certified yes": a certificate for groups the run never read.
+        $scope = self::runScope($run);
+        $group = $scope['kind'] === 'group';
         $head = [
             ['schema', ScanReport::SCHEMA],
             ['project', (string) (int) $pid],
             ['run', (string) (int) $run['run_id']],
             ['generated_at', gmdate('Y-m-d H:i:s') . ' UTC'],
-            ['scope', $r['scope']['dag'] === null ? 'whole project'
-                : 'Data Access Group ' . (string) $reader['dagName']],
-            ['coverage', $facts['coverageSentence']],
-            ['certified', $facts['mayCertify'] ? 'yes' : 'no'],
+            ['scope', $scope['label']],
+            ['coverage', $facts['coverageSentence'] . ($group ? ' ' . sprintf(self::GROUP_ONLY, $scope['label']) : '')],
+            ['certified', !$facts['mayCertify'] ? 'no' : ($group ? 'yes, for ' . $scope['label'] . ' only' : 'yes')],
             ['values', $facts['valuesState']],
             ['labels', $facts['labelsDegraded'] ? $facts['degradedSummary']
                 : 'as the project was when this scan was planned'],
@@ -1423,6 +1430,28 @@ final class ScanService
                     }
                     return $out;
                 }];
+    }
+
+    /** Said after the coverage of a run over one group, in its file: %s is runScope()'s label. */
+    const GROUP_ONLY = 'This scan covered %s only, not the whole project.';
+
+    /**
+     * What a stored run covered, as its report states it: the run's own
+     * scope_dag, resolved to the group's name for prose (review rv11a1-1).
+     * A group reader may only read a run of their own group, so for them this
+     * is their group; for an unconfined reader it is whichever group the run
+     * was confined to, which is what a whole-project heading had hidden.
+     *
+     * @return array{kind:string, group:?string, label:string} kind 'project'
+     *         or 'group'; group the unique name, null when it cannot be read
+     */
+    private static function runScope(array $run)
+    {
+        $dag = isset($run['scope_dag']) ? $run['scope_dag'] : null;
+        if ($dag === null || $dag === '') return ['kind' => 'project', 'group' => null, 'label' => 'whole project'];
+        $name = ScanPageView::dagNameOf($dag);
+        return ['kind' => 'group', 'group' => $name, 'label' => $name !== null
+            ? 'Data Access Group ' . $name : 'the Data Access Group with id ' . (string) $dag];
     }
 
     /** A refusal as the export page sends it: 403 when it is the answer, 503 when asking again may help. */
