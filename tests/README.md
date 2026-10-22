@@ -60,6 +60,8 @@ node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
 node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
+node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
+php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract
@@ -624,8 +626,23 @@ explicitly or the suite fails. Covered: both configuration channels, all four
 log-privacy modes on the success AND exception paths, keyed-HMAC hashing and
 key persistence, event scoping (a value under another event is never audited),
 instrument scoping, repeat instances, duplicate-field skips, per-rule
-isolation, `uvalidate-unconfigurable` logging, non-ASCII fail-open, the
-non-text field rejection, and the save-time `validateSettings` gate.
+isolation, `uvalidate-unconfigurable` logging, non-ASCII values (checked, or
+reported when the regex engines may disagree), the non-text field rejection,
+and the save-time `validateSettings` gate.
+
+## `value_parity_fixture.json` — the browser/server value contract
+
+One value typed into an `@UVALIDATE` field must get the same answer from the
+browser and from the save-time audit. Each row holds a rule, a value, what the
+browser shows (`blank`, `valid`, `invalid`) and what the server says (`skip`,
+`valid`, `not-checked` or the finding's reason). `value_parity_dom_js.cjs` runs
+the rows through the real engine on a stub page; `value_parity_php.php` runs
+them through `CheckCharacter` with the config `findingsCheck` builds, checks
+that the two columns of every row agree, and locks `browserTrim`, `jsLength`
+and `dialectSplits`. The rows cover edge whitespace (VAL-3), characters outside
+printable ASCII (VAL-1), the regex constructs that JavaScript and PCRE read
+differently (`.`, `\s`, `\S`, negated classes, astral characters) and the
+512-unit length cap (VAL-12).
 
 ## CI
 

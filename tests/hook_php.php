@@ -612,11 +612,12 @@ namespace {
         \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, 'ZZ9-9999') === ['ok' => false, 'reason' => 'format']);
     check('alternates: the format-only family is accepted with no check run',
         \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, $FC) === ['ok' => true, 'reason' => 'valid']);
-    // COR-004: outside printable ASCII the server fails OPEN. Hoisted out of
-    // matchesPattern, whose fail-open "true" would otherwise read as "alternate
-    // 1's pattern matched" and run that alternate's CHECK on the value.
-    check('alternates: a non-ASCII value fails open with no alternate check run',
-        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => true, 'reason' => 'valid']);
+    // VAL-1 (review 2026-10-21): outside printable ASCII the server used to
+    // fail OPEN, returning "valid" before any pattern or check ran. The
+    // browser blocks this value (no alternate's shape matches), so the
+    // server now files the same format finding.
+    check('alternates: a non-ASCII value that matches no shape is a format finding',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => false, 'reason' => 'format']);
 
     // M-02 (review 2026-08-27): an algorithm this engine does not implement is a
     // CONFIGURATION problem. Unguarded, compute() throws inside validateId and
@@ -631,6 +632,38 @@ namespace {
         \INSPIRE\UniversalValidator\CheckCharacter::validatePooledField(
             array_merge($unkCfg, ['alternates' => [['pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',
                 'algorithm' => 'sha256_thing', 'lengths' => [9]]]]), 'SK1-0123D')['reason'] === 'unconfigurable');
+
+    // VAL-1 / VAL-3 through the real save hook: the audit judges the value the
+    // browser judged (trimmed the same way) and never passes a value it could
+    // not check. tests/value_parity_* hold the full row set.
+    $parDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'sid'       => ['field_type' => 'text', 'field_annotation' => '@UVALIDATE', 'form_name' => 'f'],
+        'fdot'      => ['field_type' => 'text', 'form_name' => 'f',
+                        'field_annotation' => '@UVALIDATE={"algorithm":"none","pattern":"FC.[0-9]{4}","strip":""}'],
+    ];
+    $parSave = function (array $values) use ($parDict) {
+        $m = newModule([], $parDict, [7 => [351 => array_merge(['record_id' => '7'], $values)]], 149);
+        $m->redcap_save_record(149, '7', 'f', 351, null, null, null, 1);
+        return $m;
+    };
+    $m = $parSave(['sid' => "FC1-0589C\r\n"]);
+    check('VAL-3: a good ID with a trailing newline logs nothing', count($m->logCalls) === 0);
+    $m = $parSave(['sid' => " \n\t"]);
+    check('VAL-3: a whitespace-only value is blank, as the browser treats it', count($m->logCalls) === 0);
+    $m = $parSave(['sid' => "FC1-0589\u{0421}"]);
+    $logs = invalidLogs($m);
+    check('VAL-1: a Cyrillic look-alike is logged as a failed check, not passed',
+        count($logs) === 1 && $logs[0][1]['field'] === 'sid' && $logs[0][1]['reason'] === 'check-character');
+    $m = $parSave(['sid' => "\u{FEFF}FC1-0589D"]);
+    check('VAL-1: a bad ID behind a byte-order mark is logged', count(invalidLogs($m)) === 1);
+    $m = $parSave(['fdot' => "FC\r1234"]);
+    $unc = logsOf($m, 'uvalidate-unconfigurable');
+    check('VAL-1: a value the two regex engines read differently is reported for a manual check',
+        count(invalidLogs($m)) === 0 && count($unc) === 1
+        && strpos($unc[0][1]['why'], 'check the value by hand') !== false);
+    $m = $parSave(['fdot' => "FC\u{00E9}1234"]);
+    check('VAL-1: "." against a BMP letter is judged, not reported', count($m->logCalls) === 0);
 
     // ---- 13) per-rule isolation: a failure while auditing one rule must not
     //           stop later rules. Simulated by a log backend that throws on the
@@ -662,7 +695,9 @@ namespace {
     check('non-scalar stored setting is ignored, rule still audits (default strip)',
         in_array('main_id_1', loggedFields($m), true));
 
-    // ---- 14) COR-004: non-ASCII value on a format rule fails OPEN (no format log) ----
+    // ---- 14) a non-ASCII value on a format rule is format-audited (VAL-1) ----
+    // This used to pin COR-004's fail-open. The browser blocks the value
+    // ("expected digit"), so passing it here was the audit/browser split.
     $regexRule = [[
         'rule-type' => 'single', 'fields' => ['main_id_1'], 'fields-csv' => '',
         'algorithm' => 'none', 'source' => '', 'pattern' => 'FC[0-9]{4}', 'strip' => '',
@@ -672,7 +707,9 @@ namespace {
     $uniData = [2 => [351 => ['main_id_1' => "FC12\u{0663}4"]]]; // Arabic-Indic digit
     $m = newModule($regexRule, $dictionary, $uniData, 149);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
-    check('non-ASCII value is not format-audited (outside proven parity subset)', count(invalidLogs($m)) === 0);
+    $logs = invalidLogs($m);
+    check('an Arabic-Indic digit is a format finding, as the browser says',
+        count($logs) === 1 && $logs[0][1]['reason'] === 'format');
 
     // ---- 15) COR-003: a dialog rule on a non-text field becomes a config error ----
     $ddRadio = $dictionary;

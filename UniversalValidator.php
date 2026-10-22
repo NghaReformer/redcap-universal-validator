@@ -3510,12 +3510,13 @@ class UniversalValidator extends AbstractExternalModule
         $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
         $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
         $pattern = isset($rule['idPattern']) ? $rule['idPattern'] : null;
-        $unconfigurable = [];
+        $unconfigurable = []; $notChecked = [];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
-            if ($value === null || $value === '') continue;
+            // blank as the browser sees it: input.value.trim() === "" (VAL-3)
+            if ($value === null || CheckCharacter::browserTrim($value) === '') continue;
             // ONE config array for both verdicts: the single and pooled twins
             // read the same keys, so there is no second argument list to keep in
             // step when a rule gains an option.
@@ -3538,6 +3539,13 @@ class UniversalValidator extends AbstractExternalModule
                 // of treating it as valid — a silent pass is the one outcome an
                 // auditor can never see (COR-002).
                 $unconfigurable[] = $field;
+            } elseif (isset($res['reason']) && $res['reason'] === 'not-checked') {
+                // The server cannot say what the browser's RegExp makes of
+                // this value: a character outside printable ASCII that the
+                // pattern can match and the two engines read differently, or
+                // a PCRE limit hit mid-match. Reported, never passed as valid
+                // (VAL-1).
+                $notChecked[] = $field;
             } elseif (empty($res['ok'])) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => $algo, 'type' => $type,
                                      'reason' => isset($res['reason']) ? $res['reason'] : ''];
@@ -3545,6 +3553,9 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($unconfigurable) {
             $out['unconfigurable'][] = ['fields' => $unconfigurable, 'why' => 'rule cannot be evaluated server-side (unsafe or uncompilable configuration)'];
+        }
+        if ($notChecked) {
+            $out['unconfigurable'][] = ['fields' => $notChecked, 'why' => 'the server cannot tell how the browser reads this value against the format pattern (a character outside printable ASCII that the two regex engines read differently, or a regex engine limit); check the value by hand'];
         }
         return $out;
     }

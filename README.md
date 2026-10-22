@@ -66,9 +66,11 @@ validate identically here, in Excel, and in the browser (same verified engine).
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. A keyed hash is pseudonymization, not
   anonymity: treat the module log as identifying data in access and retention
-  policies. Format-pattern audits cover printable-ASCII values; other values are
-  left to the client and the check-character math, because JavaScript and PCRE
-  regex semantics are only proven to agree on that subset.
+  policies. The audit trims a value the way the browser does and checks values
+  with characters outside printable ASCII too. Where JavaScript and PCRE regex
+  read such a value differently (for example "." against a carriage return, or
+  `\s` against a no-break space), the value is reported in a
+  `uvalidate-unconfigurable` entry for a manual check, never passed as valid.
 - **Save-time settings validation** — an invalid rule (unknown algorithm,
   catastrophic or non-compiling regex, unsafe pooled lengths, unsupported field
   types) is rejected when the Configure dialog is saved, with a message naming

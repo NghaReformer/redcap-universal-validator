@@ -767,7 +767,10 @@ remains the primary control for human entry.
 Three log entry types make sure nothing passes silently:
 
 - `invalid-id-saved` — an invalid value was written.
-- `uvalidate-unconfigurable` — a rule the server could not evaluate.
+- `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
+  it could not judge the way the browser does (a character outside printable
+  ASCII that the format pattern's regex reads differently in the two engines).
+  Check those values by hand.
 - `uvalidate-audit-error` — the hook itself failed.
 
 ### The coverage caveat (read before relying on it)
