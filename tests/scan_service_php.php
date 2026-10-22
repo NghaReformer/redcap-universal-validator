@@ -2170,6 +2170,65 @@ namespace INSPIRE\UniversalValidator\Scan {
         $fm->sent('SELECT log_event_table') === 1);
     $fence->invoke($fs, 150);
     check('P1: and per project', $fm->sent('SELECT log_event_table') === 2);
+
+    // W10AF-N4: AND ONCE FOR THE FENCE AND THE CAPABILITY PROBE TOGETHER. The
+    // census's probe read the table name and the top of the log, and the
+    // fence read both again.
+    $caps = new \ReflectionMethod(ScanService::class, 'capabilities');
+    $caps->setAccessible(true);
+    $SC = \INSPIRE\UniversalValidator\ScanCapabilities::class;
+    $logModule = function ($throws) {
+        $lm = new class extends \CountingVerbModule {
+            public $throws = false;
+            public function query($sql, $params = [])
+            {
+                if (strpos($sql, 'SELECT log_event_table') === 0) {
+                    $this->log[] = $sql;
+                    if ($this->throws) throw new \RuntimeException('the log is away');
+                    return [['redcap_log_event']];
+                }
+                if (strpos($sql, 'SELECT MAX(log_event_id) FROM redcap_log_event') === 0) {
+                    $this->log[] = $sql;
+                    return [['500']];
+                }
+                return parent::query($sql, $params);
+            }
+        };
+        $lm->throws = $throws;
+        return $lm;
+    };
+    $lm = $logModule(false);
+    $ls = new ScanService($lm);
+    $census = $caps->invoke($ls, 149);
+    $opened = $fence->invoke($ls, 149);
+    check('W10AF-N4: a request that probes the change log and fences on it opens it once',
+        $lm->sent('SELECT log_event_table') === 1 && $lm->sent('SELECT MAX(log_event_id)') === 1
+        && $opened instanceof \INSPIRE\UniversalValidator\Scan\SourceFence);
+    $probe = $SC::sourceFence($logModule(false), 149);
+    check('W10AF-N4: and the census says what the probe of its own says',
+        $census['sourceFence'] === $probe && $probe['state'] === $SC::OK
+        && $SC::policy($census)['maxCompletion'] === $SC::policy(
+            ['sourceFence' => $probe] + $census)['maxCompletion']);
+    check('W10AF-N4: the fence opened first serves the census after it',
+        (function () use ($logModule, $caps, $fence) {
+            $m2 = $logModule(false);
+            $s2 = new ScanService($m2);
+            $fence->invoke($s2, 149);
+            $caps->invoke($s2, 149);
+            return $m2->sent('SELECT log_event_table') === 1;
+        })());
+    $um = $logModule(true);
+    $us = new ScanService($um);
+    $uc = $caps->invoke($us, 149);
+    $threw = null;
+    try { $fence->invoke($us, 149); } catch (\Throwable $e) { $threw = $e; }
+    check('W10AF-N4: a log that could not be read is unavailable to the census and stops the fence',
+        $uc['sourceFence']['state'] === $SC::NO
+        && strpos((string) $uc['sourceFence']['why'], 'could not be read just now') !== false
+        && $threw instanceof \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable
+        && $um->sent('SELECT log_event_table') === 1);
+    $caps->invoke(new ScanService($um), 149);
+    check('W10AF-N4: and the next request asks again', $um->sent('SELECT log_event_table') === 2);
 }
 
 /* =====================================================================

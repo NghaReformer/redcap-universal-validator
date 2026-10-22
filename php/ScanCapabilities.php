@@ -148,6 +148,29 @@ final class ScanCapabilities
     }
 
     /**
+     * sourceFence()'s answer from a change log already opened as a fence this
+     * request (Scan\SourceFence::forProject()), so a work request does not
+     * open it twice (W10AF-N4). The same question by the same statements:
+     * the allowlisted table, and whether its top for the project is a log
+     * position. Only a refusal is worded as the fence words it, and a log
+     * that could not be read is unavailable here as it was when the probe
+     * caught the failure itself.
+     *
+     * @param array $opened forProject()'s answer
+     * @return array{state:string, via:?string, why:?string}
+     */
+    public static function sourceFenceFrom(array $opened)
+    {
+        $fence = isset($opened['fence']) ? $opened['fence'] : null;
+        if (!empty($opened['ok']) && is_object($fence) && is_callable([$fence, 'table'])) {
+            return self::yes($fence->table() . ' (fenced on log_event_id)');
+        }
+        $why = (isset($opened['why']) && is_string($opened['why']) && $opened['why'] !== '') ? $opened['why']
+             : 'the change log could not be opened, so a record cannot be proved unchanged across a read';
+        return self::no($why);
+    }
+
+    /**
      * May the module create its own tables?
      *
      * Answered from SHOW GRANTS, which is read-only and therefore honest about

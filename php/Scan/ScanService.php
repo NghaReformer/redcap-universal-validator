@@ -127,6 +127,8 @@ final class ScanService
     private $capabilities = [];
     /** @var array project id => the change log as a fence, or null when there is none */
     private $fences = [];
+    /** @var array project id => SourceFence::forProject()'s answer (W10AF-N4) */
+    private $fenceOpened = [];
     /** @var array entitlement key (see entitlement()) => its answer */
     private $entitlements = [];
     /**
@@ -2282,19 +2284,41 @@ final class ScanService
     {
         $k = (int) $pid;
         if (!array_key_exists($k, $this->fences)) {
-            $f = SourceFence::forProject($this->db, $pid);
+            $f = $this->openedFence($pid);
             // A LOG THAT COULD NOT BE READ IS NOT A PROJECT WITHOUT ONE (H11).
             // Null here builds a worker with no fence, and a worker with no
             // fence takes every record it reads as having held still - so one
             // failed read of the log let a whole request's records through
             // unproved. The request stops instead, as for any storage failure,
-            // and the next one asks again; nothing is remembered.
+            // and the next one asks again; no request remembers it for another.
             if (!empty($f['unreadable'])) {
                 throw new ScanStoreUnavailable('the project change log could not be read');
             }
             $this->fences[$k] = empty($f['ok']) ? null : $f['fence'];
         }
         return $this->fences[$k];
+    }
+
+    /**
+     * SourceFence::forProject() for $pid, once per request.
+     *
+     * ONE OPENING FOR THE FENCE AND THE CAPABILITY PROBE (W10AF-N4). The
+     * census's sourceFence probe read the table name and the top of the log,
+     * and the fence read both again, so a work request opened the change log
+     * twice. capabilities() hands the census this answer instead
+     * (ScanCapabilities::sourceFenceFrom()), and fence() builds on it. A log
+     * that could not be read is kept for this request too, so the probe and
+     * the fence cannot disagree inside one; the next request asks again.
+     *
+     * @return array{ok:bool, fence:?SourceFence, why:?string, unreadable:bool}
+     */
+    private function openedFence($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->fenceOpened)) {
+            $this->fenceOpened[$k] = SourceFence::forProject($this->db, $pid);
+        }
+        return $this->fenceOpened[$k];
     }
 
     /**
@@ -2322,6 +2346,11 @@ final class ScanService
             try {
                 $known = isset($this->enumeration[$k])
                        ? ['recordEnumeration' => $this->enumeration[$k]] : [];
+                // The change log as the fence opens it (W10AF-N4). With no
+                // query() there is no fence, and the probe says why itself.
+                if ($this->db !== null) {
+                    $known['sourceFence'] = ScanCapabilities::sourceFenceFrom($this->openedFence($pid));
+                }
                 $this->capabilities[$k] = ScanCapabilities::all($this->module, $pid, $known);
                 $this->enumeration[$k] = $this->capabilities[$k]['recordEnumeration'];
             } catch (\Throwable $e) {
