@@ -552,11 +552,14 @@ $missing = $dir . DIRECTORY_SEPARATOR . 'nowhere';
 // that cannot be read leaves no reference at all (a configuration error on every
 // growth rule) rather than the tables the administrator meant to replace. The
 // folder's path is not in the text, which reaches the page.
-$broken = 'the reference folder in the module settings: the folder has no readable index.json.';
+$broken = 'the reference folder in the module settings: the folder has no index.json.';
 check('extra: a folder with no index is a problem, and no reference is used',
     implode(' ', G::catalog($missing)['problems']) === $broken && G::catalog($missing)['references'] === []
     && G::catalog($missing)['broken'] === $broken && G::unavailableWhy('who-wfa', $missing) === $broken
     && strpos($broken, $missing) === false);
+// rvc2-3: not there is the folder as the administrator set it, not a read
+// that failed; a scan reports the rule, and does not wait to ask again.
+check('extra rvc2-3: a folder with no index is not an unread one', G::catalog($missing)['unread'] === null);
 check('extra: without a folder nothing is unavailable', G::unavailableWhy('who-wfa') === null && G::unavailableWhy('nope') === null);
 
 $tableErr = function ($content, $entryOver = []) use ($dir, $base) {
@@ -764,7 +767,12 @@ check('limits: between the rows of the bundled linear tables the bound moves les
 check('table: a sha256 that does not match', $tableErr($t([]), ['sha256' => str_repeat('a', 64)])
     === 'the table t2.json does not match the "sha256" in index.json; it was changed or damaged.');
 @unlink($dir . '/t2.json');
-check('table: a file that is not there', $tableErr(null) === 'the table t2.json of "mine" cannot be read.');
+check('table: a file that is not there', $tableErr(null) === 'the table t2.json of "mine" is not in its folder.');
+// rvc2-3: and not a read that failed (GrowthReference::E_UNREAD).
+$e2 = array_merge($base, ['file' => 't2.json', 'sha256' => str_repeat('a', 64), 'id' => 'mine', 'dir' => $dir]);
+G::reset();
+try { G::table($e2); $code = null; } catch (\RuntimeException $ex) { $code = $ex->getCode(); }
+check('table rvc2-3: a file that is not there is not an unread one', $code !== null && $code !== G::E_UNREAD);
 file_put_contents($dir . '/t2.json', str_repeat(' ', G::MAX_TABLE_BYTES + 1));
 G::reset();
 $e = array_merge($base, ['file' => 't2.json', 'sha256' => hash('sha256', str_repeat(' ', G::MAX_TABLE_BYTES + 1)), 'id' => 'mine', 'dir' => $dir]);

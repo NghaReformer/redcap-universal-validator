@@ -3737,6 +3737,31 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Every instrument of $pid, from its data dictionary, or null when the
+     * dictionary cannot be read or names a field with no instrument (review
+     * rvc2-3). The durable scan's Stop asks a reader about these when no scan
+     * context can be built for the run (Scan\ScanService::cancelAuth()).
+     *
+     * @return string[]|null
+     */
+    public function scanProjectInstruments($pid)
+    {
+        try {
+            $dd = $this->dataDictionary($pid);
+        } catch (\Throwable $e) {
+            $dd = null;
+        }
+        if (!is_array($dd) || !$dd) return null;
+        $forms = [];
+        foreach ($dd as $meta) {
+            $f = (is_array($meta) && isset($meta['form_name'])) ? (string) $meta['form_name'] : '';
+            if ($f === '') return null;
+            $forms[$f] = true;
+        }
+        return array_map('strval', array_keys($forms));
+    }
+
+    /**
      * Record an invalid value found on the server. The "log-values" project
      * setting controls how much identifying material the entry carries (UV-005):
      *   hashed (default) — value as project-keyed HMAC, record ID raw (staff can

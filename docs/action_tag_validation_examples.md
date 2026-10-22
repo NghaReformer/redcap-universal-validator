@@ -3632,7 +3632,9 @@ replaced.
 | The error says | What to do |
 | -------------- | ---------- |
 | `is not a growth reference this server has — it has …` | The id is wrong, or the folder is not set: compare the id with the `index.json` keys |
-| `the folder has no readable index.json.` | The path in the setting is wrong, or the web server cannot read the folder |
+| `the folder has no index.json.` | The path in the setting is wrong, or the folder has no `index.json` |
+| `the folder's index.json could not be opened.` | The web server cannot read the file; check its permissions. A Validation scan asks again on its next request instead of reporting the rule |
+| `the table … is not in its folder.` | The `file` in the entry is wrong, or the table was not copied into the folder |
 | `index.json is not valid JSON.` | A comma or a quote is missing; check the file with a JSON validator |
 | `index.json must say "format": "uv-references-1".` | Add that line at the top |
 | `reference "…" needs "unit".` (or another key) | Fill in the key; that id stays out of use until then |

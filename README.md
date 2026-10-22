@@ -926,7 +926,10 @@ re-checks three things.
   user cannot open refuses the whole report rather than narrowing it, so no
   finding, count or label from that instrument is shown. Stop asks only for
   the instruments the rules sit on, so a user barred from an instrument that
-  another field's rule reads can still stop a run.
+  another field's rule reads can still stop a run. When the rules cannot be
+  read just now, for example because the growth reference folder cannot be
+  opened, the page shows no counts, and Stop asks for every instrument of the
+  project instead.
 
 A user in a Data Access Group scans that group only. A group whose name cannot
 be resolved is refused, because a scan of zero records is not a clean project.

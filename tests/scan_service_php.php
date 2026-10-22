@@ -731,6 +731,9 @@ namespace {
         }
         /** @var ?string the sentence durableScanContext() refuses with, or null for a context (W10BF-4) */
         public $refuse = null;
+        /** @var ?string[] every instrument of the project (rvc2-3); null: the dictionary cannot be read */
+        public $instruments = ['fa'];
+        public function scanProjectInstruments($pid) { return $this->instruments; }
         /** @var ?array the clock the context says it judges by when it is given none (W10BF-3) */
         public $clock = null;
         /** @var array the asOf each context was asked with, 'absent' for none (W10BF-3) */
@@ -2561,6 +2564,71 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('W10BF-4 E2E: read in full again, the run finishes complete',
         $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // rvc2-3: A RUN STAYS STOPPABLE WHEN NO CONTEXT CAN BE BUILT. Stop and
+    // status built the full scan context, so a configuration read in part, or
+    // rules that can no longer be evaluated, refused both: the page never
+    // offered Stop, Stop was refused, and the run held the project's slot
+    // until the reaper. Stop is asked of every instrument instead; the status
+    // stays refused, and says the run may be stopped.
+    foreach (['unread' => ['the growth reference folder'], 'no rules' => []] as $how => $unreadNow) {
+        $ss = new ArrayScanStore();
+        $sm = new \E2eModule($ss);
+        $srun = (int) (new ScanService($sm, $ss))->start(169)['run_id'];
+        $sm->refuse = 'this project has no rules this scan can evaluate';
+        $sm->unread = $unreadNow;
+        $sst = (new ScanService($sm, $ss))->status(169, $srun);
+        check('rvc2-3 (' . $how . '): the status is still refused, and not for good',
+            $sst['ok'] === false && $sst['final'] === false
+            && strpos((string) $sst['why'], $how === 'unread' ? 'could not be read just now' : 'no rules') !== false);
+        check('rvc2-3 (' . $how . '): but it says this run is active and this reader may stop it',
+            isset($sst['mayCancel'], $sst['active'], $sst['run_id']) && $sst['mayCancel'] === true
+            && $sst['active'] === true && $sst['run_id'] === $srun && !isset($sst['total']) && !isset($sst['findings']));
+        check('rvc2-3 (' . $how . '): an id that is no run gets the same refusal, and no offer',
+            (new ScanService($sm, $ss))->status(169, 999)
+            === ['ok' => false, 'why' => $sst['why'], 'final' => false]);
+        $sc = (new ScanService($sm, $ss))->cancel(169, $srun);
+        $srow = $ss->run(169, $srun);
+        check('rvc2-3 (' . $how . '): Stop stops it, and frees the project',
+            $sc['ok'] === true && $sc['stopped'] === true && $srow['terminal'] === ScanOutcome::CANCELLED
+            && !empty((clone $ss)->startRun(169, [])['ok']));
+        $after = (new ScanService($sm, $ss))->status(169, $srun);
+        check('rvc2-3 (' . $how . '): and the status of the ended run offers no Stop',
+            $after['ok'] === false && $after['active'] === false && $after['mayCancel'] === true);
+    }
+    // Asked of every instrument: a reader barred from one, or a dictionary
+    // that cannot be read, gets the context's own refusal.
+    $bs = new ArrayScanStore();
+    $bm = new \E2eModule($bs);
+    $brun = (int) (new ScanService($bm, $bs))->start(170)['run_id'];
+    $bm->refuse = 'this project has no rules this scan can evaluate';
+    $bm->unread = ['the growth reference folder'];
+    $bm->instruments = ['fa', 'fx'];
+    $bm->user->rights['forms'] = ['fa' => '1', 'fx' => '0'];
+    $bc = (new ScanService($bm, $bs))->cancel(170, $brun);
+    $bst = (new ScanService($bm, $bs))->status(170, $brun);
+    check('rvc2-3: a reader barred from an instrument of the project is refused Stop in the context\'s words',
+        $bc['ok'] === false && strpos((string) $bc['why'], 'could not be read just now') !== false
+        && !isset($bst['mayCancel']) && $bs->run(170, $brun)['terminal'] === null);
+    $bm->user->rights['forms'] = ['fa' => '1', 'fx' => '1'];
+    $bm->instruments = null;
+    $bd = (new ScanService($bm, $bs))->cancel(170, $brun);
+    check('rvc2-3: and so is everybody while the instruments cannot be listed',
+        $bd['ok'] === false && strpos((string) $bd['why'], 'could not be read just now') !== false
+        && $bs->run(170, $brun)['terminal'] === null);
+    $bm->instruments = ['fa', 'fx'];
+    $bm->user->rights['group_id'] = 31;
+    $keptGroups = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+    $bg = (new ScanService($bm, $bs))->cancel(170, $brun);
+    $bgs = (new ScanService($bm, $bs))->status(170, $brun);
+    check('rvc2-3: a group user is still told a whole-project run is no run',
+        $bg['ok'] === false && $bg['why'] === ScanService::NO_RUN && !isset($bgs['mayCancel']));
+    \REDCap::$groupNames = $keptGroups;
+    $bm->user->rights['group_id'] = null;
+    check('rvc2-3 (control): with every instrument readable, the same reader stops it',
+        (new ScanService($bm, $bs))->cancel(170, $brun)['ok'] === true
+        && $bs->run(170, $brun)['terminal'] === ScanOutcome::CANCELLED);
 
     // -- a finished run is answered with its status (review R5-8) ---------------
     //
@@ -4455,9 +4523,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $opRun = (int) (new ScanService($opMod, $opStore))->start(190)['run_id'];
     $opMod->user->rights['forms'] = ['fa' => '1', 'fb' => '0'];
     $opNone = (new ScanService($opMod, $opStore))->status(190, 999);
+    // rvc2-3: in the same words; the run they may stop says so, or the page
+    // never offers its Stop.
     check('W11A-N3: a reader barred from an operand\'s instrument is refused a run and no run alike',
         $opRun > 0 && $opNone['ok'] === false && strpos($opNone['why'], 'fb') !== false
-        && (new ScanService($opMod, $opStore))->status(190, $opRun) === $opNone);
+        && (new ScanService($opMod, $opStore))->status(190, $opRun)
+           === $opNone + ['run_id' => $opRun, 'active' => true, 'mayCancel' => true]
+        && !isset($opNone['mayCancel']));
     check('W11A-N3 (control): and can still stop the run, as before, while an id that is none is no run',
         (new ScanService($opMod, $opStore))->cancel(190, 999)['why'] === ScanService::NO_RUN
         && (new ScanService($opMod, $opStore))->cancel(190, $opRun)['ok'] === true);

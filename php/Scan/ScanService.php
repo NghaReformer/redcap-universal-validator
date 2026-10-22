@@ -760,24 +760,37 @@ final class ScanService
     private function statusOf($pid, $runId, array $known)
     {
         // The reader before the run (L8): see readerScope().
+        //
+        // A READER WHO MAY STOP RUNS IS TOLD WHETHER THIS ONE CAN BE (review
+        // rvc2-3). The page offers Stop only from a status, and every refusal
+        // below answered with none: a reader refused the status - a context
+        // that cannot be built, an operand instrument they cannot read,
+        // another project's refusal - was never shown Stop, though cancel()
+        // would have stopped the run for them. A reader whom cancel() would
+        // refuse before any run row is refused here the same way; one it
+        // would not is given the same refusal for every id, and for a run it
+        // may stop, with what the page needs to offer Stop (stopOffer()).
+        // cancel() tells that reader which ids are runs already, so this
+        // says nothing new.
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return $no;
+        if ($no !== null && $this->readerRefusal($pid, 'cancel') !== null) return $no;
         $store = $this->store();
         $run = (isset($known['run']) && is_array($known['run'])) ? $known['run'] : $store->run($pid, $runId);
-        if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($run === null) return $no !== null ? $no : ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($no !== null) return $this->stopOffer($pid, $run, $no);
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) {
-            return ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])];
+            return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])]);
         }
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
-        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
+        if (empty($auth['ok'])) return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $auth['why'], 'final' => true]);
         // A run can hold answers another project gave whoever drove it. A
         // reader that project would not answer is refused the whole run, by
         // the same rule as an instrument they cannot read (ScanAuthorization:
         // whole-report denial, never filtered rows). Cancel does not ask: a
-        // run must stay stoppable.
+        // run must stay stoppable, and the refusal says so (stopOffer()).
         //
         // ASKED OF THE LOOKUPS THE RUN MADE, NOT OF THE RULES AS THEY STAND
         // (reviews R3U-N1, R4-1, R4-2, R4-3). The reader's plan was asked
@@ -786,7 +799,7 @@ final class ScanService
         // held. The run keeps every lookup its rules make (whoever drives it),
         // and the other project is asked about each one for this reader.
         $refusal = $this->crossRefusal($pid, $run);
-        if ($refusal !== null) return $refusal;
+        if ($refusal !== null) return $this->stopOffer($pid, $run, $refusal);
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
         // unless the row already carries it. See progressOf() for why a quiet
@@ -799,7 +812,7 @@ final class ScanService
         $progress = self::progressOf($run, $census, time(), self::STALL_SECONDS);
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $cancel = $this->cancelAuth($pid, $run);
         // A GROUP-SCOPED RUN SHOWS NO COUNTS UNTIL ITS SCOPE IS PROVED AT THE
         // TARGET FENCE (H10 part 1). Its list is the group as planning read it,
         // and records move between groups while it runs; until catch-up has
@@ -1063,10 +1076,7 @@ final class ScanService
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
 
-        $ent = $this->entitlement($pid, $run);
-        if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        // cancelForms, NOT forms - see entitlement().
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $auth = $this->cancelAuth($pid, $run);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         // Read as status() reads it, and BEFORE the stop: the stop writes
@@ -1075,6 +1085,74 @@ final class ScanService
             $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
         }
         return $this->stopRun($store, $pid, $runId, (string) $this->username(), $run, time());
+    }
+
+    /**
+     * May this reader stop $run? mayCancel() over the instruments the rules
+     * sit on (cancelForms, NOT forms - see entitlement()).
+     *
+     * A RUN STAYS STOPPABLE WHEN NO SCAN CONTEXT CAN BE BUILT (review
+     * rvc2-3). The host instruments come from the plan, and a configuration
+     * read in part, or rules that can no longer be evaluated, refused the
+     * context and with it Stop: on a project whose rules all failed so, the
+     * run held the project's slot until the reaper, refused to everybody.
+     * Then the question is asked of every instrument of the project
+     * (everyInstrument(), one dictionary read): a reader who may read all of
+     * them may read any set the rules could name. A reader who may not is
+     * given the context's own refusal, which says what could not be read.
+     *
+     * @return array{ok:bool, why:?string}
+     */
+    private function cancelAuth($pid, array $run)
+    {
+        $ent = $this->entitlement($pid, $run);
+        if (!empty($ent['ok'])) {
+            return ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        }
+        $no = ['ok' => false, 'why' => $ent['why']];
+        if (empty($ent['unplanned'])) return $no;
+        $every = $this->everyInstrument($pid);
+        $scope = $this->readerScope($pid);
+        if ($every === null || empty($scope['ok'])) return $no;
+        $auth = ScanAuthorization::mayCancel($scope['rights'], $every, $run['scope_dag']);
+        return empty($auth['ok']) ? $no : $auth;
+    }
+
+    /**
+     * A refused status, with what the page needs to offer Stop on $run when
+     * this reader may stop it (review rvc2-3): `run_id`, `active` and
+     * `mayCancel`. A reader cancelAuth() refuses gets the refusal as it was,
+     * so a run of another group stays no run at all.
+     */
+    private function stopOffer($pid, array $run, array $refusal)
+    {
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return $refusal;
+        return $refusal + ['run_id' => (int) $run['run_id'],
+                           'active' => ScanPhase::isActive((string) $run['phase']), 'mayCancel' => true];
+    }
+
+    /**
+     * Every instrument of the project, or null when the module cannot say
+     * (review rvc2-3): what Stop asks about when no scan context can be built.
+     *
+     * @return string[]|null
+     */
+    private function everyInstrument($pid)
+    {
+        if (!is_callable([$this->module, 'scanProjectInstruments'])) return null;
+        try {
+            $forms = $this->module->scanProjectInstruments($pid);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($forms) || !$forms) return null;
+        $out = [];
+        foreach ($forms as $f) {
+            if (!is_string($f) || $f === '') return null;
+            $out[] = $f;
+        }
+        return $out;
     }
 
     // -- the report (B5) -------------------------------------------------------
@@ -2027,7 +2105,15 @@ final class ScanService
         // that cannot be built is refused here too, the same for every id;
         // it is never final, as entitlementNow() says it.
         $f = $this->readerForms($pid);
-        if (empty($f['ok'])) return ['ok' => false, 'why' => $f['why'], 'final' => false];
+        if (empty($f['ok'])) {
+            $no = ['ok' => false, 'why' => $f['why'], 'final' => false];
+            // STOP DOES NOT WAIT FOR A CONTEXT (review rvc2-3): it is asked
+            // of every instrument instead, as cancelAuth() asks it.
+            if ($verb !== 'cancel') return $no;
+            $every = $this->everyInstrument($pid);
+            if ($every === null || empty(ScanAuthorization::mayStart($scope['rights'], $every)['ok'])) return $no;
+            return null;
+        }
         $auth = ($verb === 'cancel')
             ? ScanAuthorization::mayStart($scope['rights'], $f['cancelForms'])
             : ScanAuthorization::mayStart($scope['rights'], $f['forms'], $f['unknown']);
@@ -2101,8 +2187,11 @@ final class ScanService
             'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
-        // could not be read just now.
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false];
+        // could not be read just now. `unplanned` tells cancelAuth() the run
+        // can still be stopped by another question (review rvc2-3).
+        if (empty($ctx['ok'])) {
+            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false, 'unplanned' => true];
+        }
 
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
                 // The CALLER's scope, kept beside the run's own. The two are

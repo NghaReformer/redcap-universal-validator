@@ -384,6 +384,13 @@
                 quietNode.style.display = 'none';
                 text(quietNode, '');
             }
+            // A REFUSED STATUS CAN STILL OFFER STOP (review rvc2-3). The server
+            // says so with mayCancel when this reader may stop the run it
+            // will not describe - a configuration it could not read in full,
+            // an instrument or another project that bars the report - and
+            // Stop was otherwise only ever shown from a status that arrived.
+            // A refusal that does not say leaves the button as it was.
+            if (st && st.mayCancel === true) toggle(el('uv-scan-cancel'), st.active === true);
             return;
         }
         UV.state.runId = st.run_id;

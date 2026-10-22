@@ -935,6 +935,31 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('paused: a finished run is never paused or stopping, whatever it is sent',
     els['uv-scan-stalled'].style.display === 'none');
 
+  // rvc2-3. A REFUSED STATUS THAT SAYS THIS READER MAY STOP THE RUN SHOWS
+  // STOP. Stop was only ever shown from a status that arrived, so a run whose
+  // configuration could not be read in full kept going with no way to end it
+  // from the page. The refusal still names no count and no finding.
+  const stoppable = (active) => ({ ok: false, final: false, run_id: 42, active: active, mayCancel: true,
+    why: 'the scan context could not be built: the growth reference folder could not be read just now; try again shortly' });
+  const refusedFrom = async (shown, st) => {
+    reset([st]);
+    els['uv-scan-cancel'].style.display = shown;
+    UV.attach({ runId: 42, autoResume: false });
+    await ticks(4);
+    return els['uv-scan-cancel'].style.display;
+  };
+  check('rvc2-3: a refused status that offers Stop on an active run shows Stop',
+    (await refusedFrom('none', stoppable(true))) === ''
+    && els['uv-scan-note'].textContent.indexOf('could not be read just now') !== -1
+    && els['uv-scan-counts'].textContent === '');
+  check('rvc2-3: and hides it when the run has ended',
+    (await refusedFrom('', stoppable(false))) === 'none');
+  const plain = { ok: false, final: false, why: 'the scan context could not be built' };
+  check('rvc2-3: a refusal that offers nothing leaves a shown Stop shown',
+    (await refusedFrom('', plain)) === '');
+  check('rvc2-3: and a hidden one hidden',
+    (await refusedFrom('none', plain)) === 'none');
+
   // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
   // sentence sending the reader to Stop, with Continue hidden; the list now
   // resumes from its cursor, so a flag an older server still sends is not
