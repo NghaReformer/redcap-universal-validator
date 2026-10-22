@@ -424,6 +424,42 @@ namespace {
     }
 
     /* =====================================================================
+     * W-06  every suite in tests/ is one CI runs
+     *
+     * .github/workflows/parity.yml names each suite on its own line, so a
+     * new suite is not run until somebody adds it there. Wave 11 shipped
+     * three that nothing ran (the findings panel, the export and the reason
+     * bits): green on the machine that wrote them and checked nowhere else.
+     * A suite no workflow names is a safeguard nothing calls.
+     * ===================================================================== */
+    {
+        /** The suites whose file names no workflow text mentions as tests/<name>. */
+        function uv_unrun_suites(array $names, $workflows) {
+            $out = [];
+            foreach ($names as $b) {
+                if (!preg_match('~tests/' . preg_quote($b, '~') . '(?![\w.])~', $workflows)) $out[] = $b;
+            }
+            sort($out);
+            return $out;
+        }
+        $root = dirname(__DIR__);
+        $wf = '';
+        foreach (glob($root . '/.github/workflows/*.yml') as $f) $wf .= file_get_contents($f) . "\n";
+        $suites = array_map('basename', array_merge(glob($root . '/tests/*_php.php'), glob($root . '/tests/*_js.cjs')));
+        check('W-06: the suites and the workflows were found', count($suites) >= 50 && $wf !== '');
+        $unrun = uv_unrun_suites($suites, $wf);
+        if ($unrun) {
+            fwrite(STDERR, "  suites in tests/ that no workflow runs - add them to .github/workflows/parity.yml:\n    "
+                . implode("\n    ", $unrun) . "\n");
+        }
+        check('W-06: every suite in tests/ is run by a workflow', $unrun === []);
+        check('W-06 (control): a suite the workflow text does not name is reported',
+            uv_unrun_suites(['a_js.cjs', 'b_php.php'], "run: node tests/a_js.cjs\n") === ['b_php.php']);
+        check('W-06 (control): and a longer name does not count for a shorter one',
+            uv_unrun_suites(['a_php.php'], "run: php tests/a_php.php.bak\n") === ['a_php.php']);
+    }
+
+    /* =====================================================================
      * W-04  the scale of it, stated once
      *
      * Not a pass/fail on the number - it will fall as the waves land, and a

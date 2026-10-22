@@ -104,6 +104,8 @@ jobs:
         run: node tests/explain_js.cjs
       - name: Durable scan client (progress loop, refusals, backoff)
         run: node tests/scan_client_js.cjs
+      - name: Durable scan findings panel (keyset pages, filters, refusals, marks)
+        run: node tests/scan_panel_js.cjs
       - name: JS message parity fixture (the form's sentence beside the report's)
         run: node tests/messages_fixture_js.cjs
 
@@ -275,6 +277,10 @@ jobs:
         run: php tests/scan_identity_php.php
       - name: Durable scan report (a stored finding renders as the legacy report does)
         run: php tests/scan_report_php.php
+      - name: Durable scan export (the CSV of a stored run, paged, defused, flat memory)
+        run: php tests/scan_export_php.php
+      - name: Durable scan reason bits (a pooled reason's mask, the judging branch, the identity unchanged)
+        run: php tests/scan_reason_bits_php.php
       - name: Durable scan store faults (a database failure is not a takeover)
         run: php tests/scan_sqlstore_fault_php.php
       - name: The production ScanDb itself (ROW_COUNT under the framework call)
