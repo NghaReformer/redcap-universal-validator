@@ -184,6 +184,17 @@ namespace {
             $u->name = 'alice';
             return $u;
         }
+
+        /**
+         * Rules that read no instrument. Since W11A-N3 the instruments are
+         * decided before the run row as well, from a planning context, so a
+         * fixture with none is refused before the store it means to break.
+         */
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            return ['ok' => true, 'why' => null, 'plan' => ['hostFields' => []], 'evaluate' => null,
+                    'read' => null, 'rules' => [], 'ownership' => [], 'problems' => []];
+        }
     }
 
     // A build with no query() method at all. is_callable must answer false, so
@@ -535,15 +546,33 @@ namespace {
     {
         /** @var string[] every statement */
         public $log = [];
-        /** @var int how many times a plan was asked for */
+        /** @var int how many times a context was asked for */
+        public $contexts = 0;
+        /**
+         * @var int how many plans production would BUILD for those contexts.
+         * UniversalValidator::scanPlan() keeps a plan in the request's memo
+         * under the project, the group, the value ceiling, the form-rights
+         * flag and the user - not the generation - so a second context with
+         * the same memo and key is no second plan. Since W11A-N3 every verb
+         * asks a planning context for the reader before the run row, and the
+         * run's entitlement after it is that plan again.
+         */
         public $plans = 0;
         /** @var array the options the last plan was asked with */
         public $lastOpts = [];
 
         public function durableScanContext($pid, array $opts = [], $dag = null)
         {
-            $this->plans++;
+            $this->contexts++;
             $this->lastOpts = $opts;
+            $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
+            $key = 'counted|' . json_encode([(int) $pid, $dag === null ? null : (string) $dag,
+                isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
+                !empty($opts['enforceFormRights']), is_object($this->user) ? $this->user->name : null]);
+            if ($memo === null || !isset($memo[$key])) {
+                $this->plans++;
+                if ($memo !== null) $memo[$key] = true;
+            }
             return parent::durableScanContext($pid, $opts, $dag);
         }
 
@@ -747,7 +776,11 @@ namespace {
             $key = $this->sys['log-hmac-key'];
             $self = $this;
             $this->contextsBuilt++;
-            $this->askedAsOf[] = array_key_exists('asOf', $opts) ? $opts['asOf'] : 'absent';
+            // Only a context that can judge records (one bound to a generation)
+            // is asked for the run's clock. readerForms() builds one with no
+            // generation, for the instruments alone (W11A-N3); it evaluates
+            // nothing, so no clock it is handed can reach a verdict.
+            if ($gen !== null) $this->askedAsOf[] = array_key_exists('asOf', $opts) ? $opts['asOf'] : 'absent';
             // As buildScanPlan(): a lookup whose project refuses the reader is
             // in crossRefused, and its rule stays in the rule list.
             $refused = $this->planRefused;
@@ -2043,6 +2076,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     $s2 = $svc->status(149, 77);
     check('M12: two answers about one run in one request build the plan once',
         $s1['ok'] === true && $s2['ok'] === true && $cm->plans === 1);
+    check('W11A-N3: the reader\'s instruments are asked once, before the run, and the run\'s entitlement reuses that plan',
+        $cm->contexts === 2 && $cm->plans === 1);
     check('P1: the record-enumeration probe available() made is the one the plan is handed',
         $cm->sent('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1
         && isset($cm->lastOpts['capabilities']['recordEnumeration']['state'])
@@ -2058,20 +2093,24 @@ namespace INSPIRE\UniversalValidator\Scan {
     // Every input that changes the answer is in the key.
     $cm->user->name = 'bob';
     $svc->status(149, 77);
+    // A new entitlement is a new context: counted as contexts, because the
+    // plan behind a second generation or sequence is the memo's (see above).
+    // Each status() below asks one context more, except the new reader's,
+    // who is asked about their instruments before the run (W11A-N3) too.
     check('M12: another reader in the same service is a new entitlement - rights, ceiling and '
-        . 'cross-project answers are theirs', $cm->plans === 2);
+        . 'cross-project answers are theirs', $cm->plans === 2 && $cm->contexts === 4);
     // One input at a time, so each part of the key is pinned on its own.
     $cm->runRow = \VerbModule::row(['generation_id' => 6]);
     $svc->status(149, 77);
-    check('M12: so is another generation of the run', $cm->plans === 3);
+    check('M12: so is another generation of the run', $cm->contexts === 5);
     $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6]);
     $svc->status(149, 77);
-    check('M12: and another run sequence, which the evaluator is bound to', $cm->plans === 4);
+    check('M12: and another run sequence, which the evaluator is bound to', $cm->contexts === 6);
     $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6, 'scope_dag' => '7']);
     $cm->user->rights['group_id'] = 7;
     \REDCap::$groupNames = [7 => 'north'];
     $svc->status(149, 77);
-    check('M12: and another scope', $cm->plans === 5);
+    check('M12: and another scope', $cm->contexts === 7 && $cm->plans === 3);
     $cm->user->rights['group_id'] = null;
     \REDCap::$groupNames = [];
 
@@ -2082,7 +2121,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $fresh->available(149);
     $fresh->status(149, 77);
     check('P1: a new request asks every question again',
-        $cm->plans === 6 && $cm->sent('MAX(version)') === 2 && $cm->sent('SHOW GRANTS') === 2);
+        $cm->contexts === 9 && $cm->plans === 4 && $cm->sent('MAX(version)') === 2 && $cm->sent('SHOW GRANTS') === 2);
 
     // The change log, opened once however many parts of the request need it.
     $fence = new \ReflectionMethod(ScanService::class, 'fence');
@@ -4023,8 +4062,15 @@ namespace INSPIRE\UniversalValidator\Scan {
             (new ScanService($lm, $ls))->work($pid, $rid);
         }
         $st = (new ScanService($lm, $ls))->status($pid, $rid);
+        // The report of the same run, on the page and in the file (the
+        // deferral from this review): its coverage sentence and its terminal
+        // row were built from the run row alone.
+        $x = (new ScanService($lm, $ls))->exportOpen($pid, $rid);
+        $csv = '';
+        if (!empty($x['ok'])) $x['stream'](function ($s) use (&$csv) { $csv .= $s; }, function () {});
         return ['row' => $ls->run($pid, $rid), 'states' => $ls->recordStates($rid), 'status' => $st,
-                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st),
+                'page' => (new ScanService($lm, $ls))->findings($pid, $rid), 'csv' => $csv];
     };
     $V = '\INSPIRE\UniversalValidator\ScanPageView';
     $gone = $leftRun(194, ['R01', 'R02', 'R03', 'R04', 'R05'], []);
@@ -4041,7 +4087,19 @@ namespace INSPIRE\UniversalValidator\Scan {
         strpos((string) $gone['pf']['done'], $V::EMPTY_SCOPE_LEFT) === 0
         && strpos((string) $gone['pf']['done'], 'deleted') === false
         && $gone['pf']['counts'] === $V::COUNT_NONE);
+    check('rvf1-2 report: the findings page says every record moved, in its coverage sentence and its terminal row',
+        !empty($gone['page']['ok']) && $gone['page']['report']['coverageSentence'] === $V::EMPTY_SCOPE_LEFT
+        && $gone['page']['marks']['incomplete'] === true
+        && substr((string) $gone['page']['marks']['row'], -strlen($V::EMPTY_SCOPE_LEFT)) === $V::EMPTY_SCOPE_LEFT
+        && strpos((string) $gone['page']['marks']['row'], 'deleted') === false);
+    check('rvf1-2 report: and so does the file, in its header and its terminal row',
+        strpos($gone['csv'], '"# coverage","' . $V::EMPTY_SCOPE_LEFT . '"') !== false
+        && strpos($gone['csv'], '"INCOMPLETE SCAN","') !== false
+        && strpos($gone['csv'], 'deleted while it ran') === false);
     $mixed = $leftRun(195, ['R01', 'R02', 'R03'], ['R04', 'R05']);
+    check('rvf1-2 report: a group that partly moved and was partly deleted says both on the page and in the file',
+        $mixed['page']['report']['coverageSentence'] === $V::EMPTY_SCOPE_LEFT_DELETED
+        && strpos($mixed['csv'], '"# coverage","' . $V::EMPTY_SCOPE_LEFT_DELETED . '"') !== false);
     check('rvf1-2: a group that partly moved and was partly deleted says both',
         $mixed['row']['coverage'] === ScanOutcome::EMPTY_SCOPE
         && strpos((string) $mixed['row']['terminal_reason'], 'moved to another Data Access Group or was deleted') !== false
@@ -4051,6 +4109,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rvf1-2 control: a group one record left still finishes on the records it kept',
         $kept['row']['coverage'] === ScanOutcome::FENCED && $kept['status']['leftGroup'] === true
         && strpos((string) $kept['pf']['done'], $V::coverageSentence(ScanOutcome::FENCED)) === 0);
+    check('rvf1-2 report control: and its report keeps the coverage sentence of the records it kept',
+        !empty($kept['page']['ok']) && $kept['page']['report']['coverageSentence'] === $V::coverageSentence(ScanOutcome::FENCED)
+        && strpos($kept['csv'], '"# coverage","' . $V::coverageSentence(ScanOutcome::FENCED) . '"') !== false);
 
     /* -----------------------------------------------------------------
      * rvf2-1  A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING
@@ -4171,10 +4232,14 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
     };
     $broken->user->rights['group_id'] = 7;
+    // Since W11A-N3 the context is asked for the READER before any run row,
+    // so a context that cannot be built is said, the same for every id.
     $bsvc = new ScanService($broken, $os);
+    $bnone = ['status' => $bsvc->status(185, 999), 'work' => $bsvc->work(185, 999),
+              'cancel' => $bsvc->cancel(185, 999)];
     check('rv5b-4: a context that cannot be built for another group\'s run does not say so',
-        $bsvc->status(185, $o31) === $none['status'] && $bsvc->cancel(185, $o31) === $none['cancel']
-        && $bsvc->work(185, $o31) === $none['work']);
+        $bsvc->status(185, $o31) === $bnone['status'] && $bsvc->cancel(185, $o31) === $bnone['cancel']
+        && $bsvc->work(185, $o31) === $bnone['work'] && $bnone['status']['final'] === false);
     $broken->user->rights['group_id'] = 31;
     check('rv5b-4 control: the run\'s own group is told why its context could not be built',
         (new ScanService($broken, $os))->status(185, $o31)['why']
@@ -4327,6 +4392,50 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W11A-N2 (control): with Full Data Set back, the run is there and the id is not',
         !empty($verbs($fAll)['status']['ok']) && $verbs(999)['status']['why'] === ScanService::NO_RUN
         && $fs->run(186, $fAll)['terminal'] === ScanOutcome::COMPLETE);
+    // W11A-N3. A designer barred from an instrument the rules read was told
+    // which instruments for an id that is a run, and NO_RUN for one that is
+    // not, because the entitlement was built for the run row.
+    $exportOf = function ($rid) use ($fm, $fs) {
+        $fm->user->rights['group_id'] = null;
+        return (new ScanService($fm, $fs))->exportOpen(186, $rid);
+    };
+    $fm->user->rights['forms'] = ['fa' => '0'];
+    $barredNone = $verbs(999);
+    check('W11A-N3: a reader barred from an instrument is told the same about a run and about no run, by every verb',
+        $verbs($fAll) === $barredNone && $barredNone['status']['ok'] === false
+        && $barredNone['status']['final'] === true
+        && strpos($barredNone['status']['why'], 'instrument(s) you do not have access to') !== false
+        && $barredNone['work']['why'] === $barredNone['status']['why']
+        && $barredNone['cancel']['why'] === $barredNone['status']['why']
+        && $barredNone['page'] === $barredNone['status']);
+    check('W11A-N3: and the download refuses them alike',
+        $exportOf(999) === $exportOf($fAll) && $exportOf(999)['http'] === 403
+        && $exportOf(999)['why'] === $barredNone['status']['why']);
+    $fm->user->rights['forms'] = ['fa' => '1'];
+    check('W11A-N3 (control): with the instrument back, the run is there and the id is not',
+        !empty($verbs($fAll)['status']['ok']) && $verbs(999)['status']['why'] === ScanService::NO_RUN);
+    // CANCEL IS ASKED OF THE HOST INSTRUMENTS, before the run as after it: a
+    // reader barred only from an instrument a rule's operand sits on can
+    // still stop the run, and is told NO_RUN for an id that is none.
+    $opStore = new ArrayScanStore();
+    $opMod = new class($opStore) extends \E2eModule {
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $c = parent::durableScanContext($pid, $opts, $dag);
+            if (!empty($c['ok'])) $c['ownership']['b_op'] = 'fb';
+            return $c;
+        }
+    };
+    $opMod->user->rights['forms'] = ['fa' => '1', 'fb' => '1'];
+    $opRun = (int) (new ScanService($opMod, $opStore))->start(190)['run_id'];
+    $opMod->user->rights['forms'] = ['fa' => '1', 'fb' => '0'];
+    $opNone = (new ScanService($opMod, $opStore))->status(190, 999);
+    check('W11A-N3: a reader barred from an operand\'s instrument is refused a run and no run alike',
+        $opRun > 0 && $opNone['ok'] === false && strpos($opNone['why'], 'fb') !== false
+        && (new ScanService($opMod, $opStore))->status(190, $opRun) === $opNone);
+    check('W11A-N3 (control): and can still stop the run, as before, while an id that is none is no run',
+        (new ScanService($opMod, $opStore))->cancel(190, 999)['why'] === ScanService::NO_RUN
+        && (new ScanService($opMod, $opStore))->cancel(190, $opRun)['ok'] === true);
 
     // A RUN THAT HAS NOT FINISHED HAS NO REPORT, AND ONE THAT HAS NOT PROVED
     // ITS GROUP SHOWS NO ROW.

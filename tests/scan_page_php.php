@@ -118,8 +118,18 @@ namespace ExternalModules {
          * worker holds it (review CL-2). Null is no lease: a paused run.
          */
         public $leaseExpires = null;
+        /**
+         * The newest finished run of the reader's scope (B5), and what the page
+         * asked to find it: [sql, params] per ask.
+         */
+        public $finishedRunId = null;
+        public $finishedAsks = [];
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
+            if (strpos($sql, 'uv_scan_run') !== false && strpos($sql, 'ORDER BY created_at DESC') !== false) {
+                $this->finishedAsks[] = [$sql, $params];
+                return new \ExternalModules\FakeRes($this->finishedRunId === null ? [] : [[(string) $this->finishedRunId]]);
+            }
             if (strpos($sql, 'SELECT lease_expires_at FROM') !== false) {
                 return new \ExternalModules\FakeRes($this->runRow === null ? [] : [[$this->leaseExpires]]);
             }
@@ -401,6 +411,7 @@ namespace {
         $m->runRow = isset($opts['runRow']) ? $opts['runRow'] : null;
         $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
         $m->leaseExpires = isset($opts['lease']) ? $opts['lease'] : null;
+        $m->finishedRunId = isset($opts['finishedRun']) ? $opts['finishedRun'] : null;
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -1421,8 +1432,71 @@ namespace {
         // A button with no type inside REDCap's project form defaults to
         // type=submit, and one thrown handler away from preventDefault that is a
         // page navigation in the middle of a scan.
+        // Every button, the findings panel's two included (B5).
         check('PANEL: no control can submit the project form it sits inside',
-            substr_count($html, 'type="button" id="uv-scan-') === 3);
+            substr_count($html, 'type="button" id="uv-scan-') === 5
+            && substr_count($html, '<button') === substr_count($html, '<button type="button" id="uv-scan-'));
+
+        /* -- THE FINDINGS PANEL (B5) -----------------------------------------
+         *
+         * A finished run's report, filled by js/scan.js from scan-findings.
+         * The page's half: the markup, hidden until an answer arrives; the
+         * run it opens on, which a run finished after its tab closed had no
+         * other way back to; and the download route, offered by the client
+         * only beside an answer.
+         */
+        list($noFin, $mNoFin) = render($U(), $D, $data, [], $on());
+        check('REPORT: the findings panel ships hidden, so an empty table never reads as a report that found nothing',
+            preg_match('/<section id="uv-scan-report" aria-labelledby="uv-scan-report-heading" aria-busy="false"\s+style="display:none;/', $noFin) === 1
+            && strpos($noFin, 'id="uv-scan-report-heading"') !== false);
+        check('REPORT: with no finished run the client is told there is none',
+            strpos($noFin, 'reportRunId: null,') !== false && count($mNoFin->finishedAsks) === 1);
+        check('REPORT: an unrestricted reader is offered the newest whole-project run, in one bounded read',
+            strpos($mNoFin->finishedAsks[0][0], 'scope_dag IS NULL') !== false
+            && strpos($mNoFin->finishedAsks[0][0], 'WHERE project_id = ? AND phase = ?') !== false
+            && strpos($mNoFin->finishedAsks[0][0], 'ORDER BY created_at DESC, run_id DESC LIMIT 1') !== false
+            && $mNoFin->finishedAsks[0][1] === [PID, 'terminal']);
+        list($fin, ) = render($U(), $D, $data, [], $on(['finishedRun' => 61]));
+        check('REPORT: the newest finished run is handed to the client to open', strpos($fin, 'reportRunId: 61,') !== false);
+        check('REPORT: with the download route, encoded as the labels are',
+            strpos($fin, 'exportUrl: "\/x\/pages\/export.php"') !== false);
+        check('REPORT: and a reader without scripting is told where the findings went',
+            strpos($fin, 'The findings of the last finished scan are shown with JavaScript.') !== false
+            && strpos($noFin, 'The findings of the last finished scan') === false);
+        \REDCap::$groupNames = [7 => 'north'];
+        list(, $mGroup) = render(new \ExternalModules\PlainUser(true, '7'), $D, $data, [], $on());
+        \REDCap::$groupNames = [];
+        check('REPORT: a group reader is offered the newest run of their own group, by its id',
+            count($mGroup->finishedAsks) === 1 && strpos($mGroup->finishedAsks[0][0], 'scope_dag = ?') !== false
+            && $mGroup->finishedAsks[0][1] === [PID, 'terminal', '7']);
+        list($busyHtml, $mBusy) = render($U(), $D, $data, [], $on(['activeRun' => 55, 'finishedRun' => 61]));
+        check('REPORT: while a run of theirs holds the slot nothing older is offered: the panel opens on that run when it ends',
+            count($mBusy->finishedAsks) === 0 && strpos($busyHtml, 'reportRunId: null,') !== false);
+        check('REPORT: the caption is the table\'s first child, so it is drawn and announced above it',
+            preg_match('/<table id="uv-scan-report-table"[^>]*>\s*<caption id="uv-scan-report-caption"/', $fin) === 1
+            && strpos($fin, '<thead><tr id="uv-scan-report-head"></tr></thead>') !== false);
+        check('REPORT: every filter is a labelled select',
+            substr_count($fin, '<label for="uv-scan-filter-') === 4
+            && preg_match_all('/<select id="uv-scan-filter-(form|reason|type|group)"/', $fin) === 4);
+        check('REPORT: the panel says what it is doing in a polite live region',
+            strpos($fin, '<p id="uv-scan-report-note" role="status" aria-live="polite" aria-atomic="true"') !== false);
+        // README's three marks of an incomplete report (item 10), where the
+        // file has them: the banner above the table, the terminal row below
+        // it, and the file name's suffix beside the download.
+        $at = function ($needle) use ($fin) { return strpos($fin, $needle); };
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
+        check('REPORT item 10: the banner sits above the table, the terminal row below it, before the controls',
+            $at('id="uv-scan-report-banner"') !== false && $at('id="uv-scan-report-row"') !== false
+            && $at('id="uv-scan-report-banner"') < $at('id="uv-scan-report-table"')
+            && $at('id="uv-scan-report-table"') < $at('id="uv-scan-report-row"')
+            && $at('id="uv-scan-report-row"') < $at('id="uv-scan-report-nav"'));
+        check('REPORT item 10: and the suffix is said beside the download',
+            preg_match('/<p id="uv-scan-report-export-wrap"[^>]*>\s*<a id="uv-scan-report-export">[^<]*<\/a>\s*<span id="uv-scan-report-suffix"/', $fin) === 1);
+        check('REPORT item 10: the suffix sentence names the suffix it is handed',
+            strpos($V::REPORT_SUFFIX, '{suffix}') !== false && $V::labels()['reportSuffix'] === $V::REPORT_SUFFIX);
+        check('REPORT: and the page itself offers no download: the client does, beside an answer',
+            strpos($fin, '<a id="uv-scan-report-export">') !== false
+            && preg_match('/id="uv-scan-report-export"[^>]*href=/', $fin) === 0);
 
         // N-C1. The client sets .uv-bar-indeterminate for a run with no total
         // yet. The class was defined NOWHERE - this module ships no stylesheet -
@@ -2057,6 +2131,18 @@ namespace {
             && strpos($V::panelPrefill($fin([]))['done'], $V::NOT_CERTIFIED) !== false);
         check('PREFILL: and a run still going owes no verdict yet',
             $V::verdictText($status(['clean' => 0, 'ruleProblems' => 2])) === null);
+        // W7-N10. A run with no stored decision is NOT CERTIFIED, and the
+        // counters beside it are not measurements: the reaper and the v2 data
+        // migration leave them at whatever they were.
+        $expired = $fin(['terminal' => 'expired', 'coverage' => 'partial', 'clean' => null, 'ruleProblems' => 3]);
+        check('PREFILL W7-N10: a run with no decision is not certified, whatever its rule count says',
+            $V::verdictText($expired) === $V::NOT_CERTIFIED
+            && strpos($V::panelPrefill($expired)['done'], 'could not be evaluated') === false
+            && $V::verdictText($fin(['clean' => '', 'ruleProblems' => 1])) === $V::NOT_CERTIFIED
+            && $V::verdictText($fin(['ruleProblems' => 2])) === $V::NOT_CERTIFIED);
+        check('PREFILL W7-N10 control: beside a stored 0 the count is said',
+            $V::verdictText($fin(['clean' => 0, 'ruleProblems' => 3])) === str_replace('{n}', '3', $V::RULE_PROBLEMS)
+            && $V::verdictText($fin(['clean' => '0', 'ruleProblems' => 1])) === $V::RULE_PROBLEM);
 
         // OC-4. A run that ended before its findings could be counted reports
         // NULL, and the line must say so rather than cast it to "Nothing found".
@@ -2108,7 +2194,10 @@ namespace {
                       'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems', 'withheld',
-                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf'];
+                      'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf',
+                      'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
+                      'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
+                      'filterAll', 'reportSuffix'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2119,7 +2208,10 @@ namespace {
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
-                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf'] as $k) {
+                  'withheld', 'withheldEnded', 'stoppedWithheld', 'emptyLeft', 'emptyLeftDeleted', 'none', 'asOf',
+                  'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
+                  'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
+                  'reportSuffix'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

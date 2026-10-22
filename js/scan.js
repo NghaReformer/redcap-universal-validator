@@ -156,10 +156,15 @@
      * status without the field (an older server) is not certified, because the
      * missing answer is never the reassuring one. ScanPageView::verdictText()
      * decides the same way, from the same sentences.
+     *
+     * A run with NO decision (`clean` null: expired by the reaper, or finished
+     * before the decision was stored) is not certified, and its counters are
+     * not measurements (W7-N10): the rule count is read only beside a stored 0.
      */
     function verdictText(st) {
         if (!st.terminal || st.clean === 1) return null;
         var L = labels(), n = st.ruleProblems | 0, tpl;
+        if (st.clean !== 0) return L.notCertified || 'This result does not certify the project.';
         if (n === 1) {
             return L.ruleProblem
                 || '1 rule could not be evaluated, so this result does not certify the project.';
@@ -488,6 +493,9 @@
             }
         }
 
+        // A finished run's report opens below the panel (B5), once per run.
+        if (st.terminal) reportLoad(st.run_id);
+
         var panel = el('uv-scan-panel');
         attr(panel, 'aria-busy', st.active ? 'true' : 'false');
 
@@ -796,6 +804,9 @@
             }
             UV.state.runId = r.run_id;
             UV.state.running = true;
+            // The last run's report is put away while the new run goes; the
+            // new one's opens when its status says it finished.
+            reportReset();
             UV.state.wait = NET_MIN;
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
@@ -883,6 +894,427 @@
         };
     }
 
+    /* ---------------------------------------------------------------------
+     * THE FINDINGS PANEL (B5)
+     *
+     * A finished run's report, one keyset page at a time, from scan-findings.
+     * The server decides every cell, every withheld value and whether the
+     * reader may see the run at all; this renders what it said, through
+     * textContent only, and keeps the cursor.
+     *
+     * KEYSET PAGES HAVE NO NUMBER. `next` is the last finding id of the page
+     * just read, so Next page asks after it and Previous page needs the
+     * `after` of every page shown before: a stack. Only pages that SHOWED
+     * rows go on it, so Previous never lands on an empty page.
+     *
+     * ONE REQUEST AT A TIME, NEVER AT 0 ms. A press while one is out is
+     * dropped (Next and Previous) or kept for when it lands (a filter, which
+     * starts over anyway). A refusal marked `final` is the last word and is
+     * never asked again; any other refusal, and a request that did not
+     * complete, is asked again on the no-progress ladder (IDLE_MIN doubling
+     * to IDLE_MAX).
+     * ------------------------------------------------------------------- */
+
+    /** Rows one page asks for. ScanService caps it at FINDINGS_PAGE_MAX. */
+    var REPORT_LIMIT = 50;
+    /**
+     * AN EMPTY PAGE WITH A `next` IS NOT "NO FINDINGS" (review rv11a2-6).
+     * With two filters set the server reads the first filter's key a window
+     * at a time, and a window can hold no row matching the second while later
+     * windows do. The panel reads on, up to REPORT_SKIP_MAX more pages for one
+     * press and REPORT_SKIP_MS apart, then says it is still looking and leaves
+     * Next page to the reader. "No findings match" is said only when `next`
+     * is null and nothing was shown.
+     */
+    var REPORT_SKIP_MAX = 4, REPORT_SKIP_MS = 250;
+    /** The filters scan-findings takes, in the order the page shows them. */
+    var FILTERS = ['form', 'reason', 'type', 'group'];
+
+    UV.report = {
+        runId: null,            // the run whose report is open, or null
+        gen: 0,                 // which question is current; an older answer is dropped
+        inflight: false,        // one scan-findings in flight, always
+        waiting: false,         // a timer is queued to ask again
+        wait: 0,                // the retry ladder, 0 until a refusal
+        at: 0,                  // the `after` of the page asked for
+        stack: [],              // the `after` of every page shown before it
+        next: null,             // the cursor of the page shown, null on the last
+        shown: false,           // whether the page on screen holds rows
+        skips: 0,               // empty pages read past for this press
+        stopped: false,         // a final refusal: never asked again
+        facetsFor: null,        // the run the filter options were built for
+        filter: { form: '', reason: '', type: '', group: '' }
+    };
+
+    function isRunId(v) {
+        return typeof v === 'number' && v > 0 && v === Math.floor(v);
+    }
+
+    function show(node, on) {
+        if (node) node.style.display = on ? '' : 'none';
+    }
+
+    function clearNode(node) {
+        if (!node) return;
+        while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    /** A child element with its text set as text, never as markup. */
+    function child(parent, tag, s) {
+        var c = document.createElement(tag);
+        if (s !== undefined) c.textContent = (s === null) ? '' : String(s);
+        parent.appendChild(c);
+        return c;
+    }
+
+    function reportNote(s) { text(el('uv-scan-report-note'), s); }
+
+    /** Put the report away: a new run is going, or the page has none. */
+    function reportReset() {
+        var r = UV.report;
+        r.runId = null;
+        r.gen++;
+        r.waiting = false;
+        show(el('uv-scan-report'), false);
+    }
+
+    /** Open a run's report on its first page, once per run. */
+    function reportLoad(runId) {
+        var r = UV.report;
+        if (!el('uv-scan-report') || !isRunId(runId) || r.runId === runId) return;
+        r.runId = runId;
+        r.filter = { form: '', reason: '', type: '', group: '' };
+        r.facetsFor = null;
+        r.stopped = false;
+        reportAsk(0, true);
+    }
+
+    /**
+     * Start one reader action: the page after $after, with the stack kept or
+     * emptied. Everything a press changes is set here, and only here.
+     */
+    function reportAsk(after, fresh) {
+        var r = UV.report;
+        if (fresh) r.stack = [];
+        r.at = after;
+        r.skips = 0;
+        r.wait = 0;
+        r.gen++;
+        r.waiting = false;
+        reportSend();
+    }
+
+    function reportSend() {
+        var r = UV.report;
+        if (r.inflight || r.runId === null || r.stopped) return;
+        var gen = r.gen, filter = {}, i, L = labels();
+        for (i = 0; i < FILTERS.length; i++) filter[FILTERS[i]] = r.filter[FILTERS[i]];
+        r.inflight = true;
+        attr(el('uv-scan-report'), 'aria-busy', 'true');
+        reportNote(L.reportLoading || 'Loading the findings.');
+        call('scan-findings', { run_id: r.runId, after: r.at, limit: REPORT_LIMIT, filter: filter })
+            .then(function (a) {
+                r.inflight = false;
+                attr(el('uv-scan-report'), 'aria-busy', 'false');
+                // The reader asked something else while this was out: ask
+                // that instead, and show nothing of the answer to this.
+                if (gen !== r.gen) { reportSend(); return; }
+                try {
+                    reportAnswer(a);
+                } catch (e) {
+                    reportNote('This page could not show the findings the server sent. Reload the page; '
+                             + 'nothing has been lost.');
+                }
+            }, function (e) {
+                r.inflight = false;
+                attr(el('uv-scan-report'), 'aria-busy', 'false');
+                if (gen !== r.gen) { reportSend(); return; }
+                if (e && e.uvFatal) {
+                    reportNote('This page could not reach the module\'s JavaScript transport, so the '
+                             + 'findings cannot be shown. Reload the page.');
+                    return;
+                }
+                reportLater('Lost contact with the server.');
+            });
+    }
+
+    /** Ask the same question again, on the no-progress ladder, never at once. */
+    function reportLater(why) {
+        var r = UV.report, gen = r.gen, L = labels();
+        var w = r.wait = r.wait ? Math.min(IDLE_MAX, r.wait * 2) : IDLE_MIN;
+        // The download is offered beside an answer, and this is none.
+        reportExport(null);
+        reportNote(why + ' ' + (L.reportRetry || 'Trying again shortly.'));
+        r.waiting = true;
+        setTimeout(function () {
+            if (gen !== r.gen) return;
+            r.waiting = false;
+            reportSend();
+        }, w);
+    }
+
+    function filtered() {
+        var r = UV.report, i;
+        for (i = 0; i < FILTERS.length; i++) if (r.filter[FILTERS[i]] !== '') return true;
+        return false;
+    }
+
+    /** What one completed scan-findings answer means. */
+    function reportAnswer(a) {
+        var r = UV.report, L = labels();
+        if (!a || a.ok === false) {
+            if (a && a.final === true) {
+                // The last word: rights withdrawn, or no such run. Nothing
+                // of the report stays on screen, and nothing is asked again.
+                r.stopped = true;
+                show(el('uv-scan-report'), true);
+                reportBody(false);
+                text(el('uv-scan-report-summary'), '');
+                text(el('uv-scan-report-count'), '');
+                reportMarks(null);
+                show(el('uv-scan-report-degraded'), false);
+                show(el('uv-scan-report-withheld'), false);
+                reportNote((a && a.why) ? a.why : (L.reportFailed || 'The findings of this scan could not be read just now.'));
+                return;
+            }
+            reportLater((a && a.why) ? a.why : (L.reportFailed || 'The findings of this scan could not be read just now.'));
+            return;
+        }
+        r.wait = 0;
+        show(el('uv-scan-report'), true);
+        reportSummary(a);
+        reportMarks(a);
+        if (a.withheld) {
+            // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO TABLE (H10): a row
+            // is a count of one. Its sentence, and nothing to download.
+            reportBody(false);
+            reportExport(a);
+            var held = el('uv-scan-report-withheld');
+            text(held, (typeof a.withheldWhy === 'string' && a.withheldWhy) ? a.withheldWhy
+                : (L.withheldEnded || 'This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.'));
+            show(held, true);
+            reportNote('');
+            return;
+        }
+        show(el('uv-scan-report-withheld'), false);
+        reportExport(a);
+        reportFacets(a);
+        var rows = (a.rows && a.rows.length) ? a.rows : [];
+        var next = isRunId(a.next) ? a.next : null;
+        if (!rows.length && next !== null) {
+            if (r.skips < REPORT_SKIP_MAX) {
+                // Read on, a moment later, keeping what is on screen.
+                r.skips++;
+                r.at = next;
+                reportNote(L.reportLooking || 'Looking further for findings that match these filters.');
+                var gen = r.gen;
+                r.waiting = true;
+                setTimeout(function () {
+                    if (gen !== r.gen) return;
+                    r.waiting = false;
+                    reportSend();
+                }, REPORT_SKIP_MS);
+                return;
+            }
+            r.next = next;
+            r.shown = false;
+            reportTable(a, rows);
+            reportNote(L.reportSearching || 'Still looking: the pages read so far held no finding that matches these filters, and there are more to read. Press Next page to keep looking.');
+            return;
+        }
+        r.next = next;
+        r.shown = rows.length > 0;
+        reportTable(a, rows);
+        if (rows.length) {
+            reportNote('');
+        } else if (r.stack.length) {
+            reportNote(L.reportNoMore || 'No further findings match these filters.');
+        } else {
+            reportNote(filtered() ? (L.reportEmpty || 'No findings match these filters.')
+                                  : (L.reportNone || 'This scan stored no findings.'));
+        }
+    }
+
+    /** The table, the filters, the controls and the download, on or off together. */
+    function reportBody(on) {
+        show(el('uv-scan-report-table'), on);
+        show(el('uv-scan-report-nav'), on);
+        show(el('uv-scan-report-filters'), on && UV.report.facetsFor !== null);
+        if (!on) show(el('uv-scan-report-export-wrap'), false);
+    }
+
+    /**
+     * What the whole report may be said to be: its coverage sentence and its
+     * verdict, as the panel says them (W7-N10: no decision is not certified),
+     * how many findings it holds, and whether its labels are today's.
+     */
+    function reportSummary(a) {
+        var rep = a.report || {}, L = labels();
+        // A withheld run says why in its own sentence; its coverage sentence
+        // is about records its reader is not shown.
+        var s = (!a.withheld && typeof rep.coverageSentence === 'string') ? rep.coverageSentence : '';
+        var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.ruleProblems });
+        text(el('uv-scan-report-summary'), v ? (s ? s + ' ' + v : v) : s);
+        var n = rep.expectedRows, count;
+        if (typeof n === 'number' && n >= 0 && n === Math.floor(n)) {
+            count = fill(L.reportCount || 'This report holds {findings}.',
+                         { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's') });
+        } else {
+            count = L.foundUnknown || 'Findings not counted, because the scan ended before it could total them';
+        }
+        text(el('uv-scan-report-count'), a.withheld ? '' : count);
+        var deg = el('uv-scan-report-degraded');
+        var said = (rep.labelsDegraded && typeof rep.degradedSummary === 'string') ? rep.degradedSummary : '';
+        text(deg, said);
+        show(deg, said !== '');
+    }
+
+    /**
+     * README's three marks of a report that cannot certify (item 10), as the
+     * file carries them: marks.banner above the table, marks.row below it -
+     * the page's terminal row - and the file name's suffix beside the
+     * download (reportExport()). The server decides all three
+     * (ScanService::incompleteMarks()); a run that is not incomplete shows
+     * none of them.
+     */
+    function reportMarks(a) {
+        var m = (a && a.marks) || {}, on = m.incomplete === true;
+        var banner = el('uv-scan-report-banner'), row = el('uv-scan-report-row');
+        var bannerOn = on && typeof m.banner === 'string' && m.banner !== '';
+        text(banner, bannerOn ? m.banner : '');
+        show(banner, bannerOn);
+        // A withheld run has no rows for a terminal row to come after.
+        var rowOn = on && !(a && a.withheld) && typeof m.row === 'string' && m.row !== '';
+        text(row, rowOn ? m.row : '');
+        show(row, rowOn);
+    }
+
+    /** The page: its column heads, its rows, its caption and the two controls. */
+    function reportTable(a, rows) {
+        var r = UV.report, L = labels(), i, j;
+        var cols = (a.columns && a.columns.length) ? a.columns : [];
+        var head = el('uv-scan-report-head'), body = el('uv-scan-report-body');
+        clearNode(head);
+        for (i = 0; i < cols.length; i++) {
+            attr(child(head, 'th', cols[i].label), 'scope', 'col');
+        }
+        clearNode(body);
+        for (i = 0; i < rows.length; i++) {
+            var tr = child(body, 'tr'), cells = rows[i].cells || {};
+            for (j = 0; j < cols.length; j++) {
+                var v = Object.prototype.hasOwnProperty.call(cells, cols[j].key) ? cells[cols[j].key] : '';
+                child(tr, 'td', v);
+            }
+        }
+        text(el('uv-scan-report-caption'),
+             fill(L.reportCaption || 'Findings of this scan, page {page}', { page: r.stack.length + 1 }));
+        reportBody(true);
+        // aria-disabled, NOT disabled: a press on the last page keeps the
+        // focus on the button it pressed, where `disabled` drops it on the
+        // page body. The handlers below refuse the press themselves.
+        var prev = el('uv-scan-report-prev'), nextB = el('uv-scan-report-next');
+        attr(prev, 'aria-disabled', r.stack.length ? 'false' : 'true');
+        attr(nextB, 'aria-disabled', r.next !== null ? 'false' : 'true');
+    }
+
+    /**
+     * The four filters, from the run's summary: one option per value with its
+     * count, and All. Built once per run: they are the run's, not the page's,
+     * and rebuilding a select under a keyboard user moves them.
+     */
+    function reportFacets(a) {
+        var r = UV.report, L = labels(), i, k, any = false;
+        if (r.facetsFor === r.runId) return;
+        for (i = 0; i < FILTERS.length; i++) {
+            var name = FILTERS[i], sel = el('uv-scan-filter-' + name);
+            var list = (a.facets && a.facets[name] && a.facets[name].length) ? a.facets[name] : [];
+            show(el('uv-scan-filter-' + name + '-wrap'), list.length > 0);
+            if (!sel) continue;
+            clearNode(sel);
+            var all = child(sel, 'option', L.filterAll || 'All');
+            all.value = '';
+            for (k = 0; k < list.length; k++) {
+                var o = child(sel, 'option', String(list[k].label) + ' (' + grouped(list[k].count | 0) + ')');
+                o.value = String(list[k].value);
+            }
+            sel.value = r.filter[name];
+            if (list.length) any = true;
+        }
+        r.facetsFor = any ? r.runId : null;
+        show(el('uv-scan-report-filters'), any);
+    }
+
+    /** The download, offered only beside an answer that showed the report. */
+    function reportExport(a) {
+        var r = UV.report, link = el('uv-scan-report-export'), L = labels();
+        var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
+        var ok = a && a.ok === true && !a.withheld && url !== '' && isRunId(r.runId) && a.run_id === r.runId;
+        var suffix = el('uv-scan-report-suffix');
+        if (!ok) {
+            attr(link, 'href', null);
+            show(el('uv-scan-report-export-wrap'), false);
+            text(suffix, '');
+            show(suffix, false);
+            return;
+        }
+        attr(link, 'href', url + (url.indexOf('?') === -1 ? '?' : '&') + 'run_id=' + r.runId);
+        show(el('uv-scan-report-export-wrap'), true);
+        // The third mark: the file's name says it, wherever the file goes.
+        var m = a.marks || {};
+        var said = (m.incomplete === true && typeof m.suffix === 'string' && m.suffix !== '')
+            ? fill(L.reportSuffix || 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.', { suffix: m.suffix })
+            : '';
+        text(suffix, said);
+        show(suffix, said !== '');
+    }
+
+    function reportNext() {
+        var r = UV.report;
+        if (r.inflight || r.waiting || r.stopped || r.next === null) return;
+        if (r.shown) r.stack.push(r.at);
+        reportAsk(r.next, false);
+    }
+
+    function reportPrev() {
+        var r = UV.report;
+        if (r.inflight || r.waiting || r.stopped || !r.stack.length) return;
+        reportAsk(r.stack.pop(), false);
+    }
+
+    function reportFilter(name, value) {
+        var r = UV.report;
+        if (r.runId === null || r.stopped) return;
+        r.filter[name] = String(value === null || value === undefined ? '' : value);
+        r.next = null;
+        r.shown = false;
+        reportAsk(0, true);
+    }
+
+    /** A report control's handler: never the page's default action, never a throw. */
+    function quietly(fn) {
+        return function (e) {
+            if (e && e.preventDefault) e.preventDefault();
+            try { fn(e); } catch (err) {
+                reportNote('This page could not change the findings shown. Reload the page; nothing has '
+                         + 'been lost.');
+            }
+        };
+    }
+
+    function attachReport(opts) {
+        var b, i;
+        if (typeof opts.exportUrl === 'string') UV.exportUrl = opts.exportUrl;
+        if ((b = el('uv-scan-report-next'))) b.addEventListener('click', quietly(reportNext));
+        if ((b = el('uv-scan-report-prev'))) b.addEventListener('click', quietly(reportPrev));
+        for (i = 0; i < FILTERS.length; i++) {
+            (function (name) {
+                var sel = el('uv-scan-filter-' + name);
+                if (sel) sel.addEventListener('change', quietly(function () { reportFilter(name, sel.value); }));
+            })(FILTERS[i]);
+        }
+        if (isRunId(opts.reportRunId)) reportLoad(opts.reportRunId);
+    }
+
     /**
      * Attach to a page that already knows whether a run is in progress.
      *
@@ -897,6 +1329,7 @@
         if ((b = el('uv-scan-start')))  b.addEventListener('click', safely(UV.start));
         if ((b = el('uv-scan-cancel'))) b.addEventListener('click', safely(UV.cancel));
         if ((b = el('uv-scan-resume'))) b.addEventListener('click', safely(function () { UV.resume(); }));
+        attachReport(opts);
         if (opts.runId) {
             UV.state.runId = opts.runId;
             refresh();
