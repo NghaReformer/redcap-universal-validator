@@ -550,8 +550,11 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 228 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Besides
+- `delta_mutations.py` applies 251 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. The copy
+  holds every folder and file the named suites read (`site/` and `README.md`
+  among them), and every suite must pass in it before the first mutation, so
+  a suite that cannot run in the copy stops the run. Besides
   @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
   (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
   notes, the registry entry of a field with two modes), so those suites are

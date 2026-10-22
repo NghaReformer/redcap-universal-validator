@@ -7399,9 +7399,10 @@ class UniversalValidator extends AbstractExternalModule
      * (deltaHeldGroup); every other tag holds its own. A tag that failed to
      * parse holds the group its JSON names, read leniently
      * (deltaTagsAsWritten), since fixing the key it failed on brings it back
-     * (review R9-7); one whose "vs" cannot be read at all could hold any, so
-     * the answer is every group (DELTA_ANY_GROUP, review R10-2). $frag's own
-     * tag is among them; its "vs" is never suggested back.
+     * (review R9-7); one that cannot be read even so (an unknown key, or a
+     * "vs", "direction" or "when" the parser would refuse) could hold any,
+     * so the answer is every group (DELTA_ANY_GROUP, reviews R10-2, R11-1).
+     * $frag's own tag is among them; its "vs" is never suggested back.
      *
      * Each hook asks this only once a suggestion is searched for, so an
      * accepted tag never pays for it (review R9-8).
@@ -7432,9 +7433,14 @@ class UniversalValidator extends AbstractExternalModule
     const DELTA_PASSED = '#';
     /** Said where nothing is suggested because another tag cannot be read (review R10-2). */
     const DELTA_UNREAD = ' (nothing is suggested while another @UVDELTA tag on this field cannot be read; fix that tag first)';
-    /** Said where nothing is suggested and an entry was passed over for another tag's group (review R10-1). */
+    /**
+     * Said where nothing is suggested and an entry was passed over for
+     * another tag's group (review R10-1), with the rule deltaGroupsTaken
+     * applies in the docs' words (Branching::whenExclusive, review R11-2).
+     */
     const DELTA_HELD = ' (an entry another @UVDELTA tag on this field compares with in the same direction is not suggested, '
-        . 'unless just one of the two tags has a "when", or both have one and the two can never be true at once)';
+        . 'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '
+        . 'alone or as part of an "and", and no value equals both)';
 
     /** deltaTagsAsWritten's answers, by annotation, for one build of the rules. */
     private $deltaTagsMemo = [];
@@ -7445,7 +7451,7 @@ class UniversalValidator extends AbstractExternalModule
      * R10-3): each as ['frag' => its fragment, 'failed' => whether it failed
      * to parse, 'keys' => Branching::whenKeys], where a tag that failed to
      * parse gives the keys its JSON names (AnnotationRules::deltaBranchAsWritten);
-     * null for one whose "vs" cannot be read even so. parseAllTags reads
+     * null for one that cannot be read even so. parseAllTags reads
      * each tag's values in order, so its n-th @UVDELTA entry is the n-th
      * value extractTagsDetailed reads.
      */

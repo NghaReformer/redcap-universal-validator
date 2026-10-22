@@ -34,6 +34,10 @@ GROWTH_DOM = 'tests/growth_dom_js.cjs'
 GROWTH_MODULE = 'tests/growth_module_php.php'
 TEMPORAL_INT = 'tests/temporal_integration_php.php'
 BRANCHING = 'php/Branching.php'
+# What the copy holds: every folder and file the named suites read (registry_php.php reads
+# site/, growth_module_php.php reads README.md and site/).
+COPY_FOLDERS = ['php', 'js', 'tests', 'data', 'docs', 'site']
+COPY_FILES = [UV, 'config.json', 'README.md']
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -577,9 +581,10 @@ MUTATIONS = [
      '        if ($this->deltaTagsMemo) return reset($this->deltaTagsMemo);', MODULE),
     # R10-4: the reviewer's surviving mutations X1-X5, X9, X10, V9, V10
     ('a tag that failed to parse loses its "when" (review R10-4 X1)', RULES,
-     "        if (isset($cfg['when']) && is_string($cfg['when'])) $out['when'] = $cfg['when'];\n", '', MODULE),
+     "            $out['when'] = $cfg['when'];\n", '', MODULE),
     ('a tag that failed to parse loses its direction (review R10-4 X2)', RULES,
-     "            $out['deltaDirection'] = strtolower(trim($cfg['direction']));", '            ;', MODULE),
+     "            if (!in_array($d, ['both', 'up', 'down'], true)) return null;\n            if ($d !== 'both') $out['deltaDirection'] = $d;\n",
+     "            if (!in_array($d, ['both', 'up', 'down'], true)) return null;\n", MODULE),
     ('a tag that failed to parse loses its caseSensitive (review R10-4 X3)', RULES,
      "        if (isset($cfg['caseSensitive']) && $cfg['caseSensitive'] === true) $out['caseSensitive'] = true;\n", '', MODULE),
     ('a tag that failed to parse: a shorthand in capitals not read (review R10-4 X4)', RULES,
@@ -595,6 +600,66 @@ MUTATIONS = [
      'block = "off";\n      for(var ai = 0; ai < act.length; ai++){\n        var one = judge(act[ai], typed);', DOM),
     ('JS test(): a typed Missing Data Code judged (review R10-4 V10)', ENGINE,
      '        if(QRID_isMissingCode(typed)) return null;\n        /* every comparison must pass', '        /* every comparison must pass', DOM),
+    # ---- the eleventh review's fixes ----
+    # R11-1: a tag that failed to parse with an unknown key, or a "vs", "direction" or "when" the parser refuses, holds every group
+    ('a tag that failed to parse read with a key it does not know (review R11-1)', RULES,
+     '        if (!is_array($cfg) || array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;', '        if (!is_array($cfg)) return null;', MODULE),
+    ('a key in other letter case read as the key (review R11-1)', RULES,
+     'array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;', "array_udiff(array_keys($cfg), self::DELTA_KEYS, 'strcasecmp')) return null;", MODULE),
+    ('a "vs" the parser refuses read as written (review R11-1)', RULES,
+     "        elseif (ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true]) === null) return null;\n", '', MODULE),
+    ('a blank "vs" read as written (review R11-3 P)', RULES,
+     "        elseif (ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true]) === null) return null;",
+     "        elseif ($out['deltaVs'] !== '' && ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true]) === null) return null;", MODULE),
+    ('a "vs" naming another event unread while references are off (review R11-1)', RULES,
+     "ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true])", "ModeRegistry::operandRef($out['deltaVs'], [])", MODULE),
+    ('a "direction" that is not a text read as both (review R11-1)', RULES,
+     "            $d = is_string($cfg['direction']) ? strtolower(trim($cfg['direction'])) : null;",
+     "            $d = is_string($cfg['direction']) ? strtolower(trim($cfg['direction'])) : 'both';", MODULE),
+    ('a "direction" the parser refuses read as written (review R11-1)', RULES,
+     "            if (!in_array($d, ['both', 'up', 'down'], true)) return null;\n", '', MODULE),
+    ('a "when" that is not a text read as none (review R11-1)', RULES,
+     "        if (isset($cfg['when'])) {\n            if (!is_string($cfg['when']) || ",
+     "        if (isset($cfg['when']) && is_string($cfg['when'])) {\n            if (", MODULE),
+    ('a "when" that does not parse read as written (review R11-1)', RULES,
+     " || empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;", ') return null;', MODULE),
+    ('a "when" naming another event read as one that does not parse (review R11-1)', RULES,
+     "Logic::parse($cfg['when'], ['qualified' => true])", "Logic::parse($cfg['when'], [])", MODULE),
+    # R11-2: the held note says the rule the search applies
+    ('the held note promises more than the search applies (review R11-2)', UV,
+     """'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '\n"""
+     """        . 'alone or as part of an "and", and no value equals both)';""",
+     """'unless just one of the two tags has a "when", or both have one and the two can never be true at once)';""", MODULE),
+    # R11-3: the reviewer's surviving mutations A-J, L and N (P is above). O, a wider trim in Logic::neverBothEqual,
+    # changes nothing: the characters it adds (NUL, vertical tab) cannot appear in a condition (Logic::parse).
+    ('a checkbox code dropped from the values a condition needs (review R11-3 A)', LOGIC,
+     "$out[$p[0][1] . '(' . (string) $p[0][2] . ')'][] = $p[1][1];", "$out[$p[0][1] . '()'][] = $p[1][1];", MODULE),
+    ('a field compared with a field read as a value (review R11-3 B)', LOGIC,
+     "            if ($p[0][0] === 'ref' && $p[1][0] === 'lit')", "            if ($p[0][0] === 'ref' && ($p[1][0] === 'lit' || $p[1][0] === 'ref'))", MODULE),
+    ('an "and" inside an "and" needs nothing (review R11-3 C)', LOGIC,
+     'foreach ($ast[1] as $c) foreach (self::requiredValues($c) as $k => $vs)',
+     "foreach ($ast[1] as $c) foreach ($c[0] === 'and' ? [] : self::requiredValues($c) as $k => $vs)", MODULE),
+    ('a condition that does not parse taken as never true at once (review R11-3 D)', BRANCHING,
+     "        if (empty($pa['ok']) || empty($pb['ok'])) return false;", "        if (empty($pa['ok']) || empty($pb['ok'])) return true;", MODULE),
+    ('only the first value each condition needs compared (review R11-3 E)', BRANCHING,
+     'foreach ($values as $x) foreach ($need[$key] as $y)',
+     'foreach (array_slice($values, 0, 1) as $x) foreach (array_slice($need[$key], 0, 1) as $y)', MODULE),
+    ('the lenient read drops backslash escapes (review R11-3 F)', RULES,
+     r"""            if ($c === '\\' && $i + 1 < $n) { $out .= $c . $text[++$i]; continue; }""" '\n', '', MODULE),
+    ('the lenient read keeps a comma before ] (review R11-3 G)', RULES,
+     "($text[$j] === '}' || $text[$j] === ']')", "($text[$j] === '}')", MODULE),
+    ('the lenient read leaves single curly quotes alone (review R11-3 H)', RULES,
+     r'''"\u{2018}" => "'", "\u{2019}" => "'"''', r'''"\u{2018}" => "\u{2018}", "\u{2019}" => "\u{2019}"''', MODULE),
+    ('the lenient read skips no space before a closing brace (review R11-3 I)', RULES,
+     r'''                    while ($j < $n && strpos(" \t\r\n", $text[$j]) !== false) $j++;''' '\n', '', MODULE),
+    ('only the tags memo kept from one build of the rules to the next (review R11-3 J)', UV,
+     '        $this->deltaTagsMemo = [];\n', '', MODULE),
+    ('a failed tag of another mode read as an @UVDELTA value (review R11-3 L)', UV,
+     "if ($failed ? (!isset($f['_tag']) || $f['_tag'] !== AnnotationRules::TAG_DELTA) : (!isset($f['type']) || $f['type'] !== 'delta')) continue;",
+     "if ($failed ? false : (!isset($f['type']) || $f['type'] !== 'delta')) continue;", MODULE),
+    ('the lenient read steps one byte past a curly quote inside a string (review R11-3 N)', RULES,
+     r"""            $out .= $c === '"' ? '\\"' : $c;""" '\n            $i += strlen($c) - 1;\n',
+     r"""            $out .= $c === '"' ? '\\"' : $c;""" '\n', MODULE),
     ("a branch's own test ignores a configuration error", ENGINE,
      'test: function(v, isFinal){ return configError ? null : judge(V, v, isFinal); } }; }),', 'test: function(v, isFinal){ return judge(V, v, isFinal); } }; }),', DOM),
     ("an ID check's test ignores a configuration error", ENGINE,
@@ -679,17 +744,19 @@ def run(suite, cwd):
 
 
 def main():
-    for suite in sorted({m[-1] for m in MUTATIONS}):
-        res = run(suite, ROOT)
-        if res.returncode != 0:
-            sys.exit(f'{suite} fails before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
     survived = []
     with tempfile.TemporaryDirectory(prefix='uv-delta-mutations-') as directory:
         copy = Path(directory)
-        for folder in ['php', 'js', 'tests', 'data', 'docs']:
+        for folder in COPY_FOLDERS:
             shutil.copytree(ROOT / folder, copy / folder)
-        for filename in [UV, 'config.json']:
+        for filename in COPY_FILES:
             shutil.copy2(ROOT / filename, copy / filename)
+        # in the copy, so a suite that needs a file the copy lacks stops the run here
+        # instead of killing every mutation named to it (review R11-4)
+        for suite in sorted({m[-1] for m in MUTATIONS}):
+            res = run(suite, copy)
+            if res.returncode != 0:
+                sys.exit(f'{suite} fails before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
         for name, filename, original, replacement, suite in MUTATIONS:
             path = copy / filename
             source = path.read_text(encoding='utf-8')

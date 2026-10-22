@@ -4302,11 +4302,15 @@ instance:
   `caseSensitive`), and `[x]>0` and `[x]=1` do not. A tag without a
   condition is the fallback beside tags that have one, so the two may share
   a `vs`. A refused tag earlier on the field counts with the reference its
-  own refusal suggests. A tag that failed to parse counts with the `vs` its
-  JSON names, read with single or curly quotes as double quotes and without
-  a trailing comma; when even that cannot be read, nothing is suggested
-  beside it, and the refusal says to fix that tag first. So the suggestions
-  for one field can be written back together. For the field
+  own refusal suggests. A tag that failed to parse counts with the `vs`,
+  direction and condition its JSON names, read with single or curly quotes
+  as double quotes and without a trailing comma. Nothing is suggested
+  beside it, and the refusal says to fix that tag first, when even that
+  cannot be read, when the JSON names a key the tag does not take (letter
+  case counts, so `When` is one), or when its `vs`, `direction` or `when`
+  is not text or would be refused. A reference to another event or
+  instance counts as read, since turning references on fixes it. So the
+  suggestions for one field can be written back together. For the field
   itself the instance must read an earlier entry where the event lands:
   `[previous-instance]` only at the field's own event, `[last-instance]` and
   an instance numbered after the first only at another, `[first-instance]`
