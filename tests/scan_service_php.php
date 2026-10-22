@@ -2212,6 +2212,8 @@ namespace INSPIRE\UniversalValidator\Scan {
             public $liveIds = [];
             /** @var array the identifier flags the run is planned with */
             public $snapIds = ['a_val' => true];
+            /** @var array dictionary fields no rule names, and their labels (review rv11a2-7) */
+            public $extraLabels = [];
             public function durableScanContext($pid, array $opts = [], $dag = null)
             {
                 $c = parent::durableScanContext($pid, $opts, $dag);
@@ -2226,7 +2228,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                 if ($this->dimsFail) throw new \RuntimeException('no labels today');
                 $d = new \INSPIRE\UniversalValidator\ScanDimensions();
                 $d->forms = ['fa' => $this->formLabel];
-                $d->fieldLabels = ['a_val' => 'Value A'];
+                $d->fieldLabels = ['a_val' => 'Value A'] + $this->extraLabels;
                 $d->fieldForms = ['a_val' => 'fa'];
                 $d->identifiers = $this->snapIds;
                 $d->singleEventProved = true;
@@ -4562,6 +4564,51 @@ namespace INSPIRE\UniversalValidator\Scan {
     $pn12 = (new ScanService($m12, $gap))->findings(214, $g12, ['limit' => 100]);
     check('rv11a2-6 (control): a page that has rows is one store call',
         count($pn12['rows']) === 10 && $gap->calls === [0]);
+
+    /* rv11a2-7  THE SNAPSHOT HOLDS THE FIELDS A RULE NAMES. Each page and
+     * each export reads its run's snapshot whole, and the snapshot held every
+     * dictionary field: the reviewer's 5,000 fields, 150 of them descriptive
+     * text, were 5,181 rows, 4.9 MB and 11 statements per Next. */
+    $countDims = function (ScanStore $inner) {
+        return new class($inner) extends FaultyStore {
+            public $calls = 0;
+            public $bytes = 0;
+            public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+            {
+                $rows = parent::dimensions($projectId, $generationId, $after, $limit);
+                $this->calls++;
+                foreach ($rows as $r) $this->bytes += strlen((string) $r['label']) + strlen((string) $r['meta']);
+                return $rows;
+            }
+        };
+    };
+    $ls = new ArrayScanStore();
+    $lm = $labelled($ls);
+    $lm->flagged = ['R002' => true];
+    for ($i = 0; $i < 5000; $i++) {
+        $lm->extraLabels['f' . $i] = $i < 150
+            ? str_repeat('<p>Consent text paragraph with participant instructions. </p>', 400)
+            : 'Question ' . $i . ': ' . str_repeat('label text ', 20);
+    }
+    $ld = $drive($lm, $ls, 215);
+    $lrid = (int) $ld['row']['run_id'];
+    $lgen = (int) $ld['row']['generation_id'];
+    $lall = [];
+    for ($after = null; ($pg = $ls->dimensions(215, $lgen, $after)) !== [];
+         $after = [$pg[count($pg) - 1]['kind'], $pg[count($pg) - 1]['key']]) {
+        foreach ($pg as $r) $lall[] = $r;
+    }
+    $lfields = [];
+    foreach ($lall as $r) if ($r['kind'] === 'field') $lfields[] = $r['key'];
+    $lsnap = \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($lall);
+    check('rv11a2-7: planning keeps the field its rule names, with its flag, and none of the 5,000 others',
+        $ld['row']['terminal'] === ScanOutcome::COMPLETE && $lfields === ['a_val']
+        && $lsnap->fieldLabels === ['a_val' => 'Value A'] && $lsnap->identifiers === ['a_val' => true]);
+    $lc = $countDims($ls);
+    $lp = (new ScanService($lm, $lc))->findings(215, $lrid);
+    check('rv11a2-7: so a findings page reads its labels in one statement of under 4 KB, labelled as before',
+        $lc->calls === 1 && $lc->bytes < 4096 && count($lp['rows']) === 1
+        && $lp['rows'][0]['cells']['field_label'] === 'Value A' && $lp['report']['labelsDegraded'] === false);
 
     \REDCap::$groupNames = $keptNames;
 }

@@ -2729,7 +2729,9 @@ final class ScanService
             $d->degraded['labels'] = 'the project\'s names could not be read when this scan was planned';
         }
         $d->rulesBySource = self::ruleOrdinals($plan);
-        return $d->toSnapshot();
+        // Only the fields a rule names (review rv11a2-7): the snapshot is
+        // read whole by every page and every export.
+        return $d->ruleFieldsOnly()->toSnapshot();
     }
 
     /**
