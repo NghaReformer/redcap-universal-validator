@@ -8993,10 +8993,15 @@ class UniversalValidator extends AbstractExternalModule
         $bytes = 0;
         foreach ($found as $v) {
             $id = $rule($v['rule']);
+            // THE REASON IS SPLIT ONCE (W7-R1). The row stores a pooled field's
+            // problems as the code `pooled` and a mask, so the summary groups
+            // them under one code; the identity is computed from the code it
+            // has always been computed from, so no finding is renamed.
+            $reason = Scan\ReasonCode::split($v['reason'], isset($v['type']) ? (string) $v['type'] : null);
             $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
                     'instance' => $v['instance'], 'host_form' => $v['instrument'],
                     'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason']),
+                    'reason_code' => $reason['identity'],
                     // The within-location discriminator. See Hmac::findingIdentity.
                     'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
             $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
@@ -9035,7 +9040,8 @@ class UniversalValidator extends AbstractExternalModule
                 'rule_revision' => $id['revision'],
                 'rule_ord' => (int) $v['rule'],
                 'check_type' => (string) $v['type'],
-                'reason_code' => Scan\ReasonCode::code($v['reason']),
+                'reason_code' => $reason['code'],
+                'reason_bits' => Scan\ReasonCode::bits($reason),
                 'dag_key' => isset($v['dag']) ? $v['dag'] : null,
                 'value_bin' => $blob,
                 'value_len' => ($val === null) ? null : strlen((string) $val),

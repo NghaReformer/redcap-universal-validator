@@ -54,30 +54,73 @@ final class ReasonCode
      * four of them are names CheckCharacter::validatePooledField() has never
      * emitted. What it emits is `no-id`, `check-character`, `junk`, `duplicate`
      * and `count`, joined with `;` and with no `pooled:` prefix - so split()
-     * below has never produced a non-zero mask, and every stored row has
+     * never produced a non-zero mask, and every row stored before wave 11 has
      * reason_bits = 0 with the joined names in reason_code. The real vocabulary
      * is APPENDED rather than substituted, because bit positions are the wire
-     * format and an append cannot change the meaning of a row. A producer for
-     * the mask from the joined form is owed to wave 11; until then a reader
-     * must take bits = 0 as "not recorded", never as "no problems".
+     * format and an append cannot change the meaning of a row. split() now
+     * builds the mask from the joined form (W7-R1) when it is told the finding
+     * is a pooled one; a reader must still take a mask of 0 as "not recorded",
+     * never as "no problems", because older rows say nothing else.
      */
     private static $pooled = ['length', 'charset', 'checkdigit', 'prefix', 'duplicate',
                               'no-id', 'check-character', 'junk', 'count'];
 
     /**
+     * The order CheckCharacter::validatePooledField() emits its problems in.
+     * A mask has no order, and the bit order is not this one (`duplicate` is
+     * bit 4, before `no-id`), so a mask read back in bit order told the
+     * wording layer the problems in another order than the form and the
+     * legacy report give them. pooledReason() answers in this order.
+     */
+    const POOLED_ORDER = ['no-id', 'check-character', 'junk', 'duplicate', 'count'];
+
+    /**
+     * Under the code `pooled`, reason_bits holds the mask below this bit and
+     * the judging branch above it (see bits()). Every other code has no mask,
+     * and its reason_bits is the branch alone.
+     */
+    const BRANCH_SHIFT = 24;
+
+    /** The most branch + 1 that fits above the mask. A branch past it is stored as none. */
+    const BRANCH_MAX = 255;
+
+    /**
      * Split a raw engine reason into what a column can hold.
      *
-     * @return array{code:string, bits:int, detail:?string}
+     * `identity` is the code the finding's identity is computed from, which is
+     * what `code` was before the mask had a producer. Splitting once and
+     * keeping both is what lets reason_code group a pooled field's problems
+     * under one code while no finding's identity moves (W7-R1).
+     *
+     * @param ?string $type the finding's check type. Only a `pooled` finding's
+     *                      joined reason becomes a mask: `check-character` on
+     *                      its own is also what a single-value check says.
+     * @return array{code:string, bits:int, detail:?string, identity:string}
      */
-    public static function split($reason)
+    public static function split($reason, $type = null)
     {
         $reason = (string) $reason;
         if ($reason === '') {
-            return ['code' => self::UNSPECIFIED, 'bits' => 0, 'detail' => null];
+            return ['code' => self::UNSPECIFIED, 'bits' => 0, 'detail' => null, 'identity' => self::UNSPECIFIED];
         }
         $colon = strpos($reason, ':');
         if ($colon === false) {
-            return ['code' => self::fit($reason), 'bits' => 0, 'detail' => null];
+            $code = self::fit($reason);
+            if ($type === 'pooled') {
+                // The engine's joined form. Every part must be a name the mask
+                // can hold, or the joined code stands: a part dropped on the
+                // way into a mask is a problem nobody is told about.
+                $bits = 0;
+                foreach (explode(';', $reason) as $part) {
+                    $i = array_search(trim($part), self::$pooled, true);
+                    if ($i === false || $i >= self::BRANCH_SHIFT) { $bits = 0; break; }
+                    $bits |= (1 << $i);
+                }
+                if ($bits > 0) {
+                    return ['code' => 'pooled', 'bits' => $bits, 'detail' => null, 'identity' => $code];
+                }
+            }
+            return ['code' => $code, 'bits' => 0, 'detail' => null, 'identity' => $code];
         }
         $head = substr($reason, 0, $colon);
         $tail = substr($reason, $colon + 1);
@@ -92,12 +135,43 @@ final class ReasonCode
                 $i = array_search($part, self::$pooled, true);
                 if ($i !== false) $bits |= (1 << $i);
             }
-            return ['code' => 'pooled', 'bits' => $bits, 'detail' => null];
+            return ['code' => 'pooled', 'bits' => $bits, 'detail' => null, 'identity' => 'pooled'];
         }
 
         // Everything else keeps its kind and hands the detail back to the
         // caller, which stores it against the RULE. The finding keeps the code.
-        return ['code' => self::fit($head), 'bits' => 0, 'detail' => $tail];
+        $code = self::fit($head);
+        return ['code' => $code, 'bits' => 0, 'detail' => $tail, 'identity' => $code];
+    }
+
+    /**
+     * What reason_bits holds for one split reason: the mask, if it has one.
+     */
+    public static function bits(array $split)
+    {
+        return isset($split['bits']) ? max(0, (int) $split['bits']) : 0;
+    }
+
+    /** The mask a stored row's reason_bits carries: only under the code `pooled`. */
+    public static function maskOf($code, $bits)
+    {
+        if ((string) $code !== 'pooled') return 0;
+        return ((int) $bits) & ((1 << self::BRANCH_SHIFT) - 1);
+    }
+
+    /**
+     * A stored mask as the engine's own reason: its names joined with `;`, in
+     * the order the engine emits them (POOLED_ORDER), then any name the engine
+     * no longer emits in bit order, then each unnamed bit as `bit-N`. '' for
+     * an empty mask.
+     */
+    public static function pooledReason($mask)
+    {
+        $names = self::pooledNames((int) $mask);
+        $out = [];
+        foreach (self::POOLED_ORDER as $n) if (in_array($n, $names, true)) $out[] = $n;
+        foreach ($names as $n) if (!in_array($n, $out, true)) $out[] = $n;
+        return implode(';', $out);
     }
 
     /** Just the code. The common call, and the one the finding row wants. */

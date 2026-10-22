@@ -456,20 +456,21 @@ final class FindingRowMapper
     /**
      * The reason in the form the wording layer takes: the engine's own.
      *
-     * A pooled reason stored as a mask comes back as its `;`-joined names, which
-     * is what MessageCatalog::detail() gives a sentence each. BITS = 0 MEANS
-     * "NOT RECORDED", never "no problems": nothing writes the mask yet, and the
-     * joined names are in reason_code itself.
+     * A pooled reason stored as a mask comes back as its `;`-joined names, in
+     * the order the engine emits them, which is what the legacy report and
+     * MessageCatalog::detail() read, a sentence each. A MASK OF 0 MEANS "NOT
+     * RECORDED", never "no problems": a row stored before the mask had a
+     * producer (W7-R1) holds the joined names in reason_code itself.
      */
     private static function reasonOf(array $stored)
     {
         $code = (string) $stored['reason_code'];
-        $bits = (int) $stored['reason_bits'];
+        $mask = ReasonCode::maskOf($code, $stored['reason_bits']);
         // The engine gave no reason, and the column cannot hold nothing.
         if ($code === ReasonCode::UNSPECIFIED) return '';
-        if ($code === self::POOLED_CODE && $bits > 0) {
-            $names = ReasonCode::pooledNames($bits);
-            if ($names) return implode(';', $names);
+        if ($code === self::POOLED_CODE && $mask > 0) {
+            $joined = ReasonCode::pooledReason($mask);
+            if ($joined !== '') return $joined;
         }
         return $code;
     }
