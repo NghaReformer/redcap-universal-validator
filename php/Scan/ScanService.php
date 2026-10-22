@@ -1081,6 +1081,13 @@ final class ScanService
     const FINDINGS_PAGE_MAX = 100;
 
     /**
+     * Store calls one findings page may make while it has found no row
+     * (review rv11a2-6): 10 x FILTER_WINDOWS x FILTER_WINDOW is 200,000
+     * entries of the first filter's key, at most 80 bounded statements.
+     */
+    const FINDINGS_EMPTY_WALK = 10;
+
+    /**
      * A scan-findings filter name => the findings column it narrows. The four
      * axes ScanStore::findings() takes (FindingRowMapper::PAGE_AXES), under
      * the names a page sends.
@@ -1145,9 +1152,23 @@ final class ScanService
         // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
         // status shows no counts: a row is a count of one. No facets either.
         if ($r['withheld'] !== null) return self::withheldAnswer($out, $r['withheld']);
-        $through = null;
-        $rows = $this->store()->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
-                                         $after, $limit, $through);
+        // AN EMPTY PAGE IS THE END, WITHIN A STATED BOUND (review rv11a2-6).
+        // A page of two filters walks the first one's key in windows and may
+        // come back short with `next` set (ScanStore::findings()): with 20,003
+        // findings on one form and the only 3 of reason `rare` last, page 1
+        // held no rows and next=20000, while the facet said `rare: 3`. An
+        // empty answer asks again from where the walk stopped, so a page with
+        // no rows and a `next` means FINDINGS_EMPTY_WALK store calls read that
+        // many windows without a match.
+        $store = $this->store();
+        $from = $after;
+        for ($call = 1; ; $call++) {
+            $through = null;
+            $rows = $store->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
+                                     $from, $limit, $through);
+            if ($rows || $through === null || $call >= self::FINDINGS_EMPTY_WALK) break;
+            $from = $through;
+        }
         $out['rows'] = $r['report']->present($rows);
         $out['next'] = $through;
         $out['facets'] = $this->facetsOf($r['aggregates'], $r['dims'], $r['scope']);

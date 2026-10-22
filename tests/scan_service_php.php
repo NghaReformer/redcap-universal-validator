@@ -4524,6 +4524,45 @@ namespace INSPIRE\UniversalValidator\Scan {
         $wvPage($m11, $s11, 213, $open11, 7)
             === ['ok' => false, 'why' => 'this scan has not finished, so it has no report yet', 'final' => false]);
 
+    /* rv11a2-6  AN EMPTY PAGE IS THE END, WITHIN A STATED BOUND. A store
+     * page of two filters may come back empty with `next` set (20,003
+     * findings on one form, the 3 of reason `rare` last: page 1 held none
+     * and next=20000). The page now asks again from `next` until it has a
+     * row, reaches the end, or has made FINDINGS_EMPTY_WALK calls. */
+    list($s12, $m12) = $wv($all10);
+    $g12 = $wvRun($m12, $s12, 214, null);
+    $gap = new class($s12) extends FaultyStore {
+        public $empty = 0;
+        public $calls = [];
+        public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                                 &$through = null)
+        {
+            $this->calls[] = (int) $afterId;
+            if (count($this->calls) <= $this->empty) {
+                $through = (int) $afterId + 20000;
+                return [];
+            }
+            return parent::findings($projectId, $generationId, $scope, $filter, 0, $limit, $through);
+        }
+    };
+    $m12->user->rights['group_id'] = null;
+    $gap->empty = 2;
+    $pg12 = (new ScanService($m12, $gap))->findings(214, $g12, ['limit' => 100]);
+    check('rv11a2-6: two empty store pages with a next are walked past, to the rows behind them',
+        $pg12['ok'] === true && count($pg12['rows']) === 10 && $pg12['next'] === null
+        && $gap->calls === [0, 20000, 40000]);
+    $gap->empty = PHP_INT_MAX;
+    $gap->calls = [];
+    $pe12 = (new ScanService($m12, $gap))->findings(214, $g12, ['limit' => 100]);
+    check('rv11a2-6: and a walk that finds nothing stops after its bound, saying where it stopped',
+        $pe12['ok'] === true && $pe12['rows'] === [] && count($gap->calls) === ScanService::FINDINGS_EMPTY_WALK
+        && $pe12['next'] === 20000 * ScanService::FINDINGS_EMPTY_WALK);
+    $gap->empty = 0;
+    $gap->calls = [];
+    $pn12 = (new ScanService($m12, $gap))->findings(214, $g12, ['limit' => 100]);
+    check('rv11a2-6 (control): a page that has rows is one store call',
+        count($pn12['rows']) === 10 && $gap->calls === [0]);
+
     \REDCap::$groupNames = $keptNames;
 }
 
