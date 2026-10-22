@@ -4481,6 +4481,49 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScopeDrift::check($log9, $s9, $s9->run(211, $g9), $yes, $yes, 2, 1)
             === ['ok' => false, 'movedIn' => 0, 'movedOut' => 0, 'why' => ScopeDrift::UNCONFIRMED, 'final' => true]);
 
+    /* rv11a1-6 (a)  THE VALUE GATE IS THE POLICY NOW. A run that kept raw
+     * values, read after the project tightened its storage to locations:
+     * the reader's ceiling is floored by today's policy, and reverting
+     * that floor left every suite green. */
+    list($s10, $m10) = $wv(['R01']);
+    $m10->proj['scan-value-storage'] = 'raw';
+    $m10->valueOf['R01'] = 'secret-R01';
+    $g10 = $wvRun($m10, $s10, 212, null);
+    $raw10 = $wvPage($m10, $s10, 212, $g10, null, ['limit' => 1]);
+    check('rv11a1-6 (control): a raw run read under a raw policy shows the value it kept',
+        $s10->run(212, $g10)['values_state'] === 'raw' && $raw10['rows'][0]['cells']['value'] === 'secret-R01');
+    $m10->proj['scan-value-storage'] = 'locations';
+    $tight10 = $wvPage($m10, $s10, 212, $g10, null, ['limit' => 1]);
+    $csv10 = $wvCsv($m10, $s10, 212, $g10, null);
+    check('rv11a1-6: once the project keeps locations only, the page withholds that value',
+        $tight10['report']['valuesState'] === 'raw'
+        && $tight10['rows'][0]['cells']['value'] === '[withheld by policy]');
+    check('rv11a1-6: and so does the file',
+        !empty($csv10['ok']) && strpos($csv10['text'], 'secret-R01') === false
+        && strpos($csv10['text'], '"[withheld by policy]"') !== false);
+
+    /* rv11a1-6 (b)  THE ORDER IS THE GATE. Another group's unfinished run
+     * and an id that is no run answer the same bytes on the page and the
+     * same refusal on the export: "has not finished" is asked after the
+     * reader's entitlement to the run, and moving it above leaked which
+     * ids are runs (final:false and 503 against NO_RUN and 403). */
+    list($s11, $m11) = $wv(['R01', 'R06']);
+    $m11->user->rights['group_id'] = 7;
+    $open11 = (int) (new ScanService($m11, $s11))->start(213)['run_id'];
+    $pa = $wvPage($m11, $s11, 213, $open11, 31);
+    $pb = $wvPage($m11, $s11, 213, $open11 + 1000, 31);
+    check('rv11a1-6: another group\'s open run and no run answer the page byte for byte the same',
+        $s11->run(213, $open11)['terminal'] === null && json_encode($pa) === json_encode($pb)
+        && $pa === ['ok' => false, 'why' => ScanService::NO_RUN, 'final' => true]);
+    $m11->user->rights['group_id'] = 31;
+    $xa = (new ScanService($m11, $s11))->exportOpen(213, $open11);
+    $xb = (new ScanService($m11, $s11))->exportOpen(213, $open11 + 1000);
+    check('rv11a1-6: and the export the same 403',
+        $xa === $xb && $xa === ['ok' => false, 'http' => 403, 'why' => ScanService::NO_RUN]);
+    check('rv11a1-6 (control): the group\'s own reader is told the run has not finished, not final',
+        $wvPage($m11, $s11, 213, $open11, 7)
+            === ['ok' => false, 'why' => 'this scan has not finished, so it has no report yet', 'final' => false]);
+
     \REDCap::$groupNames = $keptNames;
 }
 
