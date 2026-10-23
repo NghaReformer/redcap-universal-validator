@@ -6386,8 +6386,9 @@ function QRIDRangeInit(QRID_CONFIG){
        still has its z-score. Each reference (branch group) fills its own
        fields. A group that cannot be told here (a deferral, a selector this
        page cannot read, an input on a form this page does not carry) leaves
-       its fields as they are, and so does a branch conflict, for every group:
-       the save fills them. The first fill, made as the page opens, does not
+       its fields as they are, and the save fills them. A branch conflict
+       leaves every group's fields as they are, and the save keeps them too:
+       the server returns nothing on a conflict. The first fill, made as the page opens, does not
        mark the form as changed. */
     var opening = true;
     function publish(act){

@@ -1076,7 +1076,7 @@ class AnnotationRules
      * z is the z-score of the measurement, lower and upper the smallest and
      * largest measurements, written with "decimals", that pass the low and high
      * z limit of the "soft" limits (or "hard", "returnLimits"), and range the
-     * two as "7.7 to 12.0 kg" (GrowthReference::bound). percentile is written
+     * two as "7.8 to 11.9 kg" (GrowthReference::bound). percentile is written
      * with "percentileDecimals", valueAtZ and valueAtPercentile with
      * "decimals" (GrowthReference::output). The keys php/growth_outputs.json
      * allows are read by GrowthOutputs::parse. They become rangeReturn (key =>
@@ -3221,7 +3221,7 @@ class AnnotationRules
      * rule would write what it reads). Bounds come from the "soft" limits
      * unless "returnLimits" says "hard", and the limits asked for must be
      * there: "lower" needs the low limit, "upper" the high one, and "range"
-     * either (one-sided it reads "at least 7.7 kg"), as the catalog's "needs"
+     * either (one-sided it reads "at least 7.8 kg"), as the catalog's "needs"
      * says. "decimals" is how many decimals the bounds and the values at a
      * z-score or percentile are written with; "percentileDecimals" is the
      * percentile's, and needs a "percentile" to apply to (returnKeyUnused).

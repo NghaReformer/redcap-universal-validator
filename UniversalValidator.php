@@ -4557,9 +4557,12 @@ class UniversalValidator extends AbstractExternalModule
                 if ($why === null) {
                     $want = $this->growthPageNeed($n, $entries[$id][0], $config);
                     $merged = isset($need[$id]) ? self::mergePageNeed($need[$id], $want) : $want;
+                    $weigh = function ($rid, array $nn) use (&$entries) {
+                        return GrowthReference::pageWeight($nn, $entries[$rid][0], $entries[$rid][1]);
+                    };
                     $before = 0.0;
-                    foreach ($need as $nid => $nn) $before += GrowthReference::pageWeight($nn);
-                    $after = $before - (isset($need[$id]) ? GrowthReference::pageWeight($need[$id]) : 0.0) + GrowthReference::pageWeight($merged);
+                    foreach ($need as $nid => $nn) $before += $weigh($nid, $nn);
+                    $after = $before - (isset($need[$id]) ? $weigh($id, $need[$id]) : 0.0) + $weigh($id, $merged);
                     if ($after > $cap + 1e-9) {
                         $num = function ($w) { return floor($w) == $w ? (string) (int) $w : rtrim(sprintf('%.1f', $w), '0'); };
                         $why = 'this form already carries the rows of ' . $num($before) . ' growth reference table'
@@ -4693,6 +4696,7 @@ class UniversalValidator extends AbstractExternalModule
         $cap = null;
         $sets = [];      // curve key => the curve set
         $setWhy = [];    // curve key => why its curves cannot be sent
+        $setZoom = [];   // curve key => the zoom its curves were built for
         $tables = [];    // table key => [sex => rows]
         $tableKeys = []; // what a table of reference values holds => its table key
         $entries = [];   // reference id => [entry, table], or null when it cannot be read
@@ -4764,6 +4768,20 @@ class UniversalValidator extends AbstractExternalModule
                         $why['chart'] = self::chartCapWhy($used(), $cap);
                     } else {
                         $set = isset($sets[$key]) ? $sets[$key] : null;
+                        // Charts that share these curves may zoom differently: a
+                        // fixed span never zooms, an "auto" one zooms to MAX_ZOOM.
+                        // The curves are built for the deepest zoom any of them
+                        // needs; a set built for a fixed span first drew a
+                        // zoomable chart up to 1.43 plot units off, where 0.5 is
+                        // the promise (RNG-5).
+                        $zoom = $fixed ? 1 : GrowthCurve::MAX_ZOOM;
+                        $redo = [];
+                        if ($set !== null && isset($setZoom[$key]) && $setZoom[$key] < $zoom) {
+                            foreach (['male', 'female'] as $s) {
+                                if (array_key_exists($s, $set)) { $redo[] = $s; unset($set[$s]); }
+                            }
+                        }
+                        $setZoom[$key] = isset($setZoom[$key]) ? max($setZoom[$key], $zoom) : $zoom;
                         if ($set === null) {
                             $at = count($c['lines']['values']);
                             $bandAt = null;
@@ -4773,9 +4791,9 @@ class UniversalValidator extends AbstractExternalModule
                             $set = ['kind' => $c['lines']['kind'], 'values' => $c['lines']['values'], 'band' => $bandAt,
                                     'span' => $span, 'xScale' => $table['scale']];
                         }
-                        foreach ($sexes as $sex) {
+                        foreach (array_values(array_unique(array_merge($redo, $sexes))) as $sex) {
                             if (array_key_exists($sex, $set)) continue;
-                            $b = GrowthCurve::build($entry, $table, $sex, $zs, $span, $scale, $fixed ? 1 : GrowthCurve::MAX_ZOOM);
+                            $b = GrowthCurve::build($entry, $table, $sex, $zs, $span, $scale, $setZoom[$key]);
                             if (isset($b['why'])) {
                                 $setWhy[$key] = $b['why'];
                                 break;
@@ -7478,7 +7496,7 @@ class UniversalValidator extends AbstractExternalModule
      * Text field of the measured field's own form (and so of its event and
      * instance), and not the measured field, an input of the rule or the record
      * ID. What each value is comes from php/growth_outputs.json
-     * (GrowthOutputs): a text ("range", "7.7 to 12.0 kg") needs a field without
+     * (GrowthOutputs): a text ("range", "7.8 to 11.9 kg") needs a field without
      * validation; a number needs none or number validation that takes the
      * decimals it is written with (number_Ndp: exactly N): two for z,
      * "decimals" for a bound or a value at a z-score or percentile,
@@ -7511,7 +7529,7 @@ class UniversalValidator extends AbstractExternalModule
             $v = strtolower(self::validationOf($m));
             if ($spec['written'] === 'text') {
                 if ($v !== '') {
-                    return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.7 to 12.0 kg" — remove the validation.';
+                    return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.8 to 11.9 kg" — remove the validation.';
                 }
                 $marks[$k] = $own;
                 continue;

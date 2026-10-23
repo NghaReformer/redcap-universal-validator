@@ -301,7 +301,9 @@ Semantics worth knowing before relying on it:
 - **A false condition skips the rule — it never erases the value.** That is
   the deliberate difference from REDCap's own field branching, which erases
   hidden fields on save. Combine `when` with normal field branching if you
-  also want erasure.
+  also want erasure. The fields a `@UVRANGE` or `@UVEXISTS` rule fills with
+  `return` are the exception: the rule owns them, and a false `when` empties
+  them.
 - **The server-side audit honors the same condition** against the record's
   saved values, so browser and audit skip (or check) a rule consistently.
 - Caps: 500 characters, 20 field references, 10 nesting levels. References are

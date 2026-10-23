@@ -104,7 +104,8 @@ notice but never block a save.
 
 **`when` gates any rule.** Any tag may carry a `when` condition; the rule validates
 only while that condition is true. A false `when` skips the rule — it never erases
-the value. See [The `when` condition language](#the-when-condition-language).
+the value. The fields a rule fills with `return` are the exception: the rule owns
+them, and a false `when` empties them. See [The `when` condition language](#the-when-condition-language).
 
 **Text ignores letter case.** `[status]='active'` is true for `Active` and `ACTIVE`,
 in every tag's `when`, in branch selectors and in `@UVASSERT`. The values
@@ -4449,7 +4450,8 @@ Semantics:
   `@UVRANGE` references on one field, no branch of that reference).
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
-  branching if you also want erasure.
+  branching if you also want erasure. The fields a `@UVRANGE` or `@UVEXISTS` rule
+  fills with `return` are the exception: a false `when` empties them.
 - **The server audit honors the same condition** against saved values, so the browser and
   the audit skip (or check) a rule consistently.
 - **Caps:** 500 characters, 20 field references, 10 nesting levels. Field references are
