@@ -176,6 +176,14 @@ instance 501. Two saves of instance 3 wrote 1,000 `invalid-id-saved` rows
 (non-extended rule: 2).
 Repro: `php tools/temporal_perf_audit.php 600`.
 
+**Fixed 2026-10-23.** The audit judges every rule's saved entry first, then
+another host context only where the rule reads the saved instrument across
+entries (`TemporalRules::crossFields()`: a qualified reference, a binding, or
+record-scope uniqueness) or where that context's row is the saved one. The
+repro now gives one log row per save and judges instance 600. A save of the
+source that every entry reads still re-checks them all, up to the limit.
+Tests in `tests/temporal_integration_php.php`.
+
 ## Low and Low-Medium
 
 - **C5** `php/TemporalRules.php:167,179,216`: any unresolved member defers the

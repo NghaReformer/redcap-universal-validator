@@ -45,6 +45,29 @@ final class TemporalRules
         foreach($rule['branches']??[] as $b)$out=array_merge($out,self::fields($b,$lookups));
         return array_values(array_unique($out));
     }
+    /**
+     * The fields a rule reads in entries other than its host context's own row: a
+     * qualified reference, a binding (its field, its match targets, a qualified
+     * elapsedFrom) and, for record-scope uniqueness, its own fields. A save of an
+     * instrument none of these name changes only the host contexts that share the
+     * saved row, so the save audit re-checks just those (wargame P4).
+     */
+    public static function crossFields(array $rule)
+    {
+        $out=($rule['uniqueScope']??null)==='record'?($rule['fields']??[]):[];
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
+            $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
+            foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];
+        }
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$out[]=$op[1];
+        foreach($rule['references']??[] as $b)if(is_array($b)){
+            if(isset($b['field'])&&is_string($b['field']))$out[]=$b['field'];
+            foreach(is_array($b['match']??null)?$b['match']:[] as $target=>$source)$out[]=$target;
+            if(isset($b['elapsedFrom'])&&is_string($b['elapsedFrom'])){$p=Logic::parse($b['elapsedFrom']."=''",['qualified'=>true]);if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];}
+        }
+        foreach($rule['branches']??[] as $b)$out=array_merge($out,self::crossFields($b));
+        return array_values(array_unique($out));
+    }
     public static function validate(array $rule)
     {
         $errors=[];$refs=$rule['references']??[];

@@ -318,6 +318,38 @@ namespace {
     $m->redcap_save_record(PID,'1','fb',1,null);
     check('failed audit read incomplete',saying(array_column(unconf($m),1),'why','incomplete')===1);
     check('failed audit read never violation',!invalid($m));
+    // Wargame P4: the saved entry is judged first, and another entry only where the
+    // save can change its verdict. Eight entries on fa, every one violating.
+    $many=function($ann){
+        $m=temporal('[a_val]>0');REDCap::$dictionary['a_val']['field_annotation']=$ann;
+        $rows=[];for($k=1;$k<=8;$k++)$rows[$k]=['a_val'=>(string)(20-$k),'key_a'=>'A','fa_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;unset(REDCap::$data[1]['repeat_instances'][2]);
+        $m->projectSettings['qualified-audit-max-contexts']=5;
+        return $m;
+    };
+    $at=function($m){$s=[];foreach(invalid($m) as $c)$s[]=(int)$c[1]['instance'];sort($s);return $s;};
+    $own=tag('[a_val]<[baseline_arm_1][b_open][2]');
+    $m=$many($own);$m->redcap_save_record(PID,'1','fa',1,null,null,null,8);
+    check('P4: saving entry 8 of 8 judges entry 8, past a limit of 5, and only it (got '.json_encode([$at($m),count(unconf($m))]).')',$at($m)===[8]&&!unconf($m));
+    $m->logCalls=[];$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: two saves of entry 3 log two rows, as a rule without event references does (got '.json_encode($at($m)).')',$at($m)===[3,3]);
+    $m=$many($own);$m->redcap_save_record(PID,'1','fb',1,null,null,null,2);
+    check('P4: saving the entry they all read re-checks them, up to the limit, and says where it stopped (got '.json_encode([$at($m),array_column(array_column(unconf($m),1),'instance')]).')',
+        $at($m)===[1,2,3,4,5]&&array_column(array_column(unconf($m),1),'instance')===['6']);
+    $m=$many(tag('[a_val]>[a_val][previous-instance]'));$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: a rule that reads other entries of the saved form re-checks them (got '.json_encode($at($m)).')',in_array(4,$at($m),true)&&in_array(3,$at($m),true));
+    $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]>={mx}','references'=>['mx'=>['field'=>'a_val','aggregate'=>'maximum','excludeCurrent'=>true]],'blockSave'=>'hard']));
+    $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: ... a binding over the saved form too (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&in_array(2,$at($m),true));
+    $m=$many('@UVUNIQUE={"scope":"record"}');foreach(REDCap::$data[1]['repeat_instances'][1]['fa'] as &$e)$e['a_val']='7';unset($e);
+    $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: ... and record uniqueness (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&count($at($m))>1);
+    $m=$many($own);
+    REDCap::$dictionary['key_a']['field_annotation']='@UVASSERT='.json_encode(['assert'=>"[key_a]<>[baseline_arm_1][key_b][2]",'message'=>'key','blockSave'=>'hard']);
+    REDCap::$dictionary['a_val']['field_annotation']=tag('[a_val]>[a_val][previous-instance]');
+    $m->projectSettings['qualified-audit-max-contexts']=2;$m->redcap_save_record(PID,'1','fa',1,null,null,null,5);
+    $fields=[];foreach(invalid($m) as $c)$fields[]=$c[1]['field'].'@'.$c[1]['instance'];sort($fields);
+    check('P4: every rule\'s saved entry comes before any other entry (got '.json_encode($fields).')',$fields===['a_val@5','key_a@5']);
     $m=temporal('[a_val]<{matched}',['matched'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]]);
     REDCap::$data[1]['repeat_instances'][1]['fb'][4]['key_b']='A';
     $res=$m->scanProject(PID);check('ambiguous/absent matches not certified',!$res['violations']&&count($res['unconfigurable'])>=2);
@@ -781,9 +813,15 @@ namespace {
     check('one group not prepared, extended: the other still judged, that one named (got '.json_encode([$hit,$why]).')',
         $hit===['1/1:soft-low:who-wfa','2/1:hard-low:who-wfa']&&$why
         &&count(array_filter($why,function($w){return strpos($w,'for part of this field: reference "who-wfh": ')!==false;}))===count($why));
+    // Saving one entry can change only that entry's verdict: the rule reads its own
+    // form in its own row, and the other entries' inputs on fb did not change (wargame P4).
     $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fa',1,1);
     $u=array_map(function($c){return $c[1]['why'];},unconf($m));
-    check('... and in the audit, at each of the three entries (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
+    check('... and in the audit of one entry\'s save, at that entry (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===1&&count($u)===1
+        &&strpos($u[0],'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0);
+    $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fb',1,null,null,null,2);
+    $u=array_map(function($c){return $c[1]['why'];},unconf($m));
+    check('... and in the audit of the entry all three read, at each of the three (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
         &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0;}))===3);
     // A selector that cannot be resolved sets aside its own group: here who-wfa's
     // "when" reads [baseline_arm_1][ht] with no instance, and the fixed limits judge.

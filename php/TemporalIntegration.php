@@ -361,21 +361,36 @@ trait TemporalIntegration
         $limit=(int)$this->getProjectSetting('qualified-audit-max-contexts',$pid);if($limit<1)$limit=500;$count=0;
         $dupes=array_fill_keys(self::duplicateFields($rules),true);
         $stopped=false;
-        foreach($extended as $i=>$rule)foreach($this->ruleHostForms($rule,$pid)['forms'] as $form=>$fields){
-            // Once the audit stops, every rule it did not reach is named. Returning
-            // after the first notice left the later rules unchecked AND unmentioned.
-            if($stopped){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$event,$instance);continue;}
-            foreach($this->hostContextsFor($all,$form,$pid) as $ctx){
-                if(++$count>$limit || $this->temporalBudget->exhausted()){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;break;}
-                $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
-                if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
-                // One branch group's problem: logged, and the rest of the field is still judged.
-                if(!empty($prepared['groupProblems']))$this->logUnconfigurable($i,$fields,'Extended validation unavailable for part of this field: '.implode('; ',$prepared['groupProblems']),$form,$ctx['event_id'],$ctx['instance']);
-                // The prepared rule carries only the branches picked here: the rule as written says
-                // which fields it returns to, so a branch not picked empties its own (ruleFindings).
-                $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance'],
-                    null,[],['returnOwner'=>$rule,'returnKeep'=>$prepared['groupKeep']??[]]);
+        // The entry being saved is judged first, for every rule, and another host context
+        // only where the save can change its verdict (wargame P4). In record order the
+        // context limit stopped before the saved entry of a long repeat, and every save
+        // re-logged every other entry's violation. A rule that reads the saved instrument
+        // across entries (TemporalRules::crossFields()) may change anywhere; one that reads
+        // it only in its own row changes only where that row is the saved one.
+        $saved=[];$rest=[];$row=(int)($instance?:1);
+        foreach($extended as $i=>$rule){
+            $everywhere=$instrument===null;
+            foreach(TemporalRules::crossFields($rule) as $f)if(!isset($dd[$f]['form_name'])||$dd[$f]['form_name']===$instrument)$everywhere=true;
+            foreach($this->ruleHostForms($rule,$pid)['forms'] as $form=>$fields)foreach($this->hostContextsFor($all,$form,$pid) as $ctx){
+                $here=(string)$ctx['event_id']===(string)$event&&(int)$ctx['instance']===$row;
+                if($here&&$form===$instrument)$saved[]=[$i,$rule,$form,$fields,$ctx];
+                elseif($everywhere||$here)$rest[]=[$i,$rule,$form,$fields,$ctx];
             }
+        }
+        $named=[];
+        foreach(array_merge($saved,$rest) as list($i,$rule,$form,$fields,$ctx)){
+            // Once the audit stops, every rule and host it did not finish is named once.
+            // Returning after the first notice left the later rules unchecked AND unmentioned.
+            if($stopped){if(!isset($named[$i.'|'.$form])){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$event,$instance);}continue;}
+            if(++$count>$limit || $this->temporalBudget->exhausted()){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;continue;}
+            $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
+            if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
+            // One branch group's problem: logged, and the rest of the field is still judged.
+            if(!empty($prepared['groupProblems']))$this->logUnconfigurable($i,$fields,'Extended validation unavailable for part of this field: '.implode('; ',$prepared['groupProblems']),$form,$ctx['event_id'],$ctx['instance']);
+            // The prepared rule carries only the branches picked here: the rule as written says
+            // which fields it returns to, so a branch not picked empties its own (ruleFindings).
+            $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance'],
+                null,[],['returnOwner'=>$rule,'returnKeep'=>$prepared['groupKeep']??[]]);
         }
     }
 }

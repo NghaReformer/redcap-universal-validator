@@ -705,23 +705,31 @@ NASK, Not asked";
     // ---- 15) each context is written by a save of its own, the saved one first ------------------------------------------
     $two = ['2' => [1 => $enrol, 2 => $visit, 3 => ['visit_date' => '2026-01-10', 'weight' => '11.0']]];
     $w11 = wantFields(expected(11.0));
+    // A visit's save judges that visit alone, since the other visit's inputs did not
+    // change (wargame P4); a save of the enrolment both visits read refills both.
     $m = evMod(dict([], $evRet), $two);
     save($m, 'anthro_form', 1, '2', 2);
-    check('visit 1 saved: both visits are filled, one save each, visit 1 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
-        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
+    check('visit 1 saved: visit 1 is filled, and visit 2, whose inputs did not change, is not (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 1 && written(0) === ['2' => [2 => $want]]);
     $m = evMod(dict([], $evRet), $two);
+    save($m, 'enrol_form', 1, '2', 1);
+    check('the enrolment saved: both visits are filled, one save each (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
+    // A rule that reads its own form in another event: one visit's save can change the other.
+    $m = evMod(dict([], evTag('"when":"[visit_arm_1][weight]<>\'none\'",' . RET_ALL)), $two);
     save($m, 'anthro_form', 1, '2', 3);
-    check('visit 2 saved: visit 2 is written first', count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]]);
+    check('visit 2 saved, the rule reading visit 1: both are filled, visit 2 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]] && written(1) === ['2' => [2 => $want]]);
     $m = evMod(dict([], $evRet), $two);
     \REDCap::$saveErrorsFor = function ($data) { return isset($data['2'][3]) ? ['2' => 'the form is locked'] : []; };
-    save($m, 'anthro_form', 1, '2', 2);
+    save($m, 'enrol_form', 1, '2', 1);
     $err = logs($m, 'uvalidate-audit-error');
     check('a locked visit 2: visit 1 is written all the same, and the refusal is logged once (got ' . json_encode($err) . ')',
         pick(store('2', 2), TARGETS) === $want && pick(store('2', 3), TARGETS) === [] && count($err) === 1
         && $err[0]['stage'] === 'return values' && count(\REDCap::$saves) === 2);
     $m = evMod(dict([], $evRet), $two);
     \REDCap::$saveErrorsFor = function ($data) { if (isset($data['2'][2])) throw new \RuntimeException('disk full'); return []; };
-    save($m, 'anthro_form', 1, '2', 2);
+    save($m, 'enrol_form', 1, '2', 1);
     check('a write of visit 1 that throws: visit 2 is still written (got ' . json_encode(pick(store('2', 3), TARGETS)) . ')',
         pick(store('2', 2), TARGETS) === [] && pick(store('2', 3), TARGETS) === $w11 && count(logs($m, 'uvalidate-audit-error')) === 1);
 
