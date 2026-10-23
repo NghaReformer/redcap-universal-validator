@@ -95,6 +95,15 @@ Related Low: with an empty collection the survey payload carries the saved
 current-instrument match key as a guard literal.
 Repro: `php tools/temporal_sec_denial_oracle.php`, `php tools/temporal_sec_survey_payload.php`.
 
+**Fixed 2026-10-23.** `TemporalRules::compile()` decides that a read is
+protected from the instrument it targets, before looking at what it found: a
+collection, an aggregate, a match, or a read that failed on an instrument the
+viewer may not read marks the rule denied, and a failed one reads as
+`unresolved`. With a live operand the only reason is `unauthorized`; a
+protected operand that failed is withheld like a readable one. Both repro
+scripts now give one answer per case, and the survey guard literal is gone.
+Tests in `tests/temporal_integration_php.php`.
+
 ### C1. Display-format dates, untyped
 Live values of `date_dmy`/`date_mdy` fields are read in display order; off-page
 snapshots are saved `Y-M-D`. Untyped comparisons mix them:

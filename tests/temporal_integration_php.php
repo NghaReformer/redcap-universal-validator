@@ -214,6 +214,57 @@ namespace {
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');REDCap::$rights['nurse']['forms']['fb']='0';
     $p=render($m,'fa');check('protected source defers live comparison',!empty(ruleOf($p,'a_val')['deferred']));
     check('protected snapshot removed',strpos($p['raw'],'["lit","11"]')===false);
+    // Wargame S1: what the page gets for a rule over an instrument the viewer may
+    // not read is the same whatever that instrument holds. An empty collection
+    // used to ship live, and a match told "absent" (none), "unauthorized" (one)
+    // and "ambiguous" (two or more) apart.
+    $denied=function($expr,$refs,callable $data,$survey=false){
+        $m=temporal($expr,$refs);REDCap::$rights['nurse']['forms']['fb']='0';$data();
+        if(!$survey)return json_encode(ruleOf(render($m,'fa'),'a_val'));
+        $fold=new ReflectionMethod($m,'foldTemporalRules');$fold->setAccessible(true);
+        return json_encode($fold->invoke($m,[['type'=>'constraint','fields'=>['a_val'],'assert'=>$expr,'references'=>$refs]],PID,'1','fa',1,1,'survey'));
+    };
+    $count=['n'=>['field'=>'b_open','event'=>'baseline_arm_1','aggregate'=>'count']];
+    $full=$denied('[a_val]>{n}',$count,function(){});
+    $empty=$denied('[a_val]>{n}',$count,function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb']);});
+    check('S1: a protected count is refused alike with entries and without (got '.$empty.')',$full===$empty&&strpos($full,'unavailable: unauthorized.')!==false&&strpos($full,'assertAst')===false);
+    $match=['m'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]];
+    $keyed=function($key){return function()use($key){
+        REDCap::$data[1]['repeat_instances'][1]['fb'][6]=['b_open'=>'1','key_b'=>'AA','fb_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fb'][8]=['b_open'=>'2','key_b'=>'AA','fb_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']=$key;};};
+    $shapes=array_map(function($k)use($denied,$match,$keyed){return $denied('[a_val]<{m}',$match,$keyed($k));},['Z','A','AA']);
+    check('S1: no, one and two protected matches give the page the same rule (got '.json_encode($shapes).')',count(array_unique($shapes))===1&&strpos($shapes[0],'unavailable: unauthorized.')!==false);
+    $shapes=array_map(function($k)use($denied,$keyed){return $denied('[a_val]>={c}',['c'=>['field'=>'b_open','event'=>'baseline_arm_1','aggregate'=>'count','match'=>['key_b'=>'[key_a]']]],$keyed($k));},['Z','A']);
+    check('S1: ... and a protected count of matches too',count(array_unique($shapes))===1);
+    // On a survey every other entry is protected, the instrument's own included.
+    $others=['o'=>['field'=>'a_val','aggregate'=>'count','excludeCurrent'=>true,'match'=>['key_a'=>'[key_a]']]];
+    $one=$denied('[a_val]>={o}',$others,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='SECRET-KEY-42';},true);
+    $none=$denied('[a_val]>={o}',$others,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='SECRET-KEY-42';
+        unset(REDCap::$data[1]['repeat_instances'][1]['fa'][3],REDCap::$data[1]['repeat_instances'][2]);},true);
+    check('S1: a survey gets the same rule whether other entries exist or not, and never the saved key (got '.$none.')',
+        $one===$none&&strpos($none,'SECRET-KEY-42')===false);
+    $self=['s'=>['field'=>'a_val','match'=>['key_a'=>'[key_a]']]];
+    $alone=$denied('[a_val]>={s}',$self,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='K';},true);
+    $shared=$denied('[a_val]>={s}',$self,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='K';REDCap::$data[1]['repeat_instances'][1]['fa'][3]['key_a']='K';},true);
+    check("S1: a survey match that finds only this entry looks like one that finds two (got ".$alone." | ".$shared.")",$alone===$shared);
+    $gone=function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);};
+    $q='[a_val]<[baseline_arm_1][b_open][2]';
+    check('S1: a protected entry that is missing looks like one that is there',$denied($q,null,function(){})===$denied($q,null,$gone));
+    $last=['x'=>['field'=>'b_open','event'=>'baseline_arm_1','instance'=>'last-instance']];
+    $missing=$denied('{x}>5',$last,function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb']);});
+    check('S1: with nothing live, a protected entry that is missing gives no reason of its own (got '.$missing.')',
+        strpos($missing,'unresolved')!==false&&strpos($missing,'absent')===false);
+    $mixed=function(callable $data)use($denied){return $denied('[a_val]>0',null,function()use($data){
+        REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"when":"[baseline_arm_1][b_open][2]>0","assert":"[a_val]>{n}","references":{"n":{"field":"b_open","event":"baseline_arm_1","aggregate":"count"}}}';$data();});};
+    check('S1: an unresolved protected "when" adds nothing to a refused "assert"',$mixed(function(){})===$mixed($gone));
+    $elapsed=function(callable $data)use($denied){return $denied('[a_val]>0',null,function()use($data){
+        foreach(['a_val','b_open'] as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_ymd';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-01-01';REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';
+        REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"assert":"{d}>=0","references":{"d":{"field":"a_val","type":"date","elapsedFrom":"[baseline_arm_1][b_open][2]","unit":"days"}}}';$data();});};
+    $there=$elapsed(function(){});
+    check('S1: an elapsed time from a protected date is refused alike whether the date is there or not (got '.$there.')',
+        $there===$elapsed($gone)&&strpos($there,'unavailable: unauthorized.')!==false);
     $m=temporal('[a_val]<{matched}',['matched'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]]);
     $p=render($m,'fa');$r=ruleOf($p,'a_val');
     check('matched rule not deferred',empty($r['deferred'])&&empty($r['configError']));
@@ -526,6 +577,10 @@ namespace {
            'windowUnit'=>'days','dateType'=>'date','dateFormat'=>'ymd','fromType'=>'date','fromFormat'=>'ymd'];
     $survey=$fold->invoke($m,[$rule],PID,'1','fa',1,1,'survey');
     check('window anchor on a survey: withheld, nothing shipped',($survey[0]['windowFromOp']??null)===['withheld']&&empty($survey[0]['deferred'])&&strpos(json_encode($survey),'2026-01-01')===false);
+    // Wargame S1: a protected anchor that cannot be read is withheld as a readable one is, with no reason.
+    $m=$win();REDCap::$rights['nurse']['forms']['fb']='0';REDCap::$data[1]['repeat_instances'][1]['fb']='not rows';$r=ruleOf(render($m,'fa'),'a_val');
+    check('S1: an unreadable protected anchor is withheld like any other, no reason given (got '.json_encode($r).')',
+        ($r['windowFromOp']??null)===['withheld']&&empty($r['deferred'])&&!isset($r['windowFromOpWhy']));
     $m=$win();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
     $res=$m->scanProject(PID);
     check('window from a blank anchor in another event: inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);

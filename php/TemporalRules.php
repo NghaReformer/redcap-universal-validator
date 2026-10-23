@@ -211,6 +211,11 @@ final class TemporalRules
         // problem only when the condition stays undecided. An invalid reference is always one.
         $cond=false;$pending=[];
         $unresolved=function($state)use(&$cond,&$pending,&$problems){if($cond&&$state!=='invalid')$pending[]=$state;else $problems[]=$state;};
+        // Whether the page may not read $form. Then nothing of its entries may reach the page,
+        // not even whether one exists or how many match: a protected read that is empty,
+        // missing or ambiguous counts as denied, and its reason is "unresolved" whatever it
+        // was. Each gave a different answer where one match was refused (wargame S1).
+        $protected=function($form)use($browser,$mayRead){return $browser&&$mayRead&&!$mayRead($form);};
         $member=function(array $r,$typed=null)use($context,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems,$unresolved){
             if(($r['state']??null)!=='ok'){$unresolved($r['state']??'unreadable');return ['unknown'];}
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
@@ -222,12 +227,18 @@ final class TemporalRules
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
-        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems,&$matched,$unresolved){
+        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems,&$matched,$unresolved,$protected){
             if($op[0]==='lit')return $op;
             if($op[0]==='binding'){
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
                 $type=$b['type']??null;$from=$b['elapsedFrom']??null;$unit=$b['unit']??null;unset($b['type'],$b['elapsedFrom'],$b['unit']);
-                $r=$resolver->resolveBinding($b,$context);if($r['state']!=='ok'){$unresolved($r['state']);return ['unknown'];}
+                $r=$resolver->resolveBinding($b,$context);
+                // Only a plain read of the entry being typed is not about the protected entries:
+                // a collection or an aggregate has no "self", and a match chose among them.
+                if($protected($shape->field($b['field'])['form']??null)&&($r['state']!=='ok'||!empty($b['match'])||empty($r['self']))){
+                    $denied=true;if($r['state']!=='ok')$r=['state'=>'unresolved'];
+                }
+                if($r['state']!=='ok'){$unresolved($r['state']);return ['unknown'];}
                 // Which entries a set or an aggregate holds was read when the page was built,
                 // even when it holds none: an entry added in another tab changes it.
                 if($browser&&(isset($b['aggregate'])||isset($r['members'])))$snapshot=true;
@@ -239,13 +250,17 @@ final class TemporalRules
                 elseif(isset($b['aggregate'])){$members=[];foreach($r['members']??[] as $m)$members[]=$member($m);$kind=$b['aggregate'];$node=[in_array($kind,['any','all'],true)?'set':'aggregate',$kind,$members];}
                 elseif(isset($r['members'])){$members=[];foreach($r['members'] as $m)$members[]=$member($m);$node=['set',$r['quantifier'],$members];}
                 else $node=$member($r,$type);
-                if($from!==null){$p=Logic::parse($from."=''",['qualified'=>true]);if(empty($p['ok'])||!in_array($p['ast'][2][0],['ref','qref'],true)){$problems[]='invalid';return ['unknown'];}$node=['elapsed',$unit,$member($resolver->resolve($p['ast'][2],$context),$type),$node];}
+                if($from!==null){$p=Logic::parse($from."=''",['qualified'=>true]);if(empty($p['ok'])||!in_array($p['ast'][2][0],['ref','qref'],true)){$problems[]='invalid';return ['unknown'];}
+                    $fr=$resolver->resolve($p['ast'][2],$context);
+                    if($fr['state']!=='ok'&&$protected($shape->field($p['ast'][2][1])['form']??null)){$denied=true;$fr=['state'=>'unresolved'];}
+                    $node=['elapsed',$unit,$member($fr,$type),$node];}
                 // The row a "match" chooses was found among the saved entries, even when it is this one.
                 if($browser&&!empty($b['match']))$matched=true;
                 $guards=[];foreach($b['match']??[] as $source){preg_match('/^\[([a-z][a-z0-9_]*)\]$/D',$source,$m);if(isset($m[1])){$v=$resolver->resolve(['ref',$m[1],null],$context);if($browser && empty($v['self']) && $mayRead && isset($v['location']) && !$mayRead($v['location']['instrument']))$denied=true;if($browser&&!empty($v['self'])){$live=true;$guards[]=[$m[1],$v['value']];}}}
                 return $guards?['guard',$guards,$node]:$node;
             }
             $r=$resolver->resolve($op,$context);
+            if(($r['state']!=='ok'||isset($r['members']))&&$protected($shape->field($op[1])['form']??null)){$denied=true;if($r['state']!=='ok')$r=['state'=>'unresolved'];}
             // Which entries the set holds was read when the page was built, as for a binding.
             if(isset($r['members'])){if($browser)$snapshot=true;$members=[];foreach($r['members'] as $m)$members[]=$member($m);return ['set',$r['quantifier'],$members];}
             return $member($r);
@@ -293,6 +308,9 @@ final class TemporalRules
             if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $r=$resolver->resolve($op,$context);
             if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
+            //  - One of an instrument this viewer may not read is withheld whatever its state, with
+            //    no reason: an ambiguous entry must look like one the viewer may not see (wargame S1).
+            if(!isset($r['members'])&&($r['state']??null)!=='ok'&&$protected($shape->field($op[1])['form']??null)){$compiled[$rk['op']]=['withheld'];continue;}
             //  - One that cannot be resolved, of a rule that checks something without it
             //    (ModeRegistry::withholds: @UVWINDOW "notFuture" or "notPast"), is withheld with its
             //    reason, and the rule stays live for the rest.
@@ -312,8 +330,12 @@ final class TemporalRules
             }
         }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
+        // With a live operand nothing is sent, and the one reason given is the same whatever
+        // the protected entries hold (wargame S1).
         if($browser&&$denied){
-            if($live)$problems[]='unauthorized';
+            // It read saved entries, even where a match found only the one being typed.
+            $snapshot=true;
+            if($live)$problems=['unauthorized'];
             else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),self::textMode($rule,$key),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
