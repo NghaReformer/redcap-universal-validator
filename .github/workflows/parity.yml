@@ -86,6 +86,10 @@ jobs:
           node tests/growth_return_dom_js.cjs
           node tests/growth_chart_dom_js.cjs
           node tests/growth_chart_gaps_dom_js.cjs
+      - name: js/engine.min.js is what the pinned terser makes of js/engine.js, and every browser suite passes on it (PRF-7)
+        run: |
+          node tools/build_engine_min.cjs --check
+          node tests/engine_min_js.cjs
       - name: JS Missing Data Codes (a coded field is not judged in any mode; @UVREQUIRED counts it)
         run: node tests/missing_codes_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
@@ -248,6 +252,8 @@ jobs:
           php tests/growth_return_module_php.php
           php tests/growth_curve_php.php
           php tests/growth_chart_module_php.php
+      - name: Each bundled growth table's rows script (js/growth) matches the table (PRF-7)
+        run: php tools/build_growth_rows.php --check
           php tests/growth_chart_gaps_module_php.php
           php tests/convert_php.php
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
@@ -333,7 +339,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php js/engine.min.js data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           # Every bundled growth table ships, byte for byte as index.json pins it.
@@ -345,6 +351,22 @@ jobs:
               if hashlib.sha256(raw).hexdigest() != e['sha256']:
                   sys.exit('growth table of ' + rid + ' does not match its sha256 in the package')
           print('growth tables OK:', len(idx['references']))
+          # ...and each one's rows script, which a page names by the table's hash (PRF-7)
+          for rid, e in idx['references'].items():
+              js = 'js/growth/' + e['sha256'][:16] + '.js'
+              try:
+                  text = open(js, encoding='utf-8').read()
+              except OSError:
+                  sys.exit('the rows script of ' + rid + ' is missing from the package: ' + js)
+              if '["' + e['sha256'] + '"]' not in text:
+                  sys.exit('the rows script of ' + rid + ' files its rows under another hash: ' + js)
+          print('growth rows scripts OK')
+          # the minified engine names the engine.js shipped beside it (UniversalValidator::servedEngine)
+          import zlib
+          crc = '%08x' % (zlib.crc32(open('js/engine.js', 'rb').read()) & 0xffffffff)
+          if (' crc32b ' + crc + '. ') not in open('js/engine.min.js', encoding='utf-8').readline():
+              sys.exit('js/engine.min.js does not name the js/engine.js in the package')
+          print('js/engine.min.js OK')
           PY
           for d in .github reports tools site CLAUDE.md .graphifyignore; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }

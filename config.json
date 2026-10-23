@@ -270,7 +270,7 @@
     },
     {
       "key": "debug-log",
-      "name": "Debug: include exception messages in audit-error log entries, and write one uvalidate-faults entry per request that names each place that caught an exception and carried on (the class and a count, never the message). Leave OFF in production — exception text can quote data values.",
+      "name": "Debug: include exception messages in audit-error log entries, and write one uvalidate-faults entry per request that names each place that caught an exception and carried on (the class and a count, never the message), and load the readable js/engine.js on forms instead of the minified copy. Leave OFF in production — exception text can quote data values.",
       "type": "checkbox"
     },
     {

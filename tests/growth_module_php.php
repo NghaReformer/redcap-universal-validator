@@ -374,11 +374,34 @@ namespace {
     check('page: the tables in use, and only those, at most 4 (got ' . json_encode($ids) . ')',
         $ids === ['who-hcfa', 'who-wfa', 'who-wfh', 'who2007-bfa']);
     $wfa = $g['who-wfa'] ?? [];
-    // The sex is saved on enrol_form (a boy): only the boys' rows travel.
-    check('page: a table copy carries the index fields and the rows of the saved sex', ($wfa['title'] ?? '') === 'Weight-for-age, WHO 2006 (birth to 5 years)'
+    // The sex is saved on enrol_form (a boy) and the age is read on this page,
+    // so the page may read any of the boys' rows. A bundled table then travels
+    // as its own script, which the browser caches, and the page names it by
+    // its SHA-256 instead of carrying 46 KB inline on every view (PRF-7).
+    $wfaEntry = GrowthReference::entry('who-wfa');
+    $wfaJs = GrowthReference::rowsPath($wfaEntry['sha256']);
+    check('page: a table the page may read whole carries the index fields and names its rows by hash', ($wfa['title'] ?? '') === 'Weight-for-age, WHO 2006 (birth to 5 years)'
         && $wfa['axis'] === 'age' && $wfa['axisUnit'] === 'days' && $wfa['lookup'] === 'round' && $wfa['adjust'] === 'who-restricted'
-        && $wfa['valid'] === ['min' => '0', 'below' => '1826.25'] && $wfa['scale'] === 1 && $wfa['first'] === 0
-        && count($wfa['male']) === 1827 && $wfa['female'] === [] && !isset($wfa['sha256']) && !isset($wfa['file']));
+        && $wfa['valid'] === ['min' => '0', 'below' => '1826.25'] && ($wfa['rowsFrom'] ?? null) === $wfaEntry['sha256']
+        && !isset($wfa['male']) && !isset($wfa['female']) && !isset($wfa['scale']) && !isset($wfa['first'])
+        && !isset($wfa['sha256']) && !isset($wfa['file']));
+    $at = function ($html, $needle) { $k = strpos($html, $needle); return $k === false ? -1 : $k; };
+    $named = [];
+    foreach ($g as $copy) if (isset($copy['rowsFrom'])) $named[$copy['rowsFrom']] = true;
+    check('page: each table named by hash loads its rows script once, after the config and before the engine (got '
+        . substr_count($p['html'], '/x/js/growth/') . ' scripts for ' . count($named) . ' tables)',
+        substr_count($p['html'], '<script src="/x/' . $wfaJs . '"></script>') === 1
+        && substr_count($p['html'], '<script src="/x/js/growth/') === count($named) && count($named) >= 2
+        && $at($p['html'], 'id="inspire-validator-config"') < $at($p['html'], '/x/' . $wfaJs)
+        && $at($p['html'], '/x/' . $wfaJs) < $at($p['html'], '/x/js/engine.'));
+    $wfaFile = dirname(__DIR__) . '/' . $wfaJs;
+    check('page: the script it names ships and files the rows under the full hash',
+        GrowthReference::rowsFile($wfaEntry) === $wfaJs && is_file($wfaFile)
+        && strpos((string) file_get_contents($wfaFile), '["' . $wfaEntry['sha256'] . '"] = {"scale":1,"first":0,"male":[[') !== false);
+    $noFile = $wfaEntry; $noFile['sha256'] = str_repeat('0', 64);
+    $elsewhere = $wfaEntry; $elsewhere['dir'] = $wfaEntry['dir'] . DIRECTORY_SEPARATOR . 'elsewhere';
+    check('page: no rows script for a table whose script was not built, nor for one outside the bundled folder',
+        GrowthReference::rowsFile($noFile) === null && GrowthReference::rowsFile($elsewhere) === null);
     $deferred = array_filter($p['cfg']['rules'], function ($x) { return !empty($x['rangeReference']) && !empty($x['deferred']); });
     check('page: four tables fit, nothing deferred', !$deferred);
     $five = $DICT + ['muac' => f('anthro_form', tag('who-acfa', '"age":{"days":"[age_days]"}'), 'number_1dp')];
@@ -397,7 +420,8 @@ namespace {
     check('page: the cap deferral is marked as checked on save', $r5 && ($r5['deferredOnSave'] ?? null) === true);
     $wt = ruleFor($p5, 'weight');
     check('page: a rule that fits is not marked', $wt && !isset($wt['deferredOnSave']));
-    check('page: a whole table carries both sexes', count($p5['cfg']['growth']['who-wfa']['female'] ?? []) === 1827);
+    check('page: a whole table of both sexes is named by hash too', ($p5['cfg']['growth']['who-wfa']['rowsFrom'] ?? null) === $wfaEntry['sha256']
+        && !isset($p5['cfg']['growth']['who-wfa']['female']));
     // An age saved on another form: only the rows at that age travel, and they use none of the cap.
     $FIXED = $LIVESEX;
     $FIXED['age_days'] = f('enrol_form', '', 'integer');
@@ -418,9 +442,10 @@ namespace {
                     'hc_fix' => f('anthro_form', tag('who-hcfa', '"age":{"days":"[age_fix]"}'), 'number_1dp')];
     $mix = $DATA; $mix['2'][351]['age_fix'] = '365';
     $pm = page(mod($MIX, $mix, $FULL, 'nurse'), 'form', '2', 'anthro_form');
-    check('page: a live age and a saved age on one reference: every row of the saved sex travels (got '
-        . json_encode([count($pm['cfg']['growth']['who-hcfa']['male'] ?? []), $pm['cfg']['growth']['who-hcfa']['first'] ?? null]) . ')',
-        count($pm['cfg']['growth']['who-hcfa']['male'] ?? []) === 1827 && ($pm['cfg']['growth']['who-hcfa']['first'] ?? null) === 0);
+    check('page: a live age and a saved age on one reference: the page may read any row, so it names the rows script (got '
+        . json_encode($pm['cfg']['growth']['who-hcfa'] ?? null) . ')',
+        ($pm['cfg']['growth']['who-hcfa']['rowsFrom'] ?? null) === GrowthReference::entry('who-hcfa')['sha256']
+        && !isset($pm['cfg']['growth']['who-hcfa']['male']));
     $NOAGE = $DATA; $NOAGE['2'][351]['age_days'] = '';
     $p7 = page(mod($FIXED, $NOAGE, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: a saved age that is blank needs no rows at all', ($p7['cfg']['growth']['who-hcfa']['male'] ?? null) === []);
@@ -586,9 +611,10 @@ namespace {
     $TXT['weight'] = f('anthro_form', $txtTag . '}', 'number_1dp');
     $txt['2'][351]['sex_t'] = 'm';
     $pt = page(mod($TXT, $txt, $FULL, 'nurse'), 'form', '2', 'anthro_form');
-    check('page: a saved sex "m" sends the rows of the male code "M" only (got ' . json_encode([count($pt['cfg']['growth']['who-wfa']['male'] ?? []),
-        count($pt['cfg']['growth']['who-wfa']['female'] ?? [])]) . ')',
-        count($pt['cfg']['growth']['who-wfa']['male'] ?? []) === 1827 && ($pt['cfg']['growth']['who-wfa']['female'] ?? null) === []);
+    // The sex read as the male code means a sex is needed: the page names the
+    // rows script. Read as neither code, no row is needed and none travels.
+    check('page: a saved sex "m" is the male code "M": the page names the rows script (got ' . json_encode(array_keys($pt['cfg']['growth']['who-wfa'] ?? [])) . ')',
+        ($pt['cfg']['growth']['who-wfa']['rowsFrom'] ?? null) === $wfaEntry['sha256']);
     $TXT['weight'] = f('anthro_form', $txtTag . ',"caseSensitive":true}', 'number_1dp');
     $pt = page(mod($TXT, $txt, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: ... with caseSensitive, "m" is neither code: no rows', ($pt['cfg']['growth']['who-wfa']['male'] ?? null) === []
@@ -1058,8 +1084,11 @@ namespace {
     check('measured page: lying saved, the rows at 75.0 cm (got ' . json_encode($firstOf('1')) . ')', $firstOf('1') === [749, 3]);
     $live = $SDICT;
     $live['how_s'] = f('anthro_form', '', '', 'radio', '1, Lying | 2, Standing');
-    check('measured page: a position typed on this page sends every row (got ' . json_encode($firstOf('2', $live)) . ')',
-        $firstOf('2', $live)[0] === 450 && $firstOf('2', $live)[1] > 600);
+    $pl = page(mod($live, ['2' => [351 => ['record_id' => '2', 'sex' => '1', 'how_s' => '2', 'len_s' => '75.0', 'wt_s' => '']]], $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('measured page: a position typed on this page may read any row, so the page names the rows script (got '
+        . json_encode(array_keys($pl['cfg']['growth']['who-wfl'] ?? [])) . ')',
+        ($pl['cfg']['growth']['who-wfl']['rowsFrom'] ?? null) === GrowthReference::entry('who-wfl')['sha256']
+        && strpos($pl['html'], GrowthReference::rowsPath(GrowthReference::entry('who-wfl')['sha256'])) !== false);
 
     // The audit: the review's girl (600 days, 73.0 cm standing) is moderately,
     // not severely, stunted once corrected (z -2.91, WHO Anthro's); the same
@@ -1133,7 +1162,9 @@ namespace {
     check('extra folder: a reference with a shipped id replaces it (6.6 kg is the median there)', !isset($by['weight']) && !$un
         && ($by['wt_h'] ?? null) === 'soft-high');
     $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
-    check('extra folder: the page carries its table', ($p['cfg']['growth']['who-wfa']['title'] ?? '') === 'A flat test table');
+    check('extra folder: the page carries its table, rows inline: it has no rows script', ($p['cfg']['growth']['who-wfa']['title'] ?? '') === 'A flat test table'
+        && isset($p['cfg']['growth']['who-wfa']['male']) && !isset($p['cfg']['growth']['who-wfa']['rowsFrom'])
+        && strpos($p['html'], GrowthReference::rowsPath(hash('sha256', $table))) === false);
     file_put_contents($dir . '/index.json', $index(hash('sha256', $table), ['my-wfa' => [
         'title' => 'Mine', 'file' => 'flat.json', 'sha256' => hash('sha256', $table), 'measure' => 'weight', 'unit' => 'kg',
         'axis' => 'age', 'axisUnit' => 'days', 'lookup' => 'round', 'valid' => ['min' => '0', 'below' => '100'], 'adjust' => 'none']]));

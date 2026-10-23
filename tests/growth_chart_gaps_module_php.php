@@ -179,6 +179,7 @@ namespace {
         if ($ctx === 'survey') $m->redcap_survey_page_top(149, $record, $form, $event, null, 'hash', null, $inst);
         else $m->redcap_data_entry_form_top(149, $record, $form, $event, null, $inst);
         $html = ob_get_clean();
+        $GLOBALS['lastHtml'] = $html;
         preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
         return json_decode(isset($mm[1]) ? $mm[1] : 'null', true);
     }
@@ -204,6 +205,7 @@ namespace {
 
     // ---- K18 to K28: uv_chart_gaps, every input typed on the page ----------------------
     $A = page('uv_chart_gaps', E1, 'XE-9', []);
+    $htmlA = $GLOBALS['lastHtml'];
     foreach (['ucg_mlm', 'ucg_comma', 'ucg_zpct', 'ucg_branch'] as $f) check('uv_chart_gaps: "' . $f . '" is taken (got ' . json_encode(err($A, $f)) . ')', err($A, $f) === '');
     $mlm = ruleFor($A, 'ucg_mlm');
     $LANG_CHART = ['summary' => ['Growth chart', 'Courbe de croissance'], 'title' => ['Weight-for-age', 'Poids pour l\'âge'],
@@ -237,10 +239,17 @@ namespace {
     check('K27: two branches, one per reference, each with its own curves (got ' . json_encode($bk) . ')',
         count($bk) === 2 && $bk[0][0] === 'who-wfa' && $bk[1][0] === 'who2007-wfa' && $bk[0][1] !== $bk[1][1]
         && isset($sets[$bk[0][1]], $sets[$bk[1][1]]) && $sets[$bk[1][1]]['span'] === [60, 121] && $sets[$bk[0][1]]['values'] === ['-6', '-3', '0', '3', '5']);
-    check('K27: both references travel, both sexes, every row', isset($A['growth']['who-wfa']['male'], $A['growth']['who-wfa']['female'],
-        $A['growth']['who2007-wfa']['male'], $A['growth']['who2007-wfa']['female'])
-        && count($A['growth']['who-wfa']['male']) === 1827 && count($A['growth']['who-wfa']['female']) === 1827
-        && count($A['growth']['who2007-wfa']['male']) === 62 && count($A['growth']['who2007-wfa']['female']) === 62);
+    // Every row of both sexes may be read: each reference is named by hash,
+    // and its rows script, which the browser caches, loads before the engine (PRF-7).
+    $rowsJs = function ($id) { return GrowthReference::rowsPath(GrowthReference::entry($id)['sha256']); };
+    $html = $htmlA;
+    check('K27: both references travel, named by hash, their rows in their own scripts',
+        ($A['growth']['who-wfa']['rowsFrom'] ?? null) === GrowthReference::entry('who-wfa')['sha256']
+        && ($A['growth']['who2007-wfa']['rowsFrom'] ?? null) === GrowthReference::entry('who2007-wfa')['sha256']
+        && !isset($A['growth']['who-wfa']['male']) && !isset($A['growth']['who2007-wfa']['female'])
+        && strpos($html, '<script src="/x/' . $rowsJs('who-wfa') . '"></script>') !== false
+        && strpos($html, '<script src="/x/' . $rowsJs('who2007-wfa') . '"></script>') !== false
+        && strpos($html, $rowsJs('who2007-wfa')) < strpos($html, '/x/js/engine.'));
     $cm = ruleFor($A, 'ucg_comma');
     check('K24: the comma field is read with a comma, and its chart and table travel', ($cm['decimalComma'] ?? null) === true
         && ($cm['rangeShow']['table']['columns'] ?? null) === ['age', 'value', 'z', 'percentile'] && ($cm['rangePercentileDecimals'] ?? null) === 1);
@@ -271,8 +280,8 @@ namespace {
     $bt = $B['growthCurveTables'][$tk] ?? [];
     check('K29: the boy\'s reference values only, a row at each birthday (got ' . json_encode($bt['male'] ?? null) . ')',
         is_string($tk) && array_keys($bt) === ['male'] && count($bt['male']) === 5 && ($bt['male'][1] ?? null) === ['365.25', '7.8', '9.6', '11.8']);
-    check('K29: the page\'s table holds the boy\'s rows only', isset($B['growth']['who-wfa']['male']) && ($B['growth']['who-wfa']['female'] ?? []) === []
-        && count($B['growth']['who-wfa']['male']) === 1827);
+    check('K29: the boy\'s rows may all be read, so the page names the rows script instead of carrying them',
+        ($B['growth']['who-wfa']['rowsFrom'] ?? null) === GrowthReference::entry('who-wfa')['sha256'] && !isset($B['growth']['who-wfa']['male']));
     $B2 = page('uv_chart_saved', E1, 'XE-2', ['XE-2' => [E1 => ['record_id' => 'XE-2']]]);
     $w2 = ruleFor($B2, 'ucs_weight');
     check('K31: a sex saved blank: the chart and the table are left off with the reason, and nothing is built (got '
@@ -336,13 +345,23 @@ namespace {
     // Each page's reference rows are a slice of the rows the page that types
     // every input carries (both sexes, every row), so they are written once.
     $pages = ['gaps' => $A, 'saved' => $B, 'savedBlank' => $B2, 'repeat' => $C1, 'repeatOff' => $C0];
-    $pool = $A['growth'];
+    // A page named by hash carries no rows (the browser suite loads its rows
+    // script); the pool holds the whole rows of each reference a page carries inline.
+    $pool = [];
+    foreach ($pages as $pg) {
+        foreach (isset($pg['growth']) ? $pg['growth'] : [] as $ref => $g) {
+            if (isset($pool[$ref]) || (empty($g['male']) && empty($g['female']))) continue;
+            $e = GrowthReference::entry($ref);
+            $pool[$ref] = GrowthReference::pageCopy($e, GrowthReference::table($e));
+        }
+    }
     $sliced = true;
     foreach ($pages as $k => $pg) {
         foreach (isset($pg['growth']) ? $pg['growth'] : [] as $ref => $g) {
             foreach (['male', 'female'] as $sex) {
                 if (!isset($g[$sex])) continue;
                 $rows = $g[$sex];
+                if (!$rows) continue;  // an empty list stays as it is
                 $from = 0;
                 if ($rows) {
                     $from = array_search($rows[0], $pool[$ref][$sex], true);

@@ -116,10 +116,21 @@ function walk(el, fn) { fn(el); for (const c of el.children) walk(c, fn); }
 function all(el, test) { const out = []; walk(el, (e) => { if (test(e)) out.push(e); }); return out; }
 function tagged(el, tag) { return all(el, (e) => e.tagName.toLowerCase() === tag); }
 
+/* The rows script of each bundled table the page names by hash (PRF-7),
+   run the way the page runs it: before engine.js, with this window. */
+function loadRows(cfg) {
+  for (const ref of Object.keys(cfg.growth || {})) {
+    const sha = cfg.growth[ref].rowsFrom;
+    if (typeof sha !== 'string') continue;
+    const file = path.join(__dirname, '..', 'js', 'growth', sha.slice(0, 16) + '.js');
+    delete require.cache[require.resolve(file)];
+    require(file);
+  }
+}
 /* A page of fixture `name`: its config, with the shared table, the inputs as
    text boxes and the measured fields. mutate(config) changes the page before
    the engine reads it. */
-function boot(name, values, extra, mutate) {
+function boot(name, values, extra, mutate, rows) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const config = JSON.parse(JSON.stringify(FX.pages[name]));
@@ -153,6 +164,8 @@ function boot(name, values, extra, mutate) {
     INSPIRE_VALIDATOR_CONFIG: config, REDCap: { MultiLanguage: mlm }, addEventListener() {},
   };
   global.document = doc; global.window = win;
+  loadRows(config);
+  if (rows) rows(win.INSPIRE_UV_GROWTH_ROWS || {});
   require(enginePath);
   return { doc, win, holders, els, mlm, config, NS: win.INSPIREUniversalValidator };
 }
@@ -576,6 +589,17 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
   const def = boot('form', vals, null, (cfg) => { const r = ruleOf(cfg, 'weight'); r.deferred = true; r.deferredOnSave = true; r.deferredWhy = ['x']; });
   check('a rule checked when the record is saved (past the page\'s table cap): nothing is shown',
     !box(def, 'weight') || box(def, 'weight').children.every((h) => h.hidden === true));
+  // PRF-7: the page names who-wfa by hash and js/growth/ carries its rows
+  const sha = FX.growth['who-wfa'].rowsFrom;
+  check('the page names its table by hash and carries no rows', /^[0-9a-f]{64}$/.test(sha || '') && FX.growth['who-wfa'].male === undefined);
+  const live = boot('form', vals);
+  check('... the rows script fills them in before the engine reads them', (live.config.growth['who-wfa'].male || []).length === 1827
+    && (live.config.growth['who-wfa'].female || []).length === 1827 && !!svgOf(live, 'weight'));
+  const warn = console.warn; console.warn = () => {};
+  const lost = boot('form', vals, null, null, (store) => { delete store[sha]; });
+  console.warn = warn;
+  check('rows that did not load: no chart, as for a rule checked on save',
+    !box(lost, 'weight') || box(lost, 'weight').children.every((h) => h.hidden === true));
 }
 
 // ---- 6) its own words, other units, other widths, grams -------------------------------------
@@ -662,11 +686,13 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
 // Live on rc.2 (pid 149, ugc_head) the axis hugged the median: a girl of 12
 // months at z 0.81 sat on the top frame, and one at z 1.55 was the arrow.
 {
-  const ref = FX.growth['who-wfa'];
   const set = FX.pages.median.growthCurves[ruleOf(FX.pages.median, 'weight').growthCurveKey];
   check('the median page draws one line and carries the extent for both sexes', set.values.join() === '0'
     && ['male', 'female'].every((s) => set[s].lines.length === 1 && set[s].extent.length === 2));
-  const G = boot('median', {}).NS.growthLogic;
+  const env0 = boot('median', {});
+  const G = env0.NS.growthLogic;
+  // the rows script filled in the page's table (FX.growth names it by hash)
+  const ref = env0.config.growth['who-wfa'];
   const C = boot('median', {}).NS.chartLogic;
   const noExtent = (cfg) => { for (const k in cfg.growthCurves) for (const s of ['male', 'female']) delete cfg.growthCurves[k][s].extent; };
   // a girl of 365 days and one of 10 days, at z 1.5 and -1.5

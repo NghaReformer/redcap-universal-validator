@@ -85,7 +85,7 @@ function makeEl(tag) {
   };
 }
 
-function boot(els, config) {
+function boot(els, config, rows) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const allEls = [];
@@ -112,9 +112,13 @@ function boot(els, config) {
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
     INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
+  // what the rows scripts filed (js/growth/*.js, loaded before the engine)
+  if (rows !== undefined) win.INSPIRE_UV_GROWTH_ROWS = rows;
   global.document = doc; global.window = win;
-  require(enginePath);
-  return { doc, win, holders, allEls, NS: win.INSPIREUniversalValidator };
+  const warn = console.warn, warnings = [];
+  console.warn = (m) => { warnings.push(String(m)); };
+  try { require(enginePath); } finally { console.warn = warn; }
+  return { doc, win, holders, allEls, warnings, NS: win.INSPIREUniversalValidator };
 }
 function nMsg(env, field) {
   const kids = env.holders[field].children;
@@ -843,6 +847,52 @@ const MEASURED = { rangeMeasuredOp: ['ref', 'measured', null], rangeLying: '1', 
   len.value = '45.3'; len.fire('change');
   check('by length, standing: 45.3 cm is 45.4, past the reference (got ' + msg.innerHTML + ')',
     /the length is outside the reference \(45 to 45\.3 cm\)/.test(msg.innerHTML));
+}
+
+// ---- rows sent as their own file (PRF-7) ---------------------------------------------
+// A bundled table the page may read whole arrives as its index fields and
+// "rowsFrom", the table's SHA-256; the script loaded before the engine files
+// the rows under that name. Rows that did not arrive, or are not shaped as the
+// server reads them, leave the reference to the save, with the reason.
+{
+  const SHA = 'ab'.repeat(32);
+  const byHash = () => {
+    const t = Object.assign({}, T_DAYS, { rowsFrom: SHA });
+    delete t.scale; delete t.first; delete t.male; delete t.female;
+    return { 't-days': t };
+  };
+  const filed = () => ({ [SHA]: { scale: 1, first: 0, male: ROWS_M.map((r) => r.slice()), female: ROWS_F.map((r) => r.slice()) } });
+  // 16 kg for a boy on day 2 is z 6.00: past the hard limit, as with the rows inline
+  // each page is judged before the next boots: the engine alerts through the global window
+  const inline = boot(inputs('1', '16'), { growth: GROWTH, rules: [rule(LIVE)] });
+  const inlineMsg = nMsg(inline, 'weight').innerHTML, inlineSave = save(inline);
+  const env = boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, filed());
+  check('rows by hash: the engine reads them from the filed rows, as if inline (got ' + nMsg(env, 'weight').innerHTML + ')',
+    nMsg(env, 'weight').innerHTML === inlineMsg && /z-score 6\.00/.test(inlineMsg) && inlineSave === 'held'
+    && save(env) === 'held' && !cfgErr(env, 'weight') && env.warnings.length === 0);
+  const LOST = /^&#8505; Not checked on this page: the rows of the growth reference &quot;t-days&quot; did not load on this page, so this check runs when the record is saved\./;
+  const gone = boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, {});
+  check('rows by hash that did not load: no configuration error, a grey note that the save checks it (got ' + nMsg(gone, 'weight').innerHTML + ')',
+    !cfgErr(gone, 'weight') && LOST.test(nMsg(gone, 'weight').innerHTML) && save(gone) === 'saved');
+  check('... and the console says which reference', gone.warnings.length === 1 && /growth reference "t-days" did not load/.test(gone.warnings[0]));
+  const none = boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] });
+  check('... no rows script at all: the same', LOST.test(nMsg(none, 'weight').innerHTML) && save(none) === 'saved');
+  const notNum = boot(inputs('1', 'abc'), { growth: byHash(), rules: [rule(LIVE)] }, {});
+  check('... and a value that is not a number is still held there', /This is not a number/.test(nMsg(notNum, 'weight').innerHTML) && save(notNum) === 'held');
+  const badRow = filed(); badRow[SHA].male[3] = [0.5, '12', 0.2];
+  const bad = boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, badRow);
+  check('rows by hash with a row that is not three numbers: the same note', LOST.test(nMsg(bad, 'weight').innerHTML) && !cfgErr(bad, 'weight'));
+  const badScale = filed(); badScale[SHA].scale = 1.5;
+  check('... with a scale that is not a whole number: the same', LOST.test(nMsg(boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, badScale), 'weight').innerHTML));
+  const noFemale = filed(); noFemale[SHA].female = [];
+  check('... with no rows for one sex: the same', LOST.test(nMsg(boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, noFemale), 'weight').innerHTML));
+  const other = { ['cd'.repeat(32)]: filed()[SHA] };
+  check('... filed under another hash: the same', LOST.test(nMsg(boot(inputs('1', '16'), { growth: byHash(), rules: [rule(LIVE)] }, other), 'weight').innerHTML));
+  const srv = boot(inputs('1', '16'), { growth: byHash(), rules: [rule(Object.assign({ deferred: true, deferredOnSave: true,
+    deferredWhy: ['the server said so.'] }, LIVE))] }, {});
+  check('... a rule the server deferred keeps the server\'s reason', /^&#8505; Not checked on this page: the server said so\./.test(nMsg(srv, 'weight').innerHTML));
+  const survey = boot(inputs('1', '16'), { context: 'survey', growth: byHash(), rules: [rule(LIVE)] }, {});
+  check('... a survey respondent is not told why', !/did not load/.test(nMsg(survey, 'weight') ? nMsg(survey, 'weight').innerHTML : '') && save(survey) === 'saved');
 }
 
 console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

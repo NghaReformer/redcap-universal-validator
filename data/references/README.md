@@ -31,6 +31,11 @@ licence.
 
 A value outside "Valid for" is not checked; the page tells staff why.
 
+Each bundled table has a rows script under `js/growth/`, named by its SHA-256,
+which a page loads instead of carrying the rows (see the cap below). To change
+a bundled table, update its file and its `sha256` here, then run
+`php tools/build_growth_rows.php` from the repository and commit `js/growth/`.
+
 ## Adding a reference
 
 Any reference published as L, M and S values per sex (WHO, CDC 2000, a
@@ -148,7 +153,11 @@ values already make false carries nothing. A rule past the cap is checked
 after saving instead of on the page, and the page still checks that the
 measurement is a number above 0. To raise the cap, set `pageTables` in
 the index.json of your folder; each whole table adds tens of kilobytes to the
-page. A rule whose sex, date or axis field is on a form the viewer cannot see
+page. A bundled table the page may read whole does not travel inside the page:
+the page loads its rows as a script under `js/growth/`, which the browser
+keeps, so a second form or visit costs no more. The tables of your own folder
+always travel inside the page, as that folder may lie where the web server
+does not serve files. A rule whose sex, date or axis field is on a form the viewer cannot see
 (or a survey does not show) gets no table and does not count: the page cannot
 work out its z-score, so it only checks that the measurement is a number
 above 0.

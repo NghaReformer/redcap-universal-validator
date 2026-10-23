@@ -58,6 +58,7 @@ php  tests/convert_php.php        # data/references/convert.php: WHO and CDC sha
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in js/engine.js (--check: fail if stale)
+node tests/engine_min_js.cjs     # js/engine.min.js names the current js/engine.js, and every browser suite passes on it
 node tests/config_notice_js.cjs  # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)

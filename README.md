@@ -1159,8 +1159,12 @@ Mod 97,10 for longer numbers.
 
 A REDCap admin installs the module once; each project enables it and adds rules
 on the settings screen. On every form and survey the module reads its settings,
-builds a config object, and injects `js/engine.js` (the verified engine). Nothing
-is hard-coded per project and no third-party module is required.
+builds a config object, and injects `js/engine.min.js`, the minified build of
+`js/engine.js` (the verified engine), or the source itself while the minified
+copy was built from another version of it or the project's debug setting is on.
+A bundled growth table the page may read whole travels as its own script under
+`js/growth/`, which the browser caches. Nothing is hard-coded per project and
+no third-party module is required.
 
 ```
 REDCap settings  ->  UniversalValidator.php  ->  window.INSPIRE_VALIDATOR_CONFIG
@@ -1320,6 +1324,8 @@ node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded cons
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 php  tests/registry_php.php    # mode registry (php/modes.json): frozen maps, coverage, bad file
 node tests/gen_mode_registry.cjs # rewrite the generated blocks in js/engine.js after editing php/modes.json or php/growth_outputs.json
+node tools/build_engine_min.cjs  # rebuild js/engine.min.js after editing js/engine.js (--check: fail if stale; needs npx)
+node tests/engine_min_js.cjs     # js/engine.min.js names the current source, and every browser suite passes on it
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)

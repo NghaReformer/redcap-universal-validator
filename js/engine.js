@@ -696,6 +696,47 @@
       else QRID_shapeNotice();
     }
   }
+  /* Growth rows sent as their own file (PRF-7). A bundled table the page may
+     read whole is not inlined: config.growth[id] names it by its SHA-256 in
+     "rowsFrom" (GrowthReference::pageIndex), and the script the server loads
+     before this one (js/growth/<first 16 hex digits>.js, which the browser
+     caches) files the rows under that name in window.INSPIRE_UV_GROWTH_ROWS.
+     Rows that did not arrive, or are not shaped as GrowthReference::table()
+     leaves them, leave the reference out: its checks run when the record is
+     saved, and QRID_GROWTH_ROWS_LOST says why. */
+  var QRID_GROWTH_ROWS_LOST = (function(){
+    var lost = Object.create(null), own = Object.prototype.hasOwnProperty;
+    var tables = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growth;
+    if(!tables || typeof tables !== "object") return lost;
+    var store = (typeof window !== "undefined" && window.INSPIRE_UV_GROWTH_ROWS && typeof window.INSPIRE_UV_GROWTH_ROWS === "object")
+      ? window.INSPIRE_UV_GROWTH_ROWS : null;
+    var whole = function(n){ return typeof n === "number" && isFinite(n) && Math.floor(n) === n; };
+    var rowsOk = function(list){
+      if(!Array.isArray(list) || !list.length) return false;
+      for(var i = 0; i < list.length; i++){
+        var r = list[i];
+        if(!Array.isArray(r) || r.length !== 3) return false;
+        for(var j = 0; j < 3; j++) if(typeof r[j] !== "number" || !isFinite(r[j])) return false;
+      }
+      return true;
+    };
+    for(var id in tables){
+      if(!own.call(tables, id)) continue;
+      var t = tables[id];
+      if(!t || typeof t !== "object" || typeof t.rowsFrom !== "string") continue;
+      var rows = (store && own.call(store, t.rowsFrom)) ? store[t.rowsFrom] : null;
+      if(rows && typeof rows === "object" && whole(rows.scale) && rows.scale >= 1 && rows.scale <= 1000 && whole(rows.first)
+          && rowsOk(rows.male) && rowsOk(rows.female)){
+        t.scale = rows.scale; t.first = rows.first; t.male = rows.male; t.female = rows.female;
+      } else {
+        lost[id] = true;
+        delete tables[id];
+        if(typeof console !== "undefined" && console.warn)
+          console.warn('Universal Field Validator: the rows of growth reference "' + id + '" did not load on this page; its checks run when the record is saved.');
+      }
+    }
+    return lost;
+  })();
   /* The project's Missing Data Codes. A field marked with REDCap's "M" button
      holds the code itself; REDCap does not validate it, and neither does a
      check that judges the value (php/modes.json "missingCodes":"skip"). Every
@@ -6063,17 +6104,23 @@ function QRIDRangeInit(QRID_CONFIG){
     var plausibleLo = opt("rangePlausibleLo"), plausibleHi = opt("rangePlausibleHi"), scale = opt("rangeMeasureScale");
     /* A growth reference: the limits are z-scores, read with the page's copy of
        the table (config.growth) and the inputs the server folded into ops. */
-    var growth = null;
+    var growth = null, ROWS_LOST = null;
     if(typeof cfg.rangeReference === "string" && cfg.rangeReference !== ""){
       var tables = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growth) || null;
       var gref = (tables && Object.prototype.hasOwnProperty.call(tables, cfg.rangeReference)) ? tables[cfg.rangeReference] : null;
+      /* its rows were sent as a file that did not load (QRID_GROWTH_ROWS_LOST):
+         checked when the record is saved, like a table the page could not carry */
+      if(!gref && QRID_GROWTH_ROWS_LOST[cfg.rangeReference] === true && !configError && !cfg.deferred){
+        ROWS_LOST = 'the rows of the growth reference "' + cfg.rangeReference
+          + '" did not load on this page, so this check runs when the record is saved.';
+      }
       var ops = {}, withheld = false, okOp = function(op){ return op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld"); };
       for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
         var op = cfg["range" + QRID_GROWTH_INPUTS[gi] + "Op"];
         if(okOp(op)) ops[QRID_GROWTH_INPUTS[gi]] = op;
         if(okOp(op) && op[0] === "withheld") withheld = true;
       }
-      if(!configError && !cfg.deferred){
+      if(!configError && !cfg.deferred && ROWS_LOST === null){
         /* A withheld input means no z-score on this page, so the server sends
            no table for it (UniversalValidator::attachGrowthTables); nor for a
            rule or branch whose condition it settled false (growthIdle), which
@@ -6092,11 +6139,11 @@ function QRIDRangeInit(QRID_CONFIG){
                  atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
                  comma: cfg.rangeAxisComma === true };
     }
-    var DEFERRED = !configError && !!cfg.deferred;
+    var DEFERRED = !configError && (!!cfg.deferred || ROWS_LOST !== null);
     /* deferred only because the page could not carry the table (or the rule's
        rule-level mark says so): the save checks it, and the measurement itself
        is still checked here */
-    var ON_SAVE = DEFERRED && (cfg.deferredOnSave === true || QRID_CONFIG.deferredOnSave === true);
+    var ON_SAVE = DEFERRED && (cfg.deferredOnSave === true || ROWS_LOST !== null || QRID_CONFIG.deferredOnSave === true);
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     /* An input on this page re-checks the value when it changes. */
@@ -6134,7 +6181,8 @@ function QRIDRangeInit(QRID_CONFIG){
              measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
              deferred: DEFERRED, onSave: ON_SAVE, snapshot: SNAPSHOT, snapshotGate: cfg.snapshotGate === true,
-             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
+             deferredWhy: ROWS_LOST !== null ? [ROWS_LOST]
+                        : (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
                         : (ON_SAVE && QRID_CONFIG.deferredWhy && QRID_CONFIG.deferredWhy.length) ? QRID_CONFIG.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,

@@ -607,7 +607,38 @@ namespace {
     $UVC = \INSPIRE\UniversalValidator\UniversalValidator::CONFIG_SHAPE;
     check('QUA-7: the page config states its shape', $cfg && ($cfg['configShape'] ?? null) === $UVC);
     check('QUA-7: the engine URL carries the shape, the file time and size',
-        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+        preg_match('#<script src="/x/js/engine\.min\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+    // PRF-7: the minified engine while it names the source's CRC-32, else the
+    // source; the source too with the project's debug setting on.
+    $served = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'servedEngine');
+    $served->setAccessible(true);
+    check('PRF-7: the module serves js/engine.min.js, which names the current js/engine.js',
+        $served->invoke(null, dirname(__DIR__)) === 'js/engine.min.js');
+    $tmpEngine = sys_get_temp_dir() . '/uv_served_engine_' . getmypid();
+    @mkdir($tmpEngine . '/js', 0777, true);
+    file_put_contents($tmpEngine . '/js/engine.js', "var a = 1;\n");
+    $crcOf = hash('crc32b', "var a = 1;\n");
+    $servedWith = function ($minText) use ($served, $tmpEngine) {
+        if ($minText === null) @unlink($tmpEngine . '/js/engine.min.js');
+        else file_put_contents($tmpEngine . '/js/engine.min.js', $minText);
+        return $served->invoke(null, $tmpEngine);
+    };
+    check('PRF-7: a minified copy built from this source is served',
+        $servedWith('/*! engine.min.js: source sha256 x crc32b ' . $crcOf . '. */' . "\nvar a=1;\n") === 'js/engine.min.js');
+    check('PRF-7: one built from another source is not: the source is served',
+        $servedWith('/*! engine.min.js: source sha256 x crc32b 00000000. */' . "\nvar a=1;\n") === 'js/engine.js');
+    check('PRF-7: nor one whose first line names no source, nor a missing one',
+        $servedWith("var a=1;\n") === 'js/engine.js' && $servedWith(null) === 'js/engine.js');
+    @unlink($tmpEngine . '/js/engine.js');
+    @rmdir($tmpEngine . '/js');
+    @rmdir($tmpEngine);
+    $dbg = newModule($csvRule, $dd, [], 149, false, ['log-values' => '', 'debug-log' => true]);
+    $dbg->userReturn = new \ExternalModules\TestDesigner(true);
+    ob_start();
+    $dbg->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $dbgHtml = ob_get_clean();
+    check('PRF-7: with the project\'s debug setting on, the page loads the readable source',
+        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $dbgHtml) === 1);
     $engineSrc = file_get_contents(__DIR__ . '/../js/engine.js');
     check('QUA-7: js/engine.js reads the shape the server states (UniversalValidator::CONFIG_SHAPE)',
         preg_match('/var QRID_CONFIG_SHAPE = ([0-9]+);/', $engineSrc, $shapeM) === 1 && (int) $shapeM[1] === $UVC);

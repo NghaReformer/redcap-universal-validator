@@ -108,3 +108,21 @@ contract, and CI enforces it.
 4. Run `node tests/parity_js.cjs`, `php tests/parity_php.php`, and both pooled
    tests — all must be green before committing. If the pooled parser changed,
    regenerate `tests/pooled_fixture.json` with `node tests/gen_pooled_fixture.cjs`.
+5. Rebuild the minified copy with `node tools/build_engine_min.cjs` and run
+   `node tests/engine_min_js.cjs`.
+
+## Files derived from the engine and the tables
+
+- `engine.min.js` is `engine.js` minified by a pinned terser
+  (`tools/build_engine_min.cjs`). Its first line names the SHA-256 and the
+  CRC-32 of the source it was built from. A form loads it only while that
+  CRC-32 is the one of the `engine.js` beside it, and loads `engine.js`
+  otherwise, or when the project's debug setting is on. Every edit of
+  `engine.js` needs a rebuild: CI checks the file is exactly what terser makes
+  of the source, and `tests/engine_min_js.cjs` runs every browser suite on it.
+- `growth/<hash>.js` holds the rows of one bundled growth table
+  (`tools/build_growth_rows.php`), named by the first 16 hex digits of the
+  table's SHA-256. A page that may read any row of a bundled table loads this
+  script before the engine, which the browser caches, instead of carrying the
+  rows inline. Rebuild after adding or changing a bundled table; CI checks each
+  script against its table.

@@ -77,13 +77,24 @@ function walk(el, fn) { fn(el); for (const c of el.children) walk(c, fn); }
 function all(el, test) { const out = []; walk(el, (e) => { if (test(e)) out.push(e); }); return out; }
 function tagged(el, tag) { return all(el, (e) => e.tagName.toLowerCase() === tag); }
 
+/* The rows script of each bundled table the page names by hash (PRF-7),
+   run the way the page runs it: before engine.js, with this window. */
+function loadRows(cfg) {
+  for (const ref of Object.keys(cfg.growth || {})) {
+    const sha = cfg.growth[ref].rowsFrom;
+    if (typeof sha !== 'string') continue;
+    const file = path.join(__dirname, '..', 'js', 'growth', sha.slice(0, 16) + '.js');
+    delete require.cache[require.resolve(file)];
+    require(file);
+  }
+}
 /* The fixture's page `name`, its reference rows put back from the shared ones. */
 function pageOf(name) {
   const cfg = JSON.parse(JSON.stringify(FX.pages[name]));
   for (const ref of Object.keys(cfg.growth || {})) {
     for (const sex of ['male', 'female']) {
       const s = cfg.growth[ref][sex];
-      if (s && s.slice) cfg.growth[ref][sex] = FX.growth[ref][sex].slice(s.slice[0], s.slice[0] + s.slice[1]);
+      if (s && !Array.isArray(s) && s.slice) cfg.growth[ref][sex] = FX.growth[ref][sex].slice(s.slice[0], s.slice[0] + s.slice[1]);
     }
   }
   return cfg;
@@ -125,6 +136,7 @@ function boot(name, inputs, values, lang) {
     XMLHttpRequest: function () { asked.push('xhr'); this.open = () => {}; this.send = () => {}; this.setRequestHeader = () => {}; },
   };
   global.document = doc; global.window = win;
+  loadRows(config);
   require(enginePath);
   return { doc, win, holders, els, mlm, config, asked, NS: win.INSPIREUniversalValidator };
 }

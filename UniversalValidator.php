@@ -4386,19 +4386,41 @@ class UniversalValidator extends AbstractExternalModule
      * under the same folder kept the URL, and a browser could serve the old
      * engine from its cache.
      */
-    private function engineUrl()
+    private function engineUrl($pid = null)
     {
-        $url = $this->getUrl('js/engine.js');
-        $file = __DIR__ . '/js/engine.js';
+        // The project's debug setting loads the readable source, whose stack
+        // traces name the engine's own functions.
+        $path = $this->debugEnabled($pid) ? 'js/engine.js' : self::servedEngine(__DIR__);
+        $url = $this->getUrl($path);
+        $file = __DIR__ . '/' . $path;
         $stamp = self::CONFIG_SHAPE . '.' . (int) @filemtime($file) . '.' . (int) @filesize($file);
         return $url . (strpos($url, '?') === false ? '?' : '&') . 'v=' . rawurlencode($stamp);
+    }
+
+    /**
+     * The engine a page loads from module folder $dir: js/engine.min.js
+     * (PRF-7: 195 KB in place of 504 KB, 65 KB gzipped in place of 150) while
+     * its first line names the CRC-32 of the js/engine.js beside it, which
+     * tools/build_engine_min.cjs writes there; else js/engine.js. An
+     * engine.js changed without a rebuild is then served as it is, never an
+     * older minified copy. Reading the CRC-32 of 500 KB costs about 0.4 ms.
+     */
+    private static function servedEngine($dir)
+    {
+        $fh = @fopen($dir . '/js/engine.min.js', 'rb');
+        if ($fh === false) return 'js/engine.js';
+        $head = fgets($fh, 1024);
+        fclose($fh);
+        if (!is_string($head) || !preg_match('/ crc32b ([0-9a-f]{8})\. /', $head, $m)) return 'js/engine.js';
+        $crc = @hash_file('crc32b', $dir . '/js/engine.js');
+        return (is_string($crc) && hash_equals($m[1], $crc)) ? 'js/engine.min.js' : 'js/engine.js';
     }
 
     private function injectClient($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
-        $engineUrl = $this->engineUrl();
+        $engineUrl = $this->engineUrl($pid);
         $config['configShape'] = self::CONFIG_SHAPE;
         // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
         // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
@@ -4458,6 +4480,14 @@ class UniversalValidator extends AbstractExternalModule
         if ($json === false) return; // never inject malformed config
         echo '<script type="application/json" id="inspire-validator-config">'
             . $json . '</script>' . "\n";
+        // The rows of the growth tables the page names by hash
+        // (attachGrowthTables, PRF-7). Parser-inserted scripts run in order, so
+        // they are in place when engine.js reads the config.
+        $rowScripts = [];
+        foreach ((isset($config['growth']) && is_array($config['growth'])) ? $config['growth'] : [] as $g) {
+            if (is_array($g) && isset($g['rowsFrom']) && is_string($g['rowsFrom'])) $rowScripts[$g['rowsFrom']] = GrowthReference::rowsPath($g['rowsFrom']);
+        }
+        foreach ($rowScripts as $path) echo '<script src="' . htmlspecialchars($this->getUrl($path), ENT_QUOTES) . '"></script>' . "\n";
         echo '<script src="' . htmlspecialchars($engineUrl, ENT_QUOTES) . '"></script>' . "\n";
     }
 
@@ -4797,7 +4827,15 @@ class UniversalValidator extends AbstractExternalModule
         $tables = [];
         foreach ($need as $id => $nn) {
             $full = $nn['xs'] === null && !empty($nn['sexes']['male']) && !empty($nn['sexes']['female']);
-            $tables[$id] = GrowthReference::pageCopy($entries[$id][0], $entries[$id][1], $full ? null : $nn);
+            // PRF-7. A page that may read any row of a bundled table names the
+            // script that carries them, which the browser caches, instead of
+            // inlining 46 to 92 KB on every view (injectClient loads it). A
+            // copy limited to a few ages, or to no sex at all, stays inline:
+            // it is small, and the file would be a whole table.
+            $whole = $nn['xs'] === null && (!empty($nn['sexes']['male']) || !empty($nn['sexes']['female']));
+            $tables[$id] = $whole && GrowthReference::rowsFile($entries[$id][0]) !== null
+                ? GrowthReference::pageIndex($entries[$id][0])
+                : GrowthReference::pageCopy($entries[$id][0], $entries[$id][1], $full ? null : $nn);
         }
         if ($tables) $config['growth'] = $tables;
         return $config;
