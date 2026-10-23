@@ -730,12 +730,20 @@ final class Schema
      * first column is there: the two columns of one ALTER arrive together or
      * not at all.
      *
+     * uv_unique_candidate.branch is the branch of the @UVUNIQUE rule that
+     * offered the candidate, NULL for a rule with none (review rv11a2-2).
+     * UniqueFinalizer writes a duplicate's reason_bits from it, as every other
+     * writer does from its finding's branch; with no column it wrote 0, and a
+     * branched rule's duplicate read with the rule's top-level wording.
+     *
      * uv_unique_candidate.ix_record (project_id, generation_id, record_hash)
      * is what lets catch-up delete the candidates of a record it sends back
      * to be read again, deletes or takes out of the run's group (W5F-N1):
      * record_hash is a prefix of neither uq_candidate_v2 nor ix_group_v2, so
      * without it that DELETE reads every candidate of the generation. An
-     * index only; skipped once it exists.
+     * index only; skipped once it exists. Its own statement, not the branch
+     * column's: 8.0 adds the column in place and builds the index online,
+     * where one ALTER holding both would rebuild the table.
      *
      * The data step after these is upgradeDataV6().
      *
@@ -752,6 +760,8 @@ final class Schema
                 ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL, '
                         . 'ADD COLUMN open_findings BIGINT UNSIGNED NULL',
                  'skipIf' => ['column', $run, 'open_unstored']],
+                ['sql' => 'ALTER TABLE ' . $uc . ' ADD COLUMN branch TINYINT UNSIGNED NULL',
+                 'skipIf' => ['column', $uc, 'branch']],
                 ['sql' => 'ALTER TABLE ' . $uc . ' ADD KEY ix_record (project_id, generation_id, record_hash)',
                  'skipIf' => ['index', $uc, 'ix_record']]];
     }
@@ -821,7 +831,8 @@ final class Schema
     private static function verifyV6($module)
     {
         foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
-                  ['scan_record', 'stored_findings'], ['scan_run', 'open_findings']] as $tc) {
+                  ['scan_record', 'stored_findings'], ['scan_run', 'open_findings'],
+                  ['unique_candidate', 'branch']] as $tc) {
             if (!self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) {
                 return 'the ' . $tc[0] . ' table has no ' . $tc[1] . ' column';
             }

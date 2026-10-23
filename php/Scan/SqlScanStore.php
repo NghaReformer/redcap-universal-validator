@@ -1653,9 +1653,10 @@ final class SqlScanStore implements ScanStore
     {
         $this->db->execNoCount('INSERT INTO ' . Schema::table('unique_candidate') . '
             (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
-             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned, lookup)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned), lookup = VALUES(lookup)', [
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned, lookup, branch)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned), lookup = VALUES(lookup),
+                                    branch = VALUES(branch)', [
             self::mustProject($c),
             $c['generation_id'], $c['rule_source_id'], $c['rule_revision'], $c['group_hmac'],
             isset($c['scope_key']) ? $c['scope_key'] : '',
@@ -1670,7 +1671,21 @@ final class SqlScanStore implements ScanStore
             isset($c['version']) ? $c['version'] : null,
             // 1: a value a @UVUNIQUE rule looks in, never reported (Schema::statementsV4).
             empty($c['lookup']) ? 0 : 1,
+            // The rule's branch, which the duplicate's reason_bits carries
+            // (review rv11a2-2). NULL for none, and for a number the column
+            // or ReasonCode::bits() cannot hold, which bits() reads as none.
+            self::candidateBranch($c),
         ]);
+    }
+
+    /** A candidate's branch for uv_unique_candidate.branch: 0 to 254, else NULL. */
+    private static function candidateBranch(array $c)
+    {
+        if (!isset($c['branch'])) return null;
+        $b = $c['branch'];
+        if (!(is_int($b) || (is_string($b) && ctype_digit($b)))) return null;
+        $b = (int) $b;
+        return ($b >= 0 && $b < ReasonCode::BRANCH_MAX) ? $b : null;
     }
 
     /**

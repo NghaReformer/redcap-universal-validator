@@ -771,7 +771,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $page = max(1, (int) $limit);
         if ($dags !== null && $readLimit !== null) $page = max(1, min($page, (int) $readLimit));
         $rows = $this->db->select('SELECT candidate_id, record_hash, record_id_bin, event_id,
-            instance, host_form, field, rule_source_id, rule_revision
+            instance, host_form, field, rule_source_id, rule_revision, branch
             FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
               AND lookup = 0
@@ -820,10 +820,16 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $ord = isset($ordinals[(string) $r[7]]) ? max(0, (int) $ordinals[(string) $r[7]]) : 0;
             $dag = (isset($groupOf[(string) $r[2]]) && is_string($groupOf[(string) $r[2]])
                     && $groupOf[(string) $r[2]] !== '') ? $groupOf[(string) $r[2]] : null;
-            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)';
+            // THE BRANCH THAT JUDGED IT (review rv11a2-2), in reason_bits as
+            // every other writer stores it (ReasonCode::bits(): branch + 1).
+            // This was a literal 0, so a branched rule's duplicate read with
+            // the rule's top-level wording instead of its branch's message.
+            $bits = ReasonCode::bits(ReasonCode::split(self::REASON),
+                (isset($r[9]) && $r[9] !== null) ? (int) $r[9] : null);
+            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)';
             foreach ([$this->pid, $generationId, Hmac::findingIdentity($this->pid, $loc, $key),
                       $this->seq, $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
-                      $r[7], $r[8], $ord, 'unique', self::REASON, $dag, $g['group_hmac'],
+                      $r[7], $r[8], $ord, 'unique', self::REASON, $bits, $dag, $g['group_hmac'],
                       $g['candidate_epoch']] as $v) {
                 $flat[] = $v;
             }

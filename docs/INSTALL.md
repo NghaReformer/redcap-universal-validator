@@ -195,15 +195,19 @@ the largest, is not touched.
   run, in one `ALTER`. Neither has a default. Both are NULL on every run that
   exists at the upgrade and on any run the previous version starts while the
   upgrade runs; the new version writes 0 on each run it starts.
+- `uv_unique_candidate` gains `branch`, the branch of the `@UVUNIQUE` rule
+  that offered the value (NULL for a rule with no branches), so a duplicate
+  is reported with its branch's message.
 - `uv_unique_candidate` gains the index
   `ix_record (project_id, generation_id, record_hash)`, so catch-up can remove
   the duplicate candidates of a record it reads again, or that was deleted,
   without reading every candidate of the run.
 
-That is three statements, and their time grows with the rows in those three
+That is four statements, and their time grows with the rows in those three
 tables. Measured with 400,000 records and 400,000 candidates: MySQL 8.0 adds
 the columns at once and spends about 17 seconds on the index; MySQL 5.7
-spends about 19 seconds rebuilding `uv_scan_record` and 5 on the index.
+spends about 19 seconds rebuilding `uv_scan_record` and 5 on the index, and
+rebuilds `uv_unique_candidate` once more to add `branch`.
 
 Then one data step: each run that had already finished its catch-up pass is
 marked as having done so, 5,000 runs per `UPDATE`. The row shows this for a

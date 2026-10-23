@@ -35,6 +35,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';    // the detail budget (H9)
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/ReasonCode.php';      // a duplicate's reason_bits (rv11a2-2)
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';   // tally() reads its KINDS
@@ -2327,9 +2328,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'emitting', null, 2]];
             if (strpos($sql, 'lookup = 0') !== false && preg_match('/LIMIT (\d+)/', $sql, $m)) {
                 $this->limits[] = (int) $m[1];
-                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64)]];
+                // The last column is the candidate's branch (rv11a2-2): R2's
+                // rule judged it in its second branch.
+                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), null],
+                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), 1],
+                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64), null]];
                 return array_slice($rows, 0, (int) $m[1]);
             }
             return [];
@@ -2383,6 +2386,13 @@ namespace INSPIRE\UniversalValidator\Scan {
                     ['R1', 'sid2', 0, 'site_a', 'duplicate-value']]);
     check('W7-R4: a rule the map does not name is ordinal 0, as before, and never a guess',
         isset($wrote[2]) && $wrote[2][2] === 0);
+    // rv11a2-2: the duplicate carries its candidate's branch as every other
+    // finding does (branch + 1), and a candidate with none is 0, as before.
+    $bitsOf = [];
+    foreach ($edb->rows() as $row) $bitsOf[] = [$row['record_id_bin'], $row['reason_bits']];
+    check('rv11a2-2: a duplicate\'s reason_bits name its candidate\'s branch (got ' . json_encode($bitsOf) . ')',
+        $bitsOf === [['R1', 0], ['R2', 2], ['R1', 0]]
+        && \INSPIRE\UniversalValidator\Scan\ReasonCode::branchOf('duplicate-value', $bitsOf[1][1]) === 1);
     check('W7-R4: the groups are asked once for the page, each record once',
         $asked === [['R1', 'R2']] && $er['emitted'] === 3 && $er['read'] === 2);
     // The page is cut to the read limit when the groups may cost a read.

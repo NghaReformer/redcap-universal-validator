@@ -322,6 +322,9 @@ foreach (['open_unstored', 'open_findings'] as $oc) {
 check('v6 upgrade: uv_unique_candidate gains ix_record (project_id, generation_id, record_hash) (W5F-N1)',
     uv_index_columns($A, Schema::table('unique_candidate'), 'ix_record')
         === ['project_id', 'generation_id', 'record_hash']);
+$brCol = $colOf('unique_candidate', 'branch');
+check('v6 upgrade: uv_unique_candidate gains branch, nullable with no default, so a candidate already there has none (rv11a2-2)',
+    is_array($brCol) && $brCol[0] === 'YES' && ($brCol[1] === null || strtoupper((string) $brCol[1]) === 'NULL'));
 $v6store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
 $v6new = $v6store->startRun($NEIGHBOUR, ['created_by' => 'bob']);
 check('v6 upgrade: and a run created after it starts at 0, on both counts',

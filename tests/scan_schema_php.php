@@ -50,6 +50,7 @@ namespace {
             $m->columns[] = 'uv_scan_run.open_unstored';
             $m->columns[] = 'uv_scan_record.stored_findings';
             $m->columns[] = 'uv_scan_run.open_findings';
+            $m->columns[] = 'uv_unique_candidate.branch';
             $m->indexes[] = 'uv_unique_candidate.ix_record';
         }
     }
@@ -739,14 +740,16 @@ namespace INSPIRE\UniversalValidator\Scan {
      * there, in one ALTER; uv_scan_run.open_unstored and .open_findings, NULL
      * with no default, in one ALTER: NULL on every run already there and on
      * every run the previous build starts mid-migration (counted the old
-     * way), and written 0 by this build's startRun() (review rvc1-3); and the
-     * candidate index by record that catch-up deletes through (W5F-N1).
+     * way), and written 0 by this build's startRun() (review rvc1-3); the
+     * branch of the rule that offered a uniqueness candidate (rv11a2-2); and
+     * the candidate index by record that catch-up deletes through (W5F-N1).
      * ===================================================================== */
     {
         $v6 = ['ALTER TABLE uv_scan_record ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0, '
                . 'ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
                'ALTER TABLE uv_scan_run ADD COLUMN open_unstored BIGINT UNSIGNED NULL, '
                . 'ADD COLUMN open_findings BIGINT UNSIGNED NULL',
+               'ALTER TABLE uv_unique_candidate ADD COLUMN branch TINYINT UNSIGNED NULL',
                'ALTER TABLE uv_unique_candidate ADD KEY ix_record (project_id, generation_id, record_hash)'];
         $m = new \FakeModule();
         $m->version = '5';
@@ -772,11 +775,12 @@ namespace INSPIRE\UniversalValidator\Scan {
         $half->columns = ['uv_scan_record.unstored', 'uv_scan_record.stored_findings'];
         $rh = Schema::migrate($half);
         check('v6: interrupted after the record columns, the resumed run adds the rest and nothing else',
-            $rh['ok'] === true && $rh['applied'] === 2
+            $rh['ok'] === true && $rh['applied'] === 3
             && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }))
-               === [$v6[1], $v6[2]]);
+               === [$v6[1], $v6[2], $v6[3]]);
         foreach (['ADD COLUMN unstored' => 'scan_record table has no unstored column',
                   'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column',
+                  'ADD COLUMN branch' => 'unique_candidate table has no branch column',
                   'ADD KEY ix_record' => 'unique_candidate table has no ix_record index'] as $frag => $why) {
             $inert = new \FakeModule();
             $inert->version = '5';
@@ -787,7 +791,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                 && strpos((string) $ri['why'], $why) !== false
                 && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         }
-        check('v6: a fresh install ends with all three statements, in order',
+        check('v6: a fresh install ends with all four statements, in order',
             strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v6)) !== false);
 
         // THE DATA STEP (review rvfix-N1). Runs that left catch-up under the
