@@ -29,21 +29,27 @@ function check($label, $cond)
     }
 }
 
-// ---- extractTag ----
-check('absent tag -> null', AnnotationRules::extractTag('@READONLY @HIDDEN') === null);
-check('bare tag', AnnotationRules::extractTag('@UVALIDATE') === '');
-check('bare tag among others', AnnotationRules::extractTag('@READONLY @UVALIDATE @HIDDEN-SURVEY') === '');
-check('lowercase tag accepted', AnnotationRules::extractTag('@uvalidate=damm') === 'damm');
-check('bare token value', AnnotationRules::extractTag('@UVALIDATE=iso7064_mod11_10') === 'iso7064_mod11_10');
-check('token ends at whitespace', AnnotationRules::extractTag('@UVALIDATE=damm @READONLY') === 'damm');
-check('double-quoted value', AnnotationRules::extractTag('@UVALIDATE="damm" @X') === 'damm');
-check('single-quoted value', AnnotationRules::extractTag("@UVALIDATE='damm'") === 'damm');
-check('json value balanced', AnnotationRules::extractTag('@UVALIDATE={"algorithm":"damm"} @READONLY')
+// ---- the first tag's value ----
+// $firstTag() returned it, for the module only, until QUA-3
+// found nothing in the module called it; the first of extractTags() is the same.
+$firstTag = function ($annotation) {
+    $tags = AnnotationRules::extractTags($annotation);
+    return $tags ? $tags[0] : null;
+};
+check('absent tag -> null', $firstTag('@READONLY @HIDDEN') === null);
+check('bare tag', $firstTag('@UVALIDATE') === '');
+check('bare tag among others', $firstTag('@READONLY @UVALIDATE @HIDDEN-SURVEY') === '');
+check('lowercase tag accepted', $firstTag('@uvalidate=damm') === 'damm');
+check('bare token value', $firstTag('@UVALIDATE=iso7064_mod11_10') === 'iso7064_mod11_10');
+check('token ends at whitespace', $firstTag('@UVALIDATE=damm @READONLY') === 'damm');
+check('double-quoted value', $firstTag('@UVALIDATE="damm" @X') === 'damm');
+check('single-quoted value', $firstTag("@UVALIDATE='damm'") === 'damm');
+check('json value balanced', $firstTag('@UVALIDATE={"algorithm":"damm"} @READONLY')
     === '{"algorithm":"damm"}');
-check('json with nested braces in string', AnnotationRules::extractTag('@UVALIDATE={"pattern":"a{2}b}c"}')
+check('json with nested braces in string', $firstTag('@UVALIDATE={"pattern":"a{2}b}c"}')
     === '{"pattern":"a{2}b}c"}');
-check('@UVALIDATED is a different tag', AnnotationRules::extractTag('@UVALIDATED=x') === null);
-check('@UVALIDATED then real tag', AnnotationRules::extractTag('@UVALIDATED=x @UVALIDATE=luhn') === 'luhn');
+check('@UVALIDATED is a different tag', $firstTag('@UVALIDATED=x') === null);
+check('@UVALIDATED then real tag', $firstTag('@UVALIDATED=x @UVALIDATE=luhn') === 'luhn');
 
 // ---- parseField ----
 check('untagged -> null', AnnotationRules::parseField('@READONLY') === null);

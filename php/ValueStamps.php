@@ -140,12 +140,6 @@ final class ValueStamps
               $this->rows[$old], $this->any[$old], $this->capped[$old]);
     }
 
-    /** How many records are held in memory (for tests). */
-    public function recordsHeld()
-    {
-        return count($this->kept);
-    }
-
     /**
      * One page of the record's log, newest first, into $seen. false when the
      * log could not be read.

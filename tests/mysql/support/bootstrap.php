@@ -28,7 +28,7 @@ require_once __DIR__ . '/../../../php/Scan/DbError.php';
 require_once __DIR__ . '/../../../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
 // The parity check in cases/store.php commits one batch into each store.
-require_once __DIR__ . '/../../../php/Scan/ArrayScanStore.php';
+require_once __DIR__ . '/../../support/ArrayScanStore.php';
 // findings() zips its rows with FindingRowMapper::INPUT_KEYS (B5-N1).
 require_once __DIR__ . '/../../../php/Scan/FindingRowMapper.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';

@@ -9333,7 +9333,8 @@ class UniversalValidator extends AbstractExternalModule
     // for one of them to drift, and the axis defect this release fixes is
     // precisely that shape one layer up. It is now
     // ScanPageView::dagNameOf(), which the page, this file's live unique-check
-    // endpoint and scanProject() all call.
+    // endpoint and the legacy scan the suites run (tests/support/scan_facade.php)
+    // all call.
 
     // -- server-side value read --------------------------------------------
 

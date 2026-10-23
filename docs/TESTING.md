@@ -56,7 +56,7 @@ Everything it asserts lives in one file per area:
 | File | What it proves |
 | --- | --- |
 | `cases/schema.php` | the migration, and the four UNIQUE keys the design rests on |
-| `cases/store.php` | `SqlScanStore` end to end, plus the cross-store contract the fast suite runs against `ArrayScanStore` |
+| `cases/store.php` | `SqlScanStore` end to end, plus the cross-store contract the fast suite runs against `ArrayScanStore` (`tests/support/`) |
 | `cases/slots.php` | the installation-wide worker semaphore, and what a worker says when nobody provisioned one |
 | `cases/retention.php` | three clocks, and nothing silently losing a finding |
 | `cases/fault.php` | what the store does when the server refuses a write |

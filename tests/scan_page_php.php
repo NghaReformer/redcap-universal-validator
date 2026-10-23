@@ -37,6 +37,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $subSettings = []; public $projectSettings = []; public $projectIdReturn = null;
         public $logCalls = [];
         /** The user object the page will probe. Swapped per scenario. */
@@ -343,6 +345,7 @@ namespace {
         public static function isRepeatingForm($e = null, $f = null) { return null; }
     }
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
     require_once __DIR__ . '/scan_run_row.php';
 
     const PID  = 700;

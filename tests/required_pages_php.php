@@ -21,6 +21,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $projectSettings = [];
         public $systemSettings = [];
@@ -99,6 +101,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     use INSPIRE\UniversalValidator\UniversalValidator;
 

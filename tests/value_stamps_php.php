@@ -158,7 +158,10 @@ $db = new FakeLog();
 for ($i = 1; $i <= 40; $i++) $db->rows[] = $row($i, 'R' . $i, 351, '20261001090000', "visit = '2026-10-01'");
 $s = ValueStamps::forProject($db, 149, $utc, $utc);
 for ($i = 1; $i <= 40; $i++) $s->savedAt('R' . $i, 351, 1, 'visit', '2026-10-01');
-check('a scan holds at most RECORDS_KEPT records', $s->recordsHeld() === ValueStamps::RECORDS_KEPT);
+// read off the private list: the class has no accessor only a test would call (QUA-3)
+$kept = new ReflectionProperty(ValueStamps::class, 'kept');
+$kept->setAccessible(true);
+check('a scan holds at most RECORDS_KEPT records', count($kept->getValue($s)) === ValueStamps::RECORDS_KEPT);
 $q = $db->queries;
 check('a dropped record is read again, and answers the same', $s->savedAt('R1', 351, 1, 'visit', '2026-10-01')['state'] === 'logged'
     && $db->queries === $q + 1);

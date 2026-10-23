@@ -646,6 +646,21 @@ post-save audit with and without codes configured, the scan (two records
 marked `UNK` are not duplicates), the `unique-check` and `exists-check`
 endpoints, and the page config (codes, never their labels).
 
+## `support/` — code only the suites run
+
+Two pieces of the scan are test code and live here, not under `php/`
+(QUA-3). `ArrayScanStore.php` is the in-memory scan store: a second,
+independent implementation of `Scan\ScanStore`, so the fast suites run the
+store contract in milliseconds and `tests/mysql/run.php` runs the same contract
+against `SqlScanStore` on real servers. `scan_facade.php` is the legacy
+one-request scan, `scan_project()`, with its time and memory guard and the two
+sinks only it used. Sixteen suites call `$module->scanProject(...)`, which
+their framework stub forwards there. Each record still goes through the
+module's own `scanRecord()` and `ruleFindings()`, which the durable scan and
+the save audit use, so a verdict it finds is the module's verdict. Batching,
+leases and memory of the durable scan are tested in `scan_service_php.php`,
+`scan_worker_php.php` and the MySQL matrix, not here.
+
 ## `hook_php.php` — the audit-path contract
 
 Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.

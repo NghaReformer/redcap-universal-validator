@@ -90,7 +90,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\GrowthReference;
