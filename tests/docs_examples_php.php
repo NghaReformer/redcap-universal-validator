@@ -196,7 +196,7 @@ $growth = function (array $frag, $value, array $inputs) use ($rangeSpec, $exampl
     $m = GrowthReference::measure($value, false, $scale);
     if ($m['state'] !== 'ok') return [$m['state'], $case];
     $read = [];
-    foreach (['rangeSex', 'rangeAgeDob', 'rangeAgeAt', 'rangeAgeDays', 'rangeAgeMonths', 'rangeBy'] as $k) {
+    foreach (['rangeSex', 'rangeAgeDob', 'rangeAgeAt', 'rangeAgeDays', 'rangeAgeMonths', 'rangeBy', 'rangeMeasured'] as $k) {
         if (!isset($frag[$k])) continue;
         // the field a reference names: its last [name], so "[enrol_arm_1][dob]" reads dob
         $f = preg_match('/\[([a-z0-9_]+)\]$/', $frag[$k], $mm) ? $mm[1] : '';
@@ -210,7 +210,10 @@ $growth = function (array $frag, $value, array $inputs) use ($rangeSpec, $exampl
     // x as the shortest text that reads back as the same double, in both runtimes
     $case['sex'] = $in['sex'];
     $case['x'] = sprintf('%.17g', $in['x']);
-    $z = GrowthReference::zScore($entry, $table, $in['sex'], $in['x'], $m['y']);
+    // how the child was measured: the browser works out the correction of
+    // the measurement itself (a correction of the length is in x already)
+    if (isset($frag['rangeMeasured'])) $case['position'] = GrowthReference::positionOf($read['rangeMeasured'], $frag);
+    $z = GrowthReference::zScore($entry, $table, $in['sex'], $in['x'], $m['y'] + $in['yAdd']);
     if ($z['state'] !== 'ok') return ['no row', $case];
     $r = Logic::rangeVerdict($case['spec'], $z['z']);
     return [($r['tier'] === 'ok' ? 'ok' : $r['reason']) . ', z ' . $z['z'], $case];

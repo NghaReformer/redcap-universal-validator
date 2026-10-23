@@ -1239,5 +1239,107 @@ foreach ($fx['normalize'] as $c) {
         $got !== null && json_encode($got) === json_encode($c['entries']));
 }
 
+// ---- VAL-2: spaces around "=" and a line break after it keep the settings ----
+// Read as a bare tag, "@UVALIDATE = {...}" lost its hard block and its pattern
+// without a word, and the field went on validating with the defaults.
+$pat = 'FC[1-9]-[0-9]{4}[0-9A-Z]';
+$tight = AnnotationRules::parseAllTags('@UVALIDATE={"blockSave":"hard","pattern":"' . $pat . '"}');
+foreach (['@UVALIDATE = {"blockSave":"hard","pattern":"' . $pat . '"}',
+          "@UVALIDATE\t={\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}",
+          "@UVALIDATE=\n{\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}",
+          "@UVALIDATE =\r\n  {\"blockSave\":\"hard\",\"pattern\":\"" . $pat . "\"}"] as $spaced) {
+    check('VAL-2: ' . json_encode($spaced) . ' reads as the tight form', AnnotationRules::parseAllTags($spaced) === $tight);
+}
+check('VAL-2: "@UVALIDATE= luhn" keeps its algorithm', AnnotationRules::parseAllTags('@UVALIDATE= luhn') === [['algorithm' => 'luhn']]);
+check('VAL-2: other tags read the same way',
+    AnnotationRules::parseAllTags('@UVUNIQUE = event') === [['type' => 'unique', 'uniqueScope' => 'event']]
+    && AnnotationRules::parseAllTags("@UVASSERT =\n\"[a]>1\"") === [['type' => 'constraint', 'assert' => '[a]>1']]);
+check('VAL-2: the compatibility parser agrees', AnnotationRules::parseField('@UVALIDATE = luhn') === ['algorithm' => 'luhn']);
+check('VAL-2: a bare tag followed by another tag stays bare',
+    AnnotationRules::parseAllTags('@UVALIDATE @UVREQUIRED') === [[], ['type' => 'required']]);
+check('VAL-2: "=" with nothing after it, or only the next tag, is an empty value, as before',
+    AnnotationRules::parseAllTags('@UVALIDATE=') === [[]]
+    && AnnotationRules::parseAllTags('@UVALIDATE= @UVREQUIRED') === [[], ['type' => 'required']]);
+$ex = AnnotationRules::parseAllTags('@UVEXISTS = ');
+check('VAL-2: ...so a tag that needs a value still says so', isset($ex[0]['error']) && strpos($ex[0]['error'], 'where to look') !== false);
+check('VAL-2: a word after a bare tag is not read as its value', AnnotationRules::parseAllTags('@UVALIDATE luhn') === [[]]);
+
+// ---- AST-6: a module tag inside REDCap's @IF(...) is refused ----
+// The module does not read @IF, so the rule applied whatever the condition
+// said: a hard block at the sites the rule was not meant for.
+$ifErr = function ($frags, $tag) {
+    if (!is_array($frags)) return false;
+    foreach ($frags as $f) {
+        if (($f['_tag'] ?? '') === $tag && strpos($f['error'] ?? '', 'sits inside @IF(...)') === 0 + strlen($tag) + 1
+            && strpos($f['error'], '"when"') !== false) return true;
+    }
+    return false;
+};
+$r = AnnotationRules::parseAllTags("@IF([site]='1', @UVASSERT={\"assert\":\"[a]>10\",\"message\":\"Site (1) can't go below 10\",\"blockSave\":\"hard\"}, '')");
+check('AST-6: @UVASSERT inside @IF is a configuration error that points to "when"', is_array($r) && count($r) === 1 && $ifErr($r, '@UVASSERT'));
+$r = AnnotationRules::parseAllTags('@IF([s]="1", @UVALIDATE=luhn, @UVALIDATE=verhoeff)');
+check('AST-6: both branches of @IF are refused', is_array($r) && count($r) === 2 && !isset($r[0]['algorithm']) && !isset($r[1]['algorithm']) && $ifErr($r, '@UVALIDATE'));
+$r = AnnotationRules::parseAllTags('@IF([s]=1, @UVREQUIRED, @UVUNIQUE)');
+check('AST-6: a bare tag ended by "," or ")" inside @IF is found and refused',
+    is_array($r) && count($r) === 2 && $ifErr($r, '@UVREQUIRED') && $ifErr($r, '@UVUNIQUE'));
+check('AST-6: lower-case @if and a space before "(" are @IF too',
+    $ifErr(AnnotationRules::parseAllTags('@if ([s]=1, @UVREQUIRED, @HIDDEN)'), '@UVREQUIRED'));
+check('AST-6: a tag after the closing parenthesis is an ordinary rule',
+    AnnotationRules::parseAllTags("@IF([s]=')', @HIDDEN, '') @UVREQUIRED") === [['type' => 'required']]);
+check('AST-6: an @IF that is never closed covers the rest of the annotation',
+    $ifErr(AnnotationRules::parseAllTags('@IF([s]=1, @HIDDEN, @UVREQUIRED'), '@UVREQUIRED'));
+check('AST-6: the word @IF in a message, with no parenthesis, changes nothing',
+    AnnotationRules::parseAllTags('@UVREQUIRED={"message":"answer @IF you can"}') === [['type' => 'required', 'message' => 'answer @IF you can']]);
+check('AST-6: outside @IF a comma after a tag still does not end it, as before',
+    AnnotationRules::parseAllTags('@UVREQUIRED, @HIDDEN') === null);
+check('AST-6: the compatibility parser refuses it too',
+    isset(AnnotationRules::parseFieldAll('@IF([s]=1, @UVALIDATE=luhn, @HIDDEN)')[0]['error']));
+
+// ---- VAL-7, AST-9, REQ-11: a tag name inside another tag's value is text ----
+// A "message" that named @UVREQUIRED made a second rule, and
+// @DEFAULT='see @UVALIDATE rules' made an ID check of a plain text field.
+check('VAL-7: a tag named inside a module tag\'s JSON message makes no second rule',
+    AnnotationRules::parseAllTags('@UVREQUIRED={"message":"see @UVALIDATE"}') === [['type' => 'required', 'message' => 'see @UVALIDATE']]);
+check('VAL-7: a tag named inside REDCap\'s @DEFAULT=\'...\' makes no rule',
+    AnnotationRules::parseAllTags("@DEFAULT='see @UVALIDATE rules'") === null);
+check('VAL-7: a tag named inside @CALCTEXT(...) makes no rule',
+    AnnotationRules::parseAllTags("@CALCTEXT(if([a]='1','@UVREQUIRED',''))") === null);
+check('VAL-7: a tag name right after a letter is text (an e-mail address)',
+    AnnotationRules::parseAllTags('contact x@UVREQUIRED now') === null);
+check('AST-9: an @UVASSERT message that names @UVREQUIRED, and a real @UVREQUIRED after it, make two rules',
+    AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>1","message":"use @UVREQUIRED too"} @UVREQUIRED')
+    === [['type' => 'constraint', 'assert' => '[a]>1', 'message' => 'use @UVREQUIRED too'], ['type' => 'required']]);
+check('REQ-11: a tag right after the closing quote or brace of another value is still read',
+    AnnotationRules::parseAllTags("@DEFAULT='x'@UVREQUIRED") === [['type' => 'required']]
+    && AnnotationRules::parseAllTags('@HIDDEN{"a":1}@UVREQUIRED') === [['type' => 'required']]);
+check('REQ-11: a value that never closes hides no tag after it',
+    AnnotationRules::parseAllTags("@DEFAULT='open @UVREQUIRED") === [['type' => 'required']]);
+
+// ---- VAL-9: an @UVALIDATE "type" is single or pooled ----
+foreach (['required', 'unique', 'constraint'] as $t) {
+    $r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"' . $t . '"}');
+    check("VAL-9: @UVALIDATE with \"type\":\"$t\" is refused",
+        is_array($r) && count($r) === 1 && ($r[0]['error'] ?? '') === '"type" must be "single" or "pooled".');
+}
+check('VAL-9: "type":"single" is still accepted',
+    AnnotationRules::parseAllTags('@UVALIDATE={"type":"single","algorithm":"luhn"}') === [['type' => 'single', 'algorithm' => 'luhn']]);
+
+// ---- VAL-8: a pooled length range must leave a length to try ----
+$r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"luhn","idMinLen":1,"idMaxLen":1}');
+check('VAL-8: pooled luhn with IDs of at most 1 character is refused',
+    is_array($r) && strpos($r[0]['error'] ?? '', 'no ID length is left to try') === 0 && strpos($r[0]['error'], 'at least 2') !== false);
+$r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"iso7064_mod97_10","idMinLen":2,"idMaxLen":2}');
+check('VAL-8: a 2-digit check needs IDs of 3 characters',
+    is_array($r) && strpos($r[0]['error'] ?? '', 'at least 3') !== false);
+check('VAL-8: pooled regex-only IDs of 1 character are accepted (no check character)',
+    !isset(AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]","idMinLen":1,"idMaxLen":1}')[0]['error']));
+check('VAL-8: pooled luhn with IDs of 2 to 3 characters is accepted',
+    !isset(AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"luhn","idMinLen":2,"idMaxLen":3}')[0]['error']));
+
+// ---- VAL-11: a named group compiles in both runtimes ----
+check('VAL-11: a format with named groups is accepted',
+    AnnotationRules::parseAllTags('@UVALIDATE={"algorithm":"none","pattern":"(?<site>[A-Z]{2})(?<num>[0-9]{4})"}')
+    === [['algorithm' => 'none', 'idPattern' => '(?<site>[A-Z]{2})(?<num>[0-9]{4})']]);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

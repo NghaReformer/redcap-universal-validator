@@ -218,6 +218,28 @@ namespace INSPIRE\UniversalValidator\Scan {
         // Levels 2 and 3 can READ a form, so they do not bar it.
         check('start: read-only and edit-survey levels can read a form',
             ScanAuthorization::mayStart(rights(), ['fb', 'fc'])['ok'] === true);
+        // SEC-1: an allow-list. A value REDCap does not define bars the form,
+        // where "anything but 0" let it through.
+        foreach (['4', '', '01', ' 1', '1 ', '-1', 'x'] as $odd) {
+            check('start: a form level of ' . json_encode($odd) . ' bars the form (SEC-1)',
+                ScanAuthorization::mayStart(rights(['forms' => ['fa' => '1', 'fb' => $odd, 'fc' => '1']]), $ENT)['ok'] === false);
+        }
+        check('start: a level written as a whole number still reads',
+            ScanAuthorization::mayStart(rights(['forms' => ['fa' => 1, 'fb' => 2, 'fc' => 3]]), $ENT)['ok'] === true);
+        $PVr = '\INSPIRE\UniversalValidator\ScanPageView';
+        $reads = []; $edits = [];
+        foreach (['0', '1', '2', '3', '4', '', ' 1', '01', 2, true, null, 1.0, ['1']] as $lvl) {
+            $reads[] = $PVr::formLevelReads($lvl);
+            $edits[] = $PVr::formLevelEdits($lvl);
+        }
+        check('levels: only 1, 2 and 3 read a form (got ' . json_encode($reads) . ')',
+            $reads === [false, true, true, true, false, false, false, false, true, false, false, false, false]);
+        check('levels: only 1 and 3 change it (got ' . json_encode($edits) . ')',
+            $edits === [false, true, false, true, false, false, false, false, false, false, false, false, false]);
+        check('rights: an export level REDCap does not define allows no download (SEC-1)',
+            $PVr::mayExportFor(['data_export_tool' => '4']) === false && $PVr::mayExportFor(['data_export_tool' => ' 1']) === false
+            && $PVr::mayExportFor(['data_export_tool' => '0']) === false
+            && $PVr::mayExportFor(['data_export_tool' => '2']) === true && $PVr::mayExportFor(['data_export_tool' => '3']) === true);
 
         // A dependency whose owning form is unknown cannot be checked, so it is
         // refused rather than omitted from the entitlement set.

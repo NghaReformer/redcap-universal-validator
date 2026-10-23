@@ -677,5 +677,19 @@ function radioGroup(name, codes) {
     && /no limits to check/.test(cfgErr(env, 'weight').innerHTML));
 }
 
+// ---- 10) how the child was measured: the z-score of the corrected value (RNG-3) ---------
+{
+  // standing before day 5 adds 0.7: 11 kg scores as 11.7 (z 1.70); the bounds are the table's
+  const TP = Object.assign({}, T_DAYS, { position: { corrects: 'measurement', standing: { add: '0.7', below: '5' } } });
+  const els = form('1', '11').concat([el('measured', '2')]);
+  const env = boot(els, { growth: { 't-days': TP }, rules: [rule({ rangeMeasuredOp: ['ref', 'measured', null], rangeLying: '1', rangeStanding: '2' })] });
+  check('measured standing: z of the corrected value, the bounds of the table (got ' + asText(vals(els)) + ')',
+    same(vals(els), { wfa_z: '1.70', wfa_lo: '8.0', wfa_hi: '12.0', wfa_rng: '8.0 to 12.0 kg' }));
+  const how = by(els, 'measured');
+  how.value = '1'; how.fire('change');
+  check('measured lying: the value as typed, z 1.00 (got ' + asText(vals(els)) + ')',
+    same(vals(els), { wfa_z: '1.00', wfa_lo: '8.0', wfa_hi: '12.0', wfa_rng: '8.0 to 12.0 kg' }));
+}
+
 console.log('growth_return_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

@@ -132,6 +132,20 @@ for (const weird of [null, undefined, 7, 1.5, true, ['x'], {}, "[a]='1'"]) {
     r.ok === false && /limited to 500 characters/.test(r.error) && Date.now() - t0 < 500);
   check('trim: spaces only is the empty-condition error', W.parse('     ').error === 'must be a non-empty condition string.');
 }
+// AST-8: the operands are trimmed by index too. The regex trim retried its end
+// alternative from every space of an inner run: 80,000 spaces took 3.8 s.
+{
+  const ast = W.parse("[notes]<>'x'").ast;
+  const t0 = Date.now();
+  const v = W.evaluate(ast, { notes: 'a' + ' '.repeat(80000) + 'b' }, W.BLANK_PASSES, false);
+  check('trim: a value with 80,000 inner spaces is compared in well under a second', v === true && Date.now() - t0 < 250);
+  const eq = W.parse("[a]='x y'").ast;
+  check('trim: space, tab, CR and LF come off both ends, inner spaces stay',
+    W.evaluate(eq, { a: ' \t\r\nx y\n\r\t ' }, W.BLANK_PASSES, false) === true
+    && W.evaluate(eq, { a: 'x  y' }, W.BLANK_PASSES, false) === false);
+  check('trim: a no-break space is not trimmed, as in PHP', W.evaluate(eq, { a: ' x y' }, W.BLANK_PASSES, false) === false);
+  check('trim: only spaces reads as blank', W.evaluate(W.parse("[a]=''").ast, { a: ' \t\r\n ' }, W.BLANK_PASSES, false) === true);
+}
 
 console.log(`when_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

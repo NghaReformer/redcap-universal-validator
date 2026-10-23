@@ -393,6 +393,20 @@ const HB = { type: 'range', fields: ['hb'], rangeSoftLo: '12', rangeSoftHi: '17.
   check('conflict resolved: the one true branch holds', /allowed|plausible/.test(nMsg(env, 'hb').innerHTML) && save(env) === 'held');
 }
 
+{
+  // RNG-2: a "when" on a comma-decimal field reads 4,5 as 4.5 (config.numberMarks,
+  // AST-1). The guide's resp_rate recipe: the child range when [age_years]<5.
+  const age = numEl('age_years', '4,5');
+  const rr = numEl('resp_rate', '80');
+  const env = boot([age, rr], { numberMarks: { age_years: 'comma' }, rules: [{ type: 'range', fields: ['resp_rate'], branches: [
+    { when: '[age_years]<5', rangeSoftLo: '20', rangeSoftHi: '40', rangeSoftText: '20 to 40', rangeHardLo: '5', rangeHardHi: '100' },
+    { rangeSoftLo: '12', rangeSoftHi: '24', rangeSoftText: '12 to 24', rangeHardLo: '5', rangeHardHi: '70' } ] }] });
+  const msg = nMsg(env, 'resp_rate');
+  check('RNG-2: age 4,5 picks the child range (80 is unusual, not impossible)', /expected 20 to 40/.test(msg.innerHTML) && save(env) !== 'held');
+  age.value = '12,0'; age.fire('change');
+  check('RNG-2: age 12,0 takes the adult fallback (80 is past its hard limit)', save(env) === 'held');
+}
+
 // ---- 13) a soft-only rule still holds a value that is not a number -------------
 {
   const p = numEl('pain', 'abc');

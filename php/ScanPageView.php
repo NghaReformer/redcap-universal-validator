@@ -815,6 +815,38 @@ class ScanPageView
     }
 
     /**
+     * REDCap's per-instrument levels that let a person read a form: 1 view and
+     * edit, 2 read only, 3 edit survey responses (0 is no access). The levels
+     * that let a person change it: 1 and 3. The export levels that allow a
+     * download: 1 full data set, 2 de-identified, 3 remove identifiers.
+     *
+     * ALLOW-LISTS, NOT "ANYTHING BUT 0" (SEC-1). A value REDCap does not
+     * define (a blank, "4", "01", " 1", true) grants nothing, so a rights
+     * shape this module was not written for fails closed.
+     */
+    const FORM_READ_LEVELS = ['1', '2', '3'];
+    const FORM_EDIT_LEVELS = ['1', '3'];
+    const EXPORT_LEVELS = ['1', '2', '3'];
+
+    /** Whether one per-instrument rights value lets a person read the form. */
+    public static function formLevelReads($level)
+    {
+        return self::levelIn($level, self::FORM_READ_LEVELS);
+    }
+
+    /** Whether one per-instrument rights value lets a person change the form. */
+    public static function formLevelEdits($level)
+    {
+        return self::levelIn($level, self::FORM_EDIT_LEVELS);
+    }
+
+    /** A rights value REDCap writes as text (or a whole number) found in $levels, exactly. */
+    private static function levelIn($level, array $levels)
+    {
+        return (is_string($level) || is_int($level)) && in_array((string) $level, $levels, true);
+    }
+
+    /**
      * The reader's export level, under whichever key this build supplies it.
      *
      * ONE READER, THREE CALLERS, and that is the point. The export level decides
@@ -932,7 +964,6 @@ class ScanPageView
      */
     public static function mayExportFor($rights)
     {
-        $dx = self::exportLevel($rights);
-        return $dx !== null && (string) $dx !== '0';
+        return self::levelIn(self::exportLevel($rights), self::EXPORT_LEVELS);
     }
 }

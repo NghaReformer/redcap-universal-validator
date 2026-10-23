@@ -786,6 +786,9 @@ NASK, Not asked";
     fclose($fx);
     $m = mod($live, ['2' => [EVT => ['record_id' => '2', 'ugr_sex' => '1', 'ugr_dob' => '2025-01-10', 'ugr_visit' => '2026-01-10',
         'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]]);
+    // The person who saves the form may change it: the save writes returned
+    // values only into such a form (EXS-3).
+    \REDCap::$rights['nurse']['forms']['uv_growth_return'] = '1';
     $errs = [];
     foreach (rulesOf($m) as $r) $errs[$r['fields'][0]] = isset($r['configError']) ? (string) $r['configError'] : '';
     check('live fixture: the four good rules are taken (got ' . json_encode(array_intersect_key($errs,
@@ -988,6 +991,37 @@ NASK, Not asked";
     check('review: returnsRange with no catalog leaves the fields as they are (got ' . json_encode($got) . ')',
         is_array($got) && $got['values'] === null && strpos((string) $got['problem'], 'cannot be checked') !== false);
     GrowthOutputs::useFile(null);
+
+    // ---- 20) how the child was measured: the z-score of the corrected length (RNG-3) ----------------------------
+    // The review's girl: born 10 Jan 2025, measured standing on 2 Sep 2026 (600
+    // days) at 73.0 cm. The z-score and the percentile are those of 73.7 cm
+    // (WHO Anthro's -2.91); the bounds are the reference's at her age, whatever
+    // the position.
+    $LHD = dict(['len' => f('anthro_form', '@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2",'
+            . '"age":{"dob":"[dob]","at":"[visit_date]"},"measured":{"field":"[how]","lying":"1","standing":"2"},'
+            . '"soft":[-2,2],"hard":[-6,6],"return":{"z":"[len_z]","lower":"[len_lo]","upper":"[len_hi]","percentile":"[len_pct]"}}', 'number_1dp'),
+        'how' => f('anthro_form', '', '', 'radio', '1, Lying | 2, Standing'),
+        'len_z' => f('anthro_form'), 'len_lo' => f('anthro_form', '', 'number_1dp'), 'len_hi' => f('anthro_form', '', 'number_1dp'),
+        'len_pct' => f('anthro_form', '', 'number_1dp')], '');
+    $lhfa = GrowthReference::entry('who-lhfa', null);
+    $lhT = GrowthReference::table($lhfa);
+    $lhWant = function ($y) use ($lhfa, $lhT) {
+        $o = GrowthReference::outputs($lhfa, $lhT, 'female', 600.0, $y, ['lo' => '-2', 'hi' => '2'], 1, false);
+        return ['len_z' => (string) $o['z'], 'len_lo' => (string) $o['lower'], 'len_hi' => (string) $o['upper'],
+                'len_pct' => (string) GrowthReference::output($lhfa, $lhT, 'female', 600.0, $y, 'percentile', null, 1, null)];
+    };
+    $girl = row(['sex' => '2', 'visit_date' => '2026-09-02', 'weight' => '', 'len' => '73.0', 'how' => '2']);
+    $m = mod($LHD, ['2' => [EVT => $girl]]);
+    save($m);
+    $got = pick(store(), ['len_z', 'len_lo', 'len_hi', 'len_pct']);
+    check('measured: standing, the returned z-score and percentile are those of 73.7 cm (got ' . json_encode($got) . ')',
+        $got === $lhWant(73.0 + 0.7) && $got['len_z'] === '-2.91');
+    $m = mod($LHD, ['2' => [EVT => ['how' => '1'] + $girl]]);
+    save($m);
+    $lying = pick(store(), ['len_z', 'len_lo', 'len_hi', 'len_pct']);
+    check('measured: lying under 731 days, those of 73.0 cm as typed (got ' . json_encode($lying) . ')',
+        $lying === $lhWant(73.0) && $lying['len_z'] === '-3.14');
+    check('measured: the bounds do not move with the position', $lying['len_lo'] === $got['len_lo'] && $lying['len_hi'] === $got['len_hi']);
 
     echo "growth_return_module_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

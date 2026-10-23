@@ -321,7 +321,65 @@ const pending = [];
   check('7 a warn-only rule leaves dataEntrySubmit alone', env.win.dataEntrySubmit.__qridGuarded !== true);
 }
 
-// ---- 8) @UVWRITEONCE: the lock and a rule that reads another field ---------
+// ---- 8) survey saves that do not finish the response (REQ-7) ---------------
+// Previous Page and Save & Return Later save the page without finishing the
+// response. A blank @UVREQUIRED field (its mode waits for a complete
+// response, php/modes.json "surveySave") does not hold them; a value check
+// still does, because the value is saved either way. The server sends the
+// button names and the waiting types on a survey page only.
+{
+  const PARTIAL = { buttons: ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], types: ['required'] };
+  const surveyCfg = (extra) => Object.assign({ singleFields: [], pooledFields: [], context: 'survey', partialSave: PARTIAL,
+    rules: [{ type: 'required', fields: ['phone'], blockSave: 'hard' },
+            { type: 'single', fields: ['study_id'], algorithm: 'iso7064_mod37_36', blockSave: 'hard' }] }, extra || {});
+  const phoneInput = () => { const el = makeEl('input'); el.name = 'phone'; el.type = 'text'; return el; };
+
+  const phone = phoneInput(), id = idInput();
+  const env = boot([phone, id], surveyCfg());
+  id.value = validId(env.NS); id.fire('change');
+  phone.fire('change');
+  for (const nm of ['submit-btn-saveprevpage', 'submit-btn-savereturnlater']) {
+    const btn = saveButton(nm);
+    const ev = clickEv(btn);
+    env.doc.fire('click', ev);
+    check('8 ' + nm + ': a blank required field does not hold the click', ev._prevented === false);
+    const before = env.calls.length;
+    env.win.dataEntrySubmit(btn);
+    check('8 ' + nm + ': ...nor REDCap\'s dataEntrySubmit called with that button', env.calls.length === before + 1);
+    env.win.dataEntrySubmit({ jquery: '3.6.0', 0: btn, length: 1 });
+    check('8 ' + nm + ': ...nor a jQuery object holding it', env.calls.length === before + 2);
+  }
+  const subEv = clickEv(null); subEv.submitter = saveButton('submit-btn-savereturnlater');
+  env.doc.fire('submit', subEv);
+  check('8 a form submit from Save & Return Later is not held', subEv._prevented === false);
+  check('8 no alert so far', env.win._alerts.length === 0);
+  const next = clickEv(saveButton('submit-btn-saverecord'));
+  env.doc.fire('click', next);
+  check('8 Next / Submit is still held by the blank required field',
+    next._prevented === true && env.win._alerts.length === 1 && /phone/.test(env.win._alerts[0]));
+  // after the task: the pass a let-through click leaves for its own onclick has ended
+  pending.push(new Promise((resolve) => setTimeout(() => {
+    check('8 dataEntrySubmit with no button is a full save, held', env.win.dataEntrySubmit() === false);
+    resolve();
+  }, 5)));
+
+  id.value = '0ABC00001X'; id.fire('change');
+  const back = clickEv(saveButton('submit-btn-saveprevpage'));
+  env.doc.fire('click', back);
+  check('8 a wrong ID still holds Previous Page (the value is saved either way)',
+    back._prevented === true && /Participant Study ID/.test(env.win._alerts[env.win._alerts.length - 1])
+    && !/phone/.test(env.win._alerts[env.win._alerts.length - 1]));
+}
+{
+  // a data-entry form: no partialSave in the config, every save button holds
+  const phone = makeEl('input'); phone.name = 'phone'; phone.type = 'text';
+  const env = boot([phone], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['phone'], blockSave: 'hard' }] });
+  phone.fire('change');
+  const ev = clickEv(saveButton('submit-btn-saveprevpage'));
+  env.doc.fire('click', ev);
+  check('8 without partialSave in the config, the same button name holds as before', ev._prevented === true);
+}
+// ---- 9) @UVWRITEONCE: the lock and a rule that reads another field ---------
 function textField(name, value) { const el = makeEl('input'); el.name = name; el.type = 'text'; el.value = value; return el; }
 const WO = (fields) => ({ type: 'writeonce', fields });
 const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard',
@@ -329,14 +387,14 @@ const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[hei
 {
   const locked = textField('consent_date', '2026-03-01');
   const env = boot([locked], { rules: [WO(['consent_date'])] });
-  check('8 a write-once lock alone wraps dataEntrySubmit', env.bootError === null
+  check('9 a write-once lock alone wraps dataEntrySubmit', env.bootError === null
     && env.win.dataEntrySubmit.__qridGuarded === true);
-  check('8 the locked box is read-only', locked.readOnly === true);
+  check('9 the locked box is read-only', locked.readOnly === true);
   locked.value = '2026-04-01';                 // a script, no event
   const r = pressEnter(env, locked, saveButton('submit-btn-saverecord'));
-  check('8 Enter puts the saved value back and saves', r === 'redcap-result' && env.calls.length === 1
+  check('9 Enter puts the saved value back and saves', r === 'redcap-result' && env.calls.length === 1
     && locked.value === '2026-03-01');
-  check('8 no alert for a value put back', env.win._alerts.length === 0);
+  check('9 no alert for a value put back', env.win._alerts.length === 0);
 }
 // The values the other fields opened with are taken in a timer, after REDCap's start-up (review W4-2),
 // so each page is booted, left to start, and checked before the next one is booted, once the timers
@@ -351,18 +409,18 @@ for (const order of ['lock first', 'lock last']) {
   await new Promise((resolve) => setTimeout(resolve, 5));
   global.document = env.doc; global.window = env.win;
   {
-    check('8 ' + order + ': a violation saved before the page opened does not hold Enter',
+    check('9 ' + order + ': a violation saved before the page opened does not hold Enter',
       pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 1);
     height.value = '40';
     height.fire('change');
     const r = pressEnter(env, height, btn);
-    check('8 ' + order + ': Enter is held once the other field changed and still breaks the rule',
+    check('9 ' + order + ': Enter is held once the other field changed and still breaks the rule',
       r === false && env.calls.length === 1);
-    check('8 ' + order + ': the alert names the locked field',
+    check('9 ' + order + ': the alert names the locked field',
       env.win._alerts.length === 1 && /weight/.test(env.win._alerts[0]));
     height.value = '50';
     height.fire('change');
-    check('8 ' + order + ': the other field put back as it was lets Enter through again',
+    check('9 ' + order + ': the other field put back as it was lets Enter through again',
       pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 2);
   }
 }

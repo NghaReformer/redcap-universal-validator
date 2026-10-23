@@ -245,6 +245,13 @@ class AnnotationRules
      * 'condition' (the whole condition, for the tags whose bare value IS one —
      * see Logic::parsePrefix). A condition that goes on past the point where it
      * can be read gets an error instead of being cut short.
+     *
+     * A tag starts the annotation or follows whitespace, or the closing quote,
+     * brace or parenthesis of another tag's value; inside @IF(...) it may also
+     * follow "(" or ",". The name inside another action tag's quoted, {JSON}
+     * or (...) value is text of that value (valueSpans), so a message that
+     * names @UVREQUIRED, or @DEFAULT='see @UVALIDATE rules', makes no rule
+     * (VAL-7, AST-9, REQ-11).
      */
     public static function extractTagsDetailed($annotation, $tag, $bare = 'token')
     {
@@ -252,31 +259,64 @@ class AnnotationRules
         $len = strlen($ann);
         $out = [];
         $offset = 0;
+        $ifSpans = null;   // REDCap @IF(...) spans, read when the first tag is found (AST-6)
+        $valueSpans = null;
         while ($offset < $len) {
             $pos = stripos($ann, $tag, $offset);
+            $inIf = null;
             while ($pos !== false) {
                 $after = $pos + strlen($tag);
                 $ch = $after < $len ? $ann[$after] : '';
+                // A tag inside REDCap's @IF(...) is refused (AST-6): the module
+                // does not read @IF, so the rule would apply whatever the
+                // condition says. There a bare tag may also end at "," or ")".
+                if ($ifSpans === null) { $ifSpans = self::ifSpans($ann); $valueSpans = self::valueSpans($ann); }
+                $inIf = null;
+                foreach ($ifSpans as $sp) {
+                    if ($pos > $sp[0] && $pos < $sp[1]) { $inIf = self::IF_ERROR; break; }
+                }
+                $before = $pos > 0 ? $ann[$pos - 1] : '';
+                $starts = $before === '' || ctype_space($before) || strpos('\'"})', $before) !== false
+                    || ($inIf !== null && ($before === '(' || $before === ','));
+                foreach ($valueSpans as $sp) {
+                    if ($pos > $sp[0] && $pos < $sp[1]) { $starts = false; break; }
+                }
                 // a real tag ends at '=', whitespace, or end-of-string;
                 // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
-                if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
+                if ($starts && ($ch === '' || $ch === '=' || ctype_space($ch))) break;
+                if ($starts && $inIf !== null && ($ch === ',' || $ch === ')')) break;
                 $pos = stripos($ann, $tag, $after);
             }
             if ($pos === false) break;
             $after = $pos + strlen($tag);
-            if ($after >= $len || $ann[$after] !== '=') {
-                $out[] = ['value' => '', 'error' => null];
+            // Spaces or tabs may stand before "=", and any whitespace (a line
+            // break before a long JSON value) after it (VAL-2). Read as a bare
+            // tag, "@UVALIDATE = {...}" lost every setting without a word.
+            $eq = $after;
+            while ($eq < $len && ($ann[$eq] === ' ' || $ann[$eq] === "\t")) $eq++;
+            if ($eq >= $len || $ann[$eq] !== '=') {
+                $out[] = ['value' => '', 'error' => $inIf];
                 $offset = $after;
                 continue;
             }
-            $read = self::readValue(substr($ann, $after + 1), $bare);
+            $start = $eq + 1;
+            while ($start < $len && strpos(" \t\r\n", $ann[$start]) !== false) $start++;
+            // "=" with nothing after it, or only the next tag: an empty value,
+            // which each tag's parser judges as it always has
+            if ($start >= $len || $ann[$start] === '@') {
+                $out[] = ['value' => '', 'error' => $inIf];
+                $offset = $start;
+                continue;
+            }
+            $after = $start - 1;
+            $read = self::readValue(substr($ann, $start), $bare);
             $eg = $tag . '="[a]=\'1\' and [b]=\'2\'".';
-            $out[] = ['value' => $read['value'], 'error' => !$read['continues'] ? null
+            $out[] = ['value' => $read['value'], 'error' => $inIf !== null ? $inIf : (!$read['continues'] ? null
                 : (isset($read['hint'])
                     ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
                         . ' Then put the whole condition in quotes, e.g. ' . $eg
                     : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                        . $eg)];
+                        . $eg))];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -285,8 +325,111 @@ class AnnotationRules
         return $out;
     }
 
+    /** Why a module tag inside REDCap's @IF(...) is refused (AST-6). */
+    const IF_ERROR = 'sits inside @IF(...). The module does not read @IF, so the rule would apply whatever the '
+        . 'condition says. Move the tag out of @IF and put the condition in the rule\'s "when" instead.';
+
+    /**
+     * The spans of REDCap's @IF(...) action tags in an annotation, as
+     * [start, end) byte pairs: from "@IF" to its closing parenthesis, with
+     * parentheses inside quoted text skipped (a backslash escapes the next
+     * character there, as in a JSON value). An @IF that is never closed runs
+     * to the end of the annotation.
+     */
+    private static function ifSpans($ann)
+    {
+        $spans = [];
+        $len = strlen($ann);
+        $offset = 0;
+        while ($offset < $len && ($p = stripos($ann, '@IF', $offset)) !== false) {
+            $i = $p + 3;
+            while ($i < $len && ($ann[$i] === ' ' || $ann[$i] === "\t")) $i++;
+            if ($i >= $len || $ann[$i] !== '(') { $offset = $p + 3; continue; }
+            $depth = 0;
+            $quote = null;
+            for (; $i < $len; $i++) {
+                $c = $ann[$i];
+                if ($quote !== null) {
+                    if ($c === '\\') $i++;
+                    elseif ($c === $quote) $quote = null;
+                    continue;
+                }
+                if ($c === '"' || $c === "'") $quote = $c;
+                elseif ($c === '(') $depth++;
+                elseif ($c === ')' && --$depth === 0) break;
+            }
+            $spans[] = [$p, min($i + 1, $len)];
+            $offset = $i + 1;
+        }
+        return $spans;
+    }
+
+    /**
+     * The values of action tags in an annotation, as [start, end) byte pairs:
+     * from the "@" of a tag to the end of its quoted, {JSON} or (...) value,
+     * read as readValue reads a module tag's value (a quoted value ends at the
+     * next quote of its kind; a JSON value is brace-balanced, with strings
+     * skipped). REDCap's own tags count too: @DEFAULT='...', @CALCTEXT(...).
+     * @IF(...) is left to ifSpans, which refuses a module tag inside it. A
+     * value that never closes has no span, so it hides no tag after it.
+     */
+    private static function valueSpans($ann)
+    {
+        $spans = [];
+        $len = strlen($ann);
+        $i = 0;
+        while ($i < $len && ($p = strpos($ann, '@', $i)) !== false) {
+            $j = $p + 1;
+            if ($j >= $len || !ctype_alpha($ann[$j])) { $i = $j; continue; }
+            while ($j < $len && (ctype_alnum($ann[$j]) || $ann[$j] === '_' || $ann[$j] === '-')) $j++;
+            if (strcasecmp(substr($ann, $p + 1, $j - $p - 1), 'IF') === 0) { $i = $j; continue; }
+            $k = $j;
+            while ($k < $len && ($ann[$k] === ' ' || $ann[$k] === "\t")) $k++;
+            if ($k < $len && $ann[$k] === '=') {
+                $k++;
+                while ($k < $len && strpos(" \t\r\n", $ann[$k]) !== false) $k++;
+            } elseif ($k >= $len || $ann[$k] !== '(') {
+                $i = $j;
+                continue;
+            }
+            $end = $k < $len ? self::valueEnd($ann, $k) : null;
+            if ($end === null) { $i = $j; continue; }
+            $spans[] = [$p, $end];
+            $i = $end;
+        }
+        return $spans;
+    }
+
+    /** Where the quoted, {JSON} or (...) value at $k ends (exclusive), or null when it is none of those or never closes. */
+    private static function valueEnd($ann, $k)
+    {
+        $len = strlen($ann);
+        $c = $ann[$k];
+        if ($c === '"' || $c === "'") {
+            $e = strpos($ann, $c, $k + 1);
+            return $e === false ? null : $e + 1;
+        }
+        if ($c !== '{' && $c !== '(') return null;
+        $close = $c === '{' ? '}' : ')';
+        $depth = 0;
+        $quote = null;
+        for ($i = $k; $i < $len; $i++) {
+            $ch = $ann[$i];
+            if ($quote !== null) {
+                if ($ch === '\\') $i++;
+                elseif ($ch === $quote) $quote = null;
+                continue;
+            }
+            if ($ch === '"' || ($c === '(' && $ch === "'")) $quote = $ch;
+            elseif ($ch === $c) $depth++;
+            elseif ($ch === $close && --$depth === 0) return $i + 1;
+        }
+        return null;
+    }
+
     /**
      * Read one tag value: {json} (brace-balanced), quoted text, or a bare
+
      * value — one token, or with $bare 'condition' the longest condition.
      * Returns ['value', 'length' => bytes consumed, 'continues' => bool], plus
      * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!".
@@ -354,12 +497,15 @@ class AnnotationRules
      */
     public static function parseFieldAll($annotation, array $opts = [])
     {
-        $tags = self::extractTags($annotation);
+        $tags = self::extractTagsDetailed($annotation, self::TAG);
         if (!$tags) return null;
         $out = [];
-        foreach ($tags as $val) $out[] = self::parseValue($val, $opts);
+        foreach ($tags as $read) {
+            $out[] = $read['error'] !== null ? ['error' => self::TAG . ' ' . $read['error']] : self::parseValue($read['value'], $opts);
+        }
         return $out;
     }
+
 
     /**
      * Parse EVERY module tag on one field's annotation, across all modes
@@ -372,9 +518,12 @@ class AnnotationRules
      */
     public static function parseAllTags($annotation, array $opts = [])
     {
+        $annotation = (string) $annotation;
         $any = false;
         $out = [];
         foreach (ModeRegistry::tagMap() as $tag => $mode) {
+            // Most fields hold one tag: the others need no scan (PRF-3).
+            if (stripos($annotation, $tag) === false) continue;
             $parser = ModeRegistry::mode($mode)['parser'];
             foreach (self::extractTagsDetailed($annotation, $tag, ModeRegistry::bareValue($mode)) as $read) {
                 $any = true;
@@ -921,7 +1070,8 @@ class AnnotationRules
      *             "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-6,5]}
      * "sex", "age" (one of {"dob","at"}, {"days"} or {"months"}) and "by" become
      * the operand keys rangeSex, rangeAgeDob/rangeAgeAt, rangeAgeDays,
-     * rangeAgeMonths and rangeBy; checkGrowth refuses a wrong combination.
+     * rangeAgeMonths, rangeBy and rangeMeasured (with rangeLying and
+     * rangeStanding); checkGrowth refuses a wrong combination.
      *
      * "return" writes values worked out from the reference to Text fields of
      * the same form, and the rule then needs no limits when none of the values
@@ -959,7 +1109,7 @@ class AnnotationRules
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
         $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive',
-                    'reference', 'sex', 'male', 'female', 'age', 'by', 'plausible', 'measureScale',
+                    'reference', 'sex', 'male', 'female', 'age', 'by', 'measured', 'plausible', 'measureScale',
                     'return', 'returnLimits', 'decimals', 'percentileDecimals', 'show'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
@@ -1040,6 +1190,27 @@ class AnnotationRules
             foreach ($a as $k => $v) {
                 if (!is_string($v)) return ['error' => '"age" "' . $k . '" must be one field reference, such as "[' . ($k === 'at' ? 'visit_date' : $k) . ']".'];
                 $out['rangeAge' . ucfirst($k)] = $v;
+            }
+        }
+        // How the child was measured, for WHO's 0.7 cm correction between a
+        // length (lying) and a height (standing): the field and its two codes.
+        if (array_key_exists('measured', $cfg)) {
+            $ms = $cfg['measured'];
+            $keys = is_array($ms) ? array_keys($ms) : [];
+            sort($keys);
+            if ($keys !== ['field', 'lying', 'standing']) {
+                return ['error' => '"measured" must be {"field":"[measured]","lying":"1","standing":"2"}: the field that says '
+                    . 'how the child was measured, and the code it stores for each way.'];
+            }
+            if (!is_string($ms['field'])) return ['error' => '"measured" "field" must be one field reference, such as "[measured]".'];
+            $out['rangeMeasured'] = $ms['field'];
+            foreach (['lying' => 'rangeLying', 'standing' => 'rangeStanding'] as $k => $key) {
+                $v = is_int($ms[$k]) ? (string) $ms[$k] : $ms[$k];
+                if (!is_string($v) || trim($v) === '') {
+                    return ['error' => '"measured" "' . $k . '" must be the code the field stores for a child measured ' . $k
+                        . ', such as "' . ($k === 'lying' ? '1' : '2') . '".'];
+                }
+                $out[$key] = trim($v);
             }
         }
         // Values worked out from the reference, written to Text fields of the
@@ -1969,6 +2140,12 @@ class AnnotationRules
             return ['error' => 'unknown ' . self::TAG . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', self::JSON_KEYS) . '.'];
         }
+        // An @UVALIDATE tag is an ID check. "type":"required" or "unique" made
+        // a rule of another tag under this one (VAL-9).
+        if (isset($cfg['type']) && is_string($cfg['type']) && $cfg['type'] !== ''
+                && !in_array($cfg['type'], ModeRegistry::types('check'), true)) {
+            return ['error' => '"type" must be "single" or "pooled".'];
+        }
         return self::validateConfig($cfg, $opts);
     }
 
@@ -2442,12 +2619,19 @@ class AnnotationRules
             } else {
                 $min = isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8;
                 $max = isset($frag['idMaxLen']) && self::posInt($frag['idMaxLen']) ? (int) $frag['idMaxLen'] : 14;
+                // The parser tries no length shorter than the check character
+                // plus one, so a range below that leaves no length to try (VAL-8).
+                $least = CheckCharacter::nCheckChars($algo) + 1;
                 if ($max < $min) {
                     $errors[] = 'the maximum ID length (' . $max . ') is smaller than the minimum (' . $min . ').';
                 } elseif ($max >= 2 * $min) {
                     $errors[] = 'the maximum ID length (' . $max . ') must be LESS than 2 x the minimum ('
                         . (2 * $min) . ') so one "member" can never swallow two real ones. Narrow the '
                         . 'range, or set exact ID length(s) instead.';
+                } elseif ($max < $least) {
+                    $errors[] = 'no ID length is left to try: an ID here is at most ' . $max . ' character'
+                        . ($max === 1 ? '' : 's') . ' long, and the ' . $algo . ' check takes ' . ($least - 1)
+                        . ' of them, so an ID needs at least ' . $least . '.';
                 }
             }
         }
@@ -3366,11 +3550,12 @@ class AnnotationRules
     {
         $errors = [];
         $inputs = ['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
-                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'];
+                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"',
+                   'rangeMeasured' => '"measured" "field"'];
         if (!array_key_exists('rangeReference', $frag)) {
-            foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale']) as $k) {
+            foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale', 'rangeLying', 'rangeStanding']) as $k) {
                 if (array_key_exists($k, $frag)) {
-                    return ['"sex", "male", "female", "age" and "by" only apply with a "reference", such as "reference":"who-wfa".'];
+                    return ['"sex", "male", "female", "age", "by" and "measured" only apply with a "reference", such as "reference":"who-wfa".'];
                 }
             }
             foreach (['rangePlausibleLo', 'rangePlausibleHi', 'rangeMeasureScale'] as $k) {
@@ -3422,6 +3607,18 @@ class AnnotationRules
                 // sex codes are matched with letter case ignored (GrowthReference::sexOf)
                 $errors[] = '"male" "' . $frag['rangeMale'] . '" and "female" "' . $frag['rangeFemale'] . '" differ only in letter case, '
                     . 'which this rule ignores. Add "caseSensitive": true to tell them apart.';
+            }
+        }
+        // the codes of "measured", matched as the sex codes are
+        $measured = array_key_exists('rangeMeasured', $frag);
+        if ($measured !== (array_key_exists('rangeLying', $frag) && array_key_exists('rangeStanding', $frag))) {
+            $errors[] = '"measured" needs "field", "lying" and "standing" together.';
+        } elseif ($measured && is_string($frag['rangeLying']) && is_string($frag['rangeStanding'])) {
+            if ($frag['rangeLying'] === $frag['rangeStanding']) {
+                $errors[] = '"measured" "lying" and "standing" are the same code ("' . $frag['rangeLying'] . '").';
+            } elseif (empty($frag['caseSensitive']) && Logic::foldAscii($frag['rangeLying']) === Logic::foldAscii($frag['rangeStanding'])) {
+                $errors[] = '"measured" "lying" "' . $frag['rangeLying'] . '" and "standing" "' . $frag['rangeStanding'] . '" differ only '
+                    . 'in letter case, which this rule ignores. Add "caseSensitive": true to tell them apart.';
             }
         }
         $age = array_key_exists('rangeAgeDob', $frag) || array_key_exists('rangeAgeAt', $frag)
@@ -3562,7 +3759,7 @@ class AnnotationRules
     private static function growthExample($key)
     {
         $ex = ['rangeSex' => 'sex', 'rangeAgeDob' => 'dob', 'rangeAgeAt' => 'visit_date', 'rangeAgeDays' => 'age_days',
-               'rangeAgeMonths' => 'age_months', 'rangeBy' => 'height_cm'];
+               'rangeAgeMonths' => 'age_months', 'rangeBy' => 'height_cm', 'rangeMeasured' => 'measured'];
         return $ex[$key];
     }
 

@@ -534,14 +534,18 @@ namespace {
         && ($ws['w_past'] ?? null) === '2026-10-01' && ($ws['w_month'] ?? null) === '2026-09-15' && array_key_exists('w_now', $ws));
     check('windowSaved: a window counted from a field or a written date is not listed',
         !array_key_exists('w_lit', $ws ?? []) && !array_key_exists('w_of_field', $ws ?? []) && !array_key_exists('visit_date_2', $ws ?? []));
-    check('windowSaved: notFuture alone is not listed', !array_key_exists('collected', $ws ?? []));
+    // WIN-2: notFuture is judged against the save day by the audit, so the
+    // page needs the saved value to tell an unchanged value from a new one.
+    check('windowSaved: notFuture alone is listed too (WIN-2)', ($ws['collected'] ?? null) === '2026-10-10');
     $pu = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '9', 'visit_form');
     check('windowSaved: a saved value that could not be read is null, so nothing is judged against today',
         is_array($pu['cfg']['windowSaved'] ?? null) && array_key_exists('w_today', $pu['cfg']['windowSaved']) && $pu['cfg']['windowSaved']['w_today'] === null);
     $pn = page(mod($P9, $D9, $FULL, 'nurse'), 'form', null, 'visit_form');
     check('windowSaved: a record not saved yet sends an empty object', strpos($pn['raw'] ?? $pn['html'], '"windowSaved":{}') !== false);
-    $pw = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form');
-    check('windowSaved: no today-relative rule, no windowSaved', is_array($pw['cfg']) && !array_key_exists('windowSaved', $pw['cfg']));
+    $pw = page(mod(array_intersect_key($DICT, array_flip(['record_id', 'visit_date_bl', 'visit_date_2', 'v_start', 'v_end'])), $DATA, $FULL, 'nurse'),
+        'form', '2', 'visit_form');
+    check('windowSaved: no today-relative rule, no windowSaved', is_array($pw['cfg']) && !empty($pw['cfg']['rules'])
+        && !array_key_exists('windowSaved', $pw['cfg']));
 
     // Time zones: notPast reads as in the past where the filling zone runs behind.
     $Z9 = $P9;
@@ -714,6 +718,51 @@ namespace {
     check('report wording: past', $MC::explain(['type' => 'window', 'reason' => 'past', 'rule' => 1], $dims->rule(1))
         === ['text' => 'The date is in the past.', 'source' => 'catalog']);
     check('report issue label: past', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('window', 'past') === 'Date in the past');
+
+    // ---- WIN-1: "notPast" alone keeps the rule live when the "from" date cannot be read
+    // A window counted from a date on a repeating lab form: "ambiguous" on the visit form.
+    $RF = ['nurse' => ['forms' => ['baseline_form' => '1', 'visit_form' => '1', 'lab_form' => '1']]];
+    $WD = $DICT + [
+        'lab_date' => f('lab_form', '', 'date_ymd'),
+        'np_rep'   => f('visit_form', '@UVWINDOW={"from":"[lab_date]","window":[0,7],"notPast":true,"blockSave":"hard"}', 'date_ymd'),
+        'np_none'  => f('visit_form', '@UVWINDOW={"from":"[lab_date]","window":[0,7],"blockSave":"hard"}', 'date_ymd'),
+        'np_x'     => f('visit_form', '@UVWINDOW={"from":"[lab_date][3]","window":[0,7],"notPast":true,"blockSave":"hard"}', 'date_ymd'),
+    ];
+    $WDATA = ['2' => [
+        351 => $DATA['2'][351] + ['np_rep' => '2026-10-01', 'np_none' => '2026-10-01', 'np_x' => '2026-10-01'],
+        'repeat_instances' => [351 => ['lab_form' => [1 => ['lab_date' => '2026-09-28'], 2 => ['lab_date' => '2026-10-02']]]],
+    ]];
+    $p = page(mod($WD, $WDATA, $RF, 'nurse'), 'form', '2', 'visit_form');
+    $r = ruleFor($p, 'np_rep');
+    check('WIN-1: with notPast alone only the "from" date is withheld, and the rule stays live (got ' . json_encode($r) . ')',
+        $r && ($r['windowFromOp'] ?? null) === ['withheld'] && empty($r['deferred']) && !empty($r['windowFromOpWhy']));
+    $r = ruleFor($p, 'np_none');
+    check('WIN-1: a window with neither notPast nor notFuture is still deferred whole', $r && !empty($r['deferred']));
+    // notPast is judged against the day the value was saved, read from the log.
+    $WLOG = [['20261009143000', "np_rep = '2026-10-01',\nnp_x = '2026-10-01'", 'redcap_data', 'UPDATE']];
+    $m = $stamps(mod($WD, $WDATA, $RF, 'nurse'), $WLOG);
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    $by = []; foreach (findings($m) as $e) $by[$e['field']] = $e;
+    check('WIN-1: the audit logs the past date, as the page now says it does', isset($by['np_rep']) && $by['np_rep']['reason'] === 'past');
+    // The extended path: an instance that does not exist cannot be read either.
+    $mx = mod($WD, $WDATA, $RF, 'nurse');
+    $mx->projectSettings['enable-event-instance-refs'] = true;
+    $r = ruleFor(page($mx, 'form', '2', 'visit_form'), 'np_x');
+    check('WIN-1 extended: the "from" date is withheld, the rule stays live (got ' . json_encode($r) . ')',
+        $r && ($r['windowFromOp'] ?? null) === ['withheld'] && empty($r['deferred']));
+    $mx = $stamps(mod($WD, $WDATA, $RF, 'nurse'), $WLOG);
+    $mx->projectSettings['enable-event-instance-refs'] = true;
+    $mx->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    $by = []; foreach (findings($mx) as $e) $by[$e['field']] = $e;
+    $notChecked = array_filter(findings($mx, 'uvalidate-unconfigurable'), function ($u) {
+        return in_array('np_x', (array) ($u['fields'] ?? []), true) || strpos(json_encode($u), 'np_x') !== false;
+    });
+    check('WIN-1 extended: the audit judges notPast instead of calling the rule unavailable',
+        isset($by['np_x']) && $by['np_x']['reason'] === 'past' && !$notChecked);
+    check('WIN-1: the registry withholds for either key, and for neither does not',
+        \INSPIRE\UniversalValidator\ModeRegistry::withholds(['withholdIf' => ['windowNotFuture', 'windowNotPast']], ['windowNotPast' => true])
+        && !\INSPIRE\UniversalValidator\ModeRegistry::withholds(['withholdIf' => ['windowNotFuture', 'windowNotPast']], ['windowLo' => 0])
+        && \INSPIRE\UniversalValidator\ModeRegistry::withholds(['withholdIf' => 'windowNotFuture'], ['windowNotFuture' => true]));
 
     fwrite(STDOUT, "window_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);

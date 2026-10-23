@@ -213,7 +213,9 @@ logic**:
 | `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
 | `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes, unless extended references are on |
 | `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (write `and`, `or`, `not`) |
+| dates as `'2026-03-01'`, times as `'08:30'`, numbers with a decimal point | a date, time or number written another way (`'01-01-2000'`, `'12,5'`), and two compared fields of different kinds (a date and a datetime) |
 | | arithmetic and piping |
+| | a module tag inside REDCap's `@IF(...)`: the module does not read `@IF`, so put the condition in `when` |
 
 One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`,
 then `or`, as in REDCap; parentheses change the grouping. An unquoted
@@ -438,8 +440,11 @@ the two things it lacks: a **condition** and a **real block**:
 @UVREQUIRED={"when":"[consent]='1'","message":"Phone needed for consented participants","blockSave":"hard"}
 ```
 
-- A blank (or whitespace-only) field shows the notice while the requirement is
-  in force; the requirement turns on and off **live** as referenced fields
+- A blank field shows the notice while the requirement is in force. Blank
+  means empty or holding only spaces, tabs, line breaks, no-break spaces, other
+  Unicode spaces (U+2000 to U+200A, U+3000) or invisible characters (a
+  zero-width space, a byte-order mark): the page, the audit and the scan use
+  one test, pinned by `tests/blank_fixture.json`. The requirement turns on and off **live** as referenced fields
   change. Filling the field clears the notice — deliberately no green "OK",
   because required mode never judges the *value*. Pair it with `@UVALIDATE`
   or `@UVASSERT` for that (modes compose, each with its own save-block state:
@@ -463,6 +468,15 @@ the two things it lacks: a **condition** and a **real block**:
 - The server audit logs a blank-while-required save as `type: required`,
   `reason: required-blank` (a blank carries nothing identifying, so this entry
   is safe in every privacy mode).
+- **A survey response is judged once it is complete.** REDCap saves each page
+  a respondent leaves, so the audit does not log a page not reached yet, or a
+  field left for Save & Return Later: on a survey save it judges `@UVREQUIRED`
+  only when the instrument's status is Complete. The scan still lists blank
+  fields of open responses. On the page, Previous Page and Save & Return Later
+  are not held by a blank required field, as with REDCap's own required flag;
+  a value check (`@UVALIDATE`, `@UVASSERT`, ...) still holds them, because the
+  page's values are saved either way. The button names and the modes that wait
+  are listed in `php/modes.json` (`partialSaveButtons`, `"surveySave"`).
 
 ## No duplicates across records — the `@UVUNIQUE` tag
 
@@ -525,6 +539,20 @@ enforcement:
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
+- **A new record is compared with every saved one.** On a new-record page with
+  auto-numbering, the record id is REDCap's guess until the save. When another
+  user saves a record under that id first, REDCap saves this page under the
+  next id, so the page check compares the value with that record too. Up to
+  2.3.0-rc.2 the page check skipped it as "this record" and said *not used
+  before*.
+- **What the check reads.** The page check and the save audit read the tagged
+  field's rows (and the `also` fields' rows) from the project's data table, then
+  build only the records that hold the value. A value no other record holds
+  needs no further read. Up to 2.3.0-rc.2 every *not used before* answer and
+  every save exported those fields for every record, about 115 MB at 100,000
+  records. Where the data table cannot be read, the module falls back to that
+  export. On a survey page, a value another record holds is still settled by a
+  filtered read first, which costs nothing from the survey's read budget.
 - **What counts as the same value.** Stored values, trimmed, with letter case
   ignored (`SP-1` duplicates `sp-1`) unless the rule sets `"caseSensitive":true`.
   In a field that holds numbers (an integer or number Text field, or a slider)
@@ -541,7 +569,10 @@ enforcement:
   a warning to be read. The same refusal applies when a `with` or `also` field
   is an Identifier, and with `also` every `also` field must sit on the tagged
   field's own instrument, so a respondent is only told about fields of the
-  survey they are filling in. Reasonable use: a non-identifying response token, to
+  survey they are filling in. The tagged field itself must be on that survey
+  too: up to 2.3.0-rc.2, anyone with the link to one survey could ask about an
+  opted-in field of another instrument, such as the token of an
+  invitation-only survey. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
 - **Asked on change, not per keystroke.** The page asks when the value is
@@ -549,17 +580,22 @@ enforcement:
   again first. Typing clears the previous answer. The answer is *not used
   before* (green), *already recorded* (red, enforced per `blockSave`) or *could
   not check* (amber, staff forms only).
-- **The race is audited, not denied.** Two near-simultaneous saves can both
-  pass the live check; the post-save audit re-checks the saved value against
-  every other record and logs a collision (`type: unique`,
-  `reason: duplicate-value`) — review the module log for races. A failed check
+- **The live check is advisory, and the race is audited.** An answer is as old
+  as the check that gave it. Save asks again about any answer 30 seconds old or
+  more, *already recorded* or *not used before*, and holds the save until the
+  server answers. Up to 2.3.0-rc.2 Save never asked again about *not used
+  before*, so a value another record saved while the page stayed open passed at
+  Save. Two saves within 30 seconds of their last checks can still both pass;
+  the post-save audit re-checks the saved value against every other record and
+  logs a collision (`type: unique`, `reason: duplicate-value`), so review the
+  module log for races. A failed check
   fails **open** with *could not check* and its reason, so a network error on a
   first check never traps a save. The exception is the lookup limit (60 lookups
   a minute per session, shared with `@UVEXISTS`): a rule that can block holds the
   save until the server answers again, which takes at most a minute, and Save
-  asks again. When Save asks again about an "already used" the page has held
-  for 30 seconds or more and gets no answer, that earlier answer stands and is
-  enforced. Surveys never show *could not check* and are never held: there a
+  asks again. When Save asks again and gets no answer, the earlier answer
+  stands: an *already recorded* is enforced, and a *not used before* lets the
+  save through. Surveys never show *could not check* and are never held: there a
   failed check simply lets the save through, and the audit is the net.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
@@ -645,7 +681,9 @@ that it is not after today or not before it:
 - **Judged on the day it was saved.** A part counted from today or now, a period
   without `from`, and `notPast` are judged on the form only for a new or changed
   value, and after saving against the day REDCap's log shows the value was
-  saved; a value the log does not show is reported as not checked. Use them for
+  saved; a value the log does not show is reported as not checked. `notFuture`
+  uses the save day after saving too; on the form it still flags a saved date
+  after today, and a saved date that passes shows no "OK". Use them for
   timeliness; count clinical windows from a date in the record.
 - **Date fields only:** Text fields with date, datetime or datetime-with-seconds
   validation, in any display format. The `from` field must be the same kind of
@@ -705,8 +743,18 @@ the specimen ID on the collection form.
   datetimes to the minute, both datetimes to the second, both times of the same
   precision, or neither a date nor a time. Two number fields must use the same
   decimal mark. Dropdown and radio values are compared by code.
-  `@UVEXISTS=record` never finds the record being edited, and a record ID typed
-  in another case is found after one read of every record ID.
+  `@UVEXISTS=record` never finds the record being edited.
+- **Reads only the records that hold the value.** The module asks the project's
+  data table which records hold the value searched (in any spelling the rule
+  accepts), then reads those records through REDCap and judges them. A *not
+  found* reads no record. When the data table cannot be read, the lookup reads
+  the searched fields of every record instead, as before.
+- **`in` on this form.** When the searched field is on the tagged field's own
+  form, the page sends what that field holds now, and the record being edited
+  counts with that value, as it will once saved: a household head who types
+  the same ID in both fields is *found*. A rule with `match`, `where`,
+  `return` or `event` answers *could not check* when only the record being
+  edited holds the value, and the post-save audit decides.
 - **Asked on change, not per keystroke.** The page asks the server when the value
   is entered or changed, and once when the form opens. Typing clears the
   previous answer, typing in a text field a `when` condition reads included.
@@ -738,10 +786,14 @@ the specimen ID on the collection form.
   was found in; staff in a group see it only when it is in their group. A
   record-ID lookup never names a record.
 - **Data Access Groups.** REDCap may confine a group user's reads to their own
-  group. A *not found* from a rule that looks across groups is therefore kept
-  only when the module sees records of other groups in the same request;
-  otherwise the answer is *could not check*, and the post-save audit reports a
-  rule problem instead of a violation.
+  group, but not the module's read of the data table. A value saved nowhere is
+  therefore *not found* for a user in a group too, and the post-save audit
+  logs it as a violation. A value saved only in another group is *found*,
+  without naming the record. A rule with `match`, `where` or `return` cannot
+  judge a record REDCap does not let the user read, and answers *could not
+  check* there. When the data table cannot be read, a *not found* from a rule
+  that looks across groups is kept only when the module sees records of other
+  groups in the same request; otherwise the answer is *could not check*.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
   check on surveys, answered as found / not found only, under the survey
   throttle. It is refused when any field the lookup touches is an Identifier
@@ -750,12 +802,18 @@ the specimen ID on the collection form.
   be read. A *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
-  check*, which a survey shows as nothing.
+  check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
+  and `@UVEXISTS` together, also counts in the survey throttle: 30 a minute per
+  browser session, and per project 600 a minute for callers with no session or
+  a session less than a minute old, and 6,000 for older sessions. Up to
+  2.3.0-rc.2 a caller who dropped the session cookie on every request was
+  counted in the 6,000.
 - **Audited.** The post-save audit logs `type: exists`, reason `not-found`
   (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The
   Validation scan reads the searched field once per rule per scan request and
-  checks every record against it. A lookup that cannot be completed is reported
+  checks every record against it; a rule with no `match` and no `where` is
+  read from the data table in one statement, with no export of the records. A lookup that cannot be completed is reported
   as a rule problem, never as a pass. A scan confined to one Data Access Group
   does not evaluate a rule that looks across groups (`scope` other than `dag`)
   and says so. A durable scan with `@UVEXISTS` rules claims coverage through its
@@ -792,7 +850,13 @@ the specimen ID on the collection form.
   fields for a user who may open every form the lookup reads, and the
   post-save audit, checking the same rights, writes the values that differ as
   the person who saved (the project setting "@UVEXISTS returned values" turns
-  that write off; a survey respondent's save writes nothing). The setup is
+  that write off; a survey respondent's save writes nothing). It writes only
+  into a form that person may change ("View & Edit" or "Edit survey
+  responses"): saving the form of a `match` field with read-only rights to the
+  form the rule fills leaves its fields, and a rule problem says why. On a
+  locked form, a locked record, or a form the user may only read, the page
+  fills nothing; when the entry found now holds other values, an amber line
+  says so. The setup is
   checked when the rule is saved: copied fields hold one value on the form of
   `in` or a form that does not repeat (in every event the entry can be found
   in), each field here can hold what the field there holds (choice codes, kind
@@ -886,7 +950,11 @@ slip:
   reference check nothing; staff see why, and the post-save audit logs it as
   not evaluated. `"plausible":[0.5,30]` judges the value in the reference's
   unit when there is no z-score, and `"measureScale":0.001` reads grams
-  against a reference in kg. Sex codes match without regard to letter case
+  against a reference in kg.
+  `"measured":{"field":"[measured]","lying":"1","standing":"2"}` makes
+  WHO's 0.7 cm correction for a length measured standing or a height
+  measured lying, on length/height-for-age, weight-for-length and
+  weight-for-height, as WHO's software does. Sex codes match without regard to letter case
   unless `caseSensitive` is true. A limit the reference can never pass
   (some rows give no z-score beyond a point: a CDC-style BMI row with L -2 and
   S 0.13 gives none above 3.85) is a configuration error that says which value
@@ -926,7 +994,9 @@ slip:
   emptied. The rule owns its fields, so mark them `@READONLY`. Two references
   on one field each fill their own fields, and a rule that returns values may
   not read a returned field. The project setting "@UVRANGE returned values"
-  turns the save-time write off, and the scan's comparison with it.
+  turns the save-time write off, and the scan's comparison with it. The save
+  writes only into a form the person who saved may change, and a locked form
+  or one the user may only read is not filled on the page.
 - **A growth chart and a table on the form.** `show` draws the reference's
   curves with this visit's point under the field, and a table under them,
   on the page only:
@@ -1279,91 +1349,63 @@ Data Import Tool import on REDCap 17.0.6, and may not run for the API), or
 records entered **before a rule existed**. The
 **Validation scan** project page closes that gap: it runs every configured
 rule — check-character/format, constraint, required, unique, and choice
-filtering — over every saved record and lists each violation with a CSV export.
+filtering — over every saved record and stores what it finds.
 
-- **Where:** the "Validation scan" link on the project's left menu (visible to
-  users with design rights; the page re-checks). Records are read in chunks, and
-  since 1.7.0 findings are handed to the writer as they are produced rather than
-  collected into one array first.
-- **It is still bounded by the project, and that is not yet fixed.** Three things
-  still grow with the data and are held until the scan ends: the record-id list,
-  the unique-rule candidates, and one note per record that could not be read. The
-  export additionally spools the whole report to a temporary file before sending
-  a byte, so it needs disk for the full report and produces no output until the
-  scan finishes. On a project large enough for that to matter the request will
-  reach a proxy timeout first. Removing these is the durable-scan work, not
-  something this release did. The scan takes a **budget** — 75% of the server's execution
-  limit, 70% of its memory limit — and stops rather than being killed: both
-  limits are uncatchable fatals that would otherwise render a blank page with
-  nothing recording that the project was not examined. A stopped scan reports
-  `incomplete`, counts the records it did not reach, and says plainly that
-  duplicates are under-reported, because uniqueness is the one check that needs
-  the whole project.
-> **The project-wide scan is temporarily withdrawn (1.8.9).** The page explains
-> this and starts nothing; the CSV route answers 503. It is being rebuilt as a
-> resumable background job that can cover a project of any size and record
-> exactly what it covered, per `reports/scan-rebuild-plan-2026-08-17.md`. The
-> description below is what it does when it returns. **Live form validation, the
-> save-time audit and the uniqueness check are unaffected and continue to run.**
-
-- **What the report says.** Record, Data Access Group, event, instrument,
-  instance, field and field label; the **offending value**; the rule number, the
-  rule's own name, and **what is wrong in plain English** rather than a reason
-  code. Columns that do not apply to a project's shape are absent rather than
-  empty: a classic project has no Event column, a project without groups has no
-  DAG column. Dropping the Event column is a claim that every finding is in the
-  same event, so it is kept whenever the event map cannot be read — showing raw
-  event ids, and saying why. The wording comes from `php/messages/catalog.json`, which the
-  browser and the server both read, so the sentence a respondent saw and the
-  sentence in the report cannot drift apart.
-- **Values are a policy choice.** *Validation scan report* in the module's
-  project settings: show locations only (the default), redact the fields REDCap
-  marks as an **Identifier**, or show every value. Whatever the project chooses
-  is capped by the reader's own export rights: raw values reach a user with Full
-  Data Set export rights, and a user with no export rights never sees one.
-  Redaction **fails closed** — an unreadable data dictionary withholds every
-  value, because a dictionary that cannot be read cannot clear a field, and an
-  unreadable setting falls back to locations rather than to disclosure. A report
-  is readable by anyone with design rights, which is a wider audience than
-  REDCap's record-level access control, so choose accordingly. A finding with no
-  value to show, such as a blank required field, renders an empty cell — it never
-  claims something was withheld.
+- **Off until an administrator turns it on.** Two switches must both be on: the
+  system setting *Validation scan — enable the durable, resumable scan on this
+  installation* (`scan-system-enable-durable`), and the project setting *use the
+  durable scan for this project* (`scan-enable-durable`). Turning the system
+  switch on creates the scan's tables. While either is off, the page says the
+  scan is unavailable and reads no records. Pilot it on a real project first
+  ([`docs/TESTING.md`](docs/TESTING.md), "Durable validation scan").
+- **Where:** the "Validation scan" link on the project's left menu. Starting a
+  run needs design rights, read access to every instrument the rules read,
+  Full Data Set export rights (the run stores values), and a Data Access Group
+  the module can resolve, or none.
+- **How it runs.** Start begins a run. The page then asks the server for a few
+  seconds of work at a time, so no request holds the whole project and no proxy
+  timeout ends the scan. Closing the tab pauses the run; the Continue button carries
+  on from where it stopped, and Stop ends it. A project has one run at a time,
+  and `scan-system-max-concurrent-projects` (default 2) caps how many projects
+  are scanned at once. A record that cannot be read is retried
+  (`scan-system-record-attempts`, default 3), then recorded as unread, and the
+  run reports itself incomplete. A run that makes no progress for
+  `scan-system-stale-run-hours` (default 24) counts as abandoned.
+- **What the page shows.** The records checked out of the total, with a
+  percentage; the number of findings so far; how many finding rows, and how many
+  bytes of values, are stored; and, when the run ends, whether the result can be
+  called clean. A run with a rule it could not evaluate, or with records it did
+  not reach, says so and is not called clean.
+- **No findings list and no download yet.** The findings are stored in the
+  scan's tables, but no page lists them and nothing exports them: the download
+  route (`pages/export.php`) answers 503. The exporter will stream a stored run
+  (Task 7 of `reports/scan-rebuild-plan-2026-08-17.md`). Until it ships, the scan
+  tells you whether a project has findings and how many, not where they are.
+- **What is kept, and for how long.** A run keeps at most
+  `scan-system-max-detail-findings` findings (default 1,000,000) and
+  `scan-system-max-detail-bytes` of detail (default 512 MiB); a project may set
+  lower limits. Past either limit the run keeps counting every finding, stops
+  storing detail, and labels itself truncated. Stored values expire after
+  `scan-value-retention-days` and finished runs are purged after
+  `scan-run-retention-days`; the server sets the most days a project may choose
+  (30 and 90 by default).
+- **Values are a policy choice.** The project setting *Validation scan report*
+  decides whether the offending value is stored beside each finding: locations
+  only (the default), Identifier fields redacted, or every value. Redaction
+  **fails closed**: an unreadable data dictionary withholds every value, and an
+  unreadable setting falls back to locations.
 - **Scope must be knowable.** A user confined to a Data Access Group whose
   group name cannot be resolved is **refused**, not silently scoped to
-  nothing: a scan of zero records is not a clean project. Inside a group-scoped
-  scan, a record whose group cannot be established is left out rather than
-  admitted, the count of such records is stated, and the scan reports
-  `incomplete` — a group that cannot be read is not this group.
-- **Nothing is skipped in silence.** A rule the scan cannot evaluate is listed
-  as a rule problem with the reason: a broken configuration, a field that cannot
-  be located on any instrument, a project-scope uniqueness rule under a
-  group-scoped scan, an instrument designated to no event (which collects
-  nothing, so the rules on it can never fire), or an instrument **you** do not
-  have access to.
-- **Design rights are not instrument rights.** The scan reads through REDCap's
-  export API with no user attached, so REDCap's own per-instrument access
-  control never runs on it. A rule that reads an instrument you cannot open is
-  therefore skipped **before** it is evaluated, and named as a rule problem — no
-  finding, no count and no label from that instrument reaches the report, which
-  filtering the rows afterwards could not promise. A rule spanning several
-  instruments is still checked on the ones you can open; a rule whose *condition*
-  reads a barred instrument is skipped outright, because the condition decides
-  every verdict. Rights that cannot be read clear nothing.
-- **The download needs export rights.** A user REDCap bars from its data export
-  tool can read the scan on screen, at whatever their value ceiling allows, and
-  cannot download the file.
+  nothing: a scan of zero records is not a clean project.
+- **Nothing is skipped in silence.** A rule the scan cannot evaluate counts as a
+  rule problem, with the reason: a broken configuration, a field that cannot be
+  located on any instrument, a project-scope uniqueness rule under a
+  group-scoped scan, or an instrument designated to no event (which collects
+  nothing, so the rules on it can never fire).
 - **Same engine, same verdicts.** The scan evaluates through the exact
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one
   aggregate pass over the scanned data (project/DAG/event scopes honored).
-- **A file that cannot certify says so three ways.** The download is a real CSV
-  from its own page, so REDCap's page chrome can never precede it. An incomplete
-  scan is marked by a banner at the top, by a terminal data row that survives
-  deleting the comment lines or sorting the sheet, and by `_INCOMPLETE` in the
-  filename, which survives the file being renamed and forwarded. A refused
-  export is not offered as a download at all. CSV cells are quoted and
-  formula-defused, and record ids follow the same privacy mode the audit log
-  uses.
 
 ## Methods supported
 

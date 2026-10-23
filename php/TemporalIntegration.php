@@ -6,9 +6,19 @@ require_once __DIR__.'/TemporalRules.php';
 /** Project adapter; pure resolution/evaluation remains in the temporal components. */
 trait TemporalIntegration
 {
-    private function temporalOptions($pid=null)
+    /** @var array per-request memo: pid => temporalOptions() (PRF-3) */
+    private $temporalOptionsMemo=[];
+    /**
+     * Read once per rule build, not once per tag: the parse asks for these
+     * options on every tagged field, and a 1,000-tag project read the setting
+     * 1,751 times per page view (PRF-3). getRules() and validateSettings() pass
+     * $fresh, so each rule build starts from the stored value.
+     */
+    private function temporalOptions($pid=null,$fresh=false)
     {
-        return ['qualified'=>in_array($this->getProjectSetting('enable-event-instance-refs',$pid),[true,1,'1','true'],true)];
+        $key=(string)($pid===null?'':$pid);
+        if(!$fresh && isset($this->temporalOptionsMemo[$key])) return $this->temporalOptionsMemo[$key];
+        return $this->temporalOptionsMemo[$key]=['qualified'=>in_array($this->getProjectSetting('enable-event-instance-refs',$pid),[true,1,'1','true'],true)];
     }
     private function temporalActivationProblems($pid)
     {

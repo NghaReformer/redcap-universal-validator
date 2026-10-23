@@ -532,6 +532,23 @@ function later(ms, fn) {
   check('...an entry whose codes are offered fills them again, without the line',
     f.snapshot() === '2|South|01-03-2026|7.5|1|3|--x' && !/not offered/.test(xMsg(env, 'spec').innerHTML));
 }
+// CHO-2: a radio code an @UVCHOICES filter hides is not offered either. Its
+// row is only hidden, so the page used to tick it; the save leaves it empty.
+{
+  const f = form('SP-2');
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1, 'SP-2': FOUND_2 };
+  const env = boot(f.list, { rules: [rule(),
+    { type: 'choices', fields: ['r_arm'], choicesHide: ['3'], choicesAll: ['1', '2', '3'], blockSave: 'off' }] }, stub);
+  check('CHO-2: the filter hid the row of code 3', f.arms[2].parentNode.style.display === 'none');
+  f.spec.value = 'SP-1'; f.spec.fire('change');
+  check('CHO-2: a code whose row the filter hid is not ticked; the field is emptied (got ' + f.snapshot() + ')',
+    f.armMirror.value === '' && !f.arms[2].checked && f.date.value === '01-03-2026');
+  check('CHO-2: ...and the amber line names the field',
+    xMsg(env, 'spec').innerHTML.indexOf('The value to copy into [r_arm] is not offered on this page, so the field is left empty.') >= 0);
+  f.spec.value = 'SP-2'; f.spec.fire('change');
+  check('CHO-2: a code the filter shows is ticked as before', f.armMirror.value === '1' && f.arms[0].checked);
+}
 {
   const s = select('r<i>', [['', ''], ['1', 'one']]);
   const spec = el('spec', 'SP-1');
@@ -646,6 +663,55 @@ function later(ms, fn) {
   chain[0].value = 'J'; chain[0].fire('change');
   check('...a change runs down the chain four writes deep, and the fifth is not made (got ' + chain.map((e) => e.value).join(' ') + ')',
     chain[4].value === 'J>>>>' && chain[5].value === 'K>>>>>');
+}
+
+// ---- EXS-2: a form the person may only read, or a locked one ------------------------------------------
+{
+  // The page shows the record as saved: a found answer whose values differ
+  // fills nothing and says so; one that holds the same values says nothing.
+  const f = form('SP-1', HELD);
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1, 'SP-404': { state: 'not-found' } };
+  const env = boot(f.list, { rules: [rule()], formReadOnly: true }, stub);
+  check('EXS-2 read only: a found answer fills nothing (got ' + f.snapshot() + ')', f.snapshot() === HELD_SNAP && f.events() === 0);
+  check('EXS-2 ...the note says the entry found holds other values', /holds other values than this saved copy/.test(xMsg(env, 'spec').innerHTML)
+    && /Found/.test(xMsg(env, 'spec').innerHTML));
+  f.spec.value = 'SP-404'; f.spec.fire('change');
+  check('EXS-2 read only: not found empties nothing (got ' + f.snapshot() + ')', f.snapshot() === HELD_SNAP);
+  check('EXS-2 ...and says the fields are left as saved', /left as saved/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  const f = form('SP-1', { r_site: '2', comp: 'South', r_date: '01-03-2026', r_dose: '7.50', r_from: '1', r_arm: '3' });
+  const stub = makeTransportStub();
+  stub.next = FOUND_1;
+  const env = boot(f.list, { rules: [rule()], formReadOnly: true }, stub);
+  check('EXS-2 read only, the saved copy matches (7.50 is 7.5): no note', !/holds other values/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  // Without the flag the fill is as before.
+  const f = form('SP-1', HELD);
+  const stub = makeTransportStub();
+  stub.next = FOUND_1;
+  boot(f.list, { rules: [rule()] }, stub);
+  check('EXS-2 an editable form still fills (got ' + f.snapshot() + ')', f.snapshot() === '2|South|01-03-2026|7.5|1|3|--x');
+}
+
+// ---- EXS-6: the searched field on this form goes with the lookup -----------------------------------
+{
+  const spec = el('hh_ref', 'H-21'), own = el('hh_id', 'H-21');
+  const stub = makeTransportStub();
+  stub.next = { state: 'found', record: null };
+  boot([spec, own], { rules: [{ type: 'exists', fields: ['hh_ref'], existsSelfIn: 'hh_id', blockSave: 'hard' }] }, stub);
+  check('EXS-6 the lookup sends what the page holds in the searched field',
+    stub.calls.length === 1 && stub.calls[0].payload.values.hh_id === 'H-21' && stub.calls[0].payload.values.hh_ref === 'H-21');
+  own.value = 'H-22'; own.fire('change');
+  check('EXS-6 a change there asks again', stub.calls.length === 2 && stub.calls[1].payload.values.hh_id === 'H-22');
+}
+{
+  const spec = el('hh_ref', 'H-21'), own = el('hh_id', 'H-21');
+  const stub = makeTransportStub();
+  boot([spec, own], { rules: [{ type: 'exists', fields: ['hh_ref'], blockSave: 'hard' }] }, stub);
+  check('EXS-6 a rule that searches another form sends only its own values', !('hh_id' in stub.calls[0].payload.values));
 }
 
 global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; console.error = realConsoleError;

@@ -57,6 +57,8 @@ n++;
     'A'.repeat(512) + '!',
     '1'.repeat(512) + '!',
     ('FC' + '0'.repeat(30)).repeat(16),
+    '-'.repeat(512),   // a separator that a "." beside it also matches (VAL-4)
+    '_'.repeat(512),
   ];
   const t0 = Date.now();
   for (const p of fx.safe) {

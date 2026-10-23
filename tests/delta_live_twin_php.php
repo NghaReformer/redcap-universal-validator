@@ -247,8 +247,16 @@ namespace {
     $C = $SEED;
     $C['XE-1'][379] += ['ud_wt' => '70', 'ud_height' => '170.0', 'ud_bl' => '70', 'ud_twoev' => '70'];
     $m = save($C, true, 379, 'uv_delta_test');
-    check('C1: baseline compares with nothing (no earlier event has the form)', hits($m) === [] && !logs($m, 'uvalidate-unconfigurable'),
-        [hits($m), logs($m, 'uvalidate-unconfigurable')]);
+    $c1 = [];
+    $c1Config = true;
+    foreach (logs($m, 'uvalidate-unconfigurable') as $e) {
+        $c1[] = (string) $e['fields'];
+        if (strpos((string) ($e['why'] ?? ''), 'configuration error:') !== 0) $c1Config = false;
+    }
+    sort($c1);
+    check('C1: baseline compares with nothing (no earlier event has the form); the only rule problems are the six refused ud_bad_* rules, logged by every save of the form (VAL-15)',
+        hits($m) === [] && $c1Config && $c1 === ['ud_bad_email', 'ud_bad_inst', 'ud_bad_nofield', 'ud_bad_nolimit', 'ud_bad_self', 'ud_bad_vs'],
+        [hits($m), $c1]);
     $pages['baseline_on'] = page(mod($C, true), 379, 'uv_delta_test');
     $C['XE-1'][380] += ['ud_wt' => '78', 'ud_height' => '169.4', 'ud_bl' => '85', 'ud_twoev' => '74'];
     $m = save($C, true, 380, 'uv_delta_test');

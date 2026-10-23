@@ -33,6 +33,9 @@
  *     words, on a Missing Data Code too, and a selector that cannot be
  *     resolved (on the server or here) sets aside its own reference only,
  *   - a survey respondent is not told why there is no z-score,
+ *   - "measured": WHO's correction for how the child was measured, of the
+ *     measurement or of the length in "by", from a live, saved or withheld
+ *     position; a blank or unknown position corrects nothing (RNG-3),
  *   - "not a number" and "0 or below" keep the rule's hard setting when its
  *     inputs are saved values from another form, or its table was left off
  *     the page (deferredOnSave), and say nothing about the saved values; not
@@ -780,6 +783,66 @@ const PL = { rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: 
   check('measureScale that is not a number: a configuration error', !!cfgErr(env3, 'weight') && /rangeMeasureScale is not a number/.test(cfgErr(env3, 'weight').innerHTML));
   const env4 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangePlausibleLo: 'x' }, LIVE))] });
   check('a plausible limit that is not a number: a configuration error', !!cfgErr(env4, 'weight') && /rangePlausibleLo is not a number/.test(cfgErr(env4, 'weight').innerHTML));
+}
+
+// ---- 6) how the child was measured: WHO's correction ("measured", RNG-3) ------------
+/* A length or height by age: 0.7 cm more for a child measured standing below
+   day 2, 0.7 cm less for one measured lying from day 2. For a boy z is y - 10
+   on days 0 to 2. */
+const T_LH = Object.assign({}, T_DAYS, { title: 'Test, length or height', measure: 'length or height', unit: 'cm',
+  position: { corrects: 'measurement', lying: { add: '-0.7', from: '2' }, standing: { add: '0.7', below: '2' } } });
+/* by length: a child measured standing is 0.1 cm longer lying */
+const T_LENP = Object.assign({}, T_LEN, { position: { corrects: 'axis', standing: { add: '0.1' } } });
+const GROWTH_P = { 't-lh': T_LH, 't-lenp': T_LENP };
+const MEASURED = { rangeMeasuredOp: ['ref', 'measured', null], rangeLying: '1', rangeStanding: 'S' };
+{
+  const age = el('age_days', '1'), how = el('measured', 'S'), len = el('len', '11.5');
+  const env = boot([age, how, len], { growth: GROWTH_P, missingCodes: ['UNK'], rules: [rule(Object.assign({ fields: ['len'], rangeReference: 't-lh',
+    rangeSexOp: ['lit', '1'], rangeAgeDaysOp: ['ref', 'age_days', null] }, MEASURED))] });
+  const msg = nMsg(env, 'len');
+  check('measured standing below day 2: 11.5 cm is scored as 12.2, z 2.20, higher than usual (got ' + msg.innerHTML + ')',
+    /higher than usual \(z-score 2\.20 on Test, length or height, in cm;/.test(msg.innerHTML) && save(env) === 'asked');
+  how.value = '1'; how.fire('change');
+  check('measured lying below day 2: no correction, z 1.50, usual', !shown(msg) && save(env) === 'saved');
+  how.value = 's'; how.fire('change');
+  check('the code in another letter case still reads as standing', /z-score 2\.20/.test(msg.innerHTML));
+  how.value = ''; how.fire('change');
+  check('a blank position: no correction, and no note about it', !shown(msg));
+  how.value = '9'; how.fire('change');
+  check('a code that is neither: no correction, as WHO Anthro', !shown(msg));
+  how.value = 'UNK'; how.fire('change');
+  check('a Missing Data Code: a blank position', !shown(msg));
+  how.value = '1'; age.value = '2'; len.value = '12.5'; age.fire('change');
+  check('measured lying from day 2: 12.5 cm is scored as 11.8, z 1.80, usual', !shown(msg));
+  how.value = 'S'; how.fire('change');
+  check('measured standing from day 2: no correction, z 2.50', /z-score 2\.50/.test(msg.innerHTML));
+  check('test() answers by the corrected z-score', env.NS.validators.len.test() === false);
+}
+{
+  const w = el('len', '11.5');
+  const env = boot([w], { growth: GROWTH_P, rules: [rule(Object.assign({ fields: ['len'], rangeReference: 't-lh', rangeSexOp: ['lit', '1'],
+    rangeAgeDaysOp: ['lit', '1'] }, MEASURED, { rangeMeasuredOp: ['lit', 'S'] }))] });
+  check('a position saved on another form is used (z 2.20)', /z-score 2\.20/.test(nMsg(env, 'len').innerHTML));
+  const env2 = boot([el('len', '11.5')], { growth: GROWTH_P, rules: [rule(Object.assign({ fields: ['len'], rangeReference: 't-lh', rangeSexOp: ['lit', '1'],
+    rangeAgeDaysOp: ['lit', '1'] }, MEASURED, { rangeMeasuredOp: ['withheld'] }))] });
+  check('a position not sent to this page: not guessed at, staff told the save checks it (got ' + nMsg(env2, 'len').innerHTML + ')',
+    /saved/.test(nMsg(env2, 'len').innerHTML) && save(env2) === 'saved');
+  const env3 = boot([el('len', '11.5')], { growth: GROWTH_P, rules: [rule({ fields: ['len'], rangeReference: 't-lh', rangeSexOp: ['lit', '1'],
+    rangeAgeDaysOp: ['lit', '1'] })] });
+  check('a rule without "measured" scores the value as typed (z 1.50)', !shown(nMsg(env3, 'len')));
+}
+{
+  // by length: 2.4 kg at 45.1 cm lying is z 0.91; measured standing the length is 45.2, z 0.00
+  const len = el('len', '45.1'), how = el('measured', '1'), w = el('weight', '2.4');
+  const env = boot([len, how, w], { growth: GROWTH_P, rules: [rule(Object.assign({ fields: ['weight'], rangeReference: 't-lenp',
+    rangeSexOp: ['lit', '2'], rangeByOp: ['ref', 'len', null], rangeSoftLo: '-0.5', rangeSoftHi: '0.5', rangeSoftText: 'z-score -0.5 to 0.5' }, MEASURED))] });
+  const msg = nMsg(env, 'weight');
+  check('by length, lying: the length as typed, z 0.91 (got ' + msg.innerHTML + ')', /z-score 0\.91/.test(msg.innerHTML));
+  how.value = 'S'; how.fire('change');
+  check('by length, standing: the corrected length 45.2 cm, z 0.00', !shown(msg));
+  len.value = '45.3'; len.fire('change');
+  check('by length, standing: 45.3 cm is 45.4, past the reference (got ' + msg.innerHTML + ')',
+    /the length is outside the reference \(45 to 45\.3 cm\)/.test(msg.innerHTML));
 }
 
 // Typing into an input the growth rule reads: judged once the person leaves

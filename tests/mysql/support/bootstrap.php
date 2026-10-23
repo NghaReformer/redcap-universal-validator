@@ -35,6 +35,7 @@ require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
 require_once __DIR__ . '/../../../php/Scan/SourceFence.php';
 require_once __DIR__ . '/../../../php/Scan/RecordManifestSource.php';
+require_once __DIR__ . '/../../../php/Scan/FieldValues.php';
 require_once __DIR__ . '/../../../php/Scan/Hmac.php';
 require_once __DIR__ . '/../../../php/Scan/ScanPolicy.php';
 require_once __DIR__ . '/../../../php/Scan/ScanPlanner.php';

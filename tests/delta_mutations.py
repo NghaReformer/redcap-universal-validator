@@ -730,10 +730,10 @@ MUTATIONS = [
      'VS.all[gi].watch[wi].onChange(later);\n    }\n    check();\n    opening = false;',
      'VS.all[gi].watch[wi].onChange(function(){ check(); });\n    }\n    check();\n    opening = false;', GROWTH_DOM),
     ('the slow trim back in @UVREQUIRED', ENGINE,
-     'var blank = QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === "";',
+     'var blank = QRID_isBlank(QRID_WHEN.readRef(fieldName, null));',
      'var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \\t\\r\\n]+|[ \\t\\r\\n]+$/g, "") === "";', REQUIRED_DOM),
     ('the slow trim back in @UVCHOICES', ENGINE,
-     '        var v = QRID_whenTrim(String(QRID_WHEN.readRef(f, null)));',
+     '        var v = QRID_whenTrim(QRID_WHEN.readRef(f, null));',
      '        var v = String(QRID_WHEN.readRef(f, null)).replace(/^[ \\t\\r\\n]+|[ \\t\\r\\n]+$/g, "");', CHOICES_DOM),
 ]
 

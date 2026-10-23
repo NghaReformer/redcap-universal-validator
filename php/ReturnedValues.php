@@ -33,6 +33,13 @@ trait ReturnedValues
     /** @var array "event|instance" => ['event','instance','values' => [field => text],'fields' => measured fields] */
     private $returnQueue = [];
 
+    /**
+     * @var array the values auditRule kept out of the queue because they go
+     * into a form the person saving may not change (EXS-3): each
+     * ['rule','fields','values','event','instance','instrument']
+     */
+    private $returnBarred = [];
+
     /** True while this module writes returned values: that save is not audited again. */
     private static $returnWriting = false;
 
@@ -87,7 +94,9 @@ trait ReturnedValues
         $pctDecimals = isset($rule['rangePercentileDecimals']) ? (int) $rule['rangePercentileDecimals']
             : GrowthReference::DEFAULT_PERCENTILE_DECIMALS;
         $marks = (isset($rule['rangeReturnComma']) && is_array($rule['rangeReturnComma'])) ? $rule['rangeReturnComma'] : [];
-        $y = $m['state'] === 'ok' ? $m['y'] : null;
+        // the z-score and percentile score the measurement with WHO's correction
+        // for how the child was measured (yAdd); the bounds are the reference's
+        $y = $m['state'] === 'ok' ? $m['y'] + $g['yAdd'] : null;
         $o = GrowthReference::outputs($g['entry'], $g['table'], $g['sex'], $g['x'], $y,
             $limits, $decimals, !empty($marks['range']), $scale,
             (isset($rule['rangeUnit']) && is_string($rule['rangeUnit']) && $rule['rangeUnit'] !== '') ? $rule['rangeUnit'] : null);
@@ -297,7 +306,9 @@ trait ReturnedValues
     {
         $queue = $this->returnQueue;
         $this->returnQueue = [];
-        if (!$queue) return false;
+        $barred = $this->returnBarred;
+        $this->returnBarred = [];
+        if (!$queue && !$barred) return false;
         try {
             $dd = $this->dataDictionary($pid);
             if (!$dd) return false;
@@ -309,6 +320,7 @@ trait ReturnedValues
                 }
                 foreach ($q['fields'] as $f => $_) $read[$f] = true;
             }
+            foreach ($barred as $b) foreach ($b['values'] as $f => $_) $read[$f] = true;
             $pk = null;
             try {
                 if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
@@ -321,6 +333,24 @@ trait ReturnedValues
             ]);
             if (!is_array($whole) || !isset($whole[$record]) || !is_array($whole[$record])) return false;
             $contexts = self::recordContexts($whole[$record]);
+            // A value kept out because its form may not be changed by this
+            // person is a rule problem only where it would change the record.
+            foreach ($barred as $b) {
+                $forms = [];
+                foreach ($b['values'] as $f => $text) {
+                    if (!isset($dd[$f]['form_name']) || $dd[$f]['form_name'] === '') continue;
+                    $ctx = $this->returnContext($contexts, (string) $dd[$f]['form_name'], $b['event'], $b['instance'], $pid);
+                    if ($ctx === null) continue;
+                    $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
+                    if (self::returnedDiffers($cur, $text, self::numberMarkOf($dd[$f]) !== null)) $forms[(string) $dd[$f]['form_name']] = true;
+                }
+                if ($forms) {
+                    $this->logUnconfigurable($b['rule'], $b['fields'], 'the person who saved may not edit the form "'
+                        . implode('", "', array_keys($forms)) . '", so the fields this rule fills there keep their values'
+                        . ' — the next save by someone who may fills them', $b['instrument'], $b['event'], $b['instance']);
+                }
+            }
+            $choiceRules = null;   // field => its @UVCHOICES rules, read once (returnedChoiceText)
             $writes = [];   // "event|repeatKey|instance" => ['event_id', 'instance', 'data']
             foreach ($queue as $q) {
                 $byForm = [];
@@ -333,6 +363,7 @@ trait ReturnedValues
                     if ($ctx === null) continue;
                     $key = (string) $ctx['event_id'] . '|' . (string) $ctx['repeatKey'] . '|' . (int) $ctx['instance'];
                     foreach ($vals as $f => $text) {
+                        $text = $this->returnedChoiceText($pid, $record, $f, $text, $ctx, $form, $choiceRules);
                         $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
                         if (!self::returnedDiffers($cur, $text, isset($q['loose'][$f]) || self::numberMarkOf($dd[$f]) !== null)) continue;
                         if (!isset($writes[$key])) {
@@ -390,6 +421,53 @@ trait ReturnedValues
             $this->logAuditError($logMode, $pid, $record, $instrument, $e, 'return values');
             return false;
         }
+    }
+
+    /**
+     * $text, or "" when an @UVCHOICES rule on $f hides that code in the
+     * context the value goes to (CHO-2). The page leaves such a field empty
+     * and says so; writing the code gave the record a value the module's own
+     * filter forbids, which the choices audit then logged. The rule is judged
+     * as the audit judges it (ruleFindings), on the context's saved values
+     * with $text in $f. A rule that cannot be judged there leaves $text.
+     * $byField caches the project's choices rules per field.
+     */
+    private function returnedChoiceText($pid, $record, $f, $text, array $ctx, $form, &$byField)
+    {
+        if ((string) $text === '') return $text;
+        if ($byField === null) {
+            $byField = [];
+            foreach ($this->getRules($pid) as $i => $r) {
+                if (!is_array($r) || !empty($r['configError'])) continue;
+                if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'choices') continue;
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $rf) $byField[(string) $rf][$i] = $r;
+            }
+        }
+        if (empty($byField[$f])) return $text;
+        foreach ($byField[$f] as $i => $rule) {
+            $need = [$f => true];
+            $conds = (isset($rule['branches']) && is_array($rule['branches'])) ? $rule['branches'] : [$rule];
+            foreach ($conds as $b) {
+                if (!is_array($b) || !isset($b['when']) || !is_string($b['when']) || $b['when'] === '') continue;
+                $parsed = Logic::parse($b['when']);
+                if (empty($parsed['ok'])) continue;
+                foreach (Logic::referencedFields($parsed['ast']) as $ref) $need[(string) $ref[0]] = true;
+            }
+            foreach (ModeRegistry::refFields($rule) as $rf) $need[(string) $rf] = true;
+            $res = [];
+            try {
+                $vals = $this->readValues($pid, $record, array_keys($need), $ctx['event_id'], $form, $ctx['instance'], true, $res);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            $vals[$f] = (string) $text;
+            $res[$f] = 'ok';
+            $out = $this->ruleFindings($rule, $i, $vals, [], null, $pid, $record, $ctx['event_id'], null, $res, []);
+            foreach ($out['invalid'] as $v) {
+                if (isset($v['field']) && (string) $v['field'] === (string) $f) return '';
+            }
+        }
+        return $text;
     }
 
     /**

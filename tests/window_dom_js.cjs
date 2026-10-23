@@ -454,6 +454,22 @@ const realNow = Date.now;
     check('withheld on a survey: notFuture still judged', /after today/.test(msg.innerHTML) && !/enrol_date/.test(msg.innerHTML));
   }
   {
+    // WIN-1: notPast alone, with a "from" the server could not resolve. The
+    // window part is withheld; notPast is still judged and blocks as authored.
+    const v = dateEl('fu_date', '');
+    const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
+      rules: [withheldRule({ windowNotPast: true, windowFromOpWhy: ['Extended reference unavailable: ambiguous.'] })] });
+    const msg = wMsg(env, 'fu_date');
+    v.value = '2026-10-01'; v.fire('change');
+    check('WIN-1: a past date is judged although the window is withheld', /before today \(2026-10-09\)/.test(msg.innerHTML)
+      && !/not checked after saving either/.test(msg.innerHTML));
+    let ev = submitEv(); env.doc.fire('submit', ev);
+    check('WIN-1: ...and a hard rule holds the save', ev._prevented === true);
+    v.value = '2026-10-12'; v.fire('change');
+    ev = submitEv(); env.doc.fire('submit', ev);
+    check('WIN-1: a later date saves; the window part never blocks', ev._prevented === false);
+  }
+  {
     // A "from" the server could not resolve: the reason is shown, and notFuture still runs.
     const v = dateEl('fu_date', '2026-01-01');
     const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
@@ -820,6 +836,32 @@ const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
   const v2 = dateEl('seen', '20-10-2026');
   env = boot([v2], { clock: CLK, windowSaved: { seen: '2026-10-20' }, rules: [rule] });
   check('unchanged value with notFuture: a future date is still shown', /after today \(09-10-2026\)/.test(wMsg(env, 'seen').innerHTML));
+}
+{
+  // WIN-2: notFuture alone. An unchanged value may have been in the future on
+  // the day it was saved, which is what the audit judges: a pass shows no
+  // green OK. A value after today is still flagged (it was after its save day
+  // too), and a new or changed value is judged in full.
+  const rule = { type: 'window', fields: ['nf'], windowNotFuture: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' };
+  const v = dateEl('nf', '2026-10-08');
+  let env = boot([v], { clock: CLK, windowSaved: { nf: '2026-10-08' }, rules: [rule] });
+  let msg = wMsg(env, 'nf');
+  check('WIN-2: unchanged notFuture value before today shows no green OK', !shown(msg));
+  check('WIN-2: ...test() has no verdict', env.NS.validators.nf.test() === null);
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('WIN-2: ...and the save is not held', ev._prevented === false);
+  v.value = '2026-10-07'; v.fire('change');
+  check('WIN-2: a changed value before today shows OK', shown(msg) && /OK/.test(msg.innerHTML));
+  v.value = '2026-10-08'; v.fire('change');
+  check('WIN-2: changed back to the saved value: no green OK again', !shown(msg));
+  const v2 = dateEl('nf', '2026-10-20');
+  env = boot([v2], { clock: CLK, windowSaved: { nf: '2026-10-20' }, rules: [rule] });
+  check('WIN-2: unchanged value after today is still flagged', /after today \(2026-10-09\)/.test(wMsg(env, 'nf').innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('WIN-2: ...and holds the save', ev._prevented === true);
+  const v3 = dateEl('nf', '2026-10-08');
+  env = boot([v3], { clock: CLK, windowSaved: {}, rules: [rule] });
+  check('WIN-2: a record not saved yet: every value is new, OK shows', /OK/.test(wMsg(env, 'nf').innerHTML));
 }
 {
   // A "from" that cannot be resolved: the note promises notPast only for a new value.

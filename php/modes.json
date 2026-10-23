@@ -8,8 +8,8 @@
     "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
     "the verdict itself); fieldList = a list of field names the rule reads; operand = one field reference whose",
     "value the verdict reads (op = the key the browser gets the folded operand under, value = the key the",
-    "server's extended compile writes the resolved value to). An operand's optional withholdIf names a rule key:",
-    "when that key is true and the operand cannot be resolved, only the operand is withheld (the page checks what",
+    "server's extended compile writes the resolved value to). An operand's optional withholdIf names a rule key,",
+    "or a list of them: when one is true and the operand cannot be resolved, only the operand is withheld (the page checks what",
     "does not need it and says why the rest is not checked, under <op>Why; the audit judges the rest and logs",
     "the operand's part as not checked) instead of the whole rule being switched off.",
     "snapshotAdvisory (optional): the mode's page factory turns only the parts that read a snapshot advisory",
@@ -40,7 +40,10 @@
     "evaluator is given the code (@UVREQUIRED counts it as an answer, @UVWRITEONCE finds a code saved over a locked value).",
     "justify (true or false): whether a reason given under @UVJUSTIFY stands for a broken rule of the mode. The save guard",
     "then lets the field save, and the audit and the scan report the finding as justified instead of open",
-    "(UniversalValidator::applyJustify writes justifyBy on each such rule; ModeRegistry::justifies)."
+    "(UniversalValidator::applyJustify writes justifyBy on each such rule; ModeRegistry::justifies).",
+    "surveySave (optional): complete = a survey response is judged only once it is complete. The save audit skips the",
+    "mode's rules on a survey save whose response is still open (a page turn, Previous Page, Save & Return Later), and",
+    "on a survey page the buttons of common.partialSaveButtons, which save without finishing, do not wait for them."
   ],
   "common": {
     "refKeys": [
@@ -58,7 +61,8 @@
       "presence": ["snapshotFields", "growthChartWhy"],
       "conditionText": "(condition)",
       "configErrorText": "this check is not set up correctly; the study team can see the details on the data entry form."
-    }
+    },
+    "partialSaveButtons": ["submit-btn-saveprevpage", "submit-btn-savereturnlater"]
   },
   "modes": [
     {
@@ -140,6 +144,7 @@
       "evaluator": "findingsRequired",
       "missingCodes": "answer",
       "justify": true,
+      "surveySave": "complete",
       "refKeys": [],
       "branchKeys": ["blockSave", "caseSensitive", "message", "references", "i18n"],
       "clientKeys": ["blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields", "i18n"],
@@ -225,7 +230,7 @@
       "justify": true,
       "refKeys": [
         {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue",
-         "withholdIf": "windowNotFuture"}
+         "withholdIf": ["windowNotFuture", "windowNotPast"]}
       ],
       "snapshotAdvisory": true,
       "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
@@ -268,11 +273,11 @@
         {"key": "existsLocal", "kind": "fieldList", "role": "test"},
         {"key": "existsTargets", "kind": "fieldList", "role": "lookup"}
       ],
-      "branchKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsSurveys", "existsLocal",
+      "branchKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsSurveys", "existsLocal", "existsSelfIn",
                      "existsTargets", "existsProject", "existsPid", "existsRemoteTargets",
                      "existsReturn", "existsReturnFields", "existsReturnNumbers", "existsWhere", "existsWhereFields",
                      "whereMessage", "i18n"],
-      "clientKeys": ["existsLocal", "existsSurveys", "existsReturnFields", "existsReturnNumbers", "whereMessage",
+      "clientKeys": ["existsLocal", "existsSelfIn", "existsSurveys", "existsReturnFields", "existsReturnNumbers", "whereMessage",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "deferredChecked", "snapshotFields", "i18n"],
       "textKeys": ["message", "whereMessage"],
       "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets",
@@ -310,12 +315,14 @@
         {"key": "rangeAgeAt", "kind": "operand", "role": "test", "op": "rangeAgeAtOp", "value": "rangeAgeAtValue"},
         {"key": "rangeAgeDays", "kind": "operand", "role": "test", "op": "rangeAgeDaysOp", "value": "rangeAgeDaysValue"},
         {"key": "rangeAgeMonths", "kind": "operand", "role": "test", "op": "rangeAgeMonthsOp", "value": "rangeAgeMonthsValue"},
-        {"key": "rangeBy", "kind": "operand", "role": "test", "op": "rangeByOp", "value": "rangeByValue"}
+        {"key": "rangeBy", "kind": "operand", "role": "test", "op": "rangeByOp", "value": "rangeByValue"},
+        {"key": "rangeMeasured", "kind": "operand", "role": "test", "op": "rangeMeasuredOp", "value": "rangeMeasuredValue"}
       ],
       "branchKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
                      "rangeReference", "rangeSex", "rangeMale", "rangeFemale", "rangeAgeDob", "rangeAgeAt",
-                     "rangeAgeDays", "rangeAgeMonths", "rangeBy", "rangeDobType", "rangeDobFormat",
+                     "rangeAgeDays", "rangeAgeMonths", "rangeBy", "rangeMeasured", "rangeLying", "rangeStanding",
+                     "rangeDobType", "rangeDobFormat",
                      "rangeAtType", "rangeAtFormat", "rangeAxisComma",
                      "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
                      "rangeReturn", "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals", "rangeReturnComma",
@@ -323,7 +330,8 @@
       "clientKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
                      "rangeReference", "rangeSexOp", "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
-                     "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
+                     "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeMeasuredOp", "rangeLying", "rangeStanding",
+                     "rangeDobType", "rangeDobFormat",
                      "rangeAtType", "rangeAtFormat", "rangeAxisComma",
                      "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
                      "rangeReturn", "rangeReturnLimits", "rangeDecimals", "rangePercentileDecimals", "rangeReturnComma",

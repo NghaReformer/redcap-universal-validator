@@ -702,5 +702,21 @@ const ROWS = FX.pages.form.growthCurveTables[W.growthTableKey];
     && ['male', 'female'].every((s) => banded[s].extent === undefined));
 }
 
+// ---- how the child was measured (RNG-3): the point is the corrected value ------------------
+{
+  // a made-up correction on the weight table: 0.5 kg more for a child "measured standing"
+  const env = boot('form', { sex: '1', dob: '2025-01-10', visit_date: '2025-04-20', weight: '6.4' }, null, (c) => {
+    c.growth['who-wfa'].position = { corrects: 'measurement', standing: { add: '0.5' } };
+    Object.assign(ruleOf(c, 'weight'), { rangeMeasuredOp: ['lit', '2'], rangeLying: '1', rangeStanding: '2' });
+  });
+  const svg = svgOf(env, 'weight');
+  const G = env.NS.growthLogic;
+  const zc = G.zScore(env.config.growth['who-wfa'], 'male', 100, 6.4 + 0.5).z;
+  const title = all(marker(svg), (e) => e.tagName === 'title')[0].textContent;
+  check('measured: the point states the value as typed and the corrected z-score (got ' + title + ')',
+    title.indexOf('This visit: 6.4 kg at 3.29 months, z-score ' + zc + ',') === 0 && zc !== FX.visits[0].z);
+  check('measured: the marker sits at the corrected value', Math.abs(+marker(svg).getAttribute('cy') - yMap(svg)(6.9)) < 0.06);
+}
+
 console.log('growth_chart_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

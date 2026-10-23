@@ -59,6 +59,11 @@ foreach ($fx['axis'] as $c) {
     $got = G::axisValue($R[$c['ref']], $c['input']);
     check('axis: ' . $c['name'] . ' (got ' . json_encode($got) . ')', sameState($got, $c['want']));
 }
+// WHO's correction for how the child was measured ("position", RNG-3)
+foreach ($fx['position'] as $c) {
+    $got = G::positionAdd($R[$c['ref']], $c['position'], $c['x'], $c['corrects']);
+    check('position: ' . $c['name'] . ' (got ' . json_encode($got) . ')', is_float($got) && $got === (float) $c['want']);
+}
 foreach ($fx['lms'] as $c) {
     $got = G::lms($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x']);
     check('lms: ' . $c['name'] . ' (got ' . json_encode($got) . ')', sameLms($got, $c['want']));
@@ -325,6 +330,67 @@ check('golden: every bundled reference is covered', count($seen) === 12);
         $rows > 500 && $badEdge === 0);
 }
 
+// ---- 2b. WHO's 0.7 cm correction on the bundled tables (RNG-3) ---------------------
+// WHO Anthro adds 0.7 cm to a length measured standing under 731 days and takes
+// 0.7 cm from a height measured lying from 731 days, before it scores
+// length/height-for-age. The two children of the review's probe
+// (tools/temporal_review_range_lenhei.php): a girl of 600 days, 73.0 cm standing,
+// has WHO's z-score of 73.7 cm; a boy of 1000 days, 83.3 cm lying, that of 82.6 cm.
+$lhfa = G::entry('who-lhfa');
+$lt = G::table($lhfa);
+$rule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[measured]', 'rangeLying' => 'L', 'rangeStanding' => 's',
+         'rangeSex' => '[sex]', 'rangeAgeDays' => '[age_days]'];
+$zOf = function ($read, $y) use ($lhfa, $lt, $rule) {
+    $in = G::inputsFor($rule, $read, $lhfa);
+    return $in['state'] === 'ok' ? G::zScore($lhfa, $lt, $in['sex'], $in['x'], $y + $in['yAdd'])['z'] : $in['why'];
+};
+check('who-lhfa: a girl of 600 days measured standing scores 73.0 cm as 73.7 (z -2.91)',
+    $zOf(['rangeSex' => '2', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], 73.0) === '-2.91'
+    && G::zScore($lhfa, $lt, 'female', 600.0, 73.7)['z'] === '-2.91');
+check('who-lhfa: without the position she scores -3.14, as typed',
+    $zOf(['rangeSex' => '2', 'rangeAgeDays' => '600', 'rangeMeasured' => ''], 73.0) === '-3.14');
+check('who-lhfa: a boy of 1000 days measured lying scores 83.3 cm as 82.6 (z -3.20)',
+    $zOf(['rangeSex' => '1', 'rangeAgeDays' => '1000', 'rangeMeasured' => 'l'], 83.3) === '-3.20');
+check('who-lhfa: lying under 731 days and standing from 731 days are not corrected',
+    $zOf(['rangeSex' => '1', 'rangeAgeDays' => '700', 'rangeMeasured' => 'L'], 75.4) === G::zScore($lhfa, $lt, 'male', 700.0, 75.4)['z']
+    && $zOf(['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'S'], 84.0) === G::zScore($lhfa, $lt, 'male', 731.0, 84.0)['z']);
+check('who-lhfa: 730 days standing is still corrected, 731 lying already is',
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '730', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.7
+    && G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'l'], $lhfa)['yAdd'] === -0.7);
+check('who-lhfa: a code that is neither corrects nothing, as WHO Anthro',
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => '9'], $lhfa)['yAdd'] === 0.0);
+check('who-lhfa: a rule without "measured" corrects nothing',
+    G::inputsFor(array_diff_key($rule, ['rangeMeasured' => 1]), ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.0);
+check('positionOf: letter case ignored unless caseSensitive',
+    G::positionOf('l', $rule) === 'lying' && G::positionOf('S', $rule) === 'standing'
+    && G::positionOf('S', $rule + ['caseSensitive' => true]) === null && G::positionOf('s', $rule + ['caseSensitive' => true]) === 'standing');
+check('positionOf: a blank code is no position', G::positionOf('', $rule) === null && G::positionOf('', ['rangeLying' => ''] + $rule) === null);
+// weight-for-length takes 0.7 cm more for a child measured standing, and
+// weight-for-height 0.7 cm less for one measured lying
+$wrule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[m]', 'rangeLying' => '1', 'rangeStanding' => '2',
+          'rangeSex' => '[sex]', 'rangeBy' => '[len]'];
+$wfl = G::entry('who-wfl');
+$wfh = G::entry('who-wfh');
+$xOf = function ($e, $how, $by) use ($wrule) {
+    $in = G::inputsFor($wrule, ['rangeSex' => '1', 'rangeBy' => $by, 'rangeMeasured' => $how], $e);
+    return $in['state'] === 'ok' ? [$in['x'], $in['yAdd']] : $in['why'];
+};
+check('who-wfl: standing adds 0.7 cm to the length, lying adds nothing',
+    $xOf($wfl, '2', '75.0') === [75.0 + 0.7, 0.0] && $xOf($wfl, '1', '75.0') === [75.0, 0.0]);
+check('who-wfh: lying takes 0.7 cm from the height, standing takes nothing',
+    $xOf($wfh, '1', '90.0') === [90.0 - 0.7, 0.0] && $xOf($wfh, '2', '90.0') === [90.0, 0.0]);
+check('who-wfl: the corrected length is the one the valid range judges',
+    $xOf($wfl, '2', '109.5') === 'the length is outside the reference (45 to 110 cm)' && $xOf($wfl, '1', '109.5') === [109.5, 0.0]);
+// the guide's boy: 300 days, 75.0 cm standing, 7.5 kg, weight-for-length -3.16 (-2.98 uncorrected)
+$wt = G::table($wfl);
+check('who-wfl: the guide\'s boy of 75.0 cm standing and 7.5 kg scores -3.16',
+    G::zScore($wfl, $wt, 'male', $xOf($wfl, '2', '75.0')[0], 7.5)['z'] === '-3.16'
+    && G::zScore($wfl, $wt, 'male', $xOf($wfl, '', '75.0')[0], 7.5)['z'] === '-2.98');
+check('pageCopy: the page gets the correction', G::pageCopy($lhfa, $lt)['position'] === $lhfa['position']
+    && !isset(G::pageCopy(G::entry('who-wfa'), G::table(G::entry('who-wfa')))['position']));
+check('bundled: only who-lhfa, who-wfl and who-wfh correct for the position',
+    array_keys(array_filter(G::catalog(null)['references'], function ($e) { return isset($e['position']); })) === ['who-lhfa', 'who-wfl', 'who-wfh']);
+
 // ---- 3. 5,000 random points --------------------------------------------------------
 
 /** MINSTD: the same integers in PHP and JavaScript (every product stays under 2^53). */
@@ -438,6 +504,9 @@ function writeIndex($dir, $refs, $extra = [])
     file_put_contents($dir . '/index.json', json_encode(array_merge(['format' => 'uv-references-1', 'references' => $refs], $extra)));
     G::reset();
 }
+writeIndex($dir, ['mine' => $base + ['position' => ['corrects' => 'measurement', 'lying' => ['add' => '-1', 'from' => '1']]]]);
+check('extra: a "position" correction is read', G::catalog($dir)['problems'] === []
+    && G::entry('mine', $dir)['position'] === ['corrects' => 'measurement', 'lying' => ['add' => '-1', 'from' => '1']]);
 writeIndex($dir, ['who-wfa' => $base + ['x' => 1], 'mine' => $base]);
 $c = G::catalog($dir);
 check('extra: added and replacing by id', $c['problems'] === [] && count($c['references']) === 13
@@ -475,6 +544,21 @@ $entryCases = [
     // a bound past 2^63 / scale wrapped the whole-number row key
     'a bound past a million'  => [['mine' => ['valid' => ['min' => '0', 'max' => '10000000000000000000']] + $base], 'has a "valid" bound beyond 1000000 (or -1000000).'],
     'a min below -1000000'    => [['mine' => ['valid' => ['min' => '-1000001', 'max' => '1']] + $base], 'has a "valid" bound beyond 1000000'],
+    // "position", WHO's correction for how the child was measured (RNG-3)
+    'a position not an object'   => [['mine' => ['position' => 'lying'] + $base], 'has a "position" that is not an object'],
+    'a position, unknown key'    => [['mine' => ['position' => ['corrects' => 'measurement', 'sitting' => ['add' => '1']]] + $base], 'has "position" ["sitting"]; it takes corrects, lying and standing.'],
+    'a position, no corrects'    => [['mine' => ['position' => ['lying' => ['add' => '1']]] + $base], 'needs "position" "corrects" as measurement or axis.'],
+    'a position, bad corrects'   => [['mine' => ['position' => ['corrects' => 'weight', 'lying' => ['add' => '1']]] + $base], 'needs "position" "corrects" as measurement or axis.'],
+    'an age axis corrected'      => [['mine' => ['position' => ['corrects' => 'axis', 'lying' => ['add' => '1']]] + $base], 'has "position" "corrects" "axis", which only a reference by length or height takes.'],
+    'a position with no side'    => [['mine' => ['position' => ['corrects' => 'measurement']] + $base], 'has a "position" with neither "lying" nor "standing".'],
+    'a side not an object'       => [['mine' => ['position' => ['corrects' => 'measurement', 'lying' => '1']] + $base], 'has a "position" "lying" that is not an object.'],
+    'a side, unknown key'        => [['mine' => ['position' => ['corrects' => 'measurement', 'lying' => ['add' => '1', 'max' => '2']]] + $base], 'has "position" "lying" ["max"]; it takes add, from and below.'],
+    'a side with no add'         => [['mine' => ['position' => ['corrects' => 'measurement', 'lying' => ['from' => '2']]] + $base], 'needs "position" "lying" "add" as a number in a string.'],
+    'an add that is a number'    => [['mine' => ['position' => ['corrects' => 'measurement', 'lying' => ['add' => -0.7]]] + $base], 'needs "position" "lying" "add" as a number in a string.'],
+    'both from and below'        => [['mine' => ['position' => ['corrects' => 'measurement', 'standing' => ['add' => '1', 'from' => '1', 'below' => '2']]] + $base], 'has both "position" "standing" "from" and "below"; give one.'],
+    'a from that is text'        => [['mine' => ['position' => ['corrects' => 'measurement', 'standing' => ['add' => '1', 'from' => 'x']]] + $base], 'needs "position" "standing" "from" as a number in a string.'],
+    'an add past a million'      => [['mine' => ['position' => ['corrects' => 'measurement', 'standing' => ['add' => '2000000']]] + $base], 'has "position" "standing" "add" beyond 1000000'],
+    'a below on a length axis'   => [['mine' => ['axis' => 'length', 'axisUnit' => 'cm', 'position' => ['corrects' => 'axis', 'standing' => ['add' => '1', 'below' => '2']]] + $base], 'has "position" "standing" "below", which only a reference by age takes.'],
 ];
 foreach ($entryCases as $label => $case) {
     writeIndex($dir, $case[0]);

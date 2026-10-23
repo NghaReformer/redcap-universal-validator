@@ -2847,6 +2847,15 @@
             "next": null,
             "offsetAfter": null
         },
+        "partialSave": {
+            "buttons": [
+                "submit-btn-saveprevpage",
+                "submit-btn-savereturnlater"
+            ],
+            "types": [
+                "required"
+            ]
+        },
         "missingCodes": [
             "UNK"
         ],

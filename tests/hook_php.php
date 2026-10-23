@@ -324,6 +324,27 @@ namespace {
         return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m));
     }
 
+    // ---- 0) VAL-15: a rule refused when read is logged for the saved form -----
+    // A survey tells the respondent "a configuration issue has been logged for
+    // the study team"; the save wrote nothing before.
+    {
+        $badDict = $dictionary;
+        $badDict['main_id_tag']['field_annotation'] = '@UVALIDATE=bogus';
+        $badDict['other_field']['field_annotation'] = '@UVALIDATE=alsobogus';
+        $m = newModule([], $badDict, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $un = logsOf($m, 'uvalidate-unconfigurable');
+        check('VAL-15: the refused rule on the saved form is logged once (got ' . json_encode($un) . ')',
+            count($un) === 1 && $un[0][1]['fields'] === 'main_id_tag'
+            && strpos($un[0][1]['why'], 'configuration error: ') === 0 && strpos($un[0][1]['why'], 'bogus') !== false
+            && $un[0][1]['instrument'] === 'id_validation_test');
+        $m = newModule([], $badDict, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'other_form', 351, null, null, null, 1);
+        $un = logsOf($m, 'uvalidate-unconfigurable');
+        check('VAL-15: a save of another form logs only the refused rule of that form',
+            count($un) === 1 && $un[0][1]['fields'] === 'other_field');
+    }
+
     // ---- 1) baseline: a form save with getProjectId() working logs both invalids ----
     $m = newModule($dialogRules, $dictionary, $classicData, 149);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
@@ -2836,36 +2857,71 @@ namespace {
         check('F7: and tier 1 counted it', count($_SESSION['uvalidate_unique_hits']) === 1);
         check('F7: and tier 2 counted it too, which it never used to',
             (int) array_sum($m->rateBuckets) === 1);
-        check('F7: in the SESSIONED bucket, not the sessionless one',
+        // UNQ-8: a session made for this request has no history, and making
+        // one costs nothing, so its checks count in the sessionless bucket.
+        check('F7: a fresh session is charged to the SESSIONLESS bucket',
+            isset($m->rateBuckets['149|' . $slotOf(false)])
+            && !isset($m->rateBuckets['149|' . $slotOf(true)]));
+        check('F7: and the session remembers when it started checking',
+            isset($_SESSION['uvalidate_unique_since']) && $_SESSION['uvalidate_unique_since'] <= time());
+        // A session whose first check is a minute old or more is a respondent
+        // who stayed: the sessioned bucket.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION = ['uvalidate_unique_since' => time()
+            - \INSPIRE\UniversalValidator\UniversalValidator::SESSION_HISTORY];
+        $call($m, 'TK-1');
+        check('F7: a session with a minute of history is charged to the SESSIONED bucket',
             isset($m->rateBuckets['149|' . $slotOf(true)])
             && !isset($m->rateBuckets['149|' . $slotOf(false)]));
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION = ['uvalidate_unique_since' => time()
+            - \INSPIRE\UniversalValidator\UniversalValidator::SESSION_HISTORY + 5];
+        $call($m, 'TK-1');
+        check('F7: ...and one with less history is not',
+            isset($m->rateBuckets['149|' . $slotOf(false)])
+            && !isset($m->rateBuckets['149|' . $slotOf(true)]));
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION = ['uvalidate_unique_since' => time() + 3600];
+        $call($m, 'TK-1');
+        check('F7: a start time in the future is no history',
+            isset($m->rateBuckets['149|' . $slotOf(false)]) && $_SESSION['uvalidate_unique_since'] <= time());
 
         // THE EVASION. Discarding the session is free and resets tier 1
-        // completely; the project counter is the thing that must not move back.
-        for ($i = 0; $i < 5; $i++) { $_SESSION = []; $call($m, 'S-r' . $i); }
+        // completely; the project counter is the thing that must not move back,
+        // and it is the sessionless one (UNQ-8: 6,000 a minute before).
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        for ($i = 0; $i < 6; $i++) { $_SESSION = []; $call($m, 'S-r' . $i); }
         check('F7: rotating the session resets tier 1',
             count($_SESSION['uvalidate_unique_hits']) === 1);
-        check('F7: but the project budget keeps counting through the rotation',
-            (int) $m->rateBuckets['149|' . $slotOf(true)] === 6);
+        check('F7: but the sessionless budget keeps counting through the rotation',
+            (int) $m->rateBuckets['149|' . $slotOf(false)] === 6
+            && !isset($m->rateBuckets['149|' . $slotOf(true)]));
 
         // And the cap is real: spend it, then present a brand-new session.
-        $m = newModule([], $f5Dict, $f5Data, 149);
-        $m->rateBuckets['149|' . $slotOf(true)] =
-            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED;
-        $_SESSION = [];
-        $r = $call($m, 'S-over');
-        check('F7: a fresh session does not buy a spent project budget',
-            isset($r['error']) && strpos($r['error'], 'too many') !== false);
-
-        // THE TWO POPULATIONS DO NOT CHARGE EACH OTHER. A sessionless flood
-        // must not be able to throttle real respondents, and a busy survey must
-        // not spend the sessionless budget.
         $m = newModule([], $f5Dict, $f5Data, 149);
         $m->rateBuckets['149|' . $slotOf(false)] =
             \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
         $_SESSION = [];
+        $r = $call($m, 'S-over');
+        check('F7: a fresh session does not buy a spent 600 budget',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(true)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED;
+        $_SESSION = ['uvalidate_unique_since' => time() - 120];
+        $r = $call($m, 'S-over');
+        check('F7: nor does a session with history buy a spent sessioned budget',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+
+        // THE TWO POPULATIONS DO NOT CHARGE EACH OTHER. A sessionless flood
+        // must not be able to throttle respondents who stayed, and a busy
+        // survey must not spend the sessionless budget.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(false)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
+        $_SESSION = ['uvalidate_unique_since' => time() - 120];
         $r = $call($m, 'S-sep');
-        check('F7: a spent SESSIONLESS budget does not throttle a respondent',
+        check('F7: a spent SESSIONLESS budget does not throttle a respondent with history',
             isset($r['used']));
         check('F7: and the sessioned cap is the higher of the two, deliberately',
             \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED
@@ -2893,6 +2949,33 @@ namespace {
     } else {
         check('F7: SKIPPED - this build cannot start a session in CLI', true);
     }
+
+    // UNQ-5: a survey respondent is answered only about a field of the survey
+    // being taken. The public screening link must not test enrolment tokens.
+    $u5Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'screen'],
+        'screen_code' => ['field_type' => 'text', 'form_name' => 'screen', 'identifier' => '',
+                          'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+        'enrol_token' => ['field_type' => 'text', 'form_name' => 'enrol', 'identifier' => '',
+                          'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+    ];
+    $u5Data = ['1' => [351 => ['record_id' => '1', 'screen_code' => 'SC-1', 'enrol_token' => 'EN-1']]];
+    $u5 = function ($field, $value, $instrument) use ($u5Dict, $u5Data) {
+        $m = newModule([], $u5Dict, $u5Data, 149);
+        return $m->redcap_module_ajax('unique-check', ['field' => $field, 'values' => [$field => $value]],
+            149, '2', $instrument, 351, 1, 'HASH', null, null, '', '', null, null);
+    };
+    $r = $u5('enrol_token', 'EN-1', 'screen');
+    check('UNQ-5: a screening respondent is not answered about the enrolment token',
+        isset($r['error']) && $r['error'] === 'not enabled on surveys' && !isset($r['used']));
+    $r = $u5('screen_code', 'SC-1', 'screen');
+    check('UNQ-5: the same respondent is answered about a field of their own survey',
+        isset($r['used']) && $r['used'] === true && $r['record'] === null);
+    $r = $u5('enrol_token', 'EN-1', 'enrol');
+    check('UNQ-5: an enrolment respondent is answered about the token', isset($r['used']) && $r['used'] === true);
+    $r = $u5('enrol_token', 'EN-1', null);
+    check('UNQ-5: a caller with no instrument is answered about nothing',
+        isset($r['error']) && !isset($r['used']));
 
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);

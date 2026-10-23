@@ -503,7 +503,7 @@ namespace {
         'lx_cb'     => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_cb]<[cb_c]"', 'number'),
         'dob_o'     => f('enrol_form', '', 'date_ymd'),
         'due_d'     => f('enrol_form', "@CALCDATE([dob_o], 30, 'd')", 'date_ymd'),
-        'lx_d'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_d]<>[due_d]"'),
+        'lx_d'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_d]<>[due_d]"', 'date_ymd'),
         'wt_o'      => f('enrol_form', '', 'number'),
         'both_c'    => ['field_type' => 'calc', 'form_name' => 'enrol_form', 'field_annotation' => '@CALCTEXT([wt_o])', 'select_choices_or_calculations' => '[ht]+0'],
         'lx_b'      => f('enrol_form', '@UVWRITEONCE @UVASSERT="[lx_b]<[both_c]"', 'number'),

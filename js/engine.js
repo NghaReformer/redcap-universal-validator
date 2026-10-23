@@ -932,6 +932,43 @@ function QRID_pcreOnly(p){
   var d = String(p).replace(/\\\\/g, "");                  /* drop escaped-backslash pairs (parity) */
   return /\\[KGhHvVRNXCQEzg]/.test(d) || /\[:\^?[a-z]+:\]/.test(d);
 }
+/* PCRE syntax the other dialect gates do not look for (VAL-5): a backtracking
+   verb such as (*ACCEPT), a named back-reference \k'name' or \k{name}, an octal
+   \o{...}, a reference \8 or \9, or a character-class range that starts or ends
+   at \d, \w or \s ([\d-z]). PCRE runs the first three and refuses the last
+   two; this engine refuses the first two and reads the others as other
+   characters. Twin of CheckCharacter::usesPcreVerbOrRef (php). */
+function QRID_pcreVerbOrRef(p){
+  var src = String(p);
+  if(src.replace(/\\[\s\S]/g, "").indexOf("(*") !== -1) return true;   /* escaped characters dropped */
+  var d = src.replace(/\\\\/g, "");                                       /* escaped-backslash pairs dropped */
+  if(/\\k['{]|\\o\{|\\[89]/.test(d)) return true;
+  return QRID_shorthandRange(d);
+}
+/* Whether a character class in d has a range that starts or ends at \d, \w or
+   \s (or their capitals). A "-" first or last in the class, or escaped, is a
+   literal. Twin of CheckCharacter::shorthandRange (php). */
+function QRID_shorthandRange(d){
+  var n = d.length;
+  for(var i = 0; i < n; i++){
+    if(d.charAt(i) === "\\"){ i++; continue; }
+    if(d.charAt(i) !== "[") continue;
+    var j = i + 1;
+    if(j < n && d.charAt(j) === "^") j++;
+    var first = j;
+    if(j < n && d.charAt(j) === "]") j++;                 /* a "]" first is a literal */
+    for(; j < n && d.charAt(j) !== "]"; j++){
+      if(d.charAt(j) !== "\\") continue;
+      if(j + 1 < n && "dDwWsS".indexOf(d.charAt(j + 1)) !== -1){
+        if(j - 1 > first && d.charAt(j - 1) === "-" && d.charAt(j - 2) !== "\\") return true;
+        if(j + 3 < n && d.charAt(j + 2) === "-" && d.charAt(j + 3) !== "]") return true;
+      }
+      j++;
+    }
+    i = j;
+  }
+  return false;
+}
 /* A "(?..." group form this engine cannot compile: inline flags, comments,
    atomic groups, conditionals and the PCRE named forms. PCRE compiles all of
    them, so the server accepted a rule the browser could not run — the field
@@ -950,7 +987,8 @@ function QRID_nonJsGroup(p){
    layer so nesting cannot hide the shape. Stage two (QRID_polyOverlap) rejects
    the POLYNOMIAL shapes stage one misses: two or more unbounded quantifiers over
    overlapping character classes with no mandatory separator between them
-   (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). PCRE2 auto-possessifies those and stays
+   (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+), and three or more joined by separators
+   the quantifier before each can also match (.*-.*-.*). PCRE2 auto-possessifies those and stays
    fast, but this browser engine backtracks and would freeze the tab, so they
    must be refused before they ever run. Genuinely linear shapes — disjoint
    adjacent classes ([A-Z]+[0-9]+) and a mandatory separator (.*x.*) — pass.
@@ -960,8 +998,8 @@ function QRID_nonJsGroup(p){
    tests/risky_*.{cjs,php} assert parity. */
 function QRID_riskyPattern(src){
   if(Array.from(String(src)).length > 512) return true;   /* absurd pattern source */
-  var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
-  s = s.replace(/\(\?(<?[=!]|:)/g, "(");                   /* (?: (?= (?! (?<= (?<! -> plain ( */
+  var s = QRID_riskyEscapes(String(src));                  /* each escape -> an atom of the same reach */
+  s = s.replace(/\(\?(<?[=!]|:|<[A-Za-z_][A-Za-z0-9_]*>)/g, "("); /* (?: (?= (?! (?<= (?<! (?<name> -> plain ( (VAL-11) */
   /* Whitespace is an explicit ASCII class, NOT \s: JS \s matches Unicode
      whitespace but PCRE \s (no /u) does not, so \s would classify differently
      across runtimes. The group check accepts a bounded quantifier ({n,m}/{n,})
@@ -987,6 +1025,48 @@ function QRID_riskyPattern(src){
   if(QRID_polyOverlap(s)) return true;                                                       /* .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+ */
   return false;
 }
+/* Rewrite each escape as an atom that matches at least what it matches, so the
+   stages below see its class (VAL-4). Deleting escapes, as before, dropped \w
+   from a class body ([\w.]+_ read as [.]+_ and passed) and let a quantifier
+   after \d or \. attach to the atom before it ([0-9]+\.[0-9]+ read as
+   [0-9]+[0-9]+ and was refused). Outside a class: \d \w \s become their ASCII
+   classes, \D \W \S and an escaped metacharacter become "." (any character),
+   any other escaped symbol is that symbol, and a letter or digit escape (\b \n
+   \x \u \1 \k ...) is dropped. Inside a class the members are added at the end
+   of the body ("-" last, so it forms no range), and \D \W \S or an escaped "]"
+   make the class match everything. Twin of CheckCharacter::riskyEscapes (php). */
+var QRID_RISKY_ESCAPE_CLASS = { d: "0-9", w: "0-9A-Z_a-z", s: " \t\n\r\f" };
+function QRID_riskyEscapes(src){
+  var out = "", n = src.length, i = 0, inCls = false, body = "", extra = "", dash = false, wide = false;
+  while(i < n){
+    var c = src.charAt(i);
+    if(c === "\\" && i + 1 < n){
+      var e = src.charAt(i + 1), cls = QRID_RISKY_ESCAPE_CLASS.hasOwnProperty(e) ? QRID_RISKY_ESCAPE_CLASS[e] : null;
+      var word = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".indexOf(e) !== -1;
+      i += 2;
+      if(inCls){
+        if(cls !== null) extra += cls;
+        else if(e === "D" || e === "W" || e === "S" || e === "]") wide = true;
+        else if(e === "-") dash = true;
+        else if(!word) extra += e;
+      } else {
+        if(cls !== null) out += "[" + cls + "]";
+        else if(e === "D" || e === "W" || e === "S" || "^$.*+?()[]{}|\\".indexOf(e) !== -1) out += ".";
+        else if(!word) out += e;
+      }
+      continue;
+    }
+    i++;
+    if(inCls){
+      if(c === "]"){ out += "[" + (wide ? "^" : "") + body + extra + (dash ? "-" : "") + "]"; inCls = false; }
+      else body += c;
+    }
+    else if(c === "["){ inCls = true; body = ""; extra = ""; dash = false; wide = false; }
+    else out += c;
+  }
+  if(inCls) out += "[" + body + extra + (dash ? "-" : "");   /* unterminated class: left as written */
+  return out;
+}
 /* Reject two or more unbounded quantifiers (*, +, {n,}) whose atoms overlap with
    no mandatory atom pinning a split between them. Runs on `s` AFTER escape-strip,
    lookaround-unwrap, and the group-collapse loop (groups are already A / X*
@@ -999,6 +1079,28 @@ function QRID_polyOverlap(s){
     for(var j=i+1;j<toks.length;j++){
       if(toks[j].unbounded && QRID_classesOverlap(toks[i].cls, toks[j].cls)) return true;
       if(toks[j].mandatory) break;                     /* a must-match atom anchors the split point */
+    }
+  }
+  /* Stage two-c (VAL-4): a must-match atom pins the split only when the
+     unbounded quantifier before it cannot match it too. In .*-.*-.*-.*-.*X each
+     "-" is also matched by ".", so on a run of dashes every placement is tried:
+     one verdict on 200 dashes took 5.6 s in the browser. Follow a chain of
+     unbounded quantifiers whose classes overlap, joined by atoms that may match
+     nothing or that the quantifier before them also matches; three or more in
+     one chain are refused. Two (.*x.*, at most n*n steps on the 512-character
+     input cap) still pass. Twin of CheckCharacter::polynomialOverlap (php). */
+  for(var u=0;u<toks.length;u++){
+    if(!toks[u].unbounded) continue;
+    var chain = 1, last = toks[u].cls;
+    for(var v=u+1;v<toks.length;v++){
+      if(toks[v].unbounded && QRID_classesOverlap(last, toks[v].cls)){
+        if(++chain >= 3) return true;
+        last = toks[v].cls;
+        continue;
+      }
+      if(!toks[v].mandatory) continue;                                 /* may match nothing: does not pin */
+      if(QRID_classesOverlap(last, toks[v].cls)) continue;             /* the quantifier before also matches it */
+      break;                                                           /* a disjoint must-match atom pins the split */
     }
   }
   /* Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
@@ -1157,6 +1259,12 @@ function QRID_gatePattern(raw, label){
       "ordinary character, so the value would validate differently in the browser and on the server. " +
       "Use explicit character classes such as [A-Z] or [0-9] instead." };
   }
+  if(QRID_pcreVerbOrRef(src)){
+    return { re: null, error: pre + "idPattern" + " uses PCRE syntax that a browser cannot run or reads as " +
+      "other characters: a verb such as (*ACCEPT), a named back-reference \\k'name' or \\k{name}, an octal " +
+      "\\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, \\w or \\s, such as " +
+      "[\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead." };
+  }
   if(/\[\^?\]/.test(src.replace(/\\[\s\S]/g, ""))){
     /* "[]" is a compile error to PCRE and an empty class — one that can never
        match — here, so the server refused the rule for a reason this side would
@@ -1179,7 +1287,7 @@ function QRID_gatePattern(raw, label){
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
       "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
-      "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
+      "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, .*-.*-.*, or " +
       "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
       "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class." };
   }
@@ -2411,11 +2519,27 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
   }
   return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
-/* Space, tab, CR and LF off both ends, as PHP's trim($v, " \t\r\n"). An index
-   scan from each end: the regex /[ \t\r\n]+$/ is retried from every position
-   of a run of spaces inside the value, which took seconds on a saved value
-   with 50,000 inner spaces (see QRID_lookupTrim). */
+/* Space, tab, CR and LF off both ends, as PHP's trim($v, " \t\r\n") in Logic::compare.
+   An index scan from each end (AST-8): the regex it replaces retried its end
+   alternative from every character of a long inner run of spaces, so one
+   check of a Notes value with 80,000 inner spaces took 3.8 s. */
 function QRID_whenSpace(c){ return c === 32 || c === 9 || c === 13 || c === 10; }
+/* Whether a value holds nothing a person could read: only spaces, tabs, line
+   breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode spaces
+   U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and paragraph
+   separators, and the invisible U+200B to U+200F, U+2060 and U+FEFF (REQ-8).
+   @UVREQUIRED asks it, so a no-break space pasted into a field is no answer.
+   Twin of Logic::isBlank; tests/blank_fixture.json pins both. */
+function QRID_isBlank(v){
+  var s = (v === null || v === undefined) ? "" : String(v);
+  for(var i = 0; i < s.length; i++){
+    var c = s.charCodeAt(i);
+    if(c === 0 || (c >= 9 && c <= 13) || c === 32 || c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200F)
+       || c === 0x2028 || c === 0x2029 || c === 0x202F || c === 0x205F || c === 0x2060 || c === 0x3000 || c === 0xFEFF) continue;
+    return false;
+  }
+  return true;
+}
 function QRID_whenTrim(v){
   var s = String(v), i = 0, j = s.length;
   while(i < j && QRID_whenSpace(s.charCodeAt(i))) i++;
@@ -2635,7 +2759,7 @@ function QRID_deltaVerdict(spec, value, earlier){
    rows ("scale", "first", "male", "female"). */
 var QRID_GROWTH_DAYS_PER_MONTH = 30.4375, QRID_GROWTH_MAX_Z_TEXT = 999.99;
 /* The inputs a growth rule reads, as the suffix of its "range<Input>Op" keys. */
-var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"];
+var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By", "Measured"];
 /* What a growth rule can return to fields ("return"): php/growth_outputs.json,
    read on the server by GrowthOutputs. */
 /* @generated growth-outputs BEGIN — written from php/growth_outputs.json by tests/gen_mode_registry.cjs.
@@ -2652,10 +2776,25 @@ var QRID_GROWTH_OUTPUTS = {
   "value": {"written":"number","needs":"measurement","places":"typed","integer":false,"shapes":["column"],"unit":"measure","label":"{measure}"}
 };
 /* @generated growth-outputs END */
+/* What WHO's correction for how the child was measured adds: to the
+   measurement (corrects "measurement") or to the length or height (corrects
+   "axis"), as the reference's "position" says. 0 when it corrects the other
+   one, has nothing for this position (or position is null), or a "from" or
+   "below" age excludes axis position x (null: not known). Server twin:
+   GrowthReference::positionAdd. */
+function QRID_growthPositionAdd(ref, position, x, corrects){
+  var p = ref && ref.position;
+  if(!p || position === null || !Object.prototype.hasOwnProperty.call(p, position) || p.corrects !== corrects) return 0;
+  var s = p[position];
+  if(s.from !== undefined && !(x !== null && x >= parseFloat(s.from))) return 0;
+  if(s.below !== undefined && !(x !== null && x < parseFloat(s.below))) return 0;
+  return parseFloat(s.add);
+}
 /* Where on the reference's axis a measurement sits. `input` holds what the
    rule supplied: days or months (a number as text), dobDays and atDays (whole
    days since 1970-01-01, null for a blank date), or by (cm, as text); comma
-   reads a decimal comma in days, months or by.
+   reads a decimal comma in days, months or by. byAdd is added to by first
+   (QRID_growthPositionAdd), so the "valid" range judges the corrected length.
    Returns { state: "ok", x } or { state: "blank"|"outside"|"invalid", why }. */
 function QRID_growthAxis(ref, input){
   var comma = !!input.comma;
@@ -2672,7 +2811,7 @@ function QRID_growthAxis(ref, input){
     if(by === "") return { state: "blank", why: "the " + ref.axis + " is blank" };
     n = QRID_rangeNumber(by, comma);
     if(n === null || n === "") return { state: "invalid", why: "the " + ref.axis + " is not a number" };
-    return inRange(parseFloat(n), ref.axis);
+    return inRange(input.byAdd ? parseFloat(n) + input.byAdd : parseFloat(n), ref.axis);
   }
   var x;
   if(input.hasOwnProperty("dobDays") || input.hasOwnProperty("atDays")){
@@ -3123,6 +3262,9 @@ function QRID_selectOption(sel, code){
    typing, and the calculations and branching logic that read the field run.
    Server twin: UniversalValidator::applyReturns. */
 function QRID_writeReturned(name, text, announce, exact, lost){
+  /* A form the person may only read, or a locked one, shows the record as
+     saved (config.formReadOnly, EXS-2): nothing is written into it. */
+  if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true) return false;
   var el = QRID_returnElement(name);
   if(!el || typeof el.value !== "string") return false;
   var cur = el.value;
@@ -3133,7 +3275,12 @@ function QRID_writeReturned(name, text, announce, exact, lost){
   var opt = null;   /* the option or button that carries the code */
   if(text !== ""){
     if(isSelect) opt = QRID_selectOption(el, text);
-    else for(var oi = 0; oi < radios.length && !opt; oi++) if(radios[oi].value === text) opt = radios[oi];
+    /* A radio whose row an @UVCHOICES filter hid is not offered either: a
+       dropdown's hidden option is parked off the list, a radio's row only
+       hidden, and the save leaves both empty (CHO-2). */
+    else for(var oi = 0; oi < radios.length && !opt; oi++){
+      if(radios[oi].value === text && !(radios[oi].parentNode && radios[oi].parentNode.__qridHidden)) opt = radios[oi];
+    }
     if(!opt && (isSelect || radios.length)){
       if(lost) lost.push(name);
       text = "";
@@ -3427,15 +3574,15 @@ var QRID_WHEN = (function(){
      a 500ms interval (max 20 tries) plus a MutationObserver. A target that
      never appears is an off-page ref — the snapshot covers it, so giving up
      quietly is correct. */
-  /* Only a TIMER tick counts as a try. requestField() sweeps once per
-     requested ref, so a rule watching 84 codes used to spend every pending
-     target's 20 tries in one synchronous burst, and a late-rendered
-     autocomplete input then never bound at all. */
+  /* Only a TIMER tick counts as a try. requestField() used to sweep once per
+     requested ref, so a rule watching 84 codes spent every pending target's
+     20 tries in one synchronous burst, and a late-rendered autocomplete input
+     then never bound at all. */
   function sweep(tick){
     var remaining = [];
     for(var i = 0; i < targets.length; i++){
       var t = targets[i];
-      if(tryBind(t)) continue;
+      if(t.dead || bindTarget(t)) continue;
       if(tick) t.tries = (t.tries || 0) + 1;
       if((t.tries || 0) < 20) remaining.push(t);
     }
@@ -3443,27 +3590,63 @@ var QRID_WHEN = (function(){
     if(!targets.length) stopSweep();
     return !targets.length;
   }
+  /* A field's own element tells which of its other targets can ever appear:
+     radio buttons sit beside the hidden input that carries a radio's answer,
+     and REDCap builds the autocomplete box over a dropdown's select. A text
+     input or a textarea has neither, so once it binds those targets are
+     dropped, and no later sweep looks for them again (PRF-4). */
+  function bindTarget(t){
+    if(!tryBind(t)) return false;
+    if(t.siblings){
+      var els = document.getElementsByName(t.name), hidden = false, select = false;
+      for(var i = 0; i < els.length; i++){
+        var tag = (els[i].tagName || "").toLowerCase();
+        if(tag === "select") select = true;
+        else if(tag === "input" && (els[i].type || "").toLowerCase() === "hidden") hidden = true;
+      }
+      if(!hidden) t.siblings.radio.dead = true;
+      if(!select) t.siblings.ac.dead = true;
+    }
+    return true;
+  }
+  /* The new target, or null when that name was already asked for. */
   function queueTarget(name, field, events, byId){
     var key = (byId ? "id:" : "name:") + name;
-    if(queued[key]) return;
+    if(queued[key]) return null;
     queued[key] = true;
-    targets.push({ name: name, id: byId ? name : null, field: field, events: events, tries: 0 });
+    return { name: name, id: byId ? name : null, field: field, events: events, tries: 0 };
   }
+  /* Only the targets this call adds are looked up now. Sweeping every pending
+     target on each call repeated every earlier failed lookup once per field,
+     so a page of n referenced fields made about n squared lookups at boot
+     (PRF-4). A target that is not on the page yet waits for the timer and the
+     MutationObserver. */
   function requestField(f, code){
+    var fresh;
     if(code !== null){
       // classic REDCap: __chk__…_RC_code is the real checkbox and fires events.
-      queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]);
       // REDCap 17.x: that element is a hidden mirror (no events); the VISIBLE
       // checkbox shares the name __chkn__<field> — bind there so a live toggle
       // still re-evaluates the gate (LIVE-FOUND, see QRID_readCheckbox).
-      queueTarget("__chkn__" + f, f, ["change", "click"]);
+      fresh = [queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]),
+               queueTarget("__chkn__" + f, f, ["change", "click"])];
     } else {
-      queueTarget(f, f, ["input", "change"]);
-      queueTarget(f + "___radio", f, ["change", "click"]);
-      queueTarget("rc-ac-input_" + f, f, ["autocompleteselect", "autocompletechange", "change"], true);
+      var own = queueTarget(f, f, ["input", "change"]);
+      var radio = queueTarget(f + "___radio", f, ["change", "click"]);
+      var ac = queueTarget("rc-ac-input_" + f, f, ["autocompleteselect", "autocompletechange", "change"], true);
+      if(own && radio && ac) own.siblings = { radio: radio, ac: ac };
+      fresh = [own, radio, ac];
     }
-    if(typeof document === "undefined" || !document.getElementsByName) return;
-    if(sweep()) return;
+    var lookups = typeof document !== "undefined" && !!document.getElementsByName;
+    var waiting = false;
+    for(var i = 0; i < fresh.length; i++){
+      var t = fresh[i];
+      if(!t) continue;
+      if(lookups && (t.dead || bindTarget(t))) continue;
+      targets.push(t);
+      waiting = true;
+    }
+    if(!lookups || !waiting) return;
     if(timer === null && typeof setInterval === "function"){
       timer = setInterval(function(){ sweep(true); }, 500);
     }
@@ -3708,8 +3891,13 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
   UV_guard.items.push(input);
   if(UV_guard.armed) return;
   UV_guard.armed = true;
-  /* true when the save may go on, false when the guard held it */
-  function guard(e){
+  /* true when the save may go on, false when the guard held it. $by is the
+     button or element that asked for the save, when known: on a survey,
+     Previous Page and Save & Return Later save without finishing the
+     response, and the rules that wait for a complete response (REQ-7,
+     php/modes.json "surveySave") do not hold them. */
+  function guard(e, by){
+    var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice */
     if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return true;
@@ -3733,15 +3921,22 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     var live = UV_guard.items.filter(QRID_guardSpeaks);
     /* A field whose reason is given (@UVJUSTIFY) no longer holds the save for
        the modes a reason stands for. A lookup still in flight still waits
-       (pend, below), and a reason never adds a hold. */
-    var bad = live.filter(function(el){ return QRID_itemHolds(el) && !QRID_justified(el); });
+       (pend, below), and a reason never adds a hold. A survey save that does
+       not finish the response skips the modes that wait for a complete one
+       (REQ-7). */
+    var bad = live.filter(function(el){
+      if(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0) return false;
+      return QRID_itemHolds(el) && !QRID_justified(el);
+    });
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
        active rule can block, or fills fields from the answer (@UVEXISTS
        "return"), set __qridPending, and they drop it when the answer comes
        or after QRID_PENDING_MS. */
-    var pend = live.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
+    var pend = live.filter(function(el){
+      return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
+    });
     if(!bad.length && !pend.length) return true;
     var label = QRID_guardLabel;
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
@@ -3771,7 +3966,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     if(e.stopImmediatePropagation) e.stopImmediatePropagation();
     return false;
   }
-  document.addEventListener("submit", guard, true);
+  document.addEventListener("submit", function(e){ return guard(e, e && e.submitter); }, true);
   document.addEventListener("click", function(e){
     var t = e.target;
     while(t && t.getAttribute){
@@ -3781,7 +3976,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
            button's own onclick, dataEntrySubmit(this). The verdict cannot
            change in between, so the wrapper does not judge again; a re-run
            would repeat every recheck. */
-        if(guard(e)){
+        if(guard(e, t)){
           UV_guard.clickPass = true;
           setTimeout(function(){ UV_guard.clickPass = false; }, 0);
         }
@@ -3791,6 +3986,22 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     }
   }, true);
   QRID_guardDataEntrySubmit(guard);
+}
+/* The survey buttons that save a response without finishing it, and the rule
+   types that do not hold them (REQ-7). The server sends both on a survey page
+   from php/modes.json (common.partialSaveButtons, "surveySave"). */
+var QRID_PARTIAL_SAVE = (function(){
+  var p = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.partialSave;
+  return {
+    buttons: (p && Array.isArray(p.buttons)) ? p.buttons : [],
+    types: (p && Array.isArray(p.types)) ? p.types : []
+  };
+})();
+/* Whether the element that asked for a save is one of those buttons. */
+function QRID_partialSave(by){
+  if(!QRID_PARTIAL_SAVE.buttons.length || !by) return false;
+  var nm = (by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || ""));
+  return typeof nm === "string" && QRID_PARTIAL_SAVE.buttons.indexOf(nm) >= 0;
 }
 /* REDCap's own way into a data-entry save (LIVE-1). Pressing Enter in a text
    field runs a keydown handler that blurs the field and then calls
@@ -3812,10 +4023,10 @@ function QRID_guardDataEntrySubmit(guard){
     var orig = window.dataEntrySubmit;
     if(typeof orig !== "function") return false;
     if(orig.__qridGuarded) return true;
-    var guarded = function(){
+    var guarded = function(ob){
       if(!UV_guard.clickPass){
         var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){} };
-        if(!guard(ev)) return false;
+        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)) return false;
       }
       return orig.apply(this, arguments);
     };
@@ -4450,6 +4661,15 @@ function QRIDSingleInit(QRID_CONFIG){
         "character, so typos that keep the format cannot be detected.)" };
     }
 
+    /* A full-width digit or an invisible character left by a copy and paste
+       reads as a check-character typo below; name it instead (LIVE-5). No
+       format accepted the value, and every ID alphabet is printable ASCII. */
+    if(/[^\x20-\x7E]/.test(String(v).trim())){
+      return { ok: false, html: "&#10007; This value contains a character that is not allowed in an ID, such " +
+        "as a full-width or accented letter or digit, or an invisible character that a copy and paste can " +
+        "leave. Please re-type it." };
+    }
+
     /* ---- pass 2: a shape matched but its check character failed ---- */
     if(shapeFailed.length){
       var only = shapeFailed.length === 1 ? shapeFailed[0] : null;
@@ -4830,6 +5050,13 @@ function QRIDConstraintInit(QRID_CONFIG){
       var base = V.message ? QRID_ruleHtml(V, "message")
             : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
                               : "This value fails its validation rule for this field.");
+      /* Text in a number field fails a comparison such as [dose]<=100, and the
+         rule's own message ("above the maximum") then names the wrong cause
+         (LIVE-5). */
+      if(!ok && Object.prototype.hasOwnProperty.call(QRID_NUMBER_MARKS, fieldName)
+         && QRID_rangeNumber(val, QRID_NUMBER_MARKS[fieldName] === "comma") === null){
+        base = "This value is not a number.";
+      }
       /* Survey respondents get no field names or technical detail, as elsewhere. */
       if(!ok && V.snapshot && !QRID_IS_SURVEY){
         base += ' <span style="opacity:.8">(compared against ' +
@@ -4901,7 +5128,10 @@ function QRIDConstraintInit(QRID_CONFIG){
    new or changed value only (config.windowSaved holds the saved values): a
    saved value is judged against the day it was saved, after saving
    (UniversalValidator::findingsWindow), so opening an old record never flags
-   it. tests/window_dom_js.cjs locks this factory. */
+   it. notFuture still flags an unchanged value after today, as it was after
+   every earlier day too, but a pass of an unchanged value shows no green OK:
+   the value may have been in the future on the day it was saved, which the
+   audit judges (WIN-2). tests/window_dom_js.cjs locks this factory. */
 function QRIDWindowInit(QRID_CONFIG){
   function styleMsg(el, ok){
     var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -4990,8 +5220,8 @@ function QRIDWindowInit(QRID_CONFIG){
                      fromType: anchorKw !== null ? anchorType : (cfg.fromType == null ? null : cfg.fromType) },
              fromOp: fromOp,
              anchorKw: anchorKw, clockAnchor: clockAnchor,
-             /* the parts judged against today: a "from" of today or now, notPast */
-             todayRelative: clockAnchor || notPast,
+             /* the parts judged against today: a "from" of today or now, notPast, notFuture */
+             todayRelative: clockAnchor || notPast || notFuture,
              fromFormat: (fromOp && fromOp[0] === "ref") ? (cfg.fromFormat || "ymd") : "ymd",
              fromName: anchorKw === null ? ((typeof cfg.windowFrom === "string") ? cfg.windowFrom : "")
                      : clockAnchor ? anchorKw : QRID_temporalFormat(anchorKw, anchorType, cfg.dateFormat || "ymd"),
@@ -5011,8 +5241,8 @@ function QRIDWindowInit(QRID_CONFIG){
 
   /* Whether the field's value is new or changed since the page was built.
      config.windowSaved holds the saved value of each field a today-relative
-     part judges; only a new or changed value is judged against today, as a
-     saved one was judged against the day it was saved, after saving. A field
+     part judges; only a new or changed value is judged in full against today,
+     as a saved one was judged against the day it was saved, after saving. A field
      the server could not read (null) counts as unchanged, so nothing is
      judged against today there. Without windowSaved (a record not saved yet,
      a hand-written config) every value is new. */
@@ -5033,7 +5263,10 @@ function QRIDWindowInit(QRID_CONFIG){
      end counts from pastNow and its late end from futureNow. A period counted
      from "now" takes the plain now: a period is whole calendar days, and a
      margin would let it reach into the period before or after. r.skipped marks
-     a value whose today-relative parts were left out (an unchanged value). */
+     a value whose today-relative parts were left out (an unchanged value):
+     notPast and a window counted from today or now are dropped, notFuture is
+     kept (a value after today was after its save day too), and a pass shows
+     no green OK. */
   function verdictOf(V, fieldName){
     var val = QRID_WHEN.readRef(fieldName, null);
     var spec = V.spec, op = V.fromOp, anchor = null, anchorHi, skipped = false;
@@ -5485,7 +5718,9 @@ function QRID_growthColumnLabel(V, of){
    point (growthPoint) and the typed value: { state, why, sex, x, yRef (in
    the reference's unit, for the z-score), y (in the field's unit, for the
    chart), z, pct, typed, measure (QRID_growthMeasure's state) }, each null
-   when there is none; null when an input is not on this page. */
+   when there is none; null when an input is not on this page. yRef and y
+   carry the point's correction for how the child was measured, so the
+   point sits at its z-score among the curves; typed stays as typed. */
 function QRID_growthChartPoint(V, point, typed){
   if(!point || point.state === "withheld") return null;
   var ref = V.growth.ref, out = { state: point.state, why: point.why || null, sex: point.sex || null,
@@ -5493,8 +5728,9 @@ function QRID_growthChartPoint(V, point, typed){
   var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
   out.measure = m.state;
   if(m.state === "ok"){
-    out.yRef = m.y;
-    out.y = parseFloat(QRID_rangeNumber(typed, V.spec.decimalComma));
+    var add = (point.state === "ok" && point.yAdd) ? point.yAdd : 0;
+    out.yRef = m.y + add;
+    out.y = parseFloat(QRID_rangeNumber(typed, V.spec.decimalComma)) + (add && V.scale !== null ? add / parseFloat(V.scale) : add);
   }
   if(out.sex && out.x !== null && out.yRef !== null){
     var z = QRID_growthZScore(ref, out.sex, out.x, out.yRef);
@@ -6030,6 +6266,8 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       /* sex codes: letter case ignored unless caseSensitive (twin: GrowthReference::sexOf) */
       growth = { ref: gref, ops: ops, male: String(cfg.rangeMale), female: String(cfg.rangeFemale),
+                 lying: cfg.rangeLying === undefined ? null : String(cfg.rangeLying),
+                 standing: cfg.rangeStanding === undefined ? null : String(cfg.rangeStanding),
                  fold: cfg.caseSensitive !== true,
                  dobType: cfg.rangeDobType || "date", dobFormat: cfg.rangeDobFormat || "ymd",
                  atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
@@ -6178,7 +6416,9 @@ function QRIDRangeInit(QRID_CONFIG){
     var p = QRID_temporalDate(v, type, op[0] === "ref" ? format : "ymd");
     return p ? Math.floor(p.seconds / 86400) : undefined;
   }
-  /* Where a growth rule's inputs place the child: { state: "ok", sex, x },
+  /* Where a growth rule's inputs place the child: { state: "ok", sex, x,
+     yAdd } (yAdd: what the measurement gets added before it is scored, WHO's
+     correction for how the child was measured; one of the length is in x),
      { state: "withheld" } when an input was not sent to this page,
      { state: "typing" } while a date on this page is not yet a whole date,
      or { state: "inert", why } (a blank or unreadable input, a sex code that
@@ -6201,7 +6441,14 @@ function QRIDRangeInit(QRID_CONFIG){
       return { state: "inert", why: ins.Sex === "" ? "the sex is blank"
         : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };
     }
-    var input = { comma: g.comma };
+    /* "measured": a blank value or a code that is neither corrects nothing
+       (twin: GrowthReference::positionOf) */
+    var position = null;
+    if(g.ops.Measured && ins.Measured !== ""){
+      if(g.lying !== null && sexKey(ins.Measured) === sexKey(g.lying)) position = "lying";
+      else if(g.standing !== null && sexKey(ins.Measured) === sexKey(g.standing)) position = "standing";
+    }
+    var input = { comma: g.comma, byAdd: QRID_growthPositionAdd(g.ref, position, null, "axis") };
     if(g.ops.AgeDob){
       input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
       input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
@@ -6221,7 +6468,7 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     var a = QRID_growthAxis(g.ref, input);
     if(a.state !== "ok") return { state: "inert", why: a.why, sex: sex };
-    return { state: "ok", sex: sex, x: a.x };
+    return { state: "ok", sex: sex, x: a.x, yAdd: QRID_growthPositionAdd(g.ref, position, a.x, "measurement") };
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
@@ -6243,7 +6490,7 @@ function QRIDRangeInit(QRID_CONFIG){
     if(p.state === "withheld") return { tier: "withheld" };
     if(p.state === "typing") return { tier: "inert", why: null };
     if(p.state !== "ok") return noZ(p.why);
-    var z = QRID_growthZScore(g.ref, p.sex, p.x, m.y);
+    var z = QRID_growthZScore(g.ref, p.sex, p.x, m.y + p.yAdd);
     /* only "outside" (no row there): a server-sent table covers its "valid"
        range (GrowthReference::table), so this is a damaged reference */
     if(z.state !== "ok") return { tier: "inert", why: "the reference has no row at this " + (g.ref.axis === "age" ? "age" : g.ref.axis) };
@@ -6265,7 +6512,9 @@ function QRIDRangeInit(QRID_CONFIG){
     if(p.state === "ok"){
       var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
       var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
-      y = m.state === "ok" ? m.y : null;
+      /* the z-score and percentile score the corrected measurement; the
+         bounds are the reference's (twin: returnsRange) */
+      y = m.state === "ok" ? m.y + p.yAdd : null;
       o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, y,
         { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
         V.decimals, V.returnComma.range === true, V.scale, V.returnUnit);
@@ -7282,7 +7531,7 @@ function QRIDRequiredInit(QRID_CONFIG){
        so required composes with any other mode on the same input. */
     var GITEM = null;
     if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
-      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridType: QRID_CONFIG.type,
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} },
@@ -7327,7 +7576,7 @@ function QRIDRequiredInit(QRID_CONFIG){
         }
         QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
-      var blank = QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === "";
+      var blank = QRID_isBlank(QRID_WHEN.readRef(fieldName, null));
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
@@ -7361,7 +7610,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     QRID_registerValidator(f, { type: "required", mode: { required: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1 || QRID_fieldHidden(QRID_findAnchor(f))) return null;
-        return QRID_whenTrim(String(QRID_WHEN.readRef(f, null))) !== ""; } });
+        return !QRID_isBlank(QRID_WHEN.readRef(f, null)); } });
   });
   function boot(){
     if(configError){
@@ -7662,12 +7911,8 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(String(select.value) !== cur) select.value = cur;
       syncAutocomplete(changed);
     }
-    function optionWrappers(code){
+    function optionWrappers(code){   /* checkbox: a radio's come from renderOptions */
       var out = [];
-      var els = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
-      for(var i = 0; i < els.length; i++){
-        if(String(els[i].value) === code) out.push(els[i]);
-      }
       /* checkbox: the hidden mirror AND (REDCap 17.x) the visible checkbox both
          sit inside the same choicevert row, so hiding either one's parent hides
          the whole option — include both so the row hides on every rendering. */
@@ -7679,16 +7924,27 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     }
     function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper row */
       var buttons = QRID_enhancedChoiceButtons(fieldName);
+      /* A radio field's options in one pass, and its value read once, per
+         render (CHO-1). Looking each code up by walking every radio made a
+         400-option radio cost 160,803 element visits per change. */
+      var radioRows = null, cur = null;
+      if(!isCheckbox){
+        radioRows = Object.create(null);
+        var radios = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
+        for(var r = 0; r < radios.length; r++){
+          var rc = String(radios[r].value);
+          (radioRows[rc] || (radioRows[rc] = [])).push(radios[r]);
+        }
+        cur = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
+      }
       for(var i = 0; i < MANAGED.length; i++){
         var code = MANAGED[i];
         /* a checked/selected option is NEVER hidden from under the user. The
            checked state is read robustly (QRID_readCheckbox) because a checkbox
            option's .checked cannot be read off the hidden mirror on REDCap 17. */
-        var selected = isCheckbox
-          ? (QRID_readCheckbox(fieldName, code) === "1")
-          : (QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === code);
+        var selected = isCheckbox ? (QRID_readCheckbox(fieldName, code) === "1") : (cur === code);
         var hide = !!hiddenSet[code] && !selected;
-        var els = optionWrappers(code);
+        var els = isCheckbox ? optionWrappers(code) : (radioRows[code] || []);
         for(var j = 0; j < els.length; j++) QRID_choiceDisplay(els[j].parentNode, hide);
         var btns = buttons[code] || [];
         for(var b = 0; b < btns.length; b++) QRID_choiceDisplay(btns[b], hide);
@@ -7702,7 +7958,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     function staleCodes(V){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
-        var v = QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null)));
+        var v = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
         if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
         return out;
       }
@@ -7828,7 +8084,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     QRID_registerValidator(f, { type: "choices", mode: { choices: true, configError: configError },
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
-        var v = QRID_whenTrim(String(QRID_WHEN.readRef(f, null)));
+        var v = QRID_whenTrim(QRID_WHEN.readRef(f, null));
         if(v !== "") return !a[0].hiddenSet[v];
         for(var i = 0; i < a[0].hiddenList.length; i++){
           if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;
@@ -7865,7 +8121,7 @@ function QRID_choiceDisplay(el, hide){
   if(!el || !el.style) return;
   if(hide){
     if(!el.__qridHidden){ el.__qridDisplay = el.style.display || ""; el.__qridHidden = true; }
-    el.style.display = "none";
+    if(el.style.display !== "none") el.style.display = "none";   /* written only when it changes (CHO-1) */
   } else if(el.__qridHidden){
     el.style.display = el.__qridDisplay;
     el.__qridHidden = false;
@@ -8072,6 +8328,10 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
+      /* A record not saved when the page was drawn: its id is REDCap's guess
+         (auto-numbering), and a record another user saved under that id since
+         is not "this record" (UNQ-6). */
+      if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.newRecord === true) payload.newRecord = true;
       for(var wi = 0; wi < V.uniqueWith.length; wi++){
         var w = V.uniqueWith[wi];
         /* A "with" field this page does not carry is left out: the server
@@ -8081,10 +8341,12 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      /* Save asks again about a cached "used" older than QRID_RECHECK_MS: the
-         other record may have changed since. The guard holds the save
-         meanwhile. A re-ask that gets no usable answer keeps the old one. */
-      var prior = (cached && saving === true && cached.used === true && QRID_answerStale(cached)) ? cached : null;
+      /* Save asks again about a cached answer older than QRID_RECHECK_MS,
+         "used" or "free": another record may have changed since, and a
+         "free" given twenty minutes ago let a value saved meanwhile through
+         (UNQ-4). The guard holds the save meanwhile. A re-ask that gets no
+         usable answer keeps the old one. */
+      var prior = (cached && saving === true && typeof cached.used === "boolean" && QRID_answerStale(cached)) ? cached : null;
       if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
@@ -8263,6 +8525,9 @@ function QRIDExistsInit(QRID_CONFIG){
              whereMessage: (typeof cfg.whereMessage === "string" && cfg.whereMessage !== "") ? cfg.whereMessage : "",
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
+             /* the searched field, when it is on this form (EXS-6): its value
+                here is what this record holds, so it goes with the lookup */
+             selfIn: (typeof cfg.existsSelfIn === "string" && cfg.existsSelfIn !== "") ? cfg.existsSelfIn : null,
              returns: (cfg.existsReturnFields && cfg.existsReturnFields.length) ? cfg.existsReturnFields.slice() : [],
              numbers: (cfg.existsReturnNumbers && cfg.existsReturnNumbers.length) ? cfg.existsReturnNumbers.slice() : [],
              surveys: cfg.existsSurveys === true,
@@ -8390,6 +8655,22 @@ function QRIDExistsInit(QRID_CONFIG){
       return "";
     }
     function amberLine(text){ return '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(text) + "</div>"; }
+    /* On a form the person may only read, or a locked one, nothing is filled
+       (QRID_writeReturned). Whether what the lookup would copy differs from
+       what the fields show, so the person can be told (EXS-2). */
+    var READ_ONLY = !!(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true);
+    function differsFromShown(vals){
+      for(var k in vals){
+        if(!Object.prototype.hasOwnProperty.call(vals, k)) continue;
+        var rel = QRID_returnElement(k);
+        if(!rel || typeof rel.value !== "string") continue;
+        var cur = rel.value, text = String(vals[k]);
+        if(cur === text) continue;
+        if(NUMBERS[k] === true && cur !== "" && text !== "" && QRID_sameNumber(cur, text)) continue;
+        return true;
+      }
+      return false;
+    }
     function renderResp(resp, V, quiet){
       if(resp.state === "found"){
         styleMsg(msg, "ok");
@@ -8400,7 +8681,11 @@ function QRIDExistsInit(QRID_CONFIG){
           (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + "." +
           (kept ? amberLine(kept) : "");
         msg.innerHTML = html;
-        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object"){
+        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object" && READ_ONLY){
+          if(differsFromShown(foundValues(V, resp.values))){
+            msg.innerHTML = html + amberLine("The entry found now holds other values than this saved copy. This form cannot be changed here, so they are left as saved.");
+          }
+        } else if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object"){
           var at = seq, lost = fill(foundValues(V, resp.values), quiet);
           /* A write that set off a new judgement of this field (a "when"
              field it fills) left its own message: seq moved. */
@@ -8424,6 +8709,11 @@ function QRIDExistsInit(QRID_CONFIG){
           msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
             : "This value is not saved where it should be. Check it, or record it there first.");
         }
+        if(READ_ONLY && returnsOf(V).length){
+          var none = {};
+          for(var ni = 0; ni < OWNED.length; ni++) none[OWNED[ni]] = "";
+          if(differsFromShown(none)) msg.innerHTML += amberLine("This form cannot be changed here, so the fields this lookup fills are left as saved.");
+        }
         emptyOwned(quiet);
       } else {
         unknown(V, resp.why);
@@ -8432,7 +8722,9 @@ function QRIDExistsInit(QRID_CONFIG){
     /* The values a lookup for V sends, as the page holds them now: the value
        searched, then each match field. A match field this page does not
        carry (another form, another survey page) is left out: the server
-       reads its saved value. */
+       reads its saved value. The searched field, when this page carries it,
+       goes too: the record being edited holds what the page shows there, not
+       what was saved (EXS-6). */
     function lookupValues(V){
       var out = {};
       out[fieldName] = trim(QRID_WHEN.readRef(fieldName, null));
@@ -8440,6 +8732,7 @@ function QRIDExistsInit(QRID_CONFIG){
         var lf = V.locals[li];
         if(QRID_WHEN.has(lf, null)) out[lf] = trim(QRID_WHEN.readRef(lf, null));
       }
+      if(V.selfIn && QRID_WHEN.has(V.selfIn, null)) out[V.selfIn] = trim(QRID_WHEN.readRef(V.selfIn, null));
       return out;
     }
     /* One lookup: its values and the branch values sent with them. */
@@ -8604,8 +8897,10 @@ function QRIDExistsInit(QRID_CONFIG){
           }
         }
       }
-      for(var lj = 0; lj < VS.all[vi].locals.length; lj++){
-        var lname = VS.all[vi].locals[lj];
+      var watched = VS.all[vi].locals.slice();
+      if(VS.all[vi].selfIn) watched.push(VS.all[vi].selfIn);
+      for(var lj = 0; lj < watched.length; lj++){
+        var lname = watched[lj];
         if(!Object.prototype.hasOwnProperty.call(dirty, lname)){ dirty[lname] = false; watchTyping(lname, QRID_findAnchor(lname)); }
         var lw = QRID_WHEN.gateFor("[" + lname + "]<>''", null);
         if(lw) lw.onChange(settle);
@@ -9259,16 +9554,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "windowUnit", "windowNotFuture", "dateType", "dateFormat", "fromType",
                       "fromFormat", "windowAnchor", "windowPeriod", "windowOffLo",
                       "windowOffHi", "windowWeekStart", "windowNotPast", "snapshotGate",
-                      "windowNotFutureOff", "existsLocal", "existsSurveys",
+                      "windowNotFutureOff", "existsLocal", "existsSelfIn", "existsSurveys",
                       "existsReturnFields", "existsReturnNumbers", "whereMessage",
                       "rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi",
                       "rangeSoftBlock", "rangeHardBlock", "rangeUnit", "rangeSoftText",
                       "rangeHardText", "decimalComma", "rangeComputed", "rangeReference",
                       "rangeSexOp", "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
-                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
-                      "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
-                      "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText",
-                      "rangeMeasureScale", "rangeReturn", "rangeReturnLimits", "rangeDecimals",
+                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeMeasuredOp",
+                      "rangeLying", "rangeStanding", "rangeDobType", "rangeDobFormat",
+                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
+                      "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
+                      "rangeReturn", "rangeReturnLimits", "rangeDecimals",
                       "rangePercentileDecimals", "rangeReturnComma", "deferredOnSave",
                       "extendedAdvisory", "growthIdle", "selectorBlocked", "rangeShow",
                       "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
@@ -9387,6 +9683,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         cfg.branches.push(bc);
       }
       cfg.fields = rule.fields || [];
+      cfg.type = rule.type;                 /* the guard asks a rule's type (QRID_PARTIAL_SAVE) */
       /* branches split by this key resolve per group (QRID_buildVariants) */
       cfg.branchGroup = (typeof rule.type === "string" && own(BRANCH_GROUP_OF_TYPE, rule.type)) ? BRANCH_GROUP_OF_TYPE[rule.type] : null;
       if(rule.configError) cfg.configErrorOverride = rule.configError;
@@ -9399,6 +9696,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
              : C[k];
     }
     cfg.fields = rule.fields || [];
+    cfg.type = rule.type;                   /* the guard asks a rule's type (QRID_PARTIAL_SAVE) */
     /* a rule the server flagged as mis-configured (e.g. a non-integer expected
        count or bad id-lengths) surfaces as a field-level config error, never as
        silent wrong validation. */
@@ -9538,7 +9836,7 @@ window.INSPIREUniversalValidator = {
     percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
     normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
     roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED,
-    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ
+    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd
   },
   chartLogic: {                              /* @UVRANGE "show", locked by tests/growth_chart_dom_js.cjs */
     geometry: QRID_CHART, step: QRID_chartStep, ticks: QRID_chartTicks, xUnit: QRID_chartXUnit, span: QRID_growthSpan,

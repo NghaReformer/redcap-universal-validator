@@ -418,5 +418,19 @@ function radioField(name, value, disabled) {
   check('@READONLY autocomplete dropdown: never holds the save', ev._prevented === false);
 }
 
+// ---- REQ-8: one blank test, pinned by tests/blank_fixture.json ----------------
+// The page read a no-break space, an ideographic space or a zero-width space
+// as an answer; the audit read the same values as blank. Each row is judged
+// by the page factory here and by the save audit in required_pages_php.php.
+{
+  const fx = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'blank_fixture.json'), 'utf8'));
+  for (const row of fx.rows) {
+    const el = makeEl('input'); el.name = 'note'; el.type = 'text'; el.value = row.value;
+    const env = boot([el], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['note'], blockSave: 'hard' }] });
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    check('blank fixture "' + row.name + '": ' + (row.blank ? 'blank, held' : 'an answer, saved'), ev._prevented === row.blank);
+  }
+}
+
 console.log(`required_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

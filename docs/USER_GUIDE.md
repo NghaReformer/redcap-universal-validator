@@ -308,6 +308,19 @@ Three forms, from simplest to fullest:
 Rules for the annotation form:
 
 - Use **double quotes** inside the JSON. Single-quoted JSON is rejected.
+- Spaces may stand around the `=`, and a long JSON value may start on the next
+  line: `@UVALIDATE = {"blockSave":"hard"}` reads the same as
+  `@UVALIDATE={"blockSave":"hard"}`. This holds for every tag of the module.
+- The module does not read REDCap's `@IF(...)`. A module tag inside it would
+  apply whatever the condition says, so it is refused with a configuration
+  error. Put the tag outside `@IF` and give the rule a `"when"` with the
+  condition instead.
+- A tag name inside the value of another tag is text, not a tag. A
+  `"message"` that names `@UVREQUIRED`, or `@DEFAULT='see @UVALIDATE rules'`,
+  makes no rule. The same holds for a name that follows a letter or digit,
+  such as `email@UVREQUIRED.org`. A tag starts the annotation, follows a space
+  or a line break, or follows the closing quote, brace or parenthesis of
+  another tag's value.
 - `algorithm` accepts case-insensitive **shorthands** (`3736`, `9710`, `mod10`,
   `gs1`, `isbn`, `regex`, …) — see [Appendix B](#appendix-b-algorithm-shorthands).
 - **Fields with identical tags are grouped into one rule** automatically. Tag 50
@@ -752,11 +765,19 @@ Rejected shapes include:
 - **A repeated ambiguous group:** `(a|aa)+`, `(a?)+`, `([0-9]{1,20}){1,20}`
 - **Overlapping unbounded quantifiers with nothing required between them:**
   `.*.*`, `[0-9]*[0-9]*`, `[A-Z]+[A-Z0-9]+`, `A*A*A*9`
+- **Three or more overlapping unbounded quantifiers joined by characters they
+  also match:** `.*-.*-.*`, `[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*`, `\w+_\w+_\w+`.
+  A `.` or `[A-Z0-9-]` matches the `-` too, so on a run of dashes the browser
+  tries every way to split them: one check of `.*-.*-.*-.*-.*X` on 200 dashes
+  took 5.6 seconds.
 
 The fix is almost always to put a **required, non-overlapping** piece between
-quantifiers, or to use bounded lengths. `.*x.*` is fine (the `x` anchors the
-split); `[A-Z]+[0-9]+` is fine (the classes do not overlap); `FC[0-9]{4}` and
-`TB-[0-9]{6}` are fine. See [Appendix D](#appendix-d-safe-vs-risky-patterns) for
+quantifiers, or to use bounded lengths. `[A-Z]+-[A-Z]+-[A-Z]+` is fine
+(`[A-Z]` cannot match the `-`, so each `-` fixes a split); `.*x.*` is fine (two
+quantifiers try at most n × n splits); `[A-Z]+[0-9]+` is fine (the classes do
+not overlap); `FC[0-9]{4}` and `TB-[0-9]{6}` are fine. The guard reads `\d`,
+`\w` and `\s` as the classes they stand for, so `\d+-\d+-\d+` and
+`[0-9]+\.[0-9]+` pass. See [Appendix D](#appendix-d-safe-vs-risky-patterns) for
 the full worked list.
 
 If your pattern is rejected, you do not need to understand the theory — rewrite
@@ -786,7 +807,8 @@ Four log entry types make sure nothing passes silently:
 - `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
-  Check those values by hand.
+  Check those values by hand. A rule refused when it was read (its `why` starts
+  with "configuration error:") is logged once for each save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
 
 ### The coverage caveat (read before relying on it)
@@ -798,19 +820,20 @@ entry. **Do not assume import/API writes are audited until you have verified it 
 your own instance** (the check is in [`TESTING.md`](TESTING.md)). Browser form and
 survey entry are the paths you can count on.
 
-Since 1.4.0 there is a reliable way to catch what the hook may have missed:
-the **Validation scan** page (left project menu, design rights) re-runs every
-rule over every saved record on demand — run it after bulk imports and before
-data locks/exports, and work through its CSV.
+The Validation scan page (left project menu, design rights) catches what
+the hook may have missed: it re-runs every rule over every saved record on
+demand. Run it after bulk imports and before data locks and exports. An
+administrator has to turn it on first, for the server and for the project
+(README, "The Validation scan"). The page shows how many records it has checked
+and how many findings it has, and whether the result can be called clean. It
+has no list of the findings and no download yet, so it tells you whether a
+project needs attention, not where.
 
-Two things about that page, both since 1.6.2. If you work inside a **Data Access
-Group** and the page says *"Your Data Access Group could not be resolved, so
-there is no scope to scan"*, that is deliberate and it is not a bug in your
-project: the page cannot work out which records are yours, and it will refuse
-rather than scan nothing and report the project clean. Ask an administrator to
-check your group assignment. And the on-screen table stops at **1,000 rows** on
-projects with more violations than that — the count above the table, and the
-downloaded CSV, always cover every violation found.
+If you work inside a Data Access Group and the page says *"Your Data Access
+Group could not be resolved, so there is no scope to scan"*, that is deliberate
+and it is not a bug in your project: the page cannot work out which records are
+yours, and it will refuse rather than scan nothing and report the project clean.
+Ask an administrator to check your group assignment.
 
 ### Privacy modes for the log
 
@@ -970,8 +993,10 @@ entered or changed, with optional composite keys (`with`), project/DAG/event
 scopes, and a real save block. When the check cannot be made, staff see "Could
 not check" with the reason, and the save goes through; the exception is the
 limit of 60 lookups a minute, where a blocking rule holds the save until the
-server answers again. Two saves at the same instant can both pass the live check —
-the post-save audit logs such a collision to the module log. Letter case is
+server answers again. The live check is advisory: an answer is as old as the
+check that gave it, so Save asks again about any answer 30 seconds old or more.
+Two saves within 30 seconds of their last checks can both pass, and the post-save
+audit logs such a collision to the module log. Letter case is
 ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
 an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when
 case tells two IDs apart.
@@ -1016,7 +1041,9 @@ the window is checked when the record is saved. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
 judge a saved value against the day it was saved, so an old record never turns
-red because time has passed. Annotation-only; see the README section and
+red because time has passed. `notFuture` does too after saving; on the form it
+still flags a saved date after today, and shows no "OK" for a saved date that
+passes. Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Can a specimen ID on a result form be checked against the registered specimens?**
@@ -1033,7 +1060,9 @@ seconds or more is asked again at Save and stands if that second question gets
 no answer. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open, and a user in a Data Access Group only on records
-of their group. Surveys need `"surveys":true`, which is refused when the lookup
+of their group. A value saved nowhere is "not found" for a user in a group
+too: the module reads which records hold the value from the data table, which
+REDCap does not confine to a group. Surveys need `"surveys":true`, which is refused when the lookup
 touches an Identifier field. Letter case is ignored (`sp-1` finds `SP-1`)
 unless the rule sets `"caseSensitive":true`, and a searched field that holds
 numbers is compared by value, so `7` finds `007`.
@@ -1080,7 +1109,9 @@ there only goes into one flagged Identifier here. From another project, the
 lab project must also list the fields it lets this project copy, under "Only
 users who have rights". The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
-change to the entry found reaches this record when it is saved again.
+change to the entry found reaches this record when it is saved again. The save
+writes them only into a form the person who saved may change, and a locked
+form, or one the user may only read, is not filled on the page.
 
 **Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
 Yes. Add `where`, a condition on the entry found:
@@ -1232,9 +1263,14 @@ module's system settings. Level 7 of `@UVRANGE` in the guide of examples
 walks through it with three worked tables (by month, by length, and from a
 mean and an SD per week of gestation), `data/references/README.md` in the
 module describes the formats, and `convert.php --check` prints a z-score from
-the new table to compare with the source. WHO's 0.7 cm correction for a length measured standing, or a
-height measured lying, is not applied by the module; a calc field can apply it,
-as the guide of examples shows.
+the new table to compare with the source. For WHO's 0.7 cm correction of a length measured standing, or a
+height measured lying, name the field that says how the child was measured:
+`"measured":{"field":"[measured]","lying":"1","standing":"2"}`.
+Length/height-for-age corrects the measurement, and weight-for-length and
+weight-for-height correct the length or height in `by`, as WHO's software
+does; a blank position corrects nothing. BMI-for-age scores a BMI, so correct
+the height in the calc that works out the BMI, as the guide of examples
+shows.
 
 **Can one weight field be checked against weight-for-age and weight-for-height?**
 Yes. Several `@UVRANGE` tags that name different references on one field all
@@ -1278,7 +1314,9 @@ cannot share one. A rule that returns values cannot read a returned field,
 its own or another rule's. When the date of birth or another input sits in
 another event, saving that event refills the fields in every visit that reads
 it. The project setting "@UVRANGE returned values" keeps the page fill and
-turns off the write on save.
+turns off the write on save. The save writes only into a form the person who
+saved may change, and the page fills nothing on a locked form or one the user
+may only read.
 
 **Can a rule write the percentile, or the weight at -2 SD or at the median?**
 Yes. `return` also takes `percentile`, `valueAtZ:<z-score>` and
@@ -1445,7 +1483,8 @@ time; **safe** patterns pass. Use the safe column as templates.
 | `(a+)+`, `([A-Z]+)*`, `(\d+)+` | `[A-Z]+[0-9]+`, `[0-9A-Z]{9}` |
 | `(a\|aa)+`, `(a?)+`, `((a)\|(aa))+` | `(FC\|TB)[0-9]{4}`, `(?:FC\|TB)-[0-9]{4}` |
 | `([0-9]{1,20}){1,20}` | `\d{8,10}`, `([A-Z]{2,3})[0-9]{4,6}` |
-| `.*.*`, `.*.*.*.*.*b` | `.*x.*` (a required atom separates them) |
+| `.*.*`, `.*.*.*.*.*b` | `.*x.*` (two quantifiers only) |
+| `.*-.*-.*X`, `[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*X` | `[A-Z]+-[A-Z]+-[A-Z]+`, `\d+-\d+-\d+` |
 | `[0-9]*[0-9]*…b`, `a*a*` | `FC[0-9]{4}`, `TB-[0-9]{6}` |
 | `[A-Z]+[A-Z0-9]+`, `A*A*A*9` | `[A-Z]+[0-9]+`, `[A-Z]+-[A-Z]+` |
 | `(abc)+(abc)+` | `(abc)+`, `(19\|20)[0-9]{2}` |

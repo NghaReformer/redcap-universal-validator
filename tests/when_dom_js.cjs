@@ -14,7 +14,10 @@
  *   - the pooled factory honors the same gate,
  *   - a rule without "when" is untouched (regression),
  *   - a D-M-Y or M-D-Y date (config.dateFormats) is compared as its stored
- *     Y-M-D, as the server compares it.
+ *     Y-M-D, as the server compares it,
+ *   - boot looks each target up once, not once per later field (PRF-4): a
+ *     text ref drops its ___radio and autocomplete targets, a radio keeps
+ *     its buttons, and a dropdown's late autocomplete box still binds.
  *
  * The evaluator itself is parity-locked by tests/when_js.cjs + when_php.php;
  * this file only tests the DOM wiring around it.
@@ -56,8 +59,9 @@ function makeEl(tag) {
 }
 
 /* Boot a fresh engine instance over a fresh DOM. els: pre-existing page
-   elements (inputs, selects, ...); config: the injected module config. */
-function boot(els, config) {
+   elements (inputs, selects, ...); config: the injected module config;
+   setup(doc, win): runs before the engine loads. */
+function boot(els, config, setup) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const allEls = [];
@@ -84,6 +88,7 @@ function boot(els, config) {
     INSPIRE_VALIDATOR_CONFIG: config,
   };
   global.document = doc; global.window = win;
+  if (setup) setup(doc, win, allEls);
   const origError = console.error;
   const consoleErrors = [];
   console.error = (m) => consoleErrors.push(String(m));
@@ -468,6 +473,80 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
       check(label + 'first side of the OR, letter case ignored -> judged', judged() && blocks() === true);
     }
   }
+}
+
+// ---- PRF-4: boot looks each target up once --------------------------------
+// requestField() used to sweep every pending target once per requested field.
+// A text ref's ___radio and autocomplete targets never bind, so each new field
+// repeated every earlier field's failed lookups: n squared at boot.
+{
+  const realInterval = global.setInterval;
+  function page(count) {
+    const els = [], rules = [];
+    for (let i = 0; i < count; i++) {
+      const t = makeEl('input'); t.name = 't' + i; t.value = '';
+      const r = makeEl('input'); r.name = 'r' + i; r.value = '';
+      els.push(t, r);
+      rules.push({ type: 'required', fields: ['t' + i], when: "[r" + i + "]='x'" });
+    }
+    return { els, rules };
+  }
+  function lookups(count) {
+    const { els, rules } = page(count);
+    const seen = { byName: 0, byId: 0, names: {}, ids: {} };
+    const ticks = [];
+    global.setInterval = (fn) => { ticks.push(fn); return { unref() {} }; };
+    let env;
+    try {
+      env = boot(els, { singleFields: [], pooledFields: [], rules }, (doc) => {
+        const byName = doc.getElementsByName, byId = doc.getElementById;
+        doc.getElementsByName = function (nm) { seen.byName++; seen.names[nm] = (seen.names[nm] || 0) + 1; return byName.call(doc, nm); };
+        doc.getElementById = function (id) { seen.byId++; seen.ids[id] = (seen.ids[id] || 0) + 1; return byId.call(doc, id); };
+      });
+    } finally { global.setInterval = realInterval; }
+    return { seen, ticks, env };
+  }
+  const small = lookups(20), large = lookups(80);
+  const ratio = large.seen.byName / small.seen.byName;
+  check('PRF-4: name lookups grow with the fields, not their square (20 -> ' + small.seen.byName
+    + ', 80 -> ' + large.seen.byName + ', x' + ratio.toFixed(2) + ')', ratio < 4.6);
+  check('PRF-4: id lookups grow with the fields too (20 -> ' + small.seen.byId + ', 80 -> ' + large.seen.byId + ')',
+    large.seen.byId <= 4.6 * Math.max(1, small.seen.byId));
+  check('PRF-4: a text ref\'s ___radio target is looked up once at most',
+    Object.keys(large.seen.names).filter((k) => /___radio$/.test(k)).every((k) => large.seen.names[k] <= 1));
+  // The text refs are bound and their other targets dropped: a timer tick finds nothing to do.
+  const before = large.seen.byName + large.seen.byId;
+  large.ticks.forEach((fn) => fn());
+  check('PRF-4: no target is left to sweep once every text ref is bound', large.seen.byName + large.seen.byId === before);
+  // The gate still hears its refs.
+  const env = large.env;
+  const r5 = env.doc.getElementsByName('r5')[0], t5 = env.doc.getElementsByName('t5')[0];
+  r5.value = 'x'; r5.fire('change');
+  check('PRF-4: a bound text ref still switches its rule on', t5.getAttribute('aria-invalid') === 'true');
+}
+{
+  // A dropdown keeps its autocomplete target: REDCap builds that box after load.
+  const realInterval = global.setInterval;
+  const ticks = [];
+  const t = makeEl('input'); t.name = 'target'; t.value = '';
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  let all;
+  global.setInterval = (fn) => { ticks.push(fn); return { unref() {} }; };
+  let env;
+  try {
+    env = boot([t, site], { singleFields: [], pooledFields: [],
+      rules: [{ type: 'required', fields: ['target'], when: "[site]='2'" }] }, (doc, win, els) => { all = els; });
+  } finally { global.setInterval = realInterval; }
+  check('PRF-4: a dropdown ref keeps waiting for its autocomplete box', ticks.length >= 1);
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.type = 'text';
+  all.push(ac);
+  ticks.forEach((fn) => fn());
+  check('PRF-4: the late autocomplete box is bound', ac.__qridWhenBound === true);
+  // The box's handler waits one turn for REDCap to write the select: run it now.
+  const realTimeout = global.setTimeout;
+  global.setTimeout = (fn) => { fn(); return 0; };
+  try { site.value = '2'; ac.fire('change'); } finally { global.setTimeout = realTimeout; }
+  check('PRF-4: the late autocomplete box switches the rule on', t.getAttribute('aria-invalid') === 'true');
 }
 
 console.log(`when_dom_js: ${n} checks, ${fail} failure(s)`);

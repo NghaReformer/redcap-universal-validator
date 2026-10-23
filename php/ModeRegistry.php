@@ -81,6 +81,9 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['surveySave']) && $m['surveySave'] !== 'complete') {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a surveySave that is not complete');
+            }
             if (isset($m['bareValue']) && !in_array($m['bareValue'], ['token', 'condition'], true)) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a bareValue that is not token or condition');
             }
@@ -191,7 +194,7 @@ final class ModeRegistry
                 if (!isset($rk['key'], $rk['kind']) || !in_array($rk['kind'], ['cond', 'fieldList', 'operand'], true)
                     || ($rk['kind'] === 'operand' && (!isset($rk['op'], $rk['value'])
                         || !is_string($rk['op']) || !is_string($rk['value'])))
-                    || (isset($rk['withholdIf']) && (!is_string($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
+                    || (isset($rk['withholdIf']) && (!self::isKeyList($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a malformed refKeys entry');
                 }
             }
@@ -632,6 +635,39 @@ final class ModeRegistry
         return self::mode($mode)['missingCodes'];
     }
 
+    /**
+     * Whether rules of $type judge a survey response only once it is complete
+     * (php/modes.json "surveySave": "complete"; REQ-5, REQ-7).
+     */
+    public static function waitsForCompleteSurvey($type)
+    {
+        $m = self::mode(self::modeOfType((string) $type));
+        return isset($m['surveySave']) && $m['surveySave'] === 'complete';
+    }
+
+    /**
+     * What a survey page needs to let a save that does not finish the response
+     * through (REQ-7): the names of those buttons (common.partialSaveButtons)
+     * and the rule types that wait for a complete response. Null when no type
+     * waits.
+     *
+     * @return array{buttons: string[], types: string[]}|null
+     */
+    public static function partialSave()
+    {
+        return self::memo('partialSave', function () {
+            $c = isset(self::data()['common']['partialSaveButtons']) && is_array(self::data()['common']['partialSaveButtons'])
+                ? array_values(array_filter(self::data()['common']['partialSaveButtons'], 'is_string')) : [];
+            $types = [];
+            foreach (self::data()['modes'] as $m) {
+                if (isset($m['surveySave']) && $m['surveySave'] === 'complete') {
+                    foreach ($m['types'] as $t) $types[] = $t;
+                }
+            }
+            return ($c && $types) ? ['buttons' => $c, 'types' => $types] : null;
+        });
+    }
+
     /** Whether the mode needs a runtime service ('transport', 'clock'). */
     public static function needs($mode, $what)
     {
@@ -709,7 +745,26 @@ final class ModeRegistry
      */
     public static function withholds(array $rk, array $rule)
     {
-        return isset($rk['withholdIf']) && !empty($rule[$rk['withholdIf']]);
+        if (!isset($rk['withholdIf'])) return false;
+        foreach ((array) $rk['withholdIf'] as $k) {
+            if (!empty($rule[$k])) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A rule key, or a non-empty list of them (withholdIf). @UVWINDOW lists
+     * notFuture and notPast: either one is checked without the "from" date,
+     * so either keeps the rule live when that date cannot be read (WIN-1).
+     */
+    private static function isKeyList($v)
+    {
+        if (is_string($v)) return $v !== '';
+        if (!is_array($v) || !$v || array_values($v) !== $v) return false;
+        foreach ($v as $k) {
+            if (!is_string($k) || $k === '') return false;
+        }
+        return true;
     }
 
     /**

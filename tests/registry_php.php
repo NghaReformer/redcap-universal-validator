@@ -84,7 +84,7 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // today, now and written dates, periods, notPast; notFuture dropped for its time zone
     'windowAnchor', 'windowPeriod', 'windowOffLo', 'windowOffHi', 'windowWeekStart', 'windowNotPast', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS
-    'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
+    'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsSelfIn', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project
     'existsProject', 'existsPid', 'existsRemoteTargets',
     // @UVEXISTS "return": the map, the fields it writes, the ones that hold numbers
@@ -96,7 +96,10 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
     // 2.6.0 @UVRANGE growth references
     'rangeReference', 'rangeSex', 'rangeMale', 'rangeFemale', 'rangeAgeDob', 'rangeAgeAt',
-    'rangeAgeDays', 'rangeAgeMonths', 'rangeBy', 'rangeDobType', 'rangeDobFormat',
+    'rangeAgeDays', 'rangeAgeMonths', 'rangeBy',
+    // @UVRANGE "measured": the field, and its codes for lying and standing (RNG-3)
+    'rangeMeasured', 'rangeLying', 'rangeStanding',
+    'rangeDobType', 'rangeDobFormat',
     'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
     // @UVRANGE "plausible" and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
@@ -139,7 +142,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // a condition read when the page opened; notFuture dropped for its time zone
     'snapshotGate', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
-    'existsLocal', 'existsSurveys',
+    'existsLocal', 'existsSelfIn', 'existsSurveys',
     // @UVEXISTS "return": the page learns the fields it fills, never where the values come from
     'existsReturnFields', 'existsReturnNumbers',
     // @UVEXISTS "where": the page gets only the message, never the condition
@@ -150,7 +153,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // 2.6.0 @UVRANGE growth references (the inputs travel folded, as ops;
     // deferredOnSave marks a rule the page could not carry but the save checks)
     'rangeReference', 'rangeSexOp', 'rangeMale', 'rangeFemale', 'rangeAgeDobOp', 'rangeAgeAtOp',
-    'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp', 'rangeDobType', 'rangeDobFormat',
+    'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp',
+    // @UVRANGE "measured" (RNG-3)
+    'rangeMeasuredOp', 'rangeLying', 'rangeStanding',
+    'rangeDobType', 'rangeDobFormat',
     'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
     // "plausible" (its text in the reference's unit) and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
@@ -361,6 +367,7 @@ check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], 
          ['rangeSex', 'rangeSexOp', 'rangeSexValue'], ['rangeAgeDob', 'rangeAgeDobOp', 'rangeAgeDobValue'],
          ['rangeAgeAt', 'rangeAgeAtOp', 'rangeAgeAtValue'], ['rangeAgeDays', 'rangeAgeDaysOp', 'rangeAgeDaysValue'],
          ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue'],
+         ['rangeMeasured', 'rangeMeasuredOp', 'rangeMeasuredValue'],
          ['deltaVs', 'deltaVsOp', 'deltaVsValue']]);
 check('an operand is not a condition key', !in_array('windowFrom', ModeRegistry::condKeys(), true));
 foreach ([
@@ -613,6 +620,15 @@ check('the real registry loads again after a failure', ModeRegistry::modeOfType(
 $threw = false;
 try { ModeRegistry::mode('nope'); } catch (\InvalidArgumentException $e) { $threw = true; }
 check('an unknown mode name throws', $threw);
+
+// REQ-5, REQ-7: the modes that judge a survey response only once it is complete
+check('surveySave: @UVREQUIRED waits for a complete survey response', ModeRegistry::waitsForCompleteSurvey('required') === true);
+$allTypes = []; foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) $allTypes[] = $t;
+$waiting = array_values(array_filter($allTypes, function ($t) { return ModeRegistry::waitsForCompleteSurvey($t); }));
+check('surveySave: no other mode waits (got ' . json_encode($waiting) . ')', $waiting === ['required']);
+check('surveySave: an unknown type does not wait', ModeRegistry::waitsForCompleteSurvey('nope') === false);
+check('partialSave: the two survey buttons and the waiting types',
+    ModeRegistry::partialSave() === ['buttons' => ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], 'types' => ['required']]);
 
 echo "registry_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

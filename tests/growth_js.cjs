@@ -39,6 +39,11 @@ for (const c of fx.axis) {
   const got = G.axis(R[c.ref], c.input);
   check('axis: ' + c.name + ' (got ' + JSON.stringify(got) + ')', sameState(got, c.want));
 }
+// WHO's correction for how the child was measured ("position", RNG-3)
+for (const c of fx.position) {
+  const got = G.positionAdd(R[c.ref], c.position, c.x, c.corrects);
+  check('position: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+}
 for (const c of fx.lms) {
   const got = G.lms(R[c.ref], c.sex, c.x);
   check('lms: ' + c.name + ' (got ' + JSON.stringify(got) + ')', sameLms(got, c.want));

@@ -173,9 +173,18 @@ namespace {
         }
         return null;
     }
+    /**
+     * The entries of one audit of $type. Each save also logs every refused
+     * rule with fields on the form (VAL-15, tests/hook_php.php); those
+     * "configuration error:" entries are left out here, so a rule problem
+     * means one the save itself met.
+     */
     function findings($m, $type = 'invalid-id-saved') {
         return array_values(array_map(function ($c) { return $c[1]; },
-            array_filter($m->logCalls, function ($c) use ($type) { return $c[0] === $type; })));
+            array_filter($m->logCalls, function ($c) use ($type) {
+                return $c[0] === $type && !($type === 'uvalidate-unconfigurable'
+                    && strpos((string) ($c[1]['why'] ?? ''), 'configuration error:') === 0);
+            })));
     }
     /**
      * delta findings of one audit, field => finding; with $evt (and $inst),

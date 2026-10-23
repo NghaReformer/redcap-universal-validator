@@ -966,5 +966,40 @@ function submitEv() {
     !/Too much|not set up|unavailable/.test(msg ? msg.innerHTML : '') && ev._prevented === false && env.consoleErrors.length === 0);
 }
 
+// ---- LIVE-5 (review 2026-10-21): name the real cause -------------------------
+{
+  // Text in a number field fails [dose]<=100; the rule's message would call it
+  // "above the maximum".
+  const dose = makeEl('input'); dose.name = 'dose'; dose.value = 'abc';
+  const env = boot([dose], { singleFields: [], pooledFields: [], numberMarks: { dose: 'point' },
+    rules: [{ type: 'constraint', fields: ['dose'], assert: '[dose]<=100', message: 'Above the maximum of 100', blockSave: 'hard' }] });
+  check('LIVE-5: text in a number field reads "not a number"',
+    /This value is not a number\./.test(cMsg(env, 'dose').innerHTML) && !/Above the maximum/.test(cMsg(env, 'dose').innerHTML)
+    && dose.getAttribute('aria-invalid') === 'true');
+  dose.value = '150'; dose.fire('change');
+  check('LIVE-5: a number past the limit keeps the rule message', /Above the maximum of 100/.test(cMsg(env, 'dose').innerHTML));
+  dose.value = '1e3'; dose.fire('change');
+  check('LIVE-5: an exponent is a number', /Above the maximum of 100/.test(cMsg(env, 'dose').innerHTML));
+  // The same text in a field that holds no number keeps the message.
+  const t = makeEl('input'); t.name = 'tdose'; t.value = 'abc';
+  const envT = boot([t], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['tdose'], assert: '[tdose]<=100', message: 'Above the maximum of 100', blockSave: 'hard' }] });
+  check('LIVE-5: a field with no number mark keeps the rule message', /Above the maximum of 100/.test(cMsg(envT, 'tdose').innerHTML));
+}
+{
+  // A full-width digit or an invisible character is not a check-character typo.
+  const ids = { wide: '\uFF10ABC00001X', zw: '0ABC0\u200B0001X', typo: '0ABC00001X' };
+  const out = {};
+  for (const k of Object.keys(ids)) {
+    const sid = makeEl('input'); sid.name = 'sid_' + k; sid.value = ids[k];
+    const env = boot([sid], { singleFields: [], pooledFields: [],
+      rules: [{ type: 'single', fields: ['sid_' + k], algorithm: 'iso7064_mod37_36', blockSave: 'hard' }] });
+    out[k] = env.holders['sid_' + k].children[1].innerHTML;
+  }
+  check('LIVE-5: a full-width digit is named as a character not allowed', /character that is not allowed/.test(out.wide) && !/typo/.test(out.wide));
+  check('LIVE-5: a zero-width space is named the same way', /character that is not allowed/.test(out.zw));
+  check('LIVE-5: an ASCII typo is still a check-character typo', /check character/i.test(out.typo) && !/not allowed/.test(out.typo));
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

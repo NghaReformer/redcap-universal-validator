@@ -78,6 +78,13 @@ final class GrowthReference
      */
     const CHART_UNITS = ['auto', 'days', 'weeks', 'months', 'years'];
     const ADJUSTS = ['none', 'who-restricted'];
+    /**
+     * How a child was measured ("measured" on a rule), and what an entry's
+     * "position" correction may change: the measurement, or the axis value
+     * (the length or height of a reference by length or height).
+     */
+    const POSITIONS = ['lying', 'standing'];
+    const POSITION_CORRECTS = ['measurement', 'axis'];
     /** A reference id: 1 to 64 lower-case letters, digits, ".", "_" or "-". */
     const ID_RE = '/^[a-z0-9][a-z0-9_.-]{0,63}$/D';
 
@@ -265,7 +272,54 @@ final class GrowthReference
         if (abs((float) $v['min']) > self::MAX_AXIS || abs((float) $hi) > self::MAX_AXIS) {
             return 'has a "valid" bound beyond ' . self::MAX_AXIS . ' (or -' . self::MAX_AXIS . ').';
         }
-        return null;
+        return array_key_exists('position', $e) ? self::positionProblem($e) : null;
+    }
+
+    /**
+     * Why an entry's "position" cannot be used, or null. "position" is WHO's
+     * correction for how the child was measured, which a rule's "measured"
+     * input applies: {"corrects": "measurement" | "axis", "lying": {...},
+     * "standing": {...}}, at least one side. Each side "add"s a number to the
+     * measurement (in the reference's unit) or to the axis value (cm, on a
+     * reference by length or height). On a reference by age, a side may hold
+     * at most one of "from" and "below", in the axis unit: the correction
+     * applies at or above that age, or below it. who-lhfa adds 0.7 cm to a
+     * length measured standing below 731 days, and takes 0.7 cm from one
+     * measured lying from 731 days.
+     */
+    private static function positionProblem(array $e)
+    {
+        $p = $e['position'];
+        if (!is_array($p) || !$p) return 'has a "position" that is not an object with "corrects" and "lying" or "standing".';
+        $unknown = array_diff(array_keys($p), array_merge(['corrects'], self::POSITIONS));
+        if ($unknown) return 'has "position" ' . json_encode(array_values($unknown)) . '; it takes corrects, lying and standing.';
+        if (!isset($p['corrects']) || !in_array($p['corrects'], self::POSITION_CORRECTS, true)) {
+            return 'needs "position" "corrects" as measurement or axis.';
+        }
+        if ($p['corrects'] === 'axis' && $e['axis'] === 'age') {
+            return 'has "position" "corrects" "axis", which only a reference by length or height takes.';
+        }
+        $sides = 0;
+        foreach (self::POSITIONS as $side) {
+            if (!array_key_exists($side, $p)) continue;
+            $sides++;
+            $s = $p[$side];
+            $what = '"position" "' . $side . '"';
+            if (!is_array($s) || ($s && array_values($s) === $s)) return 'has a ' . $what . ' that is not an object.';
+            $unknown = array_diff(array_keys($s), ['add', 'from', 'below']);
+            if ($unknown) return 'has ' . $what . ' ' . json_encode(array_values($unknown)) . '; it takes add, from and below.';
+            if (!array_key_exists('add', $s) || !self::isNum($s['add'])) return 'needs ' . $what . ' "add" as a number in a string.';
+            if (array_key_exists('from', $s) && array_key_exists('below', $s)) return 'has both ' . $what . ' "from" and "below"; give one.';
+            foreach (['add', 'from', 'below'] as $k) {
+                if (!array_key_exists($k, $s)) continue;
+                if ($k !== 'add') {
+                    if ($e['axis'] !== 'age') return 'has ' . $what . ' "' . $k . '", which only a reference by age takes.';
+                    if (!self::isNum($s[$k])) return 'needs ' . $what . ' "' . $k . '" as a number in a string.';
+                }
+                if (abs((float) $s[$k]) > self::MAX_AXIS) return 'has ' . $what . ' "' . $k . '" beyond ' . self::MAX_AXIS . ' (or -' . self::MAX_AXIS . ').';
+            }
+        }
+        return $sides === 0 ? 'has a "position" with neither "lying" nor "standing".' : null;
     }
 
     private static function isNum($s)
@@ -542,6 +596,7 @@ final class GrowthReference
         $out = [];
         foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];
         if (isset($entry['chartUnit']) && $entry['chartUnit'] !== 'auto') $out['chartUnit'] = $entry['chartUnit'];
+        if (isset($entry['position'])) $out['position'] = $entry['position'];
         foreach (['scale', 'first', 'male', 'female'] as $k) $out[$k] = $table[$k];
         if ($need === null) return $out;
         if (isset($need['xs']) && is_array($need['xs'])) {
@@ -586,6 +641,9 @@ final class GrowthReference
      * as text), 'dobDays' and 'atDays' (whole days since 1970-01-01, from the
      * dates; null for a blank date), or 'by' (a length or height in cm, as
      * text). 'comma' => true reads a decimal comma in days, months or by.
+     * 'byAdd' (a float) is added to by first: WHO's correction for how the
+     * child was measured (positionAdd), so the corrected length is the one
+     * the "valid" range judges.
      *
      * @return array ['state' => 'ok', 'x' => float] or ['state' => 'blank'|'outside'|'invalid', 'why' => string]
      */
@@ -597,7 +655,9 @@ final class GrowthReference
             if ($by === '') return ['state' => 'blank', 'why' => 'the ' . $entry['axis'] . ' is blank'];
             $n = Logic::normalizeNumber($by, $comma);
             if ($n === null || $n === '') return ['state' => 'invalid', 'why' => 'the ' . $entry['axis'] . ' is not a number'];
-            return self::inRange($entry, (float) $n, $entry['axis']);
+            $x = (float) $n;
+            if (!empty($in['byAdd'])) $x += (float) $in['byAdd'];
+            return self::inRange($entry, $x, $entry['axis']);
         }
         if (array_key_exists('dobDays', $in) || array_key_exists('atDays', $in)) {
             $dob = isset($in['dobDays']) ? $in['dobDays'] : null;
@@ -721,23 +781,63 @@ final class GrowthReference
      */
     public static function sexOf($code, array $rule)
     {
+        return self::codeOf($code, $rule, ['male' => 'rangeMale', 'female' => 'rangeFemale']);
+    }
+
+    /**
+     * 'lying', 'standing' or null for a code of a rule's "measured" field,
+     * matched as sexOf matches a sex code. A blank value, or a code that is
+     * neither, is null: no correction, as WHO's software treats a position
+     * it is not given. Twin: growthPoint in js/engine.js.
+     */
+    public static function positionOf($code, array $rule)
+    {
+        return (string) $code === '' ? null : self::codeOf($code, $rule, ['lying' => 'rangeLying', 'standing' => 'rangeStanding']);
+    }
+
+    /** The name in $keys (name => rule key) whose code $code is, letter case ignored unless "caseSensitive", or null. */
+    private static function codeOf($code, array $rule, array $keys)
+    {
         $fold = empty($rule['caseSensitive']);
         $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
         $c = $key($code);
-        if ($c === $key(isset($rule['rangeMale']) ? $rule['rangeMale'] : '')) return 'male';
-        if ($c === $key(isset($rule['rangeFemale']) ? $rule['rangeFemale'] : '')) return 'female';
+        foreach ($keys as $name => $k) {
+            if ($c === $key(isset($rule[$k]) ? $rule[$k] : '')) return $name;
+        }
         return null;
     }
 
     /**
+     * What WHO's correction for how the child was measured adds, as a float:
+     * to the measurement (in the reference's unit) when $corrects is
+     * 'measurement', to the length or height (cm) when it is 'axis'. 0.0 when
+     * the entry's "position" corrects the other one, has no correction for
+     * $position (or $position is null), or a "from" or "below" age excludes
+     * the axis position $x (null: not known). Twin: QRID_growthPositionAdd.
+     */
+    public static function positionAdd(array $entry, $position, $x, $corrects)
+    {
+        if ($position === null || !isset($entry['position'][$position])) return 0.0;
+        if ($entry['position']['corrects'] !== $corrects) return 0.0;
+        $s = $entry['position'][$position];
+        if (isset($s['from']) && !($x !== null && $x >= (float) $s['from'])) return 0.0;
+        if (isset($s['below']) && !($x !== null && $x < (float) $s['below'])) return 0.0;
+        return (float) $s['add'];
+    }
+
+    /**
      * The sex and the axis position of a growth rule's inputs, or why there
-     * are none: ['state' => 'ok', 'sex' => 'male'|'female', 'x' => float] or
-     * ['state' => 'inert', 'why']. $read holds each input the rule names
-     * (rangeSex, rangeAgeDob, rangeAgeAt, rangeAgeDays, rangeAgeMonths,
-     * rangeBy) as trimmed text, '' for a blank one; dates are saved values,
-     * Y-M-D. The reasons are the browser's (growthVerdict in js/engine.js).
-     * The one reading of the inputs: UniversalValidator::growthInputs and
-     * tests/docs_examples_php.php both call it.
+     * are none: ['state' => 'ok', 'sex' => 'male'|'female', 'x' => float,
+     * 'yAdd' => float] or ['state' => 'inert', 'why']. $read holds each input
+     * the rule names (rangeSex, rangeAgeDob, rangeAgeAt, rangeAgeDays,
+     * rangeAgeMonths, rangeBy, rangeMeasured) as trimmed text, '' for a blank
+     * one; dates are saved values, Y-M-D. 'yAdd' is what the measurement
+     * gets added before it is scored, WHO's correction for how the child was
+     * measured (0.0 without one); a correction of the length or height is in
+     * 'x' already. The reasons are the browser's (growthVerdict in
+     * js/engine.js). The one reading of the inputs:
+     * UniversalValidator::growthInputs and tests/docs_examples_php.php both
+     * call it.
      */
     public static function inputsFor(array $rule, array $read, array $entry)
     {
@@ -747,7 +847,9 @@ final class GrowthReference
             return ['state' => 'inert', 'why' => $sexCode === '' ? 'the sex is blank'
                 : 'the sex code is neither ' . $rule['rangeMale'] . ' (male) nor ' . $rule['rangeFemale'] . ' (female)'];
         }
-        $in = ['comma' => !empty($rule['rangeAxisComma'])];
+        $position = isset($rule['rangeMeasured'])
+            ? self::positionOf(isset($read['rangeMeasured']) ? (string) $read['rangeMeasured'] : '', $rule) : null;
+        $in = ['comma' => !empty($rule['rangeAxisComma']), 'byAdd' => self::positionAdd($entry, $position, null, 'axis')];
         if (isset($rule['rangeAgeDob'])) {
             foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
                 $type = isset($rule['range' . ucfirst($w) . 'Type']) ? $rule['range' . ucfirst($w) . 'Type'] : 'date';
@@ -767,7 +869,7 @@ final class GrowthReference
         }
         $a = self::axisValue($entry, $in);
         if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
-        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x']];
+        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x'], 'yAdd' => self::positionAdd($entry, $position, $a['x'], 'measurement')];
     }
 
     /**

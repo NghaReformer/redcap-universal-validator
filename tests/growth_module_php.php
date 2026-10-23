@@ -165,7 +165,11 @@ namespace {
         $by = [];
         foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $by[$e['field']] = $e['reason'];
         $un = [];
-        foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        // A rule refused when read is logged too (VAL-15); these lists hold what failed at run time.
+        foreach (findings($m, 'uvalidate-unconfigurable') as $e) {
+            if (strpos((string) $e['why'], 'configuration error: ') === 0) continue;
+            $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        }
         $ne = [];
         foreach (findings($m, 'uvalidate-not-evaluated') as $e) $ne[$e['field']] = $e['why'];
         return [$by, $un, $ne, $m];
@@ -792,7 +796,11 @@ namespace {
         foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $out[$e['field']][] = $e['reason'];
         foreach ($out as $k => $v) sort($out[$k]);
         $un = [];
-        foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        // A rule refused when read is logged too (VAL-15); these lists hold what failed at run time.
+        foreach (findings($m, 'uvalidate-unconfigurable') as $e) {
+            if (strpos((string) $e['why'], 'configuration error: ') === 0) continue;
+            $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        }
         return [$out, $un];
     };
     list($sev, $un) = $sevAudit($TWO, $two);
@@ -969,6 +977,130 @@ namespace {
     $p = page(mod($DP, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: the plausible text names the reference\'s unit (cm for arm circumference)',
         (ruleFor($p, 'muac_p')['rangePlausibleText'] ?? null) === '5 to 30 cm');
+
+    // ---- 5f) how the child was measured: WHO's 0.7 cm correction (RNG-3) -----------------------
+    // "measured" names the field that says whether the child was measured lying
+    // or standing. who-lhfa corrects the measurement (0.7 cm more for a length
+    // measured standing under 731 days, 0.7 cm less for a height measured lying
+    // from 731 days); who-wfl and who-wfh correct the length or height in "by".
+    $MEAS = '"measured":{"field":"[measured]","lying":"1","standing":"2"}';
+    $ok = AnnotationRules::parseAllTags(tag('who-lhfa', '"age":{"days":"[age_days]"},' . $MEAS));
+    check('measured: parses to the field and its two codes', isset($ok[0]) && !isset($ok[0]['error'])
+        && $ok[0]['rangeMeasured'] === '[measured]' && $ok[0]['rangeLying'] === '1' && $ok[0]['rangeStanding'] === '2');
+    $ok = AnnotationRules::parseAllTags(tag('who-lhfa', '"age":{"days":"[age_days]"},"measured":{"field":"[m]","lying":1,"standing":2}'));
+    check('measured: numeric codes are kept as text', !isset($ok[0]['error']) && $ok[0]['rangeLying'] === '1' && $ok[0]['rangeStanding'] === '2');
+    $AD = '"age":{"days":"[age_days]"}';
+    $mRefused = [
+        'measured without a reference' => ['@UVRANGE={"hard":[1,2],' . $MEAS . '}', '"sex", "male", "female", "age", "by" and "measured" only apply with a "reference"'],
+        'measured as a field name'     => [tag('who-lhfa', $AD . ',"measured":"[measured]"'), '"measured" must be {"field":"[measured]","lying":"1","standing":"2"}'],
+        'measured without standing'    => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"1"}'), '"measured" must be {"field"'],
+        'measured with another key'    => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"1","standing":"2","sitting":"3"}'), '"measured" must be {"field"'],
+        'measured field not a string'  => [tag('who-lhfa', $AD . ',"measured":{"field":5,"lying":"1","standing":"2"}'), '"measured" "field" must be one field reference'],
+        'measured field a condition'   => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]=1","lying":"1","standing":"2"}'), '"measured" "field" must be exactly one field reference'],
+        'measured field a checkbox code' => [tag('who-lhfa', $AD . ',"measured":{"field":"[m(1)]","lying":"1","standing":"2"}'), '"measured" "field" must be exactly one field reference'],
+        'lying blank'                  => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":" ","standing":"2"}'), '"measured" "lying" must be the code the field stores for a child measured lying'],
+        'standing a list'              => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"1","standing":["2"]}'), '"measured" "standing" must be the code'],
+        'the same code twice'          => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"1","standing":"1"}'), '"measured" "lying" and "standing" are the same code ("1").'],
+        'codes differing by case'      => [tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"L","standing":"l"}'), '"measured" "lying" "L" and "standing" "l" differ only in letter case'],
+    ];
+    foreach ($mRefused as $label => $pair) {
+        $e = errOf($pair[0]);
+        check('measured refused: ' . $label . ' (got ' . json_encode($e) . ')', $e !== '' && strpos($e, $pair[1]) !== false);
+    }
+    check('measured: codes differing by case are fine with caseSensitive',
+        errOf(tag('who-lhfa', $AD . ',"measured":{"field":"[m]","lying":"L","standing":"l"},"caseSensitive":true')) === '');
+    $mHalf = AnnotationRules::checkRange(['type' => 'range', 'fields' => ['w'], 'rangeReference' => 'who-lhfa',
+        'rangeSex' => '[sex]', 'rangeMale' => '1', 'rangeFemale' => '2', 'rangeAgeDays' => '[a]', 'rangeMeasured' => '[m]',
+        'rangeLying' => '1', 'rangeHardLo' => '-5', 'rangeHardHi' => '5']);
+    check('checkRange: "measured" without its "standing" code (got ' . json_encode($mHalf) . ')',
+        in_array('"measured" needs "field", "lying" and "standing" together.', $mHalf, true));
+
+    $Z36 = '"soft":[-3,3],"hard":[-6,6]';
+    $MDICT = $DICT + [
+        'measured' => f('anthro_form', '', '', 'radio', '1, Lying | 2, Standing | 9, Not known'),
+        'len'      => f('anthro_form', tag('who-lhfa', $AD . ',' . $MEAS, $Z36), 'number_1dp'),
+        'len_nom'  => f('anthro_form', tag('who-lhfa', $AD, $Z36), 'number_1dp'),
+        'wt_l'     => f('anthro_form', tag('who-wfl', '"by":"[len]",' . $MEAS, '"soft":[-3,3],"hard":[-5,5]'), 'number_1dp'),
+        'b_mwfa'   => f('anthro_form', tag('who-wfa', $AD . ',' . $MEAS), 'number'),
+        'b_mbfa'   => f('anthro_form', tag('who-bfa', $AD . ',' . $MEAS), 'number'),
+        'b_mcode'  => f('anthro_form', tag('who-lhfa', $AD . ',"measured":{"field":"[measured]","lying":"L","standing":"2"}'), 'number'),
+        'b_mchk'   => f('anthro_form', tag('who-lhfa', $AD . ',"measured":{"field":"[chk]","lying":"1","standing":"2"}'), 'number'),
+        'b_mnone'  => f('anthro_form', tag('who-lhfa', $AD . ',"measured":{"field":"[nope]","lying":"1","standing":"2"}'), 'number'),
+        'b_mtext'  => f('anthro_form', tag('who-lhfa', $AD . ',"measured":{"field":"[how_txt]","lying":"L","standing":"S"}'), 'number'),
+        'b_mret'   => f('anthro_form', tag('who-lhfa', $AD . ',"measured":{"field":"[how_txt]","lying":"L","standing":"S"},"return":{"z":"[how_txt]"}'), 'number'),
+        'chk'      => f('enrol_form', '', '', 'checkbox', '1, M | 2, F'),
+        'how_txt'  => f('anthro_form'),
+    ];
+    $p = page(mod($MDICT, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $mCases = [
+        'b_mwfa'  => '"who-wfa" has no correction for how the child was measured, so "measured" does not apply. Where a value needs one, such as a BMI, correct the length or height in the calc that works the value out.',
+        'b_mbfa'  => '"who-bfa" has no correction for how the child was measured, so "measured" does not apply.',
+        'b_mcode' => '"measured" "lying" is "L", which is not a choice of "measured" field "measured" (its codes are 1, 2, 9).',
+        'b_mchk'  => '"measured" field "chk" is a checkbox field — it must hold one code',
+        'b_mnone' => '"measured" "field" names "[nope]", which is not a field in this project.',
+        'b_mret'  => '"return" writes "z" to "[how_txt]", which this rule reads — give the value a field of its own.',
+    ];
+    foreach ($mCases as $f => $want) {
+        check('measured dictionary: ' . $f . ' (got ' . json_encode($err($p, $f)) . ')', strpos($err($p, $f), $want) !== false
+            && strpos($err($p, $f), '@UVRANGE on "' . $f . '"') === 0);
+    }
+    foreach (['len', 'len_nom', 'wt_l', 'b_mtext'] as $f) {
+        check('measured dictionary: ' . $f . ' is taken (got ' . json_encode($err($p, $f)) . ')', ruleFor($p, $f) !== null && $err($p, $f) === '');
+    }
+    $r = ruleFor($p, 'len');
+    check('measured page: the field travels as a live input with its two codes (got ' . json_encode([$r['rangeMeasuredOp'] ?? null,
+        $r['rangeLying'] ?? null, $r['rangeStanding'] ?? null]) . ')', $r && ($r['rangeMeasuredOp'] ?? null) === ['ref', 'measured', null]
+        && $r['rangeLying'] === '1' && $r['rangeStanding'] === '2');
+    check('measured page: the page copy of who-lhfa carries its correction',
+        ($p['cfg']['growth']['who-lhfa']['position'] ?? null) === GrowthReference::entry('who-lhfa')['position']);
+    // A length and a position saved on another form: the page gets the rows at
+    // the corrected length (75.0 cm standing is 75.7 on weight-for-length).
+    $SDICT = ['record_id' => f('enrol_form'), 'sex' => f('enrol_form', '', '', 'radio', $SEXES),
+              'how_s' => f('enrol_form', '', '', 'radio', '1, Lying | 2, Standing'),
+              'len_s' => f('enrol_form', '', 'number_1dp'),
+              'wt_s'  => f('anthro_form', tag('who-wfl', '"by":"[len_s]","measured":{"field":"[how_s]","lying":"1","standing":"2"}', '"hard":[-5,5]'), 'number_1dp')];
+    $firstOf = function ($how, $dict = null) use ($SDICT, $FULL) {
+        $d = ['2' => [351 => ['record_id' => '2', 'sex' => '1', 'how_s' => $how, 'len_s' => '75.0', 'wt_s' => '']]];
+        $pp = page(mod($dict ?: $SDICT, $d, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+        return [$pp['cfg']['growth']['who-wfl']['first'] ?? null, count($pp['cfg']['growth']['who-wfl']['male'] ?? [])];
+    };
+    check('measured page: standing saved, the rows at 75.7 cm travel (got ' . json_encode($firstOf('2')) . ')', $firstOf('2') === [756, 3]);
+    check('measured page: lying saved, the rows at 75.0 cm (got ' . json_encode($firstOf('1')) . ')', $firstOf('1') === [749, 3]);
+    $live = $SDICT;
+    $live['how_s'] = f('anthro_form', '', '', 'radio', '1, Lying | 2, Standing');
+    check('measured page: a position typed on this page sends every row (got ' . json_encode($firstOf('2', $live)) . ')',
+        $firstOf('2', $live)[0] === 450 && $firstOf('2', $live)[1] > 600);
+
+    // The audit: the review's girl (600 days, 73.0 cm standing) is moderately,
+    // not severely, stunted once corrected (z -2.91, WHO Anthro's); the same
+    // length without "measured" scores -3.14.
+    $zsOf = function ($m) { $o = []; foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $o[$e['field']] = [$e['reason'], $e['z'] ?? null]; return $o; };
+    $mrow = ['record_id' => '2', 'sex' => '2', 'age_days' => '600', 'measured' => '2', 'len' => '73.0', 'len_nom' => '73.0'];
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => $mrow]]);
+    $zs = $zsOf($m);
+    check('measured audit: standing at 600 days, 73.0 cm passes (z -2.91); without "measured" it is low (z -3.14) (got ' . json_encode($zs) . ')',
+        !isset($zs['len']) && ($zs['len_nom'] ?? null) === ['soft-low', '-3.14']);
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => ['measured' => '1'] + $mrow]]);
+    check('measured audit: lying under 731 days is not corrected (got ' . json_encode($zsOf($m)) . ')', ($zsOf($m)['len'] ?? null) === ['soft-low', '-3.14']);
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => ['measured' => ''] + $mrow]]);
+    check('measured audit: a blank position is not corrected, and is no problem (got ' . json_encode([$zsOf($m), $un]) . ')',
+        ($zsOf($m)['len'] ?? null) === ['soft-low', '-3.14'] && !$un);
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => ['measured' => '9'] + $mrow]]);
+    check('measured audit: "Not known" is not corrected', ($zsOf($m)['len'] ?? null) === ['soft-low', '-3.14']);
+    $boy = ['record_id' => '2', 'sex' => '1', 'age_days' => '1000', 'measured' => '1', 'len' => '83.3'];
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => $boy]]);
+    check('measured audit: a boy of 1000 days measured lying at 83.3 cm is scored at 82.6 (z -3.20) (got ' . json_encode($zsOf($m)) . ')',
+        ($zsOf($m)['len'] ?? null) === ['soft-low', '-3.20']);
+    // weight-for-length: the guide's boy, 75.0 cm standing and 7.5 kg, -3.16 corrected, -2.98 lying
+    $wl = ['record_id' => '2', 'sex' => '1', 'age_days' => '300', 'measured' => '2', 'len' => '75.0', 'wt_l' => '7.5'];
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => $wl]]);
+    check('measured audit: weight-for-length by the corrected length (got ' . json_encode($zsOf($m)) . ')', ($zsOf($m)['wt_l'] ?? null) === ['soft-low', '-3.16']);
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => ['measured' => '1'] + $wl]]);
+    check('measured audit: measured lying, the length is the length (got ' . json_encode($zsOf($m)) . ')', !isset($zsOf($m)['wt_l']) && !$un);
+    // past the table once corrected: 109.5 cm standing is 110.2, outside 45 to 110 cm
+    list($by, $un, $ne, $m) = audit($MDICT, ['2' => [351 => ['len' => '109.5', 'wt_l' => '18'] + $wl]]);
+    check('measured audit: a corrected length past the table is not evaluated (got ' . json_encode($ne) . ')',
+        strpos((string) ($ne['wt_l'] ?? ''), 'the length is outside the reference (45 to 110 cm)') !== false);
 
     // ---- 5c) the docs: reference ids and the worked example --------------------------------------
     // Every reference id a document names is one the module ships or one of the

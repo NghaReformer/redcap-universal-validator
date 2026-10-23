@@ -1117,6 +1117,23 @@ class Logic
      * spaces made the regex exhaust PCRE's stack, and preg_replace then
      * returned null, which read as a blank value.
      */
+    /**
+     * Whether a value holds nothing a person could read: only spaces, tabs,
+     * line breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode
+     * spaces U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and
+     * paragraph separators, and the invisible U+200B to U+200F, U+2060 and
+     * U+FEFF (REQ-8). @UVREQUIRED asks it on the page, in the audit and in the
+     * scan; a no-break space pasted into a field no longer counts as an answer.
+     * A value that is not valid UTF-8 holds something. Twin: QRID_isBlank;
+     * tests/blank_fixture.json pins both.
+     */
+    public static function isBlank($value)
+    {
+        $v = (string) $value;
+        if ($v === '') return true;
+        return preg_match('/^[\x00\x09-\x0D\x20\x{A0}\x{1680}\x{2000}-\x{200F}\x{2028}\x{2029}\x{202F}\x{205F}\x{2060}\x{3000}\x{FEFF}]*$/uD', $v) === 1;
+    }
+
     public static function lookupTrim($s)
     {
         $s = (string) $s;

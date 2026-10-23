@@ -150,6 +150,7 @@ $cases = array(
     'retention',    // three clocks, and nothing silently losing a finding
     'fault',        // what the store does when the server says no
     'walk',         // RecordManifestSource over REDCap-shaped tables
+    'field_values', // FieldValues: the records holding a value, from the data table
     'dag',          // one group axis, and the two halves of a run agreeing about a record
     'fence',        // SourceFence: versions, retention of the log, catch-up paging
     'stamps',       // ValueStamps: the day a value was saved, from the log; a finding's as_of

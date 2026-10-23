@@ -1,5 +1,5 @@
 {
-  "note": "Shared list locking the risky-pattern heuristic across runtimes. `risky` are patterns QRID_riskyPattern / CheckCharacter::riskyPattern must reject (config error, no compile); `safe` must pass through. The gate has two stages. Stage one rejects nested quantifiers (bounded and unbounded) AND any repetition of a group that can match ambiguously — alternation, optionals, or inner quantifiers — with inner groups collapsed layer by layer so nesting cannot hide the shape. Stage two-a rejects the POLYNOMIAL class stage one misses: two or more UNBOUNDED quantifiers (*, +, {n,}) over overlapping character classes with no mandatory separator between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). Stage two-b (F1) rejects a contiguous run of overlapping BOUNDED quantifiers whose product of per-factor match-length choices exceeds MAX_BACKTRACK_PRODUCT (1e6) — e.g. A{1,20}A{1,20}A{1,20}A{1,20}A{1,20} (=3.2M): each factor is bounded but the factor count is the backtracking exponent, so a long chain freezes a browser's engine even though PCRE2 auto-possessifies it, and unlike the server the client has no match-time backstop. It deliberately over-rejects (a repeated alternation is refused even with disjoint branches; a collapsed group is treated as overlapping everything). Still a heuristic, not a proof: a SHORT bounded backtracker under the budget like A{1,40}A{1,40}A{1,40}9 (=64000) passes, which is why the server keeps the match-time PCRE-error guard as a backstop. `risky_js.cjs` additionally times every `safe` pattern against adversarial input, so \"safe\" is measured, not assumed.",
+  "note": "Shared list locking the risky-pattern heuristic across runtimes. `risky` are patterns QRID_riskyPattern / CheckCharacter::riskyPattern must reject (config error, no compile); `safe` must pass through. The gate has two stages. Stage one rejects nested quantifiers (bounded and unbounded) AND any repetition of a group that can match ambiguously — alternation, optionals, or inner quantifiers — with inner groups collapsed layer by layer so nesting cannot hide the shape. Stage two-a rejects the POLYNOMIAL class stage one misses: two or more UNBOUNDED quantifiers (*, +, {n,}) over overlapping character classes with no mandatory separator between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). Stage two-b (F1) rejects a contiguous run of overlapping BOUNDED quantifiers whose product of per-factor match-length choices exceeds MAX_BACKTRACK_PRODUCT (1e6) — e.g. A{1,20}A{1,20}A{1,20}A{1,20}A{1,20} (=3.2M): each factor is bounded but the factor count is the backtracking exponent, so a long chain freezes a browser's engine even though PCRE2 auto-possessifies it, and unlike the server the client has no match-time backstop. Stage two-c (VAL-4) follows a chain of unbounded quantifiers over overlapping classes, joined by atoms that may match nothing or that the quantifier before them also matches (in .*-.*-.*X each \"-\" is also a \".\"); three or more in one chain are refused, two (.*x.*) pass. Before any stage, each escape is read as an atom of the same reach: \\d \\w \\s as their ASCII classes, \\D \\W \\S and an escaped metacharacter as any character, so [\\w.]+_ keeps its \"_\" and [0-9]+\\.[0-9]+ keeps its separator.It deliberately over-rejects (a repeated alternation is refused even with disjoint branches; a collapsed group is treated as overlapping everything). Still a heuristic, not a proof: a SHORT bounded backtracker under the budget like A{1,40}A{1,40}A{1,40}9 (=64000) passes, which is why the server keeps the match-time PCRE-error guard as a backstop. `risky_js.cjs` additionally times every `safe` pattern against adversarial input, so \"safe\" is measured, not assumed.",
   "risky": [
     "(a+)+$",
     "([A-Z]+)*$",
@@ -35,7 +35,19 @@
     "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}9",
     "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}!",
     "[0-9]{1,40}[0-9]{1,40}[0-9]{1,40}[0-9]{1,40}x",
-    "[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9][0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}!"
+    "[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9][0-9]{1,20}[0-9]{1,20}[0-9]{1,20}[0-9]{1,20}!",
+    ".*-.*-.*-.*-.*X",
+    ".*-.*-.*X",
+    "[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*-[A-Z0-9-]*X",
+    "[^X]+-[^X]+-[^X]+-[^X]+-[^X]+X",
+    "[A-Z-]*-[0-9]*-[A-Z-]*-[0-9]*-[A-Z-]*X",
+    "[\\w.]+_[\\w.]+_[\\w.]+_[\\w.]+X",
+    "\\w+_\\w+_\\w+_\\w+X",
+    "\\S+-\\S+-\\S+-\\S+X",
+    "[A-Z\\-]+-[A-Z\\-]+-[A-Z\\-]+X",
+    "[A-Z\\]]+\\][A-Z\\]]+\\][A-Z\\]]+X",
+    "\\.*\\.*",
+    "\\d+\\d+"
   ],
   "safe": [
     "FC[1-9]-[0-9]{4}",
@@ -58,9 +70,18 @@
     "(?:FC|TB)-[0-9]{4}",
     "(A{2})+",
     "[A-Z]+-[A-Z]+",
-    ".*x.*"
+    ".*x.*",
+    ".+-.+X",
+    "[A-Z]+-[A-Z]+-[A-Z]+-[A-Z]+",
+    "\\d+-\\d+-\\d+",
+    "\\w+-\\w+-\\w+",
+    "[0-9]+\\.[0-9]+",
+    "[A-Z]{2}\\-[0-9]+\\/[0-9]+",
+    "[\\dA-F]+-[\\dA-F]+-[\\dA-F]+",
+    "(?<site>[A-Z]{2})(?<num>[0-9]{4})",
+    "(?<d>[0-9]){4}"
   ],
-  "dialect_note": "Patterns the two regex dialects read differently. `dialect_reject` must be refused by BOTH QRID_gatePattern (js) and CheckCharacter::gatePattern (php) - for any stated reason, but by both, because a pattern one runtime admits and the other refuses splits enforcement: either the browser stops checking the field while the post-save audit keeps filing findings, or the two engines both compile it and then disagree about every value. `dialect_accept` must be admitted by both. Round 3, M-1 and M-2. \"{,n}\" is literal to JavaScript and to PCRE2 before 10.43 but {0,n} from 10.43 (PHP 8.4), so it is refused too.",
+  "dialect_note": "Patterns the two regex dialects read differently. `dialect_reject` must be refused by BOTH QRID_gatePattern (js) and CheckCharacter::gatePattern (php) - for any stated reason, but by both, because a pattern one runtime admits and the other refuses splits enforcement: either the browser stops checking the field while the post-save audit keeps filing findings, or the two engines both compile it and then disagree about every value. `dialect_accept` must be admitted by both. Round 3, M-1 and M-2. \"{,n}\" is literal to JavaScript and to PCRE2 before 10.43 but {0,n} from 10.43 (PHP 8.4), so it is refused too. VAL-5 adds verbs, \\k'name', \\k{name}, \\o{...}, \\8, \\9 and class ranges at a shorthand escape; VAL-11 admits named groups.",
   "dialect_reject": [
     "\\pL[0-9]{4}",
     "\\PL[0-9]{4}",
@@ -97,7 +118,15 @@
     "FC[0-9]{2, 3}",
     "FC[0-9]{ 2}",
     "FC[0-9]{2 }",
-    "FC[0-9]{ ,2}"
+    "FC[0-9]{ ,2}",
+    "\\o{101}[0-9]{3}",
+    "(?<a>[A-Z])\\k'a'[0-9]{3}",
+    "(?<a>[A-Z])\\k{a}[0-9]{3}",
+    "[A-Z]{2}(*ACCEPT)[0-9]{4}",
+    "[\\d-z]{3}",
+    "[a-\\w]{3}",
+    "FC\\8[0-9]{3}",
+    "FC\\9[0-9]{3}"
   ],
   "dialect_accept": [
     "FC[1-9]-[0-9]{4}",
@@ -115,6 +144,13 @@
     "FC[0-9]{0,4}",
     "FC\\{,4}",
     "FC[0-9]{2,3}",
-    "FC\\{2, 3}"
+    "FC\\{2, 3}",
+    "[\\d-]{3}",
+    "[-\\d]{3}",
+    "[a\\-\\d]{3}",
+    "FC\\\\8[0-9]{3}",
+    "\\(*[0-9]{3}",
+    "(?<site>[A-Z]{2})(?<num>[0-9]{4})",
+    "(?<d>[0-9]){4}"
   ]
 }

@@ -27,6 +27,7 @@ php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, e
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
 node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
+php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form
 php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the static method; "return"/"where" on REDCap 17
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
@@ -80,8 +81,10 @@ node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEn
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
-php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope with ungrouped records, "with" placement, throttle answer, one read per save
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
+php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
+php  tests/rule_scope_php.php          # a live lookup builds only its field's rules, as the full build has them (PRF-3)
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract
@@ -138,7 +141,11 @@ nesting cannot hide the shape. Stage two rejects the *polynomial* class stage
 one misses: two or more unbounded quantifiers (`*`, `+`, `{n,}`) over overlapping
 character classes with no mandatory separator between them, so `.*.*`,
 `[0-9]*[0-9]*` and `[A-Z]+[A-Z0-9]+` are refused while the genuinely-linear
-`[A-Z]+[0-9]+` and `.*x.*` pass. Both stages sit behind a 512-code-point cap on
+`[A-Z]+[0-9]+` and `.*x.*` pass. It also follows a chain of such quantifiers
+joined by characters the quantifier before each can match, and refuses three or
+more (`.*-.*-.*`, VAL-4), while `[A-Z]+-[A-Z]+-[A-Z]+` passes. Before either
+stage, each escape is read as an atom of the same reach (`\d` as `[0-9]`, `\S`
+as any character), so `[\w.]+_` keeps its `_`. Both stages sit behind a 512-code-point cap on
 the pattern source, and a pattern the gate flags is never compiled, so it can
 never run. It deliberately over-rejects (a repeated alternation is refused even
 with disjoint branches; a collapsed group is treated as overlapping everything)
@@ -315,6 +322,24 @@ location's form, and the re-read finds instance 1 of a repeating instrument in
 field's form does not re-audit an extended rule. `missing_codes_php.php` checks
 that a code saved in an `also` field matches nothing. The SQL (the `lookup`
 column, discovery and emit) is in `tests/mysql/cases/uniqueness.php`.
+
+The live check and the save audit first ask the data table which records hold
+the value (`Scan\FieldValues`). `unique_scope_php.php` answers that read from
+its `REDCap::$data` and runs every check twice: with the table, and in a second
+process (`--no-table`) without it, where the export answers instead.
+`tests/mysql/cases/field_values.php` runs the reader on a real server over a
+table with REDCap's own indexes and asserts each statement's plan.
+
+`exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
+asks the table which records hold the value and reads only those through
+getData; its mock answers the table from `REDCap::$data` and can confine
+getData to one Data Access Group, as REDCap does for a user in one. Each
+lookup is asked again with the table unreadable, and the export must give the
+same answer. It also covers a returned value kept out of a form the person who
+saved may only read, the `formReadOnly` flag of a read-only or locked form, the
+value the page sends for an `in` field on the tagged field's own form, and the
+scan index built from the table. The browser half of the last two is in
+`exists_return_dom_js.cjs`.
 
 `exists_cross_php.php` covers `"project"`, a lookup in another project. Its
 mocks keep settings, dictionaries, data, rights and `\Project` per project id,

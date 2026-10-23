@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PHP = os.environ.get('PHP_BIN', 'php')
 NODE = os.environ.get('NODE_BIN', 'node')
 UV = 'UniversalValidator.php'
+SCANRUNS = 'php/ScanRuns.php'
 LOGIC = 'php/Logic.php'
 RULES = 'php/AnnotationRules.php'
 MODEREG = 'php/ModeRegistry.php'
@@ -201,13 +202,13 @@ MUTATIONS = [
      '', MODULE),
 
     # ---- the scans ----
-    ('the legacy scan counts no finding saved with a reason', UV,
+    ('the legacy scan counts no finding saved with a reason', SCANRUNS,
      "                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;\n",
      '', MODULE),
-    ('the legacy scan counts justified findings as violations', UV,
+    ('the legacy scan counts justified findings as violations', SCANRUNS,
      "        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);",
      "        $result['stats']['violations'] = $sink->count();", MODULE),
-    ('the durable row never carries the flag', UV,
+    ('the durable row never carries the flag', SCANRUNS,
      "                'justified' => empty($v['justified']) ? 0 : 1,",
      "                'justified' => 0,", MODULE),
     ('the array store drops the flag', ARRAYSTORE,
@@ -280,8 +281,8 @@ MUTATIONS = [
 
     # ---- the page ----
     ('a given reason releases nothing', ENGINE,
-     '    var bad = live.filter(function(el){ return QRID_itemHolds(el) && !QRID_justified(el); });',
-     '    var bad = live.filter(function(el){ return QRID_itemHolds(el); });', DOM),
+     '      return QRID_itemHolds(el) && !QRID_justified(el);',
+     '      return QRID_itemHolds(el);', DOM),
     ('a rule that only warns holds the save', ENGINE,
      '  if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;',
      '  if(!el.__qridInvalid) return false;', DOM),

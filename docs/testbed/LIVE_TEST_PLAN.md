@@ -83,6 +83,18 @@ the JSMO AJAX transport for `@UVUNIQUE` (§5) and the Validation scan page
 | | consent = **No** | blank is fine; notice gone, save allowed |
 | `umt_site` | leave blank | notice shows but the save **goes through** (informational default) |
 | `umt_score` | just look at it | a **configuration error** under the calc field — the tag was refused, never validating |
+| `umt_phone` | consent = **Yes**, paste a no-break space (Alt+0160) or an ideographic space | still counts as blank; blocked (REQ-8) |
+
+On a multi-page survey with a hard `@UVREQUIRED` field on page 2 (REQ-5, REQ-7):
+
+| Do | Expect |
+|---|---|
+| Open the survey's browser tools and read the `name` of the Previous Page and Save & Return Later buttons | `submit-btn-saveprevpage` and `submit-btn-savereturnlater`, the names `php/modes.json` `common.partialSaveButtons` lists |
+| On page 2, leave the field blank and press **Previous Page** | page 1 opens; no "Cannot save yet" alert |
+| Press **Save & Return Later** with the field blank | the return code page; no alert |
+| Press **Next** or **Submit** with the field blank | held with the alert |
+| Submit page 1 with **Next**, then read the module log | no `required-blank` entry for the page-2 field |
+| Finish the survey with the field blank (block `off`) | one `required-blank` entry, written when the response is complete |
 
 ---
 

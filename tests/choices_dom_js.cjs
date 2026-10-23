@@ -797,6 +797,44 @@ function withButtons(labels) {
   check('CHO-4: a row hidden by something else stays hidden', radios[2].parentNode.style.display === 'none');
 }
 
+// ---- CHO-1: one controller change walks a radio's options once, not once per code
+{
+  const walkedFor = (count) => {
+    const codes = [];
+    for (let i = 1; i <= count; i++) codes.push(String(i));
+    const country = makeEl('select'); country.name = 'country';
+    const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden';
+    const radios = codes.map((v) => {
+      const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
+    });
+    let walked = 0, counting = false;
+    const env = boot([country, mirror, ...radios], {
+      singleFields: [], pooledFields: [],
+      rules: [{ type: 'choices', fields: ['site'], when: "[country]='1'", choicesShow: codes.slice(0, count / 2),
+                choicesAll: codes, blockSave: 'hard' }],
+    }, (w, d) => {
+      const gebn = d.getElementsByName.bind(d);
+      d.getElementsByName = (nm) => { const r = gebn(nm); if (counting) walked += r.length; return r; };
+    });
+    counting = true;
+    country.value = '1'; country.fire('change');
+    counting = false;
+    // A row is written only when its display changes: a second change that
+    // keeps the last row hidden writes nothing to it.
+    const row = radios[count - 1].parentNode;
+    let writes = 0, disp = row.style.display;
+    row.style = { get display() { return disp; }, set display(v) { writes++; disp = v; } };
+    country.fire('change');
+    return { walked, writes, disp, hidden: radios.filter((r) => r.parentNode.style.display === 'none').length };
+  };
+  const small = walkedFor(50), big = walkedFor(400);
+  check('CHO-1: the filter still hides half of 400 radio options', big.hidden === 200 && small.hidden === 25);
+  check('CHO-1: 8 times the options cost at most 16 times the element visits (got '
+    + small.walked + ' -> ' + big.walked + ')', big.walked <= small.walked * 16);
+  check('CHO-1: a row already hidden is not written again (got ' + big.writes + ' writes)',
+    big.writes === 0 && big.disp === 'none');
+}
+
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 
 process.exit(fail === 0 ? 0 : 1);

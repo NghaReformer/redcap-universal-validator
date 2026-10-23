@@ -104,6 +104,9 @@ software computes it.</p>
     <code>{"days":"[age_days]"}</code> or <code>{"months":"[age_months]"}</code></td></tr>
 <tr><td><code>by</code></td><td>For weight-for-length or weight-for-height: the field
     holding the length or height in cm</td></tr>
+<tr><td><code>measured</code></td><td><code>{"field":"[measured]","lying":"1","standing":"2"}</code>:
+    the field that says how the child was measured, for WHO's 0.7 cm correction on
+    length/height-for-age, weight-for-length and weight-for-height</td></tr>
 <tr><td><code>soft</code>, <code>hard</code></td><td>z-score limits, from -20 to 20</td></tr>
 <tr><td><code>plausible</code></td><td><code>[low, high]</code> in the reference's unit,
     judged when no z-score can be worked out (a blank date of birth, say)</td></tr>
@@ -144,8 +147,10 @@ for every moderately malnourished child unless <code>"softBlock":"off"</code>.</
     skinfold-for-age never goes below -6.97 for a girl, so a hard low limit of -7 would
     not hold back even 0.1 mm there.</li>
 <li>WHO's 0.7 cm correction for a length measured standing, or a height measured lying,
-    is not applied by the module. A calc field can apply it, and the guide of examples
-    shows how. For a child with oedema, skip weight rules with <code>when</code>.</li>
+    is made when the rule names the field that says how the child was measured
+    (<code>measured</code>). A blank position corrects nothing. For BMI-for-age, correct
+    the height in the calc that works out the BMI, as the guide of examples shows. For a
+    child with oedema, skip weight rules with <code>when</code>.</li>
 <li>The WHO tables ship with the module under WHO's GPL-3 licence. A REDCap
     administrator can add other references (CDC 2000, a national one) in a folder named
     in the module's system settings, and check one z-score from the new table with

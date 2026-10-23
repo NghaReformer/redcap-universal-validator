@@ -173,7 +173,7 @@ form saves as it opens, since every reason saved before still stands.
 | # | Action | Expect |
 |---|---|---|
 | B1 | Save with nothing typed | Held, one line: "• Required field (or give a reason in “Why it is blank”)" |
-| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why` |
+| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr` and the six `uj_bad_*` fields), its `why` starting "configuration error:"; every save of the form logs them, and the later steps leave them out |
 | B2 | "Weight" = 300.0 and leave | "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note "Fix this value, or say why it is right in “Reason for change”." Save is held: "• Weight (or give a reason in “Reason for change”)" |
 | B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0. No entry holds "Scale checked twice" |
 | B3 | "Lab number" = 79927398710 and leave | `✗ This ID's check character does not match — probably a typo or mis-scan. Please re-scan or re-type it.` and the reason note naming “Why the lab number is right”. Held: "• Lab number (Luhn check digit) (or give a reason in “Why the lab number is right”)" |
@@ -250,11 +250,11 @@ C1 to C4 change the page only, and each puts the reason back.
 |---|---|---|
 | G1 | Open XE-4 at `visit_1_arm_1` on the data entry form, then "Survey options", "Open survey". Click Next with nothing typed | Page 1 shows section A of the form only. Under "Respiratory rate": "⚠ Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)." Next is held: "• Required field (or give a reason in “Why it is blank”)" |
 | G1b | "Why it is blank" = Refused. "Weight" = 300.0 and leave. Next | The reason note under Weight. Held: "• Weight (or give a reason in “Reason for change”)" |
-| G1c | "Reason for change" = Scale checked twice. Next | Page 2 opens. XE-4 gets two entries, `uvalidate-justified` for `uj_req` and for `uj_wt`. No entry holds the reason |
-| G2 | Page 2 (participant code, enrolment weight). Next | Page 3 opens. The same two entries |
+| G1c | "Reason for change" = Scale checked twice. Next | Page 2 opens. XE-4 gets one entry, `uvalidate-justified` for `uj_wt`. `uj_req` is judged once the response is complete (G5), so a page turn logs nothing for it. No entry holds the reason |
+| G2 | Page 2 (participant code, enrolment weight). Next | Page 3 opens. The same entry for `uj_wt` |
 | G3 | Page 3. "Hours fasted" = 30 and leave. Next | "✗ This value is above the plausible range (allowed 0 to 24)." and no reason note, because the reason field is on page 4. Next is held: "• Hours fasted", offering no reason |
-| G4 | "Hours fasted" = 12. Next. On page 4, Next | Pages 4 and 5 open. Each Next writes the same two entries |
-| G5 | Page 5. Submit | Each `uj_bad_*` field shows the general line of G1. The survey closes. The same two entries |
+| G4 | "Hours fasted" = 12. Next. On page 4, Next | Pages 4 and 5 open. Each Next writes the same entry for `uj_wt` |
+| G5 | Page 5. Submit | Each `uj_bad_*` field shows the general line of G1. The survey closes. Two entries, `uvalidate-justified` for `uj_wt` and, now that the response is complete, for `uj_req` |
 
 ## Section H: the Validation scan
 

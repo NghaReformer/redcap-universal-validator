@@ -362,8 +362,16 @@ namespace {
     $m = $save('XE-1', ['uj_req_why' => '1'], '20261026090000');
     $step('B1b', $m, [$J('uj_req', 'required:required-blank')]);
     $named = [];
-    foreach ($m->logCalls as $c) if ($c[0] === 'uvalidate-unconfigurable') foreach (explode(', ', (string) $c[1]['fields']) as $f) $named[] = $f;
-    check('B1b: the save writes no rule-problem entry (uvalidate-unconfigurable), not even for the refused tags of A1', $named === [], $named);
+    $configOnly = true;
+    foreach ($m->logCalls as $c) {
+        if ($c[0] !== 'uvalidate-unconfigurable') continue;
+        foreach (explode(', ', (string) $c[1]['fields']) as $f) $named[] = $f;
+        if (strpos((string) ($c[1]['why'] ?? ''), 'configuration error:') !== 0) $configOnly = false;
+    }
+    sort($named);
+    $refused = ['uj_bad_bare', 'uj_bad_form', 'uj_bad_none', 'uj_bad_self', 'uj_bad_twice', 'uj_bad_type', 'uj_rr'];
+    check('B1b: the save\'s only rule problems are the refused tags of A1, one "configuration error:" entry each (VAL-15)',
+        $named === $refused && $configOnly, $named);
     $open('B2', 'form');
     $m = $save('XE-1', ['uj_wt' => '300.0', 'uj_wt_why' => 'Scale checked twice'], '20261026090500');
     $step('B2b', $m, [$J('uj_wt', 'range:hard-high')]);
@@ -496,16 +504,18 @@ namespace {
     foreach (array_keys($ERR) as $f) $pages['surveyErrors'][$f] = errOf($ps, $f);
     $m = $surveySave('XE-4', ['uj_req_why' => '2', 'uj_wt' => '300.0', 'uj_wt_why' => 'Scale checked twice', 'uv_justify_test_complete' => '0'], '20261026105000');
     $G = [$J('uj_req', 'required:required-blank'), $J('uj_wt', 'range:hard-high')];
-    check('G1c: Next saves the first page: the two findings saved with their reasons', entries($m) === $G, entries($m));
+    // @UVREQUIRED judges a survey response once it is complete (REQ-5): until Submit, only the range finding
+    $Gopen = [$J('uj_wt', 'range:hard-high')];
+    check('G1c: Next saves the first page: the range finding saved with its reason; the required field waits for Submit', entries($m) === $Gopen, entries($m));
     $quiet('G1c', $m, ['Scale checked twice']);
     $m = $surveySave('XE-4', [], '20261026105100');
-    check('G2: Next on the second page logs the same two', entries($m) === $G, entries($m));
+    check('G2: Next on the second page logs the same one', entries($m) === $Gopen, entries($m));
     $m = $surveySave('XE-4', ['uj_far' => '12'], '20261026105200');
-    check('G4: Next on the third page, the hours fixed: the same two', entries($m) === $G, entries($m));
+    check('G4: Next on the third page, the hours fixed: the same one', entries($m) === $Gopen, entries($m));
     $m = $surveySave('XE-4', [], '20261026105300');
-    check('G4: Next on the fourth page: the same two', entries($m) === $G, entries($m));
+    check('G4: Next on the fourth page: the same one', entries($m) === $Gopen, entries($m));
     $m = $surveySave('XE-4', ['uv_justify_test_complete' => '2'], '20261026105400');
-    check('G5: Submit: the same two', entries($m) === $G, entries($m));
+    check('G5: Submit completes the response: both findings, the required one now judged', entries($m) === $G, entries($m));
 
     // ---- Section H: the scans --------------------------------------------------------------------------
     /** "record field type:reason open|justified" for each finding of the legacy scan on this instrument, with the stats. */

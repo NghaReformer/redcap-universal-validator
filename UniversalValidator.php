@@ -29,6 +29,8 @@ require_once __DIR__ . '/php/GrowthOutputs.php';
 require_once __DIR__ . '/php/GrowthCurve.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/ReturnedValues.php';
+require_once __DIR__ . '/php/ScanRuns.php';
+require_once __DIR__ . '/php/LiveLookups.php';
 require_once __DIR__ . '/php/ValueStamps.php';
 require_once __DIR__ . '/php/ValueHistory.php';
 require_once __DIR__ . '/php/RoleBook.php';
@@ -59,6 +61,7 @@ require_once __DIR__ . '/php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
 require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
+require_once __DIR__ . '/php/Scan/FieldValues.php';
 require_once __DIR__ . '/php/Scan/SourceFence.php';
 require_once __DIR__ . '/php/Scan/ScanPlanner.php';
 require_once __DIR__ . '/php/Scan/WorkBudget.php';
@@ -73,6 +76,8 @@ class UniversalValidator extends AbstractExternalModule
 {
     use TemporalIntegration;
     use ReturnedValues;
+    use ScanRuns;
+    use LiveLookups;
     /**
      * Per-request data dictionary cache, keyed BY PROJECT ID.
      *
@@ -157,6 +162,7 @@ class UniversalValidator extends AbstractExternalModule
         // entered, so it is not audited a second time.
         if (self::$returnWriting) return;
         $this->returnQueue = [];
+        $this->returnBarred = [];
         // A survey respondent's save: a mode whose returned values come from
         // other records writes nothing then (returnsWrittenOnSave).
         $this->surveySave = $survey_hash !== null && $survey_hash !== '';
@@ -234,6 +240,22 @@ class UniversalValidator extends AbstractExternalModule
 
         // Scope to the saved instrument when it is known (null = no filter).
         $onForm = $this->fieldsOnInstrument($project_id, $instrument);
+
+        // A misconfigured rule checks nothing: the form shows its error, and a
+        // survey tells the respondent "a configuration issue has been logged
+        // for the study team". Log it, once per save, for each such rule on the
+        // saved instrument (VAL-15); nothing wrote that entry before.
+        foreach ($rules as $ruleIndex => $r) {
+            if (empty($r['configError']) || $onForm === null) continue;
+            $own = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (is_string($f) && isset($onForm[$f])) $own[] = $f;
+            }
+            if ($own) {
+                $this->logUnconfigurable($ruleIndex, $own, 'configuration error: ' . (string) $r['configError'],
+                    $instrument, $event_id, $repeat_instance);
+            }
+        }
 
         $fields = [];
         foreach ($rules as $r) {
@@ -333,6 +355,24 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
 
+        // A survey response that is still open (REQ-5). REDCap saves each page
+        // a respondent leaves (Next, Previous Page, Save & Return Later), so a
+        // blank on a page not reached yet, or left for later, is no finding.
+        // The rules of a mode with "surveySave": "complete" (@UVREQUIRED) are
+        // judged once the instrument's status is Complete (2), which REDCap
+        // sets when the respondent finishes. A status it could not read
+        // leaves them judged, as before; the scan still covers open responses.
+        $statusField = null;
+        if ($this->surveySave && is_string($instrument) && $instrument !== '') {
+            foreach ($rules as $i => $r) {
+                if (empty($r['configError']) && !isset($dependents[$i]) && ModeRegistry::waitsForCompleteSurvey($r['type'] ?? '')) {
+                    $statusField = $instrument . '_complete';
+                    $readSet[$statusField] = true;
+                    break;
+                }
+            }
+        }
+
         // Read every audited + condition-referenced field for this exact
         // record/event/instance in ONE getData call instead of one call per
         // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
@@ -353,6 +393,8 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
+        $surveyOpen = $statusField !== null && isset($values[$statusField]) && is_scalar($values[$statusField])
+            && trim((string) $values[$statusField]) !== '' && trim((string) $values[$statusField]) !== '2';
 
         // HOST CONTEXTS for reverse dependencies (H-03). A dependant's field
         // lives on a DIFFERENT instrument, which may repeat while the form
@@ -374,7 +416,8 @@ class UniversalValidator extends AbstractExternalModule
         // its own, so nothing leaves the loop before endUniqueAudit().
         $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
-            if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
+            if (!empty($rule['configError'])) continue; // logged above (VAL-15)
+            if ($surveyOpen && !isset($dependents[$ruleIndex]) && ModeRegistry::waitsForCompleteSurvey($rule['type'] ?? '')) continue;
             // Each rule is isolated: one rule blowing up must not silently
             // abort the audit of every later rule (COR-002).
             try {
@@ -466,6 +509,16 @@ class UniversalValidator extends AbstractExternalModule
         $meta['returns'] = $this->returnsWrittenOnSave($rule, $project_id);
         $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution, $meta);
         if (isset($f['returns']) && is_array($f['returns'])) {
+            // The write goes in under the name of the person who saved, so it
+            // goes only into forms that person may change (EXS-3). A save of
+            // another form (a "match" field's, an input's) judges the rule
+            // too, and its saver may only read the form the rule fills.
+            $barred = $this->returnsBarred($project_id, $f['returns']);
+            if ($barred) {
+                $this->returnBarred[] = ['rule' => $ruleIndex, 'fields' => (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [],
+                                         'values' => $barred, 'event' => $event_id, 'instance' => $repeat_instance, 'instrument' => $instrument];
+                $f['returns'] = array_diff_key($f['returns'], $barred);
+            }
             $this->queueReturns($f['returns'], (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [], $event_id, $repeat_instance,
                 self::looseReturns($rule, $f['returns']));
         }
@@ -1360,6 +1413,12 @@ class UniversalValidator extends AbstractExternalModule
         $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
         if ($scope === 'dag' && $dag === false) return $unknown;
         $prefer = isset($opts['callerDag']) ? $opts['callerDag'] : null;
+        $budgeted = isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']);
+        // The record being edited, when its own value of the searched field
+        // came with the request (EXS-6): the saved one is not what it holds.
+        if (isset($opts['skip']) && $opts['skip'] !== null && $opts['skip'] !== '' && $spec['in'] !== 'record') {
+            $spec['skip'] = (string) $opts['skip'];
+        }
         try {
             if ($spec['in'] === 'record') {
                 $pk = $this->recordIdFieldOf($pid);
@@ -1386,6 +1445,15 @@ class UniversalValidator extends AbstractExternalModule
                                                 $data, $filtered);
                 }
                 if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
+                // The data table names every record whose ID matches, in any
+                // spelling the rule accepts, and is not confined to the
+                // caller's Data Access Group (EXS-1): only those records are
+                // read, and a miss there is a miss. A survey (a read budget)
+                // keeps the reads below.
+                if (empty($opts['foreign']) && !$budgeted) {
+                    $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered);
+                    if ($t !== null) return $t;
+                }
                 // REDCap finds a record by its exact name only, so a value that
                 // differs from a record ID in letter case, or a number written
                 // another way ("007" for record 7), needs every record ID.
@@ -1423,7 +1491,17 @@ class UniversalValidator extends AbstractExternalModule
             // narrowed hit costs about as much and would escape the budget,
             // and how many reads an answer took would tell a value saved but
             // filtered from an absent one.
-            $budgeted = isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']);
+            //
+            // A caller without a budget (staff, the save audit) reads the data
+            // table first (existsFromTable): the records that hold the value,
+            // then those records only, in place of a read of every record
+            // (EXS-4). A survey keeps its narrowed read, whose hit costs no
+            // budget, and reads the table in place of the full read below.
+            $table = empty($opts['foreign']) && !($budgeted && $spec['where'] !== null);
+            if ($table && !$budgeted) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+                if ($t !== null) return $t;
+            }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
                 if ($fl !== null) {
@@ -1446,6 +1524,10 @@ class UniversalValidator extends AbstractExternalModule
             if ($narrow && isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) {
                 return $unknown + ['why' => 'too many lookups in the last minute'];
             }
+            if ($table && $budgeted) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+                if ($t !== null) return $t;
+            }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
             $filtered = false;
@@ -1467,6 +1549,47 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return $unknown;
         }
+    }
+
+    /**
+     * A record-ID lookup that the exact read missed, answered from the data
+     * table, or null when the table cannot be read (EXS-1, EXS-4). The
+     * table's record-ID rows name every record whose ID the rule accepts
+     * (existsCandidates; $self is left out); the ones the exact read did not
+     * already judge ($ids) are read with $read and judged as recordIdsOf's
+     * read would have judged them. A record the table names but getData does
+     * not hand back is in another Data Access Group (or went in between): an
+     * ID is all a rule without "where" or "return" tests, so it is found
+     * there, without its name; with either, the answer is unknown. Under
+     * "scope":"dag" such a record is outside the group the rule looks in.
+     */
+    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered)
+    {
+        $pk = $this->recordIdFieldOf($pid);
+        if ($pk === '') return null;
+        $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self);
+        if ($cands === null) return null;
+        $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
+        $more = array_values(array_filter($cands, function ($r) use ($ids) { return !array_key_exists($r, $ids); }));
+        if (!$more) return self::existsFilteredMiss($notFound, $filtered);
+        $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => $more,
+                                  'fields' => $read, 'exportDataAccessGroups' => true]);
+        if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+        $got = self::recordIdsIn($data);
+        $mark = $spec['recordMark'];
+        $hit = $spec['where'] === null
+            ? self::recordIdMatch($got, $value, $spec['fold'], $scope, $dag, $self, $mark)
+            : self::recordWhereHit($spec, self::recordIdMatches($got, $value, $spec['fold'], $scope, $dag, $self, $mark), $data, $filtered);
+        if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
+        $unseen = array_values(array_filter($more, function ($r) use ($got) { return !array_key_exists($r, $got); }));
+        if ($unseen && $scope !== 'dag') {
+            if ($spec['where'] === null && !$spec['returns']) return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
+            return ['state' => 'unknown', 'record' => null, 'dag' => null,
+                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
+                        ? 'a value saved in another Data Access Group may not be visible from yours'
+                        : 'the saved values could not be read just now'];
+        }
+        return self::existsFilteredMiss($notFound, $filtered);
     }
 
     /**
@@ -1845,8 +1968,9 @@ class UniversalValidator extends AbstractExternalModule
         $best = null;
         $bestScore = -1;
         $top = ($prefer !== null ? 2 : 0) + 1;
+        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node)) continue;
+            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
@@ -1878,8 +2002,9 @@ class UniversalValidator extends AbstractExternalModule
     private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null)
     {
         $hits = [];
+        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node)) continue;
+            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
@@ -2079,6 +2204,15 @@ class UniversalValidator extends AbstractExternalModule
     private function buildExistsIndex($pid, $in, array $fields, $event, $foreign = false, $fold = true, array $marks = [],
                                       $recordMark = null, array $codes = [], ?array $where = null)
     {
+        // A rule that tests only the value searched (one field, or a record
+        // ID, and no "where") is indexed from the data table: one statement
+        // per field, not an export of every record in chunks, which each work
+        // request of a durable scan paid again (EXS-5, PRF-5).
+        if (!$foreign && $where === null && ($in === 'record' || count($fields) === 1)) {
+            $t = $this->existsIndexFromTable($pid, $in, $in === 'record' ? null : (string) $fields[0], $event, $fold, $marks,
+                $recordMark, $codes);
+            if ($t !== null) return $t;
+        }
         try {
             $ids = $this->recordIdsOf($pid);
             if ($ids === null) return false;
@@ -2146,6 +2280,80 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /**
+     * buildExistsIndex's index for a rule that tests only the value searched,
+     * from the data table (Scan\FieldValues::eachRow): the rows of $field (of
+     * $event, or every event), or the record-ID rows for a record-ID lookup
+     * ($in "record"). Each record's Data Access Group comes from the table's
+     * group rows (tableGroupsOf). The same entries the export gives: a blank
+     * or a Missing Data Code holds nothing to find, and one hit is kept per
+     * (group, event) under a key. Null when the table or a group name cannot
+     * be read (the caller exports instead); false when the index would pass
+     * the memory cap.
+     */
+    private function existsIndexFromTable($pid, $in, $field, $event, $fold, array $marks, $recordMark, array $codes)
+    {
+        $groups = $this->tableGroupsOf($pid);
+        if ($groups === null) return null;
+        $cap = $this->existsIndexCap !== null ? (int) $this->existsIndexCap : (int) (self::memoryLimitBytes() * 0.6);
+        $idx = [];
+        $n = 0;
+        $over = false;
+        $full = function () use (&$n, &$over, $cap) {
+            if (!$over && $cap > 0 && (++$n & 2047) === 0 && memory_get_usage() >= $cap) $over = true;
+            return $over;
+        };
+        if ($in === 'record') {
+            $pk = $this->recordIdFieldOf($pid);
+            if ($pk === '') return null;
+            $seen = [];
+            $ok = $this->fieldValues()->eachRow($pid, $pk, null,
+                function ($rec) use (&$idx, &$seen, $groups, $fold, $recordMark, $full) {
+                    if (isset($seen[$rec]) || $full()) return;
+                    $seen[$rec] = true;
+                    $idx[Logic::lookupKey($rec, $fold, $recordMark)][] = [$rec, isset($groups[$rec]) ? $groups[$rec] : null, null, true];
+                });
+        } else {
+            $mark = isset($marks[$field]) ? $marks[$field] : null;
+            $ok = $this->fieldValues()->eachRow($pid, $field, $event,
+                function ($rec, $evt, $v) use (&$idx, $groups, $fold, $mark, $codes, $full) {
+                    if ($full()) return;
+                    $v = Logic::lookupTrim($v);
+                    if ($v === '' || ($codes && self::isMissingCode($v, $codes))) return;
+                    $k = self::existsIndexKey([Logic::lookupKey($v, $fold, $mark)]);
+                    $rdag = isset($groups[$rec]) ? $groups[$rec] : null;
+                    $slot = ($rdag === null ? '' : 'g' . $rdag) . "\x1e" . $evt;
+                    if (!isset($idx[$k][$slot])) $idx[$k][$slot] = [$rec, $rdag, $evt, true];
+                });
+        }
+        if (!$ok) return null;
+        return $over ? false : $idx;
+    }
+
+    /**
+     * Record => unique name of its Data Access Group, from the data table's
+     * group rows (REDCap keeps a record's group as field "__GROUPID__"); a
+     * record with no such row is in no group and is not listed. Null when the
+     * table cannot be read or a group's name cannot.
+     */
+    private function tableGroupsOf($pid)
+    {
+        $ids = [];
+        $ok = $this->fieldValues()->eachRow($pid, '__GROUPID__', null, function ($rec, $evt, $v) use (&$ids) {
+            if ($v !== '') $ids[$rec] = $v;
+        });
+        if (!$ok) return null;
+        $names = [];
+        foreach (array_unique(array_values($ids)) as $gid) {
+            $nm = ScanPageView::dagNameOf($gid);
+            if ($nm === null) return null;
+            $names[$gid] = $nm;
+        }
+        $out = [];
+        foreach ($ids as $rec => $gid) $out[$rec] = $names[$gid];
+        return $out;
     }
 
     /**
@@ -3040,7 +3248,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
-            if ($value !== null && trim((string) $value) !== '') continue;
+            if ($value !== null && !Logic::isBlank((string) $value)) continue;
             $shown = $this->branchingShows($project_id, $field, $values, $resolution);
             if ($shown === false) continue;
             if (is_string($shown)) {
@@ -3528,7 +3736,9 @@ class UniversalValidator extends AbstractExternalModule
                     $out['unevaluated'][] = ['field' => $field, 'why' => $growth['why']] + $extra;
                     continue;
                 }
-                $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y']);
+                // WHO's correction for how the child was measured (yAdd) is
+                // added to the measurement before it is scored
+                $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y'] + $growth['yAdd']);
                 if ($z['state'] !== 'ok') {
                     // only "outside": table() refuses rows that do not cover "valid"
                     $out['unconfigurable'][] = ['fields' => [$field],
@@ -4029,7 +4239,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The inputs of a growth-reference range rule, read for one entry:
-     * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
+     * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x',
+     * 'yAdd' (added to the measurement before it is scored)], or
      * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
      * Code) or unreadable, the sex code is neither "male" nor "female", or the
      * age, length or height is outside the reference, or ['problem' => why]
@@ -4072,7 +4283,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $in = GrowthReference::inputsFor($rule, $read, $entry);
         if ($in['state'] !== 'ok') return $in;
-        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x']];
+        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x'], 'yAdd' => $in['yAdd']];
     }
 
     /**
@@ -4606,6 +4817,38 @@ class UniversalValidator extends AbstractExternalModule
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
         if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
+        // On a survey, Previous Page and Save & Return Later save without
+        // finishing the response; a rule that waits for a complete response
+        // does not hold them (REQ-7).
+        if ($context === 'survey' && $config['rules']) {
+            $partial = ModeRegistry::partialSave();
+            if ($partial !== null) {
+                foreach ($config['rules'] as $r) {
+                    if (is_array($r) && in_array($r['type'] ?? '', $partial['types'], true)) { $config['partialSave'] = $partial; break; }
+                }
+            }
+        }
+        // A record not saved yet carries REDCap's guess at its id. The live
+        // uniqueness check must not skip a record another user saves under that
+        // id meanwhile (UNQ-6), so the page says so. Unknown counts as saved:
+        // the check then skips the record, as it always did.
+        if ($record !== null && $record !== '' && $pid !== null) {
+            foreach ($config['rules'] as $r) {
+                if (!is_array($r) || ($r['type'] ?? '') !== 'unique') continue;
+                $rd = $this->recordDagOf($pid, $record);
+                if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
+                break;
+            }
+        }
+        // A form the person may only read, or a locked one, shows the record
+        // as it is saved: the page fills no field a rule returns to (EXS-2).
+        if ($context !== 'survey' && $record !== null && $record !== '' && $pid !== null) {
+            foreach ($rules as $r) {
+                if (!is_array($r) || !ModeRegistry::returnFields($r)) continue;
+                if ($this->formReadOnly($pid, $record, $instrument, $event_id, $repeat_instance)) $config['formReadOnly'] = true;
+                break;
+            }
+        }
         // The project's Missing Data Codes (codes only, never their labels): a
         // field marked with one holds the code, which the checks leave alone.
         if ($config['rules']) {
@@ -4628,11 +4871,14 @@ class UniversalValidator extends AbstractExternalModule
             if ($marks) $config['numberMarks'] = $marks;
         }
         // The saved value of each field a today-relative @UVWINDOW part judges (a
-        // "from" of today or now, notPast). The page judges those parts only for
-        // a value that is new or changed: a saved value is judged against the
-        // day it was saved, after saving (findingsWindow). A field whose saved
-        // value could not be read, or is not valid UTF-8, maps to null, and the
-        // page judges none of those parts on it.
+        // "from" of today or now, notPast, notFuture). The page judges a "from"
+        // of today or now and notPast only for a value that is new or changed:
+        // a saved value is judged against the day it was saved, after saving
+        // (findingsWindow). notFuture still flags an unchanged value after
+        // today (it was after every earlier day too), but a pass shows no
+        // green "OK": the value may have been in the future on its save day
+        // (WIN-2). A field whose saved value could not be read, or is not
+        // valid UTF-8, maps to null, and the page treats it as unchanged.
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
@@ -4649,11 +4895,41 @@ class UniversalValidator extends AbstractExternalModule
         return $config;
     }
 
-    /** Whether a @UVWINDOW rule or branch has a part judged against today: a "from" of today or now, or notPast. */
+    /**
+     * Whether this person sees $instrument of $record read only (EXS-2): their
+     * rights to the form are "read only", or the form (this event and
+     * instance) or the whole record is locked. REDCap then disables every
+     * field, and a page that filled the returned fields would show values the
+     * record does not hold. A lock that cannot be read counts as none: the
+     * page fills as it did before.
+     */
+    private function formReadOnly($pid, $record, $instrument, $event_id, $instance)
+    {
+        if (!is_string($instrument) || $instrument === '') return false;
+        $rights = $this->userFormRights($pid);
+        if (is_array($rights) && isset($rights[$instrument]) && (string) $rights[$instrument] === '2') return true;
+        $db = new Scan\ModuleDb($this);
+        try {
+            $r = $db->select('SELECT 1 FROM redcap_locking_data WHERE project_id = ? AND record = ? AND event_id = ?'
+                . ' AND form_name = ? AND instance = ? LIMIT 1',
+                [(int) $pid, (string) $record, (int) $event_id, $instrument, (int) ($instance ?: 1)]);
+            if (is_array($r) && $r) return true;
+        } catch (\Throwable $e) {
+        }
+        try {
+            $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
+                [(int) $pid, (string) $record]);
+            if (is_array($r) && $r) return true;
+        } catch (\Throwable $e) {
+        }
+        return false;
+    }
+
+    /** Whether a @UVWINDOW rule or branch has a part judged against today: a "from" of today or now, notPast or notFuture. */
     private static function windowTodayRelative(array $r)
     {
         $a = isset($r['windowAnchor']) ? $r['windowAnchor'] : null;
-        return $a === 'today' || $a === 'now' || !empty($r['windowNotPast']);
+        return $a === 'today' || $a === 'now' || !empty($r['windowNotPast']) || !empty($r['windowNotFuture']);
     }
 
     /** The fields of the page's @UVWINDOW rules with a part judged against today. */
@@ -4844,6 +5120,13 @@ class UniversalValidator extends AbstractExternalModule
             $out['sexes'] = ['male' => $which === 'male', 'female' => $which === 'female'];
         }
         $in = ['comma' => !empty($n['rangeAxisComma'])];
+        // A correction of the length or height for how the child was measured
+        // moves the axis value: one typed on this page can be either.
+        if (isset($n['rangeMeasuredOp']) && isset($entry['position']) && $entry['position']['corrects'] === 'axis') {
+            $how = $lit('rangeMeasuredOp');
+            if ($how === null) return $out;
+            $in['byAdd'] = GrowthReference::positionAdd($entry, GrowthReference::positionOf($how, $n), null, 'axis');
+        }
         if (isset($n['rangeAgeDobOp']) || isset($n['rangeAgeAtOp'])) {
             foreach (['dob' => 'rangeAgeDobOp', 'at' => 'rangeAgeAtOp'] as $w => $k) {
                 $v = $lit($k);
@@ -5252,10 +5535,10 @@ class UniversalValidator extends AbstractExternalModule
         //                      without rights to that form must not see the
         //                      value, and a window built from it would show it.
         //                      The rule stays live for what does not need it
-        //                      ("notFuture"); the browser says the rest is
+        //                      ("notFuture", "notPast"); the browser says the rest is
         //                      checked after saving.
         // $withhold (ModeRegistry::withholds): the rule checks something that
-        // does not need this operand (@UVWINDOW "notFuture"), so an unresolved
+        // does not need this operand (@UVWINDOW "notFuture" or "notPast"), so an unresolved
         // one is withheld, with its reason ('withheldWhy'), and the rule stays live.
         $foldOperand = function ($text, $withhold = false) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
             $out = ['op' => null, 'deferred' => true, 'why' => [], 'snapshot' => []];
@@ -5486,9 +5769,10 @@ class UniversalValidator extends AbstractExternalModule
                 // An administrator reads every instrument, so there is no map
                 // to consult and nothing to bar.
                 if (!$allForms && !array_key_exists($form, $forms)) continue;   // no entry -> no
-                // REDCap form rights: 0 = no access. 1 view/edit, 2 read-only,
-                // 3 edit survey responses all imply the user can read the form.
-                if (!$allForms && (string) $forms[$form] === '0') continue;
+                // REDCap form rights: 1 view/edit, 2 read-only and 3 edit survey
+                // responses imply the user can read the form; any other value
+                // does not (ScanPageView::FORM_READ_LEVELS).
+                if (!$allForms && !ScanPageView::formLevelReads($forms[$form])) continue;
                 $out[$f] = true;
             }
             return $out;
@@ -5653,7 +5937,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($rights === true) return true;
         if (!is_array($rights)) return false;                  // unestablished -> clears nothing
         if (!array_key_exists($form, $rights)) return false;   // no entry -> no
-        return (string) $rights[$form] !== '0';
+        return ScanPageView::formLevelReads($rights[$form]);   // 1, 2 or 3 only (SEC-1)
     }
 
     /**
@@ -5662,11 +5946,20 @@ class UniversalValidator extends AbstractExternalModule
      *   2. @UVALIDATE field annotations (Online Designer / data dictionary CSV).
      * A field claimed by more than one rule gets a duplicate-rule config error on
      * the client, so the two channels cannot silently fight over a field.
+     *
+     * $fields: a live lookup asks about one field, so it passes that field and
+     * only the rules it can be judged by are built: the field's own tags, the
+     * settings rules, and each tag that can return a value, since a return
+     * elsewhere can refuse the field's rule. Branching resolves sharing field by
+     * field, so the rules on the field come out as the full list has them, but
+     * for the other fields a merged rule names (tests/rule_scope_php.php). A
+     * lookup reads only its own field of a rule. A page and a save build every
+     * rule: staff see the configuration errors of every form (PRF-3).
      */
     /** @var array|null per-request memo: pid => resolved rule list */
     private $rulesMemo = [];
 
-    private function getRules($pid = null)
+    private function getRules($pid = null, ?array $fields = null)
     {
         // Memoized per request. A finding cites a rule by ORDINAL, and the
         // report resolves that ordinal against getRules() again; unmemoized,
@@ -5675,7 +5968,12 @@ class UniversalValidator extends AbstractExternalModule
         // and assertion in the report attached to the wrong rule with nothing to
         // detect it. Stable rule identity is Tasks 5-6; this closes the window
         // in the meantime.
-        $key = (string) ($pid === null ? '' : $pid) . '|qualified=' . ($this->temporalOptions($pid)['qualified'] ? '1' : '0');
+        $key = (string) ($pid === null ? '' : $pid) . '|qualified=' . ($this->temporalOptions($pid, true)['qualified'] ? '1' : '0');
+        if ($fields !== null) {
+            $fields = array_values(array_unique(array_map('strval', $fields)));
+            sort($fields);
+            $key .= '|fields=' . implode(',', $fields);
+        }
         if (array_key_exists($key, $this->rulesMemo)) return $this->rulesMemo[$key];
 
         // WHERE A RULE CAME FROM TRAVELS ON THE RULE.
@@ -5690,8 +5988,9 @@ class UniversalValidator extends AbstractExternalModule
         // survives it. A key on the rule does survive it: resolve() copies
         // surviving rules wholesale.
         $out = [];
-        foreach ($this->getSettingRules($pid) as $r)    { $r['_origin'] = 'settings';   $out[] = $r; }
-        foreach ($this->getAnnotationRules($pid) as $r) { $r['_origin'] = 'annotation'; $out[] = $r; }
+        foreach ($this->getSettingRules($pid) as $r) { $r['_origin'] = 'settings'; $out[] = $r; }
+        $scope = $fields === null ? null : array_fill_keys($fields, true);
+        foreach ($this->getAnnotationRules($pid, $scope) as $r) { $r['_origin'] = 'annotation'; $out[] = $r; }
         // Shared fields become explicit per-field branch rules (or config
         // errors when the sharing is illegal), so the client engine, the
         // audit, and the snapshot all consume one resolved structure.
@@ -6267,9 +6566,10 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($rule[$condKey]) && $types !== null) {
                     $w = Logic::parse($rule[$condKey], $opts);
                     if (!empty($w['ok'])) {
-                        foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey) as $e) {
-                            $errors[] = $e;
-                        }
+                        $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey);
+                        foreach ($refErrs as $e) $errors[] = $e;
+                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false) : null;
+                        if ($why !== null) $errors[] = $why;
                     }
                 }
             }
@@ -6423,9 +6723,10 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($rule['when']) && $types !== null) {
             $w = Logic::parse($rule['when'], $opts);
             if (!empty($w['ok'])) {
-                foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
-                    $errors[] = $e;
-                }
+                $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []);
+                foreach ($refErrs as $e) $errors[] = $e;
+                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false) : null;
+                if ($why !== null) $errors[] = $why;
             }
         }
 
@@ -6456,7 +6757,7 @@ class UniversalValidator extends AbstractExternalModule
             $identifiers = $pid ? $this->projectIdentifierFields($pid) : null;
             $dd = $pid ? $this->dataDictionary($pid) : null;
             $layout = $pid ? $this->eventLayout($pid) : null;
-            $wasEnabled = $this->temporalOptions($pid)['qualified'];
+            $wasEnabled = $this->temporalOptions($pid, true)['qualified'];
             $enabled = in_array($settings['enable-event-instance-refs'] ?? $wasEnabled, [true,1,'1','true'],true);
             // Turning the dialect off preserves its authored rules for reactivation.
             $parseExtended = $enabled || $wasEnabled;
@@ -6643,7 +6944,7 @@ class UniversalValidator extends AbstractExternalModule
      * in AnnotationRules (pure, unit-tested); this is only the REDCap glue. Tags
      * on non-text fields become a visible config error rather than a silent no-op.
      */
-    private function getAnnotationRules($pid = null)
+    private function getAnnotationRules($pid = null, ?array $scope = null)
     {
         // the @UVDELTA hooks remember answers for one build of the rules, read
         // with one set of options (deltaRemembered, deltaTagsAsWritten)
@@ -6657,6 +6958,11 @@ class UniversalValidator extends AbstractExternalModule
             // Cheap pre-filter: every module tag starts with "@UV" (@UVALIDATE,
             // @UVASSERT, …). parseAllTags then finds the real, boundary-checked ones.
             if ($ann === '' || stripos($ann, '@UV') === false) continue;
+            // A build for some fields (getRules $fields) reads their tags and
+            // every tag that may return a value. A JSON escape could spell
+            // "return", so a tag holding a backslash is read too.
+            if ($scope !== null && !isset($scope[$name]) && stripos($ann, 'return') === false
+                && strpos($ann, '\\') === false) continue;
             $frags = AnnotationRules::parseAllTags($ann, $this->temporalOptions($pid));
             if ($frags === null) continue; // no module tag (e.g. @UVALIDATED)
             // Field-type eligibility is per MODE (php/modes.json): check-
@@ -6701,6 +7007,11 @@ class UniversalValidator extends AbstractExternalModule
                         $choices = $this->projectFieldChoices($pid);
                     }
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices, $condKey);
+                    if (!$errs && $types !== null) {
+                        $ddNow = $this->dataDictionary($pid);
+                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false) : null;
+                        if ($why !== null) $errs = [$why];
+                    }
                     if ($errs) {
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
                             '_tag' => ModeRegistry::tag($mode)];
@@ -6752,6 +7063,18 @@ class UniversalValidator extends AbstractExternalModule
      * so the opt-in is refused for them. A dictionary that cannot place the
      * fields refuses too.
      */
+    /**
+     * Whether $field is on $instrument, the survey an unauthenticated caller is
+     * taking. A field the dictionary cannot place, or a request with no
+     * instrument, is not (fail closed).
+     */
+    private static function onSurveyInstrument($dd, $field, $instrument)
+    {
+        if ($instrument === null || $instrument === '') return false;
+        $home = (is_array($dd) && isset($dd[$field]['form_name'])) ? (string) $dd[$field]['form_name'] : '';
+        return $home !== '' && $home === (string) $instrument;
+    }
+
     private static function surveyAlsoProblem($dd, $field, array $also)
     {
         if (!$also) return null;
@@ -6890,6 +7213,13 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($frag['existsReturn'])) {
             $why = $this->existsReturnProblem($frag, $name, $dd, $dd, $pid, $pid, '', $this->projectIdentifierFields($pid));
             if ($why !== null) return $refuse($why);
+        }
+        // "in" on this field's own form (EXS-6): the page sends what that
+        // field holds there now, and the record being edited is judged by it,
+        // as the audit judges the saved record.
+        if ($in !== 'record' && isset($dd[$in]['form_name'], $dd[$name]['form_name'])
+                && (string) $dd[$in]['form_name'] === (string) $dd[$name]['form_name']) {
+            $frag['existsSelfIn'] = (string) $in;
         }
         return $frag;
     }
@@ -7091,7 +7421,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $errs = Logic::checkRefs($p['ast'], $types, $choices, 'where');
         if ($errs) return $hide(implode(' ', $errs));
-        $why = self::existsWhereKindProblem($p['ast'], $ddThere);
+        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);
         if ($why !== null) return $hide($why);
         $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"where"', 'tested');
         if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
@@ -7105,32 +7435,42 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The first comparison of a parsed "where" that cannot answer as meant
-     * against the fields of $dd (existsWhereProblem), or null.
+     * The first comparison of a parsed condition that cannot answer as meant
+     * against the fields of $dd, or null. $key names the condition in the
+     * message ("where", "assert", "when"). Values are compared as REDCap
+     * stores them, so two fields must hold the same kind of date or time, and
+     * a literal compared with a date, a time or a number must be written the
+     * stored way (AST-4: '01-01-2000' against a D-M-Y field compared as text
+     * and passed every date before 2000). $sameMark also asks two number
+     * fields for the same decimal mark: a "where" compares stored text, while
+     * "assert" and "when" read each number by its own mark (AST-1).
      */
-    private static function existsWhereKindProblem(array $n, array $dd)
+    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark)
     {
         if ($n[0] === 'and' || $n[0] === 'or') {
             foreach ($n[1] as $c) {
-                $why = self::existsWhereKindProblem($c, $dd);
+                $why = self::conditionKindProblem($c, $dd, $key, $sameMark);
                 if ($why !== null) return $why;
             }
             return null;
         }
-        if ($n[0] === 'not') return self::existsWhereKindProblem($n[1], $dd);
+        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark);
         if ($n[0] !== 'cmp') return null;
+        $label = '"' . $key . '"';
         // A checkbox box ([cb(code)]) reads "1" or "0": no kind to compare.
-        $field = function ($op) { return ($op[0] === 'ref' && $op[2] === null) ? $op[1] : null; };
+        $field = function ($op) {
+            return (($op[0] === 'ref' || $op[0] === 'qref') && $op[2] === null) ? $op[1] : null;
+        };
         $kind = function ($f) use ($dd) { return self::storedKindOf(isset($dd[$f]) ? self::validationOf($dd[$f]) : ''); };
         $mark = function ($f) use ($dd) { return self::numberMarkOf(isset($dd[$f]) ? $dd[$f] : null); };
         $a = $field($n[2]);
         $b = $field($n[3]);
         if ($a !== null && $b !== null) {
             if ($kind($a) !== $kind($b)) {
-                return '"where" compares "[' . $a . ']", which holds ' . $kind($a) . ', with "[' . $b . ']", which holds '
+                return $label . ' compares "[' . $a . ']", which holds ' . $kind($a) . ', with "[' . $b . ']", which holds '
                     . $kind($b) . ' — values are compared as REDCap stores them, so both must be the same kind.';
             }
-            return self::markMismatch($a, $mark($a), $b, $mark($b), '');
+            return $sameMark ? self::markMismatch($a, $mark($a), $b, $mark($b), '') : null;
         }
         $f = $a !== null ? $a : $b;
         $lit = $n[2][0] === 'lit' ? $n[2] : ($n[3][0] === 'lit' ? $n[3] : null);
@@ -7139,17 +7479,17 @@ class UniversalValidator extends AbstractExternalModule
         $v = (string) $lit[1];
         $shown = '"[' . $f . ']"';
         if (strpos($k, 'dates') === 0 && !preg_match(AnnotationRules::WINDOW_LITERAL_RE, $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
                 . 'stores them, so write it as Y-M-D, such as \'2026-03-01\'' . ($k === 'dates' ? '' : ' or \'2026-03-01 08:30\'') . '.';
         }
         if (strpos($k, 'times') === 0 && !preg_match('/^\d{2}:\d{2}(?::\d{2})?$/D', $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
         }
         if ($k === 'minutes and seconds' && !preg_match('/^\d{2}:\d{2}$/D', $v)) {
-            return '"where" compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write it as REDCap stores it, such as \'02:30\'.';
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write it as REDCap stores it, such as \'02:30\'.';
         }
         if ($mark($f) !== null && strpos($v, ',') !== false) {
-            return '"where" compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in "where" with a '
+            return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in ' . $label . ' with a '
                 . 'decimal point, such as \'' . str_replace(',', '.', $v) . '\'.';
         }
         return null;
@@ -7761,12 +8101,22 @@ class UniversalValidator extends AbstractExternalModule
             return $refuse('"' . $id . '" is read by ' . $entry['axis'] . ' — give "by", the field holding the '
                 . $entry['axis'] . ' in cm, instead of "age".');
         }
+        // The index says which references WHO corrects for how the child was
+        // measured ("position", GrowthReference::positionProblem).
+        if (isset($frag['rangeMeasured']) && !isset($entry['position'])) {
+            return $refuse('"' . $id . '" has no correction for how the child was measured, so "measured" does not apply. '
+                . 'Where a value needs one, such as a BMI, correct the length or height in the calc that works the value out.');
+        }
         $dd = $this->dataDictionary($pid);
         $opts = $this->temporalOptions($pid);
         $comma = false;
         $inputFields = [];
+        // an input that holds one code of a few, and the rule's name for each
+        $coded = ['rangeSex' => ['what' => '"sex"', 'codes' => ['rangeMale' => '"male"', 'rangeFemale' => '"female"']],
+                  'rangeMeasured' => ['what' => '"measured"', 'codes' => ['rangeLying' => '"measured" "lying"', 'rangeStanding' => '"measured" "standing"']]];
         foreach (['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
-                  'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'] as $k => $label) {
+                  'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"',
+                  'rangeMeasured' => '"measured" "field"'] as $k => $label) {
             if (!isset($frag[$k])) continue;
             $op = ModeRegistry::operandRef($frag[$k], $opts);
             if ($op === null) return $frag;   // refused already by AnnotationRules::checkRange
@@ -7775,28 +8125,29 @@ class UniversalValidator extends AbstractExternalModule
             if ($f === $name) return $refuse($label . ' names the measured field itself.');
             $meta = $dd[$f];
             $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
-            if ($k === 'rangeSex') {
+            if (isset($coded[$k])) {
+                $what = $coded[$k]['what'];
                 if (!in_array($ftype, ['radio', 'dropdown', 'yesno', 'truefalse', 'text', 'calc', 'sql'], true)) {
-                    return $refuse('"sex" field "' . $f . '" is a ' . $ftype . ' field — it must hold one code (a radio, '
+                    return $refuse($what . ' field "' . $f . '" is a ' . $ftype . ' field — it must hold one code (a radio, '
                         . 'a dropdown or a Text field).');
                 }
                 $codes = in_array($ftype, ['yesno', 'truefalse'], true) ? ['1', '0']
                     : (isset($choices[$f]) && in_array($ftype, ['radio', 'dropdown'], true) ? $choices[$f] : null);
                 if ($codes !== null) {
                     // matched as the rule matches a value: letter case ignored
-                    // unless caseSensitive (GrowthReference::sexOf)
+                    // unless caseSensitive (GrowthReference::sexOf, positionOf)
                     $fold = empty($frag['caseSensitive']);
                     $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
-                    foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $ck => $word) {
+                    foreach ($coded[$k]['codes'] as $ck => $word) {
                         $want = $key($frag[$ck]);
                         $hits = array_values(array_filter(array_map('strval', $codes), function ($c) use ($key, $want) { return $key($c) === $want; }));
                         if ($hits === []) {
-                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which is not a choice of "sex" field "'
+                            return $refuse($word . ' is "' . $frag[$ck] . '", which is not a choice of ' . $what . ' field "'
                                 . $f . '" (its codes are ' . implode(', ', $codes) . ').');
                         }
                         if (count($hits) > 1) {
-                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which matches the codes ' . implode(' and ', $hits)
-                                . ' of "sex" field "' . $f . '" when letter case is ignored. Add "caseSensitive": true to tell them apart.');
+                            return $refuse($word . ' is "' . $frag[$ck] . '", which matches the codes ' . implode(' and ', $hits)
+                                . ' of ' . $what . ' field "' . $f . '" when letter case is ignored. Add "caseSensitive": true to tell them apart.');
                         }
                     }
                 }
@@ -9594,3222 +9945,15 @@ class UniversalValidator extends AbstractExternalModule
         return null;
     }
 
-    /**
-     * Run every configured rule over EVERY saved record — the retrospective
-     * sweep the per-save audit cannot give you: legacy data, Data Import Tool
-     * and API writes (whose save-hook coverage is version-dependent), and
-     * records entered before a rule existed.
-     *
-     * Reads records in CHUNKS (memory-safe on large projects) and evaluates
-     * each record/event/instance context through ruleFindings() — the same
-     * dispatch the save-hook audit uses, so the two can never disagree.
-     * Unique rules are handled in ONE aggregate pass over the scanned data
-     * (grouping by value + composite key + scope) instead of a whole-project
-     * read per record.
-     *
-     * $dagFilter: a DAG GROUP ID — only records in that group are scanned (pass
-     * ScanPageView::scanScope()['dag'], which produces it, so a DAG-bound user
-     * never sees other groups' record ids). null scans everything. It USED to
-     * be the unique name, and the module now has exactly one DAG axis: the id.
-     * The name is derived from it internally, because this path's record groups
-     * come from the export, which reports names. A group id that cannot be
-     * resolved to a name refuses the scan rather than scanning unconfined.
-     *
-     * Returns ['violations' => [ ['record','event_id','instance','field',
-     * 'type','reason','rule' => 1-based index], ... ], 'unconfigurable' =>
-     * [ ['rule','fields','why'], ... ] (deduplicated), 'stats' => [...]].
-     * Values are returned per the scan-value-storage project setting: shown,
-     * redacted for fields REDCap marks as an Identifier, or withheld entirely.
-     * Redaction fails CLOSED — an unreadable dictionary withholds everything,
-     * because a dictionary that cannot be read cannot clear a field.
-*/
-    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, ?FindingSink $sink = null, array $opts = [])
-    {
-        // 'status' is part of the contract: a scan that could not read everything
-        // must never be presentable as a clean bill of health. 'complete' is
-        // only ever set at the very end of the full path.
-        $result = ['violations' => [], 'unconfigurable' => [], 'incomplete' => [],
-                   'status' => 'failed',
-                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0, 'justified' => 0]];
-        $this->scanJustified = 0;
-
-        // Violations are the only channel that grows with the DATA, so they are
-        // the only thing handed out as they are found. Without a sink the
-        // findings are collected here and returned, which is what every caller
-        // before 1.7.0 expected and what every test still asserts against.
-        $collect = ($sink === null);
-        if ($collect) $sink = new ArrayFindingSink();
-
-        // ONE AXIS FOR THE WHOLE MODULE, AND THIS IS THE CONVERSION.
-        //
-        // $dagFilter now arrives as the numeric group id, because that is what
-        // ScanPageView::scanScope() produces and what every durable consumer
-        // compares on. This path cannot compare ids: its record groups come from
-        // \REDCap::getData(exportDataAccessGroups => true), whose
-        // redcap_data_access_group field is the DAG's unique NAME. So the id is
-        // resolved back to a name HERE, once, through the same resolver the page
-        // uses - rather than leaving a second parameter on a second axis for
-        // somebody to fill from the wrong producer. Verified: with the page
-        // returning the id and this resolution absent, five checks in
-        // tests/scan_page_php.php go red, all of them a scan that listed zero
-        // records because it compared 'north' against '7'.
-        //
-        // AN UNRESOLVABLE GROUP REFUSES, exactly as scanScope() does. Scanning
-        // on with a name we could not read means matching no record, and this
-        // method's own H-10 note records what that produced: a green tick over
-        // "Scanned 0 record(s)".
-        $dagName = null;
-        if ($dagFilter !== null && $dagFilter !== '') {
-            $dagName = ScanPageView::dagNameOf($dagFilter);
-            if ($dagName === null) {
-                $result['incomplete'][] = 'the Data Access Group this scan was confined to could '
-                    . 'not be resolved, so no record could be placed inside or outside it and '
-                    . 'nothing was examined';
-                return $result;                  // status stays 'failed'
-            }
-        }
-
-        $plan = $this->scanPlan($pid, $opts, $dagFilter);
-        if ($plan['fatal'] !== null) {
-            $result['incomplete'][] = $plan['fatal'];
-            return $result;                  // status stays 'failed'
-        }
-        $result['stats']['rules'] = count($plan['live']);
-        // Attach the config-error notices NOW so EVERY subsequent return carries them
-        // — the empty-idData and no-records early returns below would otherwise drop
-        // them, reporting a clean project when a rule is actually inert (UV-1553-01,
-        // the M-05 silent-failure the feature exists to prevent). The final assignment
-        // on the full path re-attaches $unconf with any runtime additions.
-        $unconf = $plan['unconf'];
-        $result['unconfigurable'] = array_values($unconf);
-        if ($plan['nothingToScan']) {
-            $result['status'] = 'complete';
-            $result['coverage'] = isset($plan['policy']['maxCompletion'])
-                ? $plan['policy']['maxCompletion'] : 'manifest-complete';
-            $result['limits'] = isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [];
-            return $result;
-        }
-
-        $live       = $plan['live'];
-        $hostFields = $plan['hostFields'];
-        $readSet    = $plan['readSet'];
-        $dupes      = $plan['dupes'];
-
-        // Record list first (ids only), then chunked full reads.
-        $pk = $this->recordIdFieldOf($pid);
-        if ($pk === '') {
-            $result['incomplete'][] = 'the record identifier field could not be determined, so the '
-                . 'record list could not be read without exporting the whole project';
-            return $result;              // status stays 'failed'
-        }
-        // A throw here used to escape scanProject entirely, so the operator saw a
-        // PHP error page rather than a scan result - and nothing recorded that
-        // the project had not been examined.
-        try {
-            $idData = \REDCap::getData([
-                'project_id' => $pid, 'return_format' => 'array',
-                'fields' => [$pk],
-                'exportDataAccessGroups' => true,
-            ]);
-        } catch (\Throwable $e) {
-            $result['incomplete'][] = 'the record list could not be read: ' . get_class($e);
-            return $result;
-        }
-        if (!is_array($idData)) {
-            $result['incomplete'][] = 'the record list could not be read';
-            return $result;
-        }
-        $ids = [];
-        $ungrouped = 0;
-        foreach ($idData as $rec => $node) {
-            if ($dagFilter !== null) {
-                // The SHAPE check is not part of the exclusion test. Written as
-                // one conjunction - is_array($node) && dagOf($node) !== $filter -
-                // a node REDCap did not return as an array failed the test and
-                // was therefore ADMITTED: a record whose group could not be
-                // established reached a DAG-scoped report, and its id was
-                // printed under a header stating the file covers one group only.
-                // A group that cannot be read is not this group.
-                if (!is_array($node)) { $ungrouped++; continue; }
-                // NAME AGAINST NAME. dagOfRecordNode() returns
-                // redcap_data_access_group from the export, which is the unique
-                // NAME; $dagName is the same name, resolved once above from the
-                // group id the caller passed. Comparing $dagFilter here - the id
-                // - excludes every record in the project and reports a clean,
-                // complete scan of nothing.
-                if (self::dagOfRecordNode($node) !== $dagName) continue;
-            }
-            $ids[] = $rec;
-        }
-        if ($ungrouped > 0) {
-            // Counted, never listed, and never named. One string per record is
-            // the unbounded accumulator this scan exists to avoid, and the id is
-            // the exact thing that must not cross the group boundary - so the
-            // note says how many and stops there.
-            $result['incomplete'][] = $ungrouped . ' record(s) could not be read well enough to '
-                . 'establish a Data Access Group, so they were left OUT of this group-scoped scan';
-        }
-        // The MANIFEST size. The headline count is set at the end, from what was
-        // actually reached: a scan halted at the first chunk boundary used to
-        // report the full manifest as "Scanned 400 record(s)" in bold while the
-        // truth sat in a bullet inside a warning box. The whole point of the
-        // 1.6.4 halt guard is that a stopped scan says so.
-        $result['stats']['manifest'] = count($ids);
-        $result['stats']['records'] = count($ids);
-        unset($idData);                  // dead from here; it was held to the return
-        if (!$ids) {
-            // Zero records IN SCOPE is not a clean project, and the three ways
-            // to reach it are indistinguishable from here: the group genuinely
-            // has no records; exportDataAccessGroups was not honoured so no
-            // record carried a group at all; or the DAG name and the exported
-            // group label disagree. All three used to render the green tick over
-            // "Scanned 0 record(s)". That is S-03 — the defect 1.6.2 exists to
-            // fix — reached by a different route: 1.6.2 refused when the DAG
-            // NAME could not be resolved, not when it resolved and matched
-            // nothing.
-            $result['incomplete'][] = $dagFilter === null
-                ? 'the project contains no records, so there was nothing to examine'
-                : 'no record was in scope for Data Access Group "' . $dagName . '", so nothing was '
-                  . 'examined — this is not evidence that the group\'s data is clean';
-            $result['status'] = 'incomplete';
-            return $result;
-        }
-
-        $uniqueSeen = [];   // aggregate pass: groupKey => [ [record,event,instance,field,rule], ... ]
-        // $unconf was declared above (it already holds any config-error rules)
-
-        // The budget. This runs synchronously inside one page request, so the two
-        // ways it actually dies are the execution limit and the memory limit —
-        // and BOTH are uncatchable fatals. The process stops before the return
-        // below, the page renders nothing, and NOTHING records that the project
-        // was not examined: no status, no 'incomplete' entry, just a blank screen
-        // that looks the same as a network failure. Stopping short and SAYING so
-        // is the entire contract (M-03).
-        //
-        // Measured on a live 39-record project with 329 rules: ~20s warm. A
-        // project an order of magnitude larger does not fit in a default
-        // execution limit, so this is the expected exit on real data, not a
-        // pathological one.
-        $tStart   = microtime(true);
-        $maxSec   = (int) ini_get('max_execution_time');          // 0 = no limit (CLI)
-        $deadline = $maxSec > 0 ? $tStart + ($maxSec * 0.75) : null;
-        $memLimit = self::memoryLimitBytes();
-        $memCap   = $memLimit > 0 ? (int) ($memLimit * 0.70) : null;
-        $reached  = 0;
-
-        // Sliced, not array_chunk()'d. array_chunk builds a SECOND copy of every
-        // id up front and holds it for the whole scan, so a 200,000-record
-        // project paid for its record list twice before examining anything.
-        // array_slice hands back one chunk at a time and the previous one is
-        // released as the loop turns.
-        $chunkSize = max(1, (int) $chunkSize);
-
-        // A chunk read costs WIDTH x HEIGHT, and only the height was bounded.
-        // Every rule field, every when/assert operand and every composite unique
-        // partner goes into one getData() call, so a project with 1,500 ruled
-        // fields built a 1,500-column export of 200 records at once - and the
-        // 1.6.4 halt guard measures memory BETWEEN chunks, so it notices after
-        // the allocation that caused the problem, not before.
-        //
-        // Narrower reads instead of a refusal: the same records are examined,
-        // in more passes. CELL_BUDGET is a shape constant, not a tuning knob -
-        // 200 records x 200 fields is what the previous behaviour cost on an
-        // ordinary project, so nothing changes for one and a wide project stops
-        // scaling its peak by rule count.
-        $width = max(1, count($readSet));
-        $cellBudget = 40000;
-        if ($width * $chunkSize > $cellBudget) {
-            $narrowed = max(1, (int) ($cellBudget / $width));
-            $result['limits'][] = 'this project has ' . $width . ' fields under rules, so records are '
-                . 'read ' . $narrowed . ' at a time instead of ' . $chunkSize . ' to keep one read '
-                . 'inside memory';
-            $chunkSize = $narrowed;
-        }
-
-        $total = count($ids);
-        for ($offset = 0; $offset < $total; $offset += $chunkSize) {
-            $chunk = array_slice($ids, $offset, $chunkSize);
-            // Checked BETWEEN chunks and nowhere else. Stopping part-way through
-            // a record would leave it half-checked with nothing written down,
-            // which is the silent skip this guard exists to prevent (H-05).
-            $why = self::scanHalt($deadline, $memCap, microtime(true), memory_get_usage(true));
-            if ($why !== null) {
-                $halt = ($why === 'time')
-                    ? 'the scan stopped after ' . $reached . ' record(s) to stay inside the server '
-                      . 'execution limit of ' . $maxSec . 's'
-                    : 'the scan stopped after ' . $reached . ' record(s) to avoid exhausting the '
-                      . 'server memory limit of ' . ini_get('memory_limit');
-                $result['incomplete'][] = $halt . '; ' . (count($ids) - $reached)
-                    . ' record(s) were not checked';
-                // Duplicate detection is the one check that needs the WHOLE
-                // project, so a short run under-reports it. That is a wrong
-                // negative rather than a missing row, and the operator has to be
-                // told which it is.
-                $result['incomplete'][] = 'because the scan stopped early, duplicate values are '
-                    . 'under-reported: a value is only seen as duplicated if both records were reached';
-                break;
-            }
-            // A chunk that cannot be read is RECORDED, never skipped in silence:
-            // skipping it produced a green "No violations found" for records that
-            // were never examined, which is the worst possible failure for a tool
-            // whose entire output is an assurance.
-            // The record-id field rides along, as in durableScanContext(): without
-            // it a record whose every read field is blank is omitted by getData
-            // and reported as "requested but not returned" instead of examined.
-            // So do the host forms' status fields, which say where each host was
-            // started (R2O-2); see scanReadParams().
-            try {
-                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $chunk, $pk));
-            } catch (\Throwable $e) {
-                $result['incomplete'][] = 'reading ' . count($chunk) . ' record(s) failed: '
-                    . get_class($e);
-                continue;
-            }
-            if (!is_array($data)) {
-                $result['incomplete'][] = 'reading ' . count($chunk) . ' record(s) returned no usable data';
-                continue;
-            }
-            foreach ($chunk as $rec) {
-                if (!isset($data[$rec]) || !is_array($data[$rec])) {
-                    // The SAME record-id posture the findings use. 'none' mode
-                    // exists for sites where the record id is itself identifying,
-                    // and these notes are rendered on the page and written into
-                    // the CSV twice - for exactly the records a site is chasing.
-                    $result['incomplete'][] = 'record ' . $this->reportRecordId($plan, $rec)
-                        . ' was requested but not returned';
-                    continue;
-                }
-                try {
-                    $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
-                } catch (\Throwable $e) {
-                    // The SINK is a caller-supplied consumer - it writes to a
-                    // spool, a socket, a table. When it threw, the exception
-                    // escaped scanProject entirely and took the result with it:
-                    // no status, no incomplete list, nothing recording that the
-                    // project had not been examined, which is the one failure
-                    // this contract exists to prevent (M-03).
-                    $result['incomplete'][] = 'record ' . $this->reportRecordId($plan, $rec)
-                        . ' could not be reported: ' . get_class($e);
-                    continue;
-                }
-                if ($one['why'] !== null) {
-                    $result['incomplete'][] = $one['why'];
-                    continue;
-                }
-                $result['stats']['contexts'] += $one['contexts'];
-            }
-            // The chunk's rows are dead now. Releasing them before the next
-            // getData allocates means the two do not coexist, which halves the
-            // read peak; without it the last chunk is also held to the return.
-            $reached += count($chunk);
-            unset($data);
-        }
-
-        // Aggregate duplicate detection: a group is a violation when TWO OR
-        // MORE DISTINCT RECORDS share the key (same-record repeats mirror the
-        // endpoint/audit, which only compare against OTHER records). A lookup
-        // (collectUniqueLookups) counts as one of those records but is not
-        // itself reported: the rule checks its own fields where it applies.
-        $emitted = [];
-        foreach ($uniqueSeen as $entries) {
-            $records = [];
-            foreach ($entries as $e) $records[$e['record']] = true;
-            if (count($records) < 2) continue;
-            foreach ($entries as $e) {
-                if (!empty($e['lookup'])) continue;
-                // One row, one finding. Host scoping already stops a rule being
-                // collected from contexts it does not live in; this is the belt to
-                // that brace, so a row can never be listed twice for one rule
-                // whatever the record shape (H-04).
-                $at = $e['rule'] . '|' . $e['record'] . '|' . $e['event_id'] . '|' . $e['instance'] . '|' . $e['field'];
-                if (isset($emitted[$at])) continue;
-                $emitted[$at] = true;
-                // Already filtered at collection time (see collectUniqueCandidates):
-                // false means withheld by policy, null means there was nothing.
-                $rv = array_key_exists('value', $e) ? $e['value'] : null;
-                $sink->violation([
-                    'record' => $this->reportRecordId($plan, $e['record']), 'event_id' => $e['event_id'],
-                    'instance' => $e['instance'], 'field' => $e['field'],
-                    'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
-                    'value' => ($rv === false) ? null : $rv,
-                    'valueWithheld' => ($rv === false),
-                    'instrument' => isset($e['instrument']) ? $e['instrument'] : null,
-                    'dag' => isset($e['dag']) ? $e['dag'] : null,
-                ] + (isset($e['branch']) ? ['branch' => (int) $e['branch']] : []));
-            }
-        }
-        $result['unconfigurable'] = array_values($unconf);
-        // The count is kept whatever the sink does with the rows, so a streaming
-        // caller can still say how many findings there were — and so 'no
-        // violations' is never inferred from an empty array that was never
-        // filled in the first place (M-02).
-        // What was EXAMINED, not what was listed. Set before the loop and never
-        // revised, this reported the full manifest as the headline on a scan
-        // that had halted at the first chunk boundary — "Scanned 400 record(s)"
-        // in bold, with the truth in a bullet inside a warning box, and the same
-        // 400 on the export's metadata line.
-        $result['stats']['records'] = $reached;
-        // Open findings only: the ones a reason stands for (@UVJUSTIFY) are
-        // counted apart, and the sink still holds every row.
-        $result['stats']['justified'] = $this->scanJustified;
-        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);
-        // COVERAGE is a separate axis from STATUS. Status says whether the sweep
-        // finished; coverage says what finishing is worth on this installation.
-        // A run that read every record on its opening list, on a server where no
-        // change fence can be proved, is 'manifest-complete': it cannot know the
-        // project did not move underneath it, and per the plan that must never
-        // render as complete or clean.
-        // MERGED, not overwritten. The installation's limits come from the
-        // capability policy; the run's own limits are recorded during the sweep
-        // (the narrowed chunk read above). Assigning here discarded the second
-        // set, which is the only kind a reader can act on.
-        $result['limits'] = array_merge(
-            isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [],
-            isset($result['limits']) ? $result['limits'] : []);
-        if ($collect) $result['violations'] = $sink->violations;
-        // Only now can the scan claim it saw everything.
-        $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
-        // AFTER the status, never before: read a line too early this consulted
-        // the initial 'failed' and every run came back 'partial', which silently
-        // withheld the tick from scans that had earned it.
-        $maxCov = isset($plan['policy']['maxCompletion']) ? $plan['policy']['maxCompletion'] : 'manifest-complete';
-        $result['coverage'] = ($result['status'] === 'complete') ? $maxCov : 'partial';
-        // The rule list the ordinals in these findings refer to. A report that
-        // re-read getRules() to resolve 'Rule 12' was joining two INDEPENDENT
-        // reads by array position: add or reorder a rule between them and every
-        // label lands on the wrong finding, silently. Bounded by the rule count,
-        // never by the data.
-        $result['rules'] = isset($plan['allRules']) ? $plan['allRules'] : [];
-        return $result;
-    }
-
-    /**
-     * The label snapshot a report needs, for THIS project.
-     *
-     * Public because the export page needs it and the pieces it is built from
-     * are private. By the time a report asks, the scan has already read both the
-     * dictionary and the rules, so this is a memory read rather than a second
-     * pass over the project.
-     */
-    public function scanDimensions($pid, ?array $rules = null)
-    {
-        $dd = $this->dataDictionary($pid);
-        // Prefer the snapshot the scan actually used. Re-reading here joined the
-        // findings to a SECOND read by array position, so a rule added or
-        // reordered between the two moved every label onto the wrong finding.
-        if ($rules === null) {
-            $rules = [];
-            try { $rules = $this->getRules($pid); } catch (\Throwable $e) { $rules = []; }
-        }
-        return ScanDimensions::build($pid, is_array($dd) ? $dd : [], is_array($rules) ? $rules : []);
-    }
-
-    /** The record id as the report may show it, honouring the log-values posture. */
-    private function reportRecordId(array $plan, $rec)
-    {
-        if (empty($plan['hashRecordIds'])) return (string) $rec;
-        try {
-            $h = $this->hashedIdentifier($plan['pid'], (string) $rec);
-        } catch (\Throwable $e) {
-            $h = null;
-        }
-        // hashedIdentifier RETURNS null when no key can be obtained - it catches
-        // its own failure rather than throwing - so a catch alone never fired and
-        // every Record cell rendered EMPTY. On screen that is a table of
-        // violations with no way to reach any of them; in a CSV it reads as a
-        // fault in the reader's own export. Never the raw id, but never blank
-        // either: say that it was withheld.
-        return ($h === null || $h === '') ? '[record id unavailable]' : $h;
-    }
-
-    /**
-     * The project's record-id field, or '' when it cannot be established.
-     *
-     * ONE ANSWER FOR EVERY CALLER. The scan's record list, both scan reads, the
-     * form path's read (H-06), the report's redaction of the record-id field and
-     * the cross-project @UVEXISTS lookups all need this.
-     *
-     * THE PROJECT'S OWN DICTIONARY FIRST. REDCap's first data-dictionary field is
-     * the record identifier, and the dictionary is read for the project asked
-     * about. \REDCap::getRecordIdField() takes no project and answers for the
-     * project of the request, so it is asked only when the dictionary cannot be
-     * read AND the project asked about is that project; for another project it
-     * would name the wrong field. Without either answer the legacy scan used to
-     * ask for every rule field for every record in ONE unchunked call, which on
-     * a large project is the whole project in memory before a record has been
-     * examined.
-     */
-    private function recordIdFieldOf($pid)
-    {
-        try {
-            $dd = $this->dataDictionary($pid);
-        } catch (\Throwable $e) {
-            $dd = null;
-        }
-        if (is_array($dd) && $dd) {
-            reset($dd);
-            return (string) key($dd);
-        }
-        if (defined('PROJECT_ID') && (int) PROJECT_ID !== (int) $pid) return '';
-        try {
-            $pk = is_callable(['\REDCap', 'getRecordIdField']) ? \REDCap::getRecordIdField() : null;
-        } catch (\Throwable $e) {
-            $pk = null;
-        }
-        return (is_string($pk) && $pk !== '') ? $pk : '';
-    }
-
     /** Longest value the report will carry. A report is not a second copy of the project. */
     const REPORT_VALUE_MAX = 120;
     /** What reportValue() shows in place of an identifier field's value. */
     const REPORT_REDACTED = '[identifier withheld]';
 
-    /**
-     * The value to show beside one finding, or null to show nothing.
-     *
-     * Four things can stop a value reaching the report, and they are NOT the
-     * same and must not look the same to a reader:
-     *   - policy says never          -> false, rendered as a marker
-     *   - the finding has no value   -> null (a required-blank IS the blank)
-     *   - the field is an Identifier -> a marker, so the reader knows a value
-     *                                   exists and was withheld rather than absent
-     *   - the bytes are not text     -> a marker with the length. The module's own
-     *                                   L-01 comment records that values can carry
-     *                                   invalid UTF-8 from a Latin-1 import, and
-     *                                   pasting those into a CSV corrupts the file.
-     */
-    private static function reportValue(array $v, array $plan)
-    {
-        // Fail CLOSED on a missing key. This defaulted to 'raw', which put the
-        // MOST disclosing option twenty lines above valueRank()'s docblock
-        // promising that "anything unrecognised is treated as the least
-        // disclosing option" - a fail-open default in the one function whose
-        // entire job is to withhold. scanPlan() always sets the key today, so
-        // this was latent; a default that is only safe because nobody takes it
-        // is not a safe default.
-        $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'locations';
-
-        if (!array_key_exists('value', $v)) return null;
-        $val = $v['value'];
-        if (is_array($val)) $val = implode(', ', array_map('strval', $val));   // a checkbox
-        $val = (string) $val;
-
-        // NOTHING TO WITHHOLD and WITHHELD are different claims, and telling
-        // them apart is the entire reason the marker exists. This branched on
-        // the KEY existing - but the required path sets 'value' => ''
-        // unconditionally (see ruleFindings above), so the key ALWAYS exists and
-        // every required-blank finding rendered '[withheld by policy]'. That is
-        // an affirmative false statement about a field that is empty, made on
-        // the one finding type whose whole content is that the field is empty.
-        // Branch on there being a value, which is what the sentence means.
-        if ($val === '') return null;
-        if ($mode === 'locations') return false;
-
-        $field = isset($v['field']) ? (string) $v['field'] : '';
-        $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
-        if (self::mustRedact($ids, $field, $mode)) return self::REPORT_REDACTED;
-        // THE RECORD ID IS AN IDENTIFIER WHEREVER IT IS HASHED. Under
-        // log-values = none the Record column carries an HMAC because the id
-        // itself identifies the participant, and a finding on the record-id
-        // field put that same id, raw, in the Value cell beside it. Withheld
-        // under every mode, because the hashing is the project's posture and
-        // the reader's ceiling cannot lift it.
-        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
-            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
-            return self::REPORT_REDACTED;
-        }
-
-        if (!mb_check_encoding($val, 'UTF-8')) {
-            return '[' . strlen($val) . ' bytes, not valid text]';
-        }
-        if (mb_strlen($val, 'UTF-8') > self::REPORT_VALUE_MAX) {
-            return mb_substr($val, 0, self::REPORT_VALUE_MAX, 'UTF-8') . '… (truncated)';
-        }
-        return $val;
-    }
-
-    /**
-     * How disclosing a value mode is. Higher shows more. Unknown ranks LOWEST,
-     * so anything unrecognised is treated as the least disclosing option rather
-     * than the most.
-     */
-    private static function valueRank($mode, $unknown = 0)
-    {
-        $r = ['locations' => 0, 'identifier-redacted' => 1, 'raw' => 2];
-        return isset($r[$mode]) ? $r[$mode] : $unknown;
-    }
-
-    /** The less disclosing of two modes. */
-    private static function valueFloor($a, $b)
-    {
-        return self::valueRank($a) <= self::valueRank($b) ? $a : $b;
-    }
-
-    /**
-     * How the scan report may show values: 'raw' | 'identifier-redacted' | 'locations'.
-     *
-     * A settings read that throws must not decide between showing values and
-     * withholding them, so a failure lands on the most permissive documented
-     * default rather than silently switching policy — the same posture logMode()
-     * takes, and for the same reason: a quietly-changed privacy mode is worse
-     * than a wrong one, because nobody can tell it happened.
-     */
-    private function scanValueMode($pid)
-    {
-        try {
-            $m = $this->getProjectSetting('scan-value-storage', $pid);
-            if (self::valueRank($m, -1) >= 0) return $m;
-        } catch (\Throwable $e) {
-        }
-        // An External Modules dropdown stores NOTHING until the settings dialog
-        // is saved, so this is null on every project nobody has reconfigured -
-        // which is most of them, and all of them on upgrade. Landing on 'raw'
-        // there would switch every existing installation from locations-only to
-        // full disclosure with nobody having decided anything. Unknown or
-        // unreadable settings fail toward LESS disclosure.
-        return 'locations';
-    }
-
-    /**
-     * TRUE when this field's value must NOT appear in the report.
-     *
-     * The INVERSE of isIdentifier()'s posture, deliberately. That helper answers
-     * "is this field known to be an identifier", so an unreadable dictionary
-     * means "nothing is" — right for refusing to enable a survey feature, and
-     * catastrophic here, where it would mean "redact nothing". A dictionary we
-     * cannot read is a dictionary that cannot clear a field, so in 'identifiers'
-     * mode an unreadable one redacts EVERYTHING.
-     *
-     * @param array|null $ids projectIdentifierFields(), which returns null on a failed read
-     */
-    private static function mustRedact($ids, $field, $mode)
-    {
-        if ($mode === 'locations') return true;
-        if ($mode === 'raw')       return false;
-        if (!is_array($ids))       return true;     // cannot clear it -> withhold it
-        return isset($ids[$field]);
-    }
-
-    /**
-     * The rule problems of a plan or a record, each with the CODE it was filed
-     * under.
-     *
-     * The list is keyed "<rule index>|<code>" while it is built, which is what
-     * keeps one problem from being listed twice, and it used to leave as
-     * array_values() of itself - so the code was thrown away at the door and the
-     * durable scan, which records each problem ONCE PER RUN, had nothing to
-     * recognise one by but its sentence. A sentence that names an event or an
-     * instance is a different sentence on every record, and one fault became a
-     * row per record.
-     *
-     * THE CODE IS THE SECOND SEGMENT, WHEN IT IS A CODE. Two kinds of key carry
-     * more: "<i>|temporal|<context>", where the third segment is the context and
-     * the problem is still `temporal`; and "<i>|<sentence>", filed by the
-     * sentence itself because the rule kind that raised it had no code to give.
-     * A sentence is not a code, and is left for Scan\ScanPromotion::problemKey()
-     * to hash, as it always has been.
-     */
-    private static function problemList(array $unconf)
-    {
-        $out = [];
-        foreach ($unconf as $key => $problem) {
-            $parts = explode('|', (string) $key, 3);
-            if (isset($parts[1]) && preg_match('/^[A-Za-z][A-Za-z0-9-]{0,63}$/', $parts[1])) {
-                $problem['code'] = $parts[1];
-            }
-            $out[] = $problem;
-        }
-        return $out;
-    }
-
-    /**
-     * The one seam between this framework adapter and the durable scan.
-     *
-     * WHY A SINGLE METHOD RATHER THAN PUBLIC ACCESSORS. Everything under
-     * php/Scan/ is written to be testable without REDCap; the moment it can
-     * reach into this class it stops being. So the durable side asks once, gets
-     * closures, and never learns what a data dictionary is. scanPlan() and
-     * scanRecord() stay private, which also means the legacy synchronous path
-     * and the durable one cannot drift into two different ideas of what a rule
-     * means - they run the same two methods.
-     *
-     * WHAT IT REFUSES. A plan with a fatal problem does not become a run with a
-     * caveat: a scan that cannot resolve its own rules has nothing true to say
-     * about the project, and starting one would produce a report whose emptiness
-     * looks like good news.
-     *
-     * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
-     *               read:?callable, rules:array, ownership:array, problems:array,
-     *               verifyFingerprint?:bool, structure?:array, choices?:array,
-     *               unread?:string[]}
-     *         the last four on success only (scanStructureFacts()); `unread`
-     *         names the configuration reads that failed (review R5-4)
-     */
-    public function durableScanContext($pid, array $opts = [], $dagFilter = null)
-    {
-        $plan = $this->scanPlan($pid, $opts, $dagFilter);
-        // THE SHAPE IS THE SAME ON EVERY RETURN, including the refusals. A
-        // caller that has to know which branch answered before it knows which
-        // keys exist is a caller that will read the wrong one.
-        if ($plan['fatal'] !== null) {
-            return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
-                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
-        }
-        if (!empty($plan['nothingToScan'])) {
-            // The rule problems survive the refusal even though no run can carry
-            // them today. scanPlan()'s own note says every rule barred is not
-            // nothing to scan - the rule problems ARE the report, and they must
-            // survive - and this return is where they stopped surviving. Closing
-            // it completely needs a run that can exist with no live rules, which
-            // is a later decision; handing them back is what makes it possible.
-            return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
-                    'plan' => null, 'evaluate' => null, 'read' => null,
-                    'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
-        }
-
-        $key = $this->hmacKey();
-
-        // THE GENERATION IS THE RUN'S, AND THERE IS NO DEFAULT.
-        //
-        // It used to be `isset($opts['generation']) ? ... : 1`, and no caller
-        // anywhere passed one - so every run of every project wrote generation
-        // 1. That single default is the root cause of five failed pilots: the
-        // second scan of any project re-inserted identities that were already
-        // active, the unique key refused them, and the batch rolled back
-        // forever. A default is what let it ship, so there is no longer one.
-        //
-        // NULL is a legitimate value and means "planning": start() needs the
-        // rules and the ownership map before a run exists to have a generation,
-        // so it asks for a context with no evaluator rather than inventing a
-        // number. Passing no key at all is still an error.
-        if (!array_key_exists('generation', $opts)) {
-            throw new \InvalidArgumentException(
-                'durableScanContext requires the run generation (null for planning)');
-        }
-        $gen = ($opts['generation'] === null) ? null : (int) $opts['generation'];
-        $runSeq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 0;
-
-        // When a stored value preview expires, decided at WRITE time. The
-        // policy method that computes this had no callers at all, so every
-        // preview was written with a NULL expiry and the query that removes
-        // them could never have matched one.
-        $valueExpiry = Scan\ScanPolicy::valueExpiry(
-            isset($opts['policy']) && is_array($opts['policy']) ? $opts['policy'] : [], time());
-
-        // Taken from the plan, never re-derived. See scanPlan()'s note where
-        // ruleIds is built: deriving it twice is what let the evaluator and the
-        // planner disagree about which rule an ordinal named.
-        $ids = isset($plan['ruleIds']) && is_array($plan['ruleIds']) ? $plan['ruleIds'] : [];
-
-        // TAKEN FROM THE PLAN, exactly as $ids is one block above, and for the
-        // same reason. It used to be built HERE by walking $plan['hostFields'],
-        // which ruleHostForms() fills from $rule['fields'] alone - so the map
-        // ScanService turns into an entitlement named the forms the RULES live
-        // on while getData was asked for the read set, which also carries every
-        // when/assert operand and every unique-composite partner. scanPlan()
-        // derives it from $readSet now; a second derivation here is the drift
-        // this file keeps paying for.
-        $ownership = isset($plan['ownership']) && is_array($plan['ownership'])
-                   ? $plan['ownership'] : [];
-
-        $module = $this;
-        // No generation, no evaluator. A caller that only needs the rule list
-        // gets one it cannot accidentally scan with.
-        $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
-                                                          $runSeq, $valueExpiry) {
-            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
-                                                  $runSeq, $valueExpiry);
-        };
-
-        // The read the worker performs. Explicit records, and only the fields
-        // the plan actually needs - the same narrowing the chunked legacy path
-        // does, for the same reason.
-        //
-        // PLUS THE RECORD-ID FIELD, for the reason foldRuleConditions() gives
-        // (H-06): getData omits a blank field, so a record whose every field in
-        // the read set is blank comes back with no node at all. Since H18 the
-        // worker asks whether such a record still exists, is told it does, and
-        // files it UNREADABLE on every run - so the record @UVREQUIRED exists to
-        // flag is never evaluated and the project can never finish complete.
-        // The record id is stored for every record and is never blank. It is
-        // added to the READ only: $plan['readSet'] also keys the entitlement,
-        // and the record id is not form data the scan reports on.
-        //
-        // PLUS THE HOST FORMS' STATUS FIELDS (R2O-2), on the same terms and for
-        // the reason scanPlan() gives: they say where each host was started.
-        $pk = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
-        $read = function (array $recordIds) use ($pid, $plan, $pk) {
-            try {
-                if (!is_callable(['\REDCap', 'getData'])) {
-                    return ['ok' => false, 'data' => [],
-                            'why' => 'this installation does not expose a record read'];
-                }
-                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $recordIds, $pk));
-                if (!is_array($data)) {
-                    return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
-                }
-                return ['ok' => true, 'data' => $data, 'why' => null];
-            } catch (\Throwable $e) {
-                // A FAILED READ IS NOT AN EMPTY ONE. The worker requeues on
-                // false and would commit "examined, nothing found" on an empty
-                // success - which is the difference this return exists to keep.
-                return ['ok' => false, 'data' => [],
-                        'why' => 'the records could not be read (' . get_class($e) . ')'];
-            }
-        };
-
-        // THE RULE PROBLEMS TRAVEL. They were computed by scanPlan() - config
-        // errors, rules whose instrument cannot be resolved, rules on an
-        // instrument no event collects, project-scope uniqueness under a group
-        // scope - and then dropped right here, which is why ScanOutcome's
-        // `ruleProblems` term had nothing to read and `clean` quietly meant "no
-        // findings". array_values because the keys are the dedupe (rule|reason),
-        // not data anything downstream should depend on.
-        //
-        // THE PROJECT'S DESIGN TRAVELS TOO (review M8): the structure and the
-        // choice sets are two of the fingerprint's inputs, and this return
-        // carried only the temporal digest - [] on a project with no
-        // event/instance rule - and no choices at all. The guard that ends a
-        // run when the project changes underneath it compared two empty
-        // arrays, so a field's validation or a radio's codes could change
-        // between two requests of one run and the run finished against both.
-        $facts = $this->scanStructureFacts($pid, $plan);
-        // WHAT THE CONFIGURATION ABOVE COULD NOT READ (review R5-4): the
-        // structure, the codes and the rules' configuration errors are the
-        // fingerprint's inputs, and a fact built from a failed read is not the
-        // project's. Named, so the refusal can say what; ScanService refuses
-        // to start or advance a run on a configuration with any.
-        $pk = (int) $pid;
-        $unread = isset($this->configUnread[$pk]) ? array_keys($this->configUnread[$pk]) : [];
-        sort($unread, SORT_STRING);
-        return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
-                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
-                'verifyFingerprint' => true, 'structure' => $facts['structure'],
-                'choices' => $facts['choices'], 'unread' => $unread,
-                'problems' => self::problemList($plan['unconf'])];
-    }
-
-    /**
-     * The project's design as the fingerprint guard compares it (review M8):
-     * the structure and the choice sets a work request rebuilds and
-     * ScanService::configurationNow() checks against the run's stored
-     * fingerprint.
-     *
-     * WHAT DECIDES A FINDING, AND NOTHING ELSE. Per field, only the fields the
-     * run reads: a field it reads cannot move instrument, change type or
-     * change validation, and a choice field it reads cannot change its codes,
-     * without ending the run; a field it never reads can be added or edited
-     * freely. The instrument-event mapping and the repeating setup are the
-     * project's, because they decide which contexts every rule is judged in.
-     * The Missing Data Codes are the project's, because a value that is one is
-     * not entered. Labels are left out; codes are sorted, because their order
-     * on the form decides nothing.
-     *
-     * FROM \Project, NOT FROM THE REDCap STATICS. getInstrumentEventMappings()
-     * and its siblings answer from the request's ambient project, which a cron
-     * request does not have; two requests of one run that read the same design
-     * two ways would end it for nothing.
-     *
-     * UNREADABLE IS A VALUE, never an empty list. A part of the project object
-     * that could not be read is recorded as 'unreadable', so a run started on
-     * a read that failed and worked on one that succeeded ends - the
-     * fail-closed direction - while an empty list stays what a project with
-     * nothing there reads as. The dictionary needs no such marker: scanPlan()
-     * has refused the run already when it cannot be read.
-     *
-     * The temporal digest stays as temporalScanStructure() gives it, at the top
-     * level: it covers the whole dictionary, and only for a project that has an
-     * event/instance rule.
-     *
-     * @return array{structure:array, choices:array}
-     */
-    private function scanStructureFacts($pid, array $plan)
-    {
-        $readSet = (isset($plan['readSet']) && is_array($plan['readSet'])) ? array_keys($plan['readSet']) : [];
-        // The dictionary was read: scanPlan() refuses the run when it cannot
-        // be, and dataDictionary() keeps a successful read for the request.
-        $dd = $this->dataDictionary($pid) ?: [];
-        $fields = [];
-        foreach ($readSet as $f) {
-            $f = (string) $f;
-            // A form's status field (fb_complete) is read and is not in the
-            // dictionary; neither is a field that was deleted.
-            if (!isset($dd[$f]) || !is_array($dd[$f])) {
-                $fields[$f] = 'absent';
-                continue;
-            }
-            $meta = $dd[$f];
-            $fields[$f] = [
-                'form' => isset($meta['form_name']) ? (string) $meta['form_name'] : '',
-                'type' => isset($meta['field_type']) ? (string) $meta['field_type'] : '',
-                'validation' => self::validationOf($meta)];
-        }
-
-        $longitudinal = 'unreadable';
-        $events = 'unreadable';
-        $repeating = 'unreadable';
-        $project = $this->projectObject($pid);
-        if ($project !== null) {
-            if (isset($project->longitudinal)) $longitudinal = (bool) $project->longitudinal;
-            // event id => the instruments designated to it.
-            if (isset($project->eventsForms) && is_array($project->eventsForms)) {
-                $events = [];
-                foreach ($project->eventsForms as $ev => $forms) {
-                    $events[(string) $ev] = self::sortedNames(is_array($forms) ? $forms : []);
-                }
-            }
-            // event id => 'WHOLE' for a repeating event, else its repeating
-            // instruments ([form => custom label] in REDCap's answer).
-            try {
-                if (is_callable([$project, 'getRepeatingFormsEvents'])) {
-                    $map = $project->getRepeatingFormsEvents();
-                    if (is_array($map)) {
-                        $repeating = [];
-                        foreach ($map as $ev => $node) {
-                            if (!is_array($node)) {
-                                $repeating[(string) $ev] = is_scalar($node) ? (string) $node : 'unreadable';
-                                continue;
-                            }
-                            $forms = [];
-                            foreach ($node as $k => $v) $forms[] = is_int($k) ? $v : $k;
-                            $repeating[(string) $ev] = self::sortedNames($forms);
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                $repeating = 'unreadable';
-                $this->noteConfigUnread($pid, 'the repeating instruments and events');
-            }
-        }
-
-        $sets = $this->projectFieldChoices($pid) ?: [];
-        $codes = [];
-        foreach ($readSet as $f) {
-            if (isset($sets[$f]) && is_array($sets[$f])) $codes[(string) $f] = self::sortedNames($sets[$f]);
-        }
-        $missing = (isset($plan['missingCodes']) && is_array($plan['missingCodes']))
-                 ? array_keys($plan['missingCodes']) : [];
-
-        return [
-            'structure' => array_merge($this->temporalScanStructure($pid, $plan['live']), [
-                'fields' => $fields, 'longitudinal' => $longitudinal,
-                'events' => $events, 'repeating' => $repeating]),
-            'choices' => ['fields' => $codes, 'missing' => self::sortedNames($missing)],
-        ];
-    }
-
-    /** Scalar names as distinct strings in byte order, so a list's order is no part of a comparison. */
-    private static function sortedNames(array $names)
-    {
-        $out = [];
-        foreach ($names as $n) if (is_scalar($n)) $out[(string) $n] = true;
-        $out = array_map('strval', array_keys($out));
-        sort($out, SORT_STRING);
-        return $out;
-    }
-
-    /**
-     * One record, turned into durable rows.
-     *
-     * Public only because the closure above needs it; it is not part of any
-     * contract and takes the plan it was built from. Everything it maps is a
-     * decision already made elsewhere - reportValue() decides disclosure, the
-     * rule identities come from the planner - so this method chooses nothing and
-     * exists to translate.
-     *
-     * @return array{findings:array, candidates:array, bytes:int, contexts:int,
-     *               problems:array, why:?string}
-     */
-    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
-                                          array $ids, $runSeq = 0, $valueExpiry = null)
-    {
-        $found = [];
-        $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
-        $seen = [];
-        $unconf = [];
-        $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
-        if ($r['why'] !== null) {
-            return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
-                    'problems' => [], 'collapsed' => 0, 'why' => $r['why']];
-        }
-
-        $recHash = Scan\Hmac::raw(Scan\Hmac::P_RECORD, $pid, (string) $recordId, $key);
-        $missed = [];
-        $rule = function ($ord) use ($ids, &$missed) {
-            $i = ((int) $ord) - 1;
-            // A rule the planner could not name is still reported, under a name
-            // that says so. Dropping the finding would be the silent skip.
-            //
-            // AND IT IS NOW LOUD. $ids is keyed by the same ordinals as
-            // $plan['live'], so after the key-preserving fix this branch is
-            // unreachable in normal operation - which means any occurrence is a
-            // bug in us, not a fact about the project. It used to be reachable
-            // on every project with one config-broken rule, and it produced a
-            // plausible-looking name ('unnamed:7') that no reader would question.
-            if (isset($ids[$i])) return $ids[$i];
-            $missed[(int) $ord] = true;
-            return ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
-        };
-
-        $findings = [];
-        $byIdentity = [];
-        $collapsed = 0;
-        $bytes = 0;
-        foreach ($found as $v) {
-            $id = $rule($v['rule']);
-            $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
-                    'instance' => $v['instance'], 'host_form' => $v['instrument'],
-                    'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason']),
-                    // The within-location discriminator. See Hmac::findingIdentity.
-                    'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
-            $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
-            $blob = ($val === null) ? null : substr((string) $val, 0, 255);
-            $identity = Scan\Hmac::findingIdentity($pid, $loc, $key);
-
-            // BACKSTOP, NOT THE FIX. With the discriminator in place nothing
-            // legitimate produces one identity twice, so a repeat here is a bug
-            // in a rule kind rather than a fact about the project - and it must
-            // be COUNTED rather than allowed to reach the unique key, where it
-            // would roll back a whole batch of correctly examined records. The
-            // count travels out so the worker can raise it; swallowing it in
-            // SQL with ON DUPLICATE KEY UPDATE would hide exactly the thing
-            // this release exists to make visible.
-            $seenKey = bin2hex($identity);
-            if (isset($byIdentity[$seenKey])) { $collapsed++; continue; }
-            $byIdentity[$seenKey] = true;
-
-            if ($blob !== null) $bytes += strlen($blob);
-            $findings[] = [
-                'project_id' => (int) $pid,
-                'generation_id' => $gen,
-                'identity' => $identity,
-                // The RUN's sequence number, not a per-record ordinal. It used
-                // to be `++$seq`, which put valid_from_seq and valid_to_seq in
-                // different number spaces and made the interval columns the
-                // schema is built around describe nothing.
-                'valid_from_seq' => $runSeq,
-                'record_hash' => $recHash,
-                'record_id_bin' => (string) $recordId,
-                'event_id' => $v['event_id'],
-                'instance' => $v['instance'],
-                'host_form' => (string) $v['instrument'],
-                'field' => (string) $v['field'],
-                'rule_source_id' => $id['source_id'],
-                'rule_revision' => $id['revision'],
-                'rule_ord' => (int) $v['rule'],
-                'check_type' => (string) $v['type'],
-                'reason_code' => Scan\ReasonCode::code($v['reason']),
-                'dag_key' => isset($v['dag']) ? $v['dag'] : null,
-                'value_bin' => $blob,
-                'value_len' => ($val === null) ? null : strlen((string) $val),
-                'value_truncated' => ($val !== null && strlen((string) $val) > 255) ? 1 : 0,
-                'value_fingerprint' => ($val === null) ? null
-                    : Scan\Hmac::raw(Scan\Hmac::P_VALUE, $pid, (string) $val, $key),
-                // WRITTEN AT WRITE TIME. The expiry policy was computed by a
-                // method with no callers, so every stored preview carried a NULL
-                // here and the query that expires them - WHERE value_expires_at
-                // IS NOT NULL - could never have matched a row even once it was
-                // wired. Participant data was retained indefinitely in a table
-                // any user with design rights can read.
-                'value_expires_at' => ($blob === null) ? null : $valueExpiry,
-                // The day a @UVWINDOW verdict was judged against, for the report.
-                'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
-                // A growth finding's z-score. It gives the measurement back (and
-                // an age), so scanRecord passes it only when values are shown
-                // raw: it is stored only beside a raw value preview, and cleared
-                // with it (ScanRetention). And its reference, which is the rule's and
-                // not participant data; a rule with branches per reference has
-                // no one reference, so the finding carries its own.
-                'z_score' => isset($v['z']) ? (string) $v['z'] : null,
-                'growth_reference' => isset($v['reference']) ? substr((string) $v['reference'], 0, 64) : null,
-                // A reason (@UVJUSTIFY) stands for it: counted apart, and no bar to clean.
-                'justified' => empty($v['justified']) ? 0 : 1,
-            ];
-        }
-
-        // Uniqueness produces CANDIDATES, never findings: no record is a
-        // duplicate on its own evidence. The composite key built by the legacy
-        // path is reused verbatim and then keyed, so the live check, the audit
-        // and the scan all agree about what "the same value" means.
-        $candidates = [];
-        $candSeen = [];
-        foreach ($seen as $groupKey => $rows) {
-            $g = Scan\Hmac::raw(Scan\Hmac::P_UNIQUE, $pid, (string) $groupKey, $key);
-            foreach ($rows as $row) {
-                $id = $rule($row['rule']);
-                // scope_key was the literal 'project' whatever the rule said, so
-                // a rule scoped to a Data Access Group or to an event was stored
-                // as though it were project-wide. The rule knows its own scope;
-                // the store was being told something else.
-                $scope = isset($row['scope']) && is_string($row['scope']) && $row['scope'] !== ''
-                    ? (string) $row['scope'] : 'project';
-                // The candidate key the store enforces, computed here so an
-                // intra-record repeat is dropped before it can refuse a batch -
-                // the same backstop the findings get, for the same reason.
-                $ck = $g . '|' . $recHash . '|' . (string) $row['event_id'] . '|'
-                    . (string) $row['instance'] . '|' . (string) $row['field'];
-                if (isset($candSeen[$ck])) { $collapsed++; continue; }
-                $candSeen[$ck] = true;
-                $candidates[] = [
-                    'project_id' => (int) $pid,
-                    'generation_id' => $gen,
-                    'rule_source_id' => $id['source_id'],
-                    'rule_revision' => $id['revision'],
-                    'group_hmac' => $g,
-                    'scope_key' => $scope,
-                    'record_hash' => $recHash,
-                    'record_id_bin' => (string) $recordId,
-                    'event_id' => $row['event_id'],
-                    'instance' => $row['instance'],
-                    'host_form' => (string) $row['instrument'],
-                    'field' => (string) $row['field'],
-                    // Evidence for the group, never a finding (collectUniqueLookups).
-                    'lookup' => empty($row['lookup']) ? 0 : 1,
-                ];
-            }
-        }
-
-        // A rule ordinal the planner could not name is an INTERNAL fault, and it
-        // travels as a rule problem rather than as a plausible name nobody
-        // questions. It is reported per record, which is where it was noticed;
-        // the aggregate that counts rule problems dedupes on the text.
-        $problems = self::problemList($unconf);
-        foreach (array_keys($missed) as $ord) {
-            $problems[] = [
-                'rule'   => (int) $ord,
-                'code'   => 'no-identity',
-                'fields' => [],
-                'why'    => 'internal: this scan holds no identity for rule ' . (int) $ord
-                    . ', so any finding it produced is recorded under a placeholder name',
-            ];
-        }
-
-        return ['findings' => $findings, 'candidates' => $candidates, 'bytes' => $bytes,
-                'contexts' => $r['contexts'], 'problems' => $problems,
-                // Non-zero means a rule kind produced one identity twice. With
-                // the locus discriminator in place nothing legitimate does, so
-                // this is a bug report rather than a fact about the project.
-                'collapsed' => $collapsed, 'why' => null];
-    }
-
-    /**
-     * Everything a scan needs to know before it reads its first record: which
-     * rules are live, where each one lives, what has to be read, and which rule
-     * problems are already known. Computed once per scan.
-     *
-     * Lifted out of scanProject() whole in 1.7.0. It is the half that does not
-     * depend on the data, so a caller that scans a project in slices computes it
-     * once rather than per slice — and it is the half whose failures are FATAL,
-     * which is why they come back as one 'fatal' string rather than being mixed
-     * in with per-record notes.
-     *
-     * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
-     *               ownership: array<string,?string> field => owning instrument, NULL when it
-     *               could not be placed - the fail-closed encoding ScanService reads as
-     *               unknown ownership and mayStart() refuses on,
-     *               readSet: array, dupes: array, unconf: array,
-     *               gateable: array<int,array<string,true>> rule index => the host forms
-     *               whose contexts the started-form gate may drop for that rule,
-     *               formStatusFields: array<string,string> gateable host form => its status field,
-     *               formStartFields: array<string,string[]> gateable host form => the fields whose
-     *               value says it was started (its status field, then the read fields it owns)}
-     *
-     * ONCE PER REQUEST, WHEN THE CALLER HANDS OVER A MEMO (M12). The durable scan
-     * rebuilt this whole plan - rule discovery, the dictionary, host resolution,
-     * the capability probes, every cross-project rights check - twice in every
-     * work request, once for the work and once for the status it returns.
-     * $opts['memo'] is an \ArrayObject the CALLER owns: ScanService makes one
-     * per instance, and an instance lives for one request. The memo is never
-     * kept on this object, because a cron process runs many projects through
-     * one module instance and a plan from an earlier pass would describe rules
-     * and rights as they were then. The key is every input that changes the
-     * answer: the project, the group scope, the value ceiling, the rights gate,
-     * and the reader - crossRefused, the instrument rights and the disclosure
-     * cap are all about who is asking.
-     *
-     * $opts['capabilities']: ScanCapabilities::all() as the caller already
-     * probed it in this request, so the probes are not sent twice (P1).
-     */
-    private function scanPlan($pid, array $opts = [], $dagFilter = null)
-    {
-        $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
-        if ($memo === null) return $this->buildScanPlan($pid, $opts, $dagFilter);
-        $key = json_encode([(int) $pid, $dagFilter === null ? null : (string) $dagFilter,
-            isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
-            !empty($opts['enforceFormRights']), $this->currentUsername()]);
-        if (!isset($memo[$key])) $memo[$key] = $this->buildScanPlan($pid, $opts, $dagFilter);
-        return $memo[$key];
-    }
-
-    /** @see scanPlan() - the plan itself, built every time it is called. */
-    private function buildScanPlan($pid, array $opts = [], $dagFilter = null)
-    {
-        $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
-                // Empty means "no started-form gate": every designated context is
-                // kept, which is the behaviour before R2O-2. Filled at the end.
-                'gateable' => [], 'formStatusFields' => [], 'formStartFields' => [],
-                // Present on EVERY return, including the refusals. An entitlement
-                // key that exists only on the success path is one a caller reads as
-                // "no forms" on the path where it should read as "no answer".
-                'ownership' => [],
-                'crossRefused' => [], 'crossUnread' => [], 'crossLookups' => [],
-                'readSet' => [], 'dupes' => [], 'unconf' => [],
-                // A value that is a Missing Data Code is no candidate for a
-                // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
-                'missingCodes' => $this->missingDataCodes($pid),
-                // How @UVUNIQUE keys each field's values (numberMarkOf): the
-                // fields that hold numbers, field => decimal mark.
-                'numberMarks' => array_filter($this->lookupMarks($pid, array_keys($this->dataDictionary($pid) ?: []))),
-                // The fields whose every @UVUNIQUE rule and branch keeps letter
-                // case, field => true (filled in below, once the rules are read).
-                'uniqueExact' => [],
-                // Resolved once: the policy cannot change mid-scan, and the
-                // identifier set is a dictionary read we already paid for.
-                // The PROJECT's setting, capped by what THIS READER is entitled
-                // to see. The project decides how disclosing the report may be;
-                // the reader's own export rights decide how disclosing it
-                // actually is. Neither can raise the other.
-                'valueMode' => self::valueFloor($this->scanValueMode($pid),
-                                                // 'locations' when the caller says nothing. This
-                                                // read 'raw' - the MOST disclosing option - as the
-                                                // default of the one expression whose job is to cap
-                                                // disclosure, and beside a valueRank() whose docblock
-                                                // states that anything unrecognised ranks LOWEST. Both
-                                                // pages pass a ceiling, so it was latent; a caller that
-                                                // wants raw can say so.
-                                                isset($opts['valueCeiling']) ? $opts['valueCeiling'] : 'locations'),
-                'identifiers' => $this->projectIdentifierFields($pid),
-                // 'none' is the log mode for sites where the RECORD ID is itself
-                // identifying. The report is a new surface and must not
-                // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none'),
-                // So reportValue() can withhold a finding's value on the field
-                // whose value IS the record id the column above hashes.
-                'recordIdField' => $this->recordIdFieldOf($pid)];
-
-        // What this installation can actually support, and therefore what a run
-        // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
-        // start and nothing consulted it, so the module contained a correct,
-        // tested implementation of its own central safety property and did not
-        // call it - which is worse than not having written it, because the suite
-        // reported the property as covered.
-        try {
-            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid,
-                (isset($opts['capabilities']) && is_array($opts['capabilities'])) ? $opts['capabilities'] : []));
-        } catch (\Throwable $e) {
-            // A probe layer that fails cannot license a claim. Cap at the
-            // weakest coverage rather than assume the strongest.
-            $out['policy'] = ['mayScan' => true, 'maxCompletion' => 'manifest-complete',
-                              'incremental' => false,
-                              'limits' => ['the capabilities of this installation could not be '
-                                           . 'established: ' . get_class($e)]];
-        }
-
-        // Rule DISCOVERY is a read like any other and can throw: a settings
-        // backend failure used to escape scanProject entirely, so the operator
-        // got a PHP error page instead of a scan result and nothing recorded
-        // that the project had not been examined (M-03).
-        try {
-            $rules = $this->getRules($pid);
-        } catch (\Throwable $e) {
-            $out['fatal'] = 'the rule list could not be read: ' . get_class($e);
-            return $out;
-        }
-        if (!is_array($rules)) $rules = [];
-
-        // The dictionary is load-bearing twice: annotation rules are READ from
-        // it, and every rule has to be located on an instrument before it can be
-        // evaluated at all. Establish that independently of whether any rule
-        // survived — a failed read that left one settings rule standing used to
-        // scan that rule and report 'complete' while every annotation rule had
-        // silently vanished from the list (H-05).
-        if (!$this->dataDictionary($pid)) {
-            $out['fatal'] = 'the project data dictionary could not be read, so the rule list is '
-                . 'incomplete and no rule can be located on an instrument';
-            return $out;
-        }
-        if (!$rules) { $out['nothingToScan'] = true; return $out; }
-
-        $live = [];
-        $unconf = [];   // dedupe rule-problem notes by rule+why (config errors AND runtime)
-        foreach ($rules as $i => $r) {
-            if (!empty($r['configError'])) {
-                // A config-broken rule enforces NOTHING. Surface it in the scan
-                // rather than imply a clean project — the module's rule is that
-                // nothing fails silently (M-05). It also shows on the data-entry
-                // form, but a scan operator would not otherwise know a rule is inert.
-                $unconf[$i . '|configError'] = [
-                    'rule'   => $i + 1,
-                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                    'why'    => 'configuration error — this rule validates nothing: ' . $r['configError'],
-                ];
-                continue;
-            }
-            $live[$i] = $r;
-        }
-        $out['live']   = $live;
-        $out['unconf'] = $unconf;
-        $out['allRules'] = $rules;   // the list the ordinals in findings refer to
-        // The durable scan re-reads a duplicate group's values and compares
-        // them as the scan grouped them (ScanService::comparableValue): letter
-        // case counts only on a field whose every unique rule and branch says so.
-        //
-        // An "also" field's values join the groups of the rule that searches
-        // it, so it is compared the way that rule compares, and a field joined
-        // by "also" to a field that ignores case ignores it too: one group can
-        // hold values of both, and the re-read must compare them alike.
-        $exact = [];
-        $folded = [];
-        $joined = [];
-        foreach ($live as $r) {
-            if (($r['type'] ?? null) !== 'unique' || !isset($r['fields']) || !is_array($r['fields'])) continue;
-            $variants = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
-            foreach ($variants as $b) {
-                $also = (isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [];
-                foreach (array_merge($r['fields'], $also) as $f) {
-                    if (empty($b['caseSensitive'])) $folded[$f] = true; else $exact[$f] = true;
-                }
-                foreach ($r['fields'] as $f) {
-                    foreach ($also as $a) { $joined[$f][$a] = true; $joined[$a][$f] = true; }
-                }
-            }
-        }
-        for ($todo = array_keys($folded); $todo; ) {
-            $f = array_pop($todo);
-            foreach (isset($joined[$f]) ? array_keys($joined[$f]) : [] as $g) {
-                if (!isset($folded[$g])) { $folded[$g] = true; $todo[] = $g; }
-            }
-        }
-        $out['uniqueExact'] = array_diff_key($exact, $folded);
-        if (!$live) { $out['nothingToScan'] = true; return $out; }
-
-        $dupes = [];
-        foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
-        $out['dupes'] = $dupes;
-
-        // WHERE each rule lives, computed once. A rule whose field cannot be
-        // located on any instrument is not evaluated in some arbitrary context
-        // and hoped for — it is reported, because a guessed location produces
-        // confident nonsense rather than a near miss (H-02).
-        $hostFields = [];
-        foreach ($live as $i => $r) {
-            $h = $this->ruleHostForms($r, $pid);
-            if ($h['unknown']) {
-                $unconf[$i . '|unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
-                    'why' => 'the instrument that owns this rule\'s field(s) could not be determined from the '
-                           . 'data dictionary, so there is no context in which to check them — the field is not scanned'];
-            }
-            $hostFields[$i] = $h['forms'];
-        }
-        // An "also" field the dictionary places on no instrument is left out
-        // of the rule's lookups (uniqueLookups, below), and the scan says so.
-        foreach ($live as $i => $r) {
-            if (($r['type'] ?? null) !== 'unique') continue;
-            $also = [];
-            foreach (self::uniqueVariants($r) as $b) {
-                foreach ((isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [] as $a) $also[(string) $a] = true;
-            }
-            $h = $also ? $this->ruleHostForms(['fields' => array_keys($also)], $pid) : ['unknown' => []];
-            if ($h['unknown']) {
-                $unconf[$i . '|also-unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
-                    'why' => 'the instrument that owns this rule\'s "also" field(s) could not be determined from the '
-                           . 'data dictionary, so values saved there are not looked at by the scan'];
-            }
-        }
-        // A rule whose instrument is designated for NO event can never run.
-        // hostContextsFor() drops every context for an unmapped form, so the
-        // rule yields no violation - and, because nothing ever reached the
-        // evaluator, no rule problem either. The scan then reports the project
-        // complete and clean while the rule has enforced nothing since the day
-        // it was written. Every OTHER unevaluable condition in this module says
-        // so out loud; this was the one that did not.
-        //
-        // Fails OPEN. A null map - a classic project, or a build that does not
-        // expose the mapping - makes NO claim, because wrongly declaring an
-        // instrument uncollected would suppress a rule that works. Only a
-        // mapping that actually names instruments is trusted, and then only to
-        // say that a form it does not name collects nothing.
-        $mapped = $this->mappedInstruments($pid);
-        if (is_array($mapped)) {
-            foreach ($hostFields as $i => $forms) {
-                $orphanForms = [];
-                $orphanFields = [];
-                foreach ($forms as $form => $ownFields) {
-                    if (isset($mapped[$form])) continue;
-                    $orphanForms[] = (string) $form;
-                    foreach ((array) $ownFields as $f) $orphanFields[] = (string) $f;
-                }
-                if (!$orphanForms) continue;
-                // Per HOST, not per rule: a rule spanning two instruments where
-                // only one is unmapped is still checked on the other, and saying
-                // the whole rule was skipped would be the opposite error (H-02).
-                $unconf[$i . '|unmapped-instrument'] = [
-                    'rule'   => $i + 1,
-                    'fields' => $orphanFields,
-                    'why'    => 'instrument ' . implode(', ', $orphanForms) . ' is not designated to any event, '
-                              . 'so no record can hold these field(s) and the rule was NOT evaluated on them. '
-                              . 'Assign the instrument to an event, or move the rule to an instrument that is.',
-                ];
-            }
-        }
-        // DESIGN RIGHTS ARE NOT INSTRUMENT RIGHTS.
-        //
-        // The scan reads through REDCap::getData() with a project id and no
-        // user, so REDCap's own per-instrument access control never runs. A
-        // designer with No Access to an instrument therefore received that
-        // instrument's findings - and, on a project that had opted into raw
-        // values, its values. The 1.8.x export-rights ceiling caps how much of a
-        // value is shown; it says nothing about which instruments a reader may
-        // see at all, and the docblock that introduced it names this exact case.
-        //
-        // Enforced by DROPPING the rule before it is ever evaluated, not by
-        // filtering rows afterwards. A row filter still leaks: the finding count
-        // moves, the instrument label appears in a summary, an aggregate over
-        // the project reveals how many problems live on a form the reader cannot
-        // open. A rule that never runs produces nothing to leak.
-        //
-        // The entitlement set is every host instrument PLUS every instrument
-        // owning a field the rule references, because a `when` or `assert`
-        // operand read from a barred form decides the verdict just as directly
-        // as the field being checked.
-        //
-        // Opt-in per call. Only a request made BY a user can be scoped to that
-        // user, and scanProject() is also reachable with no user context at all;
-        // both pages pass it, which tests/scan_page_php.php asserts.
-        if (!empty($opts['enforceFormRights'])) {
-            // NULL means the rights could not be established, and a right that
-            // cannot be read cannot clear an instrument - same posture as
-            // mustRedact() and disclosableFields(), for the same reason.
-            $formRights = $this->userFormRights($pid);
-            $ddForms = $this->dataDictionary($pid);
-            $whyUnreadable = 'your per-instrument rights could not be established, so no instrument '
-                . 'could be cleared for reading and this rule was NOT evaluated - a right that cannot '
-                . 'be read cannot grant access. Ask an administrator to check your user rights.';
-            foreach ($live as $i => $r) {
-                // TWO questions, because they have different answers.
-                //
-                // A rule's CONDITION is rule-wide: a `when` or `assert` operand
-                // read from a barred instrument decides every host's verdict, so
-                // one barred operand makes the whole rule unevaluable.
-                //
-                // A rule's HOSTS are independent. Annotation rules pool by
-                // configuration, so one rule routinely spans several
-                // instruments; barring the rule outright would throw away the
-                // hosts the reader is perfectly entitled to, which is the
-                // over-broad half of H-02. Bar the host, keep the rest.
-                $own = [];
-                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
-                    $own[(string) $f] = true;
-                }
-                $condBarred = [];
-                foreach (self::ruleRefFields($r) as $f) {
-                    if (isset($own[$f])) continue;                  // a host field, handled below
-                    if (!isset($ddForms[$f]['form_name']) || $ddForms[$f]['form_name'] === '') continue;
-                    $form = (string) $ddForms[$f]['form_name'];
-                    if (!self::mayReadForm($formRights, $form)) $condBarred[$form] = true;
-                }
-                $hostBarred = [];
-                foreach ($hostFields[$i] as $form => $_) {
-                    if (!self::mayReadForm($formRights, (string) $form)) $hostBarred[(string) $form] = true;
-                }
-                if (!$condBarred && !$hostBarred) continue;
-
-                $whole = (bool) $condBarred || count($hostBarred) >= count($hostFields[$i]);
-                $named = array_keys($condBarred ? $condBarred : $hostBarred);
-                $unconf[$i . '|no-instrument-rights'] = [
-                    'rule'   => $i + 1,
-                    'fields' => array_keys($own),
-                    'why'    => $formRights === null ? $whyUnreadable
-                        : ($condBarred
-                            ? 'this rule\'s condition reads instrument ' . implode(', ', $named)
-                              . ', which you do not have access to, so the rule was NOT evaluated '
-                              . 'anywhere. Nothing about that instrument appears in this report.'
-                            : ($whole
-                                ? 'you do not have access to instrument ' . implode(', ', $named)
-                                  . ', which this rule checks, so it was NOT evaluated. Nothing about '
-                                  . 'that instrument appears in this report.'
-                                : 'you do not have access to instrument ' . implode(', ', $named)
-                                  . ', so this rule was checked only on the instrument(s) you can '
-                                  . 'open. Nothing about that instrument appears in this report.')),
-                ];
-                if ($whole) {
-                    unset($live[$i], $hostFields[$i]);
-                    continue;
-                }
-                foreach (array_keys($hostBarred) as $form) unset($hostFields[$i][$form]);
-            }
-        }
-
-        // Reassigned, because $live and $hostFields are copies taken above and
-        // the gate may have removed entries from both. Leaving the earlier
-        // assignment standing would evaluate rules the gate had just barred.
-        $out['live']       = $live;
-        $out['hostFields'] = $hostFields;
-        $out['unconf']     = $unconf;
-        // ONE LIST, ONE OWNER. The rule identities are derived HERE, from the
-        // final $live, and keyed identically to it by construction. They used
-        // to be derived a second time in durableScanContext() from a copy that
-        // had been re-indexed on the way, so the two disagreed about which rule
-        // an ordinal named - and since rule_source_id is hashed into the
-        // finding identity, the disagreement was silent and permanent. A second
-        // derivation of the same thing is a second thing that can drift.
-        $out['ruleIds'] = Scan\ScanPlanner::identifyAll($live);
-        $out['uniqueLookups'] = $this->uniqueLookupSpecs($live, $hostFields, $dupes, $pid);
-        if (!$live) {
-            // Every rule barred is not "nothing to scan": the rule problems above
-            // are the report, and they must survive. nothingToScan short-circuits
-            // to a complete status, which unconfigurable[] then keeps off green.
-            $out['nothingToScan'] = true;
-            return $out;
-        }
-
-        // Everything the evaluation needs to read: rule fields + when/assert
-        // refs + composite unique keys.
-        $readSet = [];
-        foreach ($live as $r) {
-            if (TemporalRules::extended($r)) {
-                foreach ($this->temporalReadFields([$r], $pid) as $f) $readSet[$f] = true;
-            }
-            foreach ($r['fields'] as $f) $readSet[$f] = true;
-            foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
-            foreach ($this->requiredBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
-            // the fields a rule returns to, when the scan compares them (RNG-1)
-            if ($this->returnsComparedByScan($r, $pid)) {
-                foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
-            }
-        }
-        // A project-scope unique rule cannot be evaluated from a DAG-confined
-        // scan: the scan reads one group, so a value duplicated ACROSS groups is
-        // invisible and the rule reports nothing. The live unique-check endpoint
-        // queries the whole project and WOULD flag it, so the two disagree and
-        // the scan is the one issuing certificates. Every other unevaluable
-        // condition in this module lands in 'unconfigurable'; this one was
-        // silent, which is the one outcome the contract forbids.
-        //
-        // @UVEXISTS has the same blind spot from the other side: a value saved
-        // only in another group reads "not found" from a group-confined read,
-        // and whether this request's read is confined depends on who runs it.
-        // A rule that looks across groups is reported the same way.
-        if ($dagFilter !== null) {
-            foreach ($live as $i => $r) {
-                $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
-                if ($mode === 'unique') {
-                    $scope = isset($r['uniqueScope']) ? strtolower((string) $r['uniqueScope']) : 'project';
-                    if ($scope !== 'project') continue;      // 'dag' and 'event' ARE evaluable here
-                    $unconf[$i . '|dag-scoped-unique'] = [
-                        'rule' => $i + 1,
-                        'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                        'why' => 'this rule requires values to be unique across the WHOLE project, but this scan '
-                               . 'is confined to one Data Access Group - a duplicate in another group cannot be '
-                               . 'seen from here, so the rule was NOT evaluated. Run the scan without a group '
-                               . 'scope to check it.',
-                    ];
-                } elseif ($mode === 'exists' && !self::existsConfinedToDag($r)) {
-                    $out['skip'][$i] = true;
-                    $unconf[$i . '|dag-scoped-exists'] = [
-                        'rule' => $i + 1,
-                        'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                        'why' => 'this rule looks for the value across every Data Access Group, but this scan is '
-                               . 'confined to one group - a value saved only in another group would read as not '
-                               . 'found, so the rule was NOT evaluated. Run the scan without a group scope to '
-                               . 'check it.',
-                    ];
-                }
-            }
-            $out['unconf'] = $unconf;
-        }
-
-        // A rule that searches another project is checked only when that project
-        // answers the person running the scan (crossScanProblem); otherwise it is
-        // reported, never silently passed. A branched rule is judged per branch:
-        // a refused branch is marked (existsScanRefused, read by findingsExists)
-        // and the branches that search this project, or a project that answers,
-        // are still checked. crossRefused lists the projects that do not answer
-        // this person: ScanService refuses them a stored run's results, which
-        // may hold answers those projects gave someone else.
-        // crossUnread is the part of crossRefused whose refusal rests on a
-        // read that failed (review R3U-1): refused all the same, but a
-        // moment rather than a decision, so ScanService does not call it
-        // final.
-        $crossProjects = [];
-        $out['crossRefused'] = [];
-        $out['crossUnread'] = [];
-        foreach ($live as $i => $r) {
-            if (isset($out['skip'][$i]) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
-            $branched = isset($r['branches']) && is_array($r['branches']) && $r['branches'];
-            $refused = [];
-            $kept = 0;
-            foreach (self::existsParts($r) as $bi => $p) {
-                if (empty($p['existsPid'])) { $kept++; continue; }
-                $why = $this->crossScanProblem($pid, $p, $unread);
-                if ($why === null) {
-                    $crossProjects[(int) $p['existsPid']] = true;
-                    $kept++;
-                    continue;
-                }
-                $refused[$bi] = $why;
-                $out['crossRefused'][(int) $p['existsPid']] = true;
-                if ($unread) $out['crossUnread'][(int) $p['existsPid']] = true;
-            }
-            if (!$refused) continue;
-            $fields = (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [];
-            if (!$branched || $kept === 0) {
-                $out['skip'][$i] = true;
-                $unconf[$i . '|cross-project-exists'] = [
-                    'rule' => $i + 1, 'fields' => $fields,
-                    'why'  => 'this rule looks the value up in another project, but ' . reset($refused) . ', so the rule was NOT evaluated.',
-                ];
-            } else {
-                // Kept beside the rule, not written into it: the rule identities
-                // were derived from $live above and must not move.
-                foreach ($refused as $bi => $why) {
-                    $out['existsScanRefused'][$i][$bi] = 'this branch looks the value up in another project, but '
-                        . $why . ', so it was NOT evaluated for the entries it applies to.';
-                }
-            }
-            $out['unconf'] = $unconf;
-        }
-        $out['crossRefused'] = array_keys($out['crossRefused']);
-        $out['crossUnread'] = array_keys($out['crossUnread']);
-        // EVERY lookup into another project that a live rule makes, whoever
-        // asks (reviews R3U-N1, R4-1, R4-2). A started run keeps this list and
-        // status() asks the other project about each entry for the reader.
-        // Not only the lookups this person is answered for: whoever presses
-        // Continue evaluates with their own plan, so a run started by someone
-        // project 300 refuses can still hold 300's answers. The list is the
-        // rules', and every work pass is held to the rules by the fingerprint
-        // (rule revisions cover existsPid and the fields searched), so no pass
-        // can consult a lookup the list does not name. Per lookup, not per
-        // project: under a "rights" agreement the forms a lookup reads decide
-        // who it answers.
-        $lookups = [];
-        foreach ($live as $r) {
-            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
-            foreach (self::existsParts($r) as $p) {
-                if (empty($p['existsPid'])) continue;
-                $l = self::crossLookupOf($p);
-                $lookups[json_encode($l)] = $l;
-            }
-        }
-        ksort($lookups);
-        $out['crossLookups'] = array_values($lookups);
-
-        $out['readSet'] = $readSet;
-
-        // A @UVEXISTS verdict depends on OTHER records. The change fence and the
-        // catch-up re-check the records that changed, not the records whose
-        // lookup a change elsewhere moved, so a run with such a rule can vouch
-        // for the list it read and no more.
-        $out['crossRecordLookups'] = false;
-        foreach ($live as $i => $r) {
-            if (!isset($out['skip'][$i]) && ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') === 'exists') {
-                $out['crossRecordLookups'] = true;
-                break;
-            }
-        }
-        if ($out['crossRecordLookups'] && isset($out['policy']['maxCompletion'])
-                && $out['policy']['maxCompletion'] === 'complete-through-fence') {
-            $out['policy']['maxCompletion'] = 'manifest-complete';
-            $out['policy']['limits'][] = '@UVEXISTS rules were checked against the values saved when each part of '
-                . 'the scan ran; a value saved or removed in another record during the scan was not re-checked';
-        }
-        // Whatever the run can vouch for here, nothing re-opens it for a change
-        // in the other project, so the report says so whatever its coverage.
-        if ($crossProjects && isset($out['policy']) && is_array($out['policy'])) {
-            $out['policy']['limits'][] = '@UVEXISTS rules that search project ' . implode(', ', array_keys($crossProjects))
-                . ' read it as it stood when each part of the scan ran; changes saved there do not re-open this scan';
-        }
-
-        // WHICH INSTRUMENT OWNS EACH FIELD THE RUN WILL READ - derived from the
-        // READ SET, and from nothing else.
-        //
-        // It used to be built in durableScanContext() by walking
-        // $plan['hostFields'], which ruleHostForms() fills from $rule['fields']
-        // alone. The read is $readSet: that list PLUS every field a `when` or
-        // `assert` operand references PLUS every unique-composite "with" field.
-        // ScanService turns this map into the entitlement set
-        // ScanAuthorization::mayStart() is asked about, so the gate was being
-        // asked where the RULES LIVE while getData was being asked for the
-        // OPERANDS. A designer with explicit No Access to an instrument could
-        // therefore start a scan that read it, and whose findings differed by
-        // its values - reproduced on every rule kind (@UVALIDATE, @UVASSERT,
-        // @UVREQUIRED, @UVUNIQUE, @UVCHOICES), on branch operands, and on both
-        // configuration channels. mayStart()'s own docblock already said the
-        // entitlement is "every form the run will read"; the caller was the half
-        // that was wrong.
-        //
-        // DERIVED FROM $readSet, NOT FROM ruleRefFields(). That helper computes
-        // the same three sources per rule and would give the same answer today -
-        // which is the problem: a second derivation of the same set is a second
-        // thing that can drift, the same reason ruleIds is derived once from the
-        // final $live and taken from the plan thereafter. $readSet is the array
-        // durableScanContext() hands to getData, so $readSet is the only honest
-        // answer to "what does this run read".
-        //
-        // NULL means "could not be placed", and it is the fail-closed direction:
-        // ScanService reads a null or empty form as unknown ownership and
-        // mayStart() refuses the run rather than dropping the field from the set.
-        // Nothing could set that flag before - hostFields only ever contains
-        // forms that WERE determined - so that arm of the control was dead in
-        // production. A dictionary that came back unreadable is the same answer:
-        // a form that cannot be read cannot clear an instrument.
-        //
-        // AND THAT ARM IS NOW REACHABLE FOR A RULE'S OWN FIELD, which is a real
-        // behaviour change and was argued both ways. The `n|unlocatable` note at
-        // the top of this method already reports such a field by name and says
-        // the field is not scanned - so the case for excluding it here is that
-        // the rule is already refused. That case is FALSE: $readSet above is
-        // built from every live rule's `fields` unconditionally, the unlocatable
-        // note does not remove the rule from $live, and $fields at :3122 is
-        // array_keys($plan['readSet']). The value IS read. A field that is read
-        // and cannot be placed is a field whose access cannot be checked, and
-        // refusing is the only answer consistent with the rest of this file. The
-        // refusal names the fields (ScanAuthorization::mayStart) so it is a
-        // diagnosis rather than an undiagnosable no.
-        //
-        // WITH enforceFormRights ON, this map now includes a host form the
-        // narrowing gate removed from $hostFields at the barred-host block
-        // above. Harmless today - durableScanContext never passes that flag and
-        // scanProject has no production caller - but whoever re-wires that gate
-        // has to decide whether the narrowed run should be entitled to the form
-        // it narrowed away, and this is where the two meet.
-        $ddOwn = $this->dataDictionary($pid);
-        $ownership = [];
-        foreach (array_keys($readSet) as $f) {
-            if (!isset($ddOwn[$f]) && substr($f, -9) === '_complete') { $ownership[(string)$f] = substr($f, 0, -9); continue; }
-            $ownership[(string) $f] =
-                (is_array($ddOwn) && isset($ddOwn[$f]['form_name']) && $ddOwn[$f]['form_name'] !== '')
-                    ? (string) $ddOwn[$f]['form_name'] : null;
-        }
-        $out['ownership'] = $ownership;
-
-        // WHERE EACH HOST INSTRUMENT WAS STARTED (review R2O-2).
-        //
-        // Both scan reads ask for the record-id field (EE-2), and REDCap stores
-        // a record-id row on every event the record has any data in. So every
-        // such event became a context, and hostContextsFor() kept it whenever
-        // the host form was designated there: an adverse-event form designated
-        // on every visit produced a @UVREQUIRED finding on every visit without
-        // an adverse event, and the project could never certify clean.
-        //
-        // The decision: a rule's host instrument counts in a context only where
-        // it was STARTED there - its <form>_complete holds a value, or a field
-        // the scan reads from that form holds one. That is when the form path
-        // enforces the rule (on save) and what REDCap's own missing-value checks
-        // look at. The record-id field is not evidence, because it is stored on
-        // every event whatever was opened.
-        //
-        // ONLY FOR A RULE WHOSE VERDICT ITS HOST FORM DECIDES ALONE (review
-        // R3G-1). The gate dropped every rule's contexts alike, so `ae_term`
-        // required "when [had_ae]='1'", with had_ae on the visit form, was never
-        // checked where the AE form was never opened - which is the one place
-        // that rule exists for. The scan certified the record clean while the
-        // save audit, re-checking the rule as a reverse dependant when the visit
-        // form was saved, logged the violation; auditRule() says the two must
-        // not disagree. The save audit does not gate: a dependant is evaluated
-        // in every designated host context of the saved event, an extended rule
-        // in every one of the record, and the rule's own condition decides. So
-        // the scan keeps every designated context for a (rule, host) pair whose
-        // condition, operand or field list (any branch) reads a field another
-        // form owns, and for every extended rule, which reads other events or
-        // instances by construction (a qualified reference, a binding, or a
-        // record-wide unique scope). Its condition decides there, as it does on
-        // save. A field the dictionary does not place counts as another
-        // form's: a context kept in error is a finding someone can see, one
-        // dropped in error is a finding nobody sees.
-        //
-        // Nor a rule on the record-id field itself: the record id is stored
-        // wherever the record exists, so it is always entered, and gating it
-        // would stop checking the record id of a record whose first instrument
-        // was never saved (an import).
-        //
-        // Computed HERE, once per plan, never per record: the gate runs per
-        // record per context, on projects with hundreds of thousands of
-        // records. scanRecord() only looks the pair up.
-        //
-        // The status fields are added to the READ only, never to $readSet: the
-        // read set keys the entitlement, and every host form is entitled
-        // already through the rule's own fields. They are read only for the
-        // host forms the gate consults, so a project with no gateable rule
-        // reads no status field and does not ask for blanks.
-        //
-        // REDCap reports a never-started form's status as '0' unless getData is
-        // asked for blanks (returnBlankForGrayFormStatus), and the scan must
-        // ask, or every designated form looks started. The blank changes no
-        // verdict, because no rule can read a status VALUE (review R3G-3):
-        // every condition, operand and field list, plain or qualified, must
-        // name a data-dictionary field, and REDCap's dictionary holds no
-        // <form>_complete row, so such a rule is a configuration error. The
-        // status fields a temporal rule puts in the read set are existence
-        // markers, and AddressResolver asks only whether their row or instance
-        // is there. tests/hosting_php.php pins each refusal. A rule kind that
-        // ever reads a status value must be shown the '0' the form path sees,
-        // not the blank this read asks for.
-        $pkOwn = (string) $out['recordIdField'];
-        $gateable = [];
-        $statusFields = [];
-        foreach ($hostFields as $i => $forms) {
-            if (TemporalRules::extended($live[$i])) continue;
-            // The forms owning what the rule's configuration reads. A @UVEXISTS
-            // "in" field is read in OTHER records ('lookup'), so it says nothing
-            // about this record's other forms - the save audit skips it too.
-            $readsFrom = [];
-            foreach (ModeRegistry::refFields($live[$i], ['cond', 'operand', 'fieldList'], ['lookup']) as $f) {
-                $readsFrom[isset($ddOwn[$f]['form_name']) ? (string) $ddOwn[$f]['form_name'] : ''] = true;
-            }
-            foreach ($forms as $form => $own) {
-                $form = (string) $form;
-                if ($readsFrom && (count($readsFrom) > 1 || !isset($readsFrom[$form]))) continue;
-                if ($pkOwn !== '' && in_array($pkOwn, (array) $own, true)) continue;
-                $gateable[$i][$form] = true;
-                $statusFields[$form] = $form . '_complete';
-            }
-        }
-        $startFields = [];
-        foreach ($statusFields as $form => $sf) $startFields[$form] = [$sf];
-        foreach ($ownership as $f => $form) {
-            $f = (string) $f;
-            // An existence marker is owned by its form but is no field of it:
-            // the form's status field already leads the list.
-            if ($form === null || $f === $pkOwn || !isset($ddOwn[$f]) || !isset($startFields[$form])) continue;
-            $startFields[$form][] = $f;
-        }
-        $out['gateable'] = $gateable;
-        $out['formStatusFields'] = $statusFields;
-        $out['formStartFields'] = $startFields;
-        return $out;
-    }
-
-    /**
-     * The getData fields of one scan read: the read set, the record-id field
-     * (EE-2) and the host forms' status fields (R2O-2). ONE derivation for both
-     * reads, so the legacy chunk read and the durable read cannot drift.
-     */
-    private static function scanReadFields(array $plan, $pk)
-    {
-        $fields = isset($plan['readSet']) && is_array($plan['readSet']) ? $plan['readSet'] : [];
-        if ((string) $pk !== '') $fields[(string) $pk] = true;
-        foreach (isset($plan['formStatusFields']) ? (array) $plan['formStatusFields'] : [] as $sf) {
-            $fields[(string) $sf] = true;
-        }
-        return array_keys($fields);
-    }
-
-    /**
-     * The getData parameters of one scan read, for both reads.
-     *
-     * returnBlankForGrayFormStatus is what makes the status fields worth
-     * reading: without it REDCap reports a form nobody opened as '0'
-     * (Incomplete), the same as one saved incomplete, and every designated
-     * form looks started. It is asked for only when the plan carries status
-     * fields, and it moves no verdict: no rule can read a status value (see
-     * scanPlan(), R3G-3). A build that ignores the key returns '0' and the
-     * scan keeps every designated context, which flags more rather than less.
-     */
-    private static function scanReadParams(array $plan, $pid, array $records, $pk)
-    {
-        $p = ['project_id' => $pid, 'return_format' => 'array',
-              'records' => array_values($records), 'fields' => self::scanReadFields($plan, $pk),
-              'exportDataAccessGroups' => true];
-        if (!empty($plan['formStatusFields'])) $p['returnBlankForGrayFormStatus'] = true;
-        return $p;
-    }
-
-    /**
-     * Whether $form was STARTED in one context (R2O-2): its status field, or a
-     * field the scan reads from it, holds a value in the context's OWN row.
-     *
-     * $gate is ['fields' => the plan's formStartFields for $form]. The row
-     * comes from the record node as read, never from the context's 'values':
-     * a repeat context's values are the event's base row with the instance
-     * merged over it, so a status or value on the base row would pass for this
-     * instance's own.
-     *
-     * A row that cannot be found keeps the context, because a context dropped
-     * in error is a finding nobody sees. A row that does not carry a signal
-     * field at all reads it as blank, as cleanRow() does: getData leaves a
-     * blank out, and the read asked for every signal field.
-     */
-    private static function formStartedIn(array $ctx, array $gate)
-    {
-        $rec = (isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : [];
-        $evt = $ctx['event_id'];
-        $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
-        if ($rk === null) {
-            $row = isset($rec[$evt]) ? $rec[$evt] : null;
-        } else {
-            $inst = $ctx['instance'];
-            $row = isset($rec['repeat_instances'][$evt][$rk][$inst])
-                 ? $rec['repeat_instances'][$evt][$rk][$inst] : null;
-        }
-        if (!is_array($row)) return true;
-        foreach ($gate['fields'] as $f) {
-            if (!array_key_exists($f, $row)) continue;
-            $v = $row[$f];
-            if (is_array($v)) {
-                // A checkbox arrives as code => '0'/'1' on every row that exists,
-                // ticked or not. Only a ticked box is something somebody entered.
-                foreach ($v as $c) if ((string) $c === '1') return true;
-                continue;
-            }
-            if ($v !== null && trim((string) $v) !== '') return true;
-        }
-        return false;
-    }
-
-    /**
-     * Evaluate every live rule against ONE record, handing findings to the sink.
-     *
-     * Lifted out of scanProject()'s chunk loop in 1.7.0, unchanged. Everything
-     * it needs that outlives the record — the whole-project unique candidates
-     * and the deduped rule problems — is threaded by reference, because both are
-     * bounded by the RULE list rather than by the data.
-     *
-     * @return array{contexts: int, why: ?string}  'why' is set when the record
-     *         could not be examined at all, which is reported, never assumed clean.
-     */
-    private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
-                                array &$uniqueSeen, array &$unconf)
-    {
-        $this->temporalBegin($pid);
-        $ctxAll = self::recordContexts($node);
-        if (!$ctxAll) {
-            // REDCap returned the record with no event row at all. There is
-            // nothing to evaluate, and nothing that says the record is
-            // clean — certifying it was the same silent skip as an
-            // unreadable chunk, one step further down (H-05).
-            return ['contexts' => 0,
-                    'why' => 'record ' . $this->reportRecordId($plan, $rec)
-                           . ' was returned with no data rows, so it was not checked'];
-        }
-        $recDag = self::dagOfRecordNode($node);
-        // Resolution is a property of the CONTEXT, not of the rule that
-        // happens to be asking. Computing it per rule re-derived the same
-        // ownership map contexts x rules times (M-05).
-        $resCache = [];
-        $hostCache = [];    // host form (+ gated?) => its contexts in THIS record; rules share hosts
-        foreach ($plan['live'] as $i => $r) {
-            // Reported as not evaluated by scanPlan(); evaluating it anyway would
-            // add findings the same report says it cannot vouch for.
-            if (isset($plan['skip'][$i])) continue;
-            $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
-            // What the next save would write to the rule's returned fields,
-            // compared with what they hold (returnsStale).
-            $cmpReturns = $this->returnsComparedByScan($r, $pid);
-            foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
-                $onForm = array_fill_keys($ownFields, true);
-                // Only where the host was STARTED (R2O-2), and only for a pair
-                // scanPlan() named gateable: a rule that reads another form or
-                // event, or one on the record-id field, keeps every designated
-                // context and its own condition decides (R3G-1). A plan that
-                // does not name the pair, or did not ask for the host's status
-                // field, keeps every designated context, as before.
-                $gate = null;
-                if (isset($plan['gateable'][$i][$hostForm], $plan['formStatusFields'][$hostForm],
-                          $plan['formStartFields'][$hostForm])) {
-                    $gate = ['fields' => $plan['formStartFields'][$hostForm]];
-                }
-                $hk = $hostForm . ($gate === null ? '|all' : '|started');
-                if (!isset($hostCache[$hk])) {
-                    $hostCache[$hk] = $this->hostContextsFor($ctxAll, $hostForm, $pid, $gate);
-                }
-                foreach ($hostCache[$hk] as $ck => $ctx) {
-                    if (!isset($resCache[$ck])) {
-                        $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
-                    }
-                    $evaluatedRule = $r;
-                    $evaluatedMode = $mode;
-                    // The branch an extended rule was flattened to, when it had branches.
-                    $preparedBranch = null;
-                    if (TemporalRules::extended($r)) {
-                        if ($this->temporalBudget->exhausted()) {
-                            $unconf[$i.'|temporal-budget']=['rule'=>$i+1,'fields'=>$ownFields,'why'=>'Extended record evaluation budget exhausted; this record was not fully checked.'];
-                            break;
-                        }
-                        if (!isset($temporalShape)) $temporalShape = $this->temporalShape($pid);
-                        $prepared = $this->temporalPrepared($r, $temporalShape, $node, $this->temporalContext($ctx, $hostForm));
-                        if ($prepared['problems']) {
-                            $unconf[$i . '|temporal|' . $ck] = ['rule'=>$i+1, 'fields'=>$ownFields,
-                                'why'=>'Extended validation unavailable at event ' . $ctx['event_id'] . ', instance ' . $ctx['instance'] . ': ' . implode(', ', $prepared['problems'])];
-                            continue;
-                        }
-                        // One branch group's problem: that group is reported and
-                        // the rest of the field is still judged.
-                        if (!empty($prepared['groupProblems'])) {
-                            $unconf[$i . '|temporal-group|' . $ck] = ['rule'=>$i+1, 'fields'=>$ownFields,
-                                'why'=>'Extended validation unavailable at event ' . $ctx['event_id'] . ', instance ' . $ctx['instance'] . ' for part of this field: ' . implode('; ', $prepared['groupProblems'])];
-                        }
-                        $evaluatedRule = $prepared['rule'];
-                        $evaluatedMode = ModeRegistry::modeOfType($evaluatedRule['type'] ?? '');
-                        if (isset($prepared['branch'])) $preparedBranch = (int) $prepared['branch'];
-                    }
-                    if ($evaluatedMode === 'unique' && !isset($evaluatedRule['uniqueRecordResults'])) {
-                        self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan, $preparedBranch);
-                        continue;
-                    }
-                    // Branches scanPlan found another project will not answer for
-                    // this person: findingsExists reports them instead of asking.
-                    if (isset($plan['existsScanRefused'][$i]) && isset($evaluatedRule['branches'])) {
-                        foreach ($plan['existsScanRefused'][$i] as $bi => $why) {
-                            if (isset($evaluatedRule['branches'][$bi])) $evaluatedRule['branches'][$bi]['existsScanRefused'] = $why;
-                        }
-                    }
-                    // A scan request answers @UVEXISTS from one index per rule, not one
-                    // whole-project read per record (findingsExists).
-                    $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck],
-                        ['dag' => $recDag, 'existsIndex' => true, 'instance' => $ctx['instance']] + ($cmpReturns ? ['returns' => true] : []));
-                    // A returned value out of date: REDCap does not run the save
-                    // hook for a Data Import Tool import, so an imported or
-                    // corrected measurement leaves the old z-score (RNG-1).
-                    // Reported on the returned field; opening the form and
-                    // saving it writes the current values.
-                    if ($cmpReturns && isset($f['returns']) && is_array($f['returns'])) {
-                        foreach ($this->returnsStale($evaluatedRule, $f['returns'], $ctx['values'], $pid) as $rf => $held) {
-                            $f['invalid'][] = ['field' => $rf, 'value' => $held,
-                                'type' => isset($evaluatedRule['type']) ? (string) $evaluatedRule['type'] : 'range', 'reason' => 'returned-stale'];
-                        }
-                    }
-
-                    if ($preparedBranch !== null) {
-                        foreach ($f['invalid'] as $k => $v) if (!isset($v['branch'])) $f['invalid'][$k]['branch'] = $preparedBranch;
-                    }
-                    foreach ($f['invalid'] as $v) {
-                        // Computed ONCE, and compared with === false. A truthiness
-                        // test here would turn a legitimate value of '0' into null.
-                        $rv = self::reportValue($v, $plan);
-                        $sink->violation([
-                            'record' => $this->reportRecordId($plan, $rec), 'event_id' => $ctx['event_id'],
-                            'instance' => $ctx['instance'], 'field' => $v['field'],
-                            'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
-                            'value' => ($rv === false) ? null : $rv,
-                            'valueWithheld' => ($rv === false),
-                            // RAW, and never through reportValue(). The
-                            // discriminator is part of the LOCATION; routing it
-                            // through the value path would null it under a
-                            // withholding policy, and the collision this exists
-                            // to prevent would come back on exactly the privacy
-                            // setting the module recommends.
-                            'locus' => isset($v['locus']) ? (string) $v['locus'] : '',
-                            // $hostForm, NOT $ctx['instrument']: that is null for
-                            // every base row (:2297) and deliberately null for a
-                            // repeating-EVENT context (:2320), which between them
-                            // is most projects.
-                            'instrument' => $hostForm, 'dag' => $recDag,
-                        ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
-                          // the day a today-relative @UVWINDOW part was judged against
-                          + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
-                          // what a mode's findings carry for the scan (php/modes.json findingKeys)
-                          + self::scanFindingKeys($v)
-                          // A growth finding's reference, and its z-score only
-                          // when the scan shows values raw, as the audit log
-                          // does. The z-score gives the measurement back, and
-                          // with the measurement and the sex it gives back the
-                          // age, so a date of birth the identifier mode
-                          // withholds as well.
-                          + (isset($v['z']) && is_string($rv) && isset($plan['valueMode']) && $plan['valueMode'] === 'raw'
-                              ? ['z' => (string) $v['z']] : [])
-                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : [])
-                          // a broken rule saved with a reason (@UVJUSTIFY), counted apart from the open ones
-                          + (!empty($v['justified']) && isset($v['justifiedBy'])
-                              ? ['justified' => true, 'justifiedBy' => (string) $v['justifiedBy']] : []));
-                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;
-                    }
-                    foreach ($f['unconfigurable'] as $u) {
-                        $key = $i . '|' . $u['why'];
-                        if (!isset($unconf[$key])) {
-                            $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
-                        }
-                    }
-                }
-            }
-            // What the rule's values are looked for in, from this record.
-            if (isset($plan['uniqueLookups'][$i])) {
-                self::collectUniqueLookups($uniqueSeen, $plan['uniqueLookups'][$i], $i, $ctxAll, $rec, $recDag, $plan);
-            }
-        }
-        return ['contexts' => count($ctxAll), 'why' => null];
-    }
-
-    /**
-     * 'time' | 'memory' | null — why the chunk loop must stop now.
-     *
-     * Split out from the loop so the decision can be tested WITHOUT asking PHP
-     * to enforce a real limit: setting max_execution_time inside a test kills
-     * the test process (the timer is wall-clock on Windows and does not reset),
-     * and setting memory_limit low enough to trip is one allocation away from a
-     * fatal. A null bound means "no limit known", which never halts — declining
-     * to guess, because a guard that fires on a misread would stop healthy scans
-     * and report them as incomplete.
-     */
-    private static function scanHalt($deadline, $memCap, $now, $usage)
-    {
-        if ($deadline !== null && $now >= $deadline) return 'time';
-        if ($memCap !== null && $usage >= $memCap) return 'memory';
-        return null;
-    }
-
-    /**
-     * PHP's memory_limit in bytes, or 0 when there is no limit or it cannot be
-     * read. Shorthand suffixes are case-insensitive and BINARY (1M = 1048576),
-     * per PHP's own ini parser; a bare number is already bytes, and -1 means
-     * unlimited. Returning 0 for "unknown" is deliberate: the caller then
-     * imposes no cap, because a guard that fires on a misparse would stop
-     * healthy scans and report them as incomplete.
-     */
-    private static function memoryLimitBytes()
-    {
-        return self::parseByteSize((string) ini_get('memory_limit'));
-    }
-
-    /**
-     * One PHP shorthand byte size in bytes; 0 for unlimited or unreadable.
-     * Pure, and separate from memoryLimitBytes() so it can be tested directly:
-     * ini_set('memory_limit', ...) REFUSES any value below current usage, so a
-     * test that went through the ini would silently assert against whatever the
-     * limit already was.
-     */
-    private static function parseByteSize($raw)
-    {
-        $raw = trim($raw);
-        if ($raw === '' || $raw === '-1') return 0;
-        if (!preg_match('/^(\d+(?:\.\d+)?)\s*([KMG])?$/i', $raw, $m)) return 0;
-        $n = (float) $m[1];
-        switch (isset($m[2]) ? strtoupper($m[2]) : '') {
-            case 'G': $n *= 1024; // fall through
-            case 'M': $n *= 1024; // fall through
-            case 'K': $n *= 1024;
-        }
-        return (int) $n;
-    }
-
-    /**
-     * Every value context of one record node: the plain event rows, plus each
-     * repeat instance merged over its event row (a repeat row wins where both
-     * carry a field — the same precedence readValues applies).
-     */
-    private static function recordContexts(array $recordNode)
-    {
-        $out = [];
-        foreach ($recordNode as $k => $node) {
-            if ($k === 'repeat_instances' || !is_array($node)) continue;
-            $out[] = ['event_id' => $k, 'instance' => 1, 'instrument' => null,
-                      // 'repeatKey' is the raw bucket this row came from: null for
-                      // the event's base row, '' for a repeating EVENT instance,
-                      // the form name for a repeating FORM instance. 'instrument'
-                      // cannot carry that distinction — it is deliberately null for
-                      // the repeating-event bucket (every form shares it), which
-                      // makes a repeating-event row indistinguishable from a base
-                      // row. hostContextsFor() needs to tell them apart to decide
-                      // where a rule actually lives (H-02).
-                      'repeatKey' => null,
-                      'node' => $recordNode, 'values' => self::cleanRow($node)];
-        }
-        if (isset($recordNode['repeat_instances']) && is_array($recordNode['repeat_instances'])) {
-            foreach ($recordNode['repeat_instances'] as $evt => $byInstr) {
-                if (!is_array($byInstr)) continue;
-                $base = (isset($recordNode[$evt]) && is_array($recordNode[$evt])) ? self::cleanRow($recordNode[$evt]) : [];
-                foreach ($byInstr as $formKey => $byInst) {
-                    if (!is_array($byInst)) continue;
-                    foreach ($byInst as $inst => $row) {
-                        if (!is_array($row)) continue;
-                        $out[] = ['event_id' => $evt, 'instance' => $inst,
-                                  // '' is the repeating-EVENT bucket: shared by
-                                  // every form, so nothing is instrument-scoped.
-                                  'instrument' => ($formKey === '' ? null : $formKey),
-                                  'repeatKey' => $formKey,
-                                  'node'   => $recordNode,
-                                  'values' => array_merge($base, self::cleanRow($row))];
-                    }
-                }
-            }
-        }
-        return $out;
-    }
-
-    /**
-     * The instruments that HOST one rule, as form_name => [its fields], plus the
-     * fields whose owning form could not be determined.
-     *
-     * A rule lives where its OWN fields live — not wherever the caller happened
-     * to be standing. Evaluating a rule in an arbitrary context is not a
-     * near-miss, it produces confident nonsense: a populated repeating field
-     * reported blank because the base row was examined, a populated event-1
-     * field reported blank in event 2, and the same rule declared both
-     * unconfigurable and hard-violated for one record (H-02). The save audit's
-     * reverse-dependency pass had the same defect in a different shape, logging
-     * one copy of a base-form violation per unrelated repeat row (H-03), and the
-     * unique aggregator inherited it too (H-04).
-     *
-     * A rule may legitimately span forms (a pooled rule over fields on two
-     * instruments); each host is returned separately so the rule is evaluated
-     * once per host, over that host's fields only.
-     */
-    private function ruleHostForms(array $rule, $pid)
-    {
-        $out = ['forms' => [], 'unknown' => []];
-        $dd = $this->dataDictionary($pid);
-        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $f) {
-            $form = ($dd && isset($dd[$f]['form_name']) && $dd[$f]['form_name'] !== '') ? $dd[$f]['form_name'] : null;
-            if ($form === null) { $out['unknown'][] = $f; continue; }
-            $out['forms'][$form][] = $f;
-        }
-        return $out;
-    }
-
-    /**
-     * Of one record's contexts, the ones in which $form's fields actually live,
-     * keys preserved so the caller can reuse a per-context resolution cache.
-     *
-     * Three questions, answered from the SAME signals resolveOne() uses so the
-     * two can never disagree: is $form designated for this event at all; does
-     * the EVENT repeat; does $form itself repeat here.
-     *
-     * A fourth, for the scan only: was $form STARTED here (R2O-2). $gate is
-     * what formStartedIn() takes, and null asks nothing - the save audit
-     * passes none, because a save speaks for the form being saved and its
-     * reverse-dependency read does not carry status fields.
-     */
-    private function hostContextsFor(array $contexts, $form, $pid, ?array $gate = null)
-    {
-        $out = [];
-        $shape = [];    // event id => ['repeats' => bool|null, 'eventRepeats' => bool, 'mapped' => bool]
-        foreach ($contexts as $k => $ctx) {
-            $evt = $ctx['event_id'];
-            if (!isset($shape[$evt])) {
-                $rec = (isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : [];
-                $byEvent = (isset($rec['repeat_instances'][$evt]) && is_array($rec['repeat_instances'][$evt]))
-                    ? $rec['repeat_instances'][$evt] : null;
-                $eventForms = $this->formsForEvent($pid, $evt);
-                $repeating  = $this->repeatingFormsForEvent($pid, $evt, [$form]);
-                $byMeta   = is_array($repeating) ? isset($repeating[$form]) : null;
-                $byBucket = is_array($byEvent) ? array_key_exists($form, $byEvent) : null;
-                $repeats = null;
-                if ($byMeta === true || $byBucket === true) $repeats = true;
-                elseif ($byMeta === false || $byBucket === false) $repeats = false;
-                $shape[$evt] = [
-                    // A NULL mapping means "cannot tell" (classic project, or a
-                    // build without the API) and must fail OPEN, exactly as
-                    // contextResolution's own off-event check does.
-                    'mapped'       => ($eventForms === null) ? true : isset($eventForms[$form]),
-                    'eventRepeats' => is_array($byEvent) && array_key_exists('', $byEvent),
-                    'repeats'      => $repeats,
-                ];
-            }
-            $s = $shape[$evt];
-            if (!$s['mapped']) continue;                       // this form is not collected in this event
-            $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
-            if ($s['eventRepeats']) {
-                // Every form in a repeating event is instance-scoped; the base row
-                // is folded into each instance, so evaluating it too would double
-                // every finding.
-                if ($rk !== '') continue;
-            } elseif ($s['repeats'] === true) {
-                if ($rk !== $form) continue;                   // only this form's own instances
-            } else {
-                if ($rk !== null) continue;                    // base row only
-            }
-            // Designated is not started. Only the scan asks (see the docblock).
-            if ($gate !== null && !self::formStartedIn($ctx, $gate)) continue;
-            $out[$k] = $ctx;
-        }
-        return $out;
-    }
-
-    /**
-     * Resolution states for ONE scan context, computed with the SAME resolver
-     * the form hooks and the save audit use. Previously the scan had its own,
-     * weaker rule (ambiguous only, inferred from which fields happened to
-     * appear in repeat rows), so it reported hard violations for data the save
-     * path declared unconfigurable, and missed off-event references entirely
-     * (H-04). Divergence here is a correctness bug by construction, so there is
-     * now exactly one implementation.
-     */
-    private function contextResolution(array $ctx, array $fields, $pid)
-    {
-        $res = [];
-        if (!$fields) return $res;
-        $rec = (isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : [];
-        $evt = $ctx['event_id'];
-        $inst = (int) ($ctx['instance'] ?: 1);
-        $instrument = isset($ctx['instrument']) ? $ctx['instrument'] : null;
-
-        $byEvent = null;
-        if (isset($rec['repeat_instances'][$evt]) && is_array($rec['repeat_instances'][$evt])) {
-            $byEvent = $rec['repeat_instances'][$evt];
-        }
-        $formOf = [];
-        $dd = $this->dataDictionary($pid);
-        if ($dd) foreach ($fields as $f) {
-            if (isset($dd[$f]['form_name'])) $formOf[$f] = $dd[$f]['form_name'];
-        }
-        $eventForms = $this->formsForEvent($pid, $evt);
-        $repeating  = $this->repeatingFormsForEvent($pid, $evt, array_values($formOf));
-
-        foreach ($fields as $f) {
-            if ($eventForms !== null && isset($formOf[$f]) && !isset($eventForms[$formOf[$f]])) {
-                $res[$f] = 'missing';
-                continue;
-            }
-            $r = self::resolveOne($f, $rec, $byEvent, $formOf, $repeating, $evt, $instrument, $inst);
-            if ($r['state'] !== 'ok') $res[$f] = $r['state'];
-        }
-        return $res;
-    }
-
-
-    /** Drop empty values from a data row (mirrors readValues: missing == empty). */
-    private static function cleanRow(array $row)
-    {
-        $out = [];
-        foreach ($row as $f => $v) {
-            if ($v === null || $v === '') continue;
-            $out[$f] = is_array($v) ? $v : (is_string($v) ? $v : (string) $v);
-        }
-        return $out;
-    }
-
-    /**
-     * Collect one context's candidate values for a unique rule into the
-     * aggregate map. The group key mirrors findCollision's semantics: the
-     * trimmed value + composite "with" values, widened by the scope (event id
-     * for scope=event, the record's DAG for scope=dag). Branch rules resolve
-     * their active branch against this context first.
-     */
-    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null, array $plan = [], $branch = null)
-    {
-        // Every reference this aggregation consumes goes through the SAME
-        // resolution the rest of the scan uses. Without it the composite key was
-        // built by substituting '' for anything unresolvable, so two records whose
-        // composite field lives on an independently repeating instrument — with no
-        // defined pairing between their instances — collapsed to the same key and
-        // were reported as duplicates of each other, with nothing said about why
-        // (H-04). An undefined pairing is refused, never guessed.
-        $refuse = function ($why, $suffix) use (&$unconf, $ruleIndex, $rule) {
-            $unconf[$ruleIndex . '|unique-' . $suffix] = ['rule' => $ruleIndex + 1,
-                'fields' => $rule['fields'], 'why' => $why];
-        };
-        $unresolved = function (array $ast) use ($resolution) {
-            foreach (Logic::referencedFields($ast) as $ref) {
-                $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
-                if ($state !== 'ok') return [$state, $ref[0]];
-            }
-            return null;
-        };
-        // the plan's map of fields that hold numbers (conditionNumbers)
-        $numbers = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
-
-        $cfg = $rule;
-        if (isset($rule['branches']) && is_array($rule['branches'])) {
-            $active = [];
-            $else = null;
-            foreach ($rule['branches'] as $bi => $b) {
-                if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') { $else = $bi; continue; }
-                $p = Logic::parse($b['when']);
-                if (empty($p['ok'])) {
-                    // A branch condition that no longer parses means the value is not
-                    // checked here — surface it rather than a silent skip (M-05).
-                    $refuse('a unique-rule branch "when" cannot be evaluated — the value is not checked', 'branch-unparseable');
-                    return;
-                }
-                if (($u = $unresolved($p['ast'])) !== null) {
-                    $refuse('a unique-rule branch "when" condition ' . self::resolutionProblem($u[0], $u[1])
-                        . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
-                    return;
-                }
-                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']), $numbers)) $active[] = $bi;
-            }
-            if (count($active) === 1) {
-                $pick = $active[0];
-            } elseif (!count($active) && $else !== null) {
-                $pick = $else;
-            } else {
-                if (count($active) > 1) {
-                    // Two branch conditions true at once — mirror the non-unique scan
-                    // and the live client, which report this rather than guess (M-05).
-                    $refuse('more than one unique-rule "when" is true for a record (branch conflict) — the value is not checked', 'branch-conflict');
-                }
-                return;
-            }
-            $b = $rule['branches'][$pick];
-            unset($b['when']);
-            $cfg = array_merge(['type' => 'unique', 'fields' => $rule['fields']], $b);
-            $branch = $pick;
-        }
-        if (isset($cfg['when']) && is_string($cfg['when']) && $cfg['when'] !== '') {
-            $p = Logic::parse($cfg['when']);
-            if (empty($p['ok'])) {
-                $refuse('the unique rule\'s "when" condition cannot be evaluated — the value is not checked', 'when-unparseable');
-                return;
-            }
-            if (($u = $unresolved($p['ast'])) !== null) {
-                $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
-                return;
-            }
-            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']), $numbers)) return;
-        }
-        $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
-        $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
-        // A composite key is only meaningful when every part of it was actually
-        // read for THIS row. One unreadable part makes the whole tuple undefined.
-        foreach ($with as $w) {
-            $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
-            if ($state !== 'ok') {
-                $refuse('the unique rule\'s composite key ' . self::resolutionProblem($state, $w), 'with-unresolved');
-                return;
-            }
-        }
-        // A 'dag' scope and a record in no group: the bucket key below appends
-        // (string) $recDag, which is '' for such a record, so the records in no
-        // group form one group of their own and are compared with each other
-        // only. That is what README says, what @UVEXISTS does and what the live
-        // check and the audit do (findCollision, UNQ-1). Earlier releases of
-        // the scan refused these records instead (M1), and the three paths
-        // gave three answers.
-        foreach ($rule['fields'] as $field) {
-            if (isset($dupes[$field])) continue;
-            if ($onForm !== null && !isset($onForm[$field])) continue;
-            $state = isset($resolution[$field]) ? $resolution[$field] : 'ok';
-            if ($state !== 'ok') {
-                $refuse('the unique rule ' . self::resolutionProblem($state, $field), 'field-unresolved');
-                continue;
-            }
-            $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
-            if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
-            if (self::isMissingCode($v, isset($plan['missingCodes']) ? $plan['missingCodes'] : [])) continue;
-            // Collision-free, LOSSLESS composite key (L-01, L01-UTF8-COLLAPSE): a raw
-            // byte in a value (a 0x1F separator, or an invalid-UTF8 byte from a Latin-1
-            // import) must not let two DISTINCT tuples share a key and read as a false
-            // duplicate. bin2hex encodes every byte injectively and '.' cannot appear
-            // in hex output, so the joined key round-trips uniquely — unlike
-            // json_encode with JSON_INVALID_UTF8_SUBSTITUTE, which collapsed distinct
-            // invalid-UTF8 values to U+FFFD. Each value is its Logic::lookupKey, as
-            // findCollision compares them (keeps the scan and the audit in agreement).
-            //
-            // The key also names its shape (uniqueShape): two branches of one
-            // rule that build keys differently never share a group.
-            $fold = empty($cfg['caseSensitive']);
-            $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
-            $keyParts = [(string) $ruleIndex, self::uniqueShape($with, $scope, $fold), $field,
-                         Logic::lookupKey($v, $fold, isset($marks[$field]) ? $marks[$field] : null)];
-            foreach ($with as $w) {
-                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? Logic::lookupTrim($ctx['values'][$w]) : '';
-                $keyParts[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
-            }
-            if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = (string) $ctx['event_id']; }
-            elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
-            $key = '';
-            foreach ($keyParts as $kp) $key .= bin2hex($kp) . '.';
-            $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
-                             'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1,
-                             // Kept RAW here and filtered at emit time: the value
-                             // is already inside $key, so this costs nothing, and
-                             // the report policy lives where the plan is in scope.
-                             // The REPORTABLE form, decided now rather than kept
-                             // raw to the end. The key above already carries
-                             // bin2hex of $v's lookup key, so holding the raw value too was
-                             // roughly three times the bytes per candidate,
-                             // retained project-wide - including in locations
-                             // mode, where it can never be shown at all. On a
-                             // @UVUNIQUE rule over a Notes field that was the most
-                             // expensive thing in the scan.
-                             'value' => self::reportValue(['field' => $field, 'value' => $v], $plan),
-                             'instrument' => $hostForm, 'dag' => $recDag, 'scope' => (string) $scope]
-                           + ($branch !== null ? ['branch' => (int) $branch] : []);
-        }
-    }
-
-    /**
-     * The part of a @UVUNIQUE group key that says how the key was built: the
-     * composite "with" fields, the scope, and whether letter case counts. The
-     * branches of one rule can build keys differently, and a value keyed one
-     * way is no evidence about a value keyed another way: an exact "ABC" must
-     * not meet a case-folded "abc", as findCollision would never pair them.
-     */
-    private static function uniqueShape(array $with, $scope, $fold)
-    {
-        return json_encode([array_map('strval', array_values($with)), (string) $scope, $fold ? 1 : 0]);
-    }
-
-    /** A unique rule's branches, or the rule itself when it has none. */
-    private static function uniqueVariants(array $r)
-    {
-        return (isset($r['branches']) && is_array($r['branches']) && $r['branches']) ? $r['branches'] : [$r];
-    }
-
-    /**
-     * rule index => what collectUniqueLookups files for a unique rule: its
-     * checked fields (hosts, the ones scanned on an instrument the reader may
-     * open and not claimed twice), its "also" fields, each field's
-     * instrument, the shapes its branches key values by, and whether its own
-     * fields are looked in too (hostSlots: a "when" or a branch decides which
-     * records are checked, and findCollision searches the others anyway).
-     * A rule with nothing to look in has no entry.
-     */
-    private function uniqueLookupSpecs(array $live, array $hostFields, array $dupes, $pid)
-    {
-        $dd = $this->dataDictionary($pid) ?: [];
-        $out = [];
-        foreach ($live as $i => $r) {
-            if (($r['type'] ?? null) !== 'unique' || empty($hostFields[$i])) continue;
-            $shapes = [];
-            $also = [];
-            foreach (self::uniqueVariants($r) as $b) {
-                $scope = isset($b['uniqueScope']) ? (string) $b['uniqueScope'] : 'project';
-                // Record scope compares the fields of one record, never another's.
-                if ($scope === 'record') continue;
-                $with = (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) ? array_values($b['uniqueWith']) : [];
-                $fold = empty($b['caseSensitive']);
-                $shapes[self::uniqueShape($with, $scope, $fold)] = [$with, $scope, $fold];
-                foreach ((isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [] as $a) {
-                    if (isset($dd[$a]['form_name']) && $dd[$a]['form_name'] !== '') $also[(string) $a] = (string) $dd[$a]['form_name'];
-                }
-            }
-            $gated = !empty($r['branches']) || (isset($r['when']) && is_string($r['when']) && $r['when'] !== '');
-            if (!$shapes || (!$also && !$gated)) continue;
-            $hosts = [];
-            $formOf = $also;
-            foreach ($hostFields[$i] as $form => $own) {
-                foreach ((array) $own as $f) {
-                    if (isset($dupes[$f])) continue;
-                    $hosts[] = (string) $f;
-                    $formOf[(string) $f] = (string) $form;
-                }
-            }
-            if (!$hosts) continue;
-            $out[$i] = ['hosts' => $hosts, 'also' => array_keys($also), 'formOf' => $formOf,
-                        'shapes' => array_values($shapes), 'hostSlots' => $gated];
-        }
-        return $out;
-    }
-
-    /**
-     * File one record's values for a unique rule's lookups: what the rule's
-     * values are looked for in, read the way findCollision reads another
-     * record. Every merged context (recordContexts, as collisionIn walks
-     * them), every "also" field, and the rule's own fields too when a "when"
-     * or a branch decides which records are checked ($spec['hostSlots']):
-     * findCollision searches every other record whatever its own "when" says.
-     * Filed under each shape the rule can build a key with, so a value only
-     * meets values keyed the same way.
-     *
-     * Marked 'lookup': counted as one of the records sharing a value, never
-     * reported itself, because the rule checks its own fields only where its
-     * "when" holds. One entry per group and record, and none where the record
-     * already holds a checked value of that group.
-     *
-     * $spec is scanPlan's uniqueLookups entry: hosts, also, formOf, shapes,
-     * hostSlots.
-     */
-    private static function collectUniqueLookups(array &$seen, array $spec, $ruleIndex, array $ctxAll, $rec, $recDag, array $plan)
-    {
-        $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
-        $codes = isset($plan['missingCodes']) ? $plan['missingCodes'] : [];
-        $rec = (string) $rec;
-        $done = [];
-        foreach ($spec['shapes'] as list($with, $scope, $fold)) {
-            // A record in no group shares a value with the other records in
-            // none ('' below), as collectUniqueCandidates keys them (UNQ-1).
-            $shape = self::uniqueShape($with, $scope, $fold);
-            foreach ($ctxAll as $ctx) {
-                $row = $ctx['values'];
-                $tail = [];
-                foreach ($with as $w) {
-                    $wv = (isset($row[$w]) && !is_array($row[$w])) ? Logic::lookupTrim($row[$w]) : '';
-                    $tail[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
-                }
-                if ($scope === 'event') { $tail[] = 'evt'; $tail[] = (string) $ctx['event_id']; }
-                elseif ($scope === 'dag') { $tail[] = 'dag'; $tail[] = (string) $recDag; }
-                $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
-                foreach ($spec['hosts'] as $h) {
-                    foreach ($spec['hostSlots'] ? array_merge([$h], $spec['also']) : $spec['also'] as $s) {
-                        $v = isset($row[$s]) ? $row[$s] : null;
-                        if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
-                        if (self::isMissingCode($v, $codes)) continue;
-                        // The key collectUniqueCandidates builds for host $h, bin2hex-joined.
-                        $key = '';
-                        foreach (array_merge([(string) $ruleIndex, $shape, $h,
-                                              Logic::lookupKey($v, $fold, isset($marks[$s]) ? $marks[$s] : null)], $tail) as $kp) {
-                            $key .= bin2hex($kp) . '.';
-                        }
-                        if (isset($done[$key])) continue;
-                        $done[$key] = true;
-                        // This record's own checked value is in the group already.
-                        if (isset($seen[$key]) && $seen[$key][count($seen[$key]) - 1]['record'] === $rec) continue;
-                        // Where the value is stored, for the durable scan's re-read: a
-                        // base-row value merged into a repeat instance's context lives
-                        // in the base row.
-                        $form = isset($spec['formOf'][$s]) ? $spec['formOf'][$s] : null;
-                        $inst = ($rk === null || ($rk !== '' && $rk !== $form)) ? 1 : $ctx['instance'];
-                        $seen[$key][] = ['record' => $rec, 'event_id' => $ctx['event_id'],
-                                         'instance' => $inst, 'field' => (string) $s, 'rule' => $ruleIndex + 1,
-                                         'lookup' => true, 'instrument' => $form, 'dag' => $recDag,
-                                         'scope' => (string) $scope];
-                    }
-                }
-            }
-        }
-    }
-
-    // -- uniqueness (@UVUNIQUE): live endpoint + shared lookup ---------------
-
-    /**
-     * The durable scan's AJAX verbs.
-     *
-     * Thin on purpose. Everything that decides anything - the feature flags,
-     * the schema health, the rights, the scope, the run's own state - lives in
-     * ScanService, so this method reads a run id, calls one of four things, and
-     * hands back what it said. A handler that made decisions would be a second
-     * place those decisions live.
-     *
-     * THE RUN ID IS A LOCATOR, NEVER AN AUTHORISATION. It is cast to an integer
-     * and bound to $project_id inside the service before any answer can
-     * distinguish "no such run" from "not yours" - which is why every refusal
-     * below shares one sentence.
-     */
-    private function scanAction($action, $project_id, $payload)
-    {
-        // A FATAL MUST NOT BECOME AN EMPTY 200.
-        //
-        // The try/catch below handles anything that is a Throwable, which is
-        // most things - but not memory exhaustion, and not the request simply
-        // running out of time. Those end the process with no output at all, and
-        // the client then gets HTTP 200 with an empty body: a success status
-        // over nothing. The pilot lost a round to exactly that, because an empty
-        // 200 is indistinguishable from a broken client and gives nobody a
-        // thread to pull.
-        //
-        // The shutdown handler cannot rescue the request. It can make the
-        // failure SAY something, which is the difference between a bug report
-        // and a shrug.
-        $answered = false;
-        register_shutdown_function(function () use (&$answered) {
-            if ($answered) return;
-            $e = error_get_last();
-            if ($e === null) return;
-            $fatal = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
-            if (!in_array($e['type'], $fatal, true)) return;
-            // The MESSAGE is not echoed: it names paths and can quote the
-            // statement. The KIND is, because "ran out of memory" and "ran out
-            // of time" need different answers and the caller can act on neither
-            // if told nothing.
-            $why = (stripos($e['message'], 'memory') !== false)
-                 ? 'this scan ran out of memory partway through a batch; nothing from it was kept'
-                 : 'this scan stopped unexpectedly partway through a batch; nothing from it was kept';
-            if (!headers_sent()) header('Content-Type: application/json');
-            echo json_encode(['ok' => false, 'stop' => 'fatal', 'why' => $why]);
-        });
-
-        try {
-            $svc = new Scan\ScanService($this);
-            $runId = (isset($payload['run_id']) && is_scalar($payload['run_id']))
-                   ? (int) $payload['run_id'] : 0;
-
-            if ($action === 'scan-start') {
-                $r = $svc->start($project_id);
-                $answered = true;
-                return $r;
-            }
-            if ($runId <= 0) {
-                $answered = true;
-                return ['ok' => false, 'why' => Scan\ScanService::NO_RUN];
-            }
-            if ($action === 'scan-work') {
-                $r = $svc->work($project_id, $runId, 'browser');
-                $answered = true;
-                return $r;
-            }
-            if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
-            if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
-            $answered = true;
-            return ['ok' => false, 'why' => 'unknown action'];
-        } catch (\Throwable $e) {
-            $answered = true;
-            // Never leaks the exception. A class name or a message from here can
-            // describe the installation's schema and its database user, to a
-            // caller who has just been told the answer is no.
-            return ['ok' => false,
-                    'why' => 'the validation scan could not be reached; ask an administrator to '
-                           . 'check the module log'];
-        }
-    }
-
-    /**
-     * Live uniqueness endpoint (framework AJAX). The client sends the field
-     * name and the CANDIDATE values (the field's own, plus the composite
-     * "with" fields'); everything else — scope, composite key, eligibility —
-     * is re-derived from the module's own stored rules, never trusted from
-     * the page. Anti-oracle: only a field covered by a live unique rule is
-     * answered at all, so this cannot be used to probe arbitrary fields for
-     * value existence.
-     *
-     * Survey requests (no-auth) are answered ONLY when the rule opted in
-     * ("surveys": true) and always with a boolean — never a record id. For
-     * authenticated staff the colliding record id is included only when it
-     * is inside the user's Data Access Group (or the user has none).
-     */
-    public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
-    {
-        // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
-        // scan reads and stores record values, so there is no version of it an
-        // unauthenticated caller may reach. $user_id is the only value here that
-        // means REDCap authenticated this caller; the framework's own action
-        // list is a first gate, and this is the second, because
-        // redcap_module_ajax() guards the action NAME and hands the identity
-        // straight through without checking it.
-        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel'], true)) {
-            if ($user_id === null || $user_id === '') {
-                return ['ok' => false, 'why' => 'you are not signed in'];
-            }
-            if (!$project_id) {
-                return ['ok' => false, 'why' => 'this action only works inside a project'];
-            }
-            return $this->scanAction($action, $project_id, $payload);
-        }
-
-        if ($action === 'exists-check') {
-            return $this->existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                $survey_hash, $user_id, $group_id);
-        }
-        if ($action !== 'unique-check') return ['error' => 'unknown action'];
-        try {
-            // AUTHENTICATION, not survey-ness, decides which guards apply.
-            //
-            // "unique-check" is declared in no-auth-ajax-actions, so this route
-            // is reachable with NO session and NO survey hash. v1.4.1 keyed its
-            // guards on $survey_hash, which meant an unauthenticated caller who
-            // simply OMITTED the hash was treated as staff: the surveys opt-in
-            // check, the Identifier refusal and the rate limit were all skipped
-            // and the endpoint still answered used/free — an unthrottled
-            // existence oracle on exactly the identifying fields v1.4.1 set out
-            // to protect. Defeated by leaving a parameter out. (Adversarial
-            // review of v1.4.1; the tests only covered (hash,null) and
-            // (null,staff) — never (null,null).)
-            //
-            // $user_id is the only value here that means "REDCap authenticated
-            // this caller"; a survey hash is caller-supplied and proves nothing.
-            $isAuthenticated = ($user_id !== null && $user_id !== '');
-            $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            $field = (isset($payload['field']) && is_string($payload['field']))
-                ? strtolower(trim($payload['field'])) : '';
-            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) {
-                return ['error' => 'not a checkable field'];
-            }
-            $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
-            if (count($raw) > 8) return ['error' => 'too many values'];
-            $values = [];
-            foreach ($raw as $k => $v) {
-                if (!is_string($k) || (!is_string($v) && !is_numeric($v))) continue;
-                $v = (string) $v;
-                if (strlen($v) > 1024) return ['error' => 'value too long'];
-                $values[strtolower($k)] = $v;
-            }
-
-            $live = $this->liveCondValues($payload, $project_id, $instrument);
-            if ($live === null) return ['error' => 'malformed request'];
-            $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance, $isAuthenticated && !$isSurvey, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
-            if (!$isAuthenticated) {
-                // An unauthenticated caller gets an answer ONLY for a rule whose
-                // designer opted surveys in...
-                if (empty($rule['uniqueSurveys'])) return ['error' => 'not enabled on surveys'];
-                // ...never for an identifying field (the configuration channels
-                // already refuse that opt-in; this re-check is what actually
-                // holds the line for a caller who skips the survey machinery
-                // altogether — security scan 15 Jul 2026 advisory)...
-                //
-                // FAIL CLOSED when identifier status is UNVERIFIABLE (F3). All
-                // three identifier gates (the two config channels and this one)
-                // read the same data dictionary; projectIdentifierFields() returns
-                // null on any getDataDictionary failure/empty result, and
-                // isIdentifier(null, …) is false — so a transient dictionary read
-                // failure would silently reopen the unauthenticated existence
-                // oracle this check exists to close. findCollision() does NOT need
-                // the dictionary, so it would still answer. Refuse instead: an
-                // unauthenticated caller loses only a convenience (the post-save
-                // audit and the Validation scan still cover the field), while a
-                // known-identifier field stays protected even when the dictionary
-                // momentarily cannot be read.
-                // The refusal covers the primary field AND every composite "with"
-                // field (H-01), not just the primary: an "already used" answer whose
-                // key includes an identifying value is the same existence oracle.
-                // And every "also" field: "already used" there says the value is
-                // saved in it.
-                $identifiers = $this->projectIdentifierFields($project_id);
-                $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-                $alsoFields = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
-                if ($identifiers === null
-                        || self::firstIdentifier($identifiers, array_merge([$field], $withFields, $alsoFields)) !== null) {
-                    return ['error' => 'not enabled on surveys'];
-                }
-                // ...nor about a field off the survey's own instrument, which
-                // the respondent may never see (surveyAlsoProblem; the
-                // configuration channels refuse it, this holds the line).
-                if (self::surveyAlsoProblem($this->dataDictionary($project_id), $field, $alsoFields) !== null) {
-                    return ['error' => 'not enabled on surveys'];
-                }
-                // ...and never faster than the throttle allows.
-                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
-            } else {
-                // A signed-in caller is throttled too, and answered only about
-                // forms they may open: "already used" on a field of a form the
-                // user has no access to is a read of that form by another door.
-                // Its own answer, as exists-check gives it: the page says
-                // "could not check" and why, instead of nothing (UNQ-3).
-                if ($this->signedInRateLimited($project_id)) {
-                    return ['unknown' => true, 'record' => null, 'throttled' => true,
-                            'why' => 'too many checks in the last minute — wait a moment'];
-                }
-                // An "also" field is searched too, so the caller must be able
-                // to open its form as well.
-                $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-                $alsoFields = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
-                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $withFields, $alsoFields)) !== null) {
-                    return ['error' => 'not a checkable field'];
-                }
-                // The record's saved values are read below; one of another
-                // Data Access Group is not this caller's to read.
-                if ($this->recordBeyondCallerGroup($project_id, $record, $group_id)) {
-                    return ['error' => 'record not available'];
-                }
-            }
-
-            $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-            $also  = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
-            $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
-            // A date arrives as the field shows it; the comparison is on stored values.
-            $values = $this->storedFormOf($project_id, $values);
-            // A Missing Data Code is not a value anyone else can have "used".
-            if (self::isMissingCode(isset($values[$field]) ? $values[$field] : null, $this->missingDataCodes($project_id))) {
-                return ['used' => false, 'record' => null];
-            }
-
-            // Resolve composite "with" values the browser could not read (H-03). A
-            // field that is not on the rendered instrument is sent as "" by the
-            // client, which would compare against blank and MISS a real collision.
-            // For such a field, read its saved value on the server (authoritative);
-            // a field ON the instrument keeps the client's live value (unsaved edits
-            // count), mirroring how "when"/"assert" conditions fold. The resolved
-            // values feed ONLY the in-PHP comparison — nothing off-page is ever
-            // returned to the page, so no record value leaks (SEC-005 posture holds).
-            if ($with && $record !== null && $record !== '') {
-                $onForm = $this->fieldsOnInstrument($project_id, $instrument);
-                $offPage = [];
-                foreach ($with as $w) {
-                    // Sent by the page: its value counts, unsaved edits included.
-                    // Left out (not on this page: another form, or another page
-                    // of a multi-page survey): read from the saved record. A
-                    // blank sent for a field of another form counts as left out.
-                    if (array_key_exists($w, $values)
-                            && ($values[$w] !== '' || ($onForm !== null && isset($onForm[$w])))) continue;
-                    $offPage[] = $w;
-                }
-                if ($offPage) {
-                    $withRes = [];
-                    try {
-                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false, $withRes);
-                        foreach ($offPage as $w) {
-                            if (isset($saved[$w]) && !is_array($saved[$w])) $values[$w] = (string) $saved[$w];
-                        }
-                    } catch (\Throwable $e) {
-                        foreach ($offPage as $w) $withRes[$w] = 'unreadable';
-                    }
-                    // A part that was not read here is not a blank (UNQ-2):
-                    // blank against blank called every reuse at another site
-                    // a duplicate.
-                    foreach ($offPage as $w) {
-                        if (isset($withRes[$w]) && $withRes[$w] !== 'ok') {
-                            return ['unknown' => true, 'record' => null]
-                                + ($isAuthenticated && !$isSurvey ? ['why' => 'the composite key ' . self::resolutionProblem($withRes[$w], $w)] : []);
-                        }
-                    }
-                }
-            }
-            // $narrow = true: this is the live endpoint, the amplification vector —
-            // let REDCap filter to candidate matches first (F4). Only a hit spares
-            // the export of the tagged fields: a miss ("not used") is confirmed by
-            // a full read, which a survey makes only within its read budget
-            // (findCollision), shared with @UVEXISTS at THROTTLE_SURVEY_FULL_READS
-            // a minute. A busy survey therefore answers "not known" sooner, and a
-            // signed-in user's every miss is one export of those fields. The
-            // post-save audit's findCollision call keeps the full, authoritative scan.
-            $mayFullRead = $isAuthenticated ? null
-                : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
-            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,
-                                        empty($rule['caseSensitive']), $mayFullRead, $also);
-            // Not settled (the read budget refused the read it needed, or the
-            // read failed): not "free", which would let a known duplicate
-            // through a save that asked again.
-            if ($col === false) return ['unknown' => true, 'record' => null]
-                + ($isAuthenticated && !$isSurvey ? ['why' => 'the saved values could not be compared just now'] : []);
-            if ($col === null) return ['used' => false, 'record' => null];
-
-            // The colliding record id goes ONLY to an authenticated user, and a
-            // survey page never names a record even if a staff session happens
-            // to be open in the same browser.
-            $recOut = null;
-            $fieldOut = null;
-            if ($isAuthenticated && !$isSurvey) {
-                $recOut = $col['record'];
-                if ($group_id !== null && $group_id !== '') {
-                    // A DAG-bound user may learn THAT the value is used, but a
-                    // record id outside their DAG is not theirs to see.
-                    $userDag = ScanPageView::dagNameOf($group_id);
-                    if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
-                }
-                // Found in an "also" field: say which, beside a record the
-                // caller may be told about. The caller may open its form
-                // (checked above); a record of another group is named by
-                // neither its id nor the field that holds the value.
-                if ($recOut !== null && isset($col['field']) && $col['field'] !== $field) $fieldOut = $col['field'];
-            }
-            return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
-        } catch (\Throwable $e) {
-            return ['error' => 'unique check failed']; // client fails open; no detail leaks
-        }
-    }
-
-    /**
-     * The live @UVEXISTS lookup: is this value already saved where the rule
-     * looks? Same posture as unique-check, in this order:
-     *   1. the field must carry a live exists rule; where to look is re-read
-     *      from that stored rule, never taken from the request;
-     *   2. an unauthenticated caller (a survey) is answered only for a rule that
-     *      opted in, never when any field the lookup touches is an Identifier
-     *      (unreadable flags refuse), and never faster than the survey throttle;
-     *   3. a signed-in caller is throttled per session and answered only when
-     *      they may open every form the lookup reads;
-     *   4. "match" fields the page did not send are read from the saved record;
-     *   5. a rule that searches another project then meets crossLookup(): that
-     *      project's agreement, the caller's standing there, its budget;
-     *   6. the reply is found / not-found / unknown. A survey never gets a reason
-     *      or a record; staff in a DAG get the record only when it is in their
-     *      own group, staff in none get it always. A record of another project
-     *      is never returned. A "not found" whose value is saved, but only in
-     *      entries that fail the rule's "where", carries filtered: true for
-     *      staff; a survey gets the plain "not found".
-     * The branch of a branched rule is the one the page is enforcing: chosen
-     * from the values the page sent for its "when" fields ("cond"), and from
-     * saved values for every other field (activeRuleFor).
-     * Every failure answers unknown or an error, which the browser shows as
-     * "could not check". It blocks only where Save asked again about a "not
-     * found" the page already held: that answer stands (QRID keepPrior).
-     */
-    private function existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $user_id, $group_id)
-    {
-        $unknown = function ($why = null) use ($user_id, $survey_hash) {
-            $staff = ($user_id !== null && $user_id !== '') && ($survey_hash === null || $survey_hash === '');
-            return ['state' => 'unknown', 'record' => null, 'why' => $staff ? $why : null];
-        };
-        try {
-            $isAuthenticated = ($user_id !== null && $user_id !== '');
-            $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
-            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => 'not a checkable field'];
-            $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
-            if (count($raw) > 8) return ['error' => 'too many values'];
-            $values = [];
-            foreach ($raw as $k => $v) {
-                if (!is_string($k) || (!is_string($v) && !is_numeric($v))) continue;
-                $v = (string) $v;
-                if (strlen($v) > 1024) return ['error' => 'value too long'];
-                $values[strtolower($k)] = $v;
-            }
-            $live = $this->liveCondValues($payload, $project_id, $instrument);
-            if ($live === null) return ['error' => 'malformed request'];
-            $rule = $this->activeRuleFor($this->getRules($project_id), 'exists', $field, $project_id, $record,
-                $event_id, $instrument, $repeat_instance, false, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
-            $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
-            $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
-            if (!$isAuthenticated) {
-                if (empty($rule['existsSurveys'])) return ['error' => 'not enabled on surveys'];
-                $touch = array_merge([$field], $locals, $targets);
-                // Another project's fields are checked there (crossCaller).
-                if (($rule['existsIn'] ?? null) === 'record' && empty($rule['existsPid'])) {
-                    $pk = $this->recordIdFieldOf($project_id);
-                    if ($pk === '') return ['error' => 'not enabled on surveys'];
-                    $touch[] = $pk;
-                }
-                $ids = $this->projectIdentifierFields($project_id);
-                if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
-                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
-            } else {
-                // Flagged, so a rule that blocks holds the save until the next
-                // answer instead of letting the value through (UNQ-3).
-                if ($this->signedInRateLimited($project_id)) {
-                    return $unknown('too many checks in the last minute — wait a moment') + ['throttled' => true];
-                }
-                // Generic on purpose: naming the field would tell the page where
-                // the rule looks. The fields a rule copies ("return") are read
-                // too; another project's are checked there (crossCaller).
-                if ($this->firstUnreadableField($project_id, $user_id, self::existsReadFields($rule, $field)) !== null) {
-                    return $unknown('you do not have access to every form this lookup reads');
-                }
-                if ($this->recordBeyondCallerGroup($project_id, $record, $group_id)) {
-                    return $unknown('this record is not in your Data Access Group');
-                }
-            }
-            $value = isset($values[$field]) ? Logic::lookupTrim($values[$field]) : '';
-            if ($value === '') return ['error' => 'nothing to look up'];
-            // Values arrive as the page shows them; the lookup compares stored ones.
-            $values = $this->storedFormOf($project_id, $values);
-            $value = Logic::lookupTrim($values[$field]);
-            // A Missing Data Code is no value to look up (the page never asks).
-            $codes = $this->missingDataCodes($project_id);
-            if (self::isMissingCode($value, $codes)) return ['error' => 'nothing to look up'];
-            $lv = [];
-            $offPage = [];
-            $onForm = $locals ? $this->fieldsOnInstrument($project_id, $instrument) : null;
-            foreach ($locals as $lf) {
-                // A match field the page shows is sent, blank or not. One it does
-                // not show (another form, or another page of a multi-page
-                // survey) is left out and read from the saved record; so is a
-                // blank sent for a field of another form.
-                if (array_key_exists($lf, $values)
-                        && (Logic::lookupTrim($values[$lf]) !== '' || ($onForm !== null && isset($onForm[$lf])))) {
-                    $lv[$lf] = Logic::lookupTrim($values[$lf]);
-                    continue;
-                }
-                $offPage[] = $lf;
-            }
-            if ($offPage) {
-                if ($record === null || $record === '') {
-                    foreach ($offPage as $lf) $lv[$lf] = '';
-                } else {
-                    $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
-                    foreach ($offPage as $lf) {
-                        $lv[$lf] = (isset($saved[$lf]) && !is_array($saved[$lf])) ? Logic::lookupTrim($saved[$lf]) : '';
-                    }
-                }
-            }
-            foreach ($lv as $lf => $v) {
-                if ($v === '') return $unknown('[' . $lf . '] is blank, so there is nothing to match against yet');
-                if (self::isMissingCode($v, $codes)) return $unknown('[' . $lf . '] holds a missing data code, so there is nothing to match against');
-            }
-            $dag = null;
-            if (($rule['existsScope'] ?? 'project') === 'dag') {
-                $rd = $this->recordDagOf($project_id, $record);
-                if ($rd === false) return $unknown('the record\'s Data Access Group could not be read');
-                // A record not saved yet is created in the user's own group, or in none.
-                // A group whose name cannot be read is not "no group" (dagNameOf).
-                if ($rd['found']) {
-                    $dag = $rd['dag'];
-                } elseif ($group_id !== null && $group_id !== '') {
-                    $dag = ScanPageView::dagNameOf($group_id);
-                    if ($dag === null) return $unknown('your Data Access Group could not be read');
-                }
-            }
-            $opts = ['self' => $record];
-            if (!$isAuthenticated) {
-                // Anyone can produce misses, and a miss is confirmed by a read of
-                // the whole searched field: a budget per project keeps that
-                // read from being a lever.
-                $opts['mayFullRead'] = function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
-            } elseif ($group_id !== null && $group_id !== '' && empty($rule['existsPid'])) {
-                $opts['callerDag'] = ScanPageView::dagNameOf($group_id);
-                if ($opts['callerDag'] === null) return $unknown('your Data Access Group could not be read');
-            }
-            // "return": values go only to a signed-in person on a data-entry
-            // form. Any other caller's lookup asks for none, so none is read,
-            // and another project logs none as handed over (logCrossProbe).
-            $handOver = $isAuthenticated && !$isSurvey;
-            $ask = $handOver ? $rule : self::withoutReturn($rule);
-            // Another project: its agreement, the caller's standing there and its
-            // budget decide; the group that matters is the caller's group THERE.
-            $r = !empty($rule['existsPid'])
-                ? $this->crossLookup($project_id, $ask, $value, $lv, $isAuthenticated ? 'staff' : 'survey', $opts)
-                : $this->findExisting($project_id, $ask, $value, $lv, $event_id, $dag, true, $opts);
-            if ($r['state'] === 'unknown') {
-                return $unknown(isset($r['why']) && $r['why'] !== null ? $r['why'] : 'the saved values could not be read just now');
-            }
-            $recOut = null;
-            if ($r['state'] === 'found' && $isAuthenticated && !$isSurvey && ($rule['existsIn'] ?? null) !== 'record'
-                    && empty($rule['existsPid'])) {
-                $recOut = $r['record'];
-                if ($group_id !== null && $group_id !== '') {
-                    $userDag = ScanPageView::dagNameOf($group_id);
-                    if ($userDag === null || $r['dag'] !== $userDag) $recOut = null;
-                }
-            }
-            $resp = ['state' => $r['state'], 'record' => $recOut];
-            // Saved, but in no entry that meets "where": staff are told, a
-            // survey respondent gets the plain "not found".
-            if ($r['state'] === 'not-found' && !empty($r['filtered']) && $isAuthenticated && !$isSurvey) $resp['filtered'] = true;
-            // "return": the values for the fields here, as the page shows them
-            // (a survey never gets them; the rule refuses "surveys" anyway).
-            // Keyed by the field here: the page never learns which fields
-            // they came from.
-            $ret = (isset($ask['existsReturn']) && is_array($ask['existsReturn'])) ? $ask['existsReturn'] : [];
-            if ($ret && $r['state'] === 'found') {
-                if (isset($r['returned']) && is_array($r['returned'])) {
-                    $vals = [];
-                    foreach ($ret as $s => $t) $vals[$t] = isset($r['returned'][$s]) ? (string) $r['returned'][$s] : '';
-                    $resp['values'] = $this->displayFormOf($project_id, $vals);
-                } elseif (isset($r['returnConflict'])) {
-                    $resp['fill'] = 'conflict';
-                    $resp['count'] = (int) $r['returnConflict'];
-                } elseif (!empty($r['returnWithheld'])) {
-                    $resp['fill'] = 'withheld';
-                }
-            }
-            return $resp;
-        } catch (\Throwable $e) {
-            return ['error' => 'lookup failed'];   // the client shows "could not check"; no detail leaks
-        }
-    }
-
-    /**
-     * The "cond" part of a live-lookup request: the values the page read for
-     * the fields its "when" conditions test, so the server picks the branch the
-     * page is enforcing (activeRuleFor). Only fields of the rendered instrument
-     * are taken; every other field keeps its saved value. A checkbox arrives as
-     * code => "1"/"0". The values are compared as sent, as the page compared
-     * them. Absent: []. Malformed: null.
-     */
-    private function liveCondValues($payload, $pid, $instrument)
-    {
-        if (!is_array($payload) || !isset($payload['cond'])) return [];
-        if (!is_array($payload['cond']) || count($payload['cond']) > 40) return null;
-        $onForm = $this->fieldsOnInstrument($pid, $instrument);
-        $out = [];
-        foreach ($payload['cond'] as $k => $v) {
-            if (!is_string($k)) return null;
-            $k = strtolower($k);
-            if (!preg_match('/^[a-z][a-z0-9_]*$/', $k)) return null;
-            if (is_array($v)) {
-                if (count($v) > 200) return null;
-                $codes = [];
-                foreach ($v as $c => $on) {
-                    $c = (string) $c;
-                    if ($c === '' || strlen($c) > 100 || (!is_string($on) && !is_numeric($on))) return null;
-                    $codes[$c] = ((string) $on === '1') ? '1' : '0';
-                }
-                $v = $codes;
-            } elseif (is_string($v) || is_numeric($v)) {
-                $v = (string) $v;
-                if (strlen($v) > 1024) return null;
-            } else {
-                return null;
-            }
-            if ($onForm !== null && isset($onForm[$k])) $out[$k] = $v;
-        }
-        return $out;
-    }
-
-    /**
-     * Whether a signed-in caller in a Data Access Group names a record of
-     * another group, or one whose group cannot be read. The live lookups read
-     * that record's saved values ("match" and "with" fields, "scope":"dag"), so
-     * such a request is refused. A record not saved yet is fine: REDCap creates
-     * it in the caller's group.
-     */
-    private function recordBeyondCallerGroup($pid, $record, $group_id)
-    {
-        if ($group_id === null || $group_id === '' || $record === null || $record === '') return false;
-        $userDag = ScanPageView::dagNameOf($group_id);
-        if ($userDag === null) return true;
-        $rd = $this->recordDagOf($pid, $record);
-        if ($rd === false) return true;
-        return $rd['found'] && $rd['dag'] !== $userDag;
-    }
-
-    /**
-     * Whether an unauthenticated @UVEXISTS lookup may read the whole searched
-     * field now (tier 2 of the rate buckets, THROTTLE_SURVEY_FULL_READS per
-     * project per minute). FAILS CLOSED, unlike the throttles: a refusal costs
-     * the respondent a "could not check", which a survey shows as nothing,
-     * while a counter that cannot be kept would leave the read unbounded.
-     */
-    private function surveyFullReadAllowed($pid)
-    {
-        try {
-            if (!$pid) return false;
-            $db = new Scan\ModuleDb($this);
-            $bucket = ((int) floor(time() / 60)) * self::RATE_TIERS + 2;
-            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
-                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
-                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
-                [(int) $pid, $bucket]);
-            $r = $db->select('SELECT LAST_INSERT_ID()', []);
-            if (!isset($r[0][0]) || $r[0][0] === null) return false;
-            return (int) $r[0][0] <= self::THROTTLE_SURVEY_FULL_READS;
-        } catch (\Throwable $e) {
-            return false;
-        }
-    }
+    // The Validation scan lives in php/ScanRuns.php (QUA-2).
 
     /** Per-session window for a signed-in caller of the live lookups (unique-check, exists-check). */
     const THROTTLE_SIGNED_IN = 60;
-
-    /**
-     * Throttle for SIGNED-IN callers of the live lookups, per session and project.
-     *
-     * Keyed on the session, which for this caller is not something they can
-     * shed: the session IS the sign-in, so a request without it is not signed
-     * in and meets the survey path's guards instead. One budget covers both
-     * endpoints. Fails open (no session, unreadable state), like the survey
-     * throttle: the live check is a convenience and the audit is the net.
-     */
-    private function signedInRateLimited($pid)
-    {
-        try {
-            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return false;
-            $key = 'uvalidate_lookup_hits_' . (int) $pid;
-            $now = time();
-            $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
-            $hits = array_values(array_filter($hits, function ($t) use ($now) {
-                return is_int($t) && ($now - $t) < 60;
-            }));
-            if (count($hits) >= self::THROTTLE_SIGNED_IN) { $_SESSION[$key] = $hits; return true; }
-            $hits[] = $now;
-            $_SESSION[$key] = $hits;
-            return false;
-        } catch (\Throwable $e) {
-            return false;
-        }
-    }
-
-    /**
-     * The first of $fields whose form the signed-in caller may not open, or
-     * null when they may open them all. A field the dictionary cannot place, or
-     * rights that cannot be read, count as not readable (fail closed).
-     */
-    private function firstUnreadableField($pid, $user_id, array $fields)
-    {
-        $rights = $this->callerFormRights($pid, $user_id);
-        $dd = $this->dataDictionary($pid);
-        foreach ($fields as $f) {
-            $f = (string) $f;
-            if ($f === '') continue;
-            $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
-            if ($form === '' || !self::mayReadForm($rights, $form)) return $f;
-        }
-        return null;
-    }
-
-    /**
-     * The form rights of the signed-in caller of an AJAX action: the framework
-     * user's, or - when this request has no framework user - those REDCap
-     * holds for $user_id, the identity the framework authenticated.
-     */
-    private function callerFormRights($pid, $user_id)
-    {
-        $r = $this->userFormRights($pid);
-        if ($r !== null || $this->currentUsername() !== null || $user_id === null || $user_id === '') return $r;
-        try {
-            if (is_callable(['\REDCap', 'getUserRights'])) {
-                $all = \REDCap::getUserRights((string) $user_id);
-                if (is_array($all) && isset($all[$user_id]['forms']) && is_array($all[$user_id]['forms'])) {
-                    return $all[$user_id]['forms'];
-                }
-            }
-        } catch (\Throwable $e) {
-        }
-        return null;
-    }
 
     /** Per-session window. Cheap, and keyed on something the caller controls. */
     const THROTTLE_SESSION = 30;
@@ -12818,13 +9962,22 @@ class UniversalValidator extends AbstractExternalModule
      * Per-project windows, which are keyed on something the caller does not.
      *
      * The sessionless cap is the older number and keeps its meaning: a
-     * cookieless enumerator gets 600 a minute for the whole project. The
+     * cookieless enumerator gets 600 a minute for the whole project, so a
+     * six-digit space takes 1,000,000 / 600 minutes, about 28 hours. The
      * sessioned cap has to sit above what a busy public survey really spends -
      * tier 1 allows each session 30 a minute, so 600 would be twenty people
-     * typing at once - while still being a bound rather than none.
+     * typing at once - while still being a bound rather than none. Only a
+     * session with history spends it (SESSION_HISTORY).
      */
     const THROTTLE_PROJECT_ANON = 600;
     const THROTTLE_PROJECT_SESSIONED = 6000;
+    /**
+     * Seconds a session must have been checking before its checks count in the
+     * sessioned bucket (UNQ-8). A fresh session costs nothing to make: a
+     * caller who drops the cookie on every request got the 6,000 cap and
+     * never met tier 1. Its first minute is charged to the 600 bucket.
+     */
+    const SESSION_HISTORY = 60;
     /**
      * Whole-field reads an unauthenticated @UVEXISTS caller may cause per
      * project per minute (surveyFullReadAllowed). Over it, a lookup that needs
@@ -12847,270 +10000,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const THROTTLE_CROSS_SURVEY = 120;
 
-    /**
-     * Throttle for the UNAUTHENTICATED (survey) uniqueness path.
-     *
-     * TWO TIERS THAT BOTH RUN, which is the correction. They were alternatives:
-     * tier 1 returned as soon as it passed, so tier 2 was reached only by a
-     * caller carrying no session at all. That made the throttle keyed, in
-     * practice, on something the caller chooses - discard the cookie between
-     * requests and each one starts a fresh 30-request budget, without ever
-     * meeting the per-project cap. The evasion costs an attacker one header.
-     *
-     *   (1) With an active session (a normal survey respondent): a per-SESSION
-     *       window, cheap and touching no shared storage. It can only ever
-     *       refuse; passing it no longer ends the check.
-     *   (2) Always: a per-PROJECT fixed window (F5) held as a COUNTER IN THE
-     *       DATABASE, incremented by one statement, so a flood is bounded even
-     *       with nothing to key a session on. Sessioned and sessionless traffic
-     *       are counted in SEPARATE buckets with separate caps, so extending
-     *       this tier to normal traffic bounds the evasion without turning a
-     *       busy survey into an outage.
-     *
-     *       Tier (2) was a read-modify-write over a system setting holding an
-     *       array of timestamps, and concurrency defeated it exactly under the
-     *       traffic it was written for: every concurrent request read the same
-     *       array, appended one entry, and the last write won. See the tier's
-     *       own comment for why the window is fixed rather than sliding.
-     *
-     * Still defence in depth, not THE defence: a single TARGETED probe is
-     * inherent to answering "is this value already used?" at all, which is why
-     * the survey opt-in is refused on Identifier fields and off by default
-     * everywhere else. Fails OPEN on any error — the live check is a convenience,
-     * never a gate on data entry.
-     */
-    private function surveyRateLimited($pid = null)
-    {
-        $window = 60;
-        $now = time();
-        // Tier (1): per-session window for a caller that has a session.
-        //
-        // IT DOES NOT RETURN WHEN IT PASSES, and that is the whole point of the
-        // tier. It used to, which made the two tiers ALTERNATIVES: tier 2 was
-        // reached only by a caller with no session at all, so the cheapest
-        // possible evasion - discard the session cookie between requests, which
-        // costs an attacker one header and nothing else - took a fresh
-        // 30-request budget every time and never once met the per-project cap.
-        // A budget keyed on something the caller chooses is not a budget.
-        $sessioned = false;
-        try {
-            if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-                $sessioned = true;
-                $key = 'uvalidate_unique_hits';
-                $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
-                $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
-                    return is_int($t) && ($now - $t) < $window;
-                }));
-                if (count($hits) >= self::THROTTLE_SESSION) { $_SESSION[$key] = $hits; return true; }
-                $hits[] = $now;
-                $_SESSION[$key] = $hits;
-            }
-        } catch (\Throwable $e) {
-            // Session state that cannot be read is not session state to trust.
-            // The project tier below still runs, which is the tier that does
-            // not depend on the caller keeping anything.
-            $sessioned = false;
-        }
-        // Tier (2): bound the flood per project, whether or not tier 1 ran.
-        //
-        // A COUNTER THE DATABASE OWNS, not a timestamp array this process reads,
-        // edits and writes back. The read-modify-write was defeated by the exact
-        // traffic the tier was written for: N concurrent requests all read the
-        // same array, each appended one entry, and the last write won - so a
-        // flood of 600 concurrent checks recorded a handful of hits and the cap
-        // was never reached. There is no read here at all. One statement
-        // increments, and the value it returns is the count after this request.
-        //
-        // A FIXED WINDOW, not a sliding one, and that is a deliberate trade. A
-        // sliding window needs the timestamps, and keeping the timestamps is
-        // what made the counter loseable. The cost is that a burst straddling a
-        // boundary can spend up to 2 x $pmax inside one 60-second span; the
-        // benefit is that no increment can ever be lost. For a throttle whose
-        // purpose is to bound a flood rather than to meter it, that is the right
-        // way round.
-        try {
-            if (!$pid) return false;
-            // TWO BUDGETS, NOT ONE, because the two populations are not alike.
-            // Sessioned traffic is mostly real respondents, and a busy public
-            // survey can legitimately spend more than the sessionless cap: tier
-            // 1 allows each session 30 a minute, so 600 is only twenty people
-            // typing at once. Charging both populations to one bucket would
-            // have turned this hardening change into an outage for exactly the
-            // projects that use the feature most. Separate buckets mean the
-            // sessionless cap keeps the value it was chosen for, and the
-            // sessioned cap only has to be low enough to bound enumeration -
-            // which it is: it converts "unbounded" into "a day and a half for a
-            // six-digit space", on an endpoint whose real defences are the
-            // per-rule opt-in and the Identifier refusal.
-            //
-            // NOT SETTINGS. Every other tunable in this module is a setting,
-            // deliberately; these are not, because the failure mode of a
-            // mistyped rate limit is a security control quietly set to zero,
-            // and there is no reading of it that an administrator needs.
-            $pmax = $sessioned ? self::THROTTLE_PROJECT_SESSIONED : self::THROTTLE_PROJECT_ANON;
-            $db = new Scan\ModuleDb($this);
-            // ONE BUCKET COLUMN, SEVERAL NAMESPACES. The primary key is
-            // (project_id, bucket) and a third dimension would mean an ALTER on
-            // a table that is now created with IF NOT EXISTS on every
-            // installation - so the tier rides in the low bits instead
-            // (RATE_TIERS). INT UNSIGNED holds the minute-counter times six
-            // until the year 3300.
-            $bucket = ((int) floor($now / $window)) * self::RATE_TIERS + ($sessioned ? 1 : 0);
-            // LAST_INSERT_ID(expr) on both paths, so the fresh-bucket INSERT and
-            // the existing-bucket UPDATE both answer with the number they wrote.
-            // The table has no AUTO_INCREMENT, so without it the insert path
-            // would report whatever the session last happened to set.
-            //
-            // execNoCount(): what this write answers with is LAST_INSERT_ID(),
-            // read below, and never its row count. exec() fetched ROW_COUNT()
-            // after it on every live uniqueness check of every survey page.
-            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
-                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
-                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
-                [(int) $pid, $bucket]);
-            $r = $db->select('SELECT LAST_INSERT_ID()', []);
-            // "I DO NOT KNOW" IS NOT "UNDER THE CAP". This read used to answer
-            // 0 for any shape it could not walk, which is silently the most
-            // permissive answer available: no throttle, no pruning, and nothing
-            // logged. ModuleDb::exec() already refuses to guess a row count for
-            // exactly this reason and the read-back must not be more trusting
-            // than the write. Raised rather than returned, so it lands in the
-            // catch below and is recorded like any other storage failure.
-            if (!isset($r[0][0]) || $r[0][0] === null) {
-                throw new \RuntimeException('the counter did not report a value');
-            }
-            $hits = (int) $r[0][0];
-            // Self-pruning, and only on the request that created the bucket, so
-            // this is one DELETE per project per window rather than one per
-            // check. Two windows of slack because a request can be in flight
-            // across a boundary - two windows of RATE_TIERS slots each, because
-            // the bucket number interleaves the tiers.
-            if ($hits === 1) {
-                $db->execNoCount('DELETE FROM ' . Scan\Schema::table('rate_bucket')
-                    . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 2 * self::RATE_TIERS]);
-            }
-            return $hits > $pmax;
-        } catch (\Throwable $e) {
-            // FAILS OPEN, as the whole method does: the live check is a
-            // convenience and never a gate on data entry, so a database that
-            // is briefly unreachable must not start refusing survey responses.
-            //
-            // BUT IT SAYS SO. Failing open in silence is how this tier came to
-            // be inert on every default installation for a whole release - the
-            // table lived behind the durable scan's opt-in flag, the increment
-            // threw on every request, and the only evidence was an absence.
-            // An operator cannot notice an absence. One log row per project per
-            // window is enough to see it and cheap enough to survive a flood.
-            $this->noteThrottleUnavailable($pid, (int) floor($now / $window), $e);
-            return false;
-        }
-    }
-
-    /**
-     * Record that the sessionless throttle could not reach its counter, at most
-     * once per project per window.
-     *
-     * The marker is a system setting rather than the counter's own table, for
-     * the obvious reason that this runs precisely when that table cannot be
-     * reached. A lost update here costs one duplicate log row, which is why the
-     * read-modify-write that was wrong for the counter is right for the marker.
-     */
-    private function noteThrottleUnavailable($pid, $bucket, \Throwable $e)
-    {
-        try {
-            $key  = 'uv_throttle_down_' . (int) $pid;
-            $seen = $this->getSystemSetting($key);
-            if ((string) $seen === (string) $bucket) return;      // already said so this window
-            $this->setSystemSetting($key, (string) $bucket);
-            // The CLASS, not the message. A message from here can name the
-            // installation's schema and its database user to a caller who is
-            // unauthenticated by definition; the class plus the redacted detail
-            // is what DbError exists to produce.
-            $this->log('uv-throttle-storage-unavailable', [
-                'project_id' => (int) $pid,
-                'class'      => get_class($e),
-                'detail'     => Scan\DbError::safe($e),
-            ]);
-        } catch (\Throwable $ignored) {
-            // A failure to record a failure is not worth a second failure.
-        }
-    }
-
-    /**
-     * The live unique rule covering one field, flattened to its active branch.
-     * Branch selection mirrors auditRule: conditions are evaluated against the
-     * record's SAVED values (the client gates itself on live values before
-     * calling). Returns null when no unique rule covers the field, or the
-     * branch situation is unresolvable (conflict / unparseable) — the client
-     * then fails open and the audit logs the config problem on save.
-     */
-    private function uniqueRuleFor(array $rules, $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead = false, array $live = [])
-    {
-        return $this->activeRuleFor($rules, 'unique', $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead, $live);
-    }
-
-    /**
-     * The live rule of one MODE covering one field, flattened to its active
-     * branch (see uniqueRuleFor), or null. Shared by the two live lookups.
-     *
-     * $live: values the page sent for the fields its "when" conditions read,
-     * already limited to the rendered instrument (liveCondValues). They win
-     * over the saved values, because the page picked its branch from them: a
-     * selector just changed and not saved yet, or a record not saved at all,
-     * must not be judged by another branch than the one the page enforces.
-     */
-    private function activeRuleFor(array $rules, $mode, $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead = false, array $live = [])
-    {
-        foreach ($rules as $r) {
-            if (!empty($r['configError'])) continue;
-            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== $mode) continue;
-            if (empty($r['fields']) || !is_array($r['fields']) || !in_array($field, $r['fields'], true)) continue;
-            // Record-local rules are rendered as advisory assertions. The legacy
-            // no-auth uniqueness endpoint must never reinterpret them as project scope.
-            if (($r['uniqueScope'] ?? null) === 'record') return null;
-            if (TemporalRules::extended($r) && !empty($r['branches'])) {
-                if (!$allowTemporalRead || $record === null || $record === '') return null;
-                $dd=$this->dataDictionary($pid) ?: [];$rights=$this->userFormRights($pid);
-                foreach (TemporalRules::fields($r) as $source) {
-                    if (!isset($dd[$source]['form_name']) || !self::mayReadForm($rights,$dd[$source]['form_name'])) return null;
-                }
-                $shape=$this->temporalShape($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
-                $this->temporalBegin($pid);
-                $p=$this->temporalPrepared($r,$shape,$node,['event'=>$event_id,'instrument'=>$instrument,'instance'=>$repeat_instance,'values'=>[]]);
-                if ($p['problems'] || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
-                return $p['rule'];
-            }
-            if (!isset($r['branches']) || !is_array($r['branches'])) return $r;
-
-            $asts = [];
-            $refs = [];
-            $else = null;
-            foreach ($r['branches'] as $bi => $b) {
-                if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') { $else = $bi; continue; }
-                $p = Logic::parse($b['when']);
-                if (empty($p['ok'])) return null;
-                $asts[$bi] = $p['ast'];
-                foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
-            }
-            $values = ($record !== null && $record !== '')
-                ? $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true)
-                : [];
-            foreach ($live as $lf => $lv) {
-                if (isset($refs[$lf])) $values[$lf] = $lv;
-            }
-            $active = [];
-            foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid))) $active[] = $bi;
-            }
-            if (count($active) === 1) $pick = $active[0];
-            elseif (!count($active) && $else !== null) $pick = $else;
-            else return null;
-            $b = $r['branches'][$pick];
-            unset($b['when']);
-            return array_merge(['type' => $r['type'], 'fields' => $r['fields']], $b);
-        }
-        return null;
-    }
+    // The live lookups and their throttles live in php/LiveLookups.php (QUA-2).
 
     /**
      * A REDCap filterLogic that narrows a collision lookup to candidate matches,
@@ -13237,6 +10127,27 @@ class UniversalValidator extends AbstractExternalModule
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
 
+        // The records that hold the value, from the data table (UNQ-7,
+        // PRF-2): getData then builds those records only, and a miss needs no
+        // export at all. [false] when the table cannot be read, and the
+        // export below answers instead.
+        $fromTable = function () use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+            $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
+                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null);
+            if ($cand === null) return [false];
+            if (!$cand) return [true, null];
+            $data = \REDCap::getData($params + ['records' => $cand]);
+            if (!is_array($data)) return [true, false];
+            return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
+        };
+        // Signed-in callers and the save audit start there. A survey keeps
+        // its order: the narrowed read below settles a hit without spending
+        // the read budget, and the budget pays for the table read of a miss.
+        if ($mayFullRead === null) {
+            $t = $fromTable();
+            if ($t[0]) return $t[1];
+        }
+
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
         // matches with a filterLogic, so REDCap returns only the few records that
@@ -13266,7 +10177,11 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
-        if ($mayFullRead !== null && !call_user_func($mayFullRead)) return false;
+        if ($mayFullRead !== null) {
+            if (!call_user_func($mayFullRead)) return false;
+            $t = $fromTable();
+            if ($t[0]) return $t[1];
+        }
         $shared = $this->sharedCollisionRead($params);
         if ($shared !== null) {
             if ($shared === false) return false;
@@ -13275,6 +10190,123 @@ class UniversalValidator extends AbstractExternalModule
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
         return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+    }
+
+    /**
+     * The records other than $excludeRecord with a row of $fields whose value
+     * has the lookup key of $value under that field's number mark, read from
+     * the data table (Scan\FieldValues); or null when it cannot be read. A
+     * superset of the records collisionIn can match: a context takes its
+     * values from these rows only.
+     */
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId)
+    {
+        $keyOf = [];
+        foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
+        $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId,
+            function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+                if (!isset($keyOf[$f])) return false;
+                if ($v === $value) return true;
+                $k = $keyOf[$f];
+                // A text key is the trimmed, folded value: a shorter stored
+                // value cannot reach it.
+                if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
+                return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+            });
+        if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
+        $skip = (string) $excludeRecord;
+        return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
+    }
+
+    /**
+     * The records of project $pid with a row of $field whose value an
+     * @UVEXISTS lookup of $value matches (existsRowMatch: trimmed, letter case
+     * ignored when $fold, numbers by value under $mark, a Missing Data Code
+     * never), in event $event (null: any), less $skip; read from the data
+     * table (Scan\FieldValues), which REDCap does not confine to the user's
+     * Data Access Group. Null when the table cannot be read.
+     */
+    private function existsCandidates($pid, $field, $value, $fold, $mark, array $codes, $event, $skip = null)
+    {
+        $key = Logic::lookupKey($value, $fold, $mark);
+        $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event,
+            function ($f, $v) use ($value, $key, $fold, $mark, $codes) {
+                if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
+                // A text key is the trimmed, folded value: a shorter stored
+                // value cannot reach it.
+                if ($key[0] === '=' && strlen($v) < strlen($key) - 1) return false;
+                $t = Logic::lookupTrim($v);
+                if ($codes && self::isMissingCode($t, $codes)) return false;
+                return Logic::lookupKey($t, $fold, $mark) === $key;
+            });
+        if ($recs === null || $skip === null || $skip === '') return $recs;
+        $skip = (string) $skip;
+        return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
+    }
+
+    /**
+     * A field lookup (findExisting) answered from the records the data table
+     * shows holding the value (existsCandidates), or null when the table
+     * cannot be read and the caller reads as before (EXS-4, EXS-1).
+     *
+     * Only those records are exported, with the fields the rule tests, and
+     * judged as the full read judged them, so the answer does not change.
+     * No record holding the value is "not found": the table is not confined
+     * to the caller's Data Access Group, so the miss needs no evidence of what
+     * the read could see (existsMiss). A record the table names but getData
+     * does not hand back is in another group (REDCap confined the read), or
+     * went in between. For a rule that tests only the value, the table row is
+     * the whole test, so the value is found there; the record is never named
+     * to the caller (its group is not known here). A rule with "match",
+     * "where" or "return" cannot be judged on a record it cannot read: the
+     * answer is unknown. Under "scope":"dag" such a record is in another
+     * group than the one the rule looks in, so it is left out.
+     */
+    private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts)
+    {
+        $in = $spec['in'];
+        $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        $cands = $this->existsCandidates($pid, $in, $value, $spec['fold'], isset($spec['marks'][$in]) ? $spec['marks'][$in] : null,
+            $spec['codes'], $spec['event'], $skip);
+        if ($cands === null) return null;
+        $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
+        if (!$cands) return $notFound;
+        $data = \REDCap::getData($params + ['records' => $cands]);
+        if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+        $filtered = false;
+        if ($spec['returns']) {
+            $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
+            if ($hits) {
+                $best = self::bestExistsHit($hits, $prefer);
+                return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
+                    + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+            }
+        } else {
+            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
+            if ($hit !== null) return ['state' => 'found'] + $hit;
+        }
+        $seen = [];
+        foreach ($data as $rec => $node) if (is_array($node)) $seen[(string) $rec] = true;
+        $unseen = array_values(array_filter($cands, function ($r) use ($seen) { return !isset($seen[$r]); }));
+        if ($unseen && $scope !== 'dag') {
+            if (count($spec['target']) === 1 && $spec['where'] === null && !$spec['returns']) {
+                return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
+            }
+            return ['state' => 'unknown', 'record' => null, 'dag' => null,
+                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
+                        ? 'a value saved in another Data Access Group may not be visible from yours'
+                        : 'the saved values could not be read just now'];
+        }
+        return self::existsFilteredMiss($notFound, $filtered);
+    }
+
+    /** @var Scan\FieldValues|null */
+    private $fieldValuesReader = null;
+
+    private function fieldValues()
+    {
+        if ($this->fieldValuesReader === null) $this->fieldValuesReader = new Scan\FieldValues($this);
+        return $this->fieldValuesReader;
     }
 
     /**

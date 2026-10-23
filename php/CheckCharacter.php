@@ -283,7 +283,8 @@ class CheckCharacter
      * layer so nesting cannot hide the shape. Stage two (polynomialOverlap)
      * rejects the POLYNOMIAL shapes stage one misses: two or more unbounded
      * quantifiers over overlapping character classes with no mandatory separator
-     * between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). Those do not blow up on
+     * between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+), and three or more joined
+     * by separators the quantifier before each can also match (.*-.*-.*). Those do not blow up on
      * PCRE2 (it auto-possessifies) but freeze a browser's backtracking engine,
      * so the client needs them refused before they are ever run. Genuinely
      * linear shapes — disjoint adjacent classes ([A-Z]+[0-9]+) and a mandatory
@@ -293,11 +294,11 @@ class CheckCharacter
      * exact sync with the JS version; tests/risky_php.php and tests/risky_js.cjs
      * assert the two agree on a shared pattern list.
      */
-    public static function riskyPattern($src)
+    private static function riskyPatternOf($src)
     {
         if (mb_strlen((string) $src, 'UTF-8') > 512) return true;           // absurd pattern source
-        $s = preg_replace('/\\\\./', '', (string) $src);                    // ignore escaped chars
-        $s = preg_replace('/\(\?(<?[=!]|:)/', '(', $s);                     // (?: (?= (?! (?<= (?<! -> plain (
+        $s = self::riskyEscapes((string) $src);                             // each escape -> an atom of the same reach
+        $s = preg_replace('/\(\?(<?[=!]|:|<[A-Za-z_][A-Za-z0-9_]*>)/', '(', $s); // (?: (?= (?! (?<= (?<! (?<name> -> plain ( (VAL-11)
         // Whitespace is an explicit ASCII class, NOT \s: PCRE \s (no /u) and JS \s
         // classify Unicode whitespace differently, which would diverge. Bounded
         // quantifiers ({n,m}/{n,}) count as the "repeating" token so nested bounded
@@ -320,6 +321,75 @@ class CheckCharacter
         // Stage two: the polynomial-overlap class the exponential rules miss.
         if (self::polynomialOverlap($s)) return true;   // .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+
         return false;
+    }
+
+    /** @var array pattern source => riskyPatternOf() (VAL-13) */
+    private static $riskyMemo = [];
+    /** @var array pattern body => compilePatternOf() (VAL-13) */
+    private static $compileMemo = [];
+
+    /**
+     * riskyPatternOf, kept per pattern source: the gate runs again for every
+     * value a rule judges, and on a rule of four formats it was 58% of the cost
+     * of judging a value (VAL-13). The answer depends on the source alone.
+     */
+    public static function riskyPattern($src)
+    {
+        $key = (string) $src;
+        if (array_key_exists($key, self::$riskyMemo)) return self::$riskyMemo[$key];
+        if (count(self::$riskyMemo) >= 512) self::$riskyMemo = [];
+        return self::$riskyMemo[$key] = self::riskyPatternOf($key);
+    }
+
+    /** Members of the \d \w \s classes, for riskyEscapes. */
+    const RISKY_ESCAPE_CLASS = ['d' => '0-9', 'w' => '0-9A-Z_a-z', 's' => " \t\n\r\f"];
+
+    /**
+     * Rewrite each escape as an atom that matches at least what it matches, so
+     * the stages of riskyPattern see its class (VAL-4). Deleting escapes, as
+     * before, dropped \w from a class body ([\w.]+_ read as [.]+_ and passed)
+     * and let a quantifier after \d or \. attach to the atom before it
+     * ([0-9]+\.[0-9]+ read as [0-9]+[0-9]+ and was refused). Outside a class:
+     * \d \w \s become their ASCII classes, \D \W \S and an escaped metacharacter
+     * become "." (any character), any other escaped symbol is that symbol, and a
+     * letter or digit escape (\b \n \x \u \1 \k ...) is dropped. Inside a class
+     * the members are added at the end of the body ("-" last, so it forms no
+     * range), and \D \W \S or an escaped "]" make the class match everything.
+     * Twin of QRID_riskyEscapes (js).
+     */
+    private static function riskyEscapes($src)
+    {
+        $out = ''; $n = strlen($src); $i = 0;
+        $inCls = false; $body = ''; $extra = ''; $dash = false; $wide = false;
+        while ($i < $n) {
+            $c = $src[$i];
+            if ($c === '\\' && $i + 1 < $n) {
+                $e = $src[$i + 1];
+                $cls = self::RISKY_ESCAPE_CLASS[$e] ?? null;
+                $word = strpos('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $e) !== false;
+                $i += 2;
+                if ($inCls) {
+                    if ($cls !== null) $extra .= $cls;
+                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || $e === ']') $wide = true;
+                    elseif ($e === '-') $dash = true;
+                    elseif (!$word) $extra .= $e;
+                } else {
+                    if ($cls !== null) $out .= '[' . $cls . ']';
+                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || strpos('^$.*+?()[]{}|\\', $e) !== false) $out .= '.';
+                    elseif (!$word) $out .= $e;
+                }
+                continue;
+            }
+            $i++;
+            if ($inCls) {
+                if ($c === ']') { $out .= '[' . ($wide ? '^' : '') . $body . $extra . ($dash ? '-' : '') . ']'; $inCls = false; }
+                else $body .= $c;
+            }
+            elseif ($c === '[') { $inCls = true; $body = ''; $extra = ''; $dash = false; $wide = false; }
+            else $out .= $c;
+        }
+        if ($inCls) $out .= '[' . $body . $extra . ($dash ? '-' : '');   // unterminated class: left as written
+        return $out;
     }
 
     /**
@@ -345,6 +415,30 @@ class CheckCharacter
                 if ($toks[$j]['mandatory']) break;   // a must-match atom anchors the split point
             }
         }
+        // Stage two-c (VAL-4): a must-match atom pins the split only when the
+        // unbounded quantifier before it cannot match it too. In .*-.*-.*-.*-.*X
+        // each "-" is also matched by ".", so on a run of dashes every placement
+        // is tried: one verdict on 200 dashes took 5.6 s in the browser. Follow a
+        // chain of unbounded quantifiers whose classes overlap, joined by atoms
+        // that may match nothing or that the quantifier before them also matches;
+        // three or more in one chain are refused. Two (.*x.*, at most n*n steps on
+        // the 512-character input cap) still pass. Twin of QRID_polyOverlap (js).
+        for ($u = 0; $u < $m; $u++) {
+            if (!$toks[$u]['unbounded']) continue;
+            $chain = 1;
+            $last = $toks[$u]['cls'];
+            for ($v = $u + 1; $v < $m; $v++) {
+                if ($toks[$v]['unbounded'] && self::classesOverlap($last, $toks[$v]['cls'])) {
+                    if (++$chain >= 3) return true;
+                    $last = $toks[$v]['cls'];
+                    continue;
+                }
+                if (!$toks[$v]['mandatory']) continue;                                 // may match nothing: does not pin
+                if (self::classesOverlap($last, $toks[$v]['cls'])) continue;           // the quantifier before also matches it
+                break;                                                                 // a disjoint must-match atom pins the split
+            }
+        }
+
         // Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
         // overlapping bounded repeats (A{1,20}A{1,20}…) backtracks with the factor
         // count as the exponent — bounded per factor, but still a browser tab
@@ -1249,6 +1343,53 @@ class CheckCharacter
     }
 
     /**
+     * Whether $pattern uses PCRE syntax that the other dialect gates do not
+     * look for (VAL-5): a backtracking verb such as (*ACCEPT), a named
+     * back-reference \k'name' or \k{name}, an octal \o{...}, a reference \8 or
+     * \9, or a character-class range that starts or ends at \d, \w or \s
+     * ([\d-z]). PCRE runs the first three and refuses the last two; a browser
+     * refuses the first two and reads the others as other characters, so the
+     * value would validate in one runtime and not the other. Twin of
+     * QRID_pcreVerbOrRef (js).
+     */
+    public static function usesPcreVerbOrRef($pattern)
+    {
+        $p = (string) $pattern;
+        if (strpos(preg_replace('/\\\\./s', '', $p), '(*') !== false) return true;   // escaped characters dropped
+        $d = str_replace('\\\\', '', $p);                                          // escaped-backslash pairs dropped
+        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[89]/', $d)) return true;
+        return self::shorthandRange($d);
+    }
+
+    /**
+     * Whether a character class in $d has a range that starts or ends at \d,
+     * \w or \s (or their capitals): [\d-z], [a-\w]. A "-" first or last in the
+     * class, or escaped, is a literal. Twin of QRID_shorthandRange (js).
+     */
+    private static function shorthandRange($d)
+    {
+        $n = strlen($d);
+        for ($i = 0; $i < $n; $i++) {
+            if ($d[$i] === '\\') { $i++; continue; }
+            if ($d[$i] !== '[') continue;
+            $j = $i + 1;
+            if ($j < $n && $d[$j] === '^') $j++;
+            $first = $j;
+            if ($j < $n && $d[$j] === ']') $j++;                    // a "]" first is a literal
+            for (; $j < $n && $d[$j] !== ']'; $j++) {
+                if ($d[$j] !== '\\') continue;
+                if ($j + 1 < $n && strpos('dDwWsS', $d[$j + 1]) !== false) {
+                    if ($j - 1 > $first && $d[$j - 1] === '-' && $d[$j - 2] !== '\\') return true;
+                    if ($j + 3 < $n && $d[$j + 2] === '-' && $d[$j + 3] !== ']') return true;
+                }
+                $j++;
+            }
+            $i = $j;
+        }
+        return false;
+    }
+
+    /**
      * Whether $pattern uses a "(?..." group form JavaScript cannot compile:
      * inline flags (?i) (?x) (?m) (?s), comments (?#...), atomic groups (?>...),
      * conditionals (?(1)...) and the PCRE named forms (?P...) (?'n'...). PCRE
@@ -1345,6 +1486,13 @@ class CheckCharacter
                     . 'the server. Use explicit character classes such as [A-Z] or [0-9] instead.';
                 return null;
             }
+            if (self::usesPcreVerbOrRef($pattern)) {
+                $why = 'the format pattern uses PCRE syntax that a browser cannot run or reads as other '
+                    . 'characters: a verb such as (*ACCEPT), a named back-reference \\k\'name\' or \\k{name}, '
+                    . 'an octal \\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, '
+                    . '\\w or \\s, such as [\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead.';
+                return null;
+            }
             if (preg_match('/\[\^?\]/', preg_replace('/\\\\./s', '', $pattern))) {
                 // "[]" is a compile error to PCRE and an empty class — one that
                 // can never match — to a browser, so the server refused the rule
@@ -1372,7 +1520,7 @@ class CheckCharacter
                 $why = 'the format pattern looks catastrophically backtracking (nested '
                     . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
                     . 'long run of overlapping bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / '
-                    . '[0-9]*[0-9]*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
+                    . '[0-9]*[0-9]*, .*-.*-.*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
                     . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
                     . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
                 return null;
@@ -1390,6 +1538,14 @@ class CheckCharacter
 
     /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
     private static function compilePattern($body)
+    {
+        $key = (string) $body;
+        if (array_key_exists($key, self::$compileMemo)) return self::$compileMemo[$key];
+        if (count(self::$compileMemo) >= 512) self::$compileMemo = [];
+        return self::$compileMemo[$key] = self::compilePatternOf($key);
+    }
+
+    private static function compilePatternOf($body)
     {
         $delims = ['/', '#', '~', '!', '@', '%', ';', ':', '|', '='];
         $d = null;
