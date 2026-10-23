@@ -174,6 +174,11 @@ Repro: `php tools/temporal_perf_audit.php 600`.
   [result][previous-instance]='1'"` never fires on instance 1. The notice
   says the study team must fix the rule, which is wrong for this case.
   Repro: `php tools/temporal_sem_kleene.php`.
+  **Fixed 2026-10-23:** inside a condition an unresolved member's reason is
+  held back and becomes a problem only when the and/or stays undecided. The
+  page gets the tree with its unknown part and decides it with live values;
+  a tree with nothing live that stays undecided is deferred as before. Tests
+  in `tests/temporal_integration_php.php`.
 - **P5** `UniversalValidator.php:4039,4045`: direct-scan unresolved notes are
   keyed by rule and in-record position, no record id; 3 exhausted records gave
   2 notes, `incomplete=[]`. Durable scan is correct.

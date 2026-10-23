@@ -291,6 +291,38 @@ namespace {
         ['when'=>'[b_open][previous-instance]>0'],['when'=>null]]];
     $pr=$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
     check('missing branch cannot choose fallback',!!$pr['problems']);
+    // Wargame C5: an unresolved operand leaves the condition unknown only where
+    // and/or has not decided it. [b_open][previous-instance] from instance 1 has
+    // no entry; [key_a] is 'A' here.
+    $kleene=function($key,$cond,$browser=false)use($m,$prepared,$shape,$context){
+        $rule=$key==='when'?['type'=>'required','fields'=>['a_val'],'when'=>$cond]:['type'=>'constraint','fields'=>['a_val'],'assert'=>$cond];
+        return $browser?$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context,true,function(){return true;})
+                       :$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
+    };
+    $pr=$kleene('when',"[key_a]='A' or [b_open][previous-instance]>0");
+    check('C5: true or unknown is true (got '.json_encode([$pr['rule']['when']??null,$pr['problems']]).')',($pr['rule']['when']??null)==='1=1'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='B' and [b_open][previous-instance]>0");
+    check('C5: false and unknown is false',($pr['rule']['when']??null)==='1=0'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='B' or [b_open][previous-instance]>0");
+    check('C5: false or unknown stays unknown, with its reason (got '.json_encode($pr['problems']).')',$pr['problems']===['absent','unresolved']);
+    $pr=$kleene('assert',"[key_a]='A' or [b_open][previous-instance]>0");
+    check('C5: an assert decided around the unknown passes',($pr['rule']['assert']??null)==='1=1'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='A' or [b_open][previous-instance]>0",true);
+    $ast=$pr['rule']['whenAst']??null;
+    $page=function($key)use($ast){return \INSPIRE\UniversalValidator\TemporalLogic::evaluate($ast,function($f)use($key){return $f==='key_a'?$key:'';},false);};
+    check('C5: the page gets the condition, live part and all (got '.json_encode([$ast,$pr['problems']]).')',!$pr['problems']&&empty($pr['rule']['deferred'])&&($ast[0]??null)==='temporal');
+    check('C5: ... and decides it where the live value does, unknown elsewhere',$page('A')===true&&$page('B')===null);
+    check('C5: ... marked as reading a snapshot, so it never blocks there',$pr['stale']===true&&($pr['rule']['blockSave']??null)==='off');
+    $pr=$kleene('when',"[baseline_arm_1][b_open][2]>0 or [b_open][previous-instance]>0",true);
+    check('C5: decided from saved values alone, the page gets the answer',($pr['rule']['whenAst']??null)===['const',true]&&!$pr['problems']);
+    $pr=$kleene('when',"[b_open][previous-instance]>0 or [baseline_arm_1][b_open][2]>99",true);
+    check('C5: undecidable with nothing live to read: deferred, with its reason',!empty($pr['rule']['deferred'])&&in_array('absent',$pr['problems'],true));
+    $pr=$kleene('when',"[key_a]='A' or [key_a][999999999999999999999]='A'");
+    check('C5: an invalid reference defers even a decided condition (got '.json_encode($pr['problems']).')',in_array('invalid',$pr['problems'],true));
+    $rule=['type'=>'required','fields'=>['a_val'],'branches'=>[
+        ['when'=>"[key_a]='A' or [b_open][previous-instance]>0"],['when'=>null]]];
+    $pr=$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
+    check('C5: a branch decided around the unknown is chosen (got '.json_encode([$pr['problems'],$pr['branch']??null]).')',!$pr['problems']&&($pr['branch']??null)===0);
     $rule=['type'=>'unique','fields'=>['a_val'],'branches'=>[
         ['type'=>'unique','uniqueScope'=>'record','when'=>'[baseline_arm_1][b_open][2]>0'],
         ['type'=>'unique','uniqueScope'=>'record','when'=>null]]];

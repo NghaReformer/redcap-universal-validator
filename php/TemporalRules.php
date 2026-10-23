@@ -186,6 +186,14 @@ final class TemporalRules
         return array_values(array_unique($errors));
     }
 
+    /** Whether a compiled condition reads a value live on the page: a plain reference or a guard's key. */
+    private static function readsLive(array $node)
+    {
+        if(($node[0]??null)==='ref'||($node[0]??null)==='guard')return true;
+        foreach($node as $child)if(is_array($child)&&self::readsLive($child))return true;
+        return false;
+    }
+
     /** Compile operands to plain live refs or permitted snapshots. $browser=false emits literals only. */
     /** The text mode of $rule's condition $key: Logic::EXACT for a test of an "exact" rule, else caseSensitive. */
     private static function textMode(array $rule,$key)
@@ -197,8 +205,14 @@ final class TemporalRules
     public static function compile(array $rule,AddressResolver $resolver,ProjectShape $shape,array $context,$browser=false,?callable $mayRead=null)
     {
         $snapshot=false;$problems=[];$live=false;$denied=false;$matched=false;
-        $member=function(array $r,$typed=null)use($context,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems){
-            if(($r['state']??null)!=='ok'){$problems[]=$r['state']??'unreadable';return ['unknown'];}
+        // Inside a condition, a value that cannot be resolved is an unknown the and/or may
+        // still decide around: "[flag]='1' or [result][previous-instance]='1'" is true on
+        // instance 1 when flag is 1 (wargame C5). Its reason waits in $pending and becomes a
+        // problem only when the condition stays undecided. An invalid reference is always one.
+        $cond=false;$pending=[];
+        $unresolved=function($state)use(&$cond,&$pending,&$problems){if($cond&&$state!=='invalid')$pending[]=$state;else $problems[]=$state;};
+        $member=function(array $r,$typed=null)use($context,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems,$unresolved){
+            if(($r['state']??null)!=='ok'){$unresolved($r['state']??'unreadable');return ['unknown'];}
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
             if($onPage){$live=true;$node=['ref',$loc['field'],$loc['code']];}
             else{$snapshot=$snapshot||$browser;if($browser&&$mayRead&&!$mayRead($loc['instrument']))$denied=true;
@@ -208,12 +222,12 @@ final class TemporalRules
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
-        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems,&$matched){
+        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems,&$matched,$unresolved){
             if($op[0]==='lit')return $op;
             if($op[0]==='binding'){
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
                 $type=$b['type']??null;$from=$b['elapsedFrom']??null;$unit=$b['unit']??null;unset($b['type'],$b['elapsedFrom'],$b['unit']);
-                $r=$resolver->resolveBinding($b,$context);if($r['state']!=='ok'){$problems[]=$r['state'];return ['unknown'];}
+                $r=$resolver->resolveBinding($b,$context);if($r['state']!=='ok'){$unresolved($r['state']);return ['unknown'];}
                 // Which entries a set or an aggregate holds was read when the page was built,
                 // even when it holds none: an entry added in another tab changes it.
                 if($browser&&(isset($b['aggregate'])||isset($r['members'])))$snapshot=true;
@@ -247,10 +261,21 @@ final class TemporalRules
         foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             if(!$browser && in_array($key,ModeRegistry::condKeys('test'),true) && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
-            $tree=$walk($p['ast']);
+            $cond=true;$pending=[];$tree=$walk($p['ast']);$cond=false;
+            $test=in_array($key,ModeRegistry::condKeys('test'),true);
             // The browser evaluates its own tree; only saved-data callers need the verdict here.
-            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},in_array($key,ModeRegistry::condKeys('test'),true),self::textMode($rule,$key),$charge);
-            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$test,self::textMode($rule,$key),$charge);
+            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null){$problems=array_merge($problems,$pending);$problems[]=$resolver->exhausted()?'limit':'unresolved';}$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
+            elseif($pending){
+                // The page decides around the unknown with its live values. A tree with none
+                // to read stays undecided there too, so it is deferred here with its reasons;
+                // one decided whatever they hold is sent as its answer. Either way the
+                // unknown part may change once its entry is saved, so the rule reads a snapshot.
+                $snapshot=true;
+                $settled=TemporalLogic::evaluate($tree,function(){return null;},$test,self::textMode($rule,$key),$charge);
+                if($settled===null&&!self::readsLive($tree))$problems=array_merge($problems,$pending);
+                $compiled[$key.'Ast']=$settled===null?['temporal',$tree]:['const',$settled];
+            }
             else $compiled[$key.'Ast']=['temporal',$tree];
         }
         // An operand is a VALUE the verdict reads, not a comparison, so it never folds to a

@@ -63,6 +63,8 @@ Supported types: `date`, `datetime`, `datetime_seconds`. Saved values use canoni
 
 A date that has not been entered yet is a saved blank, not an unknown. It behaves as a blank does in every other comparison: an ordered test (`>=`, `<`) against it is not a violation in an `@UVASSERT` and does not activate a `when`, `=` against it is false, and `<>` is true. The same holds for an elapsed time built from a blank date, and for a blank field compared with an average. A missing row, by contrast, stays unresolved.
 
+An unresolved part of a condition joined by `and` or `or` leaves the condition unresolved only when the other parts do not decide it. `"[flag]='1' or [result][previous-instance]='1'"` is true wherever `flag` is 1, instance 1 included, and `"[flag]='0' and [result][previous-instance]='1'"` is false wherever `flag` is not 0. On the page such a condition is advisory, since the unresolved part can change once its entry is saved; where the page's own values do not decide it, the rule shows the deferral notice. An invalid reference (an instance number too large to address) leaves the rule unresolved even when the rest decides it.
+
 ```text
 @UVASSERT={"assert":"{elapsed}<=48","references":{"elapsed":{"field":"result_time","type":"datetime","elapsedFrom":"[collection_arm_1][collection_time][first-instance]","unit":"hours"}}}
 ```
