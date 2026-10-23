@@ -18,8 +18,9 @@ it from then on. Named user roles can still change it.</p>
 <tbody>
 <tr><td><code>roles</code></td><td>The user roles whose members may still change or clear
     the value, by the name the User Rights page shows or by the unique role name. Letter
-    case does not matter in any alphabet ("STRASSE" matches "Stra&szlig;e"), invisible
-    format characters such as a zero-width space are ignored, and a run of spaces counts
+    case does not matter ("STRASSE" matches "Stra&szlig;e", and "&#304;DARE" matches
+    "idare"), though the dotless "&#305;" stays a letter of its own. Invisible format
+    characters such as a zero-width space are ignored, and a run of spaces counts
     as one. With PHP's intl extension a name typed with combining accents matches one typed
     with composed letters; without intl they differ. Up to 20 roles</td></tr>
 <tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>, which starts
@@ -84,14 +85,16 @@ every save.</p>
     also reads a field of this form that the person can change, and only once that field
     has changed on the page, a checkbox option by option. A calc, or a field with
     <code>@CALCTEXT</code> or <code>@CALCDATE</code>, stands for the fields it is worked out
-    from, through other calcs too. A field with <code>@READONLY</code> or
-    <code>@HIDDEN</code> (or the <code>-FORM</code> or <code>-SURVEY</code> form that applies
-    to the page), <code>@NOW</code>, <code>@TODAY</code>, <code>@LATITUDE</code>,
-    <code>@LONGITUDE</code>, <code>@SETVALUE</code> or <code>@DEFAULT</code> never counts.
-    The value each field opened with is read after REDCap's own start-up on the page, once
-    its calcs, branching and action tags have filled their fields. A violation already
-    saved when the page opened, or one between two locked fields, never holds it, on Save
-    or on Enter.</li>
+    from on this event and instance, through other calcs too. The value each field opened
+    with is read after REDCap's own start-up on the page, once its calcs, branching and
+    action tags have filled their fields. So a field REDCap fills as the page starts
+    (<code>@NOW</code>, <code>@TODAY</code>, <code>@DEFAULT</code>, <code>@SETVALUE</code>)
+    counts only once the person changes it, and so does a field with
+    <code>@READONLY</code> or <code>@HIDDEN</code>. A field with <code>@LATITUDE</code> or
+    <code>@LONGITUDE</code> never counts, since REDCap fills it later, once the browser
+    gives its position; the tag name inside another tag's quoted text is not read as the
+    tag. A violation already saved when the page opened, or one between two locked fields,
+    never holds it, on Save or on Enter.</li>
 <li>The lock lives in the browser only. A change made through the API, the Data Import
     Tool or a script that bypasses the form is found afterwards, from REDCap's log, by
     the audit of the next save of the form that holds the field and by the scan.</li>
@@ -119,14 +122,20 @@ one event at another event changes nothing.</p>
     does not describe as one form or one event, and in a project of several arms every
     deletion of the record, since the check cannot tell what it removed;</li>
 <li>a record whose log does not show it being made: one renamed while its saves stay
-    logged under the old name, or one that came with a copied project;</li>
+    logged under the old name, or one that came with a copied project. Renaming the
+    record id field after records exist does this to every record;</li>
 <li>a record whose creating row has its record id line after a Text or Notes value;</li>
 <li>a save the log names no event for;</li>
 <li>a save the log does not spell out. The log lists a save's fields in the data
     dictionary's order, and a line out of that order is how a Notes value typed to look
     like another field's line shows, so the save reads as not spelled out from the first
     Text or Notes value before that line. A save written before a field was moved breaks
-    the order too;</li>
+    the order too: moving any field of a form after records exist, locked or not, can
+    leave the Text and Notes values of the saves made before the move not checked, the
+    save that made the record included. In such a save, every value from its first Text
+    or Notes value on is not checked; a field of another type written before every Text
+    and Notes value is still read, and the record id field does not count as a Text
+    value here;</li>
 <li>a value the log never shows saved;</li>
 <li>user roles that cannot be read when a change needs them.</li>
 </ul>

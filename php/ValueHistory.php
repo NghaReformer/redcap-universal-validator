@@ -305,7 +305,7 @@ final class ValueHistory
             $start = $this->startOf(isset($row[3]) ? $row[3] : '');
             if ($start !== null) $started = $start;
         }
-        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText);
+        $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText, $this->idField);
         if ($event === null) {
             foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) return 'noevent';
             return null;
@@ -459,10 +459,12 @@ final class ValueHistory
      *    value cannot be typed, so they are kept, and so is a row whose line
      *    out of order follows no free-text value (the dictionary may have
      *    changed since the row was written, or the save wrote its fields in
-     *    another order). With no $freeText given, every field counts.
+     *    another order). With no $freeText given, every field counts. The
+     *    record id field ($idField) never counts: a record name holds no line
+     *    break, so its value cannot look like more lines.
      * Each line is looked at once, so a long value costs one pass.
      */
-    public static function parseRow($text, array $order = [], array $freeText = [])
+    public static function parseRow($text, array $order = [], array $freeText = [], $idField = null)
     {
         $out = [];
         if (!is_string($text) || $text === '') return $out;
@@ -499,7 +501,7 @@ final class ValueHistory
                 if (($p < $place || ($p === $place && !($b[2] && $prev === $b[0]))) && $firstFree !== null) $cut = $firstFree;
                 $place = $p;
             }
-            if ($firstFree === null && !$b[2] && (!$freeText || isset($freeText[$b[0]]))) $firstFree = $k;
+            if ($firstFree === null && !$b[2] && $b[0] !== $idField && (!$freeText || isset($freeText[$b[0]]))) $firstFree = $k;
             $prev = $b[0];
         }
         foreach ($blocks as $k => $b) {

@@ -280,7 +280,7 @@ check('start: told no free-text fields, the reader counts every field as one, so
 
 // The start read from the row as written (review W4-1), with the options the module gives the reader
 // (UniversalValidator::valueHistoryOptions): every Text and Notes field is free text, the record id
-// field included, so in the row that made the record its record id line is the first free-text value.
+// field included; the reader passes over the record id field when it doubts a row (review W5-2).
 $MOD = function (array $dd) {
     $free = [];
     foreach ($dd as $f => $t) if ($t === 'text' || $t === 'notes') $free[$f] = true;
@@ -304,6 +304,10 @@ check('start (module options): the row that made the record, read in the diction
     $values($mod($rows, $before, '7', 380, 'consent')) === [['20260101090000', 'nurse', '2026-01-01'], ['20260301090000', 'mallory', '2026-03-03']], $mod($rows, $before, '7', 380, 'consent'));
 check('start (module options): a field moved since leaves the record started; only that row\'s values are not plain',
     $values($mod($rows, $after, '7', 380, 'consent')) === [['20260101090000', 'nurse', null], ['20260301090000', 'mallory', '2026-03-03']], $mod($rows, $after, '7', 380, 'consent'));
+// the fifth review's case 1: site moved above arm, two radio fields; consent is not Text or Notes
+$afterNotText = ['record_id' => 'text', 'consent' => 'dropdown', 'site' => 'radio', 'arm' => 'radio', 'wt' => 'text'];
+check('start (module options): ... while a field that is not Text or Notes, written before any other Text value, is judged: the record id line is no typed text (review W5-2)',
+    $values($mod($rows, $afterNotText, '7', 380, 'consent')) === [['20260101090000', 'nurse', '2026-01-01'], ['20260301090000', 'mallory', '2026-03-03']], $mod($rows, $afterNotText, '7', 380, 'consent'));
 check('start (module options): ... and a field locked at another event is read whole',
     $values($mod($rows, $after, '7', 381, 'wt')) === [['20260401090000', 'nurse', '70'], ['20260402090000', 'mallory', '71']], $mod($rows, $after, '7', 381, 'wt'));
 $notes = [
@@ -470,6 +474,14 @@ check('parse: a forged run through a field no one types is caught from its first
     $pf("dob = 'x',\nsite = 'C',\nnotes = 'D'") === [1 => ['dob' => null, 'site' => null, 'notes' => null]], $pf("dob = 'x',\nsite = 'C',\nnotes = 'D'"));
 check('parse: in order, nothing is doubted', $pf("notes = 'n',\ndob = 'd',\nsite = 'A'") === [1 => ['notes' => 'n', 'dob' => 'd', 'site' => 'A']]);
 check('parse: a stray line still makes every field not plain', $pf("site = 'A',\nwhat is this") === [1 => ['site' => null]]);
+// The record id field is no free-text value (review W5-2): a record name holds no line break.
+$pfId = function ($t, $id = 'record_id') use ($ord, $free) { return ValueHistory::parseRow($t, $ord, $free + ['record_id' => true], $id); };
+check('parse: a line out of order after the record id line and no other free-text value is kept (review W5-2)',
+    $pfId("record_id = '7',\nsite = 'A',\ndob = 'd'") === [1 => ['record_id' => '7', 'site' => 'A', 'dob' => 'd']], $pfId("record_id = '7',\nsite = 'A',\ndob = 'd'"));
+check('parse: ... a free-text value after the record id line still starts the doubt',
+    $pfId("record_id = '7',\nwt = 'x',\nsite = 'C'") === [1 => ['record_id' => '7', 'wt' => null, 'site' => null]], $pfId("record_id = '7',\nwt = 'x',\nsite = 'C'"));
+check('parse: ... and told no record id field, the reader counts it as any Text field',
+    $pfId("record_id = '7',\nsite = 'A',\ndob = 'd'", null) === [1 => ['record_id' => null, 'site' => null, 'dob' => null]], $pfId("record_id = '7',\nsite = 'A',\ndob = 'd'", null));
 // Each line is looked at once (review W2-10): a long notes value costs one pass.
 // Ten times the lines must cost about ten times the time, not a hundred.
 // Either test passes it: the ratio holds on a loaded machine, where a fixed
@@ -616,12 +628,22 @@ check('roleKey: a name that is not UTF-8 is lowercased byte by byte', Logic::rol
 check('roleKey: a zero-width space or a byte-order mark is not part of the name', Logic::roleKey("Data\u{200B} manager\u{200B}") === 'data manager'
     && Logic::roleKey("\u{FEFF}Data manager") === 'data manager' && Logic::roleKey("Data\u{2060}manager") === 'datamanager', Logic::roleKey("Data\u{200B} manager\u{200B}"));
 check('roleKey: full case folding: STRASSE and Straße are one role', Logic::roleKey('STRASSE') === Logic::roleKey("Stra\u{DF}e") && Logic::roleKey('STRASSE') === 'strasse', Logic::roleKey("Stra\u{DF}e"));
+// review W5-6, W5-7
+check('roleKey: a format character between two spaces leaves one space', Logic::roleKey("Data \u{200B} manager") === 'data manager', Logic::roleKey("Data \u{200B} manager"));
+check('roleKey: the capital I with a dot above, composed or not, is "i" (İDARE is idare)', Logic::roleKey("\u{130}DARE") === 'idare' && Logic::roleKey("I\u{307}DARE") === 'idare',
+    [Logic::roleKey("\u{130}DARE"), Logic::roleKey("I\u{307}DARE")]);
+check('roleKey: the dotless ı stays a letter of its own', Logic::roleKey("D\u{131}rector") === "d\u{131}rector" && Logic::roleKey("D\u{131}rector") !== Logic::roleKey('Director'),
+    Logic::roleKey("D\u{131}rector"));
+check('roleKey: a lowercase i with a combining dot above is not changed', Logic::roleKey("i\u{307}dare") === "i\u{307}dare", Logic::roleKey("i\u{307}dare"));
 if (class_exists('Normalizer', false)) {
     check('roleKey: a letter and its combining accent (NFD) are the accented letter (NFC)', Logic::roleKey("E\u{301}quipe me\u{301}dicale") === Logic::roleKey("\u{C9}quipe M\u{E9}dicale")
         && Logic::roleKey("E\u{301}quipe me\u{301}dicale") === "\u{E9}quipe m\u{E9}dicale", Logic::roleKey("E\u{301}quipe me\u{301}dicale"));
+    check('roleKey: a format character between a letter and its accent is removed before the letters are composed (review W5-7)',
+        Logic::roleKey("E\u{200B}\u{301}quipe") === "\u{E9}quipe", Logic::roleKey("E\u{200B}\u{301}quipe"));
 } else {
     echo "note: PHP's intl extension is not loaded, so the NFC/NFD check of roleKey is skipped (run with -d extension=intl)\n";
-    check('roleKey: without intl, a combining accent is kept as typed', Logic::roleKey("E\u{301}quipe") === "e\u{301}quipe", Logic::roleKey("E\u{301}quipe"));
+    check('roleKey: without intl, a combining accent is kept as typed', Logic::roleKey("E\u{301}quipe") === "e\u{301}quipe" && Logic::roleKey("E\u{200B}\u{301}quipe") === "e\u{301}quipe",
+        Logic::roleKey("E\u{301}quipe"));
 }
 $rdb = new FakeRoleDb();
 $rdb->intl = true;
