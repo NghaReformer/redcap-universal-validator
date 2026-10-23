@@ -1062,7 +1062,10 @@ that completes replaces every earlier report, group runs included, so a
 group user whose group's last report was replaced is told so and asked to
 start a scan of the group, rather than shown an empty report. The findings
 appear when no run of the reader's is going, and open by themselves when a
-run the tab is watching finishes. Earlier runs are not listed.
+run the tab is watching finishes. Earlier runs are not listed. The summary
+above the table says what the run covered: a run over one group says "This
+scan covered Data Access Group north only, not the whole project.", whoever
+reads it, as its file does.
 
 Findings come 50 to a page, in the order they were stored, with "Next page"
 and "Previous page". The table's caption gives the page, and a line above it

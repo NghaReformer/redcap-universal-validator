@@ -129,6 +129,7 @@ UV.labels = {
   reportViewingNewer: 'This is scan {run}, which did not complete. The current report is scan {current}.',
   reportShowCurrent: 'Show the current report',
   reportMissing: 'This report counts findings that could not be read now. It may have been replaced since this page was opened; reload the page to open the current report.',
+  reportGroupOnly: 'This scan covered {group} only, not the whole project.',
   coverage: {}, phase: {},
 };
 
@@ -453,6 +454,32 @@ function noZero(label) {
   check('summary: a certified run says what it checked and nothing more, and an uncounted report says so',
     els['uv-scan-report-summary'].textContent === 'Every record was checked, including changes made while it ran.'
     && els['uv-scan-report-count'].textContent === UV.labels.foundUnknown);
+
+  // -- rv11b1-2: the run's scope in the summary -----------------------------
+  // An unrestricted reader who watched a group run to its end read "Every
+  // record was checked" over the group's count, with nothing saying the
+  // other groups were not read. scan-findings carries `runScope` (rv11a1-1).
+  const GROUP_RUN = { kind: 'group', group: 'site_b', label: 'Data Access Group site_b' };
+  reset([{ ok: true, run_id: 9, phase: 'terminal', terminal: 'complete', coverage: 'complete-through-fence',
+           detail: 'complete', total: 5, done: 5, findings: 0, active: false, clean: 1, scope: 'group' },
+         page({ run_id: 9, runScope: GROUP_RUN, clean: 1, rows: [], next: null,
+                report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 0 } })]);
+  UV.attach({ runId: 9 });
+  await ticks(10);
+  check('rv11b1-2: a group run watched to its end says in its summary that it covered that group only',
+    sentAt(0).run_id === 9 && els['uv-scan-report-summary'].textContent
+      === 'Every record was checked, including changes made while it ran. This scan covered Data Access Group site_b only, not the whole project.');
+  reset([page({ runScope: { kind: 'project', group: null, label: 'whole project' }, next: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-2 (control): a whole-project run says nothing about a group',
+    els['uv-scan-report-summary'].textContent.indexOf('only, not the whole project') === -1);
+  reset([page({ withheld: true, withheldWhy: UV.labels.withheldEnded, runScope: GROUP_RUN, rows: [], next: null, facets: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-2: and a withheld group run says which group, with no coverage sentence',
+    els['uv-scan-report-summary'].textContent
+      === 'This scan covered Data Access Group site_b only, not the whole project. This result does not certify the project.');
 
   // -- README's three marks of an incomplete report (item 10) ---------------
   // The words are ScanService::incompleteMarks()'s, which tests/scan_service_php.php

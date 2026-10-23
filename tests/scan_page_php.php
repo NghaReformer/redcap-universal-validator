@@ -2301,7 +2301,7 @@ namespace {
                       'emptyLeftDeleted', 'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
                       'filterAll', 'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer',
-                      'reportViewingNewer', 'reportShowCurrent', 'reportMissing'];
+                      'reportViewingNewer', 'reportShowCurrent', 'reportMissing', 'reportGroupOnly'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2310,6 +2310,8 @@ namespace {
         }
         check('LABELS: none of them carries an apostrophe into the script block',
             strpos($all, "'") === false);
+        check('rv11b1-2: the panel says a group run covered its group only in the words the file uses',
+            str_replace('{group}', '%s', $V::REPORT_GROUP_ONLY) === \INSPIRE\UniversalValidator\Scan\ScanService::GROUP_ONLY);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
         foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues',
                   'withheld', 'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'upgraded', 'emptyLeft',
@@ -2317,7 +2319,7 @@ namespace {
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
                   'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
                   'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer', 'reportViewingNewer',
-                  'reportShowCurrent', 'reportMissing'] as $k) {
+                  'reportShowCurrent', 'reportMissing', 'reportGroupOnly'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

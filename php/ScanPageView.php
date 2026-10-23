@@ -546,6 +546,16 @@ class ScanPageView
     const REPORT_MISSING       = 'This report counts findings that could not be read now. It may have been '
                                . 'replaced since this page was opened; reload the page to open the current report.';
 
+    /**
+     * Said in the report summary of a run over one group (review rv11b1-2),
+     * as the file says it after its coverage line (ScanService::GROUP_ONLY,
+     * the same sentence with %s): {group} is the run's scope label, e.g.
+     * "Data Access Group site_b". An unrestricted reader who watched a group
+     * run to its end read "Every record was checked" above a count of the
+     * group's findings, with nothing saying the other groups were not read.
+     */
+    const REPORT_GROUP_ONLY    = 'This scan covered {group} only, not the whole project.';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -594,6 +604,7 @@ class ScanPageView
             'reportViewingNewer' => self::REPORT_VIEWING_NEWER,
             'reportShowCurrent'  => self::REPORT_SHOW_CURRENT,
             'reportMissing'   => self::REPORT_MISSING,
+            'reportGroupOnly' => self::REPORT_GROUP_ONLY,
         ];
     }
 

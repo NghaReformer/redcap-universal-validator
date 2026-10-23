@@ -1240,9 +1240,19 @@
         var rep = a.report || {}, L = labels();
         // A withheld run says why in its own sentence; its coverage sentence
         // is about records its reader is not shown.
-        var s = (!a.withheld && typeof rep.coverageSentence === 'string') ? rep.coverageSentence : '';
+        var parts = [];
+        if (!a.withheld && typeof rep.coverageSentence === 'string' && rep.coverageSentence !== '') {
+            parts.push(rep.coverageSentence);
+        }
+        // WHAT THE RUN COVERED (review rv11b1-2): a run over one group says
+        // so, whoever reads it, as its file does.
+        var sc = a.runScope || {};
+        if (sc.kind === 'group' && typeof sc.label === 'string' && sc.label !== '') {
+            parts.push(fill(L.reportGroupOnly || 'This scan covered {group} only, not the whole project.', { group: sc.label }));
+        }
         var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.ruleProblems });
-        text(el('uv-scan-report-summary'), v ? (s ? s + ' ' + v : v) : s);
+        if (v) parts.push(v);
+        text(el('uv-scan-report-summary'), parts.join(' '));
         var n = rep.expectedRows, count;
         if (typeof n === 'number' && n >= 0 && n === Math.floor(n)) {
             count = fill(L.reportCount || 'This report holds {findings}.',
