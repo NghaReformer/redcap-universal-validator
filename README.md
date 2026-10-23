@@ -1116,9 +1116,10 @@ filtering — over every saved record and stores what it finds.
   `scan-system-max-detail-bytes` of detail (default 512 MiB); a project may set
   lower limits. Past either limit the run keeps counting every finding, stops
   storing detail, and labels itself truncated. Stored values expire after
-  `scan-value-retention-days` and finished runs are purged after
-  `scan-run-retention-days`; the server sets the most days a project may choose
-  (30 and 90 by default).
+  `scan-value-retention-days`, and a daily cron clears them. Finished runs are
+  to be purged after `scan-run-retention-days`, but no cron purges runs yet, so
+  they stay in the scan's tables until one is scheduled. The server sets the
+  most days a project may choose (30 and 90 by default).
 - **Values are a policy choice.** The project setting *Validation scan report*
   decides whether the offending value is stored beside each finding: locations
   only (the default), Identifier fields redacted, or every value. Redaction
@@ -1359,7 +1360,7 @@ node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
-node tests/config_notice_js.cjs     # page-level config-error notice
+node tests/config_notice_js.cjs     # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
 ```

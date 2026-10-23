@@ -16,7 +16,11 @@ and the field-facing UI layer:
    `<script type="application/json" id="inspire-validator-config">` node that
    `UniversalValidator.php` emits (no executable config script, no config
    global); `window.INSPIRE_VALIDATOR_CONFIG` remains as a fallback for the Node
-   test harnesses. The config carries a `context` flag (`form`/`survey`).
+   test suites. The config carries a `context` flag (`form`/`survey`) and a
+   `configShape` number. The engine declares the same number
+   (`QRID_CONFIG_SHAPE`, twin of `UniversalValidator::CONFIG_SHAPE`) and, on a
+   page whose config states another, checks nothing and shows a notice to
+   reload, so a cached engine never reads a config it was not written for.
 2. **Security and performance hardening of the UI layer** (everything below the
    engine core):
    - All config-derived text (regex class bodies, config-error messages) is

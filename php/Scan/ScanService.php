@@ -162,6 +162,15 @@ final class ScanService
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
             return self::no('the durable validation scan is not enabled here');
         }
+        // After the flags, so an installation that has not turned the scan on
+        // is told nothing about its server. Without these the worker died part
+        // way through a batch (COMPAT-1).
+        $missing = is_callable([$this->module, 'missingPhpExtensions'])
+            ? $this->module->missingPhpExtensions() : ScanCapabilities::missingExtensions();
+        if ($missing) {
+            return self::no('this server\'s PHP does not load the ' . implode(' and ', $missing)
+                . (count($missing) > 1 ? ' extensions' : ' extension') . ' the scan needs');
+        }
         $health = Schema::health($this->module);
         if (empty($health['ok'])) {
             // Reported, never repaired on the fly. A migration that runs

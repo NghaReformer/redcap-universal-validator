@@ -35,6 +35,32 @@ final class ScanCapabilities
     /** A capability that is absent, degraded, or unprovable. */
     const NO = 'unavailable';
 
+    /**
+     * The PHP extensions the module calls without a guard (COMPAT-1): mb_*
+     * for lengths, case and encoding checks, ctype_* for character classes.
+     * REDCap needs mbstring itself and standard PHP builds load both, but a
+     * minimal build that leaves one out made the save audit and the scan die
+     * part way.
+     */
+    const PHP_EXTENSIONS = ['mbstring', 'ctype'];
+
+    /**
+     * The extensions of PHP_EXTENSIONS this server does not load, in that
+     * order; [] on a standard install.
+     *
+     * @param callable|null $loaded extension_loaded(), or a stand-in for a test
+     * @return string[]
+     */
+    public static function missingExtensions($loaded = null)
+    {
+        $loaded = $loaded === null ? 'extension_loaded' : $loaded;
+        $out = [];
+        foreach (self::PHP_EXTENSIONS as $x) {
+            if (!$loaded($x)) $out[] = $x;
+        }
+        return $out;
+    }
+
     /** @return array{state:string, via:?string, why:?string} */
     private static function yes($via)
     {

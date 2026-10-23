@@ -812,6 +812,22 @@ namespace INSPIRE\UniversalValidator\Scan {
     $mod3->proj[ScanService::PROJ_FLAG] = 'no';
     check('service: nor does "no"', (new ScanService($mod3))->available(1)['ok'] === false);
 
+    // -- COMPAT-1: a server without mbstring or ctype -------------------------
+    $noMb = new class extends \FakeModule { public function missingPhpExtensions() { return ['mbstring']; } };
+    $noMb->sys[ScanService::SYS_FLAG] = '1';
+    $noMb->proj[ScanService::PROJ_FLAG] = '1';
+    $nm = (new ScanService($noMb))->available(1);
+    check('COMPAT-1: a server without mbstring cannot scan, and is told which extension',
+        $nm['ok'] === false && strpos($nm['why'], 'the mbstring extension the scan needs') !== false);
+    $noBoth = new class extends \FakeModule { public function missingPhpExtensions() { return ['mbstring', 'ctype']; } };
+    $noBoth->sys[ScanService::SYS_FLAG] = '1';
+    $noBoth->proj[ScanService::PROJ_FLAG] = '1';
+    check('COMPAT-1: ...and names both when both are missing',
+        strpos((new ScanService($noBoth))->available(1)['why'], 'the mbstring and ctype extensions') !== false);
+    $noMbOff = new class extends \FakeModule { public function missingPhpExtensions() { return ['mbstring']; } };
+    check('COMPAT-1: an installation that has not turned the scan on is not told about its PHP',
+        strpos((new ScanService($noMbOff))->available(1)['why'], 'not enabled here') !== false);
+
     // -- the flag answer discloses nothing about the installation ------------
     //
     // The order in available() is deliberate: the flags are checked BEFORE the

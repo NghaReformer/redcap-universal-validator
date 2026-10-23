@@ -344,9 +344,13 @@ jobs:
                   sys.exit('growth table of ' + rid + ' does not match its sha256 in the package')
           print('growth tables OK:', len(idx['references']))
           PY
-          for d in .github reports tools; do
+          for d in .github reports tools site CLAUDE.md .graphifyignore; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }
           done
+          # Plans, PDFs and temporal scripts at the root are development files too.
+          if ls PLAN-*.md *.pdf *temporal* 2>/dev/null | grep -q .; then
+            echo "development-only file shipped in the package:"; ls PLAN-*.md *.pdf *temporal* 2>/dev/null; exit 1
+          fi
           python3 -m json.tool config.json > /dev/null
           grep -qF 'INSPIRE\\UniversalValidator' config.json \
             || { echo "config.json namespace mismatch"; exit 1; }

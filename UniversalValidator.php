@@ -173,6 +173,14 @@ class UniversalValidator extends AbstractExternalModule
             // EVERY settings/dictionary read (SEC-002).
             $rules = $this->getRules($project_id);
             if (!$rules) return;
+            // Without mbstring or ctype the audit died part way and logged
+            // only uvalidate-audit-error. It now stops here and says what is
+            // missing, once per request (COMPAT-1).
+            $missing = $this->missingPhpExtensions();
+            if ($missing) {
+                $this->logMissingExtensions($missing, 'save');
+                return;
+            }
             // Two phases when a rule returns values to fields (@UVRANGE
             // "return"): those rules are judged first, on both paths (the
             // event/instance audit too), and what they return is written before
@@ -4188,11 +4196,36 @@ class UniversalValidator extends AbstractExternalModule
 
     // -- client injection ---------------------------------------------------
 
+    /**
+     * The shape of the client config, stated on the page as "configShape".
+     * js/engine.js declares the same number (QRID_CONFIG_SHAPE) and checks
+     * nothing on a page whose config states another, with a notice to reload,
+     * so a cached script never reads a config it was not written for (QUA-7).
+     * Raise both together when a change to the config would mislead an older
+     * engine; tests/hook_php.php fails while they differ.
+     */
+    const CONFIG_SHAPE = 1;
+
+    /**
+     * The engine's URL with a ?v= that changes whenever the file does. The
+     * module folder carries the version, but a release candidate redeployed
+     * under the same folder kept the URL, and a browser could serve the old
+     * engine from its cache.
+     */
+    private function engineUrl()
+    {
+        $url = $this->getUrl('js/engine.js');
+        $file = __DIR__ . '/js/engine.js';
+        $stamp = self::CONFIG_SHAPE . '.' . (int) @filemtime($file) . '.' . (int) @filesize($file);
+        return $url . (strpos($url, '?') === false ? '?' : '&') . 'v=' . rawurlencode($stamp);
+    }
+
     private function injectClient($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
-        $engineUrl = $this->getUrl('js/engine.js');
+        $engineUrl = $this->engineUrl();
+        $config['configShape'] = self::CONFIG_SHAPE;
         // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
         // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
         // Initialized only when a unique rule is live, so other pages carry no
@@ -8227,6 +8260,43 @@ class UniversalValidator extends AbstractExternalModule
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
+        $missing = $this->missingPhpExtensions();
+        if ($missing) $this->logMissingExtensions($missing, 'enable');
+    }
+
+    /**
+     * The PHP extensions the module needs that this server does not load
+     * (ScanCapabilities::PHP_EXTENSIONS); [] on a standard install. Public so
+     * ScanService can ask the module, and a test can answer for a server
+     * without them.
+     *
+     * @return string[]
+     */
+    public function missingPhpExtensions()
+    {
+        return ScanCapabilities::missingExtensions();
+    }
+
+    /** Whether this request has logged the missing extensions already. */
+    private $missingLogged = false;
+
+    /**
+     * One module log entry, uvalidate-missing-extension, naming what is
+     * missing and where it was found: 'enable', 'upgrade' or 'save'. Once per
+     * request, so an import of many records writes one.
+     */
+    private function logMissingExtensions(array $missing, $where)
+    {
+        if ($this->missingLogged) return;
+        $this->missingLogged = true;
+        try {
+            $this->log('uvalidate-missing-extension', [
+                'extensions' => implode(',', $missing),
+                'where'      => (string) $where,
+                'effect'     => 'the save audit and the validation scan do not run on this server',
+            ]);
+        } catch (\Throwable $e) {
+        }
     }
 
     /**
@@ -8239,6 +8309,8 @@ class UniversalValidator extends AbstractExternalModule
     {
         Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
+        $missing = $this->missingPhpExtensions();
+        if ($missing) $this->logMissingExtensions($missing, 'upgrade');
     }
 
     /**
@@ -8366,16 +8438,15 @@ class UniversalValidator extends AbstractExternalModule
      * The column, not the row: the finding stays true and stops being a copy of
      * the project. Daily, because a value's window is measured in days.
      *
-     * PURGING WHOLE RUNS IS DELIBERATELY NOT WIRED HERE, and that is not an
-     * oversight. ScanRetention::purgeRuns() used to delete findings with
-     * `DELETE FROM uv_finding WHERE generation_id = ?` while every run in every
-     * project was written with generation_id = 1, so one project's purge deleted
-     * every project's findings. 2.0.0 scopes those deletes by project and
-     * generation, but they are still unpaged: measured, an unpaged DELETE of
-     * 500,000 findings is one 160-second statement holding row locks throughout.
-     * Run retention stays manual until the remediation plan's wave 8 pages it.
-     * The value sweep below is the same kind of unpaged statement (an UPDATE),
-     * and is also on wave 8's list.
+     * PURGING WHOLE RUNS IS NOT WIRED HERE. ScanRetention::purgeRuns() used to
+     * delete findings with `DELETE FROM uv_finding WHERE generation_id = ?`
+     * while every run in every project was written with generation_id = 1, so
+     * one project's purge deleted every project's findings. 2.0.0 scopes those
+     * deletes by project and generation, and every statement ScanRetention
+     * sends is now a page of at most ScanRetention::PAGE rows (P6), but no cron
+     * calls purgeRuns() yet: finished runs stay until one is scheduled.
+     * The value sweep below runs in id windows (expireValuesPage()), one
+     * UPDATE per window.
      */
     public function uvScanExpireValuesCron($cronInfo = [])
     {

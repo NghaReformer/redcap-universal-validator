@@ -41,7 +41,8 @@ $pid = $module->getProjectId();
 if (!$pid) { echo 'This page only works inside a project.'; return; }
 
 // -- rights: design rights, and DAG confinement ------------------------------
-// One implementation, shared with pages/export.php and with every AJAX action.
+// One implementation, shared with every AJAX action. (pages/export.php answers
+// 503 before it reads any rights.)
 // A second copy of a security decision is a second copy that ages differently
 // from the first.
 $scope = ScanPageView::scanScope($module, $pid);

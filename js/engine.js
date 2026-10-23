@@ -6,7 +6,7 @@
      1. Config source: parsed from the inert <script type="application/json"
         id="inspire-validator-config"> node UniversalValidator.php emits (with
         window.INSPIRE_VALIDATOR_CONFIG as a test-only fallback) instead of a
-        hardcoded literal.
+        hardcoded literal. A config of another configShape is not read.
      2. UI-layer security hardening: HTML-escaping of config-derived text,
         catastrophic-regex (ReDoS) rejection at config time, per-field input
         length caps, pooled work caps, input debouncing, and MutationObserver
@@ -640,27 +640,62 @@
   /* Config source: the inert JSON node emitted by UniversalValidator.php is
      authoritative; the window fallback exists for the Node test harnesses and
      legacy JavaScript-Injector use. */
+  /* The config shape this script reads; twin of UniversalValidator::
+     CONFIG_SHAPE, and tests/hook_php.php fails while the two differ. A page
+     whose config states another shape was built for a different engine.js
+     (a cached copy after an upgrade): the script checks nothing there and a
+     notice says to reload, rather than read keys it does not know (QUA-7). A
+     config that states no shape (the Node test suites) is read as it is. */
+  var QRID_CONFIG_SHAPE = 1;
+  var QRID_SHAPE_MISMATCH = null;
+  function QRID_emptyConfig(context){
+    return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
+      idPattern: null, alternates: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
+      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off",
+      context: context === "survey" ? "survey" : "form" };
+  }
+  function QRID_shapeChecked(cfg){
+    if (cfg && typeof cfg === "object" && cfg.configShape !== undefined && cfg.configShape !== QRID_CONFIG_SHAPE){
+      QRID_SHAPE_MISMATCH = String(cfg.configShape);
+      return QRID_emptyConfig(cfg.context);
+    }
+    return cfg;
+  }
   function QRID_readConfig(){
     try {
       if (typeof document !== "undefined" && document.getElementById) {
         var el = document.getElementById("inspire-validator-config");
-        if (el && el.textContent) return JSON.parse(el.textContent);
+        if (el && el.textContent) return QRID_shapeChecked(JSON.parse(el.textContent));
       }
     } catch(e){
       if (typeof console !== "undefined" && console.error)
         console.error("Universal Field Validator: could not parse config", e);
     }
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
-      return window.INSPIRE_VALIDATOR_CONFIG;
-    return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, alternates: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
-      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
+      return QRID_shapeChecked(window.INSPIRE_VALIDATOR_CONFIG);
+    var none = QRID_emptyConfig("form");
+    delete none.context;
+    return none;
   }
   var QRID_COMBINED_CONFIG = QRID_readConfig();
   /* Survey pages face respondents who cannot act on configuration problems:
      technical config detail is muted there (UX-001) — admins still see every
      detail on data-entry forms, in the Configure dialog, and in the module log. */
   var QRID_IS_SURVEY = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.context === "survey");
+  /* A config of another shape: the console always, and the page-level notice
+     on a staff form (QRID_configErrorNotice is muted on surveys). */
+  if (QRID_SHAPE_MISMATCH !== null){
+    var QRID_shapeText = "This page's validator script (config shape " + QRID_CONFIG_SHAPE +
+      ") does not match the server's settings (config shape " + QRID_SHAPE_MISMATCH +
+      "), so nothing on this page is checked as you type. Reload the page without the browser cache " +
+      "(Ctrl+F5). The server still audits each save.";
+    if (typeof console !== "undefined" && console.warn) console.warn("Universal Field Validator: " + QRID_shapeText);
+    var QRID_shapeNotice = function(){ try { QRID_configErrorNotice(QRID_shapeText); } catch(e){} };
+    if (typeof document !== "undefined"){
+      if (document.readyState === "loading" && document.addEventListener) document.addEventListener("DOMContentLoaded", QRID_shapeNotice);
+      else QRID_shapeNotice();
+    }
+  }
   /* The project's Missing Data Codes. A field marked with REDCap's "M" button
      holds the code itself; REDCap does not validate it, and neither does a
      check that judges the value (php/modes.json "missingCodes":"skip"). Every
@@ -8894,6 +8929,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
    fields attach. */
 window.INSPIREUniversalValidator = {
   config: QRID_COMBINED_CONFIG,
+  configShape: QRID_CONFIG_SHAPE,           /* twin of UniversalValidator::CONFIG_SHAPE (QUA-7) */
   engine: Q,
   riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
   gatePattern: QRID_gatePattern,            /* the one pattern admission point, locked by tests/risky_js.cjs */

@@ -874,6 +874,12 @@ is spelled correctly (unknown names show a configuration error); (5) the field
 is not claimed by two rules **of the same kind** (that shows a configuration
 error instead of validating — different kinds compose and are fine).
 
+**A notice says the page's validator script does not match the server.**
+The browser kept an older or newer copy of the module's script than the one the
+server's settings were written for, usually after an upgrade. Nothing on that
+page is checked as you type until you reload it without the cache (Ctrl+F5, or
+Cmd+Shift+R on a Mac). The server still audits each save.
+
 **A value I know is correct is flagged as invalid.**
 The rule's **algorithm** probably does not match how the ID was minted, or the
 **source** / **strip** settings are off. Confirm the minting method with whoever

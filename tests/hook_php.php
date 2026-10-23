@@ -363,6 +363,44 @@ namespace {
     check('annotation-rule invalid is audited', in_array('main_id_tag', $fields, true));
     check('valid field is NOT audited', !in_array('main_id_2', $fields, true));
 
+    // ---- COMPAT-1: a server without mbstring ----
+    // The audit used to die part way and log uvalidate-audit-error on every
+    // save. It now stops before reading the record, with one entry per request
+    // that names the extension.
+    {
+        $noMb = function () use ($dialogRules, $dictionary, $classicData) {
+            $m = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+                public function missingPhpExtensions() { return ['mbstring']; }
+            };
+            $m->subSettings = $dialogRules;
+            $m->projectSettings = ['log-values' => ''];
+            $m->projectIdReturn = 149;
+            \REDCap::$dictionary = $dictionary;
+            \REDCap::$data = $classicData;
+            \REDCap::$dataThrows = false;
+            return $m;
+        };
+        $m = $noMb();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $m->redcap_save_record(149, '3', 'id_validation_test', 351, null, null, null, 1);
+        $miss = logsOf($m, 'uvalidate-missing-extension');
+        check('COMPAT-1: a save without mbstring logs one entry naming it, for two saves (got ' . json_encode($miss) . ')',
+            count($miss) === 1 && $miss[0][1]['extensions'] === 'mbstring' && $miss[0][1]['where'] === 'save');
+        check('COMPAT-1: ...and audits nothing, without an audit error',
+            invalidLogs($m) === [] && logsOf($m, 'uvalidate-audit-error') === []);
+        $m = $noMb();
+        $m->rateStatements = [];
+        $m->systemSettings['scan-system-enable-durable'] = '0';
+        $m->redcap_module_system_enable('2.3.0');
+        $miss = logsOf($m, 'uvalidate-missing-extension');
+        check('COMPAT-1: enabling the module on such a server logs it',
+            count($miss) === 1 && $miss[0][1]['where'] === 'enable');
+        $m = newModule($dialogRules, $dictionary, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        check('COMPAT-1: a standard server logs no missing extension',
+            logsOf($m, 'uvalidate-missing-extension') === [] && $m->missingPhpExtensions() === []);
+    }
+
     // ---- 2) import/API context (getProjectId()==null): the strict mocks return
     //         NO settings without an explicit pid, so this passing proves the
     //         module threads the hook's project_id into getSubSettings AND
@@ -478,6 +516,15 @@ namespace {
     check('config-error rule keeps the typed field names', $errRule && $errRule['fields'] === ['studyid', 'specimenid']);
     check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
     check('form hook injects context=form', $cfg && isset($cfg['context']) && $cfg['context'] === 'form');
+    // QUA-7: the config states its shape, the engine reads the same one, and
+    // the script URL changes when the file does.
+    $UVC = \INSPIRE\UniversalValidator\UniversalValidator::CONFIG_SHAPE;
+    check('QUA-7: the page config states its shape', $cfg && ($cfg['configShape'] ?? null) === $UVC);
+    check('QUA-7: the engine URL carries the shape, the file time and size',
+        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+    $engineSrc = file_get_contents(__DIR__ . '/../js/engine.js');
+    check('QUA-7: js/engine.js reads the shape the server states (UniversalValidator::CONFIG_SHAPE)',
+        preg_match('/var QRID_CONFIG_SHAPE = ([0-9]+);/', $engineSrc, $shapeM) === 1 && (int) $shapeM[1] === $UVC);
     // LIVE-4: a user without design rights sees only the configuration errors
     // of the fields on their page; these name fields of no form.
     $errsFor = function ($user, $rules, $dict, $instrument) {
