@@ -376,7 +376,8 @@ def main():
     skipped = []
     with tempfile.TemporaryDirectory(prefix='uv-justify-mutations-') as directory:
         copy = Path(directory)
-        for folder in ['php', 'js', 'tests', 'data', 'docs', 'site']:
+        # site/ and pages/ too: registry_php reads site/, scan_page_php renders pages/scan.php
+        for folder in ['php', 'js', 'tests', 'data', 'docs', 'site', 'pages']:
             shutil.copytree(ROOT / folder, copy / folder)
         for filename in [UV, 'config.json']:
             shutil.copy2(ROOT / filename, copy / filename)
