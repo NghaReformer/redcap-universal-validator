@@ -7,6 +7,7 @@ final class ProjectShape
     private $events;
     private $fields;
     private $fieldsKnown;
+    private $recordIdField;
     /** eventId() answers, keyed by its arguments. The shape never changes, so neither do they. */
     private $eventIds = [];
 
@@ -14,18 +15,27 @@ final class ProjectShape
      * events[id] = {name, arm, order, forms: ?array<string>, repeats: ?array<string>,
      *                eventRepeats: ?bool}. fields[field] = {form, type?, validation?}.
      * Adapters must supply authoritative arm/order, never infer them from names.
+     * $recordIdField is the project's record-id field, or null when not known.
      */
-    public function __construct(array $events, array $fields, $fieldsKnown = true)
+    public function __construct(array $events, array $fields, $fieldsKnown = true, $recordIdField = null)
     {
         $this->events = $events;
         $this->fields = $fields;
         $this->fieldsKnown = (bool)$fieldsKnown;
+        $this->recordIdField = is_string($recordIdField) && $recordIdField !== '' ? $recordIdField : null;
     }
 
     public function fieldsKnown() { return $this->fieldsKnown; }
     public function field($name) { return isset($this->fields[$name]) ? $this->fields[$name] : null; }
     public function event($id) { return isset($this->events[$id]) ? $this->events[$id] : null; }
     public function events() { return $this->events; }
+
+    /**
+     * The record-id field, or null. REDCap stores it in every event and
+     * instance a record has data in, so it says nothing about which form was
+     * entered there.
+     */
+    public function recordIdField() { return $this->recordIdField; }
 
     /**
      * Every token walks the project's events, and a binding asks again for each

@@ -23,6 +23,8 @@ Instance selectors are positive integers, `current-instance`, `previous-instance
 
 Without an instance selector, a reference into an independent repeat bucket is ambiguous. Use an explicit selector or shared-key match. A missing row is unresolved, not a blank answer. Existing all-blank repeat rows are retained using instrument completion markers.
 
+An event, or an instance of a repeating event, holds an entry of an instrument only where that instrument was entered there: its form status, or one of its fields, holds a value. REDCap keeps one row per event and per repeating-event instance, so another instrument's data in the same event does not make an entry of this one. `count` and `exists` leave such an event out, and a reference into it is a missing row, the same as for an event with no data at all. A reference into the asking entry's own event or instance reads a field of another instrument there as blank, as REDCap's own logic does.
+
 ## Named bindings and matching
 
 Tag JSON accepts a `references` object. The settings dialog accepts the same object in **Extended reference bindings**. Expressions refer to its aliases with `{alias}`. Bindings are declarative; arbitrary code, SQL, functions, and unsupported REDCap smart variables are rejected.
@@ -82,7 +84,7 @@ Project/DAG/event uniqueness keeps its existing cross-record behavior. Record-lo
 
 Raw off-page values are included only when the current user may read their source instruments. Survey payloads do not include protected source values or collections. A wholly server-resolved Boolean may be sent; comparisons needing both protected data and live input are deferred. Deferred selectors never activate an `else` branch. Advisory feedback cannot prevent API/import writes or race conditions.
 
-Relevant saves re-evaluate dependent host contexts, including another event on the same instrument. Unrelated instrument saves do not cause extended data reads. The default synchronous audit limit is 500 host contexts; configure **Maximum extended audit host contexts** to change it. Read failures or truncation emit an incomplete-audit notice directing the user to a scan, one notice for every rule the audit did not reach.
+Relevant saves re-evaluate dependent host contexts, including another event on the same instrument. A rule is checked in each event, or repeating instance, where its instrument is designated and the record has data, even where that instrument was never opened. A `@UVREQUIRED` whose `when` reads another event fires where its form is still empty. Unrelated instrument saves do not cause extended data reads. The default synchronous audit limit is 500 host contexts; configure **Maximum extended audit host contexts** to change it. Read failures or truncation emit an incomplete-audit notice directing the user to a scan, one notice for every rule the audit did not reach.
 
 A saved value that is not valid UTF-8 text (legacy imports) cannot be placed in a page. The rule that reads it is shown as not checked in the browser, every other rule on the page keeps working, and the audit and scans still judge the saved bytes.
 

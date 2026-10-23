@@ -15,6 +15,8 @@ final class AddressResolver
     private $budget;
     private $shared = false;
     private $memo = [];
+    /** entered() answers, keyed by row and form. Saved rows never change. */
+    private $entered = [];
 
     public function __construct(ProjectShape $shape, array $record, $limit = 10000, ?ReferenceBudget $budget = null)
     {
@@ -72,7 +74,7 @@ final class AddressResolver
                     || (strlen((string)$selector) === strlen((string)PHP_INT_MAX) && strcmp((string)$selector, (string)PHP_INT_MAX) > 0)) return self::problem('invalid');
                 $selected = (int)$selector;
             } else {
-                $index = $this->instances($eventId, $target, $sameBucket ? $context : null);
+                $index = $this->instances($eventId, $target, $form, $sameBucket ? $context : null);
                 if ($index['state'] !== 'ok') return $index;
                 $ids = $index['instances'];
                 if (in_array($selector, ['any-instance','all-instances'], true)) {
@@ -190,13 +192,14 @@ final class AddressResolver
                 if ($selected['state']!=='ok') return $selected;
                 $candidates=isset($selected['members'])?$selected['members']:[$selected];
             } elseif ($bucket['bucket']===null) {
-                $hasRow=array_key_exists($eventId,$this->record)||($same&&$field['form']===$context['instrument']&&!empty($context['unsaved']));
+                // An event row holds a member only where this form was entered (wargame C2).
+                $hasRow=($same&&$field['form']===$context['instrument']&&!empty($context['unsaved']))||$this->entered($eventId,null,null,$field['form']);
                 // value() charges a row it reads; an event with no row cost nothing,
                 // so a long list of them was free work per host context (wargame P2).
                 if (!$hasRow && !$this->budget->take()) return self::problem('limit');
                 $candidates=$hasRow?[$this->value(['ref',$binding['field'],null],$eventId,null,null,$field['form'],$context,$same)]:[];
             } else {
-                $index=$this->instances($eventId,$bucket['bucket'],$same?$context:null);
+                $index=$this->instances($eventId,$bucket['bucket'],$field['form'],$same?$context:null);
                 if ($index['state']!=='ok') return $index;
                 $candidates=$this->members(['ref',$binding['field'],null],$eventId,$bucket['bucket'],$index['instances'],$field['form'],$context,$same);
                 if (isset($candidates['state'])) return $candidates;
@@ -314,19 +317,20 @@ final class AddressResolver
         return $context['values'][$field] !== $saved;
     }
 
-    private function instances($event, $bucket, $context)
+    private function instances($event, $bucket, $form, $context)
     {
-        $indexKey = 'i|' . $event . '|' . $bucket;
+        // Every form of a repeating event shares its instances, but not its entries.
+        $indexKey = 'i|' . $event . '|' . $bucket . ($bucket === '' ? '|' . $form : '');
         if ($this->shared && ($context === null || empty($context['unsaved'])) && isset($this->memo[$indexKey])) {
             return $this->budget->take(1 + intdiv(count($this->memo[$indexKey]['instances']), 32))
                 ? $this->memo[$indexKey] : self::problem('limit');
         }
-        $index = $this->instanceIndex($event, $bucket, $context);
+        $index = $this->instanceIndex($event, $bucket, $form, $context);
         if ($this->shared && $index['state'] === 'ok' && ($context === null || empty($context['unsaved']))) $this->memo[$indexKey] = $index;
         return $index;
     }
 
-    private function instanceIndex($event, $bucket, $context)
+    private function instanceIndex($event, $bucket, $form, $context)
     {
         $rows = $this->rows($event, $bucket);
         if ($rows === null) return self::problem('unreadable');
@@ -334,6 +338,9 @@ final class AddressResolver
         $ids = [];
         foreach ($rows as $id=>$row) {
             if (!is_array($row) || !preg_match('/^[1-9][0-9]*$/', (string)$id) || (string)(int)$id !== (string)$id) return self::problem('unreadable');
+            // An instance of a repeating event is an entry of the forms entered in it
+            // (wargame C2); a repeating form's own instance is always its entry.
+            if ($bucket === '' && !$this->entered($event, '', (int)$id, $form)) continue;
             $ids[(int)$id] = true;
         }
         if ($context !== null && !empty($context['unsaved']) && (int)$context['instance'] > 0) $ids[(int)$context['instance']] = true;
@@ -357,8 +364,13 @@ final class AddressResolver
     private function value($ref, $event, $bucket, $instance, $form, $context, $sameBucket)
     {
         $self = $sameBucket && ($bucket === null || (int)$instance === (int)$context['instance']);
+        // The caller's own row reads blank where another form of it was not
+        // entered, as REDCap's logic does. Another row is that form's entry only
+        // where the form was entered there: REDCap returns a row for every event
+        // or instance holding any data (wargame C2).
         if ($bucket === null) {
             if (!array_key_exists($event,$this->record) && !($self && $form === $context['instrument'] && !empty($context['unsaved']))) return self::problem('absent');
+            if (!$self && !$this->entered($event, null, null, $form)) return self::problem('absent');
             $row = isset($this->record[$event]) ? $this->record[$event] : [];
         } else {
             $rows = $this->rows($event, $bucket);
@@ -366,7 +378,8 @@ final class AddressResolver
             if (!array_key_exists($instance, $rows)) {
                 if (!$self || empty($context['unsaved'])) return self::problem('absent');
                 $row = [];
-            } else $row = $rows[$instance];
+            } elseif (!$self && $bucket === '' && !$this->entered($event, '', (int)$instance, $form)) return self::problem('absent');
+            else $row = $rows[$instance];
         }
         if (!is_array($row)) return self::problem('unreadable');
         // Only values belonging to this instrument are live in a repeating event.
@@ -380,6 +393,45 @@ final class AddressResolver
         if (!$this->budget->take(1 + intdiv(strlen((string)$value),64))) return self::problem('limit');
         return ['state'=>'ok','value'=>(string)$value,'self'=>$live,
             'location'=>['event'=>$event,'instrument'=>$form,'bucket'=>$bucket,'instance'=>$instance,'field'=>$ref[1],'code'=>$ref[2]]];
+    }
+
+    /**
+     * Whether $form was entered in one saved row: an event's row ($bucket null)
+     * or an instance of a repeating event ($bucket ''). REDCap returns such a
+     * row whenever anything was saved in it, with blanks for the forms nobody
+     * opened there, so the row alone counted a never-entered form once per
+     * event (wargame C2). The form's status field holding a value is evidence,
+     * and so is one of its fields holding one (an import that left the status
+     * out); a ticked checkbox code counts, an unticked one does not, and the
+     * record-id field, stored in every row, never does. This is the signal the
+     * scan's started-form gate reads (ScanRuns::formStartedIn()); the callers
+     * read every status field with returnBlankForGrayFormStatus, so a form
+     * nobody opened reads blank there, not '0'.
+     */
+    private function entered($event, $bucket, $instance, $form)
+    {
+        $key = $event . '|' . ($bucket === null ? 'e' : 'r' . $instance) . '|' . $form;
+        if (isset($this->entered[$key])) return $this->entered[$key];
+        if ($bucket === null) $row = $this->record[$event] ?? null;
+        else {
+            $rows = $this->rows($event, $bucket);
+            $row = is_array($rows) ? ($rows[$instance] ?? null) : null;
+        }
+        $found = false;
+        if (is_array($row)) {
+            $pk = $this->shape->recordIdField();
+            foreach ($row as $f => $v) {
+                $f = (string)$f;
+                if ($f === $pk) continue;
+                if ($f !== $form . '_complete' && ($this->shape->field($f)['form'] ?? null) !== $form) continue;
+                if (is_array($v)) {
+                    foreach ($v as $c) if ((string)$c === '1') { $found = true; break 2; }
+                    continue;
+                }
+                if (is_scalar($v) && trim((string)$v) !== '') { $found = true; break; }
+            }
+        }
+        return $this->entered[$key] = $found;
     }
 
     private static function problem($state) { return ['state'=>$state]; }

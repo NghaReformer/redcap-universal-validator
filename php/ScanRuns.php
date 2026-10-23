@@ -1373,10 +1373,11 @@ trait ScanRuns
         // name a data-dictionary field, and REDCap's dictionary holds no
         // <form>_complete row, so such a rule is a configuration error. The
         // status fields a temporal rule puts in the read set are existence
-        // markers, and AddressResolver asks only whether their row or instance
-        // is there. tests/hosting_php.php pins each refusal. A rule kind that
-        // ever reads a status value must be shown the '0' the form path sees,
-        // not the blank this read asks for.
+        // markers: AddressResolver asks only whether one holds a value, to tell
+        // a form's entry from a row other forms made (wargame C2), and blank is
+        // the answer it needs for a form nobody opened. tests/hosting_php.php
+        // pins each refusal. A rule kind that ever reads a status value must be
+        // shown the '0' the form path sees, not the blank this read asks for.
         $pkOwn = (string) $out['recordIdField'];
         $gateable = [];
         $statusFields = [];
@@ -1433,17 +1434,26 @@ trait ScanRuns
      * returnBlankForGrayFormStatus is what makes the status fields worth
      * reading: without it REDCap reports a form nobody opened as '0'
      * (Incomplete), the same as one saved incomplete, and every designated
-     * form looks started. It is asked for only when the plan carries status
-     * fields, and it moves no verdict: no rule can read a status value (see
-     * scanPlan(), R3G-3). A build that ignores the key returns '0' and the
-     * scan keeps every designated context, which flags more rather than less.
+     * form looks started. It is asked for when the plan carries status fields,
+     * and when the read set holds one an extended rule put there: AddressResolver
+     * reads it to tell a form's entry from a row other forms made (wargame C2).
+     * It moves no other verdict: no rule can read a status value (see
+     * scanPlan(), R3G-3). A build that ignores the key returns '0': the scan
+     * keeps every designated context and the resolver counts every row, which
+     * flags more rather than less.
      */
     private static function scanReadParams(array $plan, $pid, array $records, $pk)
     {
         $p = ['project_id' => $pid, 'return_format' => 'array',
               'records' => array_values($records), 'fields' => self::scanReadFields($plan, $pk),
               'exportDataAccessGroups' => true];
-        if (!empty($plan['formStatusFields'])) $p['returnBlankForGrayFormStatus'] = true;
+        $markers = !empty($plan['formStatusFields']);
+        // ownership places a status field at its form, as no dictionary field can be.
+        foreach (isset($plan['ownership']) ? (array) $plan['ownership'] : [] as $f => $form) {
+            if ($markers) break;
+            $markers = $form !== null && (string) $f === $form . '_complete';
+        }
+        if ($markers) $p['returnBlankForGrayFormStatus'] = true;
         return $p;
     }
 

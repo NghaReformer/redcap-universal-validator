@@ -140,9 +140,11 @@ readable values.
 
 - [ ] **[auto]** Save XE-2 event 351 xe_enrol unchanged. Expected: findings for
       every XE-2 context whose rule depends on enrolment values.
-- [ ] **[auto] Finding C2 check**: the audit also logs
-      `xv_ae_note required-blank` for XE-2 at **followup_arm_1**, where
-      xe_visit was never entered (only xe_close is saved there).
+- [ ] **[auto]** The audit also logs `xv_ae_note required-blank` for XE-2
+      at **followup_arm_1**, where xe_visit was never entered (only xe_close
+      is saved there). This is expected, because a rule whose condition reads another
+      event is checked in every designated context that holds data (review
+      R3G-1). Finding C2 was about counts and references only.
 - [ ] **[auto]** Save an unrelated legacy form (wb_test): no extended reads,
       no new log rows.
 - [ ] **[auto]** Save XE-2 Baseline xr_specimen instance 3 twice: count
@@ -154,7 +156,7 @@ readable values.
 ## Phase 4: scans
 
 - [ ] **[auto]** Direct scan: compare the violation list with
-      `expected_violations.csv` (37 rows, 3 of them marked UNRESOLVED).
+      `expected_violations.csv` (38 rows, 3 of them marked UNRESOLVED).
 - [ ] **[auto]** Durable scan: same list; unresolved rules listed apart.
 - [ ] **[auto]** Change one annotation while a durable scan runs: the old
       run refuses further work.

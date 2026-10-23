@@ -61,7 +61,11 @@ trait TemporalIntegration
     private function temporalReadRecord($pid,$record,array $rules,?ProjectShape $shape=null,$event=null)
     {
         if($record===null||$record==='')return [];
-        $request=['project_id'=>$pid,'return_format'=>'array','records'=>[$record],'fields'=>$this->temporalReadFields($rules,$pid)];
+        // A form nobody opened reads blank, not '0': its status field is how the
+        // resolver tells an entry from a row other forms made (wargame C2). No rule
+        // can read a status value (ScanRuns::scanPlan(), R3G-3).
+        $request=['project_id'=>$pid,'return_format'=>'array','records'=>[$record],'fields'=>$this->temporalReadFields($rules,$pid),
+            'returnBlankForGrayFormStatus'=>true];
         if($shape && $event!==null){
             $events=[];$known=true;
             foreach($rules as $rule){$needed=TemporalRules::eventIds($rule,$shape,$event);if($needed===null){$known=false;break;}foreach($needed as $id)$events[$id]=true;}

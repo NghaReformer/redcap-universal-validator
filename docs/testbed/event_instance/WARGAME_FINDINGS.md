@@ -119,6 +119,18 @@ not-yet-started visit form in any event that has other data.
 Repro: `php tools/temporal_sem_row_existence.php`;
 `php tools/temporal_testbed_check.php --trace="XE-2|followup_arm_1|1|xv_ae_note"`.
 
+**Fixed 2026-10-23 (counts and references).** `AddressResolver` takes an event
+row, or an instance of a repeating event, as a form's entry only where the
+form's status or one of its fields holds a value; the record id does not
+count. The extended read and the scan read ask for
+`returnBlankForGrayFormStatus`, so a form nobody opened reads blank there.
+The three repro cases agree. Tests in `tests/binding_php.php`.
+**Host contexts: kept as designed.** Review R3G-1 (2026-10-10, after this
+wargame) decided that a rule whose condition reads another form or event is
+checked in every designated context that holds data, with
+`tests/hosting_php.php` pinning the close-out case. The `xv_ae_note` finding at
+`followup_arm_1` is therefore expected, and `expected_violations.csv` lists it.
+
 ### C4. Fallback branch promoted by a configuration error
 `getRules()` sets `configError` on extended rules before `Branching::resolve`
 (`UniversalValidator.php:1569-1581`), and `Branching` ignores configError

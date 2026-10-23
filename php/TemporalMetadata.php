@@ -64,6 +64,8 @@ final class TemporalMetadata
                 'order'=>$order[$id]??null,
                 'forms'=>$forms,'repeats'=>$repeatForms,'eventRepeats'=>$eventRepeats];
         }
-        return new ProjectShape($events,$fields,$dictionary!==[]);
+        // The dictionary lists the record-id field first.
+        $pk=array_key_first($dictionary);
+        return new ProjectShape($events,$fields,$dictionary!==[],is_string($pk)?$pk:null);
     }
 }
