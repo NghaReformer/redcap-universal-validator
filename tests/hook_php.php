@@ -1631,6 +1631,9 @@ namespace {
     foreach (invalidLogs($m) as $L) if ($L[1]['field'] === 'phone') $phoneLog = $L[1];
     check('required log typed "required"', $phoneLog && $phoneLog['type'] === 'required');
     check('required reason is required-blank', $phoneLog && $phoneLog['reason'] === 'required-blank');
+    // The hash of "" is one per project and tells nothing (REQ-15).
+    check('hashed mode stores no value_hmac for a blank (got ' . json_encode($phoneLog) . ')',
+        $phoneLog && !isset($phoneLog['value_hmac']) && !isset($phoneLog['value']) && !isset($phoneLog['hmac_unavailable']));
 
     // consent NOT given -> phone requirement off; site still required
     $rData2 = [2 => [351 => ['record_id' => '2', 'consent' => '0']]];
@@ -1746,6 +1749,15 @@ namespace {
     $cDictBad['badref'] = ['field_type' => 'radio', 'form_name' => 'cf',
         'select_choices_or_calculations' => '1, A | 2, B',
         'field_annotation' => '@UVCHOICES={"when":"[no_such_field]=\'1\'","hide":["1"]}'];
+    // a "hide" of every code leaves nothing to pick (CHO-14); a "when" that
+    // reads the field itself is allowed, since a checkbox may make one code
+    // exclusive that way
+    $cDictBad['hideall'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[freetext]=\'1\'","hide":["2","1"]}'];
+    $cDictBad['selfref'] = ['field_type' => 'checkbox', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '0, None | 1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[selfref(0)]=\'1\'","hide":["1","2"]}'];
     $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
         'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
     ob_start();
@@ -1767,6 +1779,9 @@ namespace {
         && strpos($cfgErrs['mx'], 'matrix') !== false);
     check('bad "when" reference on @UVCHOICES -> error names @UVCHOICES',
         isset($cfgErrs['badref']) && strpos($cfgErrs['badref'], '@UVCHOICES on "badref"') === 0);
+    check('a "hide" of every code -> configError (got ' . json_encode($cfgErrs['hideall'] ?? null) . ')', isset($cfgErrs['hideall'])
+        && strpos($cfgErrs['hideall'], '"hide" lists every choice of this field (1, 2)') !== false);
+    check('...a "when" on the field itself is taken (got ' . json_encode($cfgErrs['selfref'] ?? null) . ')', !isset($cfgErrs['selfref']));
     $m->logCalls = [];
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('config-error choices rules produce no detections',

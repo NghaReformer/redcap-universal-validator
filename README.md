@@ -519,7 +519,9 @@ enforcement:
   as blank: `SP-9` at site 1 and `SP-9` at site 2 counted as duplicates. A
   `with` value on another form that the module cannot read for one record
   leaves that check as *could not check*; the save audit logs it as a rule
-  problem instead of comparing a blank.
+  problem instead of comparing a blank. A Missing Data Code in a `with` field
+  is compared as a value like any other, so `SP-8` at site `UNK` in two records
+  is a duplicate; a code in the tagged field itself is never one.
 - `also` looks for the value in up to 5 other fields too. With
   `@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`, an ID typed there
   counts as used when another record holds it in `study_id_typed` or in
@@ -543,6 +545,11 @@ enforcement:
   fields. The list of `also` fields is not sent to the page. Each `also` field
   adds entries to the Validation scan's duplicate groups, one per tagged field
   and per `with`/scope/letter-case combination of the tag's branches.
+- **A record is never compared with itself.** Two instances of a repeating
+  form, or two events, of one record do not collide under any scope: `SP-1` in
+  instances 1 and 2 of a specimen form of one participant is not a duplicate.
+  To keep a value unique inside one record, use `@UVUNIQUE=record` (event and
+  instance references must be on).
 - **Under `dag`, records in no group form one group of their own.** They are
   compared against each other, not exempted: "no DAG" is a scope like any other,
   and the alternative reading — that an ungrouped record has nothing to be
@@ -642,7 +649,10 @@ field instead of one near-duplicate field per country:
 - **JSON form only.** Exactly one of `show` (whitelist — every other code of
   the field hides) or `hide` (blacklist) per tag, plus optional `when`,
   `message`, `blockSave`. Codes must exist in the field's own choice list — an
-  unknown code is a configuration error naming the real codes. A list holds up
+  unknown code is a configuration error naming the real codes, and so is a
+  `hide` of every code, which would leave nothing to pick (hide the question
+  with branching logic instead). A `when` may read the field itself, such as
+  `[symptoms(0)]='1'` on the `symptoms` checkbox. A list holds up
   to 10,000 codes, so the field's own list is the limit in practice. Up to
   2.3.0-rc.2 the limit was 200, which left a 600-site list whose region holds
   250 sites impossible to write either way.
@@ -656,7 +666,9 @@ field instead of one near-duplicate field per country:
   false. A comparison with a field on the form needs the saved value on the
   page to follow what is typed: a user with REDCap rights to the other
   instrument gets that value, and on a survey or without those rights the page
-  gets the answer as of page load (the rule of 1.6.0).
+  gets the answer as of page load (the rule of 1.6.0). On a survey shown one
+  section per page, a condition over a field of an earlier page reads its saved
+  answer in the same way.
 - **A hidden selection is never cleared.** If the stored/selected choice
   becomes hidden (the user changes the country after picking a site), the
   module keeps it visible — dropdowns keep the option in place, greyed and

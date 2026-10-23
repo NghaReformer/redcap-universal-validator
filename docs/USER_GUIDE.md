@@ -1122,7 +1122,9 @@ same decimal mark and, when it fixes its decimal places, the same number of
 them; a Text field without validation takes anything. A field flagged Identifier
 there only goes into one flagged Identifier here. From another project, the
 lab project must also list the fields it lets this project copy, under "Only
-users who have rights". The project setting "@UVEXISTS returned values" keeps
+users who have rights". A copied value is then data of this project: anyone
+here with rights to the form it goes into can read it, whatever their rights in
+the lab project. The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
 change to the entry found reaches this record when it is saved again. The save
 writes them only into a form the person who saved may change, and a locked

@@ -291,7 +291,8 @@ value again writes nothing.
 - [ ] Confirm an `@UVALIDATE`-tagged field is audited on the server too (not only
       dialog-rule fields) by importing an invalid value into a tagged field.
 - [ ] `log-values` modes behave as documented: `hashed` (default) stores
-      `value_hmac` + raw `record`; `none` stores `record_hmac` and no value;
+      `value_hmac` + raw `record` (no `value_hmac` for a blank, such as a
+      required field left empty); `none` stores `record_hmac` and no value;
       `raw` stores both raw; `off` stores no detections. The two hash fields are
       keyed HMACs — the same value gives the same hash within one project and a
       different hash in another project.

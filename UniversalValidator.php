@@ -4217,7 +4217,9 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($mode === 'raw') {
             $entry['value'] = $value;
-        } elseif ($mode !== 'none') {
+        } elseif ($mode !== 'none' && (string) $value !== '') {
+            // A blank value (a required field left empty) has one hash per
+            // project, which tells nothing, so it is not stored (REQ-15).
             $h = $this->hashedIdentifier($pid, (string) $value);
             if ($h !== null) $entry['value_hmac'] = $h;
             else $entry['hmac_unavailable'] = '1';
@@ -7423,6 +7425,13 @@ class UniversalValidator extends AbstractExternalModule
             return ['error' => 'choice code(s) '
                 . implode(', ', array_map('json_encode', $missing))
                 . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
+                '_tag' => AnnotationRules::TAG_CHOICES];
+        }
+        // A "hide" of every code leaves nothing to pick, and with @UVREQUIRED
+        // a save that can never pass (CHO-14).
+        if (isset($frag['choicesHide']) && !array_diff($all, $frag['choicesHide'])) {
+            return ['error' => '"hide" lists every choice of this field (' . implode(', ', $all) . '), so it could never be '
+                . 'answered — to take the question away, hide the field with branching logic.',
                 '_tag' => AnnotationRules::TAG_CHOICES];
         }
         $frag['choicesAll'] = $all;

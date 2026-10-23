@@ -36,7 +36,7 @@ function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' +
 
 function makeEl(tag) {
   return {
-    tagName: (tag || 'div').toUpperCase(), id: '', name: '', value: '', innerHTML: '',
+    tagName: (tag || 'div').toUpperCase(), nodeType: 1, id: '', name: '', value: '', innerHTML: '',
     type: '', checked: false, disabled: false,
     style: {}, _attrs: {}, children: [], parentNode: null, readOnly: false,
     _handlers: {},
@@ -188,6 +188,33 @@ function r17chk(field, code) {
   check('repick: no orphaned stale mark', kept.getAttribute('data-uv-stale') === null);
   ev = submitEv(); env.doc.fire('submit', ev);
   check('repick: save allowed', ev._prevented === false);
+}
+
+// ---- 1a) a stale answer on a row REDCap's branching hides (CHO-16) ---------
+// The person cannot see the field, so the save guard lets the save through;
+// the notice stays and the audit still sees the value.
+{
+  const method = makeEl('select'); method.name = 'method';
+  ['', '1', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  method.value = '';
+  const legacy = makeEl('input'); legacy.name = 'legacy'; legacy.value = '1';
+  const env = boot([method, legacy], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'],
+              choicesAll: ['1', '2', '9'], when: "[legacy]='0'", blockSave: 'hard' }],
+  });
+  const row = env.holders.method; row.tagName = 'TR'; row.id = 'method-tr';
+  method.value = '9'; method.fire('change');
+  legacy.value = '0'; legacy.fire('change');
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('hidden row: stale + hard while the row shows: save trapped', ev._prevented === true);
+  row.style.display = 'none';
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('hidden row: once branching hides the row the save goes through', ev._prevented === false);
+  check('hidden row: the field stays flagged', method.getAttribute('aria-invalid') === 'true');
+  row.style.display = '';
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('hidden row: shown again, the save is trapped again', ev._prevented === true);
 }
 
 // ---- 1b) text in the "when" ignores letter case unless caseSensitive:true ---

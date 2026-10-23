@@ -1609,7 +1609,10 @@ warning.
   taken in the server's time zone unless the project setting **Time zone for
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. The same
   setting decides `notPast` and a `from` of `today` or `now`. A page left open
-  across a daylight-saving change follows it.
+  across a daylight-saving change follows it. The page knows only the next
+  change, so a page left open across two of them (40 days or more in
+  Casablanca, about 200 days elsewhere) runs off by the second; the post-save
+  audit reads the server clock and is not affected.
 - **A date and time gets a small margin.** On the page it may run up to 120
   seconds past the server's "now", plus how far the computer's clock runs ahead
   of or behind the server's, up to 10 minutes, so REDCap's Now button and `@NOW`,

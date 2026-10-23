@@ -213,7 +213,7 @@
         },
         {
           "key": "exists-consumer-returns",
-          "name": "Fields of this project whose values it may copy into its own fields (@UVEXISTS \"return\"), separated by commas (\"record\" for the record ID). Leave empty to allow none. Needs \"Only users who have rights\": a user gets values only when they may read every field the lookup searches and copies here.",
+          "name": "Fields of this project whose values it may copy into its own fields (@UVEXISTS \"return\"), separated by commas (\"record\" for the record ID). Leave empty to allow none. Needs \"Only users who have rights\": a user gets values only when they may read every field the lookup searches and copies here. A copied value is saved in the other project as its own data: from then on, anyone there with rights to the form it is copied into can read it, and these rights no longer apply to it.",
           "type": "text"
         },
         {
