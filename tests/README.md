@@ -663,6 +663,10 @@ Each case has a rule in the shape the page gives the engine, one finding, the
 form's values, and for staff and survey both sentences with a mark, `same`
 or `differs`. The PHP half renders the report's sentence and the JS half
 reads the form's, and each fails when a sentence or its mark no longer holds.
+The PHP half renders the staff sentence twice: from the rule as planned, and
+as a stored run's report gives it, with the finding written as a stored row,
+read back by `FindingRowMapper::toFinding()`, over the labels snapshot read
+back by `ScanDimensions::fromSnapshot()`.
 A catalogue key with no case fails the PHP half. Of the 58 sentences the form
 shows, 9 match the catalogue; the fixture records the rest, and changes
 neither side.
