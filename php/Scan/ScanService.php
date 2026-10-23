@@ -422,7 +422,10 @@ final class ScanService
 
         // The reader before the run (L8): see readerScope().
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return ['ok' => false, 'why' => $no['why']];
+        if ($no !== null) {
+            $gone = (!empty($no['final']) && $no['why'] === self::NO_RULES) ? $this->endRulesGone($pid, $runId) : null;
+            return $gone !== null ? $gone : ['ok' => false, 'why' => $no['why']];
+        }
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
@@ -591,6 +594,63 @@ final class ScanService
         // must not describe the run after it - so then status() reads again.
         $known = empty($p['wrote']) ? ['run' => $p['run'], 'census' => $p['census']] : [];
         return $this->disclosed($run, $r, $this->statusOf($pid, $runId, $known));
+    }
+
+    /** What a work request answers when it has ended a run whose rules are gone (CFXB-N2). */
+    const RULES_GONE = 'Every rule this scan was checking has been removed or now has a configuration '
+        . 'error, so the scan was ended rather than left holding the project. Fix the rules and start a '
+        . 'new scan.';
+
+    /** The stored reason of that run, as promotion words the reason of a run the rules moved under. */
+    const RULES_GONE_WHY = 'every rule this scan was checking was removed or now has a configuration error, '
+        . 'so the scan was ended rather than left holding the project; fix the rules and run it again';
+
+    /**
+     * End $runId when its project has no rule left to evaluate (CFXB-N2), or
+     * null to answer the refusal as before.
+     *
+     * A RUN WHOSE RULES ALL WENT WAS ENDED BY NOBODY'S WORK. The rules were
+     * deleted, or each became a configuration error, while it ran: every
+     * work request was refused before the run row ("no rules this scan can
+     * evaluate"), the worker that would have met the moved fingerprint was
+     * never built, and the run held the project's one slot until Stop or the
+     * reaper ended it. Since rv11b2-6 that refusal is settled (contextFinal()),
+     * so a work request on such a run ends it, failed, with a stored reason
+     * that says why - as promote() ends a run the configuration moved under.
+     *
+     * ASKED AS STOP IS ASKED (cancelAuth()). No context can be built, so the
+     * instruments the rules read cannot be named; a reader cancel() would let
+     * stop the run may end it, since ending reads no value, and anyone else
+     * is given the refusal unchanged, the same for every id. A stopped run is
+     * finished as stopped, by the one finisher. A finished run, or an id that
+     * is no run of this project, is left to the refusal.
+     *
+     * @return ?array the work answer, or null
+     */
+    private function endRulesGone($pid, $runId)
+    {
+        $store = $this->store();
+        $run = $store->run($pid, $runId);
+        if ($run === null || (isset($run['terminal']) && $run['terminal'] !== null && $run['terminal'] !== '')
+                || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return null;
+        }
+        if ($this->readerRefusal($pid, 'cancel') !== null) return null;
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return null;
+        $answer = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                   'phase' => ScanPhase::TERMINAL, 'done' => false];
+        if (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING) {
+            ScanPromotion::finishCancelled($store, $pid, $runId, self::limitsOf($this->policy($pid)));
+            return ['ok' => true, 'stop' => 'cancelled',
+                    'why' => 'this scan was stopped, so the records after that point were never examined'] + $answer;
+        }
+        $outcome = ScanOutcome::derive(['failed' => true]);
+        $outcome['why'] = self::RULES_GONE_WHY;
+        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        if (!$store->finish((int) $runId, $outcome)) return null;
+        $this->note('scan run ended: no rules left to evaluate', ['project_id' => (int) $pid, 'run_id' => (int) $runId]);
+        return ['stop' => 'changed', 'why' => self::RULES_GONE] + $answer;
     }
 
     /**

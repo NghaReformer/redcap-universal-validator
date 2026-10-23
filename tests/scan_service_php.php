@@ -2685,6 +2685,55 @@ namespace INSPIRE\UniversalValidator\Scan {
     $gm->refuse = null;
     $gm->unread = [];
 
+    // CFXB-N2: A RUN WHOSE RULES ALL WENT IS ENDED BY A WORK REQUEST. Every
+    // work request was refused before the run row, so the run held the
+    // project's slot until Stop or the reaper. Now the request ends it,
+    // failed, with a stored reason that says the rules are gone - for a
+    // reader who may stop it, asked as Stop asks.
+    $rgS = new ArrayScanStore();
+    $rgM = new \E2eModule($rgS);
+    $rgRun = (int) (new ScanService($rgM, $rgS))->start(171)['run_id'];
+    $rgM->refuse = ScanService::NO_RULES;
+    $rgM->unread = [];
+    $rgNone = (new ScanService($rgM, $rgS))->work(171, 999);
+    $rgW = (new ScanService($rgM, $rgS))->work(171, $rgRun);
+    $rgRow = $rgS->run(171, $rgRun);
+    check('CFXB-N2: a work request on a run whose rules are all gone ends it, failed, with a reason that says so',
+        $rgRun > 0 && $rgW['ok'] === false && $rgW['why'] === ScanService::RULES_GONE
+        && $rgW['phase'] === ScanPhase::TERMINAL && $rgW['stop'] === 'changed'
+        && $rgRow['terminal'] === ScanOutcome::FAILED && $rgRow['terminal_reason'] === ScanService::RULES_GONE_WHY);
+    check('CFXB-N2: and frees the project for the next scan', !empty((clone $rgS)->startRun(171, [])['ok']));
+    check('CFXB-N2: an id that is no run is refused as before',
+        $rgNone === ['ok' => false, 'why' => ScanService::NO_RULES]);
+    check('CFXB-N2: a later request on the ended run is refused as before, and ends nothing twice',
+        (new ScanService($rgM, $rgS))->work(171, $rgRun) === $rgNone
+        && $rgS->run(171, $rgRun)['terminal_reason'] === ScanService::RULES_GONE_WHY);
+    // A reader Stop would refuse - barred from an instrument of the project,
+    // which is what Stop asks when no context can be built - ends nothing.
+    $rbS = new ArrayScanStore();
+    $rbM = new \E2eModule($rbS);
+    $rbRun = (int) (new ScanService($rbM, $rbS))->start(172)['run_id'];
+    $rbM->refuse = ScanService::NO_RULES;
+    $rbM->instruments = ['fa', 'fx'];
+    $rbM->user->rights['forms'] = ['fa' => '1', 'fx' => '0'];
+    $rbW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2 (control): a reader who may not stop the run is refused as before, and the run goes on',
+        $rbW === ['ok' => false, 'why' => ScanService::NO_RULES] && $rbS->run(172, $rbRun)['terminal'] === null);
+    // A read that failed is not settled, so it ends nothing (W10BF-4 above).
+    $rbM->user->rights['forms'] = ['fa' => '1', 'fx' => '1'];
+    $rbM->unread = ['the growth reference folder'];
+    $ruW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2 (control): nor does a refusal resting on a read that failed',
+        $ruW['ok'] === false && strpos((string) $ruW['why'], 'could not be read just now') !== false
+        && $rbS->run(172, $rbRun)['terminal'] === null);
+    // A stopped run is finished as stopped.
+    $rbM->unread = [];
+    $rbS->cancel(172, $rbRun, 'bob');
+    $rcW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2: a run already asked to stop is finished as stopped, not as failed',
+        $rcW['ok'] === true && $rcW['stop'] === 'cancelled'
+        && $rbS->run(172, $rbRun)['terminal'] === ScanOutcome::CANCELLED);
+
     // rvc2-3: A RUN STAYS STOPPABLE WHEN NO CONTEXT CAN BE BUILT. Stop and
     // status built the full scan context, so a configuration read in part, or
     // rules that can no longer be evaluated, refused both: the page never
