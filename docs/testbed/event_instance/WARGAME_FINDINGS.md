@@ -232,6 +232,10 @@ Tests in `tests/temporal_integration_php.php`.
   from the deliberately broken `xn_*` fields.
 - **P7** `AddressResolver.php:225`, `engine.js:1306`: min/max run the exact
   sum first; three 4,096-digit values give `limit`.
+  **Fixed 2026-10-23:** minimum and maximum check that each value is a number
+  of at most 4,096 characters and no longer sum. `sum` and `average` keep the
+  limit on the total. Tests in `tests/temporal_fixture.json` (both evaluators)
+  and `tests/binding_php.php`.
 
 ## Suspicions, not reproduced
 

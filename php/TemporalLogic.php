@@ -64,7 +64,9 @@ final class TemporalLogic
             if($kind==='distinct-count')return (string)count(array_unique($v,SORT_STRING));
             if(!$v)return null;
             if(!self::spend($charge,ExactDecimal::sumCost($v)))return null;
-            $sum=ExactDecimal::sum($v);if($sum['state']!=='ok')return null;
+            // minimum/maximum check each value; the sum of long ones may not fit (wargame P7).
+            if($kind==='minimum'||$kind==='maximum'){if(ExactDecimal::check($v)['state']!=='ok')return null;}
+            else{$sum=ExactDecimal::sum($v);if($sum['state']!=='ok')return null;}
             if($kind==='sum')return $sum['value'];
             if($kind==='average')return ['numerator'=>$sum['value'],'denominator'=>(string)count($v)];
             $best=$v[0];foreach($v as $x)if(Logic::evaluate(['cmp',$kind==='minimum'?'<':'>',['lit',$x],['lit',$best]],[]))$best=$x;

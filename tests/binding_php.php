@@ -89,4 +89,13 @@ check($r->resolveBinding(['field'=>'w','aggregate'=>'populated-count'],$c)['valu
 check($r->resolveBinding(['field'=>'w','aggregate'=>'distinct-count'],$c)['value']==='2','C6: distinct-count leaves it out too');
 check($r->resolveBinding(['field'=>'w','aggregate'=>'sum'],$c)['value']==='12','C6: sum ignores it, as it ignores a blank');
 check($r->resolveBinding(['field'=>'w','aggregate'=>'count'],$c)['value']==='3','C6: count still counts the entry');
+// Wargame P7: minimum and maximum check each value, so long values whose sum
+// would not fit still give an answer. The sum of the same values does not.
+$big=[1=>str_repeat('7',4096),2=>str_repeat('9',4096),3=>str_repeat('8',4096)];
+$r=new AddressResolver($shape,['repeat_instances'=>[1=>['meas'=>array_map(function($v){return ['w'=>$v];},$big)]]]);
+check(($r->resolveBinding(['field'=>'w','aggregate'=>'maximum'],$c)['value']??null)===$big[2],'P7: maximum of three 4,096-digit values');
+check(($r->resolveBinding(['field'=>'w','aggregate'=>'minimum'],$c)['value']??null)===$big[1],'P7: minimum of three 4,096-digit values');
+check($r->resolveBinding(['field'=>'w','aggregate'=>'sum'],$c)['state']==='limit','P7: their sum is still over the digit limit');
+$r=new AddressResolver($shape,['repeat_instances'=>[1=>['meas'=>[1=>['w'=>'5'],2=>['w'=>'x']]]]]);
+check($r->resolveBinding(['field'=>'w','aggregate'=>'maximum'],$c)['state']==='invalid','P7: a value that is not a number still stops maximum');
 echo "binding_php: $n checks, 0 failures\n";

@@ -251,10 +251,16 @@ final class AddressResolver
         // context (excludeCurrent, match) is charged here (wargame P1).
         $cost=ExactDecimal::sumCost($values);
         if ($cost>0 && !$this->budget->take($cost)) return self::problem('limit');
-        $sum=ExactDecimal::sum($values);
-        if ($sum['state']!=='ok') return $sum;
-        if ($op==='average') return ['state'=>'ok','numerator'=>$sum['value'],'denominator'=>(string)count($values),'members'=>$members];
-        if ($op==='sum') return $sum+['members'=>$members];
+        if ($op==='minimum' || $op==='maximum') {
+            // Each value must be a number, but their sum may be too long (wargame P7).
+            $checked=ExactDecimal::check($values);
+            if ($checked['state']!=='ok') return $checked;
+        } else {
+            $sum=ExactDecimal::sum($values);
+            if ($sum['state']!=='ok') return $sum;
+            if ($op==='average') return ['state'=>'ok','numerator'=>$sum['value'],'denominator'=>(string)count($values),'members'=>$members];
+            return $sum+['members'=>$members];
+        }
         $best=$values[0];
         foreach ($values as $value) {
             if (Logic::evaluate(['cmp',$op==='minimum'?'<':'>',['lit',$value],['lit',$best]],[])) $best=$value;

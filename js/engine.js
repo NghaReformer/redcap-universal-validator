@@ -1798,6 +1798,14 @@ function QRID_temporalScaled(numerator,denominator){
   if(denominator!=='1')return QRID_temporalMultiply(numerator,denominator);
   return typeof numerator==='string'&&QRID_WHEN_NUM_RE.test(numerator)&&numerator.length<=4096?numerator:null;
 }
+/* True when every value is a decimal of at most 4096 characters after the comparison
+   trim, which is all minimum and maximum need. Twin of ExactDecimal::check. */
+function QRID_temporalNumbers(values){
+  for(var i=0;i<values.length;i++){
+    if(typeof values[i]==='object')return false;var v=QRID_whenTrim(values[i]);if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return false;
+  }
+  return true;
+}
 function QRID_temporalSum(values){
   function add(a,b){
     var sa=a[0]==='-'?-1:1,sb=b[0]==='-'?-1:1;a=a.replace(/^-/,'').replace(/^0+/,'')||'0';b=b.replace(/^-/,'').replace(/^0+/,'')||'0';
@@ -1864,7 +1872,9 @@ function QRID_temporalValue(op,read,raw){
     if(op[0]==='set')return {set:op[1],values:values};var k=op[1];if(k==='count')return String(values.length);if(k==='exists')return values.length?'1':'0';
     /* a value of spaces is blank to every comparison, so it is no value here either (wargame C6) */
     values=values.filter(function(v){return !QRID_temporalBlank(v);});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
-    if(!values.length)return null;var sum=QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
+    if(!values.length)return null;
+    /* minimum/maximum check each value; the sum of long ones may not fit (wargame P7) */
+    var sum=k==='minimum'||k==='maximum'?(QRID_temporalNumbers(values)?'':null):QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
     var best=values[0];values.forEach(function(v){if(QRID_whenCompare(k==='minimum'?'<':'>',v,best,true,false))best=v;});return best;
   }
   return null;
