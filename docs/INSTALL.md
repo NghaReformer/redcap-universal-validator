@@ -205,9 +205,11 @@ the largest, is not touched.
 
 That is four statements, and their time grows with the rows in those three
 tables. Measured with 400,000 records and 400,000 candidates: MySQL 8.0 adds
-the columns at once and spends about 17 seconds on the index; MySQL 5.7
-spends about 19 seconds rebuilding `uv_scan_record` and 5 on the index, and
-rebuilds `uv_unique_candidate` once more to add `branch`.
+the columns at once and spends about 17 seconds on the index. MySQL 5.7
+rebuilds `uv_scan_record` (10 to 19 seconds over two runs on a shared test
+host), rebuilds `uv_unique_candidate` to add `branch` (about 15 seconds),
+and spends 2 to 5 seconds on the index: about 27 seconds in all on the
+second run.
 
 Then one data step: each run that had already finished its catch-up pass is
 marked as having done so, 5,000 runs per `UPDATE`. The row shows this for a
