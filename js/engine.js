@@ -2076,6 +2076,29 @@ function QRID_windowPeriodLabel(p, a, b, name, rel){
   if(!rel && a > 0) return a + " to " + plural(b) + " after the " + p + " of " + name;
   return one(a) + " to " + one(b);
 }
+/* A window's bounds by name: "21 to 35 days after [visit_date_bl]", "7 to 30
+   days before today", "3 days before [x] to 5 days after [x]"; one bound
+   alone is "no earlier than ..." or "no later than ...". A negative bound
+   reads as "before": the note printed the count with its sign, as "-7 to -7
+   minutes from now" (WIN-7). Twin of TemporalLogic::spanLabel; the "spans"
+   cases of tests/window_fixture.json lock both. */
+function QRID_windowSpanLabel(lo, hi, unit, name){
+  var u = String(unit);
+  function count(n){ var one = /s$/.test(u) ? u.slice(0, -1) : u; return n + " " + one + (n === 1 ? "" : "s"); }
+  function bound(n){
+    if(n > 0) return count(n) + " after " + name;
+    if(n < 0) return count(-n) + " before " + name;
+    if(name === "today" || name === "now") return name;
+    return (QRID_WINDOW_UNITS[u] !== undefined && QRID_WINDOW_UNITS[u] < 86400 ? "at the time of " : "on the day of ") + name;
+  }
+  if(lo == null && hi == null) return "";
+  if(hi == null) return "no earlier than " + (lo === 0 ? name : bound(lo));
+  if(lo == null) return "no later than " + (hi === 0 ? name : bound(hi));
+  if(lo === hi) return bound(lo);
+  if(lo >= 0) return lo + " to " + count(hi) + " after " + name;
+  if(hi <= 0) return (-hi) + " to " + count(-lo) + " before " + name;
+  return bound(lo) + " to " + bound(hi);
+}
 /* The verdict for a window counted from a moment known only to within a
    margin (a "from" of "now", which a computer a little off fills in): a value
    passes when some anchor between anchorLo and anchorHi accepts it. The
@@ -5059,9 +5082,7 @@ function QRIDWindowInit(QRID_CONFIG){
              : l ? "This date must be on or before " + l + "."
              : "This date is outside its allowed window.";
     if(named && V.fromName && V.spec.period === null){
-      var lo = V.spec.lo, hi = V.spec.hi, u = V.spec.unit;
-      var range = (lo !== null && hi !== null) ? lo + " to " + hi : (lo !== null ? "at least " + lo : "at most " + hi);
-      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(range + " " + u + " from " + V.fromName) + ")</span>";
+      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(QRID_windowSpanLabel(V.spec.lo, V.spec.hi, V.spec.unit, V.fromName)) + ")</span>";
     }
     return text;
   }
@@ -8896,7 +8917,7 @@ window.INSPIREUniversalValidator = {
     keywordAnchorType: QRID_keywordAnchorType, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
     clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS, calendarUnits: QRID_CALENDAR_UNITS,
-    periodLabel: QRID_windowPeriodLabel,
+    periodLabel: QRID_windowPeriodLabel, spanLabel: QRID_windowSpanLabel,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
   },

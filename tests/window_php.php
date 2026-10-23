@@ -60,6 +60,18 @@ foreach ($fx['labels'] as $c) {
     $got = call_user_func_array([TemporalLogic::class, 'periodLabel'], $c['args']);
     check('label ' . json_encode($c['args']) . ' -> ' . $c['out'] . ' (got ' . $got . ')', $got === $c['out']);
 }
+// window bounds by name (WIN-7), the same cases as window_js.cjs
+check('spans fixture loads', !empty($fx['spans']));
+foreach ($fx['spans'] as $c) {
+    $got = call_user_func_array([TemporalLogic::class, 'spanLabel'], $c['args']);
+    check('span ' . json_encode($c['args']) . ' -> ' . $c['out'] . ' (got ' . $got . ')', $got === $c['out']);
+}
+check('windowDetail: each bound by name', TemporalLogic::windowDetail(['windowFrom' => '[v]', 'windowLo' => -3, 'windowHi' => 5, 'windowUnit' => 'days'])
+    === ['windowOpens' => '3 days before [v]', 'windowCloses' => '5 days after [v]']);
+check('windowDetail: an open end has no bound', TemporalLogic::windowDetail(['windowAnchor' => 'today', 'windowLo' => 0])
+    === ['windowOpens' => 'today']);
+check('windowDetail: a period keeps its own text', TemporalLogic::windowDetail(['windowPeriod' => 'month', 'windowAnchor' => 'today',
+    'windowOffLo' => -1, 'windowOffHi' => -1]) === ['windowPeriodText' => 'last month']);
 check('periodDetail: last month', TemporalLogic::periodDetail(['windowPeriod' => 'month', 'windowAnchor' => 'today',
     'windowOffLo' => -1, 'windowOffHi' => -1]) === ['windowPeriodText' => 'last month']);
 check('periodDetail: the month of a field', TemporalLogic::periodDetail(['windowPeriod' => 'month', 'windowFrom' => '[v_start]'])

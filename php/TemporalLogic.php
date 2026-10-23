@@ -184,9 +184,67 @@ final class TemporalLogic
     }
 
     /**
+     * A window's bounds by name, for the page's staff note:
+     * "21 to 35 days after [visit_date_bl]", "7 to 30 days before today",
+     * "3 days before [x] to 5 days after [x]"; one bound alone is "no earlier
+     * than ..." or "no later than ...". A negative bound reads as "before",
+     * where the count was printed with its sign (WIN-7). Twin of
+     * QRID_windowSpanLabel; the "spans" cases of tests/window_fixture.json
+     * lock both.
+     */
+    public static function spanLabel($lo, $hi, $unit, $name)
+    {
+        if ($lo === null && $hi === null) return '';
+        if ($hi === null) return 'no earlier than ' . ((int) $lo === 0 ? $name : self::boundLabel($lo, $unit, $name));
+        if ($lo === null) return 'no later than ' . ((int) $hi === 0 ? $name : self::boundLabel($hi, $unit, $name));
+        $lo = (int) $lo;
+        $hi = (int) $hi;
+        if ($lo === $hi) return self::boundLabel($lo, $unit, $name);
+        if ($lo >= 0) return $lo . ' to ' . self::unitCount($hi, $unit) . ' after ' . $name;
+        if ($hi <= 0) return (-$hi) . ' to ' . self::unitCount(-$lo, $unit) . ' before ' . $name;
+        return self::boundLabel($lo, $unit, $name) . ' to ' . self::boundLabel($hi, $unit, $name);
+    }
+
+    /** One bound by name: "30 days before today", "1 week after [x]", "on the day of [x]". */
+    public static function boundLabel($n, $unit, $name)
+    {
+        $n = (int) $n;
+        $u = (string) $unit;
+        if ($n > 0) return self::unitCount($n, $u) . ' after ' . $name;
+        if ($n < 0) return self::unitCount(-$n, $u) . ' before ' . $name;
+        if ($name === 'today' || $name === 'now') return (string) $name;
+        return (isset(self::WINDOW_UNITS[$u]) && self::WINDOW_UNITS[$u] < 86400 ? 'at the time of ' : 'on the day of ') . $name;
+    }
+
+    /** "1 day", "7 days": unit names are plural. */
+    private static function unitCount($n, $unit)
+    {
+        $u = (string) $unit;
+        $one = substr($u, -1) === 's' ? substr($u, 0, -1) : $u;
+        return $n . ' ' . $one . ($n === 1 ? '' : 's');
+    }
+
+    /**
      * The scan report's derived detail of a @UVWINDOW rule (scan.detailDerive
-     * in php/modes.json): windowPeriodText, the period by name, for a rule
-     * with a period.
+     * in php/modes.json): the period by name (periodDetail), and each bound of
+     * a window by name, windowOpens and windowCloses ("30 days before today").
+     */
+    public static function windowDetail(array $r)
+    {
+        $out = self::periodDetail($r);
+        $kw = isset($r['windowAnchor']) && is_string($r['windowAnchor']) && $r['windowAnchor'] !== '' ? $r['windowAnchor'] : null;
+        $from = isset($r['windowFrom']) && is_string($r['windowFrom']) && $r['windowFrom'] !== '' ? $r['windowFrom'] : null;
+        $name = $from !== null ? $from : $kw;
+        if ($name === null || !empty($r['windowPeriod'])) return $out;
+        $unit = isset($r['windowUnit']) && is_string($r['windowUnit']) ? $r['windowUnit'] : 'days';
+        if (isset($r['windowLo']) && is_numeric($r['windowLo'])) $out['windowOpens'] = self::boundLabel((int) $r['windowLo'], $unit, $name);
+        if (isset($r['windowHi']) && is_numeric($r['windowHi'])) $out['windowCloses'] = self::boundLabel((int) $r['windowHi'], $unit, $name);
+        return $out;
+    }
+
+    /**
+     * The scan report's derived detail of a @UVWINDOW rule with a period:
+     * windowPeriodText, the period by name.
      */
     public static function periodDetail(array $r)
     {

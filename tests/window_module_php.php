@@ -34,7 +34,9 @@ namespace ExternalModules {
             $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
             return $e ? $this->subSettings : [];
         }
+        public $settingReads = [];   // key => how many times it was read (WIN-5)
         public function getProjectSetting($k, $pid = null) {
+            $this->settingReads[$k] = (isset($this->settingReads[$k]) ? $this->settingReads[$k] : 0) + 1;
             $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
             if (!$e) return null;
             return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null;
@@ -466,6 +468,36 @@ namespace {
     check('window-timezone: an unknown name is refused when saved', is_string($msg) && strpos($msg, 'Mars/Olympus') !== false);
     check('window-timezone: a zone name saves', $vs->validateSettings(['window-timezone' => 'Africa/Douala']) === null);
     check('window-timezone: blank saves', $vs->validateSettings(['window-timezone' => '']) === null);
+    // WIN-4: a backward-compatible name (one saved before a tzdata update made
+    // it an alias) still sets the clock, and still saves.
+    $offsetOf = function ($zone) { return (new \DateTimeImmutable('now', new \DateTimeZone($zone)))->getOffset(); };
+    check('WIN-4: Asia/Calcutta still sets the clock', $clockOf('Asia/Calcutta')['offset'] === $offsetOf('Asia/Kolkata'));
+    check('WIN-4: US/Eastern still sets the clock', $clockOf('US/Eastern')['offset'] === $offsetOf('America/New_York'));
+    check('WIN-4: a backward-compatible name saves', $vs->validateSettings(['window-timezone' => 'Europe/Kiev']) === null);
+    // WIN-5: the setting is read once per request, however many values are judged.
+    $z = mod($DICT, $DATA, $FULL, 'nurse');
+    $rp = new \ReflectionProperty($z, 'clockOverride'); $rp->setAccessible(true); $rp->setValue($z, null);
+    $z->projectSettings['window-timezone'] = 'Africa/Douala';
+    $sc = new \ReflectionMethod($z, 'serverClock'); $sc->setAccessible(true);
+    $z->settingReads = [];
+    for ($i = 0; $i < 50; $i++) $sc->invoke($z, 149);
+    $reads = isset($z->settingReads['window-timezone']) ? $z->settingReads['window-timezone'] : 0;
+    check('WIN-5: 50 clock reads read the time zone setting once (got ' . $reads . ')', $reads === 1);
+    // WIN-8: a period reads only the day of its "from" date, so it may count
+    // from a datetime field on a date field.
+    $P8 = $DICT + ['p_field' => f('visit_form', '@UVWINDOW={"from":"[dose_at]","period":"month"}', 'date_ymd')];
+    $r = ruleFor(page(mod($P8, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form'), 'p_field');
+    check('WIN-8: a period from a datetime field is accepted on a date field', $r && empty($r['configError']));
+    $pHits = function ($m) { return array_values(array_filter(findings($m), function ($e) { return ($e['field'] ?? '') === 'p_field'; })); };
+    $V = $DATA; $V['2'][351]['dose_at'] = '2026-01-15 08:00'; $V['2'][351]['p_field'] = '2026-02-03';
+    $m = mod($P8, $V, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    $h = $pHits($m);
+    check('WIN-8: a date after the month of the datetime is logged late', count($h) === 1 && $h[0]['reason'] === 'window-late');
+    $V['2'][351]['p_field'] = '2026-01-20';
+    $m = mod($P8, $V, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    check('WIN-8: a date in that month passes', $pHits($m) === []);
     // The report: the issue label and the staff detail line come from the registry.
     $dims = \INSPIRE\UniversalValidator\ScanDimensions::build(149, $DICT, [
         ['type' => 'window', 'fields' => ['visit_date_2'], 'windowFrom' => '[visit_date_bl]', 'windowLo' => 21, 'windowHi' => 35, 'windowUnit' => 'days'],
@@ -473,10 +505,10 @@ namespace {
     ]);
     check('report detail: the window that was missed',
         \INSPIRE\UniversalValidator\MessageCatalog::detail(['type' => 'window', 'reason' => 'window-early'], $dims->rule(1))
-        === 'The window opens 21 days from [visit_date_bl].');
+        === 'The window opens 21 days after [visit_date_bl].');
     check('report detail: the closing bound',
         \INSPIRE\UniversalValidator\MessageCatalog::detail(['type' => 'window', 'reason' => 'window-late'], $dims->rule(1))
-        === 'The window closes 35 days from [visit_date_bl].');
+        === 'The window closes 35 days after [visit_date_bl].');
     check('report detail: an open end has no sentence, not half of one',
         \INSPIRE\UniversalValidator\MessageCatalog::detail(['type' => 'window', 'reason' => 'window-late'], $dims->rule(2)) === '');
     check('report detail: future has none',
@@ -708,7 +740,10 @@ namespace {
     $MC = \INSPIRE\UniversalValidator\MessageCatalog::class;
     check('report detail: a window from today, with the day it was judged against',
         $MC::detail(['type' => 'window', 'reason' => 'window-early', 'asOf' => '2026-10-09'], $dims->rule(1))
-        === 'The window opens -30 days from today. Judged against 2026-10-09, when this value was saved.');
+        === 'The window opens 30 days before today. Judged against 2026-10-09, when this value was saved.');
+    check('report detail: a snapshot made before the bounds had names keeps its sentence',
+        $MC::detail(['type' => 'window', 'reason' => 'window-early'], ['detail' => ['windowLo' => '21', 'windowUnit' => 'days', 'windowFrom' => '[v]']])
+        === 'The window opens 21 days from [v].');
     check('report detail: a period with an offset',
         $MC::detail(['type' => 'window', 'reason' => 'window-late'], $dims->rule(2)) === 'The date must be in last month.');
     check('report detail: the period of a field', $MC::detail(['type' => 'window', 'reason' => 'window-early'], $dims->rule(3))

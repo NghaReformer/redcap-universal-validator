@@ -723,17 +723,20 @@ that it is not after today or not before it:
   moved forward while the form is open moves it too; the post-save audit reads the
   server clock and still logs the date. The project setting **Time zone for
   @UVWINDOW "notFuture"** sets the time zone, when it differs from the server's.
-- **Blank checks nothing.** A blank field, or a blank `from` date, is not
-  checked; a date still being typed shows no verdict.
+- **Blank checks nothing.** A blank field is not checked, and a date still
+  being typed shows no verdict. A blank `from` date leaves the window part
+  unchecked; `notFuture` and `notPast` still apply.
 - **Other forms and events.** A `from` date on another form is read when the page
-  opens and the window part is advisory (it never blocks); `notFuture` keeps its
-  `blockSave`. On a survey, or without rights to that form, the value never
-  reaches the page: the browser checks only `notFuture`, and staff see a note
+  opens and the window part is advisory (it never blocks); `notFuture` and
+  `notPast` keep their `blockSave`. On a survey, or without rights to that form,
+  the value never reaches the page: the browser checks only `notFuture` and
+  `notPast`, and staff see a note
   that the window is checked on save. With event and instance references
   enabled, `from` may name another event: `[baseline_arm_1][visit_date]`. Its
-  window part is advisory on the page and `notFuture` keeps its `blockSave`. A
+  window part is advisory on the page, and `notFuture` and `notPast` keep their
+  `blockSave`. A
   `when`, or a branch selector, that reads a value from another form or event
-  makes the whole rule advisory, `notFuture` included. On a multi-page survey, put the `from` field on the same page as the date it
+  makes the whole rule advisory, `notFuture` and `notPast` included. On a multi-page survey, put the `from` field on the same page as the date it
   anchors, or the window is checked only after the save.
 - **Audited.** The post-save audit logs `type: window` with reason
   `window-early`, `window-late`, `future` or `past`, and saving the `from` date's form

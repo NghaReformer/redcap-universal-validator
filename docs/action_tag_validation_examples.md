@@ -1400,7 +1400,7 @@ limit is the current time, not the end of the day.
 of 2026-01-01 the rule accepts 2026-01-22 to 2026-02-05, and the message names
 those dates in the field's own format:
 
-> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days from [visit_date_bl])
+> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days after [visit_date_bl])
 
 The part in brackets is shown to staff only; a survey respondent sees the dates
 without the other field's name. The example assumes a D-M-Y field.
@@ -1556,24 +1556,26 @@ warning.
   validation, in any display format (Y-M-D, M-D-Y or D-M-Y). Any other field shows a
   configuration error.
 - **The `from` field must be the same kind of date.** A date window counts from a
-  date field, a datetime window from a datetime field. A `from` field that does
+  date field, a datetime window from a datetime field. A `period` reads only the
+  day of its `from` date, so it may count from either kind. A `from` field that does
   not exist, is not a date field, or is the tagged field itself is a configuration
   error.
 - **Blank means nothing to check.** A blank field checks nothing, and so does a
   blank `from` date: the visit that anchors the window may not have happened yet.
-  `notFuture` still applies while `from` is blank.
+  `notFuture` and `notPast` still apply while `from` is blank.
 - **A date still being typed shows no verdict.** REDCap's own date check covers
   half-typed values.
 - **A `from` date on another form is read when the page opens.** If the user may
   read that form, its saved value is used and the check is **advisory**: it shows
   the verdict but never blocks the save, because that form could change while
   this one is open. On a survey, or without rights to that form, the value is not
-  sent to the page at all. The browser then checks only `notFuture`; staff see a
+  sent to the page at all. The browser then checks only `notFuture` and
+  `notPast`; staff see a
   note that the window is checked when the record is saved, and a survey
   respondent sees nothing about it.
-- **`notFuture` keeps its `blockSave`.** "After today" does not depend on the
-  `from` date, so a hard rule still blocks a future date when the window part is
-  advisory or not sent. A `from` in another event works the same way: the window
+- **`notFuture` and `notPast` keep their `blockSave`.** "After today" and
+  "before today" do not depend on the `from` date, so a hard rule still blocks a
+  future date, or a new past one, when the window part is advisory or not sent. A `from` in another event works the same way: the window
   part is advisory, and `notFuture` blocks as set. A `from` that resolves to a
   field on this page (`[visit_date_bl][current-instance]`, where both dates are
   on one form) blocks as set too.
@@ -1581,7 +1583,7 @@ warning.
   a `when`, or the condition that picks a branch, reads a value from another
   form or event, the page judges with the value it read when it opened. Whether
   the rule applies may have changed since, so nothing in the rule blocks there,
-  `notFuture` included. A count or set of entries, in this event or another,
+  `notFuture` and `notPast` included. A count or set of entries, in this event or another,
   counts as such a value, even when it holds no entries or only this one.
 - **Multi-page surveys.** The browser reads a `from` date only on the page being
   shown. If the `from` field is on an earlier page of the survey, the window is
@@ -1634,8 +1636,9 @@ warning.
   windows counted from it.
 - **The Validation scan** reports the same findings, with "Date outside allowed
   window", "Date in the future" or "Date in the past" in the Issue column and
-  the missed bound in the detail line, such as "The window opens 21 days from
-  [visit_date_bl]." or "The date must be in last month.". Where the log does not
+  the missed bound in the detail line, such as "The window opens 21 days after
+  [visit_date_bl].", "The window opens 30 days before today." or "The date must
+  be in last month.". Where the log does not
   show when a value was saved, `notFuture` is judged against the day the scan
   runs. Each part of a durable scan reads the clock when that part runs, and
   stores with each finding the day it was judged against (`as_of`); the durable

@@ -153,6 +153,13 @@ for (const c of fx.labels) {
   check('label ' + JSON.stringify(c.args) + ' -> ' + c.out + ' (got ' + got + ')', got === c.out);
 }
 
+// window bounds by name (WIN-7): the fixture's "spans" cases (window_php.php runs them too)
+check('spans fixture loads', Array.isArray(fx.spans) && fx.spans.length > 0);
+for (const c of fx.spans) {
+  const got = W.spanLabel.apply(null, c.args);
+  check('span ' + JSON.stringify(c.args) + ' -> ' + c.out + ' (got ' + got + ')', got === c.out);
+}
+
 // verdictSpread: the fixture's "spread" cases (window_php.php runs them too)
 check('spread fixture loads', Array.isArray(fx.spread) && fx.spread.length > 0);
 for (const c of fx.spread) {

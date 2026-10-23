@@ -3881,20 +3881,42 @@ class UniversalValidator extends AbstractExternalModule
         return $v === 'sunday' ? 'sunday' : 'monday';
     }
 
-    /** The project's "window-timezone" setting as a zone; null for none or an unknown name. */
+    /** @var array pid => the "window-timezone" zone (null for none), read once per request */
+    private $clockZoneMemo = [];
+
+    /**
+     * The project's "window-timezone" setting as a zone; null for none or an
+     * unknown name. Read once per request: the scan read and checked the
+     * setting for every value it judged, 4,000 times in a scan of 4,000
+     * values (WIN-5).
+     */
     private function clockZone($pid = null)
     {
+        $key = (string) $pid;
+        if (array_key_exists($key, $this->clockZoneMemo)) return $this->clockZoneMemo[$key];
         $name = null;
         try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) {}
         $name = is_string($name) ? trim($name) : '';
-        if ($name === '' || !self::isClockZone($name)) return null;
-        return new \DateTimeZone($name);
+        return $this->clockZoneMemo[$key] = ($name === '' || !self::isClockZone($name)) ? null : new \DateTimeZone($name);
     }
 
-    /** Whether $name is a timezone the "window-timezone" setting accepts (an IANA name). */
+    /** @var array|null every zone name the "window-timezone" setting accepts, name => true */
+    private static $clockZoneNames = null;
+
+    /**
+     * Whether $name is a timezone the "window-timezone" setting accepts: an
+     * IANA name, the backward-compatible ones included. A name saved while it
+     * was current (Europe/Kiev before tzdata 2022b, then Europe/Kyiv) was
+     * dropped without a word after a tzdata update, and today became the
+     * server's date (WIN-4). PHP still builds every one of them.
+     */
     private static function isClockZone($name)
     {
-        return is_string($name) && in_array($name, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL), true);
+        if (!is_string($name)) return false;
+        if (self::$clockZoneNames === null) {
+            self::$clockZoneNames = array_fill_keys(\DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true);
+        }
+        return isset(self::$clockZoneNames[$name]);
     }
 
     /**
@@ -7622,7 +7644,10 @@ class UniversalValidator extends AbstractExternalModule
                 . 'datetime-with-seconds validation.');
         }
         $own = isset($frag['dateType']) ? $frag['dateType'] : null;
-        if (TemporalValue::family($tv['type']) !== TemporalValue::family($own)) {
+        // A period reads only the "from" date's day, so it may count from
+        // either kind of date, as the verdict and a written "from" already
+        // allowed (WIN-8).
+        if (!isset($frag['windowPeriod']) && TemporalValue::family($tv['type']) !== TemporalValue::family($own)) {
             return $refuse('"from" field "' . $from . '" holds ' . ($tv['type'] === 'date' ? 'dates' : 'dates with a time')
                 . ' and this field holds ' . ($own === 'date' ? 'dates' : 'dates with a time')
                 . ' — a window counts a date from a date, or a datetime from a datetime.');

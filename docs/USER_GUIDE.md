@@ -1023,10 +1023,12 @@ date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit
 allowed dates. `"notFuture":true` refuses a date after today, where "today" is
 the server's date, not the computer's. If the study runs in another time zone
 than the server, name it in the project setting **Time zone for @UVWINDOW
-"notFuture"** (for example `Africa/Douala`). A blank `from` date checks nothing. A
+"notFuture"** (for example `Africa/Douala`). A blank `from` date leaves the
+window unchecked; `notFuture` and `notPast` still apply. A
 `from` date on another form only advises, because that form could change while
 this one is open. On a survey, or for a user without rights to that form, the
-`from` date is not sent to the page; the page then checks only `notFuture`, and
+`from` date is not sent to the page; the page then checks only `notFuture` and
+`notPast`, and
 the window is checked when the record is saved. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts

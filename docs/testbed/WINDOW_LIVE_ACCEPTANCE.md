@@ -44,7 +44,7 @@ Type `2026-03-01` in `uw_anchor` first.
 | # | Action | Expect |
 |---|---|---|
 | A1 | `uw_live` = 2026-03-22, then 2026-04-05 | Green OK both times |
-| A2 | `uw_live` = 2026-03-21 | Red: "This date must be between 2026-03-22 and 2026-04-05." plus "(21 to 35 days from [uw_anchor])" |
+| A2 | `uw_live` = 2026-03-21 | Red: "This date must be between 2026-03-22 and 2026-04-05." plus "(21 to 35 days after [uw_anchor])" |
 | A3 | `uw_live` = 2026-04-06, press Save | Save blocked (hard); the dialog names the field by its label |
 | A4 | Clear `uw_anchor` | `uw_live`, `uw_dmy`, `uw_weeks` and `uw_when` messages disappear; save allowed |
 | A5 | Anchor back to 2026-03-01; `uw_dmy` = 08-03-2026 then 09-03-2026 | OK, then "between 01-03-2026 and 08-03-2026" (the field's D-M-Y format) |
@@ -142,7 +142,7 @@ fields saved, such as a new record created for this section.
 
 | # | Action | Expect |
 |---|---|---|
-| I1 | `uw_today` = 8 days before today, press Save | Red "This date must be between ... and ..." (7 days back to today) with "(-7 to 0 days from today)"; save blocked |
+| I1 | `uw_today` = 8 days before today, press Save | Red "This date must be between ... and ..." (7 days back to today) with "(0 to 7 days before today)"; save blocked |
 | I2 | `uw_today` = 5 days before today, press Save. Reopen the record | Saved. On reopening, `uw_today` shows no message, since an unchanged value is not judged against today on the form |
 | I3 | Open the module log for the save in I2 | No `uvalidate-unconfigurable` entry saying "the day this value was saved is not known": REDCap logged the save before the module's audit ran, and the audit read it. If every save of `uw_today` gets that entry, REDCap logs after the audit on this version: stop and report it, because the audit then cannot judge a value just saved |
 | I4 | `uw_lastmonth` = today's date (advisory), press Save | Red "This date must be in last month: YYYY-MM-01 to YYYY-MM-DD." with last month's first and last days (`uw_lastmonth` shows Y-M-D); saved. The module log has reason `window-late` and `as_of` = today |
