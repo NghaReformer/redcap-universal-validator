@@ -157,7 +157,7 @@ Have record 100 and record 200 open in a second tab before you start.
 | # | Action | Expect |
 |---|---|---|
 | E1 | As deid, open the scan page and press "Start a scan". | Refused. The message says the scan needs Full Data Set export rights and that your export level reads as De-Identified. |
-| E2 | As deid, open the download link of a finished run (copy it from designer's session). | Plain text starting `# EXPORT REFUSED`; no file is saved. |
+| E2 | As deid, type the export address of a finished run into the browser: the scan page's address with `pages%2Fscan` changed to `pages%2Fexport`, then `&run_id=<id>`. Repeat as designer. | Both times plain text starting `# EXPORT REFUSED` that says the file is sent only in answer to the download button; the browser's network tab shows HTTP 405. No file is saved. |
 | E3 | As designer, start a scan. While it runs, as admin, remove designer's access to `scan_demo` in User Rights. | Designer's next batch is refused, and the run does not carry on for them. Restore the access. |
 
 ## Section F: a Data Access Group user (Project A)
@@ -195,7 +195,7 @@ not start another.
 
 | # | Action | Expect |
 |---|---|---|
-| H1 | Under the findings of a complete run, press "Download these findings as a CSV file". | A file named `uv-scan-<pid>-run<id>-<date>_NOT-CERTIFIED.csv`. |
+| H1 | Under the findings of a complete run, choose a Reason filter, then press "Download the whole report as a CSV file (96 findings)". | A file named `uv-scan-<pid>-run<id>-<date>_NOT-CERTIFIED.csv` with all 96 rows, not only the filtered ones. The browser's network tab shows a POST carrying `run_id` and `redcap_csrf_token`. |
 | H2 | Open it in a text editor. | The first bytes are a byte-order mark and a line starting `# schema`. Then `# project`, `# run`, `# generated_at`, `# scope` (whole project), `# coverage`, `# certified` (no), `# values`, `# labels`, `# columns` and `# expected_rows` (96), a header row of column keys, 96 rows, and last `# export_complete=1` with rows=96. |
 | H3 | Open it in Excel. | Columns, not one cell of HTML. |
 | H4 | Start a scan and press Stop during "Checking records". When it reads "Finished", look under the panel. | The stopped run's findings, with the banner "INCOMPLETE SCAN - this report does NOT certify the project as clean" above the table, a row below it starting "This scan did not cover the whole project.", and beside the download "Its file name ends in _INCOMPLETE_CANCELLED, so the file says it is incomplete wherever it is saved." |

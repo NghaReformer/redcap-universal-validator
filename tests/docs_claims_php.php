@@ -346,8 +346,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('build: pages/scan.php names the four findings filters', count($fl[1]) === 4);
     preg_match_all('/id="uv-scan-report-(?:prev|next)"[^>]*>([^<]+)</', $scanPage, $bm);
     check('build: pages/scan.php has the two paging buttons', count($bm[1]) === 2);
-    preg_match('/<a id="uv-scan-report-export">([^<]+)<\/a>/', $scanPage, $dm);
-    check('build: pages/scan.php has the download link', isset($dm[1]));
+    // The download is a button that posts a form (W11F-N5), no longer a link.
+    preg_match('/<button type="button" id="uv-scan-report-export"[^>]*>([^<]+)<\/button>/', $scanPage, $dm);
+    check('build: pages/scan.php has the download button', isset($dm[1]));
     preg_match('/### The findings page(.*?)\n### /s', (string) $docs['README.md'], $fp);
     $panel = $flat(isset($fp[1]) ? $fp[1] : '');
     check('README.md has a "The findings page" section', $panel !== '');

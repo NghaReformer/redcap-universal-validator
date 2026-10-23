@@ -53,9 +53,16 @@ function makeEl(tag, id) {
     addEventListener(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); },
     fire(ev) { (this._handlers[ev] || []).forEach((f) => f({ preventDefault() {} })); },
     click() { this.fire('click'); },
+    // A form the client posts (W11F-N5): what it sent, and where it was then.
+    submit() {
+      submitted.push({ attrs: Object.assign({}, this._attrs), inBody: this.parentNode === global.document.body,
+        fields: this.children.map((c) => Object.assign({ tag: c.tagName }, c._attrs)) });
+    },
   };
   return e;
 }
+/** Every form the client submitted, as submit() saw it. */
+let submitted = [];
 
 const IDS = ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume', 'uv-scan-phase',
   'uv-scan-bar-track', 'uv-scan-bar', 'uv-scan-counts', 'uv-scan-found', 'uv-scan-done',
@@ -82,6 +89,7 @@ global.window = {};
 global.document = {
   getElementById: (id) => els[id] || null,
   createElement: (t) => makeEl(t),
+  body: makeEl('body'),
 };
 
 const pending = [];
@@ -181,6 +189,8 @@ function reset(s) {
   holdNext = false;
   pending.length = 0;
   freshDom();
+  global.document.body = makeEl('body');
+  UV.csrfToken = 'tok-fixture';   // the page prints one; a check that wants none clears it
   UV.report.runId = null;
   UV.report.inflight = false;
   UV.report.waiting = false;
@@ -227,10 +237,21 @@ function noZero(label) {
     els['uv-scan-report-summary'].textContent
       === 'Every record was checked, including changes made while it ran. This result does not certify the project.');
   check('panel: and the count is the report\'s', els['uv-scan-report-count'].textContent === 'This report holds 1,203 findings.');
-  check('panel: the download is offered beside the answer, for this run only',
+  check('panel: the download is offered beside the answer, and names the whole report and its count (rv11b1-5)',
     shown('uv-scan-report-export-wrap')
-    && els['uv-scan-report-export'].getAttribute('href')
-       === '/redcap/ExternalModules/?prefix=uv&page=pages%2Fexport&pid=13&run_id=61');
+    && els['uv-scan-report-export'].textContent === 'Download the whole report as a CSV file (1,203 findings)'
+    && els['uv-scan-report-export'].getAttribute('href') === null);
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  const posted = submitted[0] || { attrs: {}, fields: [] };
+  check('W11F-N5: the download posts run_id and the page\'s token to the export route, and nothing else',
+    submitted.length === 1 && posted.inBody && posted.attrs.method === 'post'
+    && posted.attrs.action === '/redcap/ExternalModules/?prefix=uv&page=pages%2Fexport&pid=13'
+    && JSON.stringify(posted.fields) === JSON.stringify([
+      { tag: 'INPUT', type: 'hidden', name: 'run_id', value: '61' },
+      { tag: 'INPUT', type: 'hidden', name: 'redcap_csrf_token', value: 'tok-fixture' }]));
+  check('W11F-N5: and the form is taken away again once sent', global.document.body.children.length === 0);
+  check('W11F-N5: the client never builds an export address of its own', SRC.indexOf("'run_id='") === -1);
 
   // -- Next and Previous on the keyset cursor --------------------------------
   reset([page({ next: 3 }), page({ rows: rowsOf(4, 3), next: 6 }), page({ rows: rowsOf(7, 2), next: null }),
@@ -295,6 +316,15 @@ function noZero(label) {
     && els['uv-scan-report-caption'].textContent === 'Findings of this scan, page 1'
     && els['uv-scan-report-prev'].getAttribute('aria-disabled') === 'true');
   check('filters: and the options are not rebuilt under the reader', formSel.children.length === 3);
+  // rv11b1-5: a filter narrows the table, never the file, and the button says so.
+  check('rv11b1-5: with a filter chosen, the button still names the whole report and its count',
+    shown('uv-scan-report-export-wrap')
+    && els['uv-scan-report-export'].textContent === 'Download the whole report as a CSV file (1,203 findings)');
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  check('rv11b1-5: and the file it asks for carries no filter: run_id and the token only',
+    submitted.length === 1
+    && JSON.stringify(submitted[0].fields.map((f) => f.name)) === JSON.stringify(['run_id', 'redcap_csrf_token']));
 
   // A filter changed while a page is out: that answer is not shown, and the
   // filtered page is asked for once it lands.
@@ -324,9 +354,26 @@ function noZero(label) {
     !shown('uv-scan-report-table') && !shown('uv-scan-report-filters') && !shown('uv-scan-report-nav'));
   check('withheld: its own sentence instead', shown('uv-scan-report-withheld')
     && els['uv-scan-report-withheld'].textContent === UV.labels.withheldEnded);
+  submitted = [];
+  els['uv-scan-report-export'].click();
   check('withheld: and nothing to download', !shown('uv-scan-report-export-wrap')
-    && els['uv-scan-report-export'].getAttribute('href') === null);
+    && UV.report.exportFor === null && submitted.length === 0);
   check('withheld: no count is shown for it either', els['uv-scan-report-count'].textContent === '');
+
+  // -- W11F-N5: a page that printed no token offers no download --------------
+  reset([page({ next: null })]);
+  UV.csrfToken = '';
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  check('W11F-N5: without the page\'s token the download is not offered, and a press sends nothing',
+    shown('uv-scan-report-table') && !shown('uv-scan-report-export-wrap') && UV.report.exportFor === null
+    && submitted.length === 0);
+  reset([page({ next: null })]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  check('W11F-N5 (control): with the token it is', shown('uv-scan-report-export-wrap') && UV.report.exportFor === 61);
 
   // -- refusals --------------------------------------------------------------
   reset([{ ok: false, why: 'no scan with that reference is running for this project', final: true }]);

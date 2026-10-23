@@ -556,6 +556,36 @@ class ScanPageView
      */
     const REPORT_GROUP_ONLY    = 'This scan covered {group} only, not the whole project.';
 
+    /**
+     * The download button (review rv11b1-5). It sat beside a filtered table
+     * as "Download these findings as a CSV file" and gave the whole report:
+     * three rows shown, 1,203 in the file. The file is the whole report, and
+     * the button says so with the report's count ({findings} as the count
+     * line words it); the plain form is the markup's, for a report whose
+     * count is not known. The filters stay a way to read the table: a file
+     * of one filter would need its own expected count and its own end check
+     * (ScanService::streamFindings()), which the report's summary does not
+     * give for two filters at once.
+     */
+    const REPORT_DOWNLOAD       = 'Download the whole report as a CSV file ({findings})';
+    const REPORT_DOWNLOAD_PLAIN = 'Download the whole report as a CSV file';
+
+    /**
+     * The framework's CSRF token for the download's POST (W11F-N5), or '' when
+     * the framework gives none or fails: the page then offers no download,
+     * since pages/export.php answers only a POST the framework has checked.
+     */
+    public static function csrfToken($module)
+    {
+        if (!is_object($module) || !is_callable([$module, 'getCSRFToken'])) return '';
+        try {
+            $t = $module->getCSRFToken();
+        } catch (\Throwable $e) {
+            return '';
+        }
+        return is_string($t) ? $t : '';
+    }
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -605,6 +635,8 @@ class ScanPageView
             'reportShowCurrent'  => self::REPORT_SHOW_CURRENT,
             'reportMissing'   => self::REPORT_MISSING,
             'reportGroupOnly' => self::REPORT_GROUP_ONLY,
+            'reportDownload'  => self::REPORT_DOWNLOAD,
+            'reportDownloadPlain' => self::REPORT_DOWNLOAD_PLAIN,
         ];
     }
 

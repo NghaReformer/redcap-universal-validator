@@ -373,8 +373,14 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
   </div>
   <p id="uv-scan-report-note" role="status" aria-live="polite" aria-atomic="true"
      style="margin-top:8px;font-size:13px;color:#444"></p>
+  <?php // THE DOWNLOAD IS A POST (W11F-N5). pages/export.php answers only a
+        // POST carrying run_id and the page's redcap_csrf_token, which the
+        // framework checks; the client builds that form outside REDCap's own
+        // project form when the button is pressed. The button says the file
+        // is the whole report and how many findings it holds (review
+        // rv11b1-5): the filters narrow the table, not the file. ?>
   <p id="uv-scan-report-export-wrap" style="display:none;margin-top:8px;font-size:13px">
-    <a id="uv-scan-report-export">Download these findings as a CSV file</a>
+    <button type="button" id="uv-scan-report-export" class="btn btn-secondary btn-sm">Download the whole report as a CSV file</button>
     <span id="uv-scan-report-suffix" style="display:none"></span>
   </p>
 </section>
@@ -418,13 +424,19 @@ reporting a clean project.
         autoResume: false,
         // The finished run whose findings the panel opens on, and where its
         // CSV is downloaded from. The URL is the framework's, encoded as the
-        // labels are; the client appends the run id and nothing else.
+        // labels are; the client posts the run id and the token to it, and
+        // nothing else.
         reportRunId: <?php echo $finishedRun === null ? 'null' : (int) $finishedRun; ?>,
         // A newer run of the same scope that did not complete, offered beside
         // it; and whether a whole-project scan replaced the group's report.
         reportNewerId: <?php echo $newerRun === null ? 'null' : (int) $newerRun; ?>,
         reportReplaced: <?php echo $replaced ? 'true' : 'false'; ?>,
         exportUrl: <?php echo json_encode((string) $module->getUrl('pages/export.php'),
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
+        // The framework's CSRF token, which the download's POST carries
+        // (W11F-N5). Empty when the framework gives none, and then the
+        // client offers no download: a POST without it is refused anyway.
+        csrfToken: <?php echo json_encode(ScanPageView::csrfToken($module),
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>
     });
 })();

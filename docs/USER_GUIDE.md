@@ -838,14 +838,17 @@ the scan kept is on some page, and in the file. A scan that reached its
 project's limit on stored detail says so, and its count still includes what
 it did not store.
 
-The link "Download these findings as a CSV file" saves the same findings,
-written straight from the stored scan. The file opens in a spreadsheet, and
+The button "Download the whole report as a CSV file" saves the whole report,
+written straight from the stored scan. It names how many findings the report
+holds, and the file holds all of them whatever filters are chosen on the page.
+The button sends the page's security token with the request, so the file
+cannot be fetched from a link or a typed address. The file opens in a spreadsheet, and
 its first lines say which scan it is, what it covered, whether it certifies
 the project, and how many rows to expect. A scan that did not cover the whole
 project says so three ways, on the page and in the file. A banner comes
 first, a row after the findings says the scan did not cover the whole
 project, and the file name ends in a suffix such as `_INCOMPLETE_CANCELLED`,
-which the page states beside the link. A file whose last line is not
+which the page states beside the button. A file whose last line is not
 `# export_complete=1` was cut off and is not the whole report.
 
 If you work inside a Data Access Group, the scan covers your group only, and

@@ -79,6 +79,12 @@ namespace ExternalModules {
         public function getUrl($p) { return '/x/' . $p; }
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
         public function getUser() { return $this->userReturn; }
+        /** The framework's CSRF token (W11F-N5), which the download posts. */
+        public $csrfReturn = 'tok-page-1';
+        public function getCSRFToken() {
+            if ($this->csrfReturn instanceof \Throwable) throw $this->csrfReturn;
+            return $this->csrfReturn;
+        }
         /**
          * A server WITH a proved change fence, unless a scenario says otherwise.
          * Without this every scan is 'manifest-complete' and the green tick is
@@ -423,6 +429,7 @@ namespace {
         $m->leaseExpires = isset($opts['lease']) ? $opts['lease'] : null;
         $m->finishedRunId = isset($opts['finishedRun']) ? $opts['finishedRun'] : null;
         $m->finishedRows = isset($opts['finishedRows']) ? $opts['finishedRows'] : null;
+        if (array_key_exists('csrf', $opts)) $m->csrfReturn = $opts['csrf'];
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -554,11 +561,22 @@ namespace {
             // The formula-injection defusing must survive the rewrite to streaming.
             $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '', 'fa_complete' => '0']]];
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
-        } elseif ($caseArg === 'export') {
+        } elseif ($caseArg === 'export' || $caseArg === 'export-get') {
             // TASK 1, then B5. pages/export.php streams a STORED run and reads no
             // record; a request that names no run is refused before anything is
             // read. It runs in a child because it sets headers and its own
-            // status code.
+            // status code. W11F-N5: the panel's download is a POST; the GET
+            // case names a run in the address, as the old link did, and must
+            // be refused before that run is even looked at.
+            if ($caseArg === 'export-get') {
+                $_SERVER['REQUEST_METHOD'] = 'GET';
+                $_GET = ['run_id' => '61'];
+                $_POST = [];
+            } else {
+                $_SERVER['REQUEST_METHOD'] = 'POST';
+                $_GET = [];
+                $_POST = [];
+            }
             $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             $m = new \INSPIRE\UniversalValidator\UniversalValidator();
             $m->projectIdReturn = PID;
@@ -873,6 +891,24 @@ namespace {
         check('B5: a request that names no run is refused as plain text with 403, as no run',
             $plain !== null && $plain['code'] === 403
             && strpos((string) $out, \INSPIRE\UniversalValidator\Scan\ScanService::NO_RUN) !== false);
+
+        // W11F-N5. A GET is what a link, a bookmark or a page on another site
+        // can make a signed-in browser send, and the framework checks no token
+        // on it. It is refused with 405 before the run it names is read.
+        list($gOut, $gHdr, $gReads) = csvChild('export-get');
+        $gPlain = null; $gAllow = false; $gAttach = false;
+        foreach ((array) $gHdr as $h) {
+            if (strpos($h['h'], 'Content-Type: text/plain') === 0) $gPlain = $h;
+            if ($h['h'] === 'Allow: POST') $gAllow = true;
+            if (stripos($h['h'], 'Content-Disposition') === 0) $gAttach = true;
+        }
+        $postOnly = \INSPIRE\UniversalValidator\Scan\ScanService::EXPORT_POST_ONLY;
+        check('W11F-N5: a GET of the export, even naming a run, is refused as plain text with 405 and Allow: POST',
+            $gOut !== null && $gPlain !== null && $gPlain['code'] === 405 && $gAllow && !$gAttach);
+        check('W11F-N5: and says why, in the stated sentence, with no file and no record read',
+            strpos(preg_replace('/\s*\n# /', ' ', (string) $gOut), $postOnly) !== false
+            && strpos((string) $gOut, '# EXPORT REFUSED') === 0 && $gReads === 0
+            && strpos((string) $gOut, \INSPIRE\UniversalValidator\Scan\ScanService::NO_RUN) === false);
         check('TASK1: a refusal is never offered as a download',
             !preg_grep('~^Content-Disposition~', $names));
         check('B5: and says plainly that no file was produced',
@@ -1452,7 +1488,7 @@ namespace {
         // Every button, the findings panel's three included (B5; the switch
         // between the current report and a newer run, rv11b2-5).
         check('PANEL: no control can submit the project form it sits inside',
-            substr_count($html, 'type="button" id="uv-scan-') === 6
+            substr_count($html, 'type="button" id="uv-scan-') === 7
             && substr_count($html, '<button') === substr_count($html, '<button type="button" id="uv-scan-'));
 
         /* -- THE FINDINGS PANEL (B5) -----------------------------------------
@@ -1549,12 +1585,34 @@ namespace {
             && $at('id="uv-scan-report-table"') < $at('id="uv-scan-report-row"')
             && $at('id="uv-scan-report-row"') < $at('id="uv-scan-report-nav"'));
         check('REPORT item 10: and the suffix is said beside the download',
-            preg_match('/<p id="uv-scan-report-export-wrap"[^>]*>\s*<a id="uv-scan-report-export">[^<]*<\/a>\s*<span id="uv-scan-report-suffix"/', $fin) === 1);
+            preg_match('/<p id="uv-scan-report-export-wrap"[^>]*>\s*<button type="button" id="uv-scan-report-export"[^>]*>[^<]*<\/button>\s*<span id="uv-scan-report-suffix"/', $fin) === 1);
         check('REPORT item 10: the suffix sentence names the suffix it is handed',
             strpos($V::REPORT_SUFFIX, '{suffix}') !== false && $V::labels()['reportSuffix'] === $V::REPORT_SUFFIX);
         check('REPORT: and the page itself offers no download: the client does, beside an answer',
-            strpos($fin, '<a id="uv-scan-report-export">') !== false
-            && preg_match('/id="uv-scan-report-export"[^>]*href=/', $fin) === 0);
+            strpos($fin, '<button type="button" id="uv-scan-report-export"') !== false
+            && preg_match('/id="uv-scan-report-export"[^>]*href=/', $fin) === 0
+            && strpos($fin, '<a id="uv-scan-report-export"') === false);
+        // W11F-N5: the download is a button whose press posts a form; no link
+        // the page prints can fetch the file, and the button says what the
+        // file holds (rv11b1-5).
+        check('W11F-N5: the download control is a button in the page\'s words, never a link',
+            preg_match('/<button type="button" id="uv-scan-report-export"[^>]*>([^<]*)<\/button>/', $fin, $dl) === 1
+            && $dl[1] === $V::REPORT_DOWNLOAD_PLAIN
+            && $V::labels()['reportDownloadPlain'] === $V::REPORT_DOWNLOAD_PLAIN
+            && str_replace(' ({findings})', '', $V::REPORT_DOWNLOAD) === $V::REPORT_DOWNLOAD_PLAIN);
+        check('W11F-N5: the page hands the client the framework\'s CSRF token, encoded as the labels are',
+            strpos($fin, 'csrfToken: "tok-page-1"') !== false);
+        list($hostile, ) = render($U(), $D, $data, [], $on(['finishedRun' => 61, 'csrf' => '</script><b>']));
+        check('W11F-N5: a token that would break out of the script block is encoded, not printed',
+            strpos($hostile, 'csrfToken: "' . chr(92) . 'u003C' . chr(92) . '/script' . chr(92) . 'u003E') !== false
+            && strpos($hostile, '</script><b>') === false);
+        list($noTok, ) = render($U(), $D, $data, [], $on(['finishedRun' => 61, 'csrf' => null]));
+        check('W11F-N5: a framework that gives no token gives the client none, and then no download',
+            strpos($noTok, 'csrfToken: ""') !== false
+            && $V::csrfToken(new \stdClass()) === '' && $V::csrfToken(null) === '');
+        list($tokThrows, ) = render($U(), $D, $data, [], $on(['finishedRun' => 61, 'csrf' => new \RuntimeException('no session')]));
+        check('W11F-N5: and one whose token call throws still renders the page, with no token',
+            strpos($tokThrows, 'csrfToken: ""') !== false && strpos($tokThrows, 'reportRunId: 61,') !== false);
 
         // N-C1. The client sets .uv-bar-indeterminate for a run with no total
         // yet. The class was defined NOWHERE - this module ships no stylesheet -
@@ -2301,7 +2359,8 @@ namespace {
                       'emptyLeftDeleted', 'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
                       'filterAll', 'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer',
-                      'reportViewingNewer', 'reportShowCurrent', 'reportMissing', 'reportGroupOnly'];
+                      'reportViewingNewer', 'reportShowCurrent', 'reportMissing', 'reportGroupOnly',
+                      'reportDownload', 'reportDownloadPlain'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2319,7 +2378,8 @@ namespace {
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
                   'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
                   'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer', 'reportViewingNewer',
-                  'reportShowCurrent', 'reportMissing', 'reportGroupOnly'] as $k) {
+                  'reportShowCurrent', 'reportMissing', 'reportGroupOnly', 'reportDownload',
+                  'reportDownloadPlain'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

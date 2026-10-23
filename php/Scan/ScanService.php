@@ -1737,6 +1737,15 @@ final class ScanService
                 }];
     }
 
+    /**
+     * Why pages/export.php refuses anything but a POST (W11F-N5): the file
+     * comes only from the scan page's download button, which posts run_id
+     * with the page's redcap_csrf_token. Sent with HTTP 405.
+     */
+    const EXPORT_POST_ONLY = 'the file is sent only in answer to the download button on the scan page, '
+        . 'which sends the page\'s token with it; a link or an address typed into the browser cannot '
+        . 'fetch it. Open the scan page and press the download button.';
+
     /** Said after the coverage of a run over one group, in its file: %s is runScope()'s label. */
     const GROUP_ONLY = 'This scan covered %s only, not the whole project.';
 

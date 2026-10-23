@@ -971,6 +971,7 @@
         stopped: false,         // a final refusal: never asked again
         facetsFor: null,        // the run the filter options were built for
         offer: null,            // {current, newer}: the page's two runs (rv11b2-5), or null
+        exportFor: null,        // the run the download is offered for, or null
         filter: { form: '', reason: '', type: '', group: '' }
     };
 
@@ -1352,20 +1353,37 @@
         show(el('uv-scan-report-filters'), any);
     }
 
-    /** The download, offered only beside an answer that showed the report. */
+    /**
+     * The download, offered only beside an answer that showed the report.
+     *
+     * A BUTTON THAT POSTS, NOT A LINK (W11F-N5). The link was a GET, which
+     * the framework does not check for its CSRF token, so another site could
+     * send a signed-in reader to the file by a top-level navigation.
+     * pages/export.php now answers only a POST with run_id and the page's
+     * redcap_csrf_token (reportDownload()); without a token nothing is
+     * offered. The button names the whole report and its count (review
+     * rv11b1-5): the filters narrow the table on the page, never the file.
+     */
     function reportExport(a) {
-        var r = UV.report, link = el('uv-scan-report-export'), L = labels();
+        var r = UV.report, btn = el('uv-scan-report-export'), L = labels();
         var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
-        var ok = a && a.ok === true && !a.withheld && url !== '' && isRunId(r.runId) && a.run_id === r.runId;
+        var token = (typeof UV.csrfToken === 'string') ? UV.csrfToken : '';
+        var ok = a && a.ok === true && !a.withheld && url !== '' && token !== '' && isRunId(r.runId)
+            && a.run_id === r.runId;
         var suffix = el('uv-scan-report-suffix');
         if (!ok) {
-            attr(link, 'href', null);
+            r.exportFor = null;
             show(el('uv-scan-report-export-wrap'), false);
             text(suffix, '');
             show(suffix, false);
             return;
         }
-        attr(link, 'href', url + (url.indexOf('?') === -1 ? '?' : '&') + 'run_id=' + r.runId);
+        r.exportFor = r.runId;
+        var n = (a.report || {}).expectedRows;
+        text(btn, (typeof n === 'number' && n >= 0 && n === Math.floor(n))
+            ? fill(L.reportDownload || 'Download the whole report as a CSV file ({findings})',
+                   { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's') })
+            : (L.reportDownloadPlain || 'Download the whole report as a CSV file'));
         show(el('uv-scan-report-export-wrap'), true);
         // The third mark: the file's name says it, wherever the file goes.
         var m = a.marks || {};
@@ -1374,6 +1392,38 @@
             : '';
         text(suffix, said);
         show(suffix, said !== '');
+    }
+
+    /**
+     * Post the download (W11F-N5): a form built for the press, outside any
+     * form on the page - the panel sits inside REDCap's project form, and a
+     * nested form is no form - carrying the run the button was offered for
+     * and the token, and taken away again once sent.
+     */
+    function reportDownload() {
+        var r = UV.report, body = document.body;
+        var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
+        var token = (typeof UV.csrfToken === 'string') ? UV.csrfToken : '';
+        if (!isRunId(r.exportFor) || r.exportFor !== r.runId || url === '' || token === '' || !body) return;
+        var f = document.createElement('form'), fields = { run_id: String(r.exportFor), redcap_csrf_token: token }, k;
+        attr(f, 'method', 'post');
+        attr(f, 'action', url);
+        f.style.display = 'none';
+        for (k in fields) {
+            if (Object.prototype.hasOwnProperty.call(fields, k)) {
+                var input = document.createElement('input');
+                attr(input, 'type', 'hidden');
+                attr(input, 'name', k);
+                attr(input, 'value', fields[k]);
+                f.appendChild(input);
+            }
+        }
+        body.appendChild(f);
+        try {
+            f.submit();
+        } finally {
+            body.removeChild(f);
+        }
     }
 
     function reportNext() {
@@ -1412,6 +1462,8 @@
     function attachReport(opts) {
         var b, i;
         if (typeof opts.exportUrl === 'string') UV.exportUrl = opts.exportUrl;
+        if (typeof opts.csrfToken === 'string') UV.csrfToken = opts.csrfToken;
+        if ((b = el('uv-scan-report-export'))) b.addEventListener('click', quietly(reportDownload));
         if ((b = el('uv-scan-report-next'))) b.addEventListener('click', quietly(reportNext));
         if ((b = el('uv-scan-report-prev'))) b.addEventListener('click', quietly(reportPrev));
         if ((b = el('uv-scan-report-switch'))) b.addEventListener('click', quietly(reportSwitch));

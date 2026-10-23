@@ -1082,8 +1082,10 @@ An incomplete report shows its banner above the table and its terminal row
 below it, and beside the download it says that the file name ends in the
 run's suffix. A group-scoped run that never confirmed its group
 shows only the sentence saying why, with no table, filters or download. The
-link "Download these findings as a CSV file" is offered only beside a report
-the page has just read.
+button "Download the whole report as a CSV file" is offered only beside a report
+the page has just read, and it names how many findings the report holds. The
+file is always the whole report: the filters narrow the table on the page,
+never the file.
 
 The columns are Issue, Record, Data Access Group, Event, Instrument, Instance,
 Field, Field label, Value, Check, Reason code, Rule, Rule name, What is wrong
@@ -1103,7 +1105,11 @@ so.
 ### The CSV file
 
 The download is `pages/export.php`, which streams the stored run a page at a
-time and runs no scan of its own. It asks the same questions as the findings
+time and runs no scan of its own. The button posts a form with the run id and
+the page's `redcap_csrf_token`, which the module framework checks. Any other
+request method, such as a link, a bookmark or an address typed into the
+browser, is refused with HTTP 405 and a plain-text `# EXPORT REFUSED` answer
+before the run is read. It asks the same questions as the findings
 page. The file is UTF-8 with a byte-order mark. It opens with `# ` lines about
 the report (schema, project, run, when it was generated, scope, coverage,
 whether it certifies, values, labels, a column legend and how many rows to
