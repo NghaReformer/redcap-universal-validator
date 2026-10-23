@@ -57,10 +57,11 @@ jobs:
         run: node tests/unique_dom_js.cjs
       - name: JS choices (@UVCHOICES) DOM contract (filter, stale-kept, fixture)
         run: node tests/choices_dom_js.cjs
-      - name: JS window (@UVWINDOW) verdict vs fixture, and its DOM contract (server clock, snapshot, midnight)
+      - name: JS window (@UVWINDOW) verdict vs fixture, its DOM contract (server clock, snapshot, midnight), and the page's glue vs the server's
         run: |
           node tests/window_js.cjs
           node tests/window_dom_js.cjs
+          node tests/window_glue_dom_js.cjs
       - name: JS exists (@UVEXISTS) DOM contract (asks on change, could-not-check never blocks, cache)
         run: node tests/exists_dom_js.cjs
       - name: JS @UVEXISTS "return" DOM contract (fills on found, empties on not-found, leaves on unknown, quiet page-open fill)
@@ -227,6 +228,7 @@ jobs:
         run: |
           php tests/window_php.php
           php tests/window_module_php.php
+          php tests/window_glue_php.php
           php tests/value_stamps_php.php
       - name: PHP @UVEXISTS grammar, hooks, endpoint (rights, throttle, surveys), audit and scan index
         run: php tests/exists_php.php

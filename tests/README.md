@@ -218,6 +218,21 @@ arithmetic, its `spread` cases a window counted from the span of "now", and its
 `labels` cases the name of a period, which the page shows and the scan report
 repeats.
 
+- `window_glue_php.php` and `window_glue_dom_js.cjs` lock what each side
+  feeds that verdict (WIN-9): the anchor for `today`, `now` and a period, the
+  clock margins, and the parts an unchanged value leaves out. The PHP half
+  draws 900 random rules with a fixed seed, each with a value saved at one
+  moment, works out the server's verdict through `findingsWindow()` with
+  REDCap's log showing when the value was saved, and compares the verdicts
+  with `window_glue_fixture.json` (`--write` rewrites it after a meant
+  change). The DOM half boots the page rule on each case and reads
+  `validators.f.verdict()`. A new value gets the server's verdict; on a date
+  and time the page may differ only where its narrower margin around now
+  explains it, which the suite proves by booting the case again with the
+  computer's clock 10 minutes ahead or behind. An unchanged value keeps only
+  verdicts the server also gives. Some draws put the value 100 to 760 seconds
+  from now, and some put the clock just after midnight on 1 January with a
+  period counted from now.
 - `window_dom_js.cjs` boots the browser rule on a stub page: the message names
   the bounds in the field's format, the survey message leaves out the `from`
   field, a snapshot `from` date never blocks, and the save-time recheck of a

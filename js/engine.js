@@ -5334,13 +5334,24 @@ function QRIDWindowInit(QRID_CONFIG){
     return true;
   }
   (QRID_CONFIG.fields || []).forEach(function(f){
+    /* The active variant's verdict on the value now, or null when no single
+       variant applies, it is deferred, or the value is a missing data code. */
+    function judged(){
+      var a = QRID_activeVariants(VS);
+      if(a.length !== 1 || a[0].deferred) return null;
+      if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
+      var r = verdictOf(a[0], f);
+      return { verdict: r.verdict, skipped: !!r.skipped, withheld: !!a[0].windowWithheld };
+    }
     UV_validators[f] = { type: "window", mode: { window: true, configError: configError },
+      /* What the page decided, for tests/window_glue_dom_js.cjs, which holds
+         it against the server's verdict on the same value (WIN-9). */
+      verdict: function(){ return judged(); },
       test: function(){
-        var a = QRID_activeVariants(VS);
-        if(a.length !== 1 || a[0].deferred) return null;
-        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var r = verdictOf(a[0], f), v = r.verdict;
-        if(v === "ok" && (a[0].windowWithheld || r.skipped)) return null;   /* a part was never checked */
+        var r = judged();
+        if(!r) return null;
+        var v = r.verdict;
+        if(v === "ok" && (r.withheld || r.skipped)) return null;   /* a part was never checked */
         return v === "ok" ? true : (v === "future" || v === "past" || v === "window-early" || v === "window-late") ? false : null;
       } };
   });
