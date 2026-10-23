@@ -467,6 +467,18 @@ namespace {
     check('match: ...whose saved value decides', ($r['state'] ?? null) === 'not-found');
     $r = ask(mod(), 'res_off', ['res_off' => 'SP-1'], '');
     check('match: a new record has no saved value, so unknown', ($r['state'] ?? null) === 'unknown');
+    // EXS-9: a value sent for a match field of another form is never taken.
+    $r = ask(mod(), 'res_off', ['res_off' => 'SP-1', 'home_site' => 'A'], '2');
+    check('EXS-9: a value sent for a match field of another form does not replace the saved one', ($r['state'] ?? null) === 'not-found');
+    $r = ask(mod(), 'res_off', ['res_off' => 'SP-1', 'home_site' => 'A'], '');
+    check('EXS-9: ...nor stand in for a new record\'s', ($r['state'] ?? null) === 'unknown');
+    // EXS-8: a survey is answered only about a field of its own instrument.
+    $other = function ($instrument) {
+        return mod()->redcap_module_ajax('exists-check', ['field' => 'res_s', 'values' => ['res_s' => 'SP-1']],
+            149, '1', $instrument, 351, 1, 'hash', null, null, '', '', null, null);
+    };
+    check('EXS-8: a survey of another instrument is not answered about res_s', ($other('enrol')['error'] ?? null) === 'not enabled on surveys');
+    check('EXS-8: ...its own survey is', ($other('result')['state'] ?? null) === 'found');
 
     $r = ask(mod(), 'res_ev', ['res_ev' => 'SP-3']);
     check('event: a value saved only in another event is not found', ($r['state'] ?? null) === 'not-found');

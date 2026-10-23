@@ -1051,8 +1051,9 @@ way. "Could not check" never blocks a save, but a "not found" held for 30
 seconds or more is asked again at Save and stands if that second question gets
 no answer. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
-about forms they may open, and a user in a Data Access Group only on records
-of their group. A value saved nowhere is "not found" for a user in a group
+about forms they may open. A user in a Data Access Group may check only
+records of their own group, and learns whether a value is saved in another
+group, never which record holds it. A value saved nowhere is "not found" for a user in a group
 too: the module reads which records hold the value from the data table, which
 REDCap does not confine to a group. Surveys need `"surveys":true`, which is refused when the lookup
 touches an Identifier field. Letter case is ignored (`sp-1` finds `SP-1`)

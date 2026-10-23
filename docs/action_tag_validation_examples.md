@@ -2241,7 +2241,9 @@ this record.
   rule with `return`, the copied fields. A record-ID lookup without `where` needs
   no extra form.
   At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
-  user in a Data Access Group is answered only on records of their own group.
+  user in a Data Access Group may check only records of their own group; they
+  learn whether a value is saved in another group, never which record holds
+  it.
 - **Which records are read.** The module asks the project's data table which
   records hold the value (in any spelling the rule accepts) and reads only
   those through REDCap. A *not found* reads no record at all. When the data

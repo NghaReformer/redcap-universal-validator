@@ -327,6 +327,13 @@ trait LiveLookups
                 }
                 $ids = $this->projectIdentifierFields($project_id);
                 if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
+                // ...nor about a tagged field of another instrument (EXS-8, as
+                // UNQ-5 for unique-check): "surveys" on a staff form that is
+                // sometimes a survey must not open the lookup to the link of
+                // every other survey in the project.
+                if (!self::onSurveyInstrument($this->dataDictionary($project_id), $field, $instrument)) {
+                    return ['error' => 'not enabled on surveys'];
+                }
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
                 // Flagged, so a rule that blocks holds the save until the next
@@ -358,10 +365,11 @@ trait LiveLookups
             foreach ($locals as $lf) {
                 // A match field the page shows is sent, blank or not. One it does
                 // not show (another form, or another page of a multi-page
-                // survey) is left out and read from the saved record; so is a
-                // blank sent for a field of another form.
-                if (array_key_exists($lf, $values)
-                        && (Logic::lookupTrim($values[$lf]) !== '' || ($onForm !== null && isset($onForm[$lf])))) {
+                // survey) is left out and read from the saved record. A value
+                // sent for a field of another form is never taken: it let a
+                // request choose the saved value it was matched against (EXS-9).
+                // Where the form's fields cannot be listed, every one is read.
+                if (array_key_exists($lf, $values) && $onForm !== null && isset($onForm[$lf])) {
                     $lv[$lf] = Logic::lookupTrim($values[$lf]);
                     continue;
                 }

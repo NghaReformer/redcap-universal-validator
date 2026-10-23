@@ -813,8 +813,9 @@ the specimen ID on the collection form.
 - **Who gets an answer.** Signed-in users are answered only when they may open
   every form the lookup reads (the searched field, the `match` fields and the
   `where` fields; a record-ID lookup without `where` needs no extra form), and at most 60 lookups a minute per
-  session, shared with `@UVUNIQUE`. A user in a Data Access Group is answered
-  only on records of their own group. Staff in no group see the record the value
+  session, shared with `@UVUNIQUE`. A user in a Data Access Group may check
+  only records of their own group; they learn whether a value is saved in
+  another group, never which record holds it. Staff in no group see the record the value
   was found in; staff in a group see it only when it is in their group. A
   record-ID lookup never names a record.
 - **Data Access Groups.** REDCap may confine a group user's reads to their own

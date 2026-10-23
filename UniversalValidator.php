@@ -3160,6 +3160,10 @@ class UniversalValidator extends AbstractExternalModule
         }
         $r['record'] = null;
         $r['dag'] = null;
+        // Under "answer" the other project agreed to found or not found and
+        // nothing more: "saved there, but not where the conditions hold" is a
+        // third answer it never gave (EXS-10). Its own log still records it.
+        if ($c['mode'] === 'answer') unset($r['filtered']);
         return $r;
     }
 
