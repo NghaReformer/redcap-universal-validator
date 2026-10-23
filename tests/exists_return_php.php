@@ -380,9 +380,13 @@ namespace {
         return $out;
     }
     function row9(array $vals) { foreach ($vals as $k => $v) \REDCap::$data[149]['9'][351][$k] = $v; }
+    // A rule refused when read is logged on each save too (VAL-15); this list
+    // holds what failed at run time.
     function unconfigurable($m) {
         return array_values(array_map(function ($c) { return $c[1]['why']; },
-            array_filter($m->logCalls, function ($c) { return $c[0] === 'uvalidate-unconfigurable'; })));
+            array_filter($m->logCalls, function ($c) {
+                return $c[0] === 'uvalidate-unconfigurable' && strpos((string) $c[1]['why'], 'configuration error: ') !== 0;
+            })));
     }
     function fullReads($pid = 149) {
         return count(array_filter(\REDCap::$calls, function ($c) use ($pid) {

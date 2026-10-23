@@ -165,7 +165,11 @@ namespace {
         $by = [];
         foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $by[$e['field']] = $e['reason'];
         $un = [];
-        foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        // A rule refused when read is logged too (VAL-15); these lists hold what failed at run time.
+        foreach (findings($m, 'uvalidate-unconfigurable') as $e) {
+            if (strpos((string) $e['why'], 'configuration error: ') === 0) continue;
+            $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        }
         $ne = [];
         foreach (findings($m, 'uvalidate-not-evaluated') as $e) $ne[$e['field']] = $e['why'];
         return [$by, $un, $ne, $m];
@@ -782,7 +786,11 @@ namespace {
         foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $out[$e['field']][] = $e['reason'];
         foreach ($out as $k => $v) sort($out[$k]);
         $un = [];
-        foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        // A rule refused when read is logged too (VAL-15); these lists hold what failed at run time.
+        foreach (findings($m, 'uvalidate-unconfigurable') as $e) {
+            if (strpos((string) $e['why'], 'configuration error: ') === 0) continue;
+            $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        }
         return [$out, $un];
     };
     list($sev, $un) = $sevAudit($TWO, $two);

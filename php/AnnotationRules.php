@@ -224,6 +224,13 @@ class AnnotationRules
      * 'condition' (the whole condition, for the tags whose bare value IS one —
      * see Logic::parsePrefix). A condition that goes on past the point where it
      * can be read gets an error instead of being cut short.
+     *
+     * A tag starts the annotation or follows whitespace, or the closing quote,
+     * brace or parenthesis of another tag's value; inside @IF(...) it may also
+     * follow "(" or ",". The name inside another action tag's quoted, {JSON}
+     * or (...) value is text of that value (valueSpans), so a message that
+     * names @UVREQUIRED, or @DEFAULT='see @UVALIDATE rules', makes no rule
+     * (VAL-7, AST-9, REQ-11).
      */
     public static function extractTagsDetailed($annotation, $tag, $bare = 'token')
     {
@@ -232,6 +239,7 @@ class AnnotationRules
         $out = [];
         $offset = 0;
         $ifSpans = null;   // REDCap @IF(...) spans, read when the first tag is found (AST-6)
+        $valueSpans = null;
         while ($offset < $len) {
             $pos = stripos($ann, $tag, $offset);
             $inIf = null;
@@ -241,15 +249,21 @@ class AnnotationRules
                 // A tag inside REDCap's @IF(...) is refused (AST-6): the module
                 // does not read @IF, so the rule would apply whatever the
                 // condition says. There a bare tag may also end at "," or ")".
-                if ($ifSpans === null) $ifSpans = self::ifSpans($ann);
+                if ($ifSpans === null) { $ifSpans = self::ifSpans($ann); $valueSpans = self::valueSpans($ann); }
                 $inIf = null;
                 foreach ($ifSpans as $sp) {
                     if ($pos > $sp[0] && $pos < $sp[1]) { $inIf = self::IF_ERROR; break; }
                 }
+                $before = $pos > 0 ? $ann[$pos - 1] : '';
+                $starts = $before === '' || ctype_space($before) || strpos('\'"})', $before) !== false
+                    || ($inIf !== null && ($before === '(' || $before === ','));
+                foreach ($valueSpans as $sp) {
+                    if ($pos > $sp[0] && $pos < $sp[1]) { $starts = false; break; }
+                }
                 // a real tag ends at '=', whitespace, or end-of-string;
                 // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
-                if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
-                if ($inIf !== null && ($ch === ',' || $ch === ')')) break;
+                if ($starts && ($ch === '' || $ch === '=' || ctype_space($ch))) break;
+                if ($starts && $inIf !== null && ($ch === ',' || $ch === ')')) break;
                 $pos = stripos($ann, $tag, $after);
             }
             if ($pos === false) break;
@@ -327,6 +341,69 @@ class AnnotationRules
             $offset = $i + 1;
         }
         return $spans;
+    }
+
+    /**
+     * The values of action tags in an annotation, as [start, end) byte pairs:
+     * from the "@" of a tag to the end of its quoted, {JSON} or (...) value,
+     * read as readValue reads a module tag's value (a quoted value ends at the
+     * next quote of its kind; a JSON value is brace-balanced, with strings
+     * skipped). REDCap's own tags count too: @DEFAULT='...', @CALCTEXT(...).
+     * @IF(...) is left to ifSpans, which refuses a module tag inside it. A
+     * value that never closes has no span, so it hides no tag after it.
+     */
+    private static function valueSpans($ann)
+    {
+        $spans = [];
+        $len = strlen($ann);
+        $i = 0;
+        while ($i < $len && ($p = strpos($ann, '@', $i)) !== false) {
+            $j = $p + 1;
+            if ($j >= $len || !ctype_alpha($ann[$j])) { $i = $j; continue; }
+            while ($j < $len && (ctype_alnum($ann[$j]) || $ann[$j] === '_' || $ann[$j] === '-')) $j++;
+            if (strcasecmp(substr($ann, $p + 1, $j - $p - 1), 'IF') === 0) { $i = $j; continue; }
+            $k = $j;
+            while ($k < $len && ($ann[$k] === ' ' || $ann[$k] === "\t")) $k++;
+            if ($k < $len && $ann[$k] === '=') {
+                $k++;
+                while ($k < $len && strpos(" \t\r\n", $ann[$k]) !== false) $k++;
+            } elseif ($k >= $len || $ann[$k] !== '(') {
+                $i = $j;
+                continue;
+            }
+            $end = $k < $len ? self::valueEnd($ann, $k) : null;
+            if ($end === null) { $i = $j; continue; }
+            $spans[] = [$p, $end];
+            $i = $end;
+        }
+        return $spans;
+    }
+
+    /** Where the quoted, {JSON} or (...) value at $k ends (exclusive), or null when it is none of those or never closes. */
+    private static function valueEnd($ann, $k)
+    {
+        $len = strlen($ann);
+        $c = $ann[$k];
+        if ($c === '"' || $c === "'") {
+            $e = strpos($ann, $c, $k + 1);
+            return $e === false ? null : $e + 1;
+        }
+        if ($c !== '{' && $c !== '(') return null;
+        $close = $c === '{' ? '}' : ')';
+        $depth = 0;
+        $quote = null;
+        for ($i = $k; $i < $len; $i++) {
+            $ch = $ann[$i];
+            if ($quote !== null) {
+                if ($ch === '\\') $i++;
+                elseif ($ch === $quote) $quote = null;
+                continue;
+            }
+            if ($ch === '"' || ($c === '(' && $ch === "'")) $quote = $ch;
+            elseif ($ch === $c) $depth++;
+            elseif ($ch === $close && --$depth === 0) return $i + 1;
+        }
+        return null;
     }
 
     /**
@@ -1729,6 +1806,12 @@ class AnnotationRules
             return ['error' => 'unknown ' . self::TAG . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', self::JSON_KEYS) . '.'];
         }
+        // An @UVALIDATE tag is an ID check. "type":"required" or "unique" made
+        // a rule of another tag under this one (VAL-9).
+        if (isset($cfg['type']) && is_string($cfg['type']) && $cfg['type'] !== ''
+                && !in_array($cfg['type'], ModeRegistry::types('check'), true)) {
+            return ['error' => '"type" must be "single" or "pooled".'];
+        }
         return self::validateConfig($cfg, $opts);
     }
 
@@ -2202,12 +2285,19 @@ class AnnotationRules
             } else {
                 $min = isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8;
                 $max = isset($frag['idMaxLen']) && self::posInt($frag['idMaxLen']) ? (int) $frag['idMaxLen'] : 14;
+                // The parser tries no length shorter than the check character
+                // plus one, so a range below that leaves no length to try (VAL-8).
+                $least = CheckCharacter::nCheckChars($algo) + 1;
                 if ($max < $min) {
                     $errors[] = 'the maximum ID length (' . $max . ') is smaller than the minimum (' . $min . ').';
                 } elseif ($max >= 2 * $min) {
                     $errors[] = 'the maximum ID length (' . $max . ') must be LESS than 2 x the minimum ('
                         . (2 * $min) . ') so one "member" can never swallow two real ones. Narrow the '
                         . 'range, or set exact ID length(s) instead.';
+                } elseif ($max < $least) {
+                    $errors[] = 'no ID length is left to try: an ID here is at most ' . $max . ' character'
+                        . ($max === 1 ? '' : 's') . ' long, and the ' . $algo . ' check takes ' . ($least - 1)
+                        . ' of them, so an ID needs at least ' . $least . '.';
                 }
             }
         }

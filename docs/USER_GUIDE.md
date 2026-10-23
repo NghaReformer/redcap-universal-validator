@@ -315,6 +315,12 @@ Rules for the annotation form:
   apply whatever the condition says, so it is refused with a configuration
   error. Put the tag outside `@IF` and give the rule a `"when"` with the
   condition instead.
+- A tag name inside the value of another tag is text, not a tag. A
+  `"message"` that names `@UVREQUIRED`, or `@DEFAULT='see @UVALIDATE rules'`,
+  makes no rule. The same holds for a name that follows a letter or digit,
+  such as `email@UVREQUIRED.org`. A tag starts the annotation, follows a space
+  or a line break, or follows the closing quote, brace or parenthesis of
+  another tag's value.
 - `algorithm` accepts case-insensitive **shorthands** (`3736`, `9710`, `mod10`,
   `gs1`, `isbn`, `regex`, …) — see [Appendix B](#appendix-b-algorithm-shorthands).
 - **Fields with identical tags are grouped into one rule** automatically. Tag 50
@@ -798,7 +804,8 @@ Three log entry types make sure nothing passes silently:
 - `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
-  Check those values by hand.
+  Check those values by hand. A rule refused when it was read (its `why` starts
+  with "configuration error:") is logged once for each save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
 
 ### The coverage caveat (read before relying on it)

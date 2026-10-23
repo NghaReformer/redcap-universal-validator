@@ -232,6 +232,22 @@ class UniversalValidator extends AbstractExternalModule
         // Scope to the saved instrument when it is known (null = no filter).
         $onForm = $this->fieldsOnInstrument($project_id, $instrument);
 
+        // A misconfigured rule checks nothing: the form shows its error, and a
+        // survey tells the respondent "a configuration issue has been logged
+        // for the study team". Log it, once per save, for each such rule on the
+        // saved instrument (VAL-15); nothing wrote that entry before.
+        foreach ($rules as $ruleIndex => $r) {
+            if (empty($r['configError']) || $onForm === null) continue;
+            $own = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (is_string($f) && isset($onForm[$f])) $own[] = $f;
+            }
+            if ($own) {
+                $this->logUnconfigurable($ruleIndex, $own, 'configuration error: ' . (string) $r['configError'],
+                    $instrument, $event_id, $repeat_instance);
+            }
+        }
+
         $fields = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
@@ -391,7 +407,7 @@ class UniversalValidator extends AbstractExternalModule
         // its own, so nothing leaves the loop before endUniqueAudit().
         $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
-            if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
+            if (!empty($rule['configError'])) continue; // logged above (VAL-15)
             if ($surveyOpen && !isset($dependents[$ruleIndex]) && ModeRegistry::waitsForCompleteSurvey($rule['type'] ?? '')) continue;
             // Each rule is isolated: one rule blowing up must not silently
             // abort the audit of every later rule (COR-002).

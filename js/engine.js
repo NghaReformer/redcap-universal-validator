@@ -842,6 +842,43 @@ function QRID_pcreOnly(p){
   var d = String(p).replace(/\\\\/g, "");                  /* drop escaped-backslash pairs (parity) */
   return /\\[KGhHvVRNXCQEzg]/.test(d) || /\[:\^?[a-z]+:\]/.test(d);
 }
+/* PCRE syntax the other dialect gates do not look for (VAL-5): a backtracking
+   verb such as (*ACCEPT), a named back-reference \k'name' or \k{name}, an octal
+   \o{...}, a reference \8 or \9, or a character-class range that starts or ends
+   at \d, \w or \s ([\d-z]). PCRE runs the first three and refuses the last
+   two; this engine refuses the first two and reads the others as other
+   characters. Twin of CheckCharacter::usesPcreVerbOrRef (php). */
+function QRID_pcreVerbOrRef(p){
+  var src = String(p);
+  if(src.replace(/\\[\s\S]/g, "").indexOf("(*") !== -1) return true;   /* escaped characters dropped */
+  var d = src.replace(/\\\\/g, "");                                       /* escaped-backslash pairs dropped */
+  if(/\\k['{]|\\o\{|\\[89]/.test(d)) return true;
+  return QRID_shorthandRange(d);
+}
+/* Whether a character class in d has a range that starts or ends at \d, \w or
+   \s (or their capitals). A "-" first or last in the class, or escaped, is a
+   literal. Twin of CheckCharacter::shorthandRange (php). */
+function QRID_shorthandRange(d){
+  var n = d.length;
+  for(var i = 0; i < n; i++){
+    if(d.charAt(i) === "\\"){ i++; continue; }
+    if(d.charAt(i) !== "[") continue;
+    var j = i + 1;
+    if(j < n && d.charAt(j) === "^") j++;
+    var first = j;
+    if(j < n && d.charAt(j) === "]") j++;                 /* a "]" first is a literal */
+    for(; j < n && d.charAt(j) !== "]"; j++){
+      if(d.charAt(j) !== "\\") continue;
+      if(j + 1 < n && "dDwWsS".indexOf(d.charAt(j + 1)) !== -1){
+        if(j - 1 > first && d.charAt(j - 1) === "-" && d.charAt(j - 2) !== "\\") return true;
+        if(j + 3 < n && d.charAt(j + 2) === "-" && d.charAt(j + 3) !== "]") return true;
+      }
+      j++;
+    }
+    i = j;
+  }
+  return false;
+}
 /* A "(?..." group form this engine cannot compile: inline flags, comments,
    atomic groups, conditionals and the PCRE named forms. PCRE compiles all of
    them, so the server accepted a rule the browser could not run — the field
@@ -872,7 +909,7 @@ function QRID_nonJsGroup(p){
 function QRID_riskyPattern(src){
   if(Array.from(String(src)).length > 512) return true;   /* absurd pattern source */
   var s = QRID_riskyEscapes(String(src));                  /* each escape -> an atom of the same reach */
-  s = s.replace(/\(\?(<?[=!]|:)/g, "(");                   /* (?: (?= (?! (?<= (?<! -> plain ( */
+  s = s.replace(/\(\?(<?[=!]|:|<[A-Za-z_][A-Za-z0-9_]*>)/g, "("); /* (?: (?= (?! (?<= (?<! (?<name> -> plain ( (VAL-11) */
   /* Whitespace is an explicit ASCII class, NOT \s: JS \s matches Unicode
      whitespace but PCRE \s (no /u) does not, so \s would classify differently
      across runtimes. The group check accepts a bounded quantifier ({n,m}/{n,})
@@ -1131,6 +1168,12 @@ function QRID_gatePattern(raw, label){
       "\\X, \\C, \\Q...\\E, \\g, \\z or a POSIX class such as [[:digit:]]) that a browser reads as an " +
       "ordinary character, so the value would validate differently in the browser and on the server. " +
       "Use explicit character classes such as [A-Z] or [0-9] instead." };
+  }
+  if(QRID_pcreVerbOrRef(src)){
+    return { re: null, error: pre + "idPattern" + " uses PCRE syntax that a browser cannot run or reads as " +
+      "other characters: a verb such as (*ACCEPT), a named back-reference \\k'name' or \\k{name}, an octal " +
+      "\\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, \\w or \\s, such as " +
+      "[\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead." };
   }
   if(/\[\^?\]/.test(src.replace(/\\[\s\S]/g, ""))){
     /* "[]" is a compile error to PCRE and an empty class — one that can never
@@ -4293,6 +4336,15 @@ function QRIDSingleInit(QRID_CONFIG){
         "character, so typos that keep the format cannot be detected.)" };
     }
 
+    /* A full-width digit or an invisible character left by a copy and paste
+       reads as a check-character typo below; name it instead (LIVE-5). No
+       format accepted the value, and every ID alphabet is printable ASCII. */
+    if(/[^\x20-\x7E]/.test(String(v).trim())){
+      return { ok: false, html: "&#10007; This value contains a character that is not allowed in an ID, such " +
+        "as a full-width or accented letter or digit, or an invisible character that a copy and paste can " +
+        "leave. Please re-type it." };
+    }
+
     /* ---- pass 2: a shape matched but its check character failed ---- */
     if(shapeFailed.length){
       var only = shapeFailed.length === 1 ? shapeFailed[0] : null;
@@ -4658,6 +4710,13 @@ function QRIDConstraintInit(QRID_CONFIG){
       var base = V.message ? QRID_ruleHtml(V, "message")
             : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
                               : "This value fails its validation rule for this field.");
+      /* Text in a number field fails a comparison such as [dose]<=100, and the
+         rule's own message ("above the maximum") then names the wrong cause
+         (LIVE-5). */
+      if(!ok && Object.prototype.hasOwnProperty.call(QRID_NUMBER_MARKS, fieldName)
+         && QRID_rangeNumber(val, QRID_NUMBER_MARKS[fieldName] === "comma") === null){
+        base = "This value is not a number.";
+      }
       /* Survey respondents get no field names or technical detail, as elsewhere. */
       if(!ok && V.snapshot && !QRID_IS_SURVEY){
         base += ' <span style="opacity:.8">(compared against ' +

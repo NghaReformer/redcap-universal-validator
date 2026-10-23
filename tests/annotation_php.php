@@ -1278,5 +1278,51 @@ check('AST-6: outside @IF a comma after a tag still does not end it, as before',
 check('AST-6: the compatibility parser refuses it too',
     isset(AnnotationRules::parseFieldAll('@IF([s]=1, @UVALIDATE=luhn, @HIDDEN)')[0]['error']));
 
+// ---- VAL-7, AST-9, REQ-11: a tag name inside another tag's value is text ----
+// A "message" that named @UVREQUIRED made a second rule, and
+// @DEFAULT='see @UVALIDATE rules' made an ID check of a plain text field.
+check('VAL-7: a tag named inside a module tag\'s JSON message makes no second rule',
+    AnnotationRules::parseAllTags('@UVREQUIRED={"message":"see @UVALIDATE"}') === [['type' => 'required', 'message' => 'see @UVALIDATE']]);
+check('VAL-7: a tag named inside REDCap\'s @DEFAULT=\'...\' makes no rule',
+    AnnotationRules::parseAllTags("@DEFAULT='see @UVALIDATE rules'") === null);
+check('VAL-7: a tag named inside @CALCTEXT(...) makes no rule',
+    AnnotationRules::parseAllTags("@CALCTEXT(if([a]='1','@UVREQUIRED',''))") === null);
+check('VAL-7: a tag name right after a letter is text (an e-mail address)',
+    AnnotationRules::parseAllTags('contact x@UVREQUIRED now') === null);
+check('AST-9: an @UVASSERT message that names @UVREQUIRED, and a real @UVREQUIRED after it, make two rules',
+    AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>1","message":"use @UVREQUIRED too"} @UVREQUIRED')
+    === [['type' => 'constraint', 'assert' => '[a]>1', 'message' => 'use @UVREQUIRED too'], ['type' => 'required']]);
+check('REQ-11: a tag right after the closing quote or brace of another value is still read',
+    AnnotationRules::parseAllTags("@DEFAULT='x'@UVREQUIRED") === [['type' => 'required']]
+    && AnnotationRules::parseAllTags('@HIDDEN{"a":1}@UVREQUIRED') === [['type' => 'required']]);
+check('REQ-11: a value that never closes hides no tag after it',
+    AnnotationRules::parseAllTags("@DEFAULT='open @UVREQUIRED") === [['type' => 'required']]);
+
+// ---- VAL-9: an @UVALIDATE "type" is single or pooled ----
+foreach (['required', 'unique', 'constraint'] as $t) {
+    $r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"' . $t . '"}');
+    check("VAL-9: @UVALIDATE with \"type\":\"$t\" is refused",
+        is_array($r) && count($r) === 1 && ($r[0]['error'] ?? '') === '"type" must be "single" or "pooled".');
+}
+check('VAL-9: "type":"single" is still accepted',
+    AnnotationRules::parseAllTags('@UVALIDATE={"type":"single","algorithm":"luhn"}') === [['type' => 'single', 'algorithm' => 'luhn']]);
+
+// ---- VAL-8: a pooled length range must leave a length to try ----
+$r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"luhn","idMinLen":1,"idMaxLen":1}');
+check('VAL-8: pooled luhn with IDs of at most 1 character is refused',
+    is_array($r) && strpos($r[0]['error'] ?? '', 'no ID length is left to try') === 0 && strpos($r[0]['error'], 'at least 2') !== false);
+$r = AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"iso7064_mod97_10","idMinLen":2,"idMaxLen":2}');
+check('VAL-8: a 2-digit check needs IDs of 3 characters',
+    is_array($r) && strpos($r[0]['error'] ?? '', 'at least 3') !== false);
+check('VAL-8: pooled regex-only IDs of 1 character are accepted (no check character)',
+    !isset(AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]","idMinLen":1,"idMaxLen":1}')[0]['error']));
+check('VAL-8: pooled luhn with IDs of 2 to 3 characters is accepted',
+    !isset(AnnotationRules::parseAllTags('@UVALIDATE={"type":"pooled","algorithm":"luhn","idMinLen":2,"idMaxLen":3}')[0]['error']));
+
+// ---- VAL-11: a named group compiles in both runtimes ----
+check('VAL-11: a format with named groups is accepted',
+    AnnotationRules::parseAllTags('@UVALIDATE={"algorithm":"none","pattern":"(?<site>[A-Z]{2})(?<num>[0-9]{4})"}')
+    === [['algorithm' => 'none', 'idPattern' => '(?<site>[A-Z]{2})(?<num>[0-9]{4})']]);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

@@ -324,6 +324,27 @@ namespace {
         return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m));
     }
 
+    // ---- 0) VAL-15: a rule refused when read is logged for the saved form -----
+    // A survey tells the respondent "a configuration issue has been logged for
+    // the study team"; the save wrote nothing before.
+    {
+        $badDict = $dictionary;
+        $badDict['main_id_tag']['field_annotation'] = '@UVALIDATE=bogus';
+        $badDict['other_field']['field_annotation'] = '@UVALIDATE=alsobogus';
+        $m = newModule([], $badDict, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $un = logsOf($m, 'uvalidate-unconfigurable');
+        check('VAL-15: the refused rule on the saved form is logged once (got ' . json_encode($un) . ')',
+            count($un) === 1 && $un[0][1]['fields'] === 'main_id_tag'
+            && strpos($un[0][1]['why'], 'configuration error: ') === 0 && strpos($un[0][1]['why'], 'bogus') !== false
+            && $un[0][1]['instrument'] === 'id_validation_test');
+        $m = newModule([], $badDict, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'other_form', 351, null, null, null, 1);
+        $un = logsOf($m, 'uvalidate-unconfigurable');
+        check('VAL-15: a save of another form logs only the refused rule of that form',
+            count($un) === 1 && $un[0][1]['fields'] === 'other_field');
+    }
+
     // ---- 1) baseline: a form save with getProjectId() working logs both invalids ----
     $m = newModule($dialogRules, $dictionary, $classicData, 149);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);

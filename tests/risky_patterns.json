@@ -77,9 +77,11 @@
     "\\w+-\\w+-\\w+",
     "[0-9]+\\.[0-9]+",
     "[A-Z]{2}\\-[0-9]+\\/[0-9]+",
-    "[\\dA-F]+-[\\dA-F]+-[\\dA-F]+"
+    "[\\dA-F]+-[\\dA-F]+-[\\dA-F]+",
+    "(?<site>[A-Z]{2})(?<num>[0-9]{4})",
+    "(?<d>[0-9]){4}"
   ],
-  "dialect_note": "Patterns the two regex dialects read differently. `dialect_reject` must be refused by BOTH QRID_gatePattern (js) and CheckCharacter::gatePattern (php) - for any stated reason, but by both, because a pattern one runtime admits and the other refuses splits enforcement: either the browser stops checking the field while the post-save audit keeps filing findings, or the two engines both compile it and then disagree about every value. `dialect_accept` must be admitted by both. Round 3, M-1 and M-2. \"{,n}\" is literal to JavaScript and to PCRE2 before 10.43 but {0,n} from 10.43 (PHP 8.4), so it is refused too.",
+  "dialect_note": "Patterns the two regex dialects read differently. `dialect_reject` must be refused by BOTH QRID_gatePattern (js) and CheckCharacter::gatePattern (php) - for any stated reason, but by both, because a pattern one runtime admits and the other refuses splits enforcement: either the browser stops checking the field while the post-save audit keeps filing findings, or the two engines both compile it and then disagree about every value. `dialect_accept` must be admitted by both. Round 3, M-1 and M-2. \"{,n}\" is literal to JavaScript and to PCRE2 before 10.43 but {0,n} from 10.43 (PHP 8.4), so it is refused too. VAL-5 adds verbs, \\k'name', \\k{name}, \\o{...}, \\8, \\9 and class ranges at a shorthand escape; VAL-11 admits named groups.",
   "dialect_reject": [
     "\\pL[0-9]{4}",
     "\\PL[0-9]{4}",
@@ -116,7 +118,15 @@
     "FC[0-9]{2, 3}",
     "FC[0-9]{ 2}",
     "FC[0-9]{2 }",
-    "FC[0-9]{ ,2}"
+    "FC[0-9]{ ,2}",
+    "\\o{101}[0-9]{3}",
+    "(?<a>[A-Z])\\k'a'[0-9]{3}",
+    "(?<a>[A-Z])\\k{a}[0-9]{3}",
+    "[A-Z]{2}(*ACCEPT)[0-9]{4}",
+    "[\\d-z]{3}",
+    "[a-\\w]{3}",
+    "FC\\8[0-9]{3}",
+    "FC\\9[0-9]{3}"
   ],
   "dialect_accept": [
     "FC[1-9]-[0-9]{4}",
@@ -134,6 +144,13 @@
     "FC[0-9]{0,4}",
     "FC\\{,4}",
     "FC[0-9]{2,3}",
-    "FC\\{2, 3}"
+    "FC\\{2, 3}",
+    "[\\d-]{3}",
+    "[-\\d]{3}",
+    "[a\\-\\d]{3}",
+    "FC\\\\8[0-9]{3}",
+    "\\(*[0-9]{3}",
+    "(?<site>[A-Z]{2})(?<num>[0-9]{4})",
+    "(?<d>[0-9]){4}"
   ]
 }

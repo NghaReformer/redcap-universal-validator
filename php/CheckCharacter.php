@@ -294,11 +294,11 @@ class CheckCharacter
      * exact sync with the JS version; tests/risky_php.php and tests/risky_js.cjs
      * assert the two agree on a shared pattern list.
      */
-    public static function riskyPattern($src)
+    private static function riskyPatternOf($src)
     {
         if (mb_strlen((string) $src, 'UTF-8') > 512) return true;           // absurd pattern source
         $s = self::riskyEscapes((string) $src);                             // each escape -> an atom of the same reach
-        $s = preg_replace('/\(\?(<?[=!]|:)/', '(', $s);                     // (?: (?= (?! (?<= (?<! -> plain (
+        $s = preg_replace('/\(\?(<?[=!]|:|<[A-Za-z_][A-Za-z0-9_]*>)/', '(', $s); // (?: (?= (?! (?<= (?<! (?<name> -> plain ( (VAL-11)
         // Whitespace is an explicit ASCII class, NOT \s: PCRE \s (no /u) and JS \s
         // classify Unicode whitespace differently, which would diverge. Bounded
         // quantifiers ({n,m}/{n,}) count as the "repeating" token so nested bounded
@@ -321,6 +321,24 @@ class CheckCharacter
         // Stage two: the polynomial-overlap class the exponential rules miss.
         if (self::polynomialOverlap($s)) return true;   // .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+
         return false;
+    }
+
+    /** @var array pattern source => riskyPatternOf() (VAL-13) */
+    private static $riskyMemo = [];
+    /** @var array pattern body => compilePatternOf() (VAL-13) */
+    private static $compileMemo = [];
+
+    /**
+     * riskyPatternOf, kept per pattern source: the gate runs again for every
+     * value a rule judges, and on a rule of four formats it was 58% of the cost
+     * of judging a value (VAL-13). The answer depends on the source alone.
+     */
+    public static function riskyPattern($src)
+    {
+        $key = (string) $src;
+        if (array_key_exists($key, self::$riskyMemo)) return self::$riskyMemo[$key];
+        if (count(self::$riskyMemo) >= 512) self::$riskyMemo = [];
+        return self::$riskyMemo[$key] = self::riskyPatternOf($key);
     }
 
     /** Members of the \d \w \s classes, for riskyEscapes. */
@@ -1325,6 +1343,53 @@ class CheckCharacter
     }
 
     /**
+     * Whether $pattern uses PCRE syntax that the other dialect gates do not
+     * look for (VAL-5): a backtracking verb such as (*ACCEPT), a named
+     * back-reference \k'name' or \k{name}, an octal \o{...}, a reference \8 or
+     * \9, or a character-class range that starts or ends at \d, \w or \s
+     * ([\d-z]). PCRE runs the first three and refuses the last two; a browser
+     * refuses the first two and reads the others as other characters, so the
+     * value would validate in one runtime and not the other. Twin of
+     * QRID_pcreVerbOrRef (js).
+     */
+    public static function usesPcreVerbOrRef($pattern)
+    {
+        $p = (string) $pattern;
+        if (strpos(preg_replace('/\\\\./s', '', $p), '(*') !== false) return true;   // escaped characters dropped
+        $d = str_replace('\\\\', '', $p);                                          // escaped-backslash pairs dropped
+        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[89]/', $d)) return true;
+        return self::shorthandRange($d);
+    }
+
+    /**
+     * Whether a character class in $d has a range that starts or ends at \d,
+     * \w or \s (or their capitals): [\d-z], [a-\w]. A "-" first or last in the
+     * class, or escaped, is a literal. Twin of QRID_shorthandRange (js).
+     */
+    private static function shorthandRange($d)
+    {
+        $n = strlen($d);
+        for ($i = 0; $i < $n; $i++) {
+            if ($d[$i] === '\\') { $i++; continue; }
+            if ($d[$i] !== '[') continue;
+            $j = $i + 1;
+            if ($j < $n && $d[$j] === '^') $j++;
+            $first = $j;
+            if ($j < $n && $d[$j] === ']') $j++;                    // a "]" first is a literal
+            for (; $j < $n && $d[$j] !== ']'; $j++) {
+                if ($d[$j] !== '\\') continue;
+                if ($j + 1 < $n && strpos('dDwWsS', $d[$j + 1]) !== false) {
+                    if ($j - 1 > $first && $d[$j - 1] === '-' && $d[$j - 2] !== '\\') return true;
+                    if ($j + 3 < $n && $d[$j + 2] === '-' && $d[$j + 3] !== ']') return true;
+                }
+                $j++;
+            }
+            $i = $j;
+        }
+        return false;
+    }
+
+    /**
      * Whether $pattern uses a "(?..." group form JavaScript cannot compile:
      * inline flags (?i) (?x) (?m) (?s), comments (?#...), atomic groups (?>...),
      * conditionals (?(1)...) and the PCRE named forms (?P...) (?'n'...). PCRE
@@ -1421,6 +1486,13 @@ class CheckCharacter
                     . 'the server. Use explicit character classes such as [A-Z] or [0-9] instead.';
                 return null;
             }
+            if (self::usesPcreVerbOrRef($pattern)) {
+                $why = 'the format pattern uses PCRE syntax that a browser cannot run or reads as other '
+                    . 'characters: a verb such as (*ACCEPT), a named back-reference \\k\'name\' or \\k{name}, '
+                    . 'an octal \\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, '
+                    . '\\w or \\s, such as [\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead.';
+                return null;
+            }
             if (preg_match('/\[\^?\]/', preg_replace('/\\\\./s', '', $pattern))) {
                 // "[]" is a compile error to PCRE and an empty class — one that
                 // can never match — to a browser, so the server refused the rule
@@ -1466,6 +1538,14 @@ class CheckCharacter
 
     /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
     private static function compilePattern($body)
+    {
+        $key = (string) $body;
+        if (array_key_exists($key, self::$compileMemo)) return self::$compileMemo[$key];
+        if (count(self::$compileMemo) >= 512) self::$compileMemo = [];
+        return self::$compileMemo[$key] = self::compilePatternOf($key);
+    }
+
+    private static function compilePatternOf($body)
     {
         $delims = ['/', '#', '~', '!', '@', '%', ';', ':', '|', '='];
         $d = null;
