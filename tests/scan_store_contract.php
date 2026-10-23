@@ -39,9 +39,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            write run columns as stored, standing in for the
  *                            hours between two writes that the reaper's clocks
  *                            measure (review rv10a1-1). Null skips those cases.
+ * @param callable|null $audits (ScanStore $store, int $runId, string $event) => int:
+ *                            how many audit rows of that event the run has, which
+ *                            the interface cannot read back (review rvfix-N3).
+ *                            Null skips those cases.
  */
 function storeContract(callable $newStore, $label, callable $age, ?callable $clocked = null,
-                       ?callable $dropPlan = null, ?callable $setRun = null)
+                       ?callable $dropPlan = null, ?callable $setRun = null, ?callable $audits = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -225,6 +229,18 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('cancel succeeds on an active run', $s->cancel(700, $runId, 'admin') === true);
     $after = $s->run(700, $runId);
     $C('and bumps the lease epoch', (int) $after['lease_epoch'] === $epoch + 1);
+    // A RUN ALREADY STOPPING IS NOT STOPPED AGAIN (review rvfix-N3). A
+    // disable reads the run and then cancels it as the system's; a user's
+    // Stop between the two was audited twice and lost its sentence.
+    $C('rvfix-N3: a second stop of a run already stopping is refused',
+        $s->cancel(700, $runId, 'system') === false);
+    $C('rvfix-N3: and writes nothing: the epoch stays where the first stop put it',
+        (int) $s->run(700, $runId)['lease_epoch'] === $epoch + 1
+        && $s->run(700, $runId)['phase'] === ScanPhase::CANCELLING);
+    if ($audits !== null) {
+        $C('rvfix-N3: and the stop is audited once, as its first asker\'s',
+            $audits($s, $runId, 'cancel') === 1);
+    }
     $before = (int) $after['detail_rows'];
     $lost = ['bytes' => 5,
              'records' => [['ordinal' => 3, 'state' => ScanStore::REC_DONE,

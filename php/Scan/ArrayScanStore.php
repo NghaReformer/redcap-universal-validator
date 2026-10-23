@@ -988,6 +988,8 @@ final class ArrayScanStore implements ScanStore
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
         if ($r === null || (int) $r['project_id'] !== (int) $pid
             || $r['active_slot'] !== 1) return false;
+        // Not a run already stopping (review rvfix-N3), as the SQL store asks.
+        if ($r['phase'] === ScanPhase::CANCELLING) return false;
         $this->runs[$runId]['cancel_requested_at'] = gmdate('Y-m-d H:i:s');
         $this->runs[$runId]['phase'] = 'cancelling';
         $this->runs[$runId]['lease_epoch']++;

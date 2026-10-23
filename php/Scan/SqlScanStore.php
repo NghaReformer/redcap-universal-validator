@@ -1964,13 +1964,17 @@ final class SqlScanStore implements ScanStore
      * Cancel by bumping the epoch, which is what makes it beat an in-flight
      * worker: that worker's next fenced write finds a different epoch, affects
      * zero rows, and rolls back everything it had buffered.
+     *
+     * NOT A RUN ALREADY STOPPING (review rvfix-N3, ScanStore::cancel()): the
+     * phase is asked in the same statement, so of two stops racing for one
+     * run exactly one is written and audited.
      */
     public function cancel($pid, $runId, $actor)
     {
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
             SET cancel_requested_at = ?, phase = ?, lease_epoch = lease_epoch + 1, updated_at = ?
-            WHERE run_id = ? AND project_id = ? AND active_slot = 1',
-            [self::now(), 'cancelling', self::now(), $runId, $pid]);
+            WHERE run_id = ? AND project_id = ? AND active_slot = 1 AND phase <> ?',
+            [self::now(), ScanPhase::CANCELLING, self::now(), $runId, $pid, ScanPhase::CANCELLING]);
         $ok = $this->db->affected() === 1;
         if ($ok) $this->audit($pid, $runId, 'cancel', $actor, null);
         return $ok;

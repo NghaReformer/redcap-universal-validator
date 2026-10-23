@@ -1635,4 +1635,10 @@ $setRun = function ($store, $runId, array $cols) use ($dbA) {
     $dbA->exec('UPDATE ' . Schema::table('scan_run') . ' SET ' . implode(', ', $sets) . ' WHERE run_id = ?',
         array_merge(array_values($cols), array((int) $runId)));
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan, $setRun);
+// The run's audit rows of one event, which the interface does not read back.
+$audits = function ($store, $runId, $event) use ($dbA) {
+    $r = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit') . ' WHERE run_id = ? AND event = ?',
+        array((int) $runId, (string) $event));
+    return isset($r[0][0]) ? (int) $r[0][0] : -1;
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan, $setRun, $audits);

@@ -4218,6 +4218,67 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $os2['row']['terminal_reason'] === ScanOutcome::derive(['cancelled' => true])['why']
         && $os2['trail'] === ['start:alice', 'cancel:bob']);
 
+    // rvfix-N3: a Stop that lands between the disable's read of the run and
+    // its cancel. endUnderDisable() read the run as working, then cancelled it
+    // as the system's over the user's stop: audited twice, and ended on the
+    // disable's sentence. The store's cancel() now refuses a run already
+    // stopping, so the stop stays the user's.
+    $n3Inner = new ArrayScanStore();
+    $n3Store = new class($n3Inner) extends FaultyStore {
+        public $in;
+        public $stopOnRun = null;
+        public function __construct(ArrayScanStore $i) { parent::__construct($i); $this->in = $i; }
+        public function audit($pid, $runId, $event, $actor, $detail)
+        {
+            parent::audit($pid, $runId, $event, $actor, $detail);
+            if ($event === 'start') $this->stopOnRun = 'bob';
+        }
+        public function run($pid, $runId)
+        {
+            $r = parent::run($pid, $runId);
+            if ($this->stopOnRun !== null && $r !== null && $r['terminal'] === null) {
+                $this->in->cancel($pid, $runId, $this->stopOnRun);
+                $this->stopOnRun = null;
+            }
+            return $r;
+        }
+    };
+    $n3Mod = new class($n3Inner) extends \E2eModule {
+        public $offAt = null;
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            if ($this->offAt === null && array_key_exists('generation', $opts) && $opts['generation'] === null) {
+                $this->offAt = (string) time();
+                $this->proj[ScanService::PROJECT_DISABLED_AT] = $this->offAt;
+            }
+            return parent::durableScanContext($pid, $opts, $dag);
+        }
+    };
+    $n3Start = (new ScanService($n3Mod, $n3Store))->start(1194);
+    $n3Trail = [];
+    foreach ($n3Inner->allAudits() as $a) $n3Trail[] = $a['event'] . ':' . $a['actor'];
+    $n3Rid = $n3Inner->allAudits() ? (int) $n3Inner->allAudits()[0]['run_id'] : 0;
+    $n3Row = $n3Rid > 0 ? $n3Inner->run(1194, $n3Rid) : null;
+    check('rvfix-N3: a Stop between the disable\'s read of the run and its cancel is audited once, as the user\'s',
+        $n3Start['ok'] === false && $n3Start['why'] === ScanService::OFF_PROJECT
+        && $n3Trail === ['start:alice', 'cancel:bob']);
+    check('rvfix-N3: and the run ends on the user\'s stop, not the disable\'s sentence',
+        is_array($n3Row) && $n3Row['terminal'] === ScanOutcome::CANCELLED
+        && $n3Row['terminal_reason'] === ScanOutcome::derive(['cancelled' => true])['why']);
+    // And Stop on a run already stopping still ends it: a stop a worker held,
+    // pressed again once nobody holds the run. cancel() refuses the second
+    // stop now, which used to read as "already finished".
+    $n4s = new ArrayScanStore();
+    $n4m = new \E2eModule($n4s);
+    $n4r = (int) (new ScanService($n4m, $n4s))->start(1195)['run_id'];
+    $n4s->cancel(1195, $n4r, 'alice');
+    $n4 = (new ScanService($n4m, $n4s))->cancel(1195, $n4r);
+    $n4c = 0;
+    foreach ($n4s->allAudits() as $a) if ($a['event'] === 'cancel') $n4c++;
+    check('rvfix-N3: Stop on a run already stopping finishes it, and audits no second stop',
+        $n4r > 0 && !empty($n4['ok']) && $n4['stopped'] === true
+        && $n4s->run(1195, $n4r)['terminal'] === ScanOutcome::CANCELLED && $n4c === 1);
+
     /* -----------------------------------------------------------------
      * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
      * WORD, IN STATUS, WORK AND CANCEL

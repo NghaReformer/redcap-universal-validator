@@ -1750,8 +1750,17 @@ final class ScanService
     private function stopRun(ScanStore $store, $pid, $runId, $actor, array $before, $now)
     {
         if (!$store->cancel($pid, $runId, $actor)) {
-            return ['ok' => false, 'stopped' => false,
-                    'why' => 'this scan had already finished, so there was nothing to stop'];
+            // A RUN ALREADY STOPPING IS STOPPED, NOT FINISHED (review
+            // rvfix-N3). cancel() no longer stops a `cancelling` run a second
+            // time, so its false no longer means only "finished": a second
+            // Stop, or one pressed after a stop a worker held, finds the run
+            // stopping. It is finished below as this Stop's own would be,
+            // with nothing audited twice.
+            $now_ = $store->run($pid, $runId);
+            if ($now_ === null || !isset($now_['phase']) || $now_['phase'] !== ScanPhase::CANCELLING) {
+                return ['ok' => false, 'stopped' => false,
+                        'why' => 'this scan had already finished, so there was nothing to stop'];
+            }
         }
         $stopped = false;
         if (!self::workerHolds($before, $now, self::STALL_SECONDS)) {

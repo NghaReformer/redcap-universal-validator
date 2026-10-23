@@ -49,6 +49,12 @@ namespace {
             foreach ($cols as $k => $v) $this->runs[$runId][$k] = $v;
         };
         \Closure::bind($set, $store, \INSPIRE\UniversalValidator\Scan\ArrayScanStore::class)($runId, $cols);
+    }, function ($store, $runId, $event) {
+        $n = 0;
+        foreach ($store->allAudits() as $a) {
+            if ((int) $a['run_id'] === (int) $runId && $a['event'] === $event) $n++;
+        }
+        return $n;
     });
 
     // THE STORED ROW, which only this store can show whole. findings() returns

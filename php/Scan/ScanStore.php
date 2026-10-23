@@ -705,7 +705,20 @@ interface ScanStore
      */
     public function finish($runId, array $outcome);
 
-    /** Request cancellation: sets the flag, the phase, and bumps the lease epoch. */
+    /**
+     * Request cancellation: sets the flag, the phase, and bumps the lease
+     * epoch, and audits who asked.
+     *
+     * A RUN ALREADY STOPPING IS NOT STOPPED AGAIN (review rvfix-N3): false,
+     * with nothing written and nothing audited. A disable reads the run, then
+     * cancels it as the system's; a user's Stop that landed between the two
+     * was audited twice and the run ended on the disable's sentence instead
+     * of the user's stop. False here tells that caller the stop was somebody
+     * else's. A caller that only wants the run stopped reads the run again
+     * and finishes a `cancelling` one as it would its own.
+     *
+     * @return bool whether this call moved the run to `cancelling`
+     */
     public function cancel($pid, $runId, $actor);
 
     /**
