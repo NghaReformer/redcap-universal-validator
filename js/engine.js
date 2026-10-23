@@ -7490,7 +7490,13 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "q");
     QRID_followWidget(input, msg, fieldName);
-    var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
+    /* Asked of the map's own keys: a field named "constructor" would
+       otherwise find Object's constructor there, and every rule on it would
+       count as record-local, never asking the server (S2). */
+    var localGates = VS.all.map(function(v){
+      var ast = Object.prototype.hasOwnProperty.call(v.localAsts, fieldName) ? v.localAsts[fieldName] : null;
+      return ast ? QRID_WHEN.gateFor("1=1",ast,QRID_BLANK_PASSES,true) : null;
+    });
     var GITEM = null;
     if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",

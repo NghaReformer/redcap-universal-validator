@@ -62,6 +62,7 @@ node tests/engine_min_js.cjs     # js/engine.min.js names the current js/engine.
 node tests/config_notice_js.cjs  # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
+node tests/prototype_names_dom_js.cjs  # a field named "constructor", tagged or read by a condition, behaves like any other in every mode (S2)
 node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits

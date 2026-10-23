@@ -170,6 +170,10 @@ Repro: `php tools/temporal_perf_audit.php 600`.
   `Object.prototype.constructor`, the gate is `1=1`, no AJAX, no block.
   Fix: `Object.create(null)` or `hasOwnProperty`.
   Repro: `node tools/temporal_sec_constructor_field.cjs`.
+  **Fixed 2026-10-23:** the lookup asks the map's own keys.
+  `tests/prototype_names_dom_js.cjs` boots every mode with the tagged field,
+  and with the field its condition reads, named `constructor`; only
+  @UVUNIQUE differed.
 - **C3** `[xe_code][previous-instance]` on a non-repeating page and
   `[baseline_arm_1][xs_id]` without a selector raise no configuration error
   (numeric `[2]` on a non-repeating target does). They defer at run time and

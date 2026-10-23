@@ -103,6 +103,8 @@ jobs:
         run: node tests/dispatch_notice_js.cjs
       - name: JS field DOM contract (a11y, debounce, survey muting, readonly)
         run: node tests/a11y_dom_js.cjs
+      - name: JS a field named "constructor" behaves like any other, in every mode
+        run: node tests/prototype_names_dom_js.cjs
       - name: JS save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
         run: node tests/save_guard_enter_dom_js.cjs
       - name: JS browser half of the value parity rows (trim, non-ASCII, regex dialect, length)
