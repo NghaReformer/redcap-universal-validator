@@ -4412,13 +4412,15 @@ instance:
   neither tag is `caseSensitive`). Two other conditions that are true at
   once are a runtime conflict, and the field validates nothing while both
   hold. Two conditions count as never true at once only when each tests one
-  field for equality with a value, alone or as part of an `and`, and no
-  value equals both as conditions compare values. For example, `[arm]='1'`
-  and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'` (numbers compare by
-  value), `[x]='Yes'` and `[x]='yes'` (unless both tags are
-  `caseSensitive`), and `[x]>0` and `[x]=1` do not. A tag without a
-  condition is the fallback beside tags that have one, so the two may share
-  a `vs`. A refused tag earlier on the field counts with the reference its
+  field, written without an event or instance (each checkbox box counts as
+  its own field), for equality with a value, alone or as part of an `and`,
+  and no value equals both as conditions compare values. For example,
+  `[arm]='1'` and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'`
+  (numbers compare by value), `[x]='Yes'` and `[x]='yes'` (unless both tags
+  are `caseSensitive`), `[v1_arm_1][x]='1'` and `[v1_arm_1][x]='2'`,
+  `[cb(1)]='1'` and `[cb(2)]='0'`, and `[x]>0` and `[x]=1` do not. A tag
+  without a condition is the fallback beside tags that have one, so the two
+  may share a `vs`. A refused tag earlier on the field counts with the reference its
   own refusal suggests. A tag that failed to parse counts with the `vs`,
   direction and condition its JSON names, read with single or curly quotes
   as double quotes and without a trailing comma. Nothing is suggested
@@ -4426,8 +4428,10 @@ instance:
   cannot be read, when the JSON names a key the tag does not take (letter
   case counts, so `When` is one), or when its `vs`, `direction` or `when`
   is not text or would be refused. A reference to another event or
-  instance counts as read, since turning references on fixes it. So the
-  suggestions for one field can be written back together. For the field
+  instance counts as read, since turning references on fixes it; a
+  `{binding}` its `references` do not define does not, since the `when` is
+  still refused with references on. So the suggestions for one field can be
+  written back together. For the field
   itself the instance must read an earlier entry where the event lands:
   `[previous-instance]` only at the field's own event, `[last-instance]` and
   an instance numbered after the first only at another, `[first-instance]`
@@ -4566,9 +4570,11 @@ locked. It cannot be changed here."
 ```
 
 - `roles` names user roles by the name the User Rights page shows or by the
-  unique role name, up to 20. Letter case does not matter in any alphabet
-  ("STRASSE" matches "Straße"), invisible format characters such as a
-  zero-width space are ignored, and a run of spaces counts as one. With PHP's
+  unique role name, up to 20. Letter case does not matter ("STRASSE" matches
+  "Straße", and "İDARE" matches "idare"), though the dotless "ı" stays a
+  letter of its own, so "dırector" is not "director". Invisible format
+  characters such as a zero-width space are ignored, and a run of spaces
+  counts as one. With PHP's
   intl extension a name typed with combining accents matches one typed with
   composed letters; without intl they differ. Each must be a role of the
   project, or the field shows a configuration error.
@@ -4624,12 +4630,17 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   when it also reads a field of this form that the person can change, and
   only once that field has changed on the page, a checkbox option by option.
   A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the fields it
-  is worked out from, through other calcs too. A field with `@READONLY` or
-  `@HIDDEN` (or the `-FORM` or `-SURVEY` form that applies to the page),
-  `@NOW`, `@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never
-  counts. The value each field opened with is read after REDCap's own start-up
-  on the page, once its calcs, branching and action tags have filled their
-  fields. A tag that reads the locked field alone, a violation already saved
+  is worked out from on this event and instance, through other calcs too. The
+  value each field opened with is read after REDCap's own start-up on the
+  page, once its calcs, branching and action tags have filled their fields.
+  So a field REDCap fills as the page starts (`@NOW`, `@TODAY`, `@DEFAULT`,
+  `@SETVALUE`) counts only once the person changes it, and so does a field
+  with `@READONLY` or `@HIDDEN`. A field with `@LATITUDE` or `@LONGITUDE`
+  never counts, since REDCap fills it later, once the browser gives its
+  position; the tag name inside another tag's quoted text
+  (`@PLACEHOLDER="near @LATITUDE"`) is not read as the tag, while one outside
+  quotes is. A tag that reads
+  the locked field alone, a violation already saved
   when the page opened, and one between two locked fields never hold it, on
   Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
@@ -4663,6 +4674,16 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   shows. From the first Text or Notes value before such a line, the save reads
   as not spelled out. A save written before a field was moved breaks the order
   too, so its later fields are rule problems for that save.
+- Moving any field of a form after records exist, locked or not, can leave
+  the Text and Notes values of the saves made before the move "not checked",
+  the save that made the record included: in a save where a line comes out of
+  the new order after a Text or Notes value, every value from the save's first
+  Text or Notes value on reads as not spelled out. A field of another type
+  written before every Text and Notes value of the save is still read; the
+  record id field does not count as a Text value here.
+- Renaming the record id field after records exist makes every locked field
+  of every record a rule problem: the rows that made the records name the
+  field by its old name, so no record shows being made.
 - A forged line that keeps the order reads as a save of its field. After the
   lock, a save by a person with no role moves nothing, so the line gives at
   worst a false finding or a rule problem. Before the lock, or before

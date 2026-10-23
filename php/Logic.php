@@ -1319,28 +1319,30 @@ class Logic
     }
 
     /**
-     * A user role name as @UVWRITEONCE compares it: put in Unicode's composed
-     * form (NFC, when PHP's intl extension is loaded), with its format
-     * characters (a zero-width space, a byte-order mark) removed, every run of
-     * spaces (a no-break space or an ideographic space too) folded to one,
-     * then trimmed, and case-folded in any script ("Équipe  Médicale" and
-     * "équipe médicale" are one role, and so are "STRASSE" and "Straße", and
-     * "Data manager" with a no-break space or a zero-width space pasted after
-     * it). Without intl, an accent typed as a letter of its own ("E" and a
-     * combining acute) does not match the accented letter. Without mbstring,
-     * only A to Z are lowercased. Text that is not UTF-8 has its ASCII spaces
-     * folded and is lowercased byte by byte.
+     * A user role name as @UVWRITEONCE compares it: its format characters (a
+     * zero-width space, a byte-order mark) removed, the capital I with a dot
+     * above ("İ", or "I" and a combining dot above) read as "i", then put in
+     * Unicode's composed form (NFC, when PHP's intl extension is loaded),
+     * every run of spaces (a no-break space or an ideographic space too)
+     * folded to one, then trimmed, and case-folded in full ("Équipe  Médicale"
+     * and "équipe médicale" are one role, and so are "STRASSE" and "Straße",
+     * "İDARE" and "idare", and "Data manager" with a no-break space or a
+     * zero-width space pasted after it). The dotless "ı" stays a letter of
+     * its own. Without intl, an accent typed as a letter of its own ("E" and
+     * a combining acute) does not match the accented letter. Without
+     * mbstring, only A to Z are lowercased. Text that is not UTF-8 has its
+     * ASCII spaces folded and is lowercased byte by byte.
      */
     public static function roleKey($name)
     {
         $s = (string) $name;
         if (preg_match('//u', $s) !== 1) return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+        $s = str_replace(["\u{130}", "I\u{307}"], 'i', preg_replace('/\p{Cf}+/u', '', $s));
         if (class_exists('Normalizer', false)) {
             $nfc = \Normalizer::normalize($s, \Normalizer::FORM_C);
             if (is_string($nfc)) $s = $nfc;
         }
-        $folded = preg_replace('/\s+/u', ' ', preg_replace('/\p{Cf}+/u', '', $s));
-        $folded = trim($folded);
+        $folded = trim(preg_replace('/\s+/u', ' ', $s));
         return function_exists('mb_convert_case') ? mb_convert_case($folded, MB_CASE_FOLD, 'UTF-8') : strtolower($folded);
     }
 

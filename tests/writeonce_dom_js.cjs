@@ -506,6 +506,20 @@ for (const order of ['lock first', 'lock last']) {
     beforeEngine(doc, win) { win.jQuery(() => { age.value = '17'; }); } }));
 }
 {
+  // The fifth review's scenario: dob is locked, visit carries @TODAY, and the rule on dob reads it. The server
+  // now names visit in lockReads (review W5-1): REDCap fills it as the page starts, before the base is taken,
+  // so naming it holds nothing, while the person's own change of it is caught.
+  const dob = text('dob', '2026-01-10'), visit = text('visit', '');
+  const env = boot([dob, visit], { rules: [WO(['dob']),
+    { type: 'constraint', fields: ['dob'], assert: '[dob] <= [visit]', blockSave: 'hard', message: 'Visit before consent', lockReads: { dob: ['visit'] } }] },
+    { late: true, jQuery: true, beforeEngine(doc, win) { win.jQuery(() => { visit.value = '2026-01-20'; }); } });
+  check('@TODAY read by a rule on a locked field: the date REDCap writes as the page starts holds nothing', visit.value === '2026-01-20' && save(env) === 'saved', env.win._alerts);
+  visit.value = '2026-01-05'; visit.fire('change');
+  check('... the person moving the visit before dob holds the save', save(env) === 'held', env.win._alerts);
+  visit.value = '2026-01-25'; visit.fire('change');
+  check('... and moving it after dob again lets it through', save(env) === 'saved', env.win._alerts);
+}
+{
   // until the base is taken nothing is compared
   const locked = text('weight', '70'), open = text('height', '50');
   const env = boot([locked, open], { rules: [WO(['weight']),

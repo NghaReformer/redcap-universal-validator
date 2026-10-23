@@ -17,10 +17,10 @@
  * with its detail lines: on the visit (380), on a whole repeating event (382,
  * an import of two instances), on a survey whose first page is saved by Next,
  * and after a deletion of the form's data, which the check cannot place.
- * Section I's steps read what REDCap itself logs; for I0, I0b, I1, I2, I3,
- * I3b, I5, I5b, I6, I7 and H4's wordings it checks the module's answer for
- * the log the step expects, and for the other log the step tells the tester
- * to record. I4 needs an SQL field, which the fixture does not hold, so it is
+ * Section I's steps read what REDCap itself logs; for I0, I0b, I1, I1b (and
+ * I1c), I2, I3, I3b, I5, I5b, I6, I7 and H4's wordings it checks the module's
+ * answer for the log the step expects, and for the other log the step tells
+ * the tester to record. I4 needs an SQL field, which the fixture does not hold, so it is
  * not here. The page configs it builds are the input of
  * tests/writeonce_live_twin_js.cjs, which replays the sheet's clicks through
  * js/engine.js; they are kept in tests/writeonce_live_pages.json, and this
@@ -457,17 +457,50 @@ namespace {
         return implode(' | ', $out);
     };
     // I0: the row that made a record, its lines in another order than today's data dictionary (a field moved
-    // since): the record is still read from there; only that row's values are not plain (review W4-1).
+    // since): the record is still read from there (review W4-1). From the first Text or Notes value before the
+    // line out of order the row's values are not plain; the record id line is no such value (review W5-2).
     $LOG = $KEEP;
-    logSave('20261023102000', ['record_id' => 'XE-M', 'uw_arm' => '1', 'uw_consent' => '2026-10-07'], 'tester', 'XE-M', 380, 1, 'INSERT');
+    logSave('20261023102000', ['record_id' => 'XE-M', 'uw_consent' => '2026-10-07', 'uw_free' => 'f', 'uw_arm' => '1'], 'tester', 'XE-M', 380, 1, 'INSERT');
     logSave('20261023102100', ['uw_notes' => 'n'], 'tester', 'XE-M', 380);
     logSave('20261023102200', ['uw_notes' => 'm'], 'tester', 'XE-M', 380);
-    $got = scanAt($one('XE-M', ['uw_arm' => '1', 'uw_consent' => '2026-10-07', 'uw_notes' => 'm']), $ROLE_OUT, $prob);
+    $got = scanAt($one('XE-M', ['uw_arm' => '1', 'uw_consent' => '2026-10-07', 'uw_free' => 'f', 'uw_notes' => 'm']), $ROLE_OUT, $prob);
     check('I0: a creating row out of today\'s dictionary order still starts the record: a later change is found',
         $got === ['XE-M@380#1 uw_notes:changed 2026-10-23 10:21'], [$got, $prob]);
-    check('I0: ... and the fields that row wrote are not checked, as not spelled out, never as a record not made',
+    check('I0: ... and the fields that row wrote from its first Text value on are not checked, as not spelled out, never as a record not made',
         strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false && strpos($why($prob, 'uw_arm'), 'does not say plainly') !== false
         && strpos(json_encode($prob), 'record being made') === false, $prob);
+    $LOG = $KEEP;
+    logSave('20261023102000', ['record_id' => 'XE-M', 'uw_arm' => '1', 'uw_consent' => '2026-10-07'], 'tester', 'XE-M', 380, 1, 'INSERT');
+    logSave('20261023102100', ['uw_arm' => '2', 'uw_consent' => '2026-10-08'], 'tester', 'XE-M', 380);
+    $got = scanAt($one('XE-M', ['uw_arm' => '2', 'uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
+    check('I0: a line out of order that follows only the record id line and a radio button\'s is read: both changes are found (review W5-2)',
+        $got === ['XE-M@380#1 uw_arm:changed 2026-10-23 10:20', 'XE-M@380#1 uw_consent:changed 2026-10-23 10:20'] && $prob === [], [$got, $prob]);
+    // A field moved after the record was made (the fifth review's module probe): uw_free, which no tag names,
+    // moved above uw_arm in the data dictionary, then an import changes a locked field (review W5-2).
+    $moved = function (array $made, array $import, array $now) use (&$LOG, $KEEP, &$dict, $one, $ROLE_OUT) {
+        $LOG = $KEEP;
+        logSave('20261023102300', $made, 'tester', 'XE-9', 380, 1, 'INSERT');
+        $saved = $dict;
+        $new = [];
+        foreach ($dict as $f => $meta) {
+            if ($f === 'uw_free') continue;
+            if ($f === 'uw_arm') $new['uw_free'] = $dict['uw_free'];
+            $new[$f] = $meta;
+        }
+        $dict = $new;
+        logSave('20261023102400', $import, 'tester', 'XE-9', 380);
+        $m = save($one('XE-9', $now), $ROLE_OUT, 'XE-9');
+        $dict = $saved;
+        return $m;
+    };
+    $m = $moved(['record_id' => 'XE-9', 'uw_consent' => '2026-10-01', 'uw_arm' => '1', 'uw_free' => 'a'], ['uw_consent' => '2026-10-02'],
+        ['uw_consent' => '2026-10-02', 'uw_arm' => '1', 'uw_free' => 'a']);
+    check('I0, a field moved: a Text locked field the creating row wrote before the line out of order is not checked, as not spelled out',
+        hits($m) === [] && strpos($why(problems($m), 'uw_consent'), 'does not say plainly') !== false, [hits($m), problems($m)]);
+    $m = $moved(['record_id' => 'XE-9', 'uw_arm' => '1', 'uw_site' => '2', 'uw_free' => 'a'], ['uw_arm' => '2'],
+        ['uw_arm' => '2', 'uw_site' => '2', 'uw_free' => 'a']);
+    check('I0, a field moved: a radio button locked before any Text value of the creating row is judged: the import is found',
+        hits($m) === ['uw_arm:changed 2026-10-23 10:23 > 2026-10-23 10:24'] && problems($m) === [], [hits($m), problems($m)]);
     // I0b: a record made from a form with an embedded field ({uw_free} in uw_consent's label), then an import.
     $made = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
         $LOG = $KEEP;
@@ -499,6 +532,26 @@ namespace {
     $got = $imp(['uw_notes' => 'second', 'uw_consent' => '2026-10-08']);
     check('I1: ... the row in the CSV\'s order: no finding, and the consent date not checked, as not spelled out',
         $got === [] && strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false, [$got, $prob]);   // the scan names a rule's fields once per reason
+    // I1b (and I1c, its API JSON form): the reversed CSV makes a new record, XE-N, then an import changes its
+    // consent date. The creating row has the record id line first, or last as the CSV has it (review W5-5).
+    $newImp = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
+        $LOG = $KEEP;
+        logSave('20261023102800', $lines, 'tester', 'XE-N', 380, 1, 'INSERT');
+        logSave('20261023102900', ['uw_consent' => '2026-10-08'], 'tester', 'XE-N', 380);
+        return scanAt($one('XE-N', ['uw_consent' => '2026-10-08', 'uw_notes' => 'first']), $ROLE_OUT, $prob);
+    };
+    $got = $newImp(['record_id' => 'XE-N', 'uw_consent' => '2026-10-07', 'uw_notes' => 'first']);
+    check('I1b: record id first, then the dictionary\'s order: the change is found, locked at the import that made the record',
+        $got === ['XE-N@380#1 uw_consent:changed 2026-10-23 10:28'] && $prob === [], [$got, $prob]);
+    $got = $newImp(['record_id' => 'XE-N', 'uw_notes' => 'first', 'uw_consent' => '2026-10-07']);
+    check('I1b: record id first, then the CSV\'s order: the record is started, and the consent date is not checked, as not spelled out',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false && strpos(json_encode($prob), 'record being made') === false, [$got, $prob]);
+    $got = $newImp(['uw_notes' => 'first', 'uw_consent' => '2026-10-07', 'record_id' => 'XE-N']);
+    check('I1b: the CSV\'s order with the record id last: not checked, saying the row that made the record could not be read plainly',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'the row of the project log that made the record could not be read plainly') !== false, [$got, $prob]);
+    $got = $newImp(['uw_consent' => '2026-10-07', 'uw_notes' => 'first', 'record_id' => 'XE-N']);
+    check('I1b: the dictionary\'s order with the record id last: the same reason',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'the row of the project log that made the record could not be read plainly') !== false, [$got, $prob]);
     // I2: a save of a form with an embedded field ({uw_free} in uw_consent's label), then an import.
     $emb = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
         $LOG = $KEEP;

@@ -558,14 +558,41 @@ inner spaces.
   accepted, and that at run time each value picks one branch with no
   conflict; that a tag without a condition is the fallback beside a
   conditional one; that a tag that failed to parse is read with single or
-  curly quotes and a trailing comma, keeping its `when`, direction,
-  `caseSensitive` (only when true) and a shorthand in capitals, from its own
-  value; that beside a tag whose `vs` cannot be read nothing is offered and
-  each kind of refusal says to fix it first, and that each says when the
-  other tags hold every reference that would work; that two tags written the
-  same are told apart, each field reads its own tags, and the rules built
-  again with references on are worked out again; and that a refused
-  reference and a refused shorthand hand their suggestions on. The refusal of a plain `vs` naming the field
+  curly quotes (around the whole value or one value) and a trailing comma,
+  an apostrophe or double quotes inside a message kept as text, keeping its
+  `when`, direction, `caseSensitive` (only when true) and a shorthand in
+  capitals, from its own value; that beside a tag with bare words, no value
+  or no `vs` nothing is offered and each kind of refusal says to fix it
+  first, and that each says when the other tags hold every reference that
+  would work, but not when the held entry would not fit anyway; that two
+  tags written the same are told apart, each field reads its own tags, and
+  the rules built again with references on are worked out again; and that a
+  refused reference and a refused shorthand hand their suggestions on. For
+  review R11 it checks that beside a tag that failed to parse with a `when`
+  or `direction` that is not text, does not parse or is refused, a key in
+  other letter case (`When`, `Direction`), a misspelt shorthand, a blank
+  `vs` or one missing a bracket, nothing is offered, and once that tag is
+  fixed the first event is offered and accepted; that a `when` naming
+  another event is read as written; that the held note is the rule the
+  search applies, word for word; what `Branching::whenExclusive` reads (two
+  boxes of one checkbox, a field compared with a field, an `and` inside an
+  `and`, one field tested twice, a condition that does not parse); that the
+  lenient read keeps escapes, drops a trailing comma before `]` and one
+  before a space and `}`, and reads single curly quotes and a curly quote
+  inside a string; that
+  a failed tag of another mode shifts nothing; and that the tags are read
+  again once references are on. For review R12 it checks the held note with
+  a field at another event, a field with an instance and two boxes of one
+  checkbox; that beside a tag that failed to parse with a `{binding}` its
+  `references` do not define, or a collection binding compared with another
+  collection, nothing is offered, while a binding they define and
+  references refused for themselves leave the tag read; that `"direction":null`,
+  a misspelt key (`wehn`), a `when` of only spaces beside a conditional tag,
+  an extra key (`label`) and a `vs` that is a list or a number leave nothing
+  offered, with no error thrown; that `"when":null`, a direction of `both` or
+  `down` and a `vs` with spaces around it are read as the parser reads them
+  once fixed, each suggestion accepted; and that a tag that failed to parse
+  and names the field itself holds its own `vs`, not its suggestion. The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
   form repeats at the visits, a written reference when no shorthand fits
@@ -586,7 +613,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 251 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 265 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. The copy
   holds every folder and file the named suites read (`site/` and `README.md`
   among them), and every suite must pass in it before the first mutation, so
@@ -622,10 +649,11 @@ inner spaces.
   record id line typed into a notes value, change nothing; "recordXid" and
   "prev_record_id" lines not read), read from the row as written with the
   module's own options, the record id field counted as a Text field: a field
-  moved since, a Notes value with a line ending in a quote and a comma, a
-  locked field at another event, and lines of fields no one types, checkbox
-  lines and an instance line before the record id line leave the start
-  trusted, while a record id line after a Text, Notes or stray line, one that
+  moved since (a field that is not Text or Notes, written before any other
+  Text value, still judged), a Notes value with a line ending in a quote and
+  a comma, a locked field at another event, and lines of fields no one
+  types, checkbox lines and an instance line before the record id line leave
+  the start trusted, while a record id line after a Text, Notes or stray line, one that
   runs on, or one with no value is "startrow", and a newer untrusted row does
   not outrank an older start; a save with no event that names a kept
   field, on any instance; another record of the same name in a loose
@@ -638,15 +666,19 @@ inner spaces.
   notes value over several lines, 130,000 lines in under a second, checkbox
   lines, a field written twice, a stray line, an instance line that is not the
   first, and a row out of the data dictionary's order, read up to the first
-  Text or Notes value before the break). `RoleBook::read` runs
+  Text or Notes value before the break, the record id line counted as no such
+  value). `RoleBook::read` runs
   over a mock database: both names of each role, users by lowercase name, the
   project and today bound as parameters, and a REDCap with no unique role
   names, usernames stored with spaces trimmed, and role names kept as
   `Logic::roleKey` (letter case folded in full, so "STRASSE" matches "Straße";
   spaces folded; a no-break space at either end trimmed; a zero-width space,
-  a byte order mark and a word joiner dropped; a name with combining accents
-  matching its composed form where PHP's intl extension is loaded, a check the
-  suite skips with a note otherwise). The SQL of both runs
+  a byte order mark and a word joiner dropped, one between two spaces leaving
+  one space; "İ", composed or as "I" and a combining dot, read as "i", while
+  the dotless "ı" stays apart; a name with combining accents matching its
+  composed form, a format character between a letter and its accent removed
+  first, where PHP's intl extension is loaded, checks the suite skips with a
+  note otherwise; CI loads intl). The SQL of both runs
   on a real server in `tests/mysql/cases/history.php`, with two erases, rows
   that are no erase (a record "730 " or "７３０", one form of a record "730",
   another object type, one that names an event), the record's start through
@@ -673,7 +705,9 @@ inner spaces.
   a value REDCap writes in a ready callback, in a timer started there, or in a
   DOMContentLoaded listener added before the engine is no change, while a
   later change still holds the save, and nothing is compared before the
-  values are taken; a checkbox read option by
+  values are taken; a `@TODAY` date REDCap writes as the page starts, read by
+  a rule on a locked field, holds nothing until the person changes it; a
+  checkbox read option by
   option; a read field the page does not carry is never compared; the lock
   leaves an
   embedded field's enhanced choices, reset link and Today button alone; the
@@ -685,7 +719,7 @@ inner spaces.
   and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
   `@DOWNLOAD-COUNT`, `@RICHTEXT` and ontology fields of any service refused; a field given the
   tag twice refused; each role checked against the project, by name or unique
-  role name, in any letter case of any alphabet, and refused once by name; a lock on a field another rule
+  role name, in any letter case, and refused once by name; a lock on a field another rule
   returns to refused, split off its group with each refusal in field order,
   while a returning rule refused for another reason leaves the lock alone; the
   grammar; the page (only fields holding a value, never for a member of a
@@ -697,18 +731,23 @@ inner spaces.
   by the fields it is worked out from that may be changed there, through
   other calcs too (a checkbox option a calc reads named alone, a calc of
   another form naming nothing, a cycle of calcs giving the same answer in
-  either rule order), `[event-name][f]` and the page's own event name read as
-  this event while another event's field is left out, and a field with
-  `@READONLY` or `@HIDDEN` (per page, every variant when the page is not
-  known), `@NOW`, `@TODAY` (with `-SERVER` and `-UTC`), `@LATITUDE`,
-  `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never named, saved
+  either rule order), `[event-name][f]`, the page's own event name and
+  `[first-event-name]` or `[last-event-name]` that resolve to it read as this
+  event while another event's field is left out, a field at another instance
+  left out while `[current-instance]` and the page's instance number keep it,
+  only the text inside `@CALCTEXT(...)` and `@CALCDATE(...)` read, a field
+  with `@LATITUDE` or `@LONGITUDE` never named (in any letter case and inside
+  `@IF`, not inside another tag's quoted text), and one with `@READONLY`,
+  `@HIDDEN`, `@NOW`, `@TODAY`, `@SETVALUE` or `@DEFAULT` named, saved
   values that cannot be read flagged, the saved code sent for dropdown and SQL
   fields); what the log reader is told of the project (the data dictionary's
   order, its Text and Notes fields, the record id field, one arm or several);
   the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
   saved over a locked value, "since", the lock times kept whatever the log
   mode, and each rule problem, with the reason a history could not be read,
-  a creating row out of order included);
+  a creating row out of order included, judged when its line out of order
+  follows only the record id line, and the reason for a record with no start
+  word for word);
   and the scan with its labels and detail line.
 - `writeonce_live_twin_php.php` runs the module over the live fixture on a copy
   of pid 149's events with a copy of REDCap's log that gains the row of each
@@ -719,7 +758,8 @@ inner spaces.
   the scan and the next save, and the roles read as they are when the audit
   or scan runs. For section I, whose steps read what REDCap itself logs, it
   checks the module's answer for the log each step expects and for the other
-  log the step tells the tester to record (I0, I0b, I1, I2, I3, I3b, I5, I5b,
+  log the step tells the tester to record (I0 with a field moved, I0b, I1,
+  I1b and I1c with the record id line first or last, I2, I3, I3b, I5, I5b,
   I6, I7, and the three wordings of H4). It does not cover I4, since the
   fixture holds no SQL field, nor what REDCap actually writes: that is what
   the live run checks. It writes the page configs to
@@ -732,15 +772,15 @@ inner spaces.
   error under the field. B7, and a second run of B6, load the engine above
   the form while the page is still loading, as REDCap prints it, with
   jQuery's ready callbacks run in a timer.
-- `writeonce_mutations.py` applies 236 mutations to a copy of the code, one at a
+- `writeonce_mutations.py` applies 255 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Twelve mutate
   the SQL (three the role book's, six the erase search, three the search for
   the record's start) and are killed only by
   `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
-  variables name a server, and are reported as skipped otherwise. The one
-  that drops the composed form of role names runs only where PHP loads the
+  variables name a server, and are reported as skipped otherwise. The two
+  that need the composed form of role names run only where PHP loads the
   intl extension (the script passes `-d extension=intl` when PHP has it but
-  has not loaded it), and is reported as skipped otherwise.
+  has not loaded it; CI loads it), and are reported as skipped otherwise.
 
 ## `justify_*` — values saved with a reason
 

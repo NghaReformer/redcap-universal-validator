@@ -1187,18 +1187,25 @@ locks the field for everyone and says so; when the saved value cannot be
 read, it locks nothing and tells staff so. Another rule on a locked field holds
 the save only once a field it reads, other than the locked one, has changed on
 the page since REDCap finished filling the form. A calc counts through the
-fields it is worked out from; a field with `@READONLY`, `@HIDDEN`, `@NOW`,
-`@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never counts.
-Letter case in role names does not matter in any alphabet, and invisible
+fields it is worked out from on this event and instance. A field REDCap fills
+as the page starts (`@NOW`, `@TODAY`, `@DEFAULT`, `@SETVALUE`), or one with
+`@READONLY` or `@HIDDEN`, counts once the person changes it; a field with
+`@LATITUDE` or `@LONGITUDE`, which REDCap fills later, never counts.
+Letter case in role names does not matter ("İDARE" matches "idare", though
+the dotless "ı" stays a letter of its own), and invisible
 characters such as a zero-width space are ignored. An erase of all the project's records starts
 every history again. A record whose log runs past 5,000 rows for the event,
 holds a deletion of this event's data or of an arm (in a project of several
 arms, any deletion of the record), or does not show the record being made (a
 record renamed while its saves stay under the old name, or one that came with
 a copied project, or one whose creating row has its record id after a Text or
-Notes value), is reported as not checked rather than passed, and so is a
-save written before a field was moved, from the first Text or Notes field of
-that save on. Renaming a locked field that holds data restarts its history when REDCap's
+Notes value), is reported as not checked rather than passed. Renaming the
+record id field after records exist does this to every record. Moving any
+field of a form after records exist, locked or not, can leave the Text and
+Notes values of the saves made before the move not checked, the save that
+made the record included: in a save where a line comes out of the new order
+after a Text or Notes value, every value from the save's first Text or Notes
+value on is not checked. Renaming a locked field that holds data restarts its history when REDCap's
 log keeps its earlier saves under the old name. The page
 still locks the saved value, and the audit reports it as not checked until a
 save is logged under the new name, but an import or API change made before
