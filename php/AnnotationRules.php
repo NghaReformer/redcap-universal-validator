@@ -3464,10 +3464,16 @@ class AnnotationRules
             foreach ($frags as $frag) {
                 if (isset($frag['error'])) {
                     $tag = isset($frag['_tag']) ? $frag['_tag'] : self::TAG;
-                    $rules[] = [
+                    $rule = [
                         'type' => 'single', 'fields' => [$field],
                         'configError' => $tag . ' on "' . $field . '": ' . $frag['error'],
                     ];
+                    // The mode the broken tag belongs to, for Branching::resolve,
+                    // which switches off the field's fallback in that mode (C4)
+                    // and drops the key.
+                    $modes = ModeRegistry::tagMap();
+                    if (isset($modes[$tag])) $rule['_mode'] = $modes[$tag];
+                    $rules[] = $rule;
                     continue;
                 }
                 $canon = $frag;

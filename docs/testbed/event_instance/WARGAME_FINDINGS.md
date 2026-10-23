@@ -132,6 +132,11 @@ correct saves. The docs say deferred selectors never activate an else branch;
 configuration errors do.
 Repro: `php tools/temporal_testbed_check.php --off --pages`.
 
+**Fixed 2026-10-23.** A rule with a configuration error now switches off the
+fallback of its mode on each of its fields (`php/Branching.php`); the other
+conditional rules still branch. `xv_clinic` with the feature off has only its
+two configuration errors and no live rule. Tests in `tests/branching_php.php`.
+
 ### P3. Collections still quadratic
 Every host context rebuilds the n-member set (`php/TemporalRules.php:193`)
 and compares against every member (`php/TemporalLogic.php:77`). `all`,

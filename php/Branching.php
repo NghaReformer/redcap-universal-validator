@@ -39,6 +39,18 @@
  *     the same type (single/pooled); all sharing rules must give each of
  *     their mode's uniformBranchKeys the same value (php/modes.json;
  *     @UVUNIQUE "also").
+ *   - A rule with a configuration error validates nothing, and it is not a
+ *     branch. It still switches off the fallback of its mode on each of its
+ *     fields (C4): it may be a conditional rule whose condition cannot be
+ *     read, and a fallback applies only when no condition is true, which
+ *     nothing can tell while one is unreadable. The rule without "when" loses
+ *     the field, and the conditional rules of the mode still branch. In a mode
+ *     with branch groups only the broken rule's group loses its fallback,
+ *     every group when its group cannot be told (a tag that did not parse).
+ *     Up to 2.3.0-rc.2 the fallback became the field's only rule: with event
+ *     references switched off, a cascade's last choice list applied to every
+ *     site. AnnotationRules::groupMulti() marks a broken tag's mode as "_mode",
+ *     which resolve() reads and drops.
  *
  * Fields claimed by exactly one rule pass through UNTOUCHED — resolve() is
  * the identity for rule lists without sharing, so single-rule projects take
@@ -108,15 +120,21 @@ class Branching
      */
     public static function resolve(array $rules)
     {
-        $sharedGroups = [];  // list of ['field'=>f, 'idxs'=>[...]] — one per (field, mode)
+        $broken = self::brokenClaims($rules);
+        $sharedGroups = [];  // list of ['field'=>f, 'mode'=>m, 'idxs'=>[...], 'off'=>...] — one per (field, mode)
+        $removeFrom = [];    // ruleIndex => [field => true]
         foreach (self::fieldClaims($rules) as $field => $byMode) {
-            foreach ($byMode as $idxs) {
-                if (count($idxs) > 1) $sharedGroups[] = ['field' => $field, 'idxs' => $idxs];
+            foreach ($byMode as $mode => $idxs) {
+                $off = isset($broken[$field][$mode]) ? $broken[$field][$mode] : null;
+                if (count($idxs) > 1) {
+                    $sharedGroups[] = ['field' => $field, 'mode' => $mode, 'idxs' => $idxs, 'off' => $off];
+                } elseif ($off !== null && self::whenOf($rules[$idxs[0]]) === null && self::fallbackOff($off, $rules[$idxs[0]], $mode)) {
+                    $removeFrom[$idxs[0]][$field] = true;   // the fallback a broken rule switched off
+                }
             }
         }
-        if (!$sharedGroups) return $rules;
+        if (!$sharedGroups && !$removeFrom) return self::withoutModeKey($rules);
 
-        $removeFrom = [];  // ruleIndex => [field => true]
         $extra = [];       // synthesized per-field rules, appended in field order
         foreach ($sharedGroups as $grp) {
             $field = $grp['field'];
@@ -142,10 +160,11 @@ class Branching
             $elses = [];   // one per branch group at most (conflictOf)
             foreach ($idxs as $i) {
                 $b = self::branchOf($rules[$i]);
-                if ($b['when'] === null) $elses[] = $b;
-                else $branches[] = $b;
+                if ($b['when'] !== null) $branches[] = $b;
+                elseif ($grp['off'] === null || !self::fallbackOff($grp['off'], $rules[$i], $grp['mode'])) $elses[] = $b;
             }
             foreach ($elses as $b) $branches[] = $b;   // elses are always LAST
+            if (!$branches) continue;
             $first = $rules[$idxs[0]];
             $extra[] = [
                 'type'     => (isset($first['type']) && $first['type'] !== '') ? $first['type'] : 'single',
@@ -167,7 +186,42 @@ class Branching
             $out[] = $r;
         }
         foreach ($extra as $r) $out[] = $r;
+        return self::withoutModeKey($out);
+    }
+
+    /**
+     * field => [mode => [group => true]] over the rules with a configuration
+     * error: the mode is the broken tag's ("_mode") or the rule's type's, and
+     * the group 'g' . value of the mode's branchGroup key, '*' when it cannot
+     * be told.
+     */
+    private static function brokenClaims(array $rules)
+    {
+        $out = [];
+        foreach ($rules as $r) {
+            if (!is_array($r) || empty($r['configError'])) continue;
+            if (empty($r['fields']) || !is_array($r['fields'])) continue;
+            $mode = (isset($r['_mode']) && is_string($r['_mode'])) ? $r['_mode'] : self::modeOfType(isset($r['type']) ? $r['type'] : '');
+            $key = ModeRegistry::branchGroup($mode);
+            $g = ($key !== null && isset($r[$key]) && is_scalar($r[$key])) ? 'g' . $r[$key] : '*';
+            foreach ($r['fields'] as $f) if (is_string($f) && $f !== '') $out[$f][$mode][$g] = true;
+        }
         return $out;
+    }
+
+    /** Whether a broken rule switched off the fallback $rule is in its mode's group. */
+    private static function fallbackOff(array $off, array $rule, $mode)
+    {
+        return isset($off['*']) || isset($off['g' . self::groupOf($rule, ModeRegistry::branchGroup($mode))]);
+    }
+
+    /** The rules without "_mode", which is for resolve() only; the same array when none has it. */
+    private static function withoutModeKey(array $rules)
+    {
+        foreach ($rules as $i => $r) {
+            if (is_array($r) && array_key_exists('_mode', $r)) unset($rules[$i]['_mode']);
+        }
+        return $rules;
     }
 
     /**

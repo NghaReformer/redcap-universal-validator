@@ -202,12 +202,29 @@ $c = Branching::fieldConflicts($rules);
 check('conflict priority: two-unconditional first',
     isset($c['sid']) && $c['sid']['kind'] === 'two-unconditional' && $c['sid']['rules'] === [2, 3]);
 
-// ---- configError rules never participate in sharing ----
-$rules = [
-    rule(['sid'], ['algorithm' => 'damm']),
-    ['type' => 'single', 'fields' => ['sid'], 'configError' => 'already broken'],
-];
-check('configError rules excluded from claims', Branching::resolve($rules) === $rules);
+// ---- a configError rule is no branch, but it switches off its mode's fallback (C4) ----
+// It may be a conditional rule whose condition cannot be read, and a fallback
+// applies only when no condition is true. Up to 2.3.0-rc.2 the fallback
+// became the field's only rule.
+$broken = ['type' => 'single', 'fields' => ['sid'], 'configError' => 'already broken'];
+$out = Branching::resolve([rule(['sid'], ['algorithm' => 'damm']), $broken]);
+check('C4: the rule without "when" loses the field; the broken rule stays (got ' . json_encode($out) . ')', $out === [$broken]);
+$out = Branching::resolve([rule(['sid', 'other'], ['algorithm' => 'damm']), $broken]);
+check('C4: ...on that field only', $out === [rule(['other'], ['algorithm' => 'damm']), $broken]);
+$out = Branching::resolve([rule(['sid'], ['algorithm' => 'damm', 'when' => "[a]='1'"]), $broken]);
+check('C4: a conditional rule still applies under its condition', $out === [rule(['sid'], ['algorithm' => 'damm', 'when' => "[a]='1'"]), $broken]);
+$out = Branching::resolve([rule(['sid'], ['algorithm' => 'damm', 'when' => "[a]='1'"]), rule(['sid'], ['algorithm' => 'luhn']), $broken]);
+$br = isset($out[1]['branches']) ? $out[1]['branches'] : [];
+check('C4: shared with conditional rules, the branches stay and the else goes (got ' . json_encode($out) . ')',
+    count($out) === 2 && $out[0] === $broken && count($br) === 1 && $br[0]['when'] === "[a]='1'" && $br[0]['algorithm'] === 'damm');
+$choicesBroken = ['type' => 'single', 'fields' => ['clinic'], 'configError' => '@UVCHOICES on "clinic": broken', '_mode' => 'choices'];
+$fallback = ['type' => 'choices', 'fields' => ['clinic'], 'choicesShow' => ['E1']];
+$out = Branching::resolve([$choicesBroken, $choicesBroken, $fallback]);
+check('C4: a broken tag counts in its own mode ("_mode"), and resolve() drops the key (got ' . json_encode($out) . ')',
+    count($out) === 2 && !isset($out[0]['_mode']) && !isset($out[1]['_mode']) && $out[0]['configError'] === '@UVCHOICES on "clinic": broken');
+$out = Branching::resolve([$choicesBroken, rule(['clinic'], ['algorithm' => 'damm'])]);
+check('C4: a broken rule of another mode leaves the field\'s rules alone', count($out) === 2 && $out[1] === rule(['clinic'], ['algorithm' => 'damm']));
+check('C4: with nothing broken and nothing shared, the list is returned as it came', Branching::resolve([$fallback]) === [$fallback]);
 
 // ---- one field legal, another illegal, in the same list ----
 $rules = [
@@ -296,6 +313,14 @@ $n++;
     check('groups: the elses go last, in rule order',
         count($br) === 3 && $br[0]['when'] === "[b]='1'" && $br[1]['rangeReference'] === 'who-wfa' && $br[1]['when'] === null
         && $br[2]['rangeReference'] === 'who-wfh' && $br[2]['when'] === null);
+    // C4 per group: a broken rule of one reference switches off that
+    // reference's fallback only; one whose reference cannot be told, every one
+    $out = Branching::resolve([$rg('who-wfa'), $rg('who-wfh'), $rg('who-wfh', ['configError' => 'broken'])]);
+    check('groups C4: a broken rule switches off its own reference\'s else (got ' . json_encode($out) . ')',
+        count($out) === 2 && !empty($out[0]['configError']) && isset($out[1]['branches']) && count($out[1]['branches']) === 1
+        && $out[1]['branches'][0]['rangeReference'] === 'who-wfa' && $out[1]['branches'][0]['when'] === null);
+    $out = Branching::resolve([$rg('who-wfa'), $rg('who-wfh'), ['type' => 'single', 'fields' => ['wt'], 'configError' => 'x', '_mode' => 'range']]);
+    check('groups C4: a broken tag of unknown reference switches off every else', count($out) === 1 && $out[0]['configError'] === 'x');
     check('groups: a mode without a branchGroup keeps one group (check mode)',
         isset(Branching::fieldConflicts([rule(['x'], ['algorithm' => 'damm']), rule(['x'], ['algorithm' => 'luhn'])])['x']));
     check('groups: groupOf reads the key, "" without one', Branching::groupOf(['rangeReference' => 'r'], 'rangeReference') === 'r'

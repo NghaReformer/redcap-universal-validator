@@ -345,6 +345,13 @@ Rules worth knowing:
   both conditions, validates nothing, and NEVER blocks the save; the server
   logs the same conflict to the module log. Mutually exclusive conditions
   (`='2'` vs `<>'2'`) can never conflict.
+- **A rule with a configuration error switches off the else branch** of
+  its tag on that field. The broken rule validates nothing and shows its
+  error; it may be a conditional rule whose condition cannot be read, and
+  the else applies only when no condition is true. The other conditional
+  rules still apply. Up to 2.3.0-rc.2 the else became the field's only rule:
+  with event references switched off, a site cascade's last list applied to
+  every site.
 - `blockSave` and `suggestFix` are **per branch** — e.g. *Compulsory* for
   blood specimens, informational otherwise.
 - The branch semantics are specified normatively in
