@@ -1561,6 +1561,9 @@ final class ScanService
             ['scope', $scope['label']],
             ['coverage', $facts['coverageSentence'] . ($group ? ' ' . sprintf(self::GROUP_ONLY, $scope['label']) : '')],
             ['certified', !$facts['mayCertify'] ? 'no' : ($group ? 'yes, for ' . $scope['label'] . ' only' : 'yes')],
+            // The day the run's date rules were judged as of (W10BF-3), as the
+            // status, the panel and the findings page give it (review rvc2-5).
+            ['judged_as_of', $facts['asOf'] !== null ? (string) $facts['asOf'] : 'not applicable'],
             ['values', $facts['valuesState']],
             ['labels', $facts['labelsDegraded'] ? $facts['degradedSummary']
                 : 'as the project was when this scan was planned'],

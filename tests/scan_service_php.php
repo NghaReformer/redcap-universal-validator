@@ -2686,6 +2686,22 @@ namespace INSPIRE\UniversalValidator\Scan {
         is_array($c4pol) && !array_key_exists('asOf', $c4pol)
         && $cm4->askedAsOf && !array_filter($cm4->askedAsOf, function ($a) { return $a !== null; })
         && (new ScanService($cm4, $cs4))->status(170, $c4run)['asOf'] === null);
+    // rvc2-5: the file says it too. Status, the panel and the findings page
+    // gave the frozen day, and the CSV's head did not.
+    $asOfLine = function ($m, $s, $pid, $rid) {
+        for ($i = 0; $i < 25 && $s->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($m, $s))->work($pid, $rid);
+        }
+        $x = (new ScanService($m, $s))->exportOpen($pid, $rid);
+        if (empty($x['ok'])) return 'refused: ' . (isset($x['why']) ? $x['why'] : '');
+        $buf = '';
+        $x['stream'](function ($t) use (&$buf) { $buf .= $t; }, function () {});
+        return preg_match('/^"# judged_as_of","([^"]*)"/m', $buf, $mm) ? $mm[1] : 'no line';
+    };
+    check('rvc2-5: the export of a run whose rules read the clock says the day it was judged as of',
+        $asOfLine($cm3, $cs3, 169, $c3run) === '2026-10-21');
+    check('rvc2-5: and of a run whose rules read none, that no day applies',
+        $asOfLine($cm4, $cs4, 170, $c4run) === 'not applicable');
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();

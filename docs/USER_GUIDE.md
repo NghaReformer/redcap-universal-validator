@@ -799,8 +799,9 @@ second tab on the same page only watches, until you press Continue there.
 
 When the project has an `@UVWINDOW` rule, every record of a run is judged as of
 the date and time the run was planned, so a scan that runs past midnight
-judges every record against the same day. The page and the file say "Dates
-were judged as of" that date.
+judges every record against the same day. The page says "Dates were judged
+as of" that date, and the downloaded file gives it on its `# judged_as_of`
+line (`not applicable` when no rule of the run reads the clock).
 
 A finished scan says how much it covered. "Every record was checked,
 including changes made while it ran." is the whole project. Any other sentence
