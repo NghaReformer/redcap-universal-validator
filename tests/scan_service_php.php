@@ -4739,6 +4739,46 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W11A-N3 (control): and can still stop the run, as before, while an id that is none is no run',
         (new ScanService($opMod, $opStore))->cancel(190, 999)['why'] === ScanService::NO_RUN
         && (new ScanService($opMod, $opStore))->cancel(190, $opRun)['ok'] === true);
+    check('rv11b1-8: the refusal that offers that reader Stop is final, so the page shows Stop and stops asking',
+        $opNone['final'] === true);
+    // rv11b2-3. THE OTHER HALF OF THE PRE-RUN QUESTION: a field a rule
+    // depends on that the plan cannot place on an instrument. Its access
+    // cannot be checked, so every verb refuses, and it must refuse a run and
+    // an id that is no run in the same words. Without the unknown-ownership
+    // half of readerRefusal() a run was told which field and an id that is
+    // none was told NO_RUN, the oracle W11A-N3 closed for instruments.
+    $unStore = new ArrayScanStore();
+    $unMod = new class($unStore) extends \E2eModule {
+        public $unplace = false;
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $c = parent::durableScanContext($pid, $opts, $dag);
+            if (!empty($c['ok']) && $this->unplace) $c['ownership']['b_lost'] = null;
+            return $c;
+        }
+    };
+    $unMod->user->rights['forms'] = ['fa' => '1'];
+    $unRun = (int) (new ScanService($unMod, $unStore))->start(190)['run_id'];
+    $unMod->unplace = true;
+    $unVerbs = function ($id) use ($unMod, $unStore) {
+        return ['status' => (new ScanService($unMod, $unStore))->status(190, $id),
+                'work'   => (new ScanService($unMod, $unStore))->work(190, $id),
+                'page'   => (new ScanService($unMod, $unStore))->findings(190, $id),
+                'export' => (new ScanService($unMod, $unStore))->exportOpen(190, $id)];
+    };
+    $unOn = $unVerbs($unRun);
+    $unOff = $unVerbs(999);
+    check('rv11b2-3: a field no instrument holds refuses a run and no run alike, by every verb and the download',
+        $unRun > 0 && $unOff['status']['ok'] === false && $unOff['status']['final'] === true
+        && strpos($unOff['status']['why'], 'could not be located on an instrument') !== false
+        && strpos($unOff['status']['why'], 'b_lost') !== false
+        && $unOn['work'] === $unOff['work'] && $unOn['page'] === $unOff['page']
+        && $unOn['export'] === $unOff['export'] && $unOff['export']['http'] === 403
+        && $unOff['work']['why'] === $unOff['status']['why'] && $unOff['export']['why'] === $unOff['status']['why']
+        && $unOn['status'] === $unOff['status'] + ['run_id' => $unRun, 'active' => true, 'mayCancel' => true]);
+    $unMod->unplace = false;
+    check('rv11b2-3 (control): with the field placed again, the run is there and the id is not',
+        !empty($unVerbs($unRun)['status']['ok']) && $unVerbs(999)['status']['why'] === ScanService::NO_RUN);
 
     // A RUN THAT HAS NOT FINISHED HAS NO REPORT, AND ONE THAT HAS NOT PROVED
     // ITS GROUP SHOWS NO ROW.
