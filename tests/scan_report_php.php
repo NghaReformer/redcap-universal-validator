@@ -163,7 +163,12 @@ namespace {
             'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
             'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
             'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => (int) $ord, 'check_type' => 'unique',
-            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON, 'reason_bits' => 0,
+            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON,
+            // UniqueFinalizer::emit(): the branch the candidate was stored
+            // with (rv11a2-2), 0 when it was stored with none.
+            'reason_bits' => \INSPIRE\UniversalValidator\Scan\ReasonCode::bits(
+                \INSPIRE\UniversalValidator\Scan\ReasonCode::split(\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON),
+                isset($cand['branch']) ? (int) $cand['branch'] : null),
             'dag_key' => $dag,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
             'as_of' => null, 'z_score' => null, 'growth_reference' => null,
@@ -397,8 +402,8 @@ namespace {
             $written !== []
             && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at'],
                                array_keys($written)) === []
-            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '0'
-            && strpos($fin, "\$ord, 'unique', self::REASON, \$dag, \$g['group_hmac']") !== false
+            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '?'
+            && strpos($fin, "\$ord, 'unique', self::REASON, \$bits, \$dag, \$g['group_hmac']") !== false
             && \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON === 'duplicate-value');
 
         // The group a duplicate is given is read off the record node by
@@ -435,6 +440,53 @@ namespace {
             $prod === $mine && array_keys($mine) === ['p', 'q', 'r', 's']);
         check('identifier flags: no dictionary is "could not tell", not "none"',
             ScanDimensions::build(PID, [], [])->identifiers === null);
+
+        // A BRANCHED @UVUNIQUE DUPLICATE READS WITH ITS BRANCH (review
+        // rv11a2-2). The candidate table had no branch column, so the
+        // finalizer stored 0 and the duplicate read with no branch's message.
+        // The column is there now; the evaluator has to fill it, or the
+        // finalizer still has nothing to store.
+        $bDict = dict([
+            'record_id' => [],
+            'grp'  => [],
+            'code' => ['@UVUNIQUE={"when":"[grp]=\'2\'","message":"Female code taken."} '
+                       . '@UVUNIQUE={"when":"[grp]=\'1\'","message":"Male code taken."}'],
+        ]);
+        $bData = ['B-1' => [1 => ['record_id' => 'B-1', 'grp' => '1', 'code' => 'X1']],
+                  'B-2' => [1 => ['record_id' => 'B-2', 'grp' => '1', 'code' => 'X1']]];
+        $bm = mkMod($bDict, $bData);
+        $bLegacy = $bm->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
+        $bCtx = $bm->durableScanContext(PID, ['valueCeiling' => 'raw', 'generation' => 7, 'runSeq' => 7]);
+        $bd = $bm->scanDimensions(PID);
+        foreach ($bCtx['plan']['ruleIds'] as $i => $id) $bd->rulesBySource[$id['source_id']] = $i + 1;
+        $bOrd = \INSPIRE\UniversalValidator\Scan\ScanService::ruleOrdinals($bCtx['plan']);
+        $bWas = [];
+        foreach ($bLegacy['violations'] as $v) {
+            if ($v['type'] === 'unique') $bWas[$v['record']] = ScanColumns::row($v, $bd);
+        }
+        $bIs = [];
+        $bBranches = [];
+        foreach ($bData as $rid => $node) {
+            foreach ($bCtx['evaluate']($rid, $node)['candidates'] as $i => $c) {
+                $bBranches[] = isset($c['branch']) ? $c['branch'] : null;
+                $o = isset($bOrd[$c['rule_source_id']]) ? $bOrd[$c['rule_source_id']] : 0;
+                $bIs[$c['record_id_bin']] = ScanColumns::row(mapper()->toFinding(finalized($c, 200 + $i, $o)), $bd);
+            }
+        }
+        ksort($bWas); ksort($bIs);
+        // The finalizer keeps no value for a duplicate (RP-1), so the value
+        // cell is the one column the two reports are allowed to differ in.
+        $bValues = array_column($bIs, 'value');
+        $noValue = function ($rows) {
+            foreach ($rows as $k => $r) unset($rows[$k]['value']);
+            return $rows;
+        };
+        check('rv11a2-2: the evaluator hands each candidate the branch that judged it',
+            count($bBranches) === 2 && !in_array(null, $bBranches, true) && count(array_unique($bBranches)) === 1);
+        check('rv11a2-2: and the stored duplicate reads as the legacy report reads it, the branch\'s message included',
+            count($bWas) === 2 && $noValue($bWas) === $noValue($bIs)
+            && $bValues === ['[not kept by this scan]', '[not kept by this scan]']
+            && $bIs['B-1']['problem'] === 'Male code taken.');
     }
 
     /* =====================================================================

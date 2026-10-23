@@ -180,8 +180,8 @@ The number is the version the installation is at, which
 2.3.0 release candidate, `Schema::plan(1)` for 1.9.x, `Schema::plan(0)` for an
 installation with no scan tables. Run the statements in order, then save the
 system configuration once. The module finds the changes already made, skips
-them, runs the steps that are not DDL (the version-2 data step below),
-verifies the result and records the version.
+them, runs the steps that are not DDL (the version-2 and version-6 data
+steps below), verifies the result and records the version.
 
 ### Upgrading from a 2.3.0 release candidate (schema version 5 to 6)
 
@@ -190,21 +190,40 @@ the largest, is not touched.
 
 - `uv_scan_record` gains `unstored` and `stored_findings`: for each record, how
   many findings of its latest reading the detail limit left out, and how many
-  it stored.
+  it stored. One `ALTER`, so MySQL 5.7 rebuilds the table once.
 - `uv_scan_run` gains `open_unstored` and `open_findings`, their sums for the
-  run. Both are NULL on every run that exists at the upgrade, and 0 on runs
-  created after it.
+  run, in one `ALTER`. Neither has a default. Both are NULL on every run that
+  exists at the upgrade and on any run the previous version starts while the
+  upgrade runs; the new version writes 0 on each run it starts.
+- `uv_unique_candidate` gains `branch`, the branch of the `@UVUNIQUE` rule
+  that offered the value (NULL for a rule with no branches), so a duplicate
+  is reported with its branch's message.
 - `uv_unique_candidate` gains the index
   `ix_record (project_id, generation_id, record_hash)`, so catch-up can remove
   the duplicate candidates of a record it reads again, or that was deleted,
   without reading every candidate of the run.
 
-That is seven statements, and their time grows with the rows in those three
-tables; the index is the slowest.
+That is four statements, and their time grows with the rows in those three
+tables. Measured with 400,000 records and 400,000 candidates: MySQL 8.0 adds
+the columns at once and spends about 17 seconds on the index. MySQL 5.7
+rebuilds `uv_scan_record` (10 to 19 seconds over two runs on a shared test
+host), rebuilds `uv_unique_candidate` to add `branch` (about 15 seconds),
+and spends 2 to 5 seconds on the index: about 27 seconds in all on the
+second run.
+
+Then one data step: each run that had already finished its catch-up pass is
+marked as having done so, 5,000 runs per `UPDATE`. The row shows this for a
+run in either finishing phase, and for a stopped or ended run whose summary
+had begun. A scan of one Data Access Group stopped or ended after that point
+shows its counts again. One stopped earlier in the finishing phases cannot be
+told apart from one stopped before catch-up ended, so it keeps saying its
+counts are shown once it has confirmed its group.
 
 Runs that exist at the upgrade are counted the old way, from every finding
-row they wrote. That shows only where such a run has no summary: one still in
-progress, or one that failed, was cancelled or expired. A run in progress at
+row they wrote and from their summary. That shows only where such a run has
+no summary: one still in progress, or one that failed, was cancelled or
+expired, which may say its findings were not counted where a later run
+shows 0. A run in progress at
 the upgrade ends on its next batch as failed, with the reason that the module
 was upgraded while it ran, because this build judges some values differently;
 start it again. Runs started after the upgrade are counted as the README's

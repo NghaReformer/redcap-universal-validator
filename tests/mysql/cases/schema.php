@@ -312,14 +312,19 @@ foreach (['unstored', 'stored_findings'] as $rc) {
             . ' WHERE run_id = ?', [$v5run])[0][0] === 0);
 }
 foreach (['open_unstored', 'open_findings'] as $oc) {
-    check('v6 upgrade: uv_scan_run.' . $oc . ' is NULL on the run in flight, so it is counted the old way',
-        $colOf('scan_run', $oc) === ['YES', '0']
+    // No default (review rvc1-3): MySQL reports SQL NULL, MariaDB the word.
+    $def = $colOf('scan_run', $oc);
+    check('v6 upgrade: uv_scan_run.' . $oc . ' is nullable with no default, and NULL on the run in flight, so it is counted the old way',
+        is_array($def) && $def[0] === 'YES' && ($def[1] === null || strtoupper((string) $def[1]) === 'NULL')
         && $ca->query('SELECT ' . $oc . ' FROM ' . Schema::table('scan_run')
             . ' WHERE run_id = ?', [$v5run])[0][0] === null);
 }
 check('v6 upgrade: uv_unique_candidate gains ix_record (project_id, generation_id, record_hash) (W5F-N1)',
     uv_index_columns($A, Schema::table('unique_candidate'), 'ix_record')
         === ['project_id', 'generation_id', 'record_hash']);
+$brCol = $colOf('unique_candidate', 'branch');
+check('v6 upgrade: uv_unique_candidate gains branch, nullable with no default, so a candidate already there has none (rv11a2-2)',
+    is_array($brCol) && $brCol[0] === 'YES' && ($brCol[1] === null || strtoupper((string) $brCol[1]) === 'NULL'));
 $v6store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
 $v6new = $v6store->startRun($NEIGHBOUR, ['created_by' => 'bob']);
 check('v6 upgrade: and a run created after it starts at 0, on both counts',
@@ -331,3 +336,112 @@ check('v6 upgrade: migrating again applies nothing',
     $r6b['ok'] === true && $r6b['applied'] === 0
     && $ca->query('SELECT open_unstored, open_findings FROM ' . Schema::table('scan_run')
         . ' WHERE run_id = ?', [$v5run])[0] === [null, null]);
+
+// -- A RUN THE PREVIOUS BUILD STARTS WHILE THE UPGRADE RUNS (review rvc1-3) ----
+//
+// The version 5 build passes health() until the version row is written, and
+// its INSERT names neither run count. With DEFAULT 0 set mid-migration, such a
+// run read as one keeping counts that no commit of its build maintained, and
+// dropped its left-out findings from the working count (the reviewer's
+// window repro: 1 where the old rule says 3). With no default it is NULL and
+// counted the old way.
+foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
+for ($v5 = 1; $v5 <= 5; $v5++) {
+    foreach (Schema::statements($v5) as $item) $A->query(is_array($item) ? $item['sql'] : $item);
+}
+$A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES (5, NOW())');
+$v6sql = Schema::statements(6);
+// Every version 6 statement that touches a run's columns has run; the
+// version row has not.
+foreach ($v6sql as $item) {
+    if (strpos($item['sql'], Schema::table('scan_run')) !== false || strpos($item['sql'], Schema::table('scan_record')) !== false) {
+        $A->query($item['sql']);
+    }
+}
+check('rvc1-3 window: the server still reports version 5, so the version 5 build still answers Start',
+    Schema::currentVersion($ca) === 5);
+$A->query('INSERT INTO ' . Schema::table('scan_run') . '
+    (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+     coverage, detail, values_state, policy_json, policy_revision, fingerprint,
+     created_at, updated_at, active_slot)
+    VALUES (UNHEX(REPLACE(UUID(), "-", "")), ' . $PID . ', 1, 1, "alice", "global", "full", "scanning",
+            "partial", "complete", "none", "{}", 1, REPEAT("a", 64), NOW(), NOW(), 1)');
+$winRun = (int) $A->insert_id;
+$rWin = Schema::migrate($ca);
+check('rvc1-3 window: the migration then completes', $rWin['ok'] === true && Schema::currentVersion($ca) === 6);
+$winStore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+$winRow = $winStore->run($PID, $winRun);
+check('rvc1-3 window: the run the version 5 build made keeps NULL on both counts',
+    $winRow !== null && $winRow['open_unstored'] === null && $winRow['open_findings'] === null);
+// What a version 5 commit wrote while the run was in flight: one row stored,
+// two left out, counted only in the detail-unstored aggregate.
+$A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 1 WHERE run_id = ' . $winRun);
+$winStore->addAggregate($winRun, \INSPIRE\UniversalValidator\Scan\ScanStore::DETAIL_UNSTORED, '', '', 2);
+check('rvc1-3 window: and is counted the old way while it works: 1 stored and 2 left out',
+    \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($winStore, $winStore->run($PID, $winRun)) === 3);
+$winNew = $winStore->startRun($NEIGHBOUR, ['created_by' => 'bob']);
+check('rvc1-3 window: while a run this build starts writes 0 on both counts itself',
+    $winNew['ok'] === true && $winNew['run']['open_unstored'] !== null && (int) $winNew['run']['open_unstored'] === 0
+    && $winNew['run']['open_findings'] !== null && (int) $winNew['run']['open_findings'] === 0);
+
+// -- RUNS THAT LEFT CATCH-UP UNDER THE PREVIOUS BUILD (review rvfix-N1) --------
+//
+// advancePhase() marks the move out of catch-up (catchup_dirty = CAUGHT_UP),
+// and a stopped group-scoped run shows its counts only with that mark. The
+// version 5 build did not write it, so version 6's data step marks the runs
+// whose row shows they left: a finalizer phase, or stopped or ended with the
+// rollup cursor moved. One past the first primary-key page proves the paging.
+foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
+for ($v5 = 1; $v5 <= 5; $v5++) {
+    foreach (Schema::statements($v5) as $item) $A->query(is_array($item) ? $item['sql'] : $item);
+}
+$A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES (5, NOW())');
+$CU = \INSPIRE\UniversalValidator\Scan\ScanStore::CAUGHT_UP;
+// name => [run_id, phase, terminal, catchup_dirty, rollup_cursor, active, the mark after]
+$n1runs = ['in unique-finalize'                  => [11, 'unique-finalize', null, 0, 0, 1, $CU],
+           'in rollup-finalize'                  => [12, 'rollup-finalize', null, 1, 3, 1, $CU],
+           'stopping after the summary began'    => [13, 'cancelling', null, 0, 5, 1, $CU],
+           'expired after the summary began'     => [14, 'terminal', 'expired', 0, 7, 0, $CU],
+           'past the first page, in unique-finalize' => [Schema::DATA_V6_PAGE + 7, 'unique-finalize', null, 0, 0, 1, $CU],
+           'stopping, cursor not moved'          => [15, 'cancelling', null, 0, 0, 1, 0],
+           'failed, cursor not moved'            => [16, 'terminal', 'failed', 1, 0, 0, 1],
+           'in catch-up'                         => [17, 'catch-up', null, 1, 0, 1, 1],
+           'scanning'                            => [18, 'scanning', null, 0, 0, 1, 0]];
+$n1pid = 950;
+foreach ($n1runs as $name => $rr) {
+    $A->query('INSERT INTO ' . Schema::table('scan_run') . '
+        (run_id, run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, scope_dag, run_kind, phase,
+         terminal, coverage, detail, values_state, policy_json, policy_revision, fingerprint, fence_target,
+         catchup_dirty, rollup_cursor, created_at, updated_at, active_slot)
+        VALUES (' . (int) $rr[0] . ', UNHEX(REPLACE(UUID(), "-", "")), ' . ($n1pid++) . ', 1, 1, "alice", "dag", "7",
+                "full", "' . $rr[1] . '", ' . ($rr[2] === null ? 'NULL' : '"' . $rr[2] . '"') . ', "partial",
+                "complete", "none", "{}", 1, REPEAT("a", 64), "42", ' . (int) $rr[3] . ', ' . (int) $rr[4] . ',
+                NOW(), NOW(), ' . ($rr[5] ? '1' : 'NULL') . ')');
+}
+$markOf = function ($id) use ($A) {
+    $q = $A->query('SELECT catchup_dirty FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . (int) $id)->fetch_row();
+    return $q === null ? null : (int) $q[0];
+};
+$provedOf = function ($id) use ($ca) {
+    $r = $ca->query('SELECT scope_dag, fence_target, phase, terminal, catchup_dirty FROM '
+        . Schema::table('scan_run') . ' WHERE run_id = ?', [(int) $id]);
+    return \INSPIRE\UniversalValidator\Scan\ScanAuthorization::scopeProved(
+        ['scope_dag' => $r[0][0], 'fence_target' => $r[0][1], 'phase' => $r[0][2],
+         'terminal' => $r[0][3], 'catchup_dirty' => $r[0][4]]);
+};
+check('rvfix-N1: before the upgrade, a group run stopped after the summary began is withheld',
+    $provedOf(13) === false && $provedOf(14) === false);
+$rN1 = Schema::migrate($ca);
+check('rvfix-N1: the upgrade completes', $rN1['ok'] === true && Schema::currentVersion($ca) === 6);
+foreach ($n1runs as $name => $rr) {
+    check('rvfix-N1: a run ' . $name . ' ends with catchup_dirty ' . $rr[6], $markOf($rr[0]) === $rr[6]);
+}
+check('rvfix-N1: so the stopped and the expired run show their counts again',
+    $provedOf(13) === true && $provedOf(14) === true && $provedOf(15) === false);
+$A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version = 6');
+$before = [];
+foreach ($n1runs as $rr) $before[] = $markOf($rr[0]);
+$rN1b = Schema::migrate($ca);
+$after = [];
+foreach ($n1runs as $rr) $after[] = $markOf($rr[0]);
+check('rvfix-N1: run again, the step changes nothing', $rN1b['ok'] === true && $after === $before);

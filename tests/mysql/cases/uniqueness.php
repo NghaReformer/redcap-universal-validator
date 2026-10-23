@@ -1102,6 +1102,87 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
 }
 
+// -- a branched @UVUNIQUE duplicate keeps its branch (review rv11a2-2) ------
+//
+// The finalizer wrote a literal 0 into a duplicate's reason_bits, because the
+// candidate it reads had no branch, so a duplicate judged by a rule's second
+// branch read with the rule's top-level wording. The branch now goes on the
+// candidate through commitBatch(), and the duplicate stores it as every other
+// finding does (branch + 1), which FindingRowMapper hands back.
+{
+    $KEY = 'rv11a2-2-key';
+    $BPID = 968;
+    $bst = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $brun = $bst->startRun($BPID, array('created_by' => 'alice'))['run'];
+    $brid = (int) $brun['run_id'];
+    $bgen = (int) $brun['generation_id'];
+    $bep = (int) $brun['lease_epoch'];
+    $bHash = function ($r) use ($BPID, $KEY) {
+        return \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $BPID, $r, $KEY);
+    };
+    $bGroup = \INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $BPID, 'X1', $KEY);
+    $bst->writeManifest($brid, array_map(function ($r) use ($bHash) {
+        return array('id_bin' => $r, 'hash' => $bHash($r), 'dag' => null);
+    }, array('B1', 'B2')));
+    // B1's rule has no branch; B2 was judged in branch 1, the rule's second.
+    $bBranch = array('B1' => null, 'B2' => 1);
+    $bb = array('bytes' => 0, 'records' => array(), 'findings' => array(), 'candidates' => array());
+    foreach ($bst->claim($brid, 'w1', $bep, 2) as $c) {
+        $bb['records'][] = array('ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '100',
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'claim' => $c['claim']);
+        $bb['candidates'][] = array('ordinal' => $c['ordinal'], 'project_id' => $BPID, 'generation_id' => $bgen,
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64), 'group_hmac' => $bGroup,
+            'scope_key' => 'project', 'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+            'event_id' => 1, 'instance' => 1, 'host_form' => 'f', 'field' => 'code', 'version' => '100')
+            + ($bBranch[$c['id_bin']] === null ? array() : array('branch' => $bBranch[$c['id_bin']]));
+    }
+    $okB = $bst->commitBatch($brid, 'w1', $bep, $bb) === true;
+    $bStored = array();
+    foreach ($dbA->select('SELECT record_id_bin, branch FROM ' . Schema::table('unique_candidate')
+            . ' WHERE project_id = ? AND generation_id = ? ORDER BY record_id_bin', array($BPID, $bgen)) as $r) {
+        $bStored[(string) $r[0]] = $r[1] === null ? null : (int) $r[1];
+    }
+    check('rv11a2-2: commitBatch() stores each candidate\'s branch, NULL for none',
+        $okB && $bStored === array('B1' => null, 'B2' => 1));
+    $bVer = new MovingVersions();
+    $bVer->v = array('B1' => '100', 'B2' => '100');
+    $bFin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $BPID,
+        'seq' => (int) $brun['run_seq'], 'hmacKey' => $KEY, 'versions' => $bVer,
+        'read' => function ($locs) {
+            $out = array();
+            foreach ($locs as $l) {
+                $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('X1');
+            }
+            return array('ok' => true, 'values' => $out, 'why' => null);
+        }));
+    for ($i = 0; $i < 20; $i++) {
+        $bs = $bFin->step($bgen, 10, 10);
+        if ($bs['done']) break;
+    }
+    $bRows = array();
+    foreach ($dbA->select('SELECT record_id_bin, reason_code, reason_bits FROM ' . Schema::table('finding')
+            . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1 ORDER BY record_id_bin',
+            array($BPID, $bgen)) as $r) {
+        $bRows[(string) $r[0]] = array((string) $r[1], (int) $r[2]);
+    }
+    check('rv11a2-2: the duplicate of the branched candidate stores branch + 1, the other 0 (got '
+        . json_encode($bRows) . ')',
+        $bRows === array('B1' => array('duplicate-value', 0), 'B2' => array('duplicate-value', 2)));
+    $bMapper = new \INSPIRE\UniversalValidator\Scan\FindingRowMapper(array('pid' => $BPID,
+        'now' => gmdate('Y-m-d H:i:s'), 'valuesState' => 'none', 'readerCeiling' => 'raw', 'identifiers' => array(),
+        'recordIds' => \INSPIRE\UniversalValidator\Scan\FindingRowMapper::IDS_RAW, 'recordIdField' => 'record_id'));
+    $bRead = array();
+    foreach ($bst->findings($BPID, $bgen, array('dag' => null), array(), 0, 10) as $row) {
+        $f = $bMapper->toFinding($row);
+        $bRead[(string) $f['record']] = $f['branch'];
+    }
+    check('rv11a2-2: and the report reads the branch back from the stored duplicate (got ' . json_encode($bRead) . ')',
+        $bRead === array('B1' => null, 'B2' => 1));
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
 // -- departures are not restarts (review rvf2-5) -----------------------------
 //
 // MAX_RESTARTS counts the group's candidate_epoch, and dropping a departed

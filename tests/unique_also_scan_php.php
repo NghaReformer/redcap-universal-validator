@@ -204,10 +204,17 @@ namespace {
              'group_hmac' => str_repeat("\1", 32), 'scope_key' => 'project', 'record_hash' => str_repeat("\5", 32),
              'record_id_bin' => '1', 'event_id' => 351, 'instance' => 1, 'host_form' => 'reg', 'field' => 'scan_id'];
     $insert->invoke($store, $cand + ['lookup' => 1]);
-    $insert->invoke($store, $cand);
-    check('store: the lookup column is written', strpos($db->writes[0][0], 'version_scanned, lookup)') !== false
+    $insert->invoke($store, $cand + ['branch' => 3]);
+    // The lookup flag is the second-last value; the rule's branch (review
+    // rv11a2-2) is the last.
+    $lookupOf = function (array $args) { return $args[count($args) - 2]; };
+    check('store: the lookup column is written', strpos($db->writes[0][0], 'version_scanned, lookup, branch)') !== false
         && strpos($db->writes[0][0], 'lookup = VALUES(lookup)') !== false);
-    check('store: 1 for a lookup, 0 for a checked value', end($db->writes[0][1]) === 1 && end($db->writes[1][1]) === 0);
+    check('store: 1 for a lookup, 0 for a checked value',
+        $lookupOf($db->writes[0][1]) === 1 && $lookupOf($db->writes[1][1]) === 0);
+    check('store: the branch is written, NULL for a candidate with none',
+        strpos($db->writes[0][0], 'branch = VALUES(branch)') !== false
+        && end($db->writes[0][1]) === null && end($db->writes[1][1]) === 3);
 
     // ---- the re-read compares values the way their group was keyed ----
     $p = ['uniqueExact' => ['typed_id' => true, 'scan_id' => true], 'numberMarks' => ['n_a' => 'point', 'n_b' => 'point']];

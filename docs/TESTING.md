@@ -69,6 +69,7 @@ Everything it asserts lives in one file per area:
 | `cases/uniqueness.php` | `UniqueFinalizer`: duplicates decided without holding the project |
 | `cases/rollup.php` | `RollupBuilder`: the summary, and the two ways a summary lies |
 | `cases/promotion.php` | `ScanPromotion`: which terminal state a run has earned |
+| `cases/counting.php` | one finding count: the panel, the findings page, the file and the summary agree in every run state, with the real finalizer and summary |
 | `cases/perf.php` | `ScanService`: how many statements one request sends |
 | `cases/cron.php` | the two crons and the reaper Start runs, beside a second connection holding locks |
 | `cases/report.php` | the findings read: its query plans, and no project or group reading another's |

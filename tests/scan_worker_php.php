@@ -35,6 +35,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';    // the detail budget (H9)
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/ReasonCode.php';      // a duplicate's reason_bits (rv11a2-2)
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';   // tally() reads its KINDS
@@ -2365,9 +2366,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'emitting', null, 2]];
             if (strpos($sql, 'lookup = 0') !== false && preg_match('/LIMIT (\d+)/', $sql, $m)) {
                 $this->limits[] = (int) $m[1];
-                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64)]];
+                // The last column is the candidate's branch (rv11a2-2): R2's
+                // rule judged it in its second branch.
+                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), null],
+                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), 1],
+                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64), null]];
                 return array_slice($rows, 0, (int) $m[1]);
             }
             return [];
@@ -2421,6 +2424,13 @@ namespace INSPIRE\UniversalValidator\Scan {
                     ['R1', 'sid2', 0, 'site_a', 'duplicate-value']]);
     check('W7-R4: a rule the map does not name is ordinal 0, as before, and never a guess',
         isset($wrote[2]) && $wrote[2][2] === 0);
+    // rv11a2-2: the duplicate carries its candidate's branch as every other
+    // finding does (branch + 1), and a candidate with none is 0, as before.
+    $bitsOf = [];
+    foreach ($edb->rows() as $row) $bitsOf[] = [$row['record_id_bin'], $row['reason_bits']];
+    check('rv11a2-2: a duplicate\'s reason_bits name its candidate\'s branch (got ' . json_encode($bitsOf) . ')',
+        $bitsOf === [['R1', 0], ['R2', 2], ['R1', 0]]
+        && \INSPIRE\UniversalValidator\Scan\ReasonCode::branchOf('duplicate-value', $bitsOf[1][1]) === 1);
     check('W7-R4: the groups are asked once for the page, each record once',
         $asked === [['R1', 'R2']] && $er['emitted'] === 3 && $er['read'] === 2);
     // The page is cut to the read limit when the groups may cost a read.
@@ -2465,6 +2475,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             $this->tx[] = 'write';
             parent::execNoCount($sql, $params);
         }
+        /** What each counted write reports, in order: the publish's close, then its activation. */
+        public $counts = [];
+        private $last = 1;
+        public function exec($sql, array $params = [])
+        {
+            $this->tx[] = 'write';
+            $this->last = $this->counts ? array_shift($this->counts) : 1;
+            return 1;
+        }
+        public function affected() { return $this->last; }
         public function begin() { $this->tx[] = 'begin'; }
         public function commit() { $this->tx[] = 'commit'; }
         public function rollback() { $this->tx[] = 'rollback'; }
@@ -2498,11 +2518,16 @@ namespace INSPIRE\UniversalValidator\Scan {
     // page, the close of earlier epochs' rows, the activation and the
     // group's pointer with its cursor.
     $tdb = new TxEmitDb();
+    $tdb->counts = [0, 3];
     $lastPage = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
         ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
     check('W10BF-5: the last page of a group publishes it in its own held transaction',
         $lastPage['emitted'] === 3 && $lastPage['published'] === true && $lastPage['why'] === null
         && $tdb->tx === ['begin', 'write', 'write', 'write', 'write', 'commit']);
+    // rvc2-2, CONS-N1: and the rows it published are the run's, counted in
+    // that transaction.
+    check('CONS-N1: the publish adds the rows it made active to the count of the run',
+        (int) $fs->run(800, $frid)['open_findings'] === 3);
     $bumpEpoch($fs, $frid);
     $tdb = new TxEmitDb();
     $late = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
@@ -2515,11 +2540,14 @@ namespace INSPIRE\UniversalValidator\Scan {
     list($fs, $frid, $fep) = $fenceRun();
     $tdb = new TxEmitDb();
     $tdb->empty = true;
+    $tdb->counts = [1, 3];
     $pubLive = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
         ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
     check('rv10a1-1: a group published for a live run is published in one held transaction',
         $pubLive['published'] === true && $pubLive['why'] === null
         && $tdb->tx === ['begin', 'write', 'write', 'write', 'commit']);
+    check('CONS-N1: a publish that closed an earlier staging takes its rows back as it adds the new ones',
+        (int) $fs->run(800, $frid)['open_findings'] === 2);
     $fs->finish($frid, ScanOutcome::derive(['failed' => true]));
     $tdb = new TxEmitDb();
     $tdb->empty = true;
@@ -3858,7 +3886,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             $p = ScanPromotion::promote($store, $pid, $rid, array_merge($ok, $in));
             return [$p, $store->run($pid, $rid), $store];
         };
+        // The finalizer publishes the duplicate and counts it in the run's
+        // row in the same transaction (notePublished(), rvc2-2); the summary
+        // counts it once more.
         list($p, $row, $store810) = $promoted(810, function ($store, $rid) use ($K) {
+            $store->notePublished($rid, 1, 0);
             foreach ($K as $kind) $store->addAggregate($rid, $kind, 'x', null, 1);
         });
         check('duplicates only: the worker stored nothing', (int) $row['detail_rows'] === 0);
@@ -3866,6 +3898,9 @@ namespace INSPIRE\UniversalValidator\Scan {
             $p['promoted'] === true && $row['terminal'] === ScanOutcome::COMPLETE);
         check('duplicates only: and the page is told ONE finding, not the counter\'s zero',
             ScanPromotion::findingsOf($store810, $row) === 1);
+        check('duplicates only: and so is the page of a run from before the run kept its count, from the summary',
+            ScanPromotion::findingsOf($store810, array_merge($row, ['open_findings' => null,
+                                                                    'open_unstored' => null])) === 1);
         check('duplicates only: and is NOT clean, because the summary found what the counter missed',
             $row['clean'] !== null && (int) $row['clean'] === 0
             && ScanOutcome::mayClaimClean($p['outcome']) === false);
@@ -3880,15 +3915,30 @@ namespace INSPIRE\UniversalValidator\Scan {
         $live->addAggregate($lid, $K[0], 'x', null, 40);
         check('findings: a run still working reports what it has stored so far',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['open_findings' => 7])) === 7);
-        // OC-4: a run that ended without a verdict answers with the LARGER of
-        // its counter and whatever summary it built, because the counter misses
-        // every duplicate the uniqueness finalizer wrote.
-        check('findings: one that ended without a verdict answers with the larger of its counter and its summary',
+        // OC-4, FOR A RUN FROM BEFORE SCHEMA VERSION 6 (NULL counts): one that
+        // ended without a verdict answers with the LARGER of its counter and
+        // whatever summary it built, because the counter misses every
+        // duplicate the uniqueness finalizer wrote.
+        $old = ['open_findings' => null, 'open_unstored' => null, 'detail_rows' => 7];
+        check('findings: an old run that ended without a verdict answers with the larger of its counter and its summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), $old,
+                ['terminal' => ScanOutcome::CANCELLED])) === 40);
+        check('findings: and an old one that reached a verdict answers from the summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), $old,
+                ['terminal' => ScanOutcome::PARTIAL])) === 40);
+        // ONE NUMBER (reviews rvc2-2, rvc1-2, CONS-N1): a run that keeps its
+        // count answers from its row in every state, the rows its page and
+        // its file list, whatever its summary says.
+        foreach ([null, ScanOutcome::CANCELLED, ScanOutcome::EXPIRED, ScanOutcome::FAILED,
+                  ScanOutcome::PARTIAL, ScanOutcome::COMPLETE] as $term) {
+            check('findings: a run that keeps its count answers its rows and what they left out, '
+                . ($term === null ? 'working' : $term),
+                ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
+                    ['open_findings' => 7, 'open_unstored' => 2, 'terminal' => $term])) === 9);
+        }
+        check('findings: and zero is its answer when it holds none, stopped or not',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
-                ['detail_rows' => 7, 'terminal' => ScanOutcome::CANCELLED])) === 40);
-        check('findings: and one that reached a verdict answers from the summary',
-            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
-                ['detail_rows' => 7, 'terminal' => ScanOutcome::PARTIAL])) === 40);
+                ['open_findings' => 0, 'open_unstored' => 0, 'terminal' => ScanOutcome::CANCELLED])) === 0);
 
         // A CALLER CANNOT TALK THE VERDICT ROUND. These three used to arrive in
         // the array, and the production caller fed one of them from the wrong place.

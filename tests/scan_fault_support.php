@@ -334,6 +334,9 @@ class FaultyStore implements ScanStore
     public function holdRun($runId, $epoch, $phase)
     { $this->gate('holdRun'); return $this->inner->holdRun($runId, $epoch, $phase); }
 
+    public function notePublished($runId, $opened, $closed)
+    { $this->gate('notePublished'); return $this->inner->notePublished($runId, $opened, $closed); }
+
     public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
     { $this->gate('markAggregate'); return $this->inner->markAggregate($runId, $kind, $axis1, $axis2, $blocks, $samples); }
 

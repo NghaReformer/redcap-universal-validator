@@ -1518,37 +1518,61 @@ namespace INSPIRE\UniversalValidator\Scan {
  * OC-4  A RUN WITH NO VERDICT NEVER SAYS ZERO OVER FINDINGS IT HAS
  *
  * status() reports findingsOf(). For a cancelled, failed or expired run that
- * was the stored-row counter, which the uniqueness finalizer never moves: a run
- * cancelled during unique-finalize said "Nothing found yet" over the duplicates
- * it had written. The run row cannot say whether a summary was built, so a run
- * with no verdict answers with the larger of the counter and whatever summary
- * exists - and with NULL, "not counted", when both are zero. The counter is
- * the run row's open_findings, what its records still hold (W5F-N2), and
- * detail_rows on a run from before schema version 6 (below).
+ * was the stored-row counter, which the uniqueness finalizer never moved: a
+ * run cancelled during unique-finalize said "Nothing found yet" over the
+ * duplicates it had written.
+ *
+ * A RUN FROM BEFORE SCHEMA VERSION 6 (open_unstored and open_findings NULL)
+ * is still counted that way: its row cannot say whether a summary was built,
+ * so a run with no verdict answers with the larger of detail_rows and
+ * whatever summary exists, and with NULL, "not counted", when both are zero.
+ *
+ * A RUN THAT KEEPS ITS COUNT answers its row in every state (reviews rvc2-2,
+ * rvc1-2, CONS-N1): open_findings, which the finalizer now moves as it
+ * publishes (notePublished(), pinned in scan_worker_php), plus open_unstored.
+ * Its zero is a real zero, and a summary does not change its count.
  * ===================================================================== */
 {
+    $old = ['created_by' => 'alice', 'open_unstored' => null, 'open_findings' => null];
     $agg = new ArrayScanStore();
-    $aid = (int) $agg->startRun(820, ['created_by' => 'alice'])['run']['run_id'];
+    $aid = (int) $agg->startRun(820, $old)['run']['run_id'];
     $bare = new ArrayScanStore();
-    $bid = (int) $bare->startRun(821, ['created_by' => 'alice'])['run']['run_id'];
+    $bid = (int) $bare->startRun(821, $old)['run']['run_id'];
     foreach (RollupBuilder::KINDS as $kind) $agg->addAggregate($aid, $kind, 'x', null, 2);
     $as = function (ArrayScanStore $s, $pid, $id, array $over) {
         return ScanPromotion::findingsOf($s, array_merge($s->run($pid, $id), $over));
     };
+    check('OC-4: the fixture runs are from before version 6, keeping no count',
+        $agg->run(820, $aid)['open_findings'] === null && $bare->run(821, $bid)['open_unstored'] === null);
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("OC-4: a $how run with nothing stored and nothing summarised is NOT COUNTED, never zero",
-            $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 0]) === null);
+            $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 0]) === null);
         check("OC-4: a $how run whose summary holds findings the counter missed reports them",
-            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 0]) === 2);
+            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 0]) === 2);
         check("OC-4: and a $how run answers with the larger of the two, whichever it is",
-            $as($agg, 820, $aid, ['terminal' => $how, 'open_findings' => 5]) === 5
-            && $as($bare, 821, $bid, ['terminal' => $how, 'open_findings' => 3]) === 3);
+            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 5]) === 5
+            && $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 3]) === 3);
     }
     check('OC-4: a run that reached a verdict still answers from its summary alone',
-        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 2
-        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'open_findings' => 9]) === 0);
+        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 2
+        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
-        $as($agg, 820, $aid, ['terminal' => null, 'open_findings' => 4]) === 4);
+        $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+
+    // A RUN THAT KEEPS ITS COUNT, beside the same summary of 2.
+    $kept = function ($terminal, $found, $left) use ($as, $agg, $aid) {
+        return $as($agg, 820, $aid, ['terminal' => $terminal, 'open_findings' => $found,
+                                     'open_unstored' => $left, 'detail_rows' => 8]);
+    };
+    foreach (array_merge([null, ScanOutcome::COMPLETE, ScanOutcome::PARTIAL], ScanOutcome::NO_VERDICT) as $how) {
+        $name = $how === null ? 'working' : $how;
+        check("rvc2-2: a $name run that keeps its count answers its row, not its summary or detail_rows",
+            $kept($how, 5, 0) === 5 && $kept($how, 1, 2) === 3 && $kept($how, '4', '1') === 5);
+        check("rvc2-2: and a $name run that keeps its count and holds no findings answers 0",
+            $kept($how, 0, 0) === 0);
+    }
+    check('rvc2-2: a row with one count and not the other is read as a run from before version 6',
+        $kept(ScanOutcome::CANCELLED, 5, null) === 8 && $kept(ScanOutcome::CANCELLED, null, 1) === 8);
 
     // FINDINGS THE DETAIL BUDGET LEFT OUT. The counter stops at the budget
     // while the worker goes on finding, so every answer adds them: a run
@@ -1586,10 +1610,14 @@ namespace INSPIRE\UniversalValidator\Scan {
                  'policy_json' => $frozen]) === 6);
     check('rvf2-4: a working run that keeps the count reads no aggregates, below the budget or past it',
         $askAgg(['terminal' => null, 'detail_rows' => 4, 'detail_bytes' => 10,
-                 'policy_json' => $frozen, 'open_unstored' => '3']) === 7
+                 'policy_json' => $frozen, 'open_unstored' => '3', 'open_findings' => '4']) === 7
         && $askAgg(['terminal' => null, 'detail_rows' => 10, 'detail_bytes' => 1000,
-                 'policy_json' => $frozen, 'open_unstored' => '0']) === 10
-        && $askAgg(['terminal' => null, 'detail_rows' => 2, 'policy_json' => '{', 'open_unstored' => 5]) === 7);
+                 'policy_json' => $frozen, 'open_unstored' => '0', 'open_findings' => '10']) === 10
+        && $askAgg(['terminal' => null, 'detail_rows' => 2, 'policy_json' => '{', 'open_unstored' => 5,
+                 'open_findings' => 2]) === 7);
+    check('rvc2-2: nor does a run that keeps the count once it has ended, in any state',
+        $askAgg(['terminal' => ScanOutcome::CANCELLED, 'open_unstored' => 1, 'open_findings' => 4]) === 5
+        && $askAgg(['terminal' => ScanOutcome::COMPLETE, 'open_unstored' => 0, 'open_findings' => 0]) === 0);
     foreach (ScanOutcome::NO_VERDICT as $how) {
         check("rv10b1-5: a run ended $how that stored 5 and left 2 out found 7",
             $as($uns, 822, $uid, ['terminal' => $how, 'detail_rows' => 5]) === 7);
@@ -2870,6 +2898,22 @@ namespace INSPIRE\UniversalValidator\Scan {
         is_array($c4pol) && !array_key_exists('asOf', $c4pol)
         && $cm4->askedAsOf && !array_filter($cm4->askedAsOf, function ($a) { return $a !== null; })
         && (new ScanService($cm4, $cs4))->status(170, $c4run)['asOf'] === null);
+    // rvc2-5: the file says it too. Status, the panel and the findings page
+    // gave the frozen day, and the CSV's head did not.
+    $asOfLine = function ($m, $s, $pid, $rid) {
+        for ($i = 0; $i < 25 && $s->run($pid, $rid)['terminal'] === null; $i++) {
+            (new ScanService($m, $s))->work($pid, $rid);
+        }
+        $x = (new ScanService($m, $s))->exportOpen($pid, $rid);
+        if (empty($x['ok'])) return 'refused: ' . (isset($x['why']) ? $x['why'] : '');
+        $buf = '';
+        $x['stream'](function ($t) use (&$buf) { $buf .= $t; }, function () {});
+        return preg_match('/^"# judged_as_of","([^"]*)"/m', $buf, $mm) ? $mm[1] : 'no line';
+    };
+    check('rvc2-5: the export of a run whose rules read the clock says the day it was judged as of',
+        $asOfLine($cm3, $cs3, 169, $c3run) === '2026-10-21');
+    check('rvc2-5: and of a run whose rules read none, that no day applies',
+        $asOfLine($cm4, $cs4, 170, $c4run) === 'not applicable');
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();
@@ -4406,6 +4450,67 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $os2['row']['terminal_reason'] === ScanOutcome::derive(['cancelled' => true])['why']
         && $os2['trail'] === ['start:alice', 'cancel:bob']);
 
+    // rvfix-N3: a Stop that lands between the disable's read of the run and
+    // its cancel. endUnderDisable() read the run as working, then cancelled it
+    // as the system's over the user's stop: audited twice, and ended on the
+    // disable's sentence. The store's cancel() now refuses a run already
+    // stopping, so the stop stays the user's.
+    $n3Inner = new ArrayScanStore();
+    $n3Store = new class($n3Inner) extends FaultyStore {
+        public $in;
+        public $stopOnRun = null;
+        public function __construct(ArrayScanStore $i) { parent::__construct($i); $this->in = $i; }
+        public function audit($pid, $runId, $event, $actor, $detail)
+        {
+            parent::audit($pid, $runId, $event, $actor, $detail);
+            if ($event === 'start') $this->stopOnRun = 'bob';
+        }
+        public function run($pid, $runId)
+        {
+            $r = parent::run($pid, $runId);
+            if ($this->stopOnRun !== null && $r !== null && $r['terminal'] === null) {
+                $this->in->cancel($pid, $runId, $this->stopOnRun);
+                $this->stopOnRun = null;
+            }
+            return $r;
+        }
+    };
+    $n3Mod = new class($n3Inner) extends \E2eModule {
+        public $offAt = null;
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            if ($this->offAt === null && array_key_exists('generation', $opts) && $opts['generation'] === null) {
+                $this->offAt = (string) time();
+                $this->proj[ScanService::PROJECT_DISABLED_AT] = $this->offAt;
+            }
+            return parent::durableScanContext($pid, $opts, $dag);
+        }
+    };
+    $n3Start = (new ScanService($n3Mod, $n3Store))->start(1194);
+    $n3Trail = [];
+    foreach ($n3Inner->allAudits() as $a) $n3Trail[] = $a['event'] . ':' . $a['actor'];
+    $n3Rid = $n3Inner->allAudits() ? (int) $n3Inner->allAudits()[0]['run_id'] : 0;
+    $n3Row = $n3Rid > 0 ? $n3Inner->run(1194, $n3Rid) : null;
+    check('rvfix-N3: a Stop between the disable\'s read of the run and its cancel is audited once, as the user\'s',
+        $n3Start['ok'] === false && $n3Start['why'] === ScanService::OFF_PROJECT
+        && $n3Trail === ['start:alice', 'cancel:bob']);
+    check('rvfix-N3: and the run ends on the user\'s stop, not the disable\'s sentence',
+        is_array($n3Row) && $n3Row['terminal'] === ScanOutcome::CANCELLED
+        && $n3Row['terminal_reason'] === ScanOutcome::derive(['cancelled' => true])['why']);
+    // And Stop on a run already stopping still ends it: a stop a worker held,
+    // pressed again once nobody holds the run. cancel() refuses the second
+    // stop now, which used to read as "already finished".
+    $n4s = new ArrayScanStore();
+    $n4m = new \E2eModule($n4s);
+    $n4r = (int) (new ScanService($n4m, $n4s))->start(1195)['run_id'];
+    $n4s->cancel(1195, $n4r, 'alice');
+    $n4 = (new ScanService($n4m, $n4s))->cancel(1195, $n4r);
+    $n4c = 0;
+    foreach ($n4s->allAudits() as $a) if ($a['event'] === 'cancel') $n4c++;
+    check('rvfix-N3: Stop on a run already stopping finishes it, and audits no second stop',
+        $n4r > 0 && !empty($n4['ok']) && $n4['stopped'] === true
+        && $n4s->run(1195, $n4r)['terminal'] === ScanOutcome::CANCELLED && $n4c === 1);
+
     /* -----------------------------------------------------------------
      * rv5b-4  A RUN OUTSIDE THE READER'S GROUP IS "NO SUCH RUN", WORD FOR
      * WORD, IN STATUS, WORK AND CANCEL
@@ -4755,8 +4860,19 @@ namespace INSPIRE\UniversalValidator\Scan {
         && strpos($haltedCsv['text'], "\xEF\xBB\xBF\"# INCOMPLETE SCAN") === 0
         && strpos($haltedCsv['text'], "\r\n\"" . ScanService::INCOMPLETE_LABEL . '","This scan did not cover') !== false
         && $haltedCsv['result']['ok'] === true);
-    check('B5 export (item 10): and promises no row count, because a stopped run has no verdict',
-        strpos($haltedCsv['text'], '"# expected_rows","unknown"') !== false);
+    // A run that keeps its count promises the rows it holds in every state
+    // (review rvc2-2), 0 here; one from before schema version 6 has no count
+    // to promise once it stopped without a verdict.
+    check('B5 export (item 10): and promises the rows a stopped run holds, 0 here',
+        strpos($haltedCsv['text'], '"# expected_rows","0"') !== false
+        && strpos($haltedCsv['text'], '"# export_complete=1","rows=0"') !== false);
+    \Closure::bind(function () use ($halted) {
+        $this->runs[$halted]['open_findings'] = null;
+        $this->runs[$halted]['open_unstored'] = null;
+    }, $fs, ArrayScanStore::class)();
+    $oldHaltedCsv = $csv($halted, null, 190);
+    check('B5 export (item 10): a stopped run from before version 6 promises no row count, having no verdict',
+        !empty($oldHaltedCsv['ok']) && strpos($oldHaltedCsv['text'], '"# expected_rows","unknown"') !== false);
     $broken = new FaultyStore($fs);
     $fm->user->rights['group_id'] = null;
     $bx = (new ScanService($fm, $broken))->exportOpen(186, $fAll);
@@ -4944,7 +5060,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('rv11a1-5 (control): another group\'s reader is still told it is no run',
         $wvPage($m6, $s6, 205, $g6, 7) === ['ok' => false, 'why' => ScanService::NO_RUN, 'final' => true]);
 
-    // THE RECHECK, EACH HALF ON ITS OWN. A stopped run promises no count, so
+    // THE RECHECK, EACH HALF ON ITS OWN. A stopped run from before schema
+    // version 6 promises no count (a later run promises its rows, rvc2-2), so
     // only the run read again can tell that B replaced it during its download;
     // a run retention begins removing mid-download still has every row; and
     // a store that hands back one row fewer than the summary counted is caught
@@ -4955,6 +5072,10 @@ namespace INSPIRE\UniversalValidator\Scan {
     $m7->readSleep = 3.2;
     (new ScanService($m7, $s7))->work(206, $c7);
     (new ScanService($m7, $s7))->cancel(206, $c7);
+    \Closure::bind(function () use ($c7) {
+        $this->runs[$c7]['open_findings'] = null;
+        $this->runs[$c7]['open_unstored'] = null;
+    }, $s7, ArrayScanStore::class)();
     $openC = (new ScanService($m7, $s7))->exportOpen(206, $c7);
     $d7 = $wvRun($m7, $s7, 206, null);
     $midC = $lostOf($openC);

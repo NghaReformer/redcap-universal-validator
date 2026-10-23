@@ -133,6 +133,9 @@ $NEIGHBOUR = uv_neighbour($PID);
             $st->bind_param('iisssss', $pid, $gen, $ident, $rh, $rid_bin, $rev, $grp);
             $st->execute();
         }
+        // Counted as the finalizer counts what it publishes, in the publish
+        // transaction (ScanStore::notePublished(), reviews rvc2-2, CONS-N1).
+        if ($dupes > 0) $store->notePublished($rid, $dupes, 0);
         foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
@@ -254,12 +257,17 @@ $NEIGHBOUR = uv_neighbour($PID);
         (int) $raw[2] === 0 && (int) $raw[3] === 0);
 
     // A RUN CANCELLED DURING UNIQUE-FINALIZE (review OC-4). The finalizer has
-    // written two duplicates as active findings, the counter it never moves
-    // reads 0, and no summary was built. The page read that 0 as "Nothing found
-    // yet"; what it is told now is that the findings were not counted.
+    // written two duplicates as active findings, the counter reads 0, and no
+    // summary was built. The page read that 0 as "Nothing found yet"; what it
+    // is told now is that the findings were not counted. A RUN FROM BEFORE
+    // SCHEMA VERSION 6 (both counts NULL), whose finalizer moved no count; a
+    // later run's publish counts its duplicates (notePublished(), reviews
+    // rvc2-2, CONS-N1), and cases/counting.php stops one in unique-finalize.
     $r = $store->startRun(954, array('created_by' => 'alice', 'fence_open' => '10'));
     $rid = (int) $r['run']['run_id'];
     $gen = (int) $r['run']['generation_id'];
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = NULL, open_findings = NULL WHERE run_id = ' . $rid);
     $store->writeManifest($rid, array(
         array('id_bin' => 'D1', 'hash' => hash('sha256', 'D1', true), 'dag' => null),
         array('id_bin' => 'D2', 'hash' => hash('sha256', 'D2', true), 'dag' => null)));

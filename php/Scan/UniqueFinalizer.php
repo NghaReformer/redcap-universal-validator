@@ -771,7 +771,7 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
         $page = max(1, (int) $limit);
         if ($dags !== null && $readLimit !== null) $page = max(1, min($page, (int) $readLimit));
         $rows = $this->db->select('SELECT candidate_id, record_hash, record_id_bin, event_id,
-            instance, host_form, field, rule_source_id, rule_revision
+            instance, host_form, field, rule_source_id, rule_revision, branch
             FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
               AND lookup = 0
@@ -820,10 +820,16 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
             $ord = isset($ordinals[(string) $r[7]]) ? max(0, (int) $ordinals[(string) $r[7]]) : 0;
             $dag = (isset($groupOf[(string) $r[2]]) && is_string($groupOf[(string) $r[2]])
                     && $groupOf[(string) $r[2]] !== '') ? $groupOf[(string) $r[2]] : null;
-            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)';
+            // THE BRANCH THAT JUDGED IT (review rv11a2-2), in reason_bits as
+            // every other writer stores it (ReasonCode::bits(): branch + 1).
+            // This was a literal 0, so a branched rule's duplicate read with
+            // the rule's top-level wording instead of its branch's message.
+            $bits = ReasonCode::bits(ReasonCode::split(self::REASON),
+                (isset($r[9]) && $r[9] !== null) ? (int) $r[9] : null);
+            $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)';
             foreach ([$this->pid, $generationId, Hmac::findingIdentity($this->pid, $loc, $key),
                       $this->seq, $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
-                      $r[7], $r[8], $ord, 'unique', self::REASON, $dag, $g['group_hmac'],
+                      $r[7], $r[8], $ord, 'unique', self::REASON, $bits, $dag, $g['group_hmac'],
                       $g['candidate_epoch']] as $v) {
                 $flat[] = $v;
             }
@@ -913,21 +919,34 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     }
 
     /**
-     * publish()'s three statements, for a caller already inside held():
-     * publish() itself, and the last emit page (review W10BF-5), which also
-     * writes its cursor in the group's UPDATE.
+     * publish()'s statements, for a caller already inside held(): publish()
+     * itself, and the last emit page (review W10BF-5), which also writes its
+     * cursor in the group's UPDATE. The rows closed and published go into the
+     * run's count in the same transaction (ScanStore::notePublished()).
      */
     private function publishRows($generationId, array $g, $cursor)
     {
         $t = Schema::table('finding');
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+        // COUNTED (reviews rvc2-2, CONS-N1). Each statement changes every row
+        // it matches (active_slot 1 to NULL, NULL to 1), so what affected()
+        // reports is the rows closed and the rows published, and the run's
+        // count takes both in this transaction, behind the hold.
+        $this->db->exec('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
               AND stage_epoch <> ?',
             [$this->seq, $this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
+        $closed = $this->db->affected();
+        $this->db->exec('UPDATE ' . $t . ' SET active_slot = 1
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
               AND active_slot IS NULL',
             [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $opened = $this->db->affected();
+        // Only for a finalizer bound to a run and its store: one driven
+        // directly writes for no run row (held()).
+        $store = isset($this->deps['store']) ? $this->deps['store'] : null;
+        if ($store instanceof ScanStore && $this->runId !== null) {
+            $store->notePublished($this->runId, $opened, $closed);
+        }
         $set = 'phase = ?, published_epoch = ?, staged_epoch = ?';
         $args = [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch']];
         if ($cursor !== null) {

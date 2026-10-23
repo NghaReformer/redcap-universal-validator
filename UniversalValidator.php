@@ -9428,6 +9428,9 @@ class UniversalValidator extends AbstractExternalModule
                     'field' => (string) $row['field'],
                     // Evidence for the group, never a finding (collectUniqueLookups).
                     'lookup' => empty($row['lookup']) ? 0 : 1,
+                    // The branch that judged the value; the finalizer turns it
+                    // into the duplicate's reason bits (review rv11a2-2).
+                    'branch' => isset($row['branch']) ? (int) $row['branch'] : null,
                 ];
             }
         }
