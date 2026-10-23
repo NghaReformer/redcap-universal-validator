@@ -1375,7 +1375,9 @@ single-value rules.
 | Expected number of IDs | `expectedIds` | *(none)* | pooled |
 
 Project-level: **log-values** (`hashed` / `none` / `raw` / `off`, default
-`hashed`) and **debug-log** (off).
+`hashed`) and **debug-log** (off). A **log-values** that cannot be read, or that
+holds a value other than these four, is treated as `none`: the module log and
+the scan report name records by their keyed hash.
 
 ## Appendix D: Safe vs risky patterns
 

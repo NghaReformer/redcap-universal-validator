@@ -64,8 +64,10 @@ validate identically here, in Excel, and in the browser (same verified engine).
   and a hook failure leaves a `uvalidate-audit-error` entry, so neither can pass
   silently. Raw identifiers are not stored in the log by default — a keyed,
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
-  per project down to logging nothing. A keyed hash is pseudonymization, not
-  anonymity: treat the module log as identifying data in access and retention
+  per project down to logging nothing. When the `log-values` setting cannot be
+  read, or holds a value this version does not know, the log uses the strict
+  mode (`none`): the record ID as its keyed hash and no value. A keyed hash is
+  pseudonymization, not anonymity: treat the module log as identifying data in access and retention
   policies. Format-pattern audits cover printable-ASCII values; other values are
   left to the client and the check-character math, because JavaScript and PCRE
   regex semantics are only proven to agree on that subset.
