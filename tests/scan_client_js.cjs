@@ -965,6 +965,28 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     (await refusedFrom('', plain)) === '');
   check('rvc2-3: and a hidden one hidden',
     (await refusedFrom('none', plain)) === 'none');
+  // rv11b1-8. A reader barred only from an instrument a rule's operand sits
+  // on (W11A-N3) is refused status, FINAL, and may still stop the run. This
+  // is the service's own answer for them (tools/temporal_pfx_g_status.php,
+  // pinned in tests/scan_service_php.php "refused a run and no run alike"):
+  // the page shows Stop, and Stop sends the cancel for that run.
+  const barred = { ok: false, final: true, run_id: 42, active: true, mayCancel: true,
+    why: 'this scan reads instrument(s) you do not have access to, so the whole report is refused rather '
+       + 'than quietly narrowed: fb' };
+  check('rv11b1-8: a final refusal for a reader who may still stop the run shows Stop',
+    (await refusedFrom('none', barred)) === ''
+    && els['uv-scan-note'].textContent === barred.why && els['uv-scan-counts'].textContent === '');
+  const askedAfter = sent.length;
+  await ticks(4);
+  for (let i = 0; i < 6 && pending.length; i++) { const t = pending.shift(); t.fn(); await ticks(4); }
+  check('rv11b1-8: and the final refusal is not asked again', sent.length === askedAfter);
+  sent.length = 0;
+  script = [{ ok: true, stopped: true, why: null }];
+  els['uv-scan-cancel'].click();
+  await ticks(6);
+  check('rv11b1-8: Stop sends the cancel for that run, and only the run id',
+    sent.length >= 1 && sent[0].action === 'scan-cancel' && sent[0].payload.run_id === 42
+    && Object.keys(sent[0].payload).join() === 'run_id');
 
   // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
   // sentence sending the reader to Stop, with Continue hidden; the list now
