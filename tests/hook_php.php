@@ -401,6 +401,92 @@ namespace {
             logsOf($m, 'uvalidate-missing-extension') === [] && $m->missingPhpExtensions() === []);
     }
 
+    // ---- PRF-9: a standing violation is logged once, not on every save ----
+    // Each module below is one request. queryLogs() answers from the entries
+    // of earlier requests ($stored), the way the framework's log table would.
+    {
+        $KEY = str_repeat('ab', 32);
+        $req = function ($stored, $data, $mode = '', $subs = null, $dict = null, $throws = false)
+            use ($dialogRules, $dictionary, $KEY) {
+            $m = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+                public $stored = [];
+                public $logQueries = [];
+                public $queryThrows = false;
+                public function queryLogs($sql, $params)
+                {
+                    $this->logQueries[] = [$sql, $params];
+                    if ($this->queryThrows) throw new \Exception('log table unreadable');
+                    if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                        throw new \Exception('unexpected log query: ' . $sql);
+                    }
+                    $rows = [];
+                    foreach ($this->stored as $c) {
+                        if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1]
+                            && isset($c[1]['fingerprint'])) $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                    }
+                    return new class($rows) {
+                        private $r;
+                        public function __construct($r) { $this->r = $r; }
+                        public function fetch_assoc() { return array_shift($this->r); }
+                    };
+                }
+            };
+            $m->stored = $stored;
+            $m->queryThrows = $throws;
+            $m->subSettings = $subs === null ? $dialogRules : $subs;
+            $m->projectSettings = ['log-values' => $mode];
+            $m->projectIdReturn = 149;
+            $m->systemSettings['log-hmac-key'] = $KEY;
+            \REDCap::$dictionary = $dict === null ? $dictionary : $dict;
+            \REDCap::$data = $data;
+            \REDCap::$dataThrows = false;
+            $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+            return $m;
+        };
+        $fieldsOf = function ($m) { return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m)); };
+
+        $r1 = $req([], $classicData);
+        $first = invalidLogs($r1);
+        check('PRF-9: the first save logs both invalid values, each with a fingerprint',
+            count($first) === 2 && strlen($first[0][1]['fingerprint'] ?? '') === 64
+            && $first[0][1]['fingerprint'] !== $first[1][1]['fingerprint']
+            && $first[0][1]['fingerprint'] !== ($first[0][1]['value_hmac'] ?? null));
+        $r2 = $req($r1->logCalls, $classicData);
+        check('PRF-9: a second save of the same values logs nothing (got ' . json_encode($fieldsOf($r2)) . ')',
+            invalidLogs($r2) === []);
+        $reads = array_values(array_filter($r2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
+        check('PRF-9: ...after one read of the log for the record',
+            count($reads) === 1 && $reads[0][1] === ['invalid-id-saved', '2']);
+        $changed = $classicData;
+        $changed[2][351]['main_id_1'] = '1ABC-00003E';
+        $r3 = $req(array_merge($r1->logCalls, $r2->logCalls), $changed);
+        check('PRF-9: a new invalid value is logged, and only that one (got ' . json_encode($fieldsOf($r3)) . ')',
+            $fieldsOf($r3) === ['main_id_1']);
+        $r4 = $req($r1->logCalls, $classicData, '', null, null, true);
+        check('PRF-9: a log that cannot be read loses nothing: every value is logged',
+            count(invalidLogs($r4)) === 2);
+
+        // The none mode keeps no value, so its fingerprint names the place:
+        // a different invalid value at a logged place is not logged again.
+        $n1 = $req([], $classicData, 'none');
+        $n2 = $req($n1->logCalls, $changed, 'none');
+        $nReads = array_values(array_filter($n2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
+        check('PRF-9: none mode logs once per place, read by record_hmac',
+            count(invalidLogs($n1)) === 2 && invalidLogs($n2) === []
+            && count($nReads) === 1 && strpos($nReads[0][0], 'record_hmac = ?') !== false
+            && $nReads[0][1][1] === invalidLogs($n1)[0][1]['record_hmac']);
+
+        // A rule problem names no record: once for each place of the instrument.
+        $badDict = $dictionary;
+        $badDict['main_id_tag']['field_annotation'] = '@UVALIDATE=bogus';
+        $u1 = $req([], $classicData, '', [], $badDict);
+        $u2 = $req($u1->logCalls, $classicData, '', [], $badDict);
+        $uReads = array_values(array_filter($u2->logQueries, function ($q) { return $q[1][0] === 'uvalidate-unconfigurable'; }));
+        check('PRF-9: a refused rule is logged on the first save of its form only',
+            count(logsOf($u1, 'uvalidate-unconfigurable')) === 1 && logsOf($u2, 'uvalidate-unconfigurable') === []
+            && count($uReads) === 1 && $uReads[0][1] === ['uvalidate-unconfigurable', 'id_validation_test']);
+    }
+
     // ---- 2) import/API context (getProjectId()==null): the strict mocks return
     //         NO settings without an explicit pid, so this passing proves the
     //         module threads the hook's project_id into getSubSettings AND

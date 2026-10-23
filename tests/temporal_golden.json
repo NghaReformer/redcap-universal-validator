@@ -39,7 +39,8 @@
                 "event_id": "1",
                 "instance": "3",
                 "record": "1",
-                "value_hmac": "a6d802c9841188098e38441c0d8f6e355570e59e8583ce41b48c3738b7245309"
+                "value_hmac": "a6d802c9841188098e38441c0d8f6e355570e59e8583ce41b48c3738b7245309",
+                "fingerprint": "b4fde6d933ece6da08587e2c748cfe345cdabfda9640ea57b85e1e6098921611"
             }
         ]
     ],

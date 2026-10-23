@@ -62,7 +62,9 @@ validate identically here, in Excel, and in the browser (same verified engine).
   it on your own instance (the step is in [`docs/TESTING.md`](docs/TESTING.md)).
   A rule the server cannot evaluate leaves a `uvalidate-unconfigurable` entry
   and a hook failure leaves a `uvalidate-audit-error` entry, so neither can pass
-  silently. Raw identifiers are not stored in the log by default — a keyed,
+  silently. Each problem is logged once. A save of a value the log already
+  reports for that record and field writes no new entry (see the user guide,
+  Part 7). Raw identifiers are not stored in the log by default — a keyed,
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. A keyed hash is pseudonymization, not
   anonymity: treat the module log as identifying data in access and retention

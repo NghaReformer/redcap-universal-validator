@@ -277,6 +277,10 @@ text, it follows the language on screen
 >   treat import/API coverage as unavailable and rely on the client block plus a
 >   periodic Data-Quality/export check instead.
 
+Use a new invalid value, or a new record, for each step below. The log holds
+one entry for each invalid value at a field of a record, so saving the same
+value again writes nothing.
+
 - [ ] Save a data-entry **form** with an invalid ID (rule set to *Informational*
       so the save completes) → a `invalid-id-saved` log entry appears with reason
       `check-character` / `format` / pooled reasons. (This is the baseline: if

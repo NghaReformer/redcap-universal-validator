@@ -811,8 +811,18 @@ Three log entry types make sure nothing passes silently:
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
   Check those values by hand. A rule refused when it was read (its `why` starts
-  with "configuration error:") is logged once for each save of its form.
+  with "configuration error:") is logged on the first save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
+
+Each problem is logged once, not on every save. An entry carries a keyed
+`fingerprint` of what it reports: the record, field, event, instance, rule kind,
+reason and value. A save whose finding the log already holds for that record
+writes nothing, so saving a form with a standing invalid value again adds no
+rows; a new invalid value at the same field is logged. In the `none` mode the
+log keeps no value, so the fingerprint leaves the value out too and a field is
+logged once while it stays invalid. A rule problem names no record and is
+logged once for each place of its instrument. When the module cannot read its
+log, it writes every entry, as before.
 
 ### The coverage caveat (read before relying on it)
 

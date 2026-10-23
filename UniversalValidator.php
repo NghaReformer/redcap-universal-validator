@@ -152,6 +152,7 @@ class UniversalValidator extends AbstractExternalModule
         // path below can honor it too — an exception must never leak a record
         // ID that the project's mode says to hash or omit (SEC-003).
         $logMode = $this->logMode($project_id);
+        $this->auditPid = $project_id;
         // The module's own write of the values a rule returns is a save of this
         // record too (ReturnedValues::applyReturns). It changes nothing a person
         // entered, so it is not audited a second time.
@@ -4050,6 +4051,82 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * PRF-9. What the module log already holds, read once per request: a key
+     * of loggedAlready() => [fingerprint => true], or false when the log could
+     * not be read, and then every entry is written as before.
+     */
+    private $loggedBefore = [];
+
+    /** The project of the save being audited, for logUnconfigurable(). */
+    private $auditPid = null;
+
+    /**
+     * A keyed fingerprint of what one log entry says, or null without a key.
+     * Each part is length-prefixed, so no value can pass for two parts. The
+     * key differs from hashedIdentifier()'s, so a fingerprint never equals a
+     * value_hmac or record_hmac.
+     */
+    private function logFingerprint($pid, array $parts)
+    {
+        if ($pid === null || $pid === '') return null;
+        $key = $this->hmacKey();
+        if ($key === null) return null;
+        $s = '';
+        foreach ($parts as $p) {
+            $p = (string) $p;
+            $s .= strlen($p) . ':' . $p . '|';
+        }
+        return hash_hmac('sha256', $s, $key . '|fingerprint|' . (string) $pid);
+    }
+
+    /**
+     * Whether the module log holds an entry with this fingerprint. The read is
+     * narrowed by one column or parameter ($where: record, record_hmac or
+     * instrument) and made once per request for each value of it. Without a
+     * fingerprint, without queryLogs(), or when the read fails, the answer is
+     * no, so a standing problem is logged again rather than lost.
+     */
+    private function loggedAlready($message, $where, $value, $fp)
+    {
+        if ($fp === null || $value === null || $value === '') return false;
+        $k = $message . "\0" . $where . "\0" . $value;
+        if (!array_key_exists($k, $this->loggedBefore)) {
+            $this->loggedBefore[$k] = $this->readFingerprints($message, $where, $value);
+        }
+        return $this->loggedBefore[$k] !== false && isset($this->loggedBefore[$k][$fp]);
+    }
+
+    /** Count an entry just written, so a second save in this request skips it. */
+    private function noteLogged($message, $where, $value, $fp)
+    {
+        $k = $message . "\0" . $where . "\0" . $value;
+        if ($fp !== null && isset($this->loggedBefore[$k]) && $this->loggedBefore[$k] !== false) {
+            $this->loggedBefore[$k][$fp] = true;
+        }
+    }
+
+    /** @return array|false fingerprint => true, or false when the log cannot be read */
+    private function readFingerprints($message, $where, $value)
+    {
+        if (!in_array($where, ['record', 'record_hmac', 'instrument'], true)) return false;
+        if (!is_callable([$this, 'queryLogs'])) return false;
+        try {
+            $res = $this->queryLogs('select fingerprint where message = ? and ' . $where . ' = ?',
+                [(string) $message, (string) $value]);
+            if (!is_object($res) || !is_callable([$res, 'fetch_assoc'])) return false;
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                if (isset($row['fingerprint']) && is_string($row['fingerprint']) && $row['fingerprint'] !== '') {
+                    $out[$row['fingerprint']] = true;
+                }
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
      * Record an invalid value found on the server. The "log-values" project
      * setting controls how much identifying material the entry carries (UV-005):
      *   hashed (default) — value as project-keyed HMAC, record ID raw (staff can
@@ -4061,6 +4138,13 @@ class UniversalValidator extends AbstractExternalModule
      * Field / instrument / event / instance are logged in every mode except off.
      * A keyed hash is pseudonymization, not anonymity: treat the module log as
      * identifying data for access/retention purposes (see README).
+     *
+     * ONE ENTRY PER PROBLEM, NOT PER SAVE (PRF-9). Each entry carries a keyed
+     * "fingerprint" of the record, field, event, instance, rule kind, reason
+     * and value (no value in the none mode), and an entry whose fingerprint the
+     * log already holds for the record is not written again. A standing
+     * violation was logged on every save: one save of a 500-tag form wrote
+     * 249 rows, and the next save of the same values 249 more.
      */
     private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [])
     {
@@ -4090,7 +4174,28 @@ class UniversalValidator extends AbstractExternalModule
             if ($h !== null) $entry['value_hmac'] = $h;
             else $entry['hmac_unavailable'] = '1';
         }
+        list($where, $scope) = self::logScope($mode, $entry);
+        $parts = ['invalid-id-saved', $record, $field, $event_id, $entry['instance'], $type, $algo, $reason,
+                  $mode === 'none' ? '' : (string) $value];
+        ksort($extra);
+        foreach ($extra as $k => $v) { $parts[] = (string) $k; $parts[] = (string) $v; }
+        $fp = $this->logFingerprint($pid, $parts);
+        if ($this->loggedAlready('invalid-id-saved', $where, $scope, $fp)) return;
+        if ($fp !== null) $entry['fingerprint'] = $fp;
         $this->log('invalid-id-saved', $entry);
+        $this->noteLogged('invalid-id-saved', $where, $scope, $fp);
+    }
+
+    /**
+     * The column or parameter that holds an entry's record: "record" where
+     * the mode stores the record id, "record_hmac" in the none mode.
+     *
+     * @return array{0:string, 1:?string}
+     */
+    private static function logScope($mode, array $entry)
+    {
+        if ($mode === 'none') return ['record_hmac', isset($entry['record_hmac']) ? $entry['record_hmac'] : null];
+        return ['record', isset($entry['record']) ? $entry['record'] : null];
     }
 
     /**
@@ -4142,22 +4247,39 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 $entry['record'] = (string) $record;
             }
+            // Once per value it could not work out, as logInvalid() (PRF-9).
+            list($where, $scope) = self::logScope($mode, $entry);
+            $fp = $this->logFingerprint($pid, ['uvalidate-not-evaluated', $record, $entry['rule'], $entry['field'],
+                $entry['why'], $entry['event_id'], $entry['instance'], isset($entry['reference']) ? $entry['reference'] : '']);
+            if ($this->loggedAlready('uvalidate-not-evaluated', $where, $scope, $fp)) return;
+            if ($fp !== null) $entry['fingerprint'] = $fp;
             $this->log('uvalidate-not-evaluated', $entry);
+            $this->noteLogged('uvalidate-not-evaluated', $where, $scope, $fp);
         } catch (\Throwable $ignored) {
         }
     }
 
+    /**
+     * A rule problem names no record, so it is written once for each problem
+     * at each place of the instrument, not once per save (PRF-9).
+     */
     private function logUnconfigurable($ruleIndex, array $fields, $why, $instrument, $event_id, $repeat_instance)
     {
         try {
-            $this->log('uvalidate-unconfigurable', [
+            $entry = [
                 'rule'       => (string) ($ruleIndex + 1),
                 'fields'     => implode(', ', $fields),
                 'why'        => (string) $why,
                 'instrument' => (string) $instrument,
                 'event_id'   => (string) $event_id,
                 'instance'   => (string) ($repeat_instance ?: 1),
-            ]);
+            ];
+            $fp = $this->logFingerprint($this->auditPid, ['uvalidate-unconfigurable', $entry['rule'], $entry['fields'],
+                $entry['why'], $entry['instrument'], $entry['event_id'], $entry['instance']]);
+            if ($this->loggedAlready('uvalidate-unconfigurable', 'instrument', $entry['instrument'], $fp)) return;
+            if ($fp !== null) $entry['fingerprint'] = $fp;
+            $this->log('uvalidate-unconfigurable', $entry);
+            $this->noteLogged('uvalidate-unconfigurable', 'instrument', $entry['instrument'], $fp);
         } catch (\Throwable $ignored) {
         }
     }
