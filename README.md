@@ -568,7 +568,12 @@ enforcement:
   In a field that holds numbers (an integer or number Text field, or a slider)
   values compare by value, so `007` duplicates `7`. `@UVEXISTS` compares the same
   way. Up to 2.1.0-rc.2 the comparison was exact: a project that holds both
-  spellings of a value gets duplicate findings after the upgrade.
+  spellings of a value gets duplicate findings after the upgrade. Values that
+  only look alike are different values: an accented letter typed as one
+  character or as a letter and an accent, an en dash for a hyphen, full-width
+  digits, or a zero-width space or byte-order mark left by a paste. Pair the
+  field with `@UVALIDATE` or a format pattern when such characters must not be
+  saved at all.
 - **Surveys: opt-in, and never on an identifier.** Survey respondents are not
   logged in, so an "already used" answer tells anyone holding the survey link
   that a specific value is in the study — one value at a time. `{"surveys":true}`

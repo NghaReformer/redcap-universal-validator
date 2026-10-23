@@ -158,6 +158,17 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     private $seq = null;
 
     /**
+     * Generations whose discovery found nothing new in this request. The
+     * candidates do not move while the phase runs, so asking again on every
+     * step sent two statements per step for nothing: 4,001 steps, 8,002
+     * statements, in the review's 100,000-record run (UNQ-11). A clone made
+     * by forRun() carries it, so the worker's loop keeps it.
+     *
+     * @var array<string,true>
+     */
+    private $discovered = [];
+
+    /**
      * @param array $deps {
      *   pid:      int|string  REQUIRED; a project id of 1 or more
      *   seq:      ?int  the writing run's run_seq; or bind one with forRun()
@@ -235,13 +246,25 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
-        // written.
-        $found = $this->discover($generationId, $limit);
-        $out['groups'] += $found;
-        if ($found > 0) return $out;
+        // written. Once a pass in this request found nothing it is not asked
+        // again, except once more before the phase is called done.
+        $key = (string) $generationId;
+        $skipped = isset($this->discovered[$key]);
+        if (!$skipped) {
+            $found = $this->discover($generationId, $limit);
+            $out['groups'] += $found;
+            if ($found > 0) return $out;
+            $this->discovered[$key] = true;
+        }
 
         $g = $this->nextUnfinished($generationId);
         if ($g === null) {
+            unset($this->discovered[$key]);
+            if ($skipped) {
+                $found = $this->discover($generationId, $limit);
+                $out['groups'] += $found;
+                if ($found > 0) return $out;
+            }
             $out['done'] = true;
             return $out;
         }

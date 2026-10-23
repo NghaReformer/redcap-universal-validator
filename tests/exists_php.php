@@ -556,6 +556,9 @@ namespace {
     // Surveys
     $r = askSurvey(mod(null), 'res_spec', ['res_spec' => 'SP-2']);
     check('survey: refused without the opt-in', ($r['error'] ?? null) === 'not enabled on surveys');
+    check('UNQ-9: a respondent asking about a field with no rule, or no such field, gets the same words',
+        askSurvey(mod(null), 'specimen_id', ['specimen_id' => 'SP-2']) === ['error' => 'not enabled on surveys']
+        && askSurvey(mod(null), 'nope', ['nope' => 'SP-2']) === ['error' => 'not enabled on surveys']);
     $r = askSurvey(mod(null), 'res_s', ['res_s' => 'SP-2']);
     check('survey: found / not-found only, no record, no reason', $r === ['state' => 'found', 'record' => null]);
     $m = mod(null); \REDCap::$failAll = true;

@@ -8451,7 +8451,8 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($need as $f) {
             $tv = isset($target[$f]) ? $target[$f] : '';
             if ($tv === '') continue;                                       // don't constrain a blank component
-            if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/', $tv)) return null;    // unsafe to inline -> full scan
+            // unsafe to inline -> full scan; D: a line break before the end does not pass (UNQ-10)
+            if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/D', $tv)) return null;
             $slots = $f === $primary ? array_merge([$f], $also) : [$f];
             $any = [];
             foreach ($slots as $sf) $any[] = self::collisionClause($sf, $tv, $fold, isset($marks[$sf]) ? $marks[$sf] : null);

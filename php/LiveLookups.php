@@ -67,10 +67,15 @@ trait LiveLookups
             // this caller"; a survey hash is caller-supplied and proves nothing.
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            // One wording for every refusal of a caller REDCap did not sign
+            // in: "not a checkable field" for a field with no rule beside "not
+            // enabled on surveys" for one with a rule listed the project's
+            // unique rules to anyone with the survey link (UNQ-9).
+            $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';
             $field = (isset($payload['field']) && is_string($payload['field']))
                 ? strtolower(trim($payload['field'])) : '';
             if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) {
-                return ['error' => 'not a checkable field'];
+                return ['error' => $refused];
             }
             $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
             if (count($raw) > 8) return ['error' => 'too many values'];
@@ -85,7 +90,7 @@ trait LiveLookups
             $live = $this->liveCondValues($payload, $project_id, $instrument);
             if ($live === null) return ['error' => 'malformed request'];
             $rule = $this->uniqueRuleFor($this->getRules($project_id, [$field]), $field, $project_id, $record, $event_id, $instrument, $repeat_instance, $isAuthenticated && !$isSurvey, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
+            if ($rule === null) return ['error' => $refused];
             if (!$isAuthenticated) {
                 // An unauthenticated caller gets an answer ONLY for a rule whose
                 // designer opted surveys in...
@@ -292,8 +297,9 @@ trait LiveLookups
         try {
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';   // one wording, as unique-check (UNQ-9)
             $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
-            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => 'not a checkable field'];
+            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => $refused];
             $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
             if (count($raw) > 8) return ['error' => 'too many values'];
             $values = [];
@@ -307,7 +313,7 @@ trait LiveLookups
             if ($live === null) return ['error' => 'malformed request'];
             $rule = $this->activeRuleFor($this->getRules($project_id, [$field]), 'exists', $field, $project_id, $record,
                 $event_id, $instrument, $repeat_instance, false, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
+            if ($rule === null) return ['error' => $refused];
             $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
             $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
             if (!$isAuthenticated) {

@@ -1209,7 +1209,8 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
   a number, or a slider) values compare by value: `007` and `7.0` both duplicate `7`.
   On a plain Text field they stay text, so `007` and `7` differ. Dropdown and radio
   values compare by code. `@UVEXISTS` compares the same way, so the two tags agree when
-  one field carries both.
+  one field carries both. Values that only look alike stay different: `SP–1` with an
+  en dash is not `SP-1`, and neither is `SP-1` after a zero-width space from a paste.
 - **Save asks again.** A value the page found already used 30 seconds or more
   before Save is clicked is asked once more, so a record changed since then no
   longer blocks the save. That click waits for the answer; the next one is decided

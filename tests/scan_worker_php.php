@@ -2251,6 +2251,32 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('finalizer: a caller that gives no read limit gets the old single limit',
         $vdb2->limits === [4]);
 
+    // UNQ-11: once discovery found nothing, later steps of the request do not
+    // ask again; the phase is called done only after one more pass.
+    $vdb3 = new class extends VerifyPageDb {
+        public $discoveries = 0;
+        public $pending = true;
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'GROUP BY group_hmac') !== false) $this->discoveries++;
+            if (strpos($sql, 'ix_pending') !== false && !$this->pending) return [];
+            return parent::select($sql, $params);
+        }
+    };
+    $uf3 = (new UniqueFinalizer($vdb3, ['pid' => 800, 'read' => function (array $locs) {
+        $values = [];
+        foreach ($locs as $l) $values[UniqueFinalizer::locKey($l)] = ['same'];
+        return ['ok' => true, 'values' => $values, 'why' => null];
+    }]))->forRun(1);
+    $uf3->step(1, 500, 6);
+    $uf3 = $uf3->forRun(1);   // the worker rebinds every step
+    $uf3->step(1, 500, 6);
+    $uf3->step(1, 500, 6);
+    check('UNQ-11: three steps of one request discover once (got ' . $vdb3->discoveries . ')', $vdb3->discoveries === 1);
+    $vdb3->pending = false;
+    $last = $uf3->step(1, 500, 6);
+    check('UNQ-11: before "done" discovery runs once more', $vdb3->discoveries === 2 && $last['done'] === true);
+
     // A run sequence is a positive whole number or it is refused: a 0 or a
     // fraction here would be written into every duplicate's validity interval.
     $badSeq = [];

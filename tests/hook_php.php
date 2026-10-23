@@ -2973,6 +2973,20 @@ namespace {
         isset($r['used']) && $r['used'] === true && $r['record'] === null);
     $r = $u5('enrol_token', 'EN-1', 'enrol');
     check('UNQ-5: an enrolment respondent is answered about the token', isset($r['used']) && $r['used'] === true);
+    // UNQ-9: a field with no rule, a field that does not exist and a field with
+    // a rule a respondent may not ask about get one wording, so the survey link
+    // does not list the project's unique rules.
+    $words = [];
+    foreach (['record_id', 'no_such_field', 'Bad-Name', 'enrol_token'] as $f) $words[$f] = $u5($f, 'X-1', 'screen');
+    check('UNQ-9: every refusal of a respondent reads the same (got ' . json_encode($words) . ')',
+        count(array_unique(array_map('json_encode', $words))) === 1 && $words['record_id'] === ['error' => 'not enabled on surveys']);
+    // UNQ-10: the read filter inlines only values of a safe charset; "$" without
+    // D let a value ending in a line break through.
+    $cf = new \ReflectionMethod(get_class(newModule([], $u5Dict, $u5Data, 149)), 'collisionFilterLogic');
+    $cf->setAccessible(true);
+    check('UNQ-10: a value ending in a line break is never inlined into the read filter',
+        $cf->invoke(null, ['screen_code'], ['screen_code' => "SC-1\n"]) === null
+        && $cf->invoke(null, ['screen_code'], ['screen_code' => 'SC-1']) === "[screen_code] = 'SC-1'");
     $r = $u5('enrol_token', 'EN-1', null);
     check('UNQ-5: a caller with no instrument is answered about nothing',
         isset($r['error']) && !isset($r['used']));
