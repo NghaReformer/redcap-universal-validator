@@ -731,6 +731,9 @@ namespace {
         }
         /** @var ?string the sentence durableScanContext() refuses with, or null for a context (W10BF-4) */
         public $refuse = null;
+        /** @var ?string[] every instrument of the project (rvc2-3); null: the dictionary cannot be read */
+        public $instruments = ['fa'];
+        public function scanProjectInstruments($pid) { return $this->instruments; }
         /** @var ?array the clock the context says it judges by when it is given none (W10BF-3) */
         public $clock = null;
         /** @var array the asOf each context was asked with, 'absent' for none (W10BF-3) */
@@ -999,6 +1002,38 @@ namespace INSPIRE\UniversalValidator\Scan {
     $dv = (new ScanService($pdis))->available(1);
     check('service rvf2-1: and the project enable after it lifts that refusal',
         strpos((string) $dv['why'], 'being switched off') === false);
+    // rvfix-N4: THE ORDER IS EXACT. The markers were whole seconds and the
+    // enable won a tie, so a disable in the same second as an earlier enable
+    // was ignored. They carry microseconds now, and whole-second markers
+    // written before still read.
+    $sec = (string) time();
+    $offFor = function (array $sys, array $proj) {
+        $fm = new \FakeModule();
+        $fm->sys = [ScanService::SYS_FLAG => '1'] + $sys;
+        $fm->proj = [ScanService::PROJ_FLAG => '1'] + $proj;
+        $why = (string) (new ScanService($fm))->available(1)['why'];
+        return strpos($why, 'being switched off') !== false;
+    };
+    foreach (['server' => [ScanService::DISABLED_AT, ScanService::ENABLED_AT, 'sys'],
+              'project' => [ScanService::PROJECT_DISABLED_AT, ScanService::PROJECT_ENABLED_AT, 'proj']] as $pair => $k) {
+        $at = function ($off, $on) use ($k, $offFor) {
+            $m = [$k[0] => $off, $k[1] => $on];
+            return $k[2] === 'sys' ? $offFor($m, []) : $offFor([], $m);
+        };
+        check('rvfix-N4 (' . $pair . '): a disable later in the same second as the enable refuses',
+            $at($sec . '.600000', $sec . '.100000') === true);
+        check('rvfix-N4 (' . $pair . '): an enable later in the same second lifts it',
+            $at($sec . '.100000', $sec . '.600000') === false);
+        check('rvfix-N4 (' . $pair . '): whole-second markers still read, a tie going to the enable as before',
+            $at($sec, $sec) === false && $at($sec, (string) ((int) $sec - 1)) === true);
+        check('rvfix-N4 (' . $pair . '): a whole-second enable is the start of its second',
+            $at($sec . '.000001', $sec) === true && $at($sec, $sec . '.000001') === false);
+        check('rvfix-N4 (' . $pair . '): a marker that is no time is none',
+            $at('soon', null) === false && $at($sec . '.5x', null) === false && $at($sec . '.5', null) === true);
+    }
+    $mk = ScanService::markerNow();
+    check('rvfix-N4: a marker is the time now to the microsecond',
+        preg_match('/^\d+\.\d{6}$/D', $mk) === 1 && abs((int) $mk - time()) <= 2);
 
     // -- the flag answer discloses nothing about the installation ------------
     //
@@ -2135,6 +2170,65 @@ namespace INSPIRE\UniversalValidator\Scan {
         $fm->sent('SELECT log_event_table') === 1);
     $fence->invoke($fs, 150);
     check('P1: and per project', $fm->sent('SELECT log_event_table') === 2);
+
+    // W10AF-N4: AND ONCE FOR THE FENCE AND THE CAPABILITY PROBE TOGETHER. The
+    // census's probe read the table name and the top of the log, and the
+    // fence read both again.
+    $caps = new \ReflectionMethod(ScanService::class, 'capabilities');
+    $caps->setAccessible(true);
+    $SC = \INSPIRE\UniversalValidator\ScanCapabilities::class;
+    $logModule = function ($throws) {
+        $lm = new class extends \CountingVerbModule {
+            public $throws = false;
+            public function query($sql, $params = [])
+            {
+                if (strpos($sql, 'SELECT log_event_table') === 0) {
+                    $this->log[] = $sql;
+                    if ($this->throws) throw new \RuntimeException('the log is away');
+                    return [['redcap_log_event']];
+                }
+                if (strpos($sql, 'SELECT MAX(log_event_id) FROM redcap_log_event') === 0) {
+                    $this->log[] = $sql;
+                    return [['500']];
+                }
+                return parent::query($sql, $params);
+            }
+        };
+        $lm->throws = $throws;
+        return $lm;
+    };
+    $lm = $logModule(false);
+    $ls = new ScanService($lm);
+    $census = $caps->invoke($ls, 149);
+    $opened = $fence->invoke($ls, 149);
+    check('W10AF-N4: a request that probes the change log and fences on it opens it once',
+        $lm->sent('SELECT log_event_table') === 1 && $lm->sent('SELECT MAX(log_event_id)') === 1
+        && $opened instanceof \INSPIRE\UniversalValidator\Scan\SourceFence);
+    $probe = $SC::sourceFence($logModule(false), 149);
+    check('W10AF-N4: and the census says what the probe of its own says',
+        $census['sourceFence'] === $probe && $probe['state'] === $SC::OK
+        && $SC::policy($census)['maxCompletion'] === $SC::policy(
+            ['sourceFence' => $probe] + $census)['maxCompletion']);
+    check('W10AF-N4: the fence opened first serves the census after it',
+        (function () use ($logModule, $caps, $fence) {
+            $m2 = $logModule(false);
+            $s2 = new ScanService($m2);
+            $fence->invoke($s2, 149);
+            $caps->invoke($s2, 149);
+            return $m2->sent('SELECT log_event_table') === 1;
+        })());
+    $um = $logModule(true);
+    $us = new ScanService($um);
+    $uc = $caps->invoke($us, 149);
+    $threw = null;
+    try { $fence->invoke($us, 149); } catch (\Throwable $e) { $threw = $e; }
+    check('W10AF-N4: a log that could not be read is unavailable to the census and stops the fence',
+        $uc['sourceFence']['state'] === $SC::NO
+        && strpos((string) $uc['sourceFence']['why'], 'could not be read just now') !== false
+        && $threw instanceof \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable
+        && $um->sent('SELECT log_event_table') === 1);
+    $caps->invoke(new ScanService($um), 149);
+    check('W10AF-N4: and the next request asks again', $um->sent('SELECT log_event_table') === 2);
 }
 
 /* =====================================================================
@@ -2564,6 +2658,71 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W10BF-4 E2E: read in full again, the run finishes complete',
         $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
 
+    // rvc2-3: A RUN STAYS STOPPABLE WHEN NO CONTEXT CAN BE BUILT. Stop and
+    // status built the full scan context, so a configuration read in part, or
+    // rules that can no longer be evaluated, refused both: the page never
+    // offered Stop, Stop was refused, and the run held the project's slot
+    // until the reaper. Stop is asked of every instrument instead; the status
+    // stays refused, and says the run may be stopped.
+    foreach (['unread' => ['the growth reference folder'], 'no rules' => []] as $how => $unreadNow) {
+        $ss = new ArrayScanStore();
+        $sm = new \E2eModule($ss);
+        $srun = (int) (new ScanService($sm, $ss))->start(169)['run_id'];
+        $sm->refuse = 'this project has no rules this scan can evaluate';
+        $sm->unread = $unreadNow;
+        $sst = (new ScanService($sm, $ss))->status(169, $srun);
+        check('rvc2-3 (' . $how . '): the status is still refused, and not for good',
+            $sst['ok'] === false && $sst['final'] === false
+            && strpos((string) $sst['why'], $how === 'unread' ? 'could not be read just now' : 'no rules') !== false);
+        check('rvc2-3 (' . $how . '): but it says this run is active and this reader may stop it',
+            isset($sst['mayCancel'], $sst['active'], $sst['run_id']) && $sst['mayCancel'] === true
+            && $sst['active'] === true && $sst['run_id'] === $srun && !isset($sst['total']) && !isset($sst['findings']));
+        check('rvc2-3 (' . $how . '): an id that is no run gets the same refusal, and no offer',
+            (new ScanService($sm, $ss))->status(169, 999)
+            === ['ok' => false, 'why' => $sst['why'], 'final' => false]);
+        $sc = (new ScanService($sm, $ss))->cancel(169, $srun);
+        $srow = $ss->run(169, $srun);
+        check('rvc2-3 (' . $how . '): Stop stops it, and frees the project',
+            $sc['ok'] === true && $sc['stopped'] === true && $srow['terminal'] === ScanOutcome::CANCELLED
+            && !empty((clone $ss)->startRun(169, [])['ok']));
+        $after = (new ScanService($sm, $ss))->status(169, $srun);
+        check('rvc2-3 (' . $how . '): and the status of the ended run offers no Stop',
+            $after['ok'] === false && $after['active'] === false && $after['mayCancel'] === true);
+    }
+    // Asked of every instrument: a reader barred from one, or a dictionary
+    // that cannot be read, gets the context's own refusal.
+    $bs = new ArrayScanStore();
+    $bm = new \E2eModule($bs);
+    $brun = (int) (new ScanService($bm, $bs))->start(170)['run_id'];
+    $bm->refuse = 'this project has no rules this scan can evaluate';
+    $bm->unread = ['the growth reference folder'];
+    $bm->instruments = ['fa', 'fx'];
+    $bm->user->rights['forms'] = ['fa' => '1', 'fx' => '0'];
+    $bc = (new ScanService($bm, $bs))->cancel(170, $brun);
+    $bst = (new ScanService($bm, $bs))->status(170, $brun);
+    check('rvc2-3: a reader barred from an instrument of the project is refused Stop in the context\'s words',
+        $bc['ok'] === false && strpos((string) $bc['why'], 'could not be read just now') !== false
+        && !isset($bst['mayCancel']) && $bs->run(170, $brun)['terminal'] === null);
+    $bm->user->rights['forms'] = ['fa' => '1', 'fx' => '1'];
+    $bm->instruments = null;
+    $bd = (new ScanService($bm, $bs))->cancel(170, $brun);
+    check('rvc2-3: and so is everybody while the instruments cannot be listed',
+        $bd['ok'] === false && strpos((string) $bd['why'], 'could not be read just now') !== false
+        && $bs->run(170, $brun)['terminal'] === null);
+    $bm->instruments = ['fa', 'fx'];
+    $bm->user->rights['group_id'] = 31;
+    $keptGroups = \REDCap::$groupNames;
+    \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+    $bg = (new ScanService($bm, $bs))->cancel(170, $brun);
+    $bgs = (new ScanService($bm, $bs))->status(170, $brun);
+    check('rvc2-3: a group user is still told a whole-project run is no run',
+        $bg['ok'] === false && $bg['why'] === ScanService::NO_RUN && !isset($bgs['mayCancel']));
+    \REDCap::$groupNames = $keptGroups;
+    $bm->user->rights['group_id'] = null;
+    check('rvc2-3 (control): with every instrument readable, the same reader stops it',
+        (new ScanService($bm, $bs))->cancel(170, $brun)['ok'] === true
+        && $bs->run(170, $brun)['terminal'] === ScanOutcome::CANCELLED);
+
     // -- a finished run is answered with its status (review R5-8) ---------------
     //
     // A late request from a second tab, sent after a design edit, was told the
@@ -2650,6 +2809,31 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('W10BF-2: and loosening it mid-run is no tightening: the run finishes complete',
         $ns->run(165, $nrun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // rvc1-1: A RUN PLANNED BEFORE THE POSTURE WAS FROZEN is not stopped by
+    // the upgrade. The v5 build froze no hashRecordIds, which read as "raw
+    // ids", so every run in flight on a "none" project was stopped at its
+    // next work request as a privacy tightening that never happened.
+    $vs = new ArrayScanStore();
+    $vm = new \E2eModule($vs);
+    $vm->proj['log-values'] = 'none';
+    $v0 = (new ScanService($vm, $vs))->start(166);
+    $vrun = (int) $v0['run_id'];
+    $vrp = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $vrp->setAccessible(true);
+    $vruns = $vrp->getValue($vs);
+    $vpol = json_decode((string) $vruns[$vrun]['policy_json'], true);
+    unset($vpol['hashRecordIds']);
+    $vruns[$vrun]['policy_json'] = json_encode($vpol);
+    $vrp->setValue($vs, $vruns);
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($vm, $vs))->work(166, $vrun);
+        if (empty($w['ok']) || $vs->run(166, $vrun)['terminal'] !== null) break;
+    }
+    $vrow = $vs->run(166, $vrun);
+    check('rvc1-1: a run whose frozen policy states no record-id posture, on a "none" project, finishes complete',
+        $vrow['terminal'] === ScanOutcome::COMPLETE
+        && strpos((string) $vrow['terminal_reason'], 'privacy') === false);
 
     // -- the run's clock is frozen at planning (W10BF-3) -------------------------
     //
@@ -4047,9 +4231,13 @@ namespace INSPIRE\UniversalValidator\Scan {
             && strpos($af['pf']['counts'], '5 of 5 records') === 0);
         check('rvf1-1: with no word of a group it never confirmed (' . $end . ')',
             strpos($af['pf']['counts'], ScanAuthorization::WITHHELD_ENDED) === false
-            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false
-            && strpos((string) $af['pf']['done'],
-                      \INSPIRE\UniversalValidator\ScanPageView::coverageSentence($af['row']['coverage'])) === 0);
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_WITHHELD) === false);
+        // rvfix-N2: and in words that say the counts are the group's, as
+        // confirmed, not the partial sentence that spoke of the project.
+        check('rvfix-N2: its ending says its counts are for the group (' . $end . ')',
+            $af['row']['coverage'] === ScanOutcome::COV_PARTIAL && $af['status']['scope'] === 'group'
+            && strpos((string) $af['pf']['done'], \INSPIRE\UniversalValidator\ScanPageView::STOPPED_PROVED) === 0
+            && strpos((string) $af['pf']['done'], 'could not be checked') === false);
     }
     $inCu = $afterFence(193, false, 'stopped');
     check('rvf1-1 control: a group run stopped inside catch-up is still not shown its counts',
@@ -4460,9 +4648,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $opRun = (int) (new ScanService($opMod, $opStore))->start(190)['run_id'];
     $opMod->user->rights['forms'] = ['fa' => '1', 'fb' => '0'];
     $opNone = (new ScanService($opMod, $opStore))->status(190, 999);
+    // rvc2-3: in the same words; the run they may stop says so, or the page
+    // never offers its Stop.
     check('W11A-N3: a reader barred from an operand\'s instrument is refused a run and no run alike',
         $opRun > 0 && $opNone['ok'] === false && strpos($opNone['why'], 'fb') !== false
-        && (new ScanService($opMod, $opStore))->status(190, $opRun) === $opNone);
+        && (new ScanService($opMod, $opStore))->status(190, $opRun)
+           === $opNone + ['run_id' => $opRun, 'active' => true, 'mayCancel' => true]
+        && !isset($opNone['mayCancel']));
     check('W11A-N3 (control): and can still stop the run, as before, while an id that is none is no run',
         (new ScanService($opMod, $opStore))->cancel(190, 999)['why'] === ScanService::NO_RUN
         && (new ScanService($opMod, $opStore))->cancel(190, $opRun)['ok'] === true);
@@ -5250,7 +5442,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     // rv10b1-6: AN UPGRADE IS SAID TO BE ONE. A run begun under an older
     // evaluator, on a project nobody touched, is ended - and its reason names
     // the upgrade, not the project's rules or design.
-    $upgraded = function ($pid, $oldEngine) use ($b7design, $b7codes) {
+    $upgraded = function ($pid, $oldEngine, $more = false) use ($b7design, $b7codes) {
         $inner = new ArrayScanStore();
         $m = new \E2eModule($inner);
         $m->structure = $b7design;
@@ -5271,7 +5463,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $runs[$rid]['policy_json'] = json_encode($policy);
         $p->setValue($inner, $runs);
         $w = (new ScanService($m, $inner))->work($pid, $rid);
-        return [$began, $inner->run($pid, $rid), $w];
+        return $more ? [$began, $inner->run($pid, $rid), $w, $m, $inner] : [$began, $inner->run($pid, $rid), $w];
     };
     list($began, $row, $w) = $upgraded(197, 'engine-4');
     check('rv10b1-6: a run keeps the evaluator revision it began under',
@@ -5282,11 +5474,31 @@ namespace INSPIRE\UniversalValidator\Scan {
         $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED);
     check('rv10b1-6: and so does the answer to the request that ended it',
         empty($w['ok']) && $w['why'] === ScanService::ENGINE_CHANGED);
+    // W12-N4: and every status and panel after it, not only that it failed.
+    check('W12-N4: the answer that ended it carries a status that says an upgrade ended it',
+        isset($w['status']['upgraded']) && $w['status']['upgraded'] === true
+        && $w['status']['terminal'] === ScanOutcome::FAILED
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($w['status'])['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::UPGRADED) === 0);
+    list($ub, $urow, $uw, $um, $us) = $upgraded(199, 'engine-4', true);
+    $ust = (new ScanService($um, $us))->status(199, (int) $urow['run_id']);
+    $uagain = (new ScanService($um, $us))->work(199, (int) $urow['run_id']);
+    check('W12-N4: so does a later status, and the panel built from it',
+        $ust['ok'] === true && $ust['upgraded'] === true
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($ust)['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::UPGRADED) === 0);
+    check('W12-N4: and the status a later Continue answers with',
+        isset($uagain['status']['upgraded']) && $uagain['status']['upgraded'] === true);
     list(, $row, $w) = $upgraded(198, null);
     check('rv10b1-6: a run whose policy names no revision was begun by an older build, and says so too',
         $row['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED && $w['why'] === ScanService::ENGINE_CHANGED);
     check('rv10b1-6 (control): a run the project changed under, same evaluator, still says the project changed',
         strpos((string) $inner->run(196, $rid)['terminal_reason'], 'validation rules or design changed') !== false);
+    $cst = (new ScanService($m, $inner))->status(196, $rid);
+    check('W12-N4 (control): and its status says no upgrade ended it',
+        $cst['ok'] === true && $cst['upgraded'] === false && $cst['terminal'] === ScanOutcome::FAILED
+        && strpos((string) \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($cst)['done'],
+                  \INSPIRE\UniversalValidator\ScanPageView::coverageSentence('failed')) === 0);
     // A setting that decides what is stored, loosened: not a privacy stop (it
     // shows more, it does not tighten), and still a different configuration.
     list($in, $fs, $m, $rid) = $b7(194);

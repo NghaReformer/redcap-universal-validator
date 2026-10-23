@@ -3119,8 +3119,13 @@ class UniversalValidator extends AbstractExternalModule
         // today or now, and notPast. Each saved value is judged against the day
         // it was saved (valueSavedAt), so re-saving another field never turns an
         // old date into a finding. notFuture moves to that day too; where the
-        // day is not known it is judged against today, which can only miss a
-        // date that was in the future then, never invent one.
+        // day is not known it is judged against a day no earlier than the one
+        // the value was saved on: today, or in a durable run the day the run
+        // froze, for a record that has not changed since the run was planned.
+        // That can only miss a date that was in the future then, never invent
+        // one. A date after the frozen day that today passes, on a record not
+        // known to be unchanged, may have been saved after that day, so it is
+        // not checked (review rvc2-1).
         $todayRelative = $clockAnchor || $spec['notPast'];
         $asked = $todayRelative || $spec['notFuture'];
         // The extended path marks a "from" that resolved to the field itself, in
@@ -3155,11 +3160,33 @@ class UniversalValidator extends AbstractExternalModule
                     // windowDayFree() above keeps the request's clock: its
                     // answer is the same against any day up to it, and a
                     // value saved after the run's frozen day is still one.
-                    if ($spec['notFuture']) $clock = $this->judgedClock !== null ? $this->judgedClock : $server;
+                    //
+                    // THE FROZEN DAY ONLY WHERE THE VALUE WAS THERE BY THEN
+                    // (review rvc2-1). A value saved after planning and read
+                    // later by the worker or catch-up - a pause across
+                    // midnight - with a log that could not show its day was
+                    // judged against the frozen day, and a date of the day it
+                    // was saved became "Date in the future". Judged against
+                    // the frozen day it is the future where the request's
+                    // clock is not: on a record not known to be unchanged
+                    // since planning ($judgedSettled), that part is not
+                    // checked, and says why as the parts below do.
+                    $notChecked = $todayRelative;
+                    if ($spec['notFuture']) {
+                        $clock = $this->judgedClock !== null ? $this->judgedClock : $server;
+                        if ($this->judgedClock !== null && !$this->judgedSettled
+                                && self::futureAgainst($spec, (string) $value, $this->judgedClock)
+                                && !self::futureAgainst($spec, (string) $value, $server)) {
+                            $vspec['notFuture'] = false;
+                            $notChecked = true;
+                        }
+                    }
                     if ($todayRelative) {
                         // Not checked: the parts that need the day it was saved.
                         $vspec['notPast'] = false;
                         if ($clockAnchor) { $vspec['lo'] = null; $vspec['hi'] = null; $vspec['period'] = null; }
+                    }
+                    if ($notChecked) {
                         $out['unconfigurable'][] = ['fields' => [$field],
                             'why' => 'the day this value was saved is not known (' . $st['why'] . ') — it was not checked against that day'];
                     }
@@ -3185,9 +3212,10 @@ class UniversalValidator extends AbstractExternalModule
             $r = TemporalLogic::windowVerdictSpread($vspec, (string) $value, 'ymd', $vanchor, $vanchorHi, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
                 $readable = TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok';
-                // The parts judged against the clock alone, which passed.
-                $held = $clock === null ? '' : ($spec['notFuture'] && $vspec['notPast'] ? ' (the date is neither in the future nor in the past)'
-                    : ($spec['notFuture'] ? ' (the date is not in the future)' : ($vspec['notPast'] ? ' (the date is not in the past)' : '')));
+                // The parts judged against the clock alone, which passed. $vspec:
+                // a part not checked (rvc2-1) did not pass.
+                $held = $clock === null ? '' : ($vspec['notFuture'] && $vspec['notPast'] ? ' (the date is neither in the future nor in the past)'
+                    : ($vspec['notFuture'] ? ' (the date is not in the future)' : ($vspec['notPast'] ? ' (the date is not in the past)' : '')));
                 if ($fromWhy !== null && $readable) {
                     $why = $fromWhy . ' — the window was not checked' . $held;
                 } elseif ($fromWhy !== null) {
@@ -3261,6 +3289,19 @@ class UniversalValidator extends AbstractExternalModule
             return $date ? strcmp($v['value'], (string) $clock['today']) >= 0 : $v['seconds'] >= $now['seconds'];
         }
         return false;
+    }
+
+    /**
+     * Whether notFuture finds $value in the future against $clock: asked of
+     * TemporalLogic itself, with the slack findingsWindow() gives a date and
+     * time, so the answer is the one the verdict would give (review rvc2-1).
+     */
+    private static function futureAgainst(array $spec, $value, array $clock)
+    {
+        if ($spec['type'] !== 'date') $clock = TemporalLogic::clockSlack($clock, TemporalLogic::AFTER_SAVE_SLACK_S);
+        $r = TemporalLogic::windowVerdict(['notFuture' => true, 'type' => $spec['type']], (string) $value, 'ymd',
+                                          null, 'ymd', $clock);
+        return $r['verdict'] === 'future';
     }
 
     /** The project's log reader (ValueStamps), once per request; null when the log cannot be resolved. */
@@ -3457,6 +3498,11 @@ class UniversalValidator extends AbstractExternalModule
      * one of its records is judged (durableEvaluateRecord()); null otherwise
      */
     private $judgedClock = null;
+    /**
+     * @var bool the record judged now has not changed since its run was
+     * planned (review rvc2-1), set and cleared with judgedClock
+     */
+    private $judgedSettled = false;
 
     /**
      * Today and now for the @UVWINDOW "notFuture" check, read once per request
@@ -3641,10 +3687,25 @@ class UniversalValidator extends AbstractExternalModule
      * under log-values = none, where the record id itself identifies the
      * participant. ONE PLACE, read by the legacy report's plan and by the
      * stored report's posture alike (W7-R2).
+     *
+     * A SETTING THAT CANNOT BE READ HASHES (review rvc2-4). This asked
+     * logMode(), which answers a read that throws with "hashed" - the right
+     * answer for the log, where it keeps values out, and the wrong one here,
+     * where "hashed" means raw record ids. So for that one request a
+     * "none" project's report and its file named every record raw. A read
+     * that throws, and a stored value this build does not know, now hash:
+     * neither can say the ids may be shown. An unset setting is the default
+     * mode ("hashed"), which names records raw, as before.
      */
     private function hashesRecordIds($pid)
     {
-        return $this->logMode($pid) === 'none';
+        try {
+            $mode = $this->getProjectSetting('log-values', $pid);
+        } catch (\Throwable $e) {
+            return true;
+        }
+        if ($mode === null || $mode === '') return false;
+        return !in_array($mode, ['hashed', 'raw', 'off'], true);
     }
 
     /**
@@ -3673,6 +3734,31 @@ class UniversalValidator extends AbstractExternalModule
                 : null,
             'recordIdField' => (string) $this->recordIdFieldOf($pid),
         ];
+    }
+
+    /**
+     * Every instrument of $pid, from its data dictionary, or null when the
+     * dictionary cannot be read or names a field with no instrument (review
+     * rvc2-3). The durable scan's Stop asks a reader about these when no scan
+     * context can be built for the run (Scan\ScanService::cancelAuth()).
+     *
+     * @return string[]|null
+     */
+    public function scanProjectInstruments($pid)
+    {
+        try {
+            $dd = $this->dataDictionary($pid);
+        } catch (\Throwable $e) {
+            $dd = null;
+        }
+        if (!is_array($dd) || !$dd) return null;
+        $forms = [];
+        foreach ($dd as $meta) {
+            $f = (is_array($meta) && isset($meta['form_name'])) ? (string) $meta['form_name'] : '';
+            if ($f === '') return null;
+            $forms[$f] = true;
+        }
+        return array_map('strval', array_keys($forms));
     }
 
     /**
@@ -7592,7 +7678,7 @@ class UniversalValidator extends AbstractExternalModule
         // (ScanService::disabling()), so an enable after a disable is what
         // lets scans run again at once.
         try {
-            $this->setSystemSetting(self::SCAN_ENABLED_AT, (string) time());
+            $this->setSystemSetting(self::SCAN_ENABLED_AT, Scan\ScanService::markerNow());
         } catch (\Throwable $e) {
             // Logged, never thrown; without it the refusal ends on its own
             // after ScanService::DISABLING_SECONDS.
@@ -7647,7 +7733,7 @@ class UniversalValidator extends AbstractExternalModule
     public function redcap_module_system_disable($version = null)
     {
         try {
-            $this->setSystemSetting(self::SCAN_DISABLED_AT, (string) time());
+            $this->setSystemSetting(self::SCAN_DISABLED_AT, Scan\ScanService::markerNow());
         } catch (\Throwable $e) {
             $this->scanDisableFailed('marker', $e);
         }
@@ -7692,7 +7778,7 @@ class UniversalValidator extends AbstractExternalModule
             $pid = (int) $project_id;
             if ($pid < 1) return;
             try {
-                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, (string) time(), $pid);
+                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, Scan\ScanService::markerNow(), $pid);
             } catch (\Throwable $e) {
                 $this->scanDisableFailed('project-marker', $e);
             }
@@ -7718,7 +7804,7 @@ class UniversalValidator extends AbstractExternalModule
         $pid = (int) $project_id;
         if ($pid < 1) return;
         try {
-            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, (string) time(), $pid);
+            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, Scan\ScanService::markerNow(), $pid);
         } catch (\Throwable $e) {
             $this->scanDisableFailed('project-enable-marker', $e);
         }
@@ -7873,7 +7959,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Free what is stuck: abandoned runs, worker slots above the limit, and
-     * the previous reports of every project whose latest scan completed.
+     * the previous reports of every project whose latest whole-project run
+     * finished complete.
      *
      * php/Scan/ScanRetention.php held the reaper for releases before anything
      * called it (H-2): a run whose browser closed kept its project's one scan
@@ -7985,11 +8072,12 @@ class UniversalValidator extends AbstractExternalModule
      * The instance properties that are not memos: what a test pinned
      * (existsIndexCap, clockOverride, valueStampsOverride), the record save
      * in progress (returnQueue, surveySave), which a cron pass is never inside,
-     * and the clock of the scan record being judged (judgedClock), which
+     * and the clock of the scan record being judged and whether it changed
+     * since planning (judgedClock, judgedSettled), which
      * durableEvaluateRecord() sets and clears around that one record.
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
-                            'judgedClock'];
+                            'judgedClock', 'judgedSettled'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -8651,9 +8739,16 @@ class UniversalValidator extends AbstractExternalModule
         // field put that same id, raw, in the Value cell beside it. Withheld
         // under every mode, because the hashing is the project's posture and
         // the reader's ceiling cannot lift it.
-        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
-            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
-            return self::REPORT_REDACTED;
+        //
+        // AND EVERY VALUE WHEN THE RECORD-ID FIELD IS NOT KNOWN (review
+        // rvc2-4). recordIdFieldOf() answers '' when neither the dictionary
+        // nor REDCap names it, and this skipped the check, so the field whose
+        // value is the id went out raw beside the hashed Record cell. A field
+        // this cannot tell from the id is withheld, as FindingRowMapper
+        // refuses to build hashed without one.
+        if (!empty($plan['hashRecordIds'])) {
+            $idField = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
+            if ($idField === '' || $field === $idField) return self::REPORT_REDACTED;
         }
 
         if (!mb_check_encoding($val, 'UTF-8')) {
@@ -8686,10 +8781,9 @@ class UniversalValidator extends AbstractExternalModule
      * How the scan report may show values: 'raw' | 'identifier-redacted' | 'locations'.
      *
      * A settings read that throws must not decide between showing values and
-     * withholding them, so a failure lands on the most permissive documented
-     * default rather than silently switching policy — the same posture logMode()
-     * takes, and for the same reason: a quietly-changed privacy mode is worse
-     * than a wrong one, because nobody can tell it happened.
+     * withholding them, so a failure lands on the least disclosing mode,
+     * locations only, as an unset or unknown setting does. The record-id
+     * posture fails the same way (hashesRecordIds(), review rvc2-4).
      */
     private function scanValueMode($pid)
     {
@@ -8873,10 +8967,12 @@ class UniversalValidator extends AbstractExternalModule
         $module = $this;
         // No generation, no evaluator. A caller that only needs the rule list
         // gets one it cannot accidentally scan with.
-        $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
-                                                          $runSeq, $valueExpiry, $asOf) {
+        // $settled: the worker found the record unchanged since the run's
+        // opening fence (review rvc2-1); see findingsWindow().
+        $evaluate = ($gen === null) ? null : function ($recordId, array $node, $settled = false) use ($module, $plan, $pid,
+                                                          $gen, $key, $ids, $runSeq, $valueExpiry, $asOf) {
             return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
-                                                  $runSeq, $valueExpiry, $asOf);
+                                                  $runSeq, $valueExpiry, $asOf, $settled);
         };
 
         // The read the worker performs. Explicit records, and only the fields
@@ -9164,23 +9260,29 @@ class UniversalValidator extends AbstractExternalModule
      * exists to translate.
      *
      * $asOf is the clock the run froze (W10BF-3), set for the length of this
-     * record's judgement only; null judges by the request's clock.
+     * record's judgement only; null judges by the request's clock. $settled
+     * says the record has not changed since the run was planned (review
+     * rvc2-1): only then is a date whose saved day is not known judged
+     * against the frozen day where the request's clock would pass it.
      *
      * @return array{findings:array, candidates:array, bytes:int, contexts:int,
      *               problems:array, why:?string}
      */
     public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
-                                          array $ids, $runSeq = 0, $valueExpiry = null, $asOf = null)
+                                          array $ids, $runSeq = 0, $valueExpiry = null, $asOf = null,
+                                          $settled = false)
     {
         $found = [];
         $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
         $seen = [];
         $unconf = [];
         $this->judgedClock = Scan\ScanPlanner::clockOf($asOf);
+        $this->judgedSettled = ($settled === true);
         try {
             $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
         } finally {
             $this->judgedClock = null;
+            $this->judgedSettled = false;
         }
         if ($r['why'] !== null) {
             return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,

@@ -145,6 +145,12 @@ UV.labels = {
                + 'records belong to that group, so its counts cannot be shown.',
   stoppedWithheld: 'This scan was stopped before it confirmed which records belong to this Data '
                  + 'Access Group, so it is not a complete picture of the group.',
+  stoppedProved: 'This scan was stopped after it confirmed which records belong to this Data Access '
+               + 'Group, so its counts are for the group. It ended before every check had run, so it '
+               + 'is not a complete picture of the group.',
+  upgraded: 'This module was upgraded while this scan was running, and the new version judges some '
+          + 'values differently, so the scan was ended rather than finished half under each version. '
+          + 'Start a new scan.',
   emptyLeft: 'This scan has no record left to report on: every record it listed moved to another '
            + 'Data Access Group while it ran. Any findings it counted are on records no longer in '
            + 'the group. This result says nothing about the group.',
@@ -935,6 +941,31 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('paused: a finished run is never paused or stopping, whatever it is sent',
     els['uv-scan-stalled'].style.display === 'none');
 
+  // rvc2-3. A REFUSED STATUS THAT SAYS THIS READER MAY STOP THE RUN SHOWS
+  // STOP. Stop was only ever shown from a status that arrived, so a run whose
+  // configuration could not be read in full kept going with no way to end it
+  // from the page. The refusal still names no count and no finding.
+  const stoppable = (active) => ({ ok: false, final: false, run_id: 42, active: active, mayCancel: true,
+    why: 'the scan context could not be built: the growth reference folder could not be read just now; try again shortly' });
+  const refusedFrom = async (shown, st) => {
+    reset([st]);
+    els['uv-scan-cancel'].style.display = shown;
+    UV.attach({ runId: 42, autoResume: false });
+    await ticks(4);
+    return els['uv-scan-cancel'].style.display;
+  };
+  check('rvc2-3: a refused status that offers Stop on an active run shows Stop',
+    (await refusedFrom('none', stoppable(true))) === ''
+    && els['uv-scan-note'].textContent.indexOf('could not be read just now') !== -1
+    && els['uv-scan-counts'].textContent === '');
+  check('rvc2-3: and hides it when the run has ended',
+    (await refusedFrom('', stoppable(false))) === 'none');
+  const plain = { ok: false, final: false, why: 'the scan context could not be built' };
+  check('rvc2-3: a refusal that offers nothing leaves a shown Stop shown',
+    (await refusedFrom('', plain)) === '');
+  check('rvc2-3: and a hidden one hidden',
+    (await refusedFrom('none', plain)) === 'none');
+
   // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
   // sentence sending the reader to Stop, with Continue hidden; the list now
   // resumes from its cursor, so a flag an older server still sends is not
@@ -1159,6 +1190,59 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     els['uv-scan-counts'].textContent === keptEndedLabels.withheldEnded
     && els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedWithheld) === 0);
   UV.labels = keptEndedLabels;
+
+  // rvfix-N2. A group run stopped AFTER it proved its scope shows its counts,
+  // and its ending says they are the group's, as ScanPageView::endedSentence()
+  // does; it is not told that records could not be checked.
+  const endedP = (terminal, over) => withheld(Object.assign({ phase: 'terminal', terminal: terminal,
+    coverage: 'partial', active: false, mayCancel: false, clean: false, withheld: false, withheldWhy: null,
+    total: 5, done: 5, settled: 5, findings: 1 }, over || {}));
+  for (const t of ['cancelled', 'expired']) {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP(t) }]);
+    UV.start(); await ticks(6);
+    check('rvfix-N2 client: a group run ' + t + ' after it proved its scope says its counts are for the group',
+      els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved) === 0
+      && els['uv-scan-done'].textContent.indexOf('could not be checked') === -1
+      && els['uv-scan-counts'].textContent.indexOf('5 of 5 records') === 0);
+  }
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { scope: 'project' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client control: a stopped whole-project run keeps the partial sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.partial) === 0);
+  UV.labels = Object.assign({}, keptEndedLabels, { stoppedProved: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('expired') }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedProved) === 0);
+  UV.labels = keptEndedLabels;
+
+  // W12-N4. A run an upgrade of the module ended says so wherever its ending
+  // is shown, as ScanPageView::endedSentence() does.
+  const upgradedSt = (over) => Object.assign(finished('failed'), { terminal: 'failed', upgraded: true }, over || {});
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a run an upgrade ended says so, not only that it failed',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded) === 0
+    && els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === -1);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ upgraded: false }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client control: a failed run nothing upgraded keeps the failed sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === 0);
+  const keptUpLabels = UV.labels;
+  UV.labels = Object.assign({}, keptUpLabels, { upgraded: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptUpLabels.upgraded) === 0);
+  UV.labels = keptUpLabels;
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

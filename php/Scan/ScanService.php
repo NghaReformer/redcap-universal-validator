@@ -127,6 +127,8 @@ final class ScanService
     private $capabilities = [];
     /** @var array project id => the change log as a fence, or null when there is none */
     private $fences = [];
+    /** @var array project id => SourceFence::forProject()'s answer (W10AF-N4) */
+    private $fenceOpened = [];
     /** @var array entitlement key (see entitlement()) => its answer */
     private $entitlements = [];
     /**
@@ -794,24 +796,37 @@ final class ScanService
     private function statusOf($pid, $runId, array $known)
     {
         // The reader before the run (L8): see readerScope().
+        //
+        // A READER WHO MAY STOP RUNS IS TOLD WHETHER THIS ONE CAN BE (review
+        // rvc2-3). The page offers Stop only from a status, and every refusal
+        // below answered with none: a reader refused the status - a context
+        // that cannot be built, an operand instrument they cannot read,
+        // another project's refusal - was never shown Stop, though cancel()
+        // would have stopped the run for them. A reader whom cancel() would
+        // refuse before any run row is refused here the same way; one it
+        // would not is given the same refusal for every id, and for a run it
+        // may stop, with what the page needs to offer Stop (stopOffer()).
+        // cancel() tells that reader which ids are runs already, so this
+        // says nothing new.
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return $no;
+        if ($no !== null && $this->readerRefusal($pid, 'cancel') !== null) return $no;
         $store = $this->store();
         $run = (isset($known['run']) && is_array($known['run'])) ? $known['run'] : $store->run($pid, $runId);
-        if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($run === null) return $no !== null ? $no : ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($no !== null) return $this->stopOffer($pid, $run, $no);
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) {
-            return ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])];
+            return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])]);
         }
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
-        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
+        if (empty($auth['ok'])) return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $auth['why'], 'final' => true]);
         // A run can hold answers another project gave whoever drove it. A
         // reader that project would not answer is refused the whole run, by
         // the same rule as an instrument they cannot read (ScanAuthorization:
         // whole-report denial, never filtered rows). Cancel does not ask: a
-        // run must stay stoppable.
+        // run must stay stoppable, and the refusal says so (stopOffer()).
         //
         // ASKED OF THE LOOKUPS THE RUN MADE, NOT OF THE RULES AS THEY STAND
         // (reviews R3U-N1, R4-1, R4-2, R4-3). The reader's plan was asked
@@ -820,7 +835,7 @@ final class ScanService
         // held. The run keeps every lookup its rules make (whoever drives it),
         // and the other project is asked about each one for this reader.
         $refusal = $this->crossRefusal($pid, $run);
-        if ($refusal !== null) return $refusal;
+        if ($refusal !== null) return $this->stopOffer($pid, $run, $refusal);
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
         // unless the row already carries it. See progressOf() for why a quiet
@@ -833,7 +848,7 @@ final class ScanService
         $progress = self::progressOf($run, $census, time(), self::STALL_SECONDS);
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $cancel = $this->cancelAuth($pid, $run);
         // A GROUP-SCOPED RUN SHOWS NO COUNTS UNTIL ITS SCOPE IS PROVED AT THE
         // TARGET FENCE (H10 part 1). Its list is the group as planning read it,
         // and records move between groups while it runs; until catch-up has
@@ -876,6 +891,9 @@ final class ScanService
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            // Whether an upgrade of the module ended it (W12-N4): its stored
+            // reason, so the page says so and not only that it failed.
+            'upgraded'  => self::endedByUpgrade($run),
             // The day the run's date rules are judged as of (W10BF-3), or
             // null for a run whose rules read no clock.
             'asOf'      => ScanPlanner::frozenDay($run),
@@ -1097,10 +1115,7 @@ final class ScanService
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
 
-        $ent = $this->entitlement($pid, $run);
-        if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        // cancelForms, NOT forms - see entitlement().
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $auth = $this->cancelAuth($pid, $run);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         // Read as status() reads it, and BEFORE the stop: the stop writes
@@ -1109,6 +1124,74 @@ final class ScanService
             $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
         }
         return $this->stopRun($store, $pid, $runId, (string) $this->username(), $run, time());
+    }
+
+    /**
+     * May this reader stop $run? mayCancel() over the instruments the rules
+     * sit on (cancelForms, NOT forms - see entitlement()).
+     *
+     * A RUN STAYS STOPPABLE WHEN NO SCAN CONTEXT CAN BE BUILT (review
+     * rvc2-3). The host instruments come from the plan, and a configuration
+     * read in part, or rules that can no longer be evaluated, refused the
+     * context and with it Stop: on a project whose rules all failed so, the
+     * run held the project's slot until the reaper, refused to everybody.
+     * Then the question is asked of every instrument of the project
+     * (everyInstrument(), one dictionary read): a reader who may read all of
+     * them may read any set the rules could name. A reader who may not is
+     * given the context's own refusal, which says what could not be read.
+     *
+     * @return array{ok:bool, why:?string}
+     */
+    private function cancelAuth($pid, array $run)
+    {
+        $ent = $this->entitlement($pid, $run);
+        if (!empty($ent['ok'])) {
+            return ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        }
+        $no = ['ok' => false, 'why' => $ent['why']];
+        if (empty($ent['unplanned'])) return $no;
+        $every = $this->everyInstrument($pid);
+        $scope = $this->readerScope($pid);
+        if ($every === null || empty($scope['ok'])) return $no;
+        $auth = ScanAuthorization::mayCancel($scope['rights'], $every, $run['scope_dag']);
+        return empty($auth['ok']) ? $no : $auth;
+    }
+
+    /**
+     * A refused status, with what the page needs to offer Stop on $run when
+     * this reader may stop it (review rvc2-3): `run_id`, `active` and
+     * `mayCancel`. A reader cancelAuth() refuses gets the refusal as it was,
+     * so a run of another group stays no run at all.
+     */
+    private function stopOffer($pid, array $run, array $refusal)
+    {
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return $refusal;
+        return $refusal + ['run_id' => (int) $run['run_id'],
+                           'active' => ScanPhase::isActive((string) $run['phase']), 'mayCancel' => true];
+    }
+
+    /**
+     * Every instrument of the project, or null when the module cannot say
+     * (review rvc2-3): what Stop asks about when no scan context can be built.
+     *
+     * @return string[]|null
+     */
+    private function everyInstrument($pid)
+    {
+        if (!is_callable([$this->module, 'scanProjectInstruments'])) return null;
+        try {
+            $forms = $this->module->scanProjectInstruments($pid);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($forms) || !$forms) return null;
+        $out = [];
+        foreach ($forms as $f) {
+            if (!is_string($f) || $f === '') return null;
+            $out[] = $f;
+        }
+        return $out;
     }
 
     // -- the report (B5) -------------------------------------------------------
@@ -1462,7 +1545,8 @@ final class ScanService
      * README's three ways of saying a report is incomplete: see
      * ScanReport::incompleteMarks(), which makes them. The page and the export
      * take them from here, and the report's own `suffix` from there, so the
-     * two cannot disagree (review rv11a2-5).
+     * two cannot disagree (review rv11a2-5). The filename suffix survives the
+     * file being forwarded or attached elsewhere; renaming the file removes it.
      *
      * The row ends on the run's coverage sentence, chosen as the panel and
      * runFacts() choose it: $emptied is the same pair runFacts() takes, so a
@@ -2222,7 +2306,15 @@ final class ScanService
         // that cannot be built is refused here too, the same for every id;
         // it is never final, as entitlementNow() says it.
         $f = $this->readerForms($pid);
-        if (empty($f['ok'])) return ['ok' => false, 'why' => $f['why'], 'final' => false];
+        if (empty($f['ok'])) {
+            $no = ['ok' => false, 'why' => $f['why'], 'final' => false];
+            // STOP DOES NOT WAIT FOR A CONTEXT (review rvc2-3): it is asked
+            // of every instrument instead, as cancelAuth() asks it.
+            if ($verb !== 'cancel') return $no;
+            $every = $this->everyInstrument($pid);
+            if ($every === null || empty(ScanAuthorization::mayStart($scope['rights'], $every)['ok'])) return $no;
+            return null;
+        }
         $auth = ($verb === 'cancel')
             ? ScanAuthorization::mayStart($scope['rights'], $f['cancelForms'])
             : ScanAuthorization::mayStart($scope['rights'], $f['forms'], $f['unknown']);
@@ -2296,8 +2388,11 @@ final class ScanService
             'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
-        // could not be read just now.
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false];
+        // could not be read just now. `unplanned` tells cancelAuth() the run
+        // can still be stopped by another question (review rvc2-3).
+        if (empty($ctx['ok'])) {
+            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false, 'unplanned' => true];
+        }
 
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
                 // The CALLER's scope, kept beside the run's own. The two are
@@ -2388,19 +2483,41 @@ final class ScanService
     {
         $k = (int) $pid;
         if (!array_key_exists($k, $this->fences)) {
-            $f = SourceFence::forProject($this->db, $pid);
+            $f = $this->openedFence($pid);
             // A LOG THAT COULD NOT BE READ IS NOT A PROJECT WITHOUT ONE (H11).
             // Null here builds a worker with no fence, and a worker with no
             // fence takes every record it reads as having held still - so one
             // failed read of the log let a whole request's records through
             // unproved. The request stops instead, as for any storage failure,
-            // and the next one asks again; nothing is remembered.
+            // and the next one asks again; no request remembers it for another.
             if (!empty($f['unreadable'])) {
                 throw new ScanStoreUnavailable('the project change log could not be read');
             }
             $this->fences[$k] = empty($f['ok']) ? null : $f['fence'];
         }
         return $this->fences[$k];
+    }
+
+    /**
+     * SourceFence::forProject() for $pid, once per request.
+     *
+     * ONE OPENING FOR THE FENCE AND THE CAPABILITY PROBE (W10AF-N4). The
+     * census's sourceFence probe read the table name and the top of the log,
+     * and the fence read both again, so a work request opened the change log
+     * twice. capabilities() hands the census this answer instead
+     * (ScanCapabilities::sourceFenceFrom()), and fence() builds on it. A log
+     * that could not be read is kept for this request too, so the probe and
+     * the fence cannot disagree inside one; the next request asks again.
+     *
+     * @return array{ok:bool, fence:?SourceFence, why:?string, unreadable:bool}
+     */
+    private function openedFence($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->fenceOpened)) {
+            $this->fenceOpened[$k] = SourceFence::forProject($this->db, $pid);
+        }
+        return $this->fenceOpened[$k];
     }
 
     /**
@@ -2428,6 +2545,11 @@ final class ScanService
             try {
                 $known = isset($this->enumeration[$k])
                        ? ['recordEnumeration' => $this->enumeration[$k]] : [];
+                // The change log as the fence opens it (W10AF-N4). With no
+                // query() there is no fence, and the probe says why itself.
+                if ($this->db !== null) {
+                    $known['sourceFence'] = ScanCapabilities::sourceFenceFrom($this->openedFence($pid));
+                }
                 $this->capabilities[$k] = ScanCapabilities::all($this->module, $pid, $known);
                 $this->enumeration[$k] = $this->capabilities[$k]['recordEnumeration'];
             } catch (\Throwable $e) {
@@ -2765,8 +2887,11 @@ final class ScanService
      * frozen into policy_json with the rest. Not in ScanPolicy::resolve(),
      * whose other caller (the maintenance pass) does not read the setting
      * and would then state a posture it never asked about. A read that fails
-     * is not "none", which is the legacy answer too (logMode()); a run frozen
-     * that way and read as "none" later is a tightening, and stops.
+     * is not "none" here: this value only decides whether a run stops, and
+     * read as "none" a blip in one work request would stop the run as a
+     * tightening. A run frozen that way and read as "none" later is one, and
+     * stops. The report, which discloses, hashes on a read that fails
+     * (UniversalValidator::hashesRecordIds(), review rvc2-4).
      */
     private function policy($pid)
     {
@@ -2861,10 +2986,23 @@ final class ScanService
         return self::ENGINE_REVISION;
     }
 
-    /** What a work request answers when an upgrade of this module ended the run (review rv10b1-6). */
-    const ENGINE_CHANGED = 'This module was upgraded while this scan was running, and the new version judges '
-        . 'some values differently, so the scan was ended rather than finished half under each version. '
-        . 'Start a new scan.';
+    /**
+     * What a work request answers when an upgrade of this module ended the
+     * run (review rv10b1-6): the page's own sentence for that ending, which
+     * the status and the panel show after it (W12-N4).
+     */
+    const ENGINE_CHANGED = ScanPageView::UPGRADED;
+
+    /**
+     * Did an upgrade of this module end $run (W12-N4)? Read from the reason
+     * promotion stored (ScanPromotion::ENGINE_UPGRADED).
+     */
+    private static function endedByUpgrade(array $run)
+    {
+        return isset($run['terminal'], $run['terminal_reason'])
+            && $run['terminal'] === ScanOutcome::FAILED
+            && $run['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED;
+    }
 
     /** What a work request answers when the run it was sent for has just been ended for this. */
     const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '
@@ -3072,12 +3210,49 @@ final class ScanService
         return null;
     }
 
-    /** A disable marker newer than its enable marker, and inside DISABLING_SECONDS. */
+    /**
+     * A disable marker newer than its enable marker, and inside DISABLING_SECONDS.
+     *
+     * IN MICROSECONDS (review rvfix-N4). The markers were whole seconds and an
+     * enable won a tie, so a disable written in the same second as an earlier
+     * enable was ignored, and a Start in its window made a run the hook had
+     * walked past. markerNow() writes the time to the microsecond now. A
+     * marker written before, in whole seconds, still reads: it is the start
+     * of its second, so against a new marker of the same second the new one
+     * is the later, which it is. A tie still goes to the enable, as before.
+     */
     private static function marked($off, $on)
     {
-        if (!is_numeric($off)) return false;
-        if (is_numeric($on) && (int) $on >= (int) $off) return false;
-        return time() - (int) $off < self::DISABLING_SECONDS;
+        $o = self::markerParts($off);
+        if ($o === null) return false;
+        $n = self::markerParts($on);
+        if ($n !== null && ($n[0] > $o[0] || ($n[0] === $o[0] && $n[1] >= $o[1]))) return false;
+        return time() - $o[0] < self::DISABLING_SECONDS;
+    }
+
+    /**
+     * The value an enable or disable hook writes as its marker: the time now,
+     * "<seconds>.<six digits>" (review rvfix-N4). Taken from microtime()'s
+     * string, not its float, so no digit is rounded.
+     */
+    public static function markerNow()
+    {
+        $p = explode(' ', microtime());
+        $us = (isset($p[0]) && preg_match('/^0\.(\d{6})/', $p[0], $m)) ? $m[1] : '000000';
+        return (isset($p[1]) ? $p[1] : (string) time()) . '.' . $us;
+    }
+
+    /**
+     * [seconds, microseconds] of a marker, or null for none. Reads the
+     * markers markerNow() writes and the whole seconds written before it.
+     *
+     * @return ?int[]
+     */
+    private static function markerParts($m)
+    {
+        if (is_int($m)) $m = (string) $m;
+        if (!is_string($m) || !preg_match('/^\s*(\d{1,15})(?:\.(\d{1,6})\d*)?\s*$/D', $m, $x)) return null;
+        return [(int) $x[1], isset($x[2]) ? (int) str_pad($x[2], 6, '0') : 0];
     }
 
     /**

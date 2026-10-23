@@ -722,22 +722,31 @@ namespace {
     // clock here (CLOCK, 2026-10-09) is the request's.
     $PF = $DICT + ['nf_date' => f('visit_form', '@UVWINDOW={"notFuture":true}', 'date_ymd')];
     $frozen = ['today' => '2026-10-07', 'now' => '2026-10-07 23:00:00'];
-    $judge = function ($value, $asOf) use ($PF, $DATA, $FULL, $stamps) {
+    // $settled: the worker found the record unchanged since the run was
+    // planned (review rvc2-1), so the value was there by the frozen day.
+    $judge = function ($value, $asOf, $settled = true) use ($PF, $DATA, $FULL, $stamps) {
         $d = $DATA;
         $d['2'][351]['nf_date'] = $value;
         $m = $stamps(mod($PF, $d, $FULL, 'nurse'), []);   // the log holds nothing: the saved day is not known
         $opts = ['valueCeiling' => 'locations', 'generation' => 7, 'runSeq' => 7];
         if ($asOf !== null) $opts['asOf'] = $asOf;
         $ctx = $m->durableScanContext(149, $opts);
-        $out = ['clock' => isset($ctx['clock']) ? $ctx['clock'] : 'none', 'reason' => null];
+        $out = ['clock' => isset($ctx['clock']) ? $ctx['clock'] : 'none', 'reason' => null, 'unknown' => []];
         if (!empty($ctx['ok'])) {
-            foreach ($ctx['evaluate']('2', \REDCap::$data['2'])['findings'] as $f) {
+            $er = $ctx['evaluate']('2', \REDCap::$data['2'], $settled);
+            foreach ($er['findings'] as $f) {
                 if ($f['field'] === 'nf_date') $out['reason'] = $f['reason_code'];
+            }
+            foreach ($er['problems'] as $p) {
+                if (strpos(json_encode($p), 'nf_date') !== false) $out['unknown'][] = $p;
             }
         }
         $jc = new \ReflectionProperty($m, 'judgedClock');
         $jc->setAccessible(true);
         $out['after'] = $jc->getValue($m);
+        $js = new \ReflectionProperty($m, 'judgedSettled');
+        $js->setAccessible(true);
+        $out['settledAfter'] = $js->getValue($m);
         return $out;
     };
     $future = \INSPIRE\UniversalValidator\Scan\ReasonCode::code('future');
@@ -745,7 +754,7 @@ namespace {
     $kept = $judge('2026-10-08', $frozen);
     check('W10BF-3: judged by the request\'s clock, a date of yesterday with no saved day is not in the future',
         $live['reason'] === null);
-    check('W10BF-3: judged as of the day the run froze, the same value is in the future, as it was on that day',
+    check('W10BF-3: judged as of the day the run froze, the same value on a record unchanged since is in the future, as it was on that day',
         $kept['reason'] === $future);
     check('W10BF-3: a date after the request\'s clock is in the future either way',
         $judge('2026-10-10', null)['reason'] === $future && $judge('2026-10-10', $frozen)['reason'] === $future);
@@ -754,7 +763,44 @@ namespace {
     check('W10BF-3: the context says the clock it judges by: the run\'s, else the request\'s',
         $kept['clock'] === $frozen && $live['clock'] === ['today' => $CLOCK['today'], 'now' => $CLOCK['now']]);
     check('W10BF-3: the frozen clock lasts for the record and no longer',
-        $kept['after'] === null && $live['after'] === null);
+        $kept['after'] === null && $live['after'] === null && $kept['settledAfter'] === false);
+
+    // rvc2-1: THE FROZEN DAY INVENTED A FINDING. A value saved after
+    // planning (2026-10-08, on 2026-10-08) and read by a later request of the
+    // run, with a log that cannot show its day, was judged against the frozen
+    // 2026-10-07 and stored as "Date in the future". Not known to be
+    // unchanged since planning, it is not checked, and says why.
+    $moved = $judge('2026-10-08', $frozen, false);
+    $why = json_encode($moved['unknown']);
+    check('rvc2-1: a date after the frozen day that today passes, on a record not known unchanged, is no finding',
+        $moved['reason'] === null);
+    check('rvc2-1: it is not checked, and the report says the day it was saved is not known',
+        count($moved['unknown']) === 1 && strpos($why, 'the day this value was saved is not known') !== false
+        && strpos($why, 'it was not checked against that day') !== false);
+    check('rvc2-1: a date after the request\'s clock is still in the future, changed or not',
+        $judge('2026-10-10', $frozen, false)['reason'] === $future);
+    $early = $judge('2026-10-06', $frozen, false);
+    check('rvc2-1: and a date by the frozen day is checked against it, as before, with nothing said',
+        $early['reason'] === null && $early['unknown'] === []);
+    // Durable and legacy agree: frozen on the request's own day, every value
+    // gets the answer the request's clock gives, and none is "not checked".
+    $sameDay = ['today' => $CLOCK['today'], 'now' => $CLOCK['now']];
+    $agree = true;
+    foreach (['2026-10-08', '2026-10-09', '2026-10-10'] as $val) {
+        $d = $judge($val, $sameDay, false);
+        $l = $judge($val, null, false);
+        $ld = $DATA;
+        $ld['2'][351]['nf_date'] = $val;
+        $legacy = $stamps(mod($PF, $ld, $FULL, 'nurse'), [])->scanProject(149);
+        $lr = null;
+        foreach ($legacy['violations'] as $v) if ($v['field'] === 'nf_date') $lr = $v['reason'];
+        $lu = array_filter($legacy['unconfigurable'], function ($u) { return in_array('nf_date', $u['fields'], true); });
+        if ($d['reason'] !== $l['reason'] || $d['unknown'] !== [] || $l['unknown'] !== [] || $lu
+            || ($lr === null) !== ($d['reason'] === null)) {
+            $agree = false;
+        }
+    }
+    check('rvc2-1: a run frozen on the day it is read judges as the request\'s clock does, changed or not', $agree);
     $noClock = mod(['record_id' => f('baseline_form'), 'plain' => f('visit_form', '@UVREQUIRED', 'date_ymd')], $DATA, $FULL, 'nurse')
         ->durableScanContext(149, ['valueCeiling' => 'locations', 'generation' => null]);
     check('W10BF-3: a project no live rule of which reads the clock has no clock to freeze',

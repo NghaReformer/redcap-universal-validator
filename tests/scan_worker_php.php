@@ -1123,6 +1123,44 @@ namespace INSPIRE\UniversalValidator\Scan {
         'startedAt' => microtime(true)]); };
     $fin = function () { return new Finalizer(); };
 
+    // -- unchanged since planning (review rvc2-1) ----------------------------
+    //
+    // A date with no saved day is judged against the run's frozen day only
+    // for a record whose log goes no further than the opening fence. The
+    // worker has both versions of each record it reads; it says which.
+    $settledOf = function ($open, $fence) use ($reader) {
+        $store = new ArrayScanStore();
+        $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => $open]);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach (['A', 'B', 'C', 'D'] as $id) $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+        $store->writeManifest($runId, $recs);
+        $seen = [];
+        $w = new ScanWorker($store, ['fence' => $fence, 'read' => $reader,
+            'evaluate' => function ($id, $node, $settled = 'absent') use (&$seen) {
+                $seen[$id] = $settled;
+                return ['findings' => [], 'bytes' => 0, 'contexts' => 0, 'why' => null];
+            },
+            'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                'min' => 1, 'max' => 100, 'first' => 10, 'startedAt' => microtime(true)]),
+            'owner' => 'w1', 'attempts' => 3, 'finalizer' => new Finalizer()]);
+        $w->work(800, $runId);
+        ksort($seen);
+        return $seen;
+    };
+    $sv = new Versions();
+    $sv->v = ['A' => '99', 'B' => '100', 'C' => '101'];    // D: the log shows nothing of it
+    check('worker rvc2-1: a record whose log stops at or before the opening fence is unchanged since planning, '
+        . 'one past it or not in the log is not',
+        $settledOf('100', $sv) === ['A' => true, 'B' => true, 'C' => false, 'D' => false]);
+    $sv2 = new Versions();
+    $sv2->v = ['A' => '9', 'B' => '10', 'C' => '11', 'D' => '100'];
+    check('worker rvc2-1: the fence is compared as a number, not as text',
+        $settledOf('10', $sv2) === ['A' => true, 'B' => true, 'C' => false, 'D' => false]);
+    check('worker rvc2-1: a run with no opening fence, or a worker with no fence, knows no record unchanged',
+        $settledOf(null, $sv) === ['A' => false, 'B' => false, 'C' => false, 'D' => false]
+        && $settledOf('100', null) === ['A' => false, 'B' => false, 'C' => false, 'D' => false]);
+
     // -- the ordinary case ---------------------------------------------------
     list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
     $ver = new Versions();

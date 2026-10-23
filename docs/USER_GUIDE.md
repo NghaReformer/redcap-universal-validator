@@ -800,7 +800,10 @@ second tab on the same page only watches, until you press Continue there.
 When the project has an `@UVWINDOW` rule, every record of a run is judged as of
 the date and time the run was planned, so a scan that runs past midnight
 judges every record against the same day. The page and the file say "Dates
-were judged as of" that date.
+were judged as of" that date. A record edited after the run was planned can
+hold a date later than that day; when the project log cannot show the day it
+was saved, that date is reported as not checked rather than as a date in the
+future.
 
 A finished scan says how much it covered. "Every record was checked,
 including changes made while it ran." is the whole project. Any other sentence

@@ -926,7 +926,10 @@ re-checks three things.
   user cannot open refuses the whole report rather than narrowing it, so no
   finding, count or label from that instrument is shown. Stop asks only for
   the instruments the rules sit on, so a user barred from an instrument that
-  another field's rule reads can still stop a run.
+  another field's rule reads can still stop a run. When the rules cannot be
+  read just now, for example because the growth reference folder cannot be
+  opened, the page shows no counts, and Stop asks for every instrument of the
+  project instead.
 
 A user in a Data Access Group scans that group only. A group whose name cannot
 be resolved is refused, because a scan of zero records is not a clean project.
@@ -969,7 +972,11 @@ When the project has an `@UVWINDOW` rule, the run freezes the date and time it
 was planned, in the time zone of `window-timezone`, and every record of the
 run is judged by that clock, catch-up included. A record read after midnight
 is judged as of the same day as the rest. The page, the findings page and the
-file say "Dates were judged as of" that day.
+file say "Dates were judged as of" that day. On a record changed since the run
+was planned, a `notFuture` date whose save the project log cannot show may have
+been saved after that day. If it is later than that day but not in the future
+when the record is read, it is reported as not checked ("the day this value was
+saved is not known"), not as a date in the future.
 
 ### What a finished run says
 
@@ -983,6 +990,22 @@ different claim.
 | "Some records could not be checked. This is not a complete picture of the project." | The run stopped early, or a record could not be read, held still, or examined in full. |
 | "This scan has no record left to report on: ..." | Nothing was in scope, or every record was deleted or left the group while it ran. |
 | "The scan failed, so it describes nothing." | The run failed. |
+
+A group-scoped run that was stopped, or expired, says so in its own words in
+place of the third sentence. Before it confirmed which records belong to the
+group it shows no counts and says "This scan was stopped before it confirmed
+which records belong to this Data Access Group, so it is not a complete
+picture of the group." After that it shows its counts and says "This scan was
+stopped after it confirmed which records belong to this Data Access Group, so
+its counts are for the group. It ended before every check had run, so it is
+not a complete picture of the group."
+
+A run that an upgrade of this module ended, because the new version judges
+some values differently, says so in place of the last sentence, on the page
+and in the answer to the request that ended it: "This module was upgraded
+while this scan was running, and the new version judges some values
+differently, so the scan was ended rather than finished half under each
+version. Start a new scan."
 
 A run ends as `complete`, `partial`, `cancelled`, `failed` or `expired`. Only a
 complete run can certify the project: every record checked through the fixed
@@ -1107,7 +1130,9 @@ writes a `scan-cron` entry to the module log.
   previous findings of each project whose latest whole-project run finished
   complete. Pressing Start ends an abandoned run of its own project at once.
 - `uv_scan_expire_values` runs every hour. It clears stored values that a
-  tightened privacy setting revoked, deletes finished runs older than
+  tightened privacy setting revoked, in the runs planned under the looser
+  setting (a run planned under the setting now in force keeps its own),
+  deletes finished runs older than
   `scan-run-retention-days` days (90 by default, never more than
   `scan-system-max-run-retention-days`), and clears stored values past their
   retention window.

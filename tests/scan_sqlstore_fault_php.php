@@ -1226,6 +1226,21 @@ namespace INSPIRE\UniversalValidator\Scan {
         && count($clear) === 1 && $clear[0][1] === [70, 3, 0, 41]
         && strpos($clear[0][0], 'AND active_slot = 1') !== false
         && strpos($clear[0][0], 'AND finding_id > ? AND finding_id <= ?') !== false);
+    // W10AF-N6: a bound on the runs the bump may move, as a parameter.
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => []];
+    (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2, 12);
+    $bumpB = $vdb->with(['SET policy_revision = ?']);
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => []];
+    (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2);
+    $bumpU = $vdb->with(['SET policy_revision = ?']);
+    check('revoke W10AF-N6: the bump stops at the run it is given, bound as a parameter',
+        count($bumpB) === 1 && strpos($bumpB[0][0], 'AND run_id <= ?') !== false
+        && $bumpB[0][1] === [5, 'expired', 70, 5, 12]);
+    check('revoke W10AF-N6: and with none it moves every run of the project, as before',
+        count($bumpU) === 1 && strpos($bumpU[0][0], 'run_id') === false && $bumpU[0][1] === [5, 'expired', 70, 5]);
+
     // A short page clears its rows and ends the call at the next slice: one
     // UPDATE per call, however little the slice held.
     $vdb = $paramDb();

@@ -37,6 +37,51 @@ namespace {
         global $n, $fail; $n++;
         if (!$cond) { $fail++; fwrite(STDERR, "FAIL: $label\n"); }
     }
+
+    /**
+     * Files that are there and will not open (review rvc2-3), which no
+     * portable chmod gives: a folder under uvfiles:// whose paths stat as
+     * readable files, and whose `$files` entry false fails to open. The
+     * difference between "not there" and "there, but would not open" is the
+     * one this exists to show.
+     */
+    class UvFilesWrapper
+    {
+        /** @var array path => contents, or false for a file that will not open */
+        public static $files = [];
+        public $context;
+        private $buf = '';
+        private $pos = 0;
+
+        private static function key($path) { return str_replace('\\', '/', $path); }
+
+        public function url_stat($path, $flags)
+        {
+            $k = self::key($path);
+            if (!array_key_exists($k, self::$files)) return false;
+            $size = is_string(self::$files[$k]) ? strlen(self::$files[$k]) : 10;
+            return ['dev' => 0, 'ino' => 0, 'mode' => 0100444, 'nlink' => 1, 'uid' => 0, 'gid' => 0,
+                    'rdev' => 0, 'size' => $size, 'atime' => 0, 'mtime' => 0, 'ctime' => 0,
+                    'blksize' => -1, 'blocks' => -1];
+        }
+        public function stream_open($path, $mode, $options, &$opened)
+        {
+            $k = self::key($path);
+            if (!isset(self::$files[$k]) || !is_string(self::$files[$k])) return false;
+            $this->buf = self::$files[$k];
+            $this->pos = 0;
+            return true;
+        }
+        public function stream_read($count)
+        {
+            $out = (string) substr($this->buf, $this->pos, $count);
+            $this->pos += strlen($out);
+            return $out;
+        }
+        public function stream_eof() { return $this->pos >= strlen($this->buf); }
+        public function stream_stat() { return ['size' => strlen($this->buf), 'mode' => 0100444]; }
+        public function stream_set_option($option, $arg1, $arg2) { return false; }
+    }
 }
 
 namespace ExternalModules {
@@ -908,18 +953,44 @@ namespace {
         };
         $read = $unreadOf(['reference-data-dir' => $refDir]);
         check('W10BF-4: a reference folder read in full leaves nothing unread', $read['unread'] === []);
+        // rvc2-3: A FOLDER THAT IS NOT THERE IS THE CONFIGURATION. W10BF-4
+        // read it as unread, so while the setting named a folder that does
+        // not exist every such project was refused Start and every work
+        // request did nothing; a rule problem, as before W10BF-4.
         $gone = $unreadOf(['reference-data-dir' => $refDir . '_gone']);
-        check('W10BF-4: a folder whose index.json cannot be read is named as unread',
-            $gone['unread'] === ['the growth reference folder']);
-        check('W10BF-4: and the rule is still refused, saying why',
-            strpos($gone['problems'], 'no readable index.json') !== false);
+        check('rvc2-3: a folder that does not exist is no unread configuration',
+            $gone['unread'] === []);
+        check('rvc2-3: the rule is a rule problem, saying the folder has no index.json',
+            strpos($gone['problems'], 'the folder has no index.json') !== false);
+        $empty = $refDir . '_empty';
+        mkdir($empty);
+        $noIndex = $unreadOf(['reference-data-dir' => $empty]);
+        check('rvc2-3: nor is a folder with no index.json in it',
+            $noIndex['unread'] === [] && strpos($noIndex['problems'], 'the folder has no index.json') !== false);
         check('W10BF-4: a "reference-data-dir" setting that could not be read is named as unread',
             $unreadOf([], ['reference-data-dir' => true])['unread'] === ['the growth reference folder']);
         $noTable = $refDir . '_notable';
         mkdir($noTable);
         copy($refDir . DIRECTORY_SEPARATOR . 'index.json', $noTable . DIRECTORY_SEPARATOR . 'index.json');
-        check('W10BF-4: a table its index names that cannot be read is named as unread',
-            $unreadOf(['reference-data-dir' => $noTable])['unread'] === ['the growth reference folder']);
+        $nt = $unreadOf(['reference-data-dir' => $noTable]);
+        check('rvc2-3: a table its index names that is not in the folder is no unread configuration either',
+            $nt['unread'] === [] && strpos($nt['problems'], 'is not in its folder') !== false);
+        // Only a file that is there and will not open is a read that failed.
+        stream_wrapper_register('uvfiles', 'UvFilesWrapper');
+        \UvFilesWrapper::$files = ['uvfiles://shut/index.json' => false];
+        $shut = $unreadOf(['reference-data-dir' => 'uvfiles://shut']);
+        check('W10BF-4: an index.json that is there and will not open is named as unread',
+            $shut['unread'] === ['the growth reference folder']);
+        check('W10BF-4: and the rule is still refused, saying why',
+            strpos($shut['problems'], 'index.json could not be opened') !== false);
+        \UvFilesWrapper::$files = [
+            'uvfiles://tbl/index.json' => file_get_contents($refDir . DIRECTORY_SEPARATOR . 'index.json'),
+            'uvfiles://tbl/flat.json' => false,
+        ];
+        check('W10BF-4: a table its index names that is there and will not open is named as unread',
+            $unreadOf(['reference-data-dir' => 'uvfiles://tbl'])['unread'] === ['the growth reference folder']);
+        stream_wrapper_unregister('uvfiles');
+        @rmdir($empty);
         $badJson = $refDir . '_badjson';
         mkdir($badJson);
         file_put_contents($badJson . DIRECTORY_SEPARATOR . 'index.json', '{"format": ');
@@ -944,6 +1015,24 @@ namespace {
             @rmdir($d);
         }
     }
+
+    // rvc2-3: EVERY INSTRUMENT OF THE PROJECT, for a Stop whose rules cannot
+    // be read. From the dictionary only, and nothing when any row of it is
+    // not one an instrument can be named from: a Stop that asked a shorter
+    // list than the project has would let a barred reader stop the run.
+    $instrumentsOf = function ($dict) {
+        \REDCap::$dictionary = $dict;
+        $im = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $im->projectIdReturn = 149;
+        return $im->scanProjectInstruments(149);
+    };
+    check('rvc2-3: the project\'s instruments are every form the dictionary names, once each',
+        $instrumentsOf(['record_id' => fld('fa'), 'b' => fld('fb'), 'c' => fld('fa')]) === ['fa', 'fb']);
+    check('rvc2-3: a dictionary row with no form names no list at all',
+        $instrumentsOf(['record_id' => fld('fa'), 'b' => fld('')]) === null
+        && $instrumentsOf(['record_id' => fld('fa'), 'b' => ['field_type' => 'text']]) === null);
+    check('rvc2-3: nor does a dictionary that cannot be read',
+        $instrumentsOf([]) === null && $instrumentsOf(null) === null);
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

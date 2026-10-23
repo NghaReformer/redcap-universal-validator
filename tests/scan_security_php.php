@@ -858,6 +858,10 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanPolicy::tightened(['valueDays' => 30], ['valueDays' => 7]) === true);
         check('policy: switching to hashed record ids counts as tightened',
             ScanPolicy::tightened(['hashRecordIds' => false], ['hashRecordIds' => true]) === true);
+        // rvc1-1: a policy frozen before the posture was (the v5 build) states none.
+        check('policy rvc1-1: a frozen policy that states no record-id posture has not tightened it',
+            ScanPolicy::tightened(['valueMode' => 'raw', 'valueDays' => 30],
+                                  ['valueMode' => 'raw', 'valueDays' => 30, 'hashRecordIds' => true]) === false);
         check('policy: an unchanged policy has not tightened',
             ScanPolicy::tightened(['valueMode' => 'raw', 'valueDays' => 30],
                                   ['valueMode' => 'raw', 'valueDays' => 30]) === false);

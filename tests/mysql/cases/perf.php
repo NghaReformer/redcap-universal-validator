@@ -320,8 +320,8 @@ $RECORDS = 6;
     check('perf: it probes the record index for the capability gate once, not once per caller',
         $m->count('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1);
     check('perf: it asks the grants once', $m->count('SHOW GRANTS') === 1);
-    check('perf: it opens the change log once for the fence, plus the capability probe',
-        $m->count('SELECT log_event_table') === 2);
+    check('perf: it opens the change log once, for the fence and the capability probe together (W10AF-N4)',
+        $m->count('SELECT log_event_table') === 1);
     check('perf: it reads the census once - the status reuses what promotion read',
         $m->count('SELECT state, COUNT(*)') === 1);
     check('perf: a run that is not ready reads none of its aggregates',
@@ -401,11 +401,17 @@ $RECORDS = 6;
     // labelDegraded (W7-N11), on the pass whose summary is done only. With
     // W10A-N1's revision read that makes the start 48, measured on the
     // merged tree.
+    // W10AF-N4 took two statements off the start and off each work request:
+    // the capability census's change-log probe read the table name and the
+    // top of the log, and the fence read both again. The census now takes
+    // its answer from the fence's opening, so the start sends 46, the work
+    // request with records left 75 and the one that finishes 76, measured on
+    // MariaDB 10.11 and 10.5. A status poll opens the log once either way.
     $bounds = array(
-        'start'                              => array($startCount, 48),
+        'start'                              => array($startCount, 46),
         'a status poll'                      => array($pollCount, 8),
-        'a work request with records left'   => array($workCount, 77),
-        'the work request that finishes'     => array($finishCount, 78),
+        'a work request with records left'   => array($workCount, 75),
+        'the work request that finishes'     => array($finishCount, 76),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

@@ -295,14 +295,34 @@
      * ScanPageView::endedSentence() decides it. A group-scoped run stopped
      * (or expired) before it proved its scope has coverage `partial`, whose
      * sentence says records could not be checked; its reader is shown no
-     * counts, so it is told what is known instead (review rv5b-2). An empty
-     * scope that records LEFT says they moved to another group, not that they
-     * were deleted (review rvf1-2).
+     * counts, so it is told what is known instead (review rv5b-2). One
+     * stopped after it proved its scope shows its counts, and is told they
+     * are the group's (review rvfix-N2). An empty scope that records LEFT
+     * says they moved to another group, not that they were deleted (review
+     * rvf1-2).
      */
     function endedSentence(st) {
         var L = labels();
-        if (st.withheld && (st.terminal === 'cancelled' || st.terminal === 'expired')) {
+        // A run an upgrade of the module ended says so (review W12-N4).
+        if (st.upgraded === true && st.terminal === 'failed') {
+            var u = L.upgraded || 'This module was upgraded while this scan was running, and the new version judges some values differently, so the scan was ended rather than finished half under each version. Start a new scan.';
+            if (st.detail === 'truncated') {
+                u += ' ' + (L.truncated || 'Some findings were not kept, because the scan reached the '
+                                         + 'limit this project allows.');
+            }
+            return u;
+        }
+        var stopped = (st.terminal === 'cancelled' || st.terminal === 'expired');
+        if (st.withheld && stopped) {
             return L.stoppedWithheld || 'This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group.';
+        }
+        if (stopped && st.scope === 'group' && st.coverage === 'partial') {
+            var p = L.stoppedProved || 'This scan was stopped after it confirmed which records belong to this Data Access Group, so its counts are for the group. It ended before every check had run, so it is not a complete picture of the group.';
+            if (st.detail === 'truncated') {
+                p += ' ' + (L.truncated || 'Some findings were not kept, because the scan reached the '
+                                         + 'limit this project allows.');
+            }
+            return p;
         }
         if (st.coverage === 'empty-scope' && st.leftGroup) {
             var s = (st.removed | 0) > 0
@@ -384,6 +404,13 @@
                 quietNode.style.display = 'none';
                 text(quietNode, '');
             }
+            // A REFUSED STATUS CAN STILL OFFER STOP (review rvc2-3). The server
+            // says so with mayCancel when this reader may stop the run it
+            // will not describe - a configuration it could not read in full,
+            // an instrument or another project that bars the report - and
+            // Stop was otherwise only ever shown from a status that arrived.
+            // A refusal that does not say leaves the button as it was.
+            if (st && st.mayCancel === true) toggle(el('uv-scan-cancel'), st.active === true);
             return;
         }
         UV.state.runId = st.run_id;

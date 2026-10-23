@@ -419,6 +419,44 @@ check('gone: and tries no revocation it still owes after the first, nor any proj
         || strpos($l[0], 'GROUP_CONCAT(DISTINCT values_state)') !== false; }) === []
     && array_keys($gone['state']['revoke']) === [5, 9]);
 
+// W10AF-N6: THE BUMP STOPS AT THE NEWEST RUN THE OLD POLICY GOVERNED. It
+// reached every run of the project, so a run started under the new policy
+// before the pass noticed the change had its previews revoked too. Run 10
+// kept values for 30 days and the project now keeps them 7; run 11's frozen
+// policy cannot be read, so it counts as tightened; run 12 was started under
+// the policy now in force.
+$n6 = function (array $stateIn) use ($census, $RUN) {
+    $logs = [];
+    $db = new ScriptDb(function ($sql, $params) use ($census, $RUN) {
+        if (strpos($sql, 'SELECT run_id, values_state, policy_json FROM ' . $RUN) === 0) {
+            return [[10, 'raw', json_encode(['valueMode' => 'raw', 'valueDays' => 30])],
+                    [11, 'raw', '{not json'],
+                    [12, 'raw', json_encode(['valueMode' => 'raw', 'valueDays' => 7])]];
+        }
+        if (strpos($sql, 'SELECT MAX(policy_revision)') === 0) return [[4]];
+        return call_user_func($census([[61, 1, 0, null, 'raw']]), $sql, $params);
+    });
+    $pol = function ($pid) {
+        return \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve([],
+            ['scan-value-storage' => 'raw', 'scan-value-retention-days' => '7']);
+    };
+    $r = (new ScanMaintenance($db, ['policy' => $pol,
+        'log' => function ($e, array $c) use (&$logs) { $logs[] = [$e, $c]; }]))->retain($stateIn, 100.0);
+    $bump = array_values(array_filter($db->log, function ($l) { return strpos($l[0], 'SET policy_revision = ?') !== false; }));
+    return ['out' => $r, 'bump' => $bump, 'logs' => $logs];
+};
+$b6 = $n6([]);
+check('W10AF-N6: the bump moves the runs up to the newest the old policy governed, and no later one',
+    count($b6['bump']) === 1 && strpos($b6['bump'][0][0], 'AND run_id <= ?') !== false
+    && $b6['bump'][0][1] === [5, 'expired', 61, 5, 11]);
+check('W10AF-N6: and the intent it logs says how far it reaches',
+    $b6['logs'] !== [] && $b6['logs'][0][0] === 'scan-cron-revoke'
+    && $b6['logs'][0][1] === ['project_id' => 61, 'revision' => 5, 'through' => 11]);
+$o6 = $n6(['revoke' => [61 => ['revision' => 5, 'bumped' => false, 'cursor' => null]]]);
+check('W10AF-N6: an intent an earlier build stored, with no bound, bumps every run as it did',
+    count($o6['bump']) >= 1 && strpos($o6['bump'][0][0], 'run_id <= ?') === false
+    && $o6['bump'][0][1] === [5, 'expired', 61, 5]);
+
 // ---- 9) the module switched off (M17) ---------------------------------------
 $SLOT = Schema::table('scan_worker_slot');
 $check9 = function ($label, array $sys, $throws = false) use ($tables, $RUN) {
@@ -585,6 +623,27 @@ check('project enable rvf2-1: the project\'s enable marker is written, after its
     !$threw && is_numeric($en) && (int) $en >= (int) $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 42)
     && abs((int) $en - time()) <= 5 && $m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT) === null
     && array_keys($m->projectSettings) === [42] && $m->sql === []);
+
+// rvfix-N4: every hook writes its marker to the microsecond, so a disable
+// right after an enable is the later of the two, in the same second or not.
+$m = new UniversalValidator();
+$m->systemSettings = $on;
+$m->tables = $tables;
+$m->redcap_module_system_enable('9.9.9');
+$m->redcap_module_system_disable('9.9.9');
+$m->redcap_module_project_enable('9.9.9', 42);
+$m->redcap_module_project_disable('9.9.9', 42);
+$marks = [$m->getSystemSetting(UniversalValidator::SCAN_ENABLED_AT), $m->getSystemSetting(UniversalValidator::SCAN_DISABLED_AT),
+          $m->getProjectSetting(ScanService::PROJECT_ENABLED_AT, 42), $m->getProjectSetting(ScanService::PROJECT_DISABLED_AT, 42)];
+$us = function ($s) { return is_string($s) && preg_match('/^\d+\.\d{6}$/D', $s) === 1; };
+$after = function ($a, $b) {
+    $x = explode('.', $a); $y = explode('.', $b);
+    return (int) $x[0] > (int) $y[0] || ((int) $x[0] === (int) $y[0] && (int) $x[1] > (int) $y[1]);
+};
+check('rvfix-N4: the four hooks write their markers to the microsecond',
+    count(array_filter($marks, $us)) === 4);
+check('rvfix-N4: and a disable after an enable is the later, for the server and for the project',
+    count(array_filter($marks, $us)) === 4 && $after($marks[1], $marks[0]) && $after($marks[3], $marks[2]));
 
 // A pass running when the module is switched off stops at its next unit; a
 // marker from an earlier disable stops nothing.

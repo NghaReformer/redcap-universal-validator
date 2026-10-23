@@ -75,14 +75,22 @@ final class ScanWorker
     private $walked = false;
     /** @var bool the run being worked is scoped to one group: its summary is kept per group (rv11a1-4) */
     private $groupRun = false;
+    /**
+     * @var ?string the run's opening fence (fence_open), read with the run
+     * row in work(): a record whose log goes no further than it has not
+     * changed since the run was planned (review rvc2-1, see batch())
+     */
+    private $fenceOpen = null;
 
     /**
      * @param array $deps {
      *   slots:          ?WorkerSlots  installation semaphore; null means unrationed
      *   fence:          ?RecordVersions  null means reads cannot be proved stable
      *   read:           callable(string[] $ids): array{ok:bool, data:array, why:?string}
-     *   evaluate:       callable(string $id, array $node): array{findings:array, bytes:int,
-     *                                                            contexts:int, why:?string}
+     *   evaluate:       callable(string $id, array $node, bool $settled): array{findings:array,
+     *                                 bytes:int, contexts:int, why:?string}; $settled
+     *                                 is true for a record the log shows unchanged
+     *                                 since the opening fence (review rvc2-1)
      *   budget:         WorkBudget
      *   owner:          string        who this worker is, for the leases
      *   attempts:       int           how many times one record may be retried
@@ -147,6 +155,8 @@ final class ScanWorker
             return self::stop('no scan with that reference is running for this project');
         }
         $phase = (string) $run['phase'];
+        $this->fenceOpen = (isset($run['fence_open']) && is_string($run['fence_open'])
+                            && ctype_digit($run['fence_open'])) ? $run['fence_open'] : null;
 
         // A CANCELLED RUN HAS TO BE FINISHED BY SOMEBODY.
         //
@@ -917,6 +927,20 @@ final class ScanWorker
                 && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
                     || $before[$id] !== $after[$id]);
         };
+        // UNCHANGED SINCE THE RUN WAS PLANNED (review rvc2-1): the log shows
+        // the record, and nothing of it after the opening fence. So every
+        // value it holds was saved by the time the run froze its clock, and a
+        // date judged against that clock with no saved day is judged against
+        // a day no earlier than the one it was saved on. Anything else - no
+        // fence, a record the log does not show, one saved since - is not
+        // known to be, and findingsWindow() then judges no date against the
+        // frozen day that the request's clock would pass.
+        $open = $this->fenceOpen;
+        $settled = function ($id) use ($fence, $after, $open) {
+            if (!($fence instanceof RecordVersions) || $open === null) return false;
+            $v = array_key_exists($id, $after) ? $after[$id] : null;
+            return is_string($v) && ctype_digit($v) && SourceFence::decCmp($v, $open) <= 0;
+        };
         // WHICH OF THE RECORDS THE READ LEFT OUT ARE REALLY GONE. Asked once for
         // the whole batch, and only about records on their LAST attempt: below
         // the cap the answer changes nothing, because the record is tried again
@@ -1075,7 +1099,7 @@ final class ScanWorker
                 continue;
             }
 
-            $ev = $this->evaluate($id, $data[$id]);
+            $ev = $this->evaluate($id, $data[$id], $settled($id));
             $verdict = ($budget !== null) ? $budget->sample() : null;
             if ($verdict === 'drop') {
                 // Its findings go first, before anything else asks for memory.
@@ -1423,11 +1447,11 @@ final class ScanWorker
     }
 
     /** Evaluate one record, turning any throw into a reported failure. */
-    private function evaluate($id, array $node)
+    private function evaluate($id, array $node, $settled = false)
     {
         try {
             $fn = $this->deps['evaluate'];
-            $r = $fn($id, $node);
+            $r = $fn($id, $node, (bool) $settled);
             if (!is_array($r)) {
                 return ['findings' => [], 'bytes' => 0, 'contexts' => 0,
                         'why' => 'this record could not be examined'];
