@@ -80,10 +80,10 @@ MUTATIONS = [
      "if ($bare === 'condition') {",
      'if (true) {', 'tests/annotation_php.php'),
     ('branch conditions compared as plain text', 'php/Branching.php',
-     "$keys[] = 'x' . Logic::canonicalKey($w);\n"
-     "                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);",
-     "$keys[] = 'x' . trim($w);\n"
-     "                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . strtolower(trim($w));",
+     "$keys = ['x' . Logic::canonicalKey($w)];\n"
+     "        if (empty($rule['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);",
+     "$keys = ['x' . trim($w)];\n"
+     "        if (empty($rule['caseSensitive'])) $keys[] = 'f' . strtolower(trim($w));",
      'tests/branching_php.php'),
     ('the docs harness tests nothing', 'php/AnnotationRules.php',
      "return Logic::evaluate($ast, $values, Logic::BLANK_INERT",

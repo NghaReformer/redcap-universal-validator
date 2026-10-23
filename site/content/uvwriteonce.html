@@ -18,8 +18,10 @@ it from then on. Named user roles can still change it.</p>
 <tbody>
 <tr><td><code>roles</code></td><td>The user roles whose members may still change or clear
     the value, by the name the User Rights page shows or by the unique role name. Letter
-    case does not matter in any alphabet, and a run of spaces counts as one. Up to 20
-    roles</td></tr>
+    case does not matter in any alphabet ("STRASSE" matches "Stra&szlig;e"), invisible
+    format characters such as a zero-width space are ignored, and a run of spaces counts
+    as one. With PHP's intl extension a name typed with combining accents matches one typed
+    with composed letters; without intl they differ. Up to 20 roles</td></tr>
 <tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>, which starts
     at 00:00 in the project's time zone. Saves before then do not lock anything; the value
     the field held at that moment is locked from then on. Use it when the tag is added to
@@ -79,10 +81,17 @@ every save.</p>
 <li>A person's own first answer is locked as soon as it is saved. After Save &amp; Stay,
     or Next on a multi-page survey, going back finds it locked.</li>
 <li>Another rule on a locked field still shows its note. It holds the save only when it
-    also reads a field of this form that is not locked (a calc counts only when a field it
-    is worked out from is such a field), and only once that field has changed on the page,
-    a checkbox option by option. A violation already saved when the page opened, or one
-    between two locked fields, never holds it, on Save or on Enter.</li>
+    also reads a field of this form that the person can change, and only once that field
+    has changed on the page, a checkbox option by option. A calc, or a field with
+    <code>@CALCTEXT</code> or <code>@CALCDATE</code>, stands for the fields it is worked out
+    from, through other calcs too. A field with <code>@READONLY</code> or
+    <code>@HIDDEN</code> (or the <code>-FORM</code> or <code>-SURVEY</code> form that applies
+    to the page), <code>@NOW</code>, <code>@TODAY</code>, <code>@LATITUDE</code>,
+    <code>@LONGITUDE</code>, <code>@SETVALUE</code> or <code>@DEFAULT</code> never counts.
+    The value each field opened with is read after REDCap's own start-up on the page, once
+    its calcs, branching and action tags have filled their fields. A violation already
+    saved when the page opened, or one between two locked fields, never holds it, on Save
+    or on Enter.</li>
 <li>The lock lives in the browser only. A change made through the API, the Data Import
     Tool or a script that bypasses the form is found afterwards, from REDCap's log, by
     the audit of the next save of the form that holds the field and by the scan.</li>
@@ -95,7 +104,9 @@ changed or cleared after the lock as <code>type: writeonce</code> with reason
 <code>changed</code> or <code>cleared</code>, plus <code>locked_at</code> (when the lock
 was set) and <code>changed_at</code> (when the current value was saved). The Validation
 scan reports it with the day it was locked. Each record and event is read on its own,
-back to the row REDCap writes when it makes the record. A deletion of the whole record
+back to the row REDCap writes when it makes the record. That row counts only when its
+record id line comes before every other Text or Notes value in it, since a Notes value
+could hold a typed copy of that line. A deletion of the whole record
 starts a new history, and so does an erase of all the project's records (Erase all data,
 or deleting every record when the project moves to production). A deletion of one form or
 one event at another event changes nothing.</p>
@@ -109,6 +120,7 @@ one event at another event changes nothing.</p>
     deletion of the record, since the check cannot tell what it removed;</li>
 <li>a record whose log does not show it being made: one renamed while its saves stay
     logged under the old name, or one that came with a copied project;</li>
+<li>a record whose creating row has its record id line after a Text or Notes value;</li>
 <li>a save the log names no event for;</li>
 <li>a save the log does not spell out. The log lists a save's fields in the data
     dictionary's order, and a line out of that order is how a Notes value typed to look
@@ -125,3 +137,9 @@ worst a false finding or a rule problem. Before the lock, or before <code>since<
 can stand for a first value that was never saved; the next real save of another value is
 then reported as a change. Anyone could have saved that value first, so the line gives no
 one a value they could not have saved, and the forged row stays in the log.</p>
+
+<p>Renaming a locked field after it holds data restarts its history when REDCap's
+log keeps the earlier saves under the old name. The page lock still holds the saved value,
+and the audit reports the field as a rule problem until a save is logged under the new
+name. An import or API change made after the rename, before any save of the field is
+logged under the new name, is read as the field's first save and is not caught.</p>

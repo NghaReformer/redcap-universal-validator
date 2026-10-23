@@ -1004,9 +1004,10 @@ and flags a change larger than its limit:
   the tag is checked at every event that holds the form, arm by arm. An event
   shorthand is refused when no arm has two events with the form, or when an
   event it names holds the form more than once (the form repeats there, or the
-  whole event repeats); the refusal gives a reference that names the event and
-  the instance, such as `[previous-event-name][weight][last-instance]`, when
-  one works from every event. An instance shorthand is refused unless the form repeats at
+  whole event repeats); the refusal gives the shorthand's own event with an
+  instance, `[previous-event-name][weight][last-instance]` or
+  `[first-event-name][weight][first-instance]`, when one works from every
+  event, and no example otherwise. An instance shorthand is refused unless the form repeats at
   every event that holds it. A reference that always names this same entry,
   such as `[event-name][weight]`, is refused. So is one that could not be read
   on any save of some entry: an event, named or not, that does not hold the
@@ -1019,15 +1020,42 @@ and flags a change larger than its limit:
   the field is entered. The refusal quotes the reference as written. When a
   reference is found that every event where the field is entered can read,
   the refusal ends with it; otherwise it lists the events and instances it
-  tried and says none of those can be read. The search tries the event as
+  tried and says none of those works. The search tries the event as
   written, the previous and first events (with another form, also the last),
   events named outright, and this event. It never offers the next event, nor,
   on the field's own form, the last event or a later visit named outright,
-  since each compares with a later entry. For the field itself it offers
-  `[previous-instance]` only at the field's own event and `[last-instance]`
-  only at another, and it offers nothing with the `vs` and direction of
-  another `@UVDELTA` tag on the field under the same condition, which would
-  be refused once written back. An event is named outright only when every
+  since each compares with a later entry; this holds for the event as written
+  too. For the field itself the instance must read an earlier entry where the
+  event lands: `[previous-instance]` only at the field's own event,
+  `[last-instance]` and an instance numbered after the first only at another,
+  `[first-instance]` at either (tried last), and never `[next-instance]`, nor
+  `[current-instance]` at another event. It offers nothing with the `vs` and
+  direction of another `@UVDELTA` tag on the field when neither tag has a
+  condition, or when both have one and the two could be true at once. Written
+  back, two such tags without a condition are refused, and so are two whose
+  conditions say the same thing, however written (keyword case, spacing,
+  quote style, parentheses, the order of `and`/`or` members and of a
+  comparison's sides aside, and letter case when neither tag is
+  `caseSensitive`). Two other conditions that are true at once are a runtime
+  conflict, and the field validates nothing while both hold. Two conditions
+  count as never true at once only when each tests one field for equality
+  with a value, alone or as part of an `and`, and no value equals both as
+  conditions compare values. For example, `[arm]='1'` and `[arm]='2'`
+  qualify, while `[x]=1` and `[x]='01'` (numbers compare by value),
+  `[x]='Yes'` and `[x]='yes'` (unless both tags are `caseSensitive`), and
+  `[x]>0` and `[x]=1` do not. A tag without a condition is the fallback
+  beside tags that have one, so the two may share a `vs`. A refused tag
+  earlier on the field counts with the reference its own refusal suggests. A
+  tag that failed to parse counts with the `vs`, direction and condition its
+  JSON names, read with single or curly quotes as double quotes and without
+  a trailing comma. Nothing is suggested beside it, and the refusal says to
+  fix that tag first, when even that cannot be read, when the JSON names a
+  key the tag does not take (letter case counts, so `When` is one), or when
+  its `vs`, `direction` or `when` is not text or would be refused. A
+  reference to another event or instance counts as read, since turning
+  references on fixes it. So the suggestions for one field can be
+  written back together. When the other tags hold every reference that
+  would work, the refusal says so. An event is named outright only when every
   event of the field's form is in its arm: an event of another arm holds a
   value only for a record entered in both arms. Written by hand, such an
   event is accepted. A `vs` form designated at no event is said to be so.
@@ -1067,8 +1095,12 @@ first save of a value and locks it from then on:
   locks nothing, so a field marked "unknown" can still be filled in later.
 - **Roles.** `roles` names the user roles whose members may still change or
   clear the value, by the name the User Rights page shows or by the unique
-  role name, up to 20. Letter case does not matter in any alphabet, and a run
-  of spaces counts as one. Each must be a role of the project.
+  role name, up to 20. Letter case does not matter in any alphabet ("STRASSE"
+  matches "Straße"), invisible format characters such as a zero-width space
+  are ignored, and a run of spaces counts as one. With PHP's intl extension a
+  name typed with combining accents also matches one typed with composed
+  letters; without intl the two spellings differ. Each must be a role of the
+  project.
   A member's change moves the lock to the new value, and clearing it releases
   the lock. A user whose rights in the project have expired, or whose account
   is suspended, holds no role. An administrator who is not a user of the
@@ -1105,12 +1137,17 @@ first save of a value and locks it from then on:
   role could not be checked. When the saved value cannot be read the field is
   not locked; staff see a note saying so, and the audit still checks a change.
   Another rule on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked (a calc counts
-  only when a field it is worked out from is such a field), and only once that
-  field has been changed on the page, a checkbox option by option. The value
-  each field opened with is read once the form exists. So a violation already
-  saved when the page opened, or one between two locked fields, never holds
-  it, whether the person clicks Save or presses Enter. A person's own
+  when it also reads a field of this form that the person can change, and
+  only once that field has been changed on the page, a checkbox option by
+  option. A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the
+  fields it is worked out from, through other calcs too. A field with
+  `@READONLY` or `@HIDDEN` (or the `-FORM` or `-SURVEY` form that applies to
+  the page), `@NOW`, `@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or
+  `@DEFAULT` never counts. The value each field opened with is read after
+  REDCap's own start-up on the page, once its calcs, branching and action tags
+  have filled their fields. So a violation already saved when the page opened,
+  or one between two locked fields, never holds it, whether the person clicks
+  Save or presses Enter. A person's own
   first answer is locked as soon as it is saved, so after Save & Stay, or Next
   on a multi-page survey, going back finds it locked. The roles and `since`
   never reach the page.
@@ -1122,7 +1159,9 @@ first save of a value and locks it from then on:
   as "Changed after it was locked" or "Cleared after it was locked" and names
   when the value was locked. Each record and event is read on its own, back to
   the row REDCap writes when it makes the record, which names the record id
-  field. A deletion of the whole record starts a new history, and so does an
+  field. That row is read as REDCap wrote it, and it counts only when its
+  record id line comes before every other Text or Notes value in it, since a
+  Notes value could hold a typed copy of that line. A deletion of the whole record starts a new history, and so does an
   erase of all the project's records (Erase all data, or deleting every record
   when the project moves to production): every history starts after the
   newest one. A deletion of one form or one event at another event changes
@@ -1134,7 +1173,8 @@ first save of a value and locks it from then on:
   deletion of the record, since the check cannot tell what it removed; a
   record whose log does not show it being made (one renamed while its saves
   stay logged under the old name, or one that came with a copied project); a
-  save the log names no event for; a save the log
+  record whose creating row has its record id line after a Text or Notes
+  value; a save the log names no event for; a save the log
   does not spell out; a value the log never shows saved; and roles that cannot
   be read when a change needs them. The log lists a save's fields in the data
   dictionary's order. A Notes value typed to look like the log line of another
@@ -1152,7 +1192,13 @@ first save of a value and locks it from then on:
   save of another value is reported as a change. A person with no role could
   reach the same lock by saving that value first, so the line gives no one a
   value they could not have saved; the finding falls on whoever saved next,
-  and the forged row stays in the log. The tag takes no `when`,
+  and the forged row stays in the log. Renaming a locked field after it holds
+  data restarts its history when REDCap's log keeps the earlier saves under
+  the old name. The page lock still holds the saved value, and the audit
+  reports the field as a rule problem until a save is logged under the new
+  name. An import or API change made after the rename, before any save of the
+  field is logged under the new name, is read as the field's first save and
+  is not caught. The tag takes no `when`,
   `caseSensitive` or `blockSave`. Configure via field annotation only.
 
 ## Values saved with a reason — the `@UVJUSTIFY` tag
@@ -1543,7 +1589,7 @@ python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named 
 php  tests/writeonce_php.php      # @UVWRITEONCE verdict and the log reader vs writeonce_fixture.json
 node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
 php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, scan
-php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer, from the module
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer but I4, from the module
 node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
 python3 tests/writeonce_mutations.py   # @UVWRITEONCE: every mutation must make a named suite fail
 php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.json, grammar, registry flags

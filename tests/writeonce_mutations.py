@@ -8,7 +8,9 @@ Usage: PHP_BIN=php python tests/writeonce_mutations.py
 
 The mutations of the SQL (suite tests/mysql/run.php) run only when UV_DB_HOST
 and the other UV_DB_* variables name a MySQL or MariaDB server; without one they
-are reported as skipped, never as killed.
+are reported as skipped, never as killed. The PHP suites run with PHP's intl
+extension when it can be loaded; the one mutation only intl can show is skipped
+without it.
 """
 import os
 from pathlib import Path
@@ -39,6 +41,20 @@ REGISTRY = 'tests/registry_php.php'
 EXISTS_RETURN = 'tests/exists_return_php.php'
 # The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php, case "history").
 MYSQL = 'tests/mysql/run.php'
+
+
+def intl_switches():
+    """PHP's switches that load the intl extension (none when it is built in), or None when it cannot be loaded."""
+    probe = 'exit(class_exists("Normalizer") ? 0 : 1);'
+    for switches in ([], ['-d', 'extension=intl']):
+        if subprocess.run([PHP, *switches, '-r', probe], capture_output=True).returncode == 0:
+            return switches
+    return None
+
+
+INTL = intl_switches()
+# Mutations only a suite run with PHP's intl extension can kill; without intl they are skipped, never counted as killed.
+NEEDS_INTL = {'role names not put in composed form (NFC)'}
 
 # (name, file, original, replacement, suite)
 MUTATIONS = [
@@ -182,7 +198,8 @@ MUTATIONS = [
      "                if (!isset($owner[$f]) || $owner[$f] === $i || !empty($rules[$owner[$f]]['configError'])) { $keep[] = $f; continue; }",
      '                if (!isset($owner[$f]) || $owner[$f] === $i) { $keep[] = $f; continue; }', MODULE),
     ("one rule's refusals out of field order", UV,
-     '                $rules[$i] = array_shift($mine);', '                $rules[$i] = array_pop($mine);', MODULE),
+     "                // every field refused: the rule's place holds its own first refusal\n                $rules[$i] = array_shift($mine);",
+     "                // every field refused: the rule's place holds its own first refusal\n                $rules[$i] = array_pop($mine);", MODULE),
     ('the page locks before the "since" day', UV,
      "                if (strcmp($today, $r['writeonceSince']) < 0) continue;   // the lock starts later\n",
      '', MODULE),
@@ -195,7 +212,8 @@ MUTATIONS = [
      "            $h = $history->saves($record, $event_id, $instance, $field);",
      "            $h = ['state' => 'read', 'saves' => []];", LIVE_PHP),
     ('a refused lock takes its whole group down', UV,
-     '            if ($keep) {\n                $rules[$i][\'fields\'] = $keep;', '            if (false) {\n                $rules[$i][\'fields\'] = $keep;', MODULE),
+     '            if ($keep) {\n                $rules[$i][\'fields\'] = $keep;\n            } else {\n                // every field refused',
+     '            if (false) {\n                $rules[$i][\'fields\'] = $keep;\n            } else {\n                // every field refused', MODULE),
     ('@SETVALUE locked', UV,
      "        if (preg_match('/@(SETVALUE|PREFILL)\\b/i', $ann, $m)) {", '        if (false) {', MODULE),
     ('@PREFILL locked', UV,
@@ -219,14 +237,14 @@ MUTATIONS = [
     ('a rule on a locked field that reads another field not marked', UV,
      "            if ($marks) $rules[$i]['lockReads'] = $marks;", '', MODULE),
     ('every rule on a locked field marked', UV,
-     'if (isset($locked[(string) $f]) && $others) $marks[(string) $f] = array_values($others);',
-     'if (isset($locked[(string) $f])) $marks[(string) $f] = array_values($others);', MODULE),
+     'if (isset($locked[(string) $f]) && $others) $marks[(string) $f] = array_keys($others);',
+     'if (isset($locked[(string) $f])) $marks[(string) $f] = array_keys($others);', MODULE),
     ('lockReads never worked out', UV,
-     "        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: []);\n",
+     "        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: [],\n            $context, is_array($event) && isset($event['name']) && $event['name'] !== '' ? (string) $event['name'] : null);\n",
      '', MODULE),
     ('lockReads not told the data dictionary', UV,
-     ', $this->dataDictionary($pid) ?: []);',
-     ');', MODULE),
+     ', $this->dataDictionary($pid) ?: [],\n            $context,',
+     ', [],\n            $context,', MODULE),
     ('the reader not told the dictionary order', UV,
      "return ['order' => array_flip(array_map('strval', array_keys($dd))),", "return ['order' => [],", MODULE),
     ('a project of several arms read as one', UV,
@@ -257,8 +275,8 @@ MUTATIONS = [
      "if (in_array(trim((string) $role), $book['users'][$u], true)) return true;", MODULE),
     # ---- the grammar ----
     ('"caseSensitive" taken by a tag with no condition', RULES,
-     "foreach (['when' => '\"when\"', 'caseSensitive' => '\"caseSensitive\"', 'blockSave' => '\"blockSave\"'] as $k => $label) {",
-     "foreach (['when' => '\"when\"', 'blockSave' => '\"blockSave\"'] as $k => $label) {", ANNOTATION),
+     "foreach (['when' => '\"when\"', 'caseSensitive' => '\"caseSensitive\"', 'blockSave' => '\"blockSave\"'] as $k => $label) {\n            if (array_key_exists($k, $frag)) {\n                $errors[] = self::TAG_WRITEONCE",
+     "foreach (['when' => '\"when\"', 'blockSave' => '\"blockSave\"'] as $k => $label) {\n            if (array_key_exists($k, $frag)) {\n                $errors[] = self::TAG_WRITEONCE", ANNOTATION),
     ('a "since" that is not a day of the calendar taken', RULES,
      "&& checkdate((int) $m[2], (int) $m[3], (int) $m[1]);", ';', MODULE),
     ('more than 20 roles taken', RULES,
@@ -291,8 +309,8 @@ MUTATIONS = [
      'if(lr.base[i] !== undefined && now !== undefined && now !== lr.base[i]) return true;',
      'if(lr.base[i] !== undefined && now !== lr.base[i]) return true;', DOM),
     ('the opening values read before the form exists', ENGINE,
-     '    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsBase);\n    else QRID_lockReadsBase();',
-     '    QRID_lockReadsBase();', DOM),
+     '    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsAfterStart);\n    else QRID_lockReadsAfterStart();',
+     '    QRID_lockReadsAfterStart();', DOM),
     ('a checkbox option in lockReads read as a field name', ENGINE,
      '  return m ? [m[1], m[2]] : [x, null];',
      '  return [x, null];', DOM),
@@ -393,17 +411,17 @@ MUTATIONS = [
      "event = \\'DELETE\\' AND event_id IS NULL'",
      "event = \\'DELETE\\' AND (event_id IS NULL OR event_id IS NOT NULL)'", MYSQL),
     ('a history with no start read', HISTORY,
-     "        if ($this->idField === null || $started) return 'read';\n",
+     "        if ($this->idField === null || $started === true) return 'read';\n",
      "        return 'read';\n", VERDICT),
     ('a whole-record DELETE ends the read with no start asked', HISTORY,
      "                if ($end === 'read') return $this->started($key, $started);",
      "                if ($end === 'read') return 'read';", VERDICT),
     ('an UPDATE that writes the record id taken for the start', HISTORY,
-     "        if ($verb === 'INSERT' && $this->idField !== null) {",
-     '        if ($this->idField !== null) {', VERDICT),
+     "        if ($verb === 'INSERT' && $this->idField !== null && $started !== true) {",
+     '        if ($this->idField !== null && $started !== true) {', VERDICT),
     ('a record id line that could have been typed taken for the start', HISTORY,
-     'foreach ($parsed as $values) if (isset($values[$this->idField])) $started = true;',
-     'foreach ($parsed as $values) if (array_key_exists($this->idField, $values)) $started = true;', VERDICT),
+     '                if ($plain && $ends && strlen($line) >= strlen($head) + ($i === $last ? 1 : 2)) return true;',
+     '                if ($ends && strlen($line) >= strlen($head) + ($i === $last ? 1 : 2)) return true;', VERDICT),
     ('the start at another event left out of the read', HISTORY,
      "' OR data_values LIKE ? ESCAPE \\'!\\' OR data_values LIKE ? ESCAPE \\'!\\''",
      "' OR data_values LIKE ? OR data_values LIKE ?'", MYSQL),
@@ -462,23 +480,23 @@ MUTATIONS = [
      "preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $enum)",
      "stripos($enum, 'BIOPORTAL:') === 0", MODULE),
     ('a locked field counted as one the person can change', UV,
-     'if (isset($locked[$x]) || (is_array($onPage) && !isset($onPage[$x]))) return false;',
-     'if (is_array($onPage) && !isset($onPage[$x])) return false;', MODULE),
+     '$here = function ($x) use ($locked, $onPage) { return !isset($locked[$x]) && !(is_array($onPage) && !isset($onPage[$x])); };',
+     '$here = function ($x) use ($locked, $onPage) { return !(is_array($onPage) && !isset($onPage[$x])); };', MODULE),
     ('a field of another form counted as one the person can change', UV,
-     'if (isset($locked[$x]) || (is_array($onPage) && !isset($onPage[$x]))) return false;',
-     'if (isset($locked[$x])) return false;', MODULE),
-    ('a calc counted as one the person can change whatever it reads', UV,
-     '            $from = self::lockReadsCalc(isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : []);',
+     '$here = function ($x) use ($locked, $onPage) { return !isset($locked[$x]) && !(is_array($onPage) && !isset($onPage[$x])); };',
+     '$here = function ($x) use ($locked, $onPage) { return !isset($locked[$x]); };', MODULE),
+    ('a calc named in place of the fields it is worked out from', UV,
+     '            $from = self::lockReadsCalc($meta($x), $eventName);',
      '            $from = null;', MODULE),
     ('a @CALCTEXT field not worked out from what it reads', UV,
      "$tagged = (bool) preg_match('/@CALC(?:TEXT|DATE)\\b/i', $ann);",
      '$tagged = false;', MODULE),
     ('the field of an "[event][field]" pair read as one of this event', UV,
-     "preg_match_all('/(?<!\\])\\[([a-z][a-z0-9_]*)(?:\\([^)]*\\))?\\]/', $text, $m);",
-     "preg_match_all('/\\[([a-z][a-z0-9_]*)(?:\\([^)]*\\))?\\]/', $text, $m);", MODULE),
+     "            if ($prev !== null && $prev[2] === $t[1] && $prev[0] !== 'event-name' && ($eventName === null || $prev[0] !== (string) $eventName)) continue;\n",
+     '', MODULE),
     ('a checkbox named once, not option by option', UV,
-     "                    foreach ($codes as $code) $others[] = $x . '(' . $code . ')';\n",
-     '                    $others[] = $x;\n', MODULE),
+     "            foreach ($codes as $c) $out[$x . '(' . $c . ')'] = true;",
+     '            $out[$x] = true;', MODULE),
     ('a field with @DOWNLOAD-COUNT locked', UV,
      "        if (preg_match('/@DOWNLOAD-COUNT\\b/i', $ann)) {",
      '        if (false) {', MODULE),
@@ -486,10 +504,10 @@ MUTATIONS = [
      '        $folded = trim($folded);\n',
      '', VERDICT),
     ('role names not folded for spaces', LOGIC,
-     "        $folded = preg_replace('/\\s+/u', ' ', $s);",
-     '        $folded = $s;', VERDICT),
+     "        $folded = preg_replace('/\\s+/u', ' ', preg_replace('/\\p{Cf}+/u', '', $s));",
+     "        $folded = preg_replace('/\\p{Cf}+/u', '', $s);", VERDICT),
     ('role names lowercased in ASCII only', LOGIC,
-     "        return function_exists('mb_strtolower') ? mb_strtolower($folded, 'UTF-8') : strtolower($folded);",
+     "        return function_exists('mb_convert_case') ? mb_convert_case($folded, MB_CASE_FOLD, 'UTF-8') : strtolower($folded);",
      '        return strtolower($folded);', VERDICT),
     ("the role book's role names not kept as role keys", ROLEBOOK,
      "$book['roles'][Logic::roleKey($row[$c])] = true;",
@@ -557,6 +575,145 @@ MUTATIONS = [
     ('Enter judges every item on a locked field', ENGINE,
      '    var live = UV_guard.items.filter(QRID_guardSpeaks);',
      '    var live = UV_guard.items;', 'tests/save_guard_enter_dom_js.cjs'),
+    # ---- review round 4 ----
+    ('the start read through parseRow, so a field moved since hides it', HISTORY,
+     "            $start = $this->startOf(isset($row[3]) ? $row[3] : '');",
+     "            $start = null;\n            foreach (self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText) as $values) if (isset($values[$this->idField])) $start = true;", VERDICT),
+    ('the start read through parseRow (through the module)', HISTORY,
+     "            $start = $this->startOf(isset($row[3]) ? $row[3] : '');",
+     "            $start = null;\n            foreach (self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText) as $values) if (isset($values[$this->idField])) $start = true;", MODULE),
+    ('the start read through parseRow (the live twin, I0)', HISTORY,
+     "            $start = $this->startOf(isset($row[3]) ? $row[3] : '');",
+     "            $start = null;\n            foreach (self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText) as $values) if (isset($values[$this->idField])) $start = true;", LIVE_PHP),
+    ('an untrusted start said to be no start', HISTORY,
+     "        $this->why[$key] = $started === false ? 'startrow' : 'start';",
+     "        $this->why[$key] = 'start';", VERDICT),
+    ('an INSERT whose record id line may have been typed taken for the start', HISTORY,
+     '        return $seen ? false : null;',
+     '        return $seen ? true : null;', VERDICT),
+    ('a newer untrusted INSERT outranks an older start', HISTORY,
+     '            if ($start !== null) $started = $start;',
+     '            if ($start !== null && $started === null) $started = $start;', VERDICT),
+    ('a line of a field no one types before the record id line doubted', HISTORY,
+     "            if ($ends && preg_match(\"/^([a-z][a-z0-9_]*) = '/\", $line, $m) && $this->freeText && !isset($this->freeText[$m[1]])) continue;\n",
+     '', VERDICT),
+    ('every field taken for one no one types when the reader is told no free-text fields', HISTORY,
+     ' && $this->freeText && !isset($this->freeText[$m[1]])) continue;',
+     ' && !isset($this->freeText[$m[1]])) continue;', VERDICT),
+    ('a checkbox line before the record id line doubted', HISTORY,
+     "            if (preg_match('/^[a-z][a-z0-9_]*\\([^)]*\\) = (?:checked|unchecked),?$/D', $line)) continue;\n",
+     '', VERDICT),
+    ('an instance line before the record id line doubted', HISTORY,
+     "            if ($i === 0 && preg_match('/^\\[instance = \\d+\\],?$/D', $line)) continue;\n",
+     '', VERDICT),
+    ('a free-text line before the record id line trusted', HISTORY,
+     '            $plain = false;\n        }\n        return $seen',
+     '        }\n        return $seen', VERDICT),
+    ('a record id line that runs on taken for the start', HISTORY,
+     "            $ends = substr($line, $i === $last ? -1 : -2) === ($i === $last ? \"'\" : \"',\");",
+     '            $ends = true;', VERDICT),
+    ('a record id line with no value taken for the start', HISTORY,
+     ' && strlen($line) >= strlen($head) + ($i === $last ? 1 : 2)) return true;',
+     ') return true;', VERDICT),
+    ('a row with no event not counted toward the cap', HISTORY,
+     "        if (!isset($row[2]) || $row[2] === null || $row[2] === '') return true;\n        return (string) (int) $row[2] === $eventId;",
+     "        if (!isset($row[2]) || $row[2] === null || $row[2] === '') return false;\n        return (string) (int) $row[2] === $eventId;", VERDICT),
+    ('a DELETE not counted toward the cap', HISTORY,
+     "        if (isset($row[6]) && strtoupper((string) $row[6]) === 'DELETE') return true;\n        if (!isset($row[2])",
+     '        if (!isset($row[2])', VERDICT),
+    ('the erase floor id not checked to be digits', HISTORY,
+     "return $this->eraseFloor = ($id !== '' && ctype_digit($id)) ? $id : false;",
+     'return $this->eraseFloor = $id;', VERDICT),
+    ('a log id that is not digits read on', HISTORY,
+     "                if ($id === '' || !ctype_digit($id)) {\n                    $this->saves[$key] = [];\n                    return 'unknown';\n                }",
+     "                if ($id === '') {\n                    $this->saves[$key] = [];\n                    return 'unknown';\n                }", VERDICT),
+    ('a whole-record DELETE described in other letter case not taken for one', HISTORY,
+     "'/^delete record(?: \\(api\\))?$/iD'",
+     "'/^Delete record(?: \\(API\\))?$/D'", VERDICT),
+    ('a username stored with spaces around it kept so', ROLEBOOK,
+     "$u = isset($row[0]) ? strtolower(trim((string) $row[0])) : '';",
+     "$u = isset($row[0]) ? strtolower((string) $row[0]) : '';", VERDICT),
+    ('a cycle of calcs worked out in one pass, so the answer hangs on the rule order', UV,
+     '        } while ($grew);',
+     '        } while (false);', MODULE),
+    ('a calc of another form worked out from the fields of this one', UV,
+     '                if (!$here($c)) continue;\n',
+     '', MODULE),
+    ('a checkbox option a calc reads named as every option', UV,
+     '            $codes = $code !== null ? [$code] : Logic::parseChoiceCodes(',
+     '            $codes = Logic::parseChoiceCodes(', MODULE),
+    ('@CALCDATE not worked out from what it reads', UV,
+     "$tagged = (bool) preg_match('/@CALC(?:TEXT|DATE)\\b/i', $ann);",
+     "$tagged = (bool) preg_match('/@CALCTEXT\\b/i', $ann);", MODULE),
+    ('the formula of a calc that also has @CALCTEXT ignored', UV,
+     "$text = ($type === 'calc' && isset($meta['select_choices_or_calculations'])",
+     "$text = ($type === 'calc' && !$tagged && isset($meta['select_choices_or_calculations'])", MODULE),
+    ('a checkbox option in a calc not read', UV,
+     "$f = preg_match('/^([a-z][a-z0-9_]*)(?:\\(([^()]*)\\))?$/D', $m[1][$k][0], $p) ? $p : null;",
+     "$f = preg_match('/^([a-z][a-z0-9_]*)$/D', $m[1][$k][0], $p) ? $p : null;", MODULE),
+    ('[event-name] read as another event', UV,
+     " && $prev[0] !== 'event-name' && ",
+     ' && ', MODULE),
+    ("the page's own event named outright read as another event", UV,
+     " && ($eventName === null || $prev[0] !== (string) $eventName)) continue;",
+     ') continue;', MODULE),
+    ('the event of an "[event][field]" pair read as a field', UV,
+     '            if ($next !== null && $next[1] === $t[2] && $next[3] !== null) continue;   // the event of a pair\n',
+     '', MODULE),
+    ("the page's event not given to markLockReads", UV,
+     "            $context, is_array($event) && isset($event['name']) && $event['name'] !== '' ? (string) $event['name'] : null);",
+     '            $context, null);', MODULE),
+    ("the page's context not given to markLockReads", UV,
+     '            $context, is_array($event)',
+     '            null, is_array($event)', MODULE),
+    ('@READONLY and @HIDDEN fields named', UV,
+     "        preg_match_all('/@(?:READONLY|HIDDEN)(-FORM|-SURVEY)?(?![\\w-])/i', $ann, $m);",
+     '        $m = [1 => []];', MODULE),
+    ('@NOW, @TODAY, @LATITUDE, @LONGITUDE, @SETVALUE and @DEFAULT fields named', UV,
+     "        if (preg_match('/@(?:NOW|TODAY)(?:-SERVER|-UTC)?(?![\\w-])|@(?:LATITUDE|LONGITUDE|SETVALUE|DEFAULT)(?![\\w-])/i', $ann)) return true;\n",
+     '', MODULE),
+    ('a @DEFAULT field named', UV,
+     '|@(?:LATITUDE|LONGITUDE|SETVALUE|DEFAULT)(?!',
+     '|@(?:LATITUDE|LONGITUDE|SETVALUE)(?!', MODULE),
+    ('the -SERVER and -UTC variants of @NOW and @TODAY named', UV,
+     '@(?:NOW|TODAY)(?:-SERVER|-UTC)?(?!',
+     '@(?:NOW|TODAY)(?!', MODULE),
+    ('a variant for the other kind of page left out', UV,
+     "            if ($variant === '' || ($context !== 'form' && $context !== 'survey') || strcasecmp($variant, '-' . $context) === 0) return true;",
+     '            return true;', MODULE),
+    ('a variant named where the page is not known', UV,
+     "($context !== 'form' && $context !== 'survey') || ",
+     '', MODULE),
+    ('a tag that only begins like one (@NOWHERE) taken for it', UV,
+     "(?:-SERVER|-UTC)?(?![\\w-])|@",
+     '(?:-SERVER|-UTC)?|@', MODULE),
+    ('a tag in lower case not read', UV,
+     "(-FORM|-SURVEY)?(?![\\w-])/i'",
+     "(-FORM|-SURVEY)?(?![\\w-])/'", MODULE),
+    ('a field fixed on the page named', UV,
+     '            if (!$here($x) || self::lockReadsFixed($m, $context)) return [];',
+     '            if (!$here($x)) return [];', MODULE),
+    ('why an untrusted start is not checked left out', UV,
+     "                            'startrow' => 'the row of the project log that made the record could not be read plainly (its record id line comes after a Text or Notes value), so its first saves are not read',\n",
+     '', MODULE),
+    ("the bases taken before the timers REDCap's ready callbacks start", ENGINE,
+     '  var take = function(){ setTimeout(QRID_lockReadsBase, 0); };',
+     '  var take = function(){ QRID_lockReadsBase(); };', DOM),
+    ('the bases taken with no ready callback of their own', ENGINE,
+     '    try { jq(take); return; } catch(e){}\n',
+     '', DOM),
+    ('the opening values read when the engine runs, before the form exists (the twin, engine above the form)', ENGINE,
+     '    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsAfterStart);\n    else QRID_lockReadsAfterStart();',
+     '    QRID_lockReadsBase();', LIVE_JS),
+    ('role names not put in composed form (NFC)', LOGIC,
+     "        if (class_exists('Normalizer', false)) {",
+     '        if (false) {', VERDICT),
+    ('format characters kept in role names', LOGIC,
+     "preg_replace('/\\p{Cf}+/u', '', $s)",
+     '$s', VERDICT),
+    ('role names folded by simple lowercase (Straße is not STRASSE)', LOGIC,
+     'MB_CASE_FOLD',
+     'MB_CASE_LOWER', VERDICT),
 ]
 
 
@@ -569,28 +726,34 @@ def run(suite, cwd):
         cmd = [PHP, '-d', 'extension=mysqli', suite]
         env = dict(os.environ, UV_CASES='history')
     else:
-        cmd = [NODE, suite] if suite.endswith('.cjs') else [PHP, suite]
+        cmd = [NODE, suite] if suite.endswith('.cjs') else [PHP, *(INTL or []), suite]
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
 
 
 def main():
-    for suite in sorted({m[-1] for m in MUTATIONS}):
-        res = run(suite, ROOT)
-        if res is not None and res.returncode != 0:
-            sys.exit(f'{suite} fails before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
     survived = []
     skipped = []
     with tempfile.TemporaryDirectory(prefix='uv-writeonce-mutations-') as directory:
         copy = Path(directory)
-        for folder in ['php', 'js', 'tests', 'data', 'docs']:
+        # site/ too: registry_php reads site/pages.py and site/content/
+        for folder in ['php', 'js', 'tests', 'data', 'docs', 'site']:
             shutil.copytree(ROOT / folder, copy / folder)
         for filename in [UV, 'config.json']:
             shutil.copy2(ROOT / filename, copy / filename)
+        # in the copy, so a suite the copy alone breaks stops the run
+        for suite in sorted({m[-1] for m in MUTATIONS}):
+            res = run(suite, copy)
+            if res is not None and res.returncode != 0:
+                sys.exit(f'{suite} fails in the copy before any mutation:\n{res.stdout[-2000:]}{res.stderr[-2000:]}')
         for name, filename, original, replacement, suite in MUTATIONS:
             path = copy / filename
             source = path.read_text(encoding='utf-8')
             if source.count(original) != 1:
                 sys.exit(f'{name}: the anchor must occur once in {filename}, found {source.count(original)}')
+            if name in NEEDS_INTL and INTL is None:
+                skipped.append(name)
+                print(f'skipped (no intl): {name}')
+                continue
             path.write_text(source.replace(original, replacement), encoding='utf-8', newline='')
             if filename.endswith('.php'):
                 subprocess.run([PHP, '-l', str(path)], check=True, stdout=subprocess.DEVNULL)
@@ -607,7 +770,7 @@ def main():
     if survived:
         sys.exit(f'writeonce_mutations: {len(survived)} of {len(MUTATIONS)} mutations survived')
     ran = len(MUTATIONS) - len(skipped)
-    print(f'writeonce_mutations: {ran} mutations, every one killed' + (f'; {len(skipped)} skipped (no database)' if skipped else ''))
+    print(f'writeonce_mutations: {ran} mutations, every one killed' + (f'; {len(skipped)} skipped (no database, or no intl)' if skipped else ''))
 
 
 if __name__ == '__main__':

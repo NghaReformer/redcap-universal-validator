@@ -80,10 +80,18 @@ global.Event = function (type) { this.type = type; };
 
 /* Boot the engine over els (each in its own holder; els with a row id share
    a row) and return the page. opts.jQuery installs a jQuery stub that
-   records the widget calls. opts.late loads the engine on a page still
-   loading, before els exist, then adds them and fires DOMContentLoaded, as
-   REDCap does: it prints the engine above the form. Interval callbacks are
-   kept, so a test can run the silent-change poll by hand (poll()). */
+   records the widget calls and runs ready callbacks as jQuery 3 does: its
+   own DOMContentLoaded listener, added when it loads (before the engine),
+   runs each one in a timer, and one added after that goes straight to a
+   timer. opts.late loads the engine on a page still loading, before els
+   exist, then adds them and fires DOMContentLoaded, as REDCap does: it
+   prints the engine above the form; timers started before the form runs
+   before it is added. opts.beforeEngine(doc, win) runs before
+   the engine loads (REDCap's scripts in the page head), opts.beforeForm(win)
+   after it, before the form. Timers wait in a queue that flush() runs in
+   order; boot runs it once the page has started, as a browser would, unless
+   opts.hold. Interval callbacks are kept, so a test can run the
+   silent-change poll by hand (poll()). */
 function boot(els, config, opts) {
   opts = opts || {};
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
@@ -123,8 +131,17 @@ function boot(els, config, opts) {
     INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
   if (opts.stub) win.EMStub = { UV: opts.stub.obj };
+  const timers = [];
+  global.setTimeout = (fn) => { const t = { fn, cleared: false }; timers.push(t); return t; };
+  global.clearTimeout = (t) => { if (t && typeof t === 'object') t.cleared = true; };
+  const flush = () => {
+    for (let i = 0; timers.length && i < 10000; i++) { const t = timers.shift(); if (!t.cleared) t.fn(); }
+  };
   if (opts.jQuery) {
+    const ready = { done: doc.readyState !== 'loading', list: [] };
+    if (!ready.done) doc.addEventListener('DOMContentLoaded', () => { ready.done = true; ready.list.splice(0).forEach((fn) => setTimeout(fn, 0)); });
     const jq = function (sel) {
+      if (typeof sel === 'function') { if (ready.done) setTimeout(sel, 0); else ready.list.push(sel); return undefined; }
       const el = typeof sel === 'string' ? (sel[0] === '#' ? doc.getElementById(sel.slice(1)) : null) : sel;
       const w = { length: el ? 1 : 0, fn: null };
       w.on = function (events, handler) {
@@ -150,15 +167,19 @@ function boot(els, config, opts) {
   const intervals = [];
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
+  if (opts.beforeEngine) opts.beforeEngine(doc, win);
   require(enginePath);
   if (opts.late) {
-    // the form below the engine, then DOMContentLoaded
+    // the form below the engine, then DOMContentLoaded; the parser may stop between the two, so a
+    // timer started while the page is still loading may run before the form exists
     if (opts.beforeForm) opts.beforeForm(win);
+    flush();
     for (const el of later) { allEls.push(el); if (el.tagName === 'DIV' && !el.parentNode) body.appendChild(el); }
     doc.readyState = 'interactive';
     doc.fire('DOMContentLoaded', {});
   }
-  return { doc, win, holders, allEls, calls, NS: win.INSPIREUniversalValidator, poll() { intervals.forEach((f) => f()); } };
+  if (!opts.hold) flush();
+  return { doc, win, holders, allEls, calls, flush, NS: win.INSPIREUniversalValidator, poll() { intervals.forEach((f) => f()); } };
 }
 function region(env, field, suffix) {
   const kids = env.holders[field].children;
@@ -450,6 +471,52 @@ for (const order of ['lock first', 'lock last']) {
   check('... a violation already saved when the page opened does not hold the save', save(env) === 'saved', env.win._alerts);
   open.value = '40'; open.fire('change');
   check('... a change of the other field that still breaks it does', save(env) === 'held');
+}
+{
+  // REDCap's own start-up writes fields after DOMContentLoaded: its calcs, branching and action tags run in
+  // jQuery ready callbacks, which jQuery 3 runs in a timer. A value it writes is no change by the person,
+  // so the base is taken after it (review W4-2). The reviewer's probe: dob locked, age a calc printed 18 and
+  // worked out again as 17 at start-up, the rule on dob reads [age]; nobody types.
+  const probe = (label, start, opts) => {
+    const dob = text('dob', '2008-03-01'), age = text('age', '18'), visit = text('visit_date', '2026-02-01');
+    age.readOnly = true;
+    const env = boot([dob, age, visit], { rules: [WO(['dob']),
+      { type: 'constraint', fields: ['dob'], assert: '[age] >= 18', blockSave: 'hard', message: 'Under 18', lockReads: { dob: ['age'] } }] },
+      Object.assign({ late: true }, start(age), opts || {}));
+    check('start-up write ' + label + ': nobody typed, the save goes through', save(env) === 'saved', env.win._alerts);
+    age.value = '16';
+    check('start-up write ' + label + ': ... a later change of the field read still holds it', save(env) === 'held', env.win._alerts);
+    return env;
+  };
+  // as the probe wrote it: a DOMContentLoaded listener added after the engine, writing in a timer
+  probe('in a timer of a DOMContentLoaded listener after the engine (the probe)', (age) => ({ jQuery: true,
+    beforeForm() { document.addEventListener('DOMContentLoaded', () => setTimeout(() => { age.value = '17'; }, 0)); } }));
+  // REDCap's $(function(){ calculate(); doBranching(); }), in the page head and below the form
+  probe('in a jQuery ready callback added before the engine', (age) => ({ jQuery: true,
+    beforeEngine(doc, win) { win.jQuery(() => { age.value = '17'; }); } }));
+  probe('in a jQuery ready callback added below the form', (age) => ({ jQuery: true,
+    beforeForm(win) { win.jQuery(() => { age.value = '17'; }); } }));
+  probe('in a timer a jQuery ready callback starts', (age) => ({ jQuery: true,
+    beforeEngine(doc, win) { win.jQuery(() => { setTimeout(() => { age.value = '17'; }, 0); }); } }));
+  // a page without jQuery: a DOMContentLoaded listener added before the engine, writing in a timer
+  probe('in a timer of a DOMContentLoaded listener before the engine, no jQuery', (age) => ({
+    beforeEngine(doc) { doc.addEventListener('DOMContentLoaded', () => setTimeout(() => { age.value = '17'; }, 0)); } }));
+  // a page that has loaded already: a ready callback queued before the engine still runs first
+  probe('on a page that has loaded, in a jQuery ready callback', (age) => ({ late: false, jQuery: true,
+    beforeEngine(doc, win) { win.jQuery(() => { age.value = '17'; }); } }));
+}
+{
+  // until the base is taken nothing is compared
+  const locked = text('weight', '70'), open = text('height', '50');
+  const env = boot([locked, open], { rules: [WO(['weight']),
+    { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard', lockReads: { weight: ['height'] } }] },
+    { jQuery: true, hold: true });
+  open.value = '40';
+  check('before the base is taken a field read is not compared', save(env) === 'saved', env.win._alerts);
+  env.flush();
+  check('... the base taken then is the value it holds', save(env) === 'saved', env.win._alerts);
+  open.value = '30';
+  check('... and a change after it holds the save', save(env) === 'held');
 }
 {
   // a rule that reads a checkbox: each option is read by its code (review W3-6)

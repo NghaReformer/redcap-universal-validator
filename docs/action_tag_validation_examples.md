@@ -4255,10 +4255,12 @@ instance:
   - An event shorthand needs, in some arm, two or more events with the form.
   - An event shorthand is refused when an event it names holds the form more
     than once (the form repeats there, or the whole event repeats): it does not
-    say which instance to compare with. The refusal gives a reference that
-    names the event and the instance and works from every event, such as
-    `[previous-event-name][weight][last-instance]`, when there is one. A form
-    that repeats only at the
+    say which instance to compare with. The refusal gives the shorthand's own
+    event with an instance that works from every event,
+    `[previous-event-name][weight][last-instance]` or
+    `[first-event-name][weight][first-instance]`, when there is one, and no
+    example otherwise, since another event would compare with another entry.
+    A form that repeats only at the
     last visit is fine, because no shorthand names that visit.
   - An instance shorthand needs the form to repeat at every event that holds
     it, on its own or in a repeating event.
@@ -4287,11 +4289,39 @@ instance:
   reference as written named that event (written by hand, such an event is
   accepted). It never suggests the next event, nor, on the field's own form,
   the last event or a later visit named outright, which compare with a later
-  entry, nor a reference with the `vs` and direction of another `@UVDELTA`
-  tag on the field under the same condition. For the field itself it suggests
-  `[previous-instance]` only at the field's own event and `[last-instance]`
-  only at another. When nothing works it lists the events and instances it
-  tried and says none of them can be read.
+  entry, even when the reference as written named one. Nor does it suggest a
+  reference with the `vs` and direction of another `@UVDELTA` tag on the
+  field when neither tag has a condition, or when both have one and the two
+  could be true at once. Written back, two such tags without a condition are
+  refused, and so are two whose conditions say the same thing, however
+  written (keyword case, spacing, quote style, parentheses, the order of
+  `and`/`or` members and of a comparison's sides aside, and letter case when
+  neither tag is `caseSensitive`). Two other conditions that are true at
+  once are a runtime conflict, and the field validates nothing while both
+  hold. Two conditions count as never true at once only when each tests one
+  field for equality with a value, alone or as part of an `and`, and no
+  value equals both as conditions compare values. For example, `[arm]='1'`
+  and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'` (numbers compare by
+  value), `[x]='Yes'` and `[x]='yes'` (unless both tags are
+  `caseSensitive`), and `[x]>0` and `[x]=1` do not. A tag without a
+  condition is the fallback beside tags that have one, so the two may share
+  a `vs`. A refused tag earlier on the field counts with the reference its
+  own refusal suggests. A tag that failed to parse counts with the `vs`,
+  direction and condition its JSON names, read with single or curly quotes
+  as double quotes and without a trailing comma. Nothing is suggested
+  beside it, and the refusal says to fix that tag first, when even that
+  cannot be read, when the JSON names a key the tag does not take (letter
+  case counts, so `When` is one), or when its `vs`, `direction` or `when`
+  is not text or would be refused. A reference to another event or
+  instance counts as read, since turning references on fixes it. So the
+  suggestions for one field can be written back together. For the field
+  itself the instance must read an earlier entry where the event lands:
+  `[previous-instance]` only at the field's own event, `[last-instance]` and
+  an instance numbered after the first only at another, `[first-instance]`
+  at either, and never `[next-instance]`, nor `[current-instance]` at another
+  event. Where only the first visit repeats, that gives
+  `[first-event-name][weight][first-instance]`. When nothing works it lists
+  the events and instances it tried and says none of them works.
 - The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
   is refused when `w_rep`'s form is not designated at visit 1, and a plain
   `[w_enrol]` is refused on a visit form when only enrolment collects it; the
@@ -4423,9 +4453,12 @@ locked. It cannot be changed here."
 ```
 
 - `roles` names user roles by the name the User Rights page shows or by the
-  unique role name, up to 20. Letter case does not matter in any alphabet, and
-  a run of spaces counts as one. Each must be a role of the project, or the
-  field shows a configuration error.
+  unique role name, up to 20. Letter case does not matter in any alphabet
+  ("STRASSE" matches "Straße"), invisible format characters such as a
+  zero-width space are ignored, and a run of spaces counts as one. With PHP's
+  intl extension a name typed with combining accents matches one typed with
+  composed letters; without intl they differ. Each must be a role of the
+  project, or the field shows a configuration error.
 - A member of a role sees the field open. A change by a member moves the lock
   to the new value; a member who clears it releases the lock, and the next
   value saved locks it again.
@@ -4475,12 +4508,17 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 - A person's own first answer is locked as soon as it is saved: after Save &
   Stay, or Next on a multi-page survey, going back finds it locked.
 - Another tag on a locked field still shows its note. It holds the save only
-  when it also reads a field of this form that is not locked (a calc counts
-  only when a field it is worked out from is such a field), and only once
-  that field has changed on the page, a checkbox option by option. The value
-  each field opened with is read once the form exists. A tag that reads the
-  locked field alone, a violation already saved when the page opened, and one
-  between two locked fields never hold it, on Save or on Enter.
+  when it also reads a field of this form that the person can change, and
+  only once that field has changed on the page, a checkbox option by option.
+  A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the fields it
+  is worked out from, through other calcs too. A field with `@READONLY` or
+  `@HIDDEN` (or the `-FORM` or `-SURVEY` form that applies to the page),
+  `@NOW`, `@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never
+  counts. The value each field opened with is read after REDCap's own start-up
+  on the page, once its calcs, branching and action tags have filled their
+  fields. A tag that reads the locked field alone, a violation already saved
+  when the page opened, and one between two locked fields never hold it, on
+  Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
 - Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
   `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
@@ -4492,7 +4530,9 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
   `locked_at` and `changed_at`. Each record and event is read on its own,
-  back to the row REDCap writes when it makes the record. A deletion of the
+  back to the row REDCap writes when it makes the record. That row counts only
+  when its record id line comes before every other Text or Notes value in it,
+  since a Notes value could hold a typed copy of that line. A deletion of the
   whole record starts a new history, and so does an erase of all the
   project's records; a deletion of one form or one event at another event
   changes nothing. A log that holds more rows of the record and event than
@@ -4500,7 +4540,8 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   at another event the log does not describe as one form or one event (and in
   a project of several arms, every deletion of the record), a record whose log
   does not show it being made (renamed while its saves stay under the old
-  name, or brought in with a copied project), a save the log names no event
+  name, or brought in with a copied project), a record whose creating row has
+  its record id line after a Text or Notes value, a save the log names no event
   for, a save the log does not spell out, a value the log never shows saved,
   and roles that cannot be read when a change needs them are rule problems,
   never a pass.
@@ -4516,6 +4557,12 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   save of another value is then reported as a change. Anyone could have saved
   that value first, so the line gives no one a value they could not have
   saved, and the forged row stays in the log.
+- Renaming a locked field after it holds data restarts its history when
+  REDCap's log keeps the earlier saves under the old name. The page lock still
+  holds the saved value, and the audit reports the field as a rule problem
+  until a save is logged under the new name. An import or API change made
+  after the rename, before any save of the field is logged under the new name,
+  is read as the field's first save and is not caught.
 
 ```text invalid
 # refused: takes no value
@@ -4534,8 +4581,8 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 Once the data dictionary and the user roles are read, the module also refuses a
 role the project does not have, a calc or checkbox field, a field with
-`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, a field
-that searches an ontology, a field given the tag twice, and a field another
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@RICHTEXT`, a field that searches an ontology of any service, a field given the tag twice, and a field another
 rule returns a value to.
 
 ---

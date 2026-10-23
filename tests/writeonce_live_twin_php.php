@@ -16,7 +16,12 @@
  * locks, every log entry of each save in the sheet's order, and the scan
  * with its detail lines: on the visit (380), on a whole repeating event (382,
  * an import of two instances), on a survey whose first page is saved by Next,
- * and after a deletion of the form's data, which the check cannot place. The page configs it builds are the input of
+ * and after a deletion of the form's data, which the check cannot place.
+ * Section I's steps read what REDCap itself logs; for I0, I0b, I1, I2, I3,
+ * I3b, I5, I5b, I6, I7 and H4's wordings it checks the module's answer for
+ * the log the step expects, and for the other log the step tells the tester
+ * to record. I4 needs an SQL field, which the fixture does not hold, so it is
+ * not here. The page configs it builds are the input of
  * tests/writeonce_live_twin_js.cjs, which replays the sheet's clicks through
  * js/engine.js; they are kept in tests/writeonce_live_pages.json, and this
  * suite fails when that file is not what the module builds now.
@@ -438,6 +443,163 @@ namespace {
     check('H3: the scan lists XE-4\'s consent date as not checked, never as a pass or a finding',
         !array_filter($got, function ($g) { return strpos($g, 'XE-4') === 0; })
         && (bool) array_filter($prob, function ($u) { return in_array('uw_consent', $u['fields'], true) && strpos((string) ($u['why'] ?? ''), 'deletion') !== false; }), [$got, $prob]);
+
+    // ---- Section I: what REDCap writes to its log, as far as the module's answer goes ------------
+    // Each step reads what REDCap logs on the real server; the twin checks what the module answers for
+    // the shape the sheet expects, and for the other shape the step says to record. Each runs on its own
+    // copy of the log, so the steps above are left as they are.
+    $KEEP = $LOG;
+    $one = function ($rec, array $values) { return [$rec => [351 => ['record_id' => $rec], 380 => $values]]; };
+    $why = function (array $prob, $f) {
+        $out = [];
+        // the scan lists a problem's fields, the audit's log entry names them in one text
+        foreach ($prob as $u) if (in_array($f, is_array($u['fields']) ? $u['fields'] : preg_split('/[\s,]+/', (string) $u['fields']), true)) $out[] = (string) ($u['why'] ?? '');
+        return implode(' | ', $out);
+    };
+    // I0: the row that made a record, its lines in another order than today's data dictionary (a field moved
+    // since): the record is still read from there; only that row's values are not plain (review W4-1).
+    $LOG = $KEEP;
+    logSave('20261023102000', ['record_id' => 'XE-M', 'uw_arm' => '1', 'uw_consent' => '2026-10-07'], 'tester', 'XE-M', 380, 1, 'INSERT');
+    logSave('20261023102100', ['uw_notes' => 'n'], 'tester', 'XE-M', 380);
+    logSave('20261023102200', ['uw_notes' => 'm'], 'tester', 'XE-M', 380);
+    $got = scanAt($one('XE-M', ['uw_arm' => '1', 'uw_consent' => '2026-10-07', 'uw_notes' => 'm']), $ROLE_OUT, $prob);
+    check('I0: a creating row out of today\'s dictionary order still starts the record: a later change is found',
+        $got === ['XE-M@380#1 uw_notes:changed 2026-10-23 10:21'], [$got, $prob]);
+    check('I0: ... and the fields that row wrote are not checked, as not spelled out, never as a record not made',
+        strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false && strpos($why($prob, 'uw_arm'), 'does not say plainly') !== false
+        && strpos(json_encode($prob), 'record being made') === false, $prob);
+    // I0b: a record made from a form with an embedded field ({uw_free} in uw_consent's label), then an import.
+    $made = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
+        $LOG = $KEEP;
+        logSave('20261023103000', $lines, 'tester', 'XE-E', 380, 1, 'INSERT');
+        logSave('20261023103100', ['uw_consent' => '2026-10-08'], 'tester', 'XE-E', 380);
+        return scanAt($one('XE-E', ['uw_consent' => '2026-10-08', 'uw_notes' => 'n', 'uw_free' => 'e']), $ROLE_OUT, $prob);
+    };
+    $got = $made(['record_id' => 'XE-E', 'uw_consent' => '2026-10-07', 'uw_notes' => 'n', 'uw_free' => 'e', 'uv_writeonce_test_complete' => '0']);
+    check('I0b: the creating row in the dictionary\'s order: the import is found', $got === ['XE-E@380#1 uw_consent:changed 2026-10-23 10:30'] && $prob === [], [$got, $prob]);
+    $got = $made(['record_id' => 'XE-E', 'uw_consent' => '2026-10-07', 'uw_free' => 'e', 'uw_notes' => 'n', 'uv_writeonce_test_complete' => '0']);
+    check('I0b: the embedded field written straight after its host: the record is started, the row\'s fields are not checked as not spelled out',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false && strpos(json_encode($prob), 'record being made') === false, [$got, $prob]);
+    $got = $made(['uw_consent' => '2026-10-07', 'record_id' => 'XE-E', 'uw_notes' => 'n', 'uw_free' => 'e']);
+    check('I0b: the record id line after a Text value: every field not checked, saying the row could not be read plainly',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'the row of the project log that made the record could not be read plainly') !== false
+        && strpos($why($prob, 'uw_arm'), 'could not be read plainly') !== false, [$got, $prob]);
+    // I1: an import with its columns out of order. REDCap writes the row in the dictionary's order, or the
+    // two fields read as not spelled out (the other shape the step names).
+    $imp = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
+        $LOG = $KEEP;
+        logSave('20261020090000', ['record_id' => 'XE-1'], 'tester', 'XE-1', 351, 1, 'INSERT');
+        logSave('20261023102400', ['uw_consent' => '2026-10-07', 'uw_notes' => 'first'], 'tester', 'XE-1', 380);
+        logSave('20261023102500', $lines, 'tester', 'XE-1', 380);
+        return scanAt($one('XE-1', ['uw_consent' => '2026-10-08', 'uw_notes' => 'second']), $ROLE_OUT, $prob);
+    };
+    $got = $imp(['uw_consent' => '2026-10-08', 'uw_notes' => 'second']);
+    check('I1: the import row in the dictionary\'s order: two findings, locked at I1\'s save',
+        $got === ['XE-1@380#1 uw_consent:changed 2026-10-23 10:24', 'XE-1@380#1 uw_notes:changed 2026-10-23 10:24'] && $prob === [], [$got, $prob]);
+    $got = $imp(['uw_notes' => 'second', 'uw_consent' => '2026-10-08']);
+    check('I1: ... the row in the CSV\'s order: no finding, and the consent date not checked, as not spelled out',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false, [$got, $prob]);   // the scan names a rule's fields once per reason
+    // I2: a save of a form with an embedded field ({uw_free} in uw_consent's label), then an import.
+    $emb = function (array $lines) use (&$LOG, $KEEP, $one, $ROLE_OUT, &$prob) {
+        $LOG = $KEEP;
+        logSave('20261020090000', ['record_id' => 'XE-2'], 'tester', 'XE-2', 351, 1, 'INSERT');
+        logSave('20261023102600', $lines, 'tester', 'XE-2', 380);
+        logSave('20261023102700', ['uw_consent' => '2026-10-08'], 'tester', 'XE-2', 380);
+        return scanAt($one('XE-2', ['uw_consent' => '2026-10-08', 'uw_notes' => 'n', 'uw_free' => 'e']), $ROLE_OUT, $prob);
+    };
+    $got = $emb(['uw_consent' => '2026-10-07', 'uw_notes' => 'n', 'uw_free' => 'e', 'uv_writeonce_test_complete' => '0']);
+    check('I2: the save lists the embedded field in the dictionary\'s order: the import is one finding', $got === ['XE-2@380#1 uw_consent:changed 2026-10-23 10:26'] && $prob === [], [$got, $prob]);
+    $got = $emb(['uw_consent' => '2026-10-07', 'uw_free' => 'e', 'uw_notes' => 'n', 'uv_writeonce_test_complete' => '0']);
+    check('I2: ... the embedded field straight after its host: the consent date is not checked, with the reason of I1',
+        $got === [] && strpos($why($prob, 'uw_consent'), 'does not say plainly') !== false, [$got, $prob]);
+    // I3 and I3b: a renamed record, read both ways REDCap may log it.
+    $LOG = $KEEP;
+    logSave('20261023104000', ['record_id' => 'XE-R1', 'uw_consent' => '2026-10-07', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-R1', 380, 1, 'INSERT');
+    logSave('20261023104100', ['record_id' => 'XE-R2'], 'tester', 'XE-R2', 380);
+    $m = save($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
+    check('I3 (a): the old rows stay under XE-R1: the save of XE-R2 is no finding, and a rule problem for the record not made',
+        hits($m) === [] && strpos($why(problems($m), 'uw_consent'), 'the project log does not show the record being made') !== false, [hits($m), problems($m)]);
+    check('I3: XE-R2 opens locked at the saved date', lockedOn(page(mod($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT), 'XE-R2')) === ['uw_consent']);
+    logSave('20261023104500', ['uw_consent' => '2026-10-08'], 'tester', 'XE-R2', 380);
+    $got = scanAt($one('XE-R2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
+    check('I3b (a): the import after the rename is not checked, for the same reason, never passed', $got === []
+        && strpos($why($prob, 'uw_consent'), 'the project log does not show the record being made') !== false, [$got, $prob]);
+    $LOG = $KEEP;
+    logSave('20261023104000', ['record_id' => 'XE-R1', 'uw_consent' => '2026-10-07', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-R2', 380, 1, 'INSERT');
+    logSave('20261023104100', ['record_id' => 'XE-R2'], 'tester', 'XE-R2', 380);
+    $m = save($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
+    check('I3 (b): the old rows moved to XE-R2: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    logSave('20261023104500', ['uw_consent' => '2026-10-08'], 'tester', 'XE-R2', 380);
+    $got = scanAt($one('XE-R2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
+    check('I3b (b): the import after the rename is found, locked at I3\'s save', $got === ['XE-R2@380#1 uw_consent:changed 2026-10-23 10:40'] && $prob === [], [$got, $prob]);
+    // I5: an erase of all records writes one row for the project (pk = the project id, no event).
+    $LOG = [];
+    logSave('20261023105000', ['record_id' => 'XE-1', 'uw_consent' => '2026-10-07'], 'tester', 'XE-1', 380, 1, 'INSERT');
+    logSave('20261023105100', [], 'tester', '149', null, 1, 'DELETE', 'Erase all data');
+    logSave('20261023105200', ['record_id' => 'XE-1', 'uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380, 1, 'INSERT');
+    $m = save($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-1');
+    check('I5: the save after the erase writes no entry: the save before it no longer counts', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    logSave('20261023105300', ['uw_consent' => '2026-10-09'], 'tester', 'XE-1', 380);
+    $m = save($one('XE-1', ['uw_consent' => '2026-10-09']), $ROLE_OUT, 'XE-1');
+    check('I5: the import after it is a change, locked at the second save', hits($m) === ['uw_consent:changed 2026-10-23 10:52 > 2026-10-23 10:53'], hits($m));
+    // I5b: the production move's "delete all records", on a copy. Either shape the step lets REDCap write
+    // starts every history: one row for the project in its own words, or one "Delete record" row per record.
+    foreach (['one row for the project' => ['149', null, 'Delete all records'], 'one row per record' => ['XE-2', 380, 'Delete record']] as $shape => $del) {
+        $LOG = [];
+        logSave('20261023105500', ['record_id' => 'XE-2', 'uw_consent' => '2026-10-07'], 'tester', 'XE-2', 380, 1, 'INSERT');
+        logSave('20261023105600', [], 'tester', $del[0], $del[1], 1, 'DELETE', $del[2]);
+        logSave('20261023105700', ['record_id' => 'XE-2', 'uw_consent' => '2026-10-08'], 'tester', 'XE-2', 380, 1, 'INSERT');
+        $m = save($one('XE-2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-2');
+        check("I5b ($shape): the save after the production move writes no entry", hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+        logSave('20261023105800', ['uw_consent' => '2026-10-09'], 'tester', 'XE-2', 380);
+        $m = save($one('XE-2', ['uw_consent' => '2026-10-09']), $ROLE_OUT, 'XE-2');
+        check("I5b ($shape): the import after it is a change, locked at the save after the move", hits($m) === ['uw_consent:changed 2026-10-23 10:57 > 2026-10-23 10:58'], hits($m));
+    }
+    // I6: one instance of the repeating event deleted (XE-3, unscheduled_arm_1 instance 2). A description that
+    // says one event leaves the visit's history as it was; one with more after it cannot be placed.
+    $inst = function ($descr) use (&$LOG, $KEEP, $D, $ROLE_OUT, &$prob) {
+        $LOG = $KEEP;
+        logSave('20261023110000', [], 'tester', 'XE-3', 382, 2, 'DELETE', $descr);
+        $d = $D;
+        unset($d['XE-3']['repeat_instances'][382][''][2]);
+        return scanAt(['XE-3' => $d['XE-3']], $ROLE_OUT, $prob);
+    };
+    // H4's three wordings are the ones passed over at another event
+    foreach (['Delete all record data for single event', 'Delete all record data for single form', 'Delete all data on event'] as $descr) {
+        $got = $inst($descr);
+        check("H4, I6: an instance deleted at the repeating event, described as \"$descr\": the visit's findings stand, the repeating event is not checked",
+            $got === ['XE-3@380#1 uw_arm:changed 2026-10-23 09:00', 'XE-3@380#1 uw_consent:changed 2026-10-23 09:00',
+            'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00', 'XE-3@380#1 uw_site:changed 2026-10-23 09:05'] && strpos($why($prob, 'uw_consent'), 'deletion') !== false, [$got, $prob]);
+    }
+    $got = $inst('Delete all record data for single event (instance 2)');
+    check('I6: ... described with more after it (an instance number, say): every event of the record is not checked',
+        $got === [] && strpos($why($prob, 'uw_arm'), 'holds a deletion this check cannot place') !== false, [$got, $prob]);
+    // I7: a locked field renamed after it holds data (review W4-3). uw_consent stands for the sheet's
+    // uw_ren2, and "uw_consent_old", which the data dictionary no longer has, for uw_ren. (a) The log keeps
+    // the earlier save under the old name: the page still locks, the audit reports the field not checked,
+    // and an import before any save under the new name is taken for its first save. (b) The log shows the
+    // earlier save under the new name: the import is a finding.
+    $ren = function ($name) use (&$LOG, $KEEP) {
+        $LOG = $KEEP;
+        logSave('20261020090000', ['record_id' => 'XE-1'], 'tester', 'XE-1', 351, 1, 'INSERT');
+        logSave('20261023111000', [$name => '2026-10-07', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-1', 380);
+    };
+    $ren('uw_consent_old');
+    check('I7: the renamed field opens locked at the saved value', lockedOn(page(mod($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT), 'XE-1')) === ['uw_consent']);
+    $m = save($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
+    check('I7 (a): the save after the rename is no finding, and a rule problem: the log does not show the save of the value it holds',
+        hits($m) === [] && strpos($why(problems($m), 'uw_consent'), 'the project log does not show the save of the value it holds') !== false, [hits($m), problems($m)]);
+    logSave('20261023111100', ['uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380);
+    $got = scanAt($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
+    check('I7 (a): the import after the rename is taken for the first save under the new name: no finding and no rule problem (the documented limit)',
+        $got === [] && $why($prob, 'uw_consent') === '', [$got, $prob]);
+    $ren('uw_consent');
+    $m = save($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
+    check('I7 (b): the earlier save shown under the new name: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    logSave('20261023111100', ['uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380);
+    $got = scanAt($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
+    check('I7 (b): ... and the import is a finding', $got === ['XE-1@380#1 uw_consent:changed 2026-10-23 11:10'] && $prob === [], [$got, $prob]);
+    $LOG = $KEEP;
 
     // The labels and field types the engine replay builds its page from.
     $pages['labels'] = $LABELS;

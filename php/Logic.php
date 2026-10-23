@@ -221,6 +221,47 @@ class Logic
     }
 
     /**
+     * The values a parsed condition ($ast) needs plain fields to equal before
+     * it can be true, as [field key => [value, ...]]: from the condition
+     * itself when it is a [field] = value or [field(code)] = value
+     * comparison (either way round), else from each such member of its top
+     * "and", nested ones included. A field with an event or an instance, a
+     * <> or an ordered comparison, and anything under "or" or "not" add
+     * nothing. Two conditions that need one field to equal values no value
+     * can equal both can never be true at once (Branching::whenExclusive).
+     */
+    public static function requiredValues(array $ast)
+    {
+        $out = [];
+        if ($ast[0] === 'and') {
+            foreach ($ast[1] as $c) foreach (self::requiredValues($c) as $k => $vs) foreach ($vs as $v) $out[$k][] = $v;
+            return $out;
+        }
+        if ($ast[0] !== 'cmp' || $ast[1] !== '=') return $out;
+        foreach ([[$ast[2], $ast[3]], [$ast[3], $ast[2]]] as $p) {
+            if ($p[0][0] === 'ref' && $p[1][0] === 'lit') $out[$p[0][1] . '(' . (string) $p[0][2] . ')'][] = $p[1][1];
+        }
+        return $out;
+    }
+
+    /**
+     * Whether no value can equal both $a and $b as compare() reads "=" with
+     * case folded ($fold) or not: once trimmed, two numbers (NUM_RE) that
+     * differ in value, a number and a text, or two texts that differ, with
+     * A-Z folded when $fold. So 1, 01, 1.0 and ' 1' are one value. The
+     * browser compares as compare() does (QRID_whenCompare).
+     */
+    public static function neverBothEqual($a, $b, $fold)
+    {
+        $a = trim((string) $a, " \t\r\n");
+        $b = trim((string) $b, " \t\r\n");
+        $number = (bool) preg_match(self::NUM_RE, $a);
+        if ($number !== (bool) preg_match(self::NUM_RE, $b)) return true;
+        if ($number) return self::decCmp($a, $b) !== 0;
+        return $fold ? self::foldAscii($a) !== self::foldAscii($b) : $a !== $b;
+    }
+
+    /**
      * The longest leading condition of an unquoted annotation value, for the
      * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
      * A value used to end at the first space, so everything after "and" was
@@ -1259,20 +1300,29 @@ class Logic
     }
 
     /**
-     * A user role name as @UVWRITEONCE compares it: every run of spaces (a
-     * no-break space or an ideographic space too) folded to one, then
-     * trimmed, in lowercase in any script ("Équipe  Médicale" and "équipe
-     * médicale" are one role, and so are "Data manager" and "Data manager"
-     * with a no-break space pasted after it). Text that is not UTF-8 has its
-     * ASCII spaces folded and is lowercased byte by byte.
+     * A user role name as @UVWRITEONCE compares it: put in Unicode's composed
+     * form (NFC, when PHP's intl extension is loaded), with its format
+     * characters (a zero-width space, a byte-order mark) removed, every run of
+     * spaces (a no-break space or an ideographic space too) folded to one,
+     * then trimmed, and case-folded in any script ("Équipe  Médicale" and
+     * "équipe médicale" are one role, and so are "STRASSE" and "Straße", and
+     * "Data manager" with a no-break space or a zero-width space pasted after
+     * it). Without intl, an accent typed as a letter of its own ("E" and a
+     * combining acute) does not match the accented letter. Without mbstring,
+     * only A to Z are lowercased. Text that is not UTF-8 has its ASCII spaces
+     * folded and is lowercased byte by byte.
      */
     public static function roleKey($name)
     {
         $s = (string) $name;
-        $folded = preg_replace('/\s+/u', ' ', $s);
-        if ($folded === null) return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+        if (preg_match('//u', $s) !== 1) return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+        if (class_exists('Normalizer', false)) {
+            $nfc = \Normalizer::normalize($s, \Normalizer::FORM_C);
+            if (is_string($nfc)) $s = $nfc;
+        }
+        $folded = preg_replace('/\s+/u', ' ', preg_replace('/\p{Cf}+/u', '', $s));
         $folded = trim($folded);
-        return function_exists('mb_strtolower') ? mb_strtolower($folded, 'UTF-8') : strtolower($folded);
+        return function_exists('mb_convert_case') ? mb_convert_case($folded, MB_CASE_FOLD, 'UTF-8') : strtolower($folded);
     }
 
     /**

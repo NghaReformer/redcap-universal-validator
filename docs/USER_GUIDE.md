@@ -942,8 +942,9 @@ limits (`@UVDELTA`): Text fields with no, integer or number validation
 (including comma decimals), calc fields and sliders, compared with a field of
 any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
 dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
-with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or `@RICHTEXT`, nor a
-BioPortal ontology search. A reason (`@UVJUSTIFY`) may stand for the rules of
+with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@RICHTEXT`, nor a field with an ontology search of any service (BioPortal,
+FHIR or another). A reason (`@UVJUSTIFY`) may stand for the rules of
 any field another tag checks, and the reason field itself is a Text, Notes,
 dropdown, radio or SQL field on the same form that the person fills in: not
 the record ID field, a field with any form of `@READONLY`, a field that
@@ -1151,14 +1152,23 @@ user of the project is locked out too. When the roles cannot be read, the page
 locks the field for everyone and says so; when the saved value cannot be
 read, it locks nothing and tells staff so. Another rule on a locked field holds
 the save only once a field it reads, other than the locked one, has changed on
-the page since the form opened. An erase of all the project's records starts
+the page since REDCap finished filling the form. A calc counts through the
+fields it is worked out from; a field with `@READONLY`, `@HIDDEN`, `@NOW`,
+`@TODAY`, `@LATITUDE`, `@LONGITUDE`, `@SETVALUE` or `@DEFAULT` never counts.
+Letter case in role names does not matter in any alphabet, and invisible
+characters such as a zero-width space are ignored. An erase of all the project's records starts
 every history again. A record whose log runs past 5,000 rows for the event,
 holds a deletion of this event's data or of an arm (in a project of several
 arms, any deletion of the record), or does not show the record being made (a
 record renamed while its saves stay under the old name, or one that came with
-a copied project), is reported as not checked rather than passed, and so is a
+a copied project, or one whose creating row has its record id after a Text or
+Notes value), is reported as not checked rather than passed, and so is a
 save written before a field was moved, from the first Text or Notes field of
-that save on. A Notes value typed to look like a save of the field, before
+that save on. Renaming a locked field that holds data restarts its history when REDCap's
+log keeps its earlier saves under the old name. The page
+still locks the saved value, and the audit reports it as not checked until a
+save is logged under the new name, but an import or API change made before
+then is taken as its first save and is not caught. A Notes value typed to look like a save of the field, before
 its first real save, can set the lock; the next real save is then reported as
 a change.
 Annotation-only; see the README section and

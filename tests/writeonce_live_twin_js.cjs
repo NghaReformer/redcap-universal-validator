@@ -8,6 +8,10 @@
  * "reset" link, a dropdown with its autocomplete box, a notes box and a
  * slider. It checks which controls are locked, each lock note word for word,
  * that a change is undone, each save outcome, and the configuration errors.
+ * B7, and a second run of B6, load the engine above the form while the page
+ * is still loading, as REDCap prints it, with jQuery's ready callbacks run in a
+ * timer after the DOMContentLoaded listeners. Section I reads what REDCap
+ * logs, so it has no clicks to replay here.
  *
  * RUN:  php tests/writeonce_live_twin_php.php && node tests/writeonce_live_twin_js.cjs
  */
@@ -52,16 +56,21 @@ function codes(t) {
   if (t.type === 'yesno') return ['1', '0'];
   return String(t.choices || '').split('|').map((c) => c.split(',')[0].trim()).filter((c) => c !== '');
 }
-/* One page: each fixture field as REDCap renders it, holding the saved values; the server's config as the page has it. */
-function boot(cfg, values) {
+/* One page: each fixture field as REDCap renders it, holding the saved values; the server's config as the page has it.
+   jQuery runs ready callbacks as jQuery 3 does (in a timer, from its own DOMContentLoaded listener), and timers wait
+   in a queue that boot runs once the page has started. opts.late loads the engine on a page still loading, before
+   the form, then adds the form and fires DOMContentLoaded, as REDCap prints the engine above the form. */
+function boot(cfg, values, opts) {
+  opts = opts || {};
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
-  const all = [], holders = {}, ctl = {};
+  const all = [], holders = {}, ctl = {}, later = [];
   const body = makeEl('body');
-  const add = (holder, el) => { holder.appendChild(el); all.push(el); return el; };
+  const add = (holder, el) => { holder.appendChild(el); (opts.late ? later : all).push(el); return el; };
   for (const f of Object.keys(PAGES.types)) {
     const t = PAGES.types[f], v = (values && values[f]) || '';
-    const row = makeEl('tr'); row.id = f + '-tr'; body.appendChild(row); all.push(row);
+    const row = makeEl('tr'); row.id = f + '-tr'; (opts.late ? later : all).push(row);
+    if (!opts.late) body.appendChild(row);
     holders[f] = row;
     const lab = makeEl('td'); lab.id = 'label-' + f; lab.textContent = PAGES.labels[f]; all.push(lab);
     const c = { type: t.type };
@@ -82,7 +91,7 @@ function boot(cfg, values) {
     ctl[f] = c;
   }
   const doc = {
-    body, readyState: 'complete', _handlers: {}, activeElement: null,
+    body, readyState: opts.late ? 'loading' : 'complete', _handlers: {}, activeElement: null,
     createElement(t) { const e = makeEl(t); all.push(e); return e; },
     getElementById(id) { return all.find((e) => e.id === id) || null; },
     getElementsByName(nm) { return all.filter((e) => e.name === nm); },
@@ -97,7 +106,14 @@ function boot(cfg, values) {
     /* REDCap's own, which the Enter key in a text field calls */
     dataEntrySubmit(ob) { submits.push(ob); return 'redcap-save'; },
     INSPIRE_VALIDATOR_CONFIG: JSON.parse(JSON.stringify(cfg)) };
+  const timers = [];
+  global.setTimeout = (fn) => { const t = { fn, cleared: false }; timers.push(t); return t; };
+  global.clearTimeout = (t) => { if (t && typeof t === 'object') t.cleared = true; };
+  const flush = () => { for (let i = 0; timers.length && i < 10000; i++) { const t = timers.shift(); if (!t.cleared) t.fn(); } };
+  const ready = { done: doc.readyState !== 'loading', list: [] };
+  if (!ready.done) doc.addEventListener('DOMContentLoaded', () => { ready.done = true; ready.list.splice(0).forEach((fn) => setTimeout(fn, 0)); });
   const jq = function (sel) {
+    if (typeof sel === 'function') { if (ready.done) setTimeout(sel, 0); else ready.list.push(sel); return undefined; }
     const el = typeof sel === 'string' ? (sel[0] === '#' ? doc.getElementById(sel.slice(1)) : null) : sel;
     const w = { length: el ? 1 : 0 };
     w.on = function (events, handler) { for (const ev of events.split(' ')) if (el) el.addEventListener(ev.split('.')[0], handler); return w; };
@@ -120,7 +136,14 @@ function boot(cfg, values) {
   global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
   global.clearInterval = () => {};
   require(enginePath);
-  return { doc, win, holders, ctl, calls, submits, poll() { intervals.forEach((fn) => fn()); } };
+  if (opts.late) {
+    flush();   // a timer started while the page is still loading may run before the form exists
+    for (const el of later) { all.push(el); if (el.tagName === 'TR') body.appendChild(el); }
+    doc.readyState = 'interactive';
+    doc.fire('DOMContentLoaded', {});
+  }
+  flush();
+  return { doc, win, holders, ctl, calls, submits, flush, poll() { intervals.forEach((fn) => fn()); } };
 }
 function region(env, f, suffix) {
   for (const k of env.holders[f].children) if (k.id && new RegExp('-' + suffix + '$').test(k.id)) return k;
@@ -233,7 +256,18 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
   check('B6 ... and the save goes through once it is put right', save(env) === 'saved');
 }
 {
-  const env = boot(PAGES.b7, PAGES.b7_values);
+  // the same with the engine above the form, as REDCap prints it: the opening value is still read from the form
+  const env = boot(PAGES.b6, PAGES.b6_values, { late: true });
+  type(env, 'uw_free', 'stop');
+  const held = save(env);
+  check('B6 (engine above the form) the free text that breaks the rule holds the save', /Cannot save yet/.test(held) && /Screening note/.test(held), held);
+  type(env, 'uw_free', 'ok');
+  check('B6 (engine above the form) ... and it goes through once put right', save(env) === 'saved');
+}
+{
+  // REDCap prints the engine above the form: the page is still loading when it runs (review W4-2)
+  const env = boot(PAGES.b7, PAGES.b7_values, { late: true });
+  check('B7 the engine ran above the form, and the note is locked once the form exists', isLocked(env, 'uw_notes') && note(env, 'uw_notes') === LOCK, note(env, 'uw_notes'));
   check('B7 the free text broke the rule before the page opened: Enter saves', pressEnter(env, 'uw_weight') === 'redcap-save' && env.submits.length === 1,
     env.win._alerts);
   check('B7 ... and so does Save', save(env) === 'saved');

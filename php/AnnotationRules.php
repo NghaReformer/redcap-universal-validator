@@ -62,6 +62,9 @@ class AnnotationRules
         'first-instance' => '[%s][first-instance]',
     ];
 
+    /** The keys a @UVDELTA tag's JSON may name, in this letter case. */
+    const DELTA_KEYS = ['vs', 'max', 'maxPct', 'direction', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+
     /** Most languages one text key (a "message" map) may name, "default" included. */
     const MAX_TEXT_LANGUAGES = 50;
 
@@ -1156,7 +1159,7 @@ class AnnotationRules
         }
         // every number as the text it was typed as, so a limit keeps its digits
         $exact = json_decode(self::quoteJsonNumbers($val), true);
-        $allowed = ['vs', 'max', 'maxPct', 'direction', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+        $allowed = self::DELTA_KEYS;
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_DELTA . ' option(s): ' . implode(', ', $unknown)
@@ -1205,6 +1208,91 @@ class AnnotationRules
         if (isset($out['deltaVs'])) $out['deltaGroup'] = self::deltaGroup($out['deltaVs'], isset($out['deltaDirection']) ? $out['deltaDirection'] : 'both');
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * The keys a @UVDELTA value ($val) that failed to parse would give its
+     * branch, read from its JSON as parseDeltaValue reads them: deltaVs
+     * (and deltaVsName for a shorthand), deltaDirection, "when" and
+     * "caseSensitive" (only when true: any other value may be fixed to
+     * false). The JSON is read leniently (jsonLenient), as it will read
+     * once fixed. Null when even so it does not decode, names a key
+     * outside DELTA_KEYS (a key in other letter case among them), or has
+     * a "vs", "direction" or "when" that is not a text or that
+     * parseDeltaValue would refuse: fixed, such a key could give the
+     * branch any group or condition. A reference to another event or
+     * instance is read as written, since turning event and instance
+     * references on fixes it. Fixing the key the tag failed on brings the
+     * branch back, so the @UVDELTA suggestions leave its group alone, and
+     * all groups alone while it cannot be read
+     * (UniversalValidator::deltaGroupsTaken, reviews R9-7, R10-2, R11-1).
+     */
+    public static function deltaBranchAsWritten($val)
+    {
+        $cfg = self::jsonLenient(trim((string) $val));
+        if (!is_array($cfg) || array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;
+        if (!isset($cfg['vs']) || !is_string($cfg['vs'])) return null;
+        $out = ['deltaVs' => trim($cfg['vs'])];
+        $kw = strtolower($out['deltaVs']);
+        if (isset(self::DELTA_SHORTHANDS[$kw])) $out = ['deltaVs' => $kw, 'deltaVsName' => $kw];
+        elseif (ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true]) === null) return null;
+        if (array_key_exists('direction', $cfg)) {
+            $d = is_string($cfg['direction']) ? strtolower(trim($cfg['direction'])) : null;
+            if (!in_array($d, ['both', 'up', 'down'], true)) return null;
+            if ($d !== 'both') $out['deltaDirection'] = $d;
+        }
+        if (isset($cfg['when'])) {
+            if (!is_string($cfg['when']) || empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;
+            $out['when'] = $cfg['when'];
+        }
+        if (isset($cfg['caseSensitive']) && $cfg['caseSensitive'] === true) $out['caseSensitive'] = true;
+        return $out;
+    }
+
+    /**
+     * $text decoded as a JSON object, or, when it does not decode, decoded
+     * once single quotes and curly quotes are read as double quotes and a
+     * comma before a closing } or ] is dropped: the slips a designer makes
+     * and the tag's refusal names. A string ends only at the kind of quote
+     * that opened it, so an apostrophe in a double-quoted message stays
+     * text. Null when neither decodes. A scan from the start, so a long or
+     * broken value costs its length.
+     */
+    private static function jsonLenient($text)
+    {
+        $cfg = json_decode($text, true, 512, JSON_BIGINT_AS_STRING);
+        if (is_array($cfg)) return $cfg;
+        $curly = ["\u{201C}" => '"', "\u{201D}" => '"', "\u{2018}" => "'", "\u{2019}" => "'"];
+        $out = '';
+        $open = null;       // the quote that opened the string being read, null outside one
+        $n = strlen($text);
+        for ($i = 0; $i < $n; $i++) {
+            $c = $text[$i];
+            $q = $c === '"' || $c === "'" ? $c : null;
+            if ($q === null && $c === "\xE2" && isset($curly[substr($text, $i, 3)])) {
+                $q = $curly[substr($text, $i, 3)];
+                $c = substr($text, $i, 3);
+            }
+            if ($open === null) {
+                if ($q !== null) { $open = [$q, $c]; $out .= '"'; $i += strlen($c) - 1; continue; }
+                if ($c === ',') {
+                    $j = $i + 1;
+                    while ($j < $n && strpos(" \t\r\n", $text[$j]) !== false) $j++;
+                    if ($j < $n && ($text[$j] === '}' || $text[$j] === ']')) continue;
+                }
+                $out .= $c;
+                continue;
+            }
+            // a straight quote is ended by itself, a curly one by either curly quote of its kind
+            if ($q === $open[0] && ($c === $open[1] || strlen($c) === strlen($open[1]))) {
+                $open = null; $out .= '"'; $i += strlen($c) - 1; continue;
+            }
+            if ($c === '\\' && $i + 1 < $n) { $out .= $c . $text[++$i]; continue; }
+            $out .= $c === '"' ? '\\"' : $c;
+            $i += strlen($c) - 1;
+        }
+        $cfg = json_decode($out, true, 512, JSON_BIGINT_AS_STRING);
+        return is_array($cfg) ? $cfg : null;
     }
 
     /**

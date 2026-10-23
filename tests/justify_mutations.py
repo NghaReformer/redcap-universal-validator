@@ -174,8 +174,8 @@ MUTATIONS = [
      "        if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\\w-])/i', $ann)) {",
      '        if (false) {', MODULE),
     ('a reason field makes a locked field hold the save', UV,
-     "            $reads = array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList']));",
-     "            $reads = array_map('strval', ModeRegistry::refFields($r));", MODULE),
+     "            foreach (array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList'])) as $x) {",
+     "            foreach (array_map('strval', ModeRegistry::refFields($r)) as $x) {", MODULE),
 
     # ---- the audit (markJustified) ----
     ('a finding marked justified whatever the reason field holds', UV,

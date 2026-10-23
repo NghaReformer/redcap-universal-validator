@@ -803,8 +803,9 @@
      that reads other fields the person may change here
      (UniversalValidator::markLockReads, the rule's lockReads): its guard item
      holds the save once one of them differs from its value as the page
-     opened (base, QRID_lockReadsBase), since that change is what makes it
-     fail. others holds [field, code], code null but for a checkbox option. */
+     opened, taken after REDCap's own start-up (base,
+     QRID_lockReadsAfterStart), since that change is what makes it fail.
+     others holds [field, code], code null but for a checkbox option. */
   var UV_LOCK_READS = Object.create(null);
   /* Fields @UVJUSTIFY pairs with a reason field on this page: field =>
      {reason, given(), label(), later()}, set as each pair is bound
@@ -3634,10 +3635,8 @@ function QRID_lockReadValue(ref){
   var v = QRID_WHEN.readRef(ref[0], ref[1]);
   return String(v === null || v === undefined ? "" : v);
 }
-/* Each lockReads entry's value as the form opened. REDCap prints the engine
-   above the form, so the base is read at DOMContentLoaded, once the inputs
-   exist and REDCap's own start-up has worked out its calcs; on a page that
-   has its inputs already it is read at once. An entry with no input then
+/* Each lockReads entry's value as the form opened, once REDCap's own
+   start-up has run (QRID_lockReadsAfterStart). An entry with no input then
    keeps none and is never compared. */
 function QRID_lockReadsBase(){
   for(var k in UV_LOCK_READS){
@@ -3668,6 +3667,23 @@ function QRID_itemHolds(el){
   if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;
   var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
   return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
+}
+/* Take the bases after REDCap's start-up. REDCap prints the engine above
+   the form, and works out its calcs, branching and action tags (@NOW,
+   @DEFAULT and the rest) in jQuery ready callbacks, which jQuery 3 runs in a
+   timer after every DOMContentLoaded listener. So once the form exists
+   (DOMContentLoaded, or at once on a page that has loaded) this adds a ready
+   callback of its own, which runs after REDCap's, and takes the bases in a
+   timer from there, after any timer theirs started. Without jQuery the bases
+   are taken in a timer. Until a base is taken its entry is not compared
+   (QRID_guardSpeaks). */
+function QRID_lockReadsAfterStart(){
+  var take = function(){ setTimeout(QRID_lockReadsBase, 0); };
+  var jq = (typeof window !== "undefined" && window) ? window.jQuery : null;
+  if(typeof jq === "function"){
+    try { jq(take); return; } catch(e){}
+  }
+  take();
 }
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
@@ -9422,7 +9438,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   for(var jm in JUSTIFY_OF_MODE) if(own(JUSTIFY_OF_MODE, jm) && JUSTIFY_OF_MODE[jm] === true) QRID_JUSTIFY_OF_MODE[jm] = true;
   /* lockReads: locked field => the other fields the rule reads that the
      person may change here, kept with their values as the form opened
-     (QRID_lockReadsBase, QRID_guardSpeaks) */
+     (QRID_lockReadsAfterStart, QRID_guardSpeaks) */
   var anyLockReads = false;
   rules.forEach(function(rule){
     if(rule.configError || !rule.lockReads || typeof rule.lockReads !== "object" || Array.isArray(rule.lockReads)) return;
@@ -9435,8 +9451,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     }
   });
   if(anyLockReads){
-    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsBase);
-    else QRID_lockReadsBase();
+    if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsAfterStart);
+    else QRID_lockReadsAfterStart();
   }
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);

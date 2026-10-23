@@ -135,6 +135,8 @@ $del = function ($descr, array $opts = [], $ev = 'DELETE') use ($row, $utc) {
 check('reader: "Delete record" ends the history', $values($del('Delete record')) === [['20261003090000', 'dan', '1990-09-09']]);
 check('reader: "Delete record (API)" ends it too', $values($del('Delete record (API)')) === [['20261003090000', 'dan', '1990-09-09']]);
 check('reader: a DELETE written in lower case is a DELETE', $values($del('Delete record', [], 'delete')) === [['20261003090000', 'dan', '1990-09-09']]);
+check('reader: a whole-record DELETE described in other letter case ends the history', $values($del('delete record (api)')) === [['20261003090000', 'dan', '1990-09-09']]
+    && $values($del('DELETE RECORD')) === [['20261003090000', 'dan', '1990-09-09']], $del('delete record (api)'));
 foreach (['Delete all record data for single form', 'Delete all record data for single event', 'Delete record (arm 2)', ''] as $d) {
     check('reader: a DELETE described "' . $d . '" cannot be placed', $del($d) === ['state' => 'unknown', 'saves' => [], 'why' => 'delete'], $del($d));
 }
@@ -251,7 +253,7 @@ $typed = [
     $row(1, 'B1', 380, '20260105090000', "dob = '2026-01-05',\nnotes = 'x',\nrecord_id = 'B1'", 'mallory', 'INSERT'),
     $row(2, 'B1', 380, '20260106090000', "dob = '2026-01-06'", 'nurse'),
 ];
-check('start: an INSERT whose record id line could have been typed is no start', $ren($typed) === $UNSTARTED, $ren($typed));
+check('start: an INSERT whose record id line could have been typed is no start, and says so (review W4-1)', $ren($typed) === ['state' => 'unknown', 'saves' => [], 'why' => 'startrow'], $ren($typed));
 $typed[0][7] = 'UPDATE';
 $typed[0][5] = "record_id = 'B1',\ndob = '2026-01-05'";
 check('start: an UPDATE with the record id line is no start either', $ren($typed) === $UNSTARTED, $ren($typed));
@@ -272,6 +274,78 @@ $made = [
     $row(2, 'B1', 381, '20260106090000', "prev_record_id = 'B1'", 'nurse', 'INSERT'),
 ];
 check('start: a field whose name only looks like the record id field is no start', $ren($made) === $UNSTARTED, $ren($made));
+$made = [$row(1, 'B1', 380, '20260105090000', "wt = '3',\nrecord_id = 'B1'", 'nurse', 'INSERT'), $row(2, 'B1', 380, '20260106090000', "dob = '2026-01-06'", 'nurse')];
+check('start: told no free-text fields, the reader counts every field as one, so a record id line after another field is no start',
+    $ren($made, ['recordIdField' => 'record_id']) === ['state' => 'unknown', 'saves' => [], 'why' => 'startrow'], $ren($made, ['recordIdField' => 'record_id']));
+
+// The start read from the row as written (review W4-1), with the options the module gives the reader
+// (UniversalValidator::valueHistoryOptions): every Text and Notes field is free text, the record id
+// field included, so in the row that made the record its record id line is the first free-text value.
+$MOD = function (array $dd) {
+    $free = [];
+    foreach ($dd as $f => $t) if ($t === 'text' || $t === 'notes') $free[$f] = true;
+    return ['order' => array_flip(array_keys($dd)), 'freeText' => $free, 'recordIdField' => 'record_id', 'multiArm' => false];
+};
+$mod = function (array $rows, array $dd, $rec, $event, $field) use ($utc, $MOD) {
+    $db = new FakeHistoryLog();
+    $db->rows = $rows;
+    return ValueHistory::forProject($db, 149, ['consent', 'wt'], $utc, $utc, $MOD($dd))->saves($rec, $event, 1, $field);
+};
+$STARTROW = ['state' => 'unknown', 'saves' => [], 'why' => 'startrow'];
+$rows = [
+    $row(1, '7', 380, '20260101090000', "record_id = '7',\nconsent = '2026-01-01',\narm = '1',\nsite = '2'", 'nurse', 'INSERT', 'redcap_data', 149, 'Create record'),
+    $row(2, '7', 380, '20260301090000', "consent = '2026-03-03'", 'mallory'),
+    $row(3, '7', 381, '20260401090000', "record_id = '7',\nwt = '70'", 'nurse'),
+    $row(4, '7', 381, '20260402090000', "wt = '71'", 'mallory'),
+];
+$before = ['record_id' => 'text', 'consent' => 'text', 'arm' => 'radio', 'site' => 'radio', 'wt' => 'text'];
+$after = ['record_id' => 'text', 'consent' => 'text', 'site' => 'radio', 'arm' => 'radio', 'wt' => 'text'];
+check('start (module options): the row that made the record, read in the dictionary order it was written in',
+    $values($mod($rows, $before, '7', 380, 'consent')) === [['20260101090000', 'nurse', '2026-01-01'], ['20260301090000', 'mallory', '2026-03-03']], $mod($rows, $before, '7', 380, 'consent'));
+check('start (module options): a field moved since leaves the record started; only that row\'s values are not plain',
+    $values($mod($rows, $after, '7', 380, 'consent')) === [['20260101090000', 'nurse', null], ['20260301090000', 'mallory', '2026-03-03']], $mod($rows, $after, '7', 380, 'consent'));
+check('start (module options): ... and a field locked at another event is read whole',
+    $values($mod($rows, $after, '7', 381, 'wt')) === [['20260401090000', 'nurse', '70'], ['20260402090000', 'mallory', '71']], $mod($rows, $after, '7', 381, 'wt'));
+$notes = [
+    $row(1, '8', 380, '20260101090000', "record_id = '8',\nconsent = '2026-01-01',\nnote = 'He said 'no',\nthen agreed'", 'nurse', 'INSERT'),
+    $row(2, '8', 380, '20260301090000', "consent = '2026-03-03'", 'mallory'),
+];
+check('start (module options): a Notes value in that row with a line ending in quote-comma leaves the record started',
+    $values($mod($notes, ['record_id' => 'text', 'consent' => 'text', 'note' => 'notes'], '8', 380, 'consent')) === [['20260101090000', 'nurse', null], ['20260301090000', 'mallory', '2026-03-03']],
+    $mod($notes, ['record_id' => 'text', 'consent' => 'text', 'note' => 'notes'], '8', 380, 'consent'));
+$late = function ($dv) use ($row) {
+    return [$row(1, '9', 381, '20260101090000', $dv, 'nurse', 'INSERT'), $row(2, '9', 381, '20260102090000', "wt = '70'", 'nurse')];
+};
+$DD9 = ['record_id' => 'text', 'wt' => 'text', 'visit_note' => 'notes', 'arm' => 'radio', 'cb' => 'checkbox'];
+check('start (module options): a record id line after a Notes line is an untrusted start ("startrow")', $mod($late("visit_note = 'x',\nrecord_id = '9'"), $DD9, '9', 381, 'wt') === $STARTROW,
+    $mod($late("visit_note = 'x',\nrecord_id = '9'"), $DD9, '9', 381, 'wt'));
+check('start (module options): ... and after a Text line', $mod($late("wt = '1',\nrecord_id = '9'"), $DD9, '9', 381, 'wt') === $STARTROW);
+foreach (["arm = '1',\nrecord_id = '9'" => 'a line of a field no one types', "[instance = 2],\nrecord_id = '9'" => 'an instance line',
+          "cb(1) = checked,\ncb(2) = unchecked,\nrecord_id = '9',\nvisit_note = 'x'" => 'checkbox lines', "record_id = '9'" => 'nothing (the whole row)'] as $dv => $label) {
+    check('start (module options): a record id line after ' . $label . ' starts the record', $mod($late($dv), $DD9, '9', 381, 'wt')['state'] === 'read', $mod($late($dv), $DD9, '9', 381, 'wt'));
+}
+check('start (module options): a record id line after a stray line is an untrusted start', $mod($late("what is this\nrecord_id = '9'"), $DD9, '9', 381, 'wt') === $STARTROW);
+check('start (module options): ... and after a value of another field that runs on', $mod($late("arm = '1\nrecord_id = '9'"), $DD9, '9', 381, 'wt') === $STARTROW);
+check('start (module options): a record id line that runs on is no start', $mod($late("record_id = '9\nx'"), $DD9, '9', 381, 'wt') === $STARTROW);
+check('start (module options): ... nor one with no value at all', $mod($late("record_id = '\nwt = '1'"), $DD9, '9', 381, 'wt') === $STARTROW
+    && $mod($late("record_id = '"), $DD9, '9', 381, 'wt') === $STARTROW && $mod($late("record_id = ',\nwt = '1'"), $DD9, '9', 381, 'wt') === $STARTROW,
+    [$mod($late("record_id = '"), $DD9, '9', 381, 'wt'), $mod($late("record_id = ',\nwt = '1'"), $DD9, '9', 381, 'wt')]);
+check('start (module options): an INSERT with no record id line is no start', $mod($late("wt = '1'"), $DD9, '9', 381, 'wt') === $UNSTARTED);
+// A typed record id line never starts a record (review W3-3 kept): a value only adds lines after its own field's line.
+check('start (module options): a record id line typed into a Notes value of the creating row is no start',
+    $mod($late("wt = '1',\nvisit_note = 'x',\nrecord_id = '9'"), $DD9, '9', 381, 'wt') === $STARTROW);
+$both = [
+    $row(1, '9', 381, '20260101090000', "record_id = '9',\nwt = '69'", 'nurse', 'INSERT'),
+    $row(2, '9', 381, '20260102090000', "visit_note = 'x',\nrecord_id = '9'", 'mallory', 'INSERT'),
+    $row(3, '9', 381, '20260103090000', "wt = '70'", 'nurse'),
+];
+check('start (module options): a start older than an untrusted INSERT still starts the record', $mod($both, $DD9, '9', 381, 'wt')['state'] === 'read', $mod($both, $DD9, '9', 381, 'wt'));
+$both[0][7] = 'UPDATE';
+check('start (module options): an untrusted INSERT and no start: "startrow"', $mod($both, $DD9, '9', 381, 'wt') === $STARTROW, $mod($both, $DD9, '9', 381, 'wt'));
+$both[0][7] = 'INSERT';
+$both[1][5] = "record_id = '9'";
+$both[0][5] = "visit_note = 'x',\nrecord_id = '9'";
+check('start (module options): a start newer than an untrusted INSERT starts it too', $mod($both, $DD9, '9', 381, 'wt')['state'] === 'read');
 // Rows of other events that only look like the record id line are not read at all (review W3-8).
 $db = new FakeHistoryLog();
 $db->rows[] = $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT');
@@ -293,6 +367,17 @@ $db->rows[] = $row(1, 'B1', 380, '20260105090000', "record_id = 'B1',\ndob = '20
 for ($i = 0; $i < ValueHistory::MAX_ROWS_PER_RECORD + 10; $i++) $db->rows[] = $row(2 + $i, 'B1', 381, '20260106090000', "record_id = 'B1',\nwt = '$i'", 'nurse');
 $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, $START)->saves('B1', 380, 1, 'dob');
 check('cap: rows of another event do not count toward MAX_ROWS_PER_RECORD', $values($h) === [['20260105090000', 'nurse', '2026-01-05']], $h['state']);
+// ... while a row with no event and a DELETE do, even one the reader passes over (review W4-8).
+$counted = function (array $extra) use ($row, $utc) {
+    $db = new FakeHistoryLog();
+    $db->rows[] = $row(1, 'R6', 380, '20261001090000', "wt = '0'");
+    $db->rows[] = $extra;
+    for ($i = 1; $i < ValueHistory::MAX_ROWS_PER_RECORD; $i++) $db->rows[] = $row(2 + $i, 'R6', 380, '20261001090000', "wt = '$i'");
+    return ValueHistory::forProject($db, 149, ['dob'], $utc, $utc)->saves('R6', 380, 1, 'dob')['state'];
+};
+check('cap: a row with no event counts toward MAX_ROWS_PER_RECORD', $counted($row(2, 'R6', null, '20261001090000', "wt = 'x'")) === 'capped');
+check('cap: a DELETE of another event\'s form counts too', $counted($row(2, 'R6', 381, '20261001090000', '', 'cat', 'DELETE', 'redcap_data', 149, 'Delete all record data for single form')) === 'capped');
+check('cap: ... while a row of another event does not', $counted($row(2, 'R6', 381, '20261001090000', "wt = 'x'")) === 'read');
 
 // Deletes of another event's data (review W2-8): no part of this event's history.
 $evdel = function ($descr, $event = 381, array $opts = []) use ($row, $utc) {
@@ -386,11 +471,22 @@ check('parse: a forged run through a field no one types is caught from its first
 check('parse: in order, nothing is doubted', $pf("notes = 'n',\ndob = 'd',\nsite = 'A'") === [1 => ['notes' => 'n', 'dob' => 'd', 'site' => 'A']]);
 check('parse: a stray line still makes every field not plain', $pf("site = 'A',\nwhat is this") === [1 => ['site' => null]]);
 // Each line is looked at once (review W2-10): a long notes value costs one pass.
-$long = "notes = 'start\n" . str_repeat("a line\n", 130000) . "end',\nsite = 'A'";
-$t0 = microtime(true);
-$r = ValueHistory::parseRow($long, $ord, $free);
-$took = microtime(true) - $t0;
-check('parse: 130,000 lines of one value read in under a second (took ' . round($took, 2) . ' s)', $took < 1.0 && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
+// Ten times the lines must cost about ten times the time, not a hundred; the
+// ratio holds on a loaded machine, where a fixed time limit does not.
+$parseTime = function (int $lines) use ($ord, $free) {
+    $text = "notes = 'start\n" . str_repeat("a line\n", $lines) . "end',\nsite = 'A'";
+    $best = INF;
+    for ($i = 0; $i < 3; $i++) {
+        $t0 = microtime(true);
+        $r = ValueHistory::parseRow($text, $ord, $free);
+        $best = min($best, microtime(true) - $t0);
+    }
+    return [$best, $r];
+};
+[$small] = $parseTime(13000);
+[$took, $r] = $parseTime(130000);
+$ratio = $took / max($small, 0.0005);
+check('parse: 130,000 lines of one value cost about ten times 13,000 (took ' . round($took, 2) . ' s, ' . round($ratio, 1) . ' times)', $ratio < 30 && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
 
 // Paging: a record read across pages, then the cap.
 $db = new FakeHistoryLog();
@@ -432,6 +528,15 @@ $db->rows = [$row(1, 'R1', 380, '20261001090000', "dob = '2000-01-01'")];
 $db->failOn = 3;
 $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
 check('reader: a failed read of a page is unknown', $h->saves('R1', 380, 1, 'dob') === ['state' => 'unknown', 'saves' => [], 'why' => 'read'], $db->sql);
+// An id that is not digits cannot be paged on, nor taken for the erase floor (review W4-8).
+$db = new FakeHistoryLog();
+$db->rows = [$row(1, 'R1', 380, '20261001090000', "dob = '2000-01-01'", 'ann', 'INSERT'), $row('2x', 'R1', 380, '20261002090000', "dob = '2000-01-02'", 'bob')];
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
+check('reader: a log id that is not digits is unknown', $h->saves('R1', 380, 1, 'dob') === ['state' => 'unknown', 'saves' => [], 'why' => 'read'], $h->saves('R1', 380, 1, 'dob'));
+$db = $erase([]);
+$db->rows[1][0] = '2e';
+$h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
+check('erase: an erase row whose id is not digits makes every history unknown', $h->saves('1', 380, 1, 'dob') === ['state' => 'unknown', 'saves' => [], 'why' => 'read'], $h->saves('1', 380, 1, 'dob'));
 $db = new FakeHistoryLog();
 $db->fail = true;
 check('reader: no reader when the log table cannot be read', ValueHistory::forProject($db, 149, ['dob'], $utc, $utc) === null);
@@ -463,12 +568,14 @@ final class FakeRoleDb implements \INSPIRE\UniversalValidator\Scan\ScanDb
     public $refuse = null;
     public $calls = [];
     public $intl = false;
+    public $spaced = false;
     public function select($sql, array $params = [])
     {
         $this->calls[] = [$sql, $params];
         if ($this->refuse !== null && strpos($sql, $this->refuse) !== false) throw new \RuntimeException('no such column');
         $unique = strpos($sql, 'unique_role_name') !== false;
         if ($this->intl) return strpos($sql, 'FROM redcap_user_roles') !== false ? [['ÉQUIPE  Médicale', '']] : [['Ann', ' Équipe   médicale ', '']];
+        if ($this->spaced && strpos($sql, 'FROM redcap_user_rights') !== false) return [[' DM ', 'Data manager', 'U-3DM']];
         if (strpos($sql, 'FROM redcap_user_roles') !== false) return $unique ? [['Data manager', 'U-3DM'], [' Monitor ', '']] : [['Data manager'], [' Monitor ']];
         return $unique ? [['DM', 'Data manager', 'U-3DM'], ['', 'Monitor', 'U-4MO']] : [['DM', 'Data manager']];
     }
@@ -494,12 +601,26 @@ check('roles: a REDCap with no unique role names is read without them', $book ==
 $rdb = new FakeRoleDb();
 $rdb->refuse = 'redcap_user_r';
 check('roles: tables that cannot be read give null', RoleBook::read($rdb, 149, '2026-10-22') === null);
+$rdb = new FakeRoleDb();
+$rdb->spaced = true;
+check('roles: a user name stored with spaces around it is kept trimmed', array_keys(RoleBook::read($rdb, 149, '2026-10-22')['users']) === ['dm'], RoleBook::read($rdb, 149, '2026-10-22'));
 
 // Role names in any script's letter case, spaces folded (review W2-9).
 check('roleKey: letter case in any script', Logic::roleKey('Équipe Médicale') === 'équipe médicale' && Logic::roleKey('ÉQUIPE MÉDICALE') === 'équipe médicale');
 check('roleKey: spaces trimmed and folded, tabs too', Logic::roleKey("  Data \t  manager ") === 'data manager');
 check('roleKey: a no-break or ideographic space at either end goes too (review W3-9)', Logic::roleKey("\u{A0}Data manager\u{3000}") === 'data manager' && Logic::roleKey("Data\u{A0}\u{A0}manager\u{A0}") === 'data manager');
 check('roleKey: a name that is not UTF-8 is lowercased byte by byte', Logic::roleKey("Caf\xE9  Team") === "caf\xE9 team");
+// Unicode normalization, format characters and full case folding (review W4-7)
+check('roleKey: a zero-width space or a byte-order mark is not part of the name', Logic::roleKey("Data\u{200B} manager\u{200B}") === 'data manager'
+    && Logic::roleKey("\u{FEFF}Data manager") === 'data manager' && Logic::roleKey("Data\u{2060}manager") === 'datamanager', Logic::roleKey("Data\u{200B} manager\u{200B}"));
+check('roleKey: full case folding: STRASSE and Straße are one role', Logic::roleKey('STRASSE') === Logic::roleKey("Stra\u{DF}e") && Logic::roleKey('STRASSE') === 'strasse', Logic::roleKey("Stra\u{DF}e"));
+if (class_exists('Normalizer', false)) {
+    check('roleKey: a letter and its combining accent (NFD) are the accented letter (NFC)', Logic::roleKey("E\u{301}quipe me\u{301}dicale") === Logic::roleKey("\u{C9}quipe M\u{E9}dicale")
+        && Logic::roleKey("E\u{301}quipe me\u{301}dicale") === "\u{E9}quipe m\u{E9}dicale", Logic::roleKey("E\u{301}quipe me\u{301}dicale"));
+} else {
+    echo "note: PHP's intl extension is not loaded, so the NFC/NFD check of roleKey is skipped (run with -d extension=intl)\n";
+    check('roleKey: without intl, a combining accent is kept as typed', Logic::roleKey("E\u{301}quipe") === "e\u{301}quipe", Logic::roleKey("E\u{301}quipe"));
+}
 $rdb = new FakeRoleDb();
 $rdb->intl = true;
 $book = RoleBook::read($rdb, 149, '2026-10-22');
