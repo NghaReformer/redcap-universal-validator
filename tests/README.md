@@ -527,14 +527,41 @@ inner spaces.
   accepted, and that at run time each value picks one branch with no
   conflict; that a tag without a condition is the fallback beside a
   conditional one; that a tag that failed to parse is read with single or
-  curly quotes and a trailing comma, keeping its `when`, direction,
-  `caseSensitive` (only when true) and a shorthand in capitals, from its own
-  value; that beside a tag whose `vs` cannot be read nothing is offered and
-  each kind of refusal says to fix it first, and that each says when the
-  other tags hold every reference that would work; that two tags written the
-  same are told apart, each field reads its own tags, and the rules built
-  again with references on are worked out again; and that a refused
-  reference and a refused shorthand hand their suggestions on. The refusal of a plain `vs` naming the field
+  curly quotes (around the whole value or one value) and a trailing comma,
+  an apostrophe or double quotes inside a message kept as text, keeping its
+  `when`, direction, `caseSensitive` (only when true) and a shorthand in
+  capitals, from its own value; that beside a tag with bare words, no value
+  or no `vs` nothing is offered and each kind of refusal says to fix it
+  first, and that each says when the other tags hold every reference that
+  would work, but not when the held entry would not fit anyway; that two
+  tags written the same are told apart, each field reads its own tags, and
+  the rules built again with references on are worked out again; and that a
+  refused reference and a refused shorthand hand their suggestions on. For
+  review R11 it checks that beside a tag that failed to parse with a `when`
+  or `direction` that is not text, does not parse or is refused, a key in
+  other letter case (`When`, `Direction`), a misspelt shorthand, a blank
+  `vs` or one missing a bracket, nothing is offered, and once that tag is
+  fixed the first event is offered and accepted; that a `when` naming
+  another event is read as written; that the held note is the rule the
+  search applies, word for word; what `Branching::whenExclusive` reads (two
+  boxes of one checkbox, a field compared with a field, an `and` inside an
+  `and`, one field tested twice, a condition that does not parse); that the
+  lenient read keeps escapes, drops a trailing comma before `]` and one
+  before a space and `}`, and reads single curly quotes and a curly quote
+  inside a string; that
+  a failed tag of another mode shifts nothing; and that the tags are read
+  again once references are on. For review R12 it checks the held note with
+  a field at another event, a field with an instance and two boxes of one
+  checkbox; that beside a tag that failed to parse with a `{binding}` its
+  `references` do not define, or a collection binding compared with another
+  collection, nothing is offered, while a binding they define and
+  references refused for themselves leave the tag read; that `"direction":null`,
+  a misspelt key (`wehn`), a `when` of only spaces beside a conditional tag,
+  an extra key (`label`) and a `vs` that is a list or a number leave nothing
+  offered, with no error thrown; that `"when":null`, a direction of `both` or
+  `down` and a `vs` with spaces around it are read as the parser reads them
+  once fixed, each suggestion accepted; and that a tag that failed to parse
+  and names the field itself holds its own `vs`, not its suggestion. The refusal of a plain `vs` naming the field
   itself suggests `previous-instance` on a classic project whose form
   repeats, `previous-event` across visits, `previous-instance` where the
   form repeats at the visits, a written reference when no shorthand fits
@@ -555,7 +582,7 @@ inner spaces.
   the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
   `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
   word, and section F checks each configuration error under its own field.
-- `delta_mutations.py` applies 251 mutations to a copy of the code, one at a
+- `delta_mutations.py` applies 265 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. The copy
   holds every folder and file the named suites read (`site/` and `README.md`
   among them), and every suite must pass in it before the first mutation, so

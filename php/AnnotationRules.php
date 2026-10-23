@@ -1221,9 +1221,14 @@ class AnnotationRules
      * parseDeltaValue would refuse: fixed, such a key could give the
      * branch any group or condition. A reference to another event or
      * instance is read as written, since turning event and instance
-     * references on fixes it. Fixing the key the tag failed on brings the
-     * branch back, so the @UVDELTA suggestions leave its group alone, and
-     * all groups alone while it cannot be read
+     * references on fixes it. A "when" that TemporalRules::validate
+     * refuses beside the tag's own "references" (a {binding} they do not
+     * define, a collection binding compared with another collection) is
+     * refused with references on too, so it makes the value unreadable;
+     * the errors of the "references" alone do not, as for any key the tag
+     * failed on (review R12-2). Fixing the key the tag failed on brings
+     * the branch back, so the @UVDELTA suggestions leave its group alone,
+     * and all groups alone while it cannot be read
      * (UniversalValidator::deltaGroupsTaken, reviews R9-7, R10-2, R11-1).
      */
     public static function deltaBranchAsWritten($val)
@@ -1242,6 +1247,9 @@ class AnnotationRules
         }
         if (isset($cfg['when'])) {
             if (!is_string($cfg['when']) || empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;
+            require_once __DIR__ . '/TemporalRules.php';
+            $refs = array_key_exists('references', $cfg) ? ['references' => $cfg['references']] : [];
+            if (array_diff(TemporalRules::validate($refs + ['when' => $cfg['when']]), TemporalRules::validate($refs))) return null;
             $out['when'] = $cfg['when'];
         }
         if (isset($cfg['caseSensitive']) && $cfg['caseSensitive'] === true) $out['caseSensitive'] = true;
