@@ -4295,13 +4295,15 @@ instance:
   neither tag is `caseSensitive`). Two other conditions that are true at
   once are a runtime conflict, and the field validates nothing while both
   hold. Two conditions count as never true at once only when each tests one
-  field for equality with a value, alone or as part of an `and`, and no
-  value equals both as conditions compare values. For example, `[arm]='1'`
-  and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'` (numbers compare by
-  value), `[x]='Yes'` and `[x]='yes'` (unless both tags are
-  `caseSensitive`), and `[x]>0` and `[x]=1` do not. A tag without a
-  condition is the fallback beside tags that have one, so the two may share
-  a `vs`. A refused tag earlier on the field counts with the reference its
+  field, written without an event or instance (each checkbox box counts as
+  its own field), for equality with a value, alone or as part of an `and`,
+  and no value equals both as conditions compare values. For example,
+  `[arm]='1'` and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'`
+  (numbers compare by value), `[x]='Yes'` and `[x]='yes'` (unless both tags
+  are `caseSensitive`), `[v1_arm_1][x]='1'` and `[v1_arm_1][x]='2'`,
+  `[cb(1)]='1'` and `[cb(2)]='0'`, and `[x]>0` and `[x]=1` do not. A tag
+  without a condition is the fallback beside tags that have one, so the two
+  may share a `vs`. A refused tag earlier on the field counts with the reference its
   own refusal suggests. A tag that failed to parse counts with the `vs`,
   direction and condition its JSON names, read with single or curly quotes
   as double quotes and without a trailing comma. Nothing is suggested
@@ -4309,8 +4311,10 @@ instance:
   cannot be read, when the JSON names a key the tag does not take (letter
   case counts, so `When` is one), or when its `vs`, `direction` or `when`
   is not text or would be refused. A reference to another event or
-  instance counts as read, since turning references on fixes it. So the
-  suggestions for one field can be written back together. For the field
+  instance counts as read, since turning references on fixes it; a
+  `{binding}` its `references` do not define does not, since the `when` is
+  still refused with references on. So the suggestions for one field can be
+  written back together. For the field
   itself the instance must read an earlier entry where the event lands:
   `[previous-instance]` only at the field's own event, `[last-instance]` and
   an instance numbered after the first only at another, `[first-instance]`

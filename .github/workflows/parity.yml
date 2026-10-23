@@ -244,7 +244,7 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 251 mutations the suites must kill
+      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 265 mutations the suites must kill
         run: |
           php tests/delta_php.php
           php tests/delta_module_php.php

@@ -627,8 +627,9 @@ MUTATIONS = [
      "Logic::parse($cfg['when'], ['qualified' => true])", "Logic::parse($cfg['when'], [])", MODULE),
     # R11-2: the held note says the rule the search applies
     ('the held note promises more than the search applies (review R11-2)', UV,
-     """'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '\n"""
-     """        . 'alone or as part of an "and", and no value equals both)';""",
+     """'unless just one of the two tags has a "when", or each "when" tests one field, written without an event or instance '\n"""
+     """        . '(each checkbox box counts as its own field), for equality with a value, alone or as part of an "and", '\n"""
+     """        . 'and no value equals both as conditions compare values)';""",
      """'unless just one of the two tags has a "when", or both have one and the two can never be true at once)';""", MODULE),
     # R11-3: the reviewer's surviving mutations A-J, L and N (P is above). O, a wider trim in Logic::neverBothEqual,
     # changes nothing: the characters it adds (NUL, vertical tab) cannot appear in a condition (Logic::parse).
@@ -660,6 +661,46 @@ MUTATIONS = [
     ('the lenient read steps one byte past a curly quote inside a string (review R11-3 N)', RULES,
      r"""            $out .= $c === '"' ? '\\"' : $c;""" '\n            $i += strlen($c) - 1;\n',
      r"""            $out .= $c === '"' ? '\\"' : $c;""" '\n', MODULE),
+    # ---- the twelfth review's fixes ----
+    # R12-1: the held note names the event, instance and checkbox limits of Logic::requiredValues
+    ('the held note leaves out the event, instance and checkbox limits (review R12-1)', UV,
+     """'unless just one of the two tags has a "when", or each "when" tests one field, written without an event or instance '\n"""
+     """        . '(each checkbox box counts as its own field), for equality with a value, alone or as part of an "and", '\n"""
+     """        . 'and no value equals both as conditions compare values)';""",
+     """'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '\n"""
+     """        . 'alone or as part of an "and", and no value equals both)';""", MODULE),
+    # R12-2: a "when" TemporalRules::validate refuses beside the tag's own references makes a failed tag unreadable
+    ('a "when" with an undefined {binding} read as written (review R12-2)', RULES,
+     "            if (array_diff(TemporalRules::validate($refs + ['when' => $cfg['when']]), TemporalRules::validate($refs))) return null;\n",
+     '', MODULE),
+    ('a "when" checked without the tag\'s own references (review R12-2)', RULES,
+     "TemporalRules::validate($refs + ['when' => $cfg['when']])", "TemporalRules::validate(['when' => $cfg['when']])", MODULE),
+    ('the errors of the references alone held against the "when" (review R12-2)', RULES,
+     "if (array_diff(TemporalRules::validate($refs + ['when' => $cfg['when']]), TemporalRules::validate($refs))) return null;",
+     "if (TemporalRules::validate($refs + ['when' => $cfg['when']])) return null;", MODULE),
+    # R12-3: the reviewer's mutations of the lenient read (N1, N4, N5, D1, D2, T1, K6, K9, W4) and round 11's Q (G1)
+    ('a "direction":null read as both (review R12-3 N5)', RULES,
+     "        if (array_key_exists('direction', $cfg)) {\n            $d = is_string", "        if (isset($cfg['direction'])) {\n            $d = is_string", MODULE),
+    ('only a key in other letter case read as unknown (review R12-3 K9)', RULES,
+     'array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;',
+     "array_filter(array_keys($cfg), function ($k) { return !in_array($k, self::DELTA_KEYS, true) && in_array(strtolower($k), array_map('strtolower', self::DELTA_KEYS), true); })) return null;", MODULE),
+    ('a "when" of only spaces read as none (review R12-3 W4)', RULES,
+     "            if (!is_string($cfg['when']) || empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;",
+     "            if (!is_string($cfg['when'])) return null;\n            if (trim($cfg['when']) !== '' && empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;", MODULE),
+    ('a "vs" that is not a text passed on (review R12-3 N1)', RULES,
+     "        if (!isset($cfg['vs']) || !is_string($cfg['vs'])) return null;", "        if (!isset($cfg['vs'])) return null;", MODULE),
+    ('a "when":null read as unreadable (review R12-3 N4)', RULES,
+     "        if (isset($cfg['when'])) {\n            if (!is_string($cfg['when'])", "        if (array_key_exists('when', $cfg)) {\n            if (!is_string($cfg['when'])", MODULE),
+    ('a direction of both read as unreadable (review R12-3 D1)', RULES,
+     "if (!in_array($d, ['both', 'up', 'down'], true)) return null;", "if (!in_array($d, ['up', 'down'], true)) return null;", MODULE),
+    ('a direction of down read as unreadable (review R12-3 D2)', RULES,
+     "if (!in_array($d, ['both', 'up', 'down'], true)) return null;", "if (!in_array($d, ['both', 'up'], true)) return null;", MODULE),
+    ('a "vs" read untrimmed (review R12-3 T1)', RULES,
+     "        $out = ['deltaVs' => trim($cfg['vs'])];", "        $out = ['deltaVs' => $cfg['vs']];", MODULE),
+    ('two keys the tag does not take read as known (review R12-3 K6)', RULES,
+     'array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;', "array_diff(array_keys($cfg), array_merge(self::DELTA_KEYS, ['label', 'type']))) return null;", MODULE),
+    ('a tag that failed to parse counted with the group its refusal would suggest (review R12-3 G1, round 11 Q)', UV,
+     "$group = !$t['failed'] && $at !== null && $i < $at ?", "$group = $at !== null && $i < $at ?", MODULE),
     ("a branch's own test ignores a configuration error", ENGINE,
      'test: function(v, isFinal){ return configError ? null : judge(V, v, isFinal); } }; }),', 'test: function(v, isFinal){ return judge(V, v, isFinal); } }; }),', DOM),
     ("an ID check's test ignores a configuration error", ENGINE,

@@ -1286,10 +1286,11 @@ namespace {
     // R8-7): with the previous event, the first event and that one held, nothing is left.
     $e = $fieldErrs($T9, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1} @UVDELTA={"vs":"first-event","max":2} '
         . '@UVDELTA={"vs":"[visit1_arm_1][w9]","max":3} @UVDELTA={"vs":"[w9]","max":5}');
-    // word for word: the rule deltaGroupsTaken applies, as the docs say it (review R11-2)
+    // word for word: the rule deltaGroupsTaken applies, as the docs say it (reviews R11-2, R12-1)
     $HELD10 = ' (an entry another @UVDELTA tag on this field compares with in the same direction is not suggested, '
-        . 'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '
-        . 'alone or as part of an "and", and no value equals both).';
+        . 'unless just one of the two tags has a "when", or each "when" tests one field, written without an event or instance '
+        . '(each checkbox box counts as its own field), for equality with a value, alone or as part of an "and", '
+        . 'and no value equals both as conditions compare values).';
     check('R8-7, R10-1: no later visit named outright once the earlier references are held, and the refusal says why (got ' . json_encode($e) . ')',
         $e === ['@UVDELTA on "w9": "vs" names this field itself — compare it with another entry' . $HELD10]);
     // N3: the field hook's written reference, where visit_form repeats at visit 1 only
@@ -1562,6 +1563,83 @@ namespace {
     check('R11-3 J: the tags read again once references are on (got ' . json_encode([$off, $on]) . ')',
         count($off) === 2 && $off[1] === $SELF9 . 'previous-event" (this needs event and instance references, a project setting).'
         && $on === [$SAME9 . '[previous-event-name][w9]".', $SELF9 . 'first-event".']);
+
+    // ---- the twelfth review (R12-1 to R12-3) ----
+    // R12-1: the held note ($HELD10) says what Logic::requiredValues counts: a field
+    // written with an event or an instance needs nothing, and each box of a checkbox is
+    // a field of its own, so none of these pairs leaves an entry free.
+    longitudinal();
+    foreach (['one field at another event' => ["[visit1_arm_1][flag] = '1'", "[visit1_arm_1][flag] = '2'"],
+              'one field with an instance' => ["[flag][1] = '1'", "[flag][1] = '2'"],
+              'two boxes of one checkbox' => ["[cb(1)] = '1'", "[cb(2)] = '0'"]] as $how => $c) {
+        $e = $fieldErrs($X11, 'w9', 'visit_form', 3, $whenTag('previous-event', 1, $c[0]) . ' ' . $whenTag('first-event', 1, $c[0]) . ' '
+            . $whenTag('[visit1_arm_1][w9]', 1, $c[0]) . ' ' . $whenTag('[event-name][w9]', 1, $c[1]));
+        check('R12-1: ' . $how . ': nothing offered, and the note says why (got ' . json_encode($e) . ')',
+            $e === ['@UVDELTA on "w9": "vs" names this field in this same entry, so the change would always be 0 — compare it with another entry' . $HELD10]);
+    }
+
+    // R12-2: a "when" the parser refuses beside the tag's own "references" even with
+    // references on (a {binding} they do not define, a collection binding compared
+    // with another collection) makes a tag that failed to parse unreadable. A binding
+    // they define, and references refused for themselves, leave the tag read.
+    $BIND = ',"references":{"p":{"field":"flag"}}';
+    foreach (['a {binding} its "references" does not define' => ['{"vs":"previous-event","max":"x","when":"{p} = \'1\'"}', ',"when":"[flag] = \'2\'"'],
+              'a collection {binding} compared with another collection' => ['{"vs":"previous-event","max":"x","when":"{p} = [y][any-instance]",'
+                  . '"references":{"p":{"field":"flag","aggregate":"any"}}}', ',"when":"[flag] = \'2\'"'],
+              'only that {binding} wrong, beside a tag without a "when"' => ['{"vs":"previous-event","max":1,"when":"{p} = \'1\'"}', '']] as $how => $c) {
+        $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[0] . ' @UVDELTA={"vs":"[w9]","max":5' . $c[1] . '}');
+        check('R12-2: beside a tag that failed to parse with ' . $how . ' nothing is offered, and the refusal says why (got ' . json_encode($e) . ')',
+            count($e) === 2 && $e[1] === $UNREAD11);
+    }
+    $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":"x","when":"{p} = \'1\'"' . $BIND . '} @UVDELTA={"vs":"[w9]","max":5,"when":"[flag] = \'2\'"}');
+    check('R12-2: a tag that failed to parse with a {binding} its "references" defines holds its group (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === $SELF9 . 'first-event".');
+    check('... which is accepted next to it once that tag is fixed', $fieldErrs($X11, 'w9', 'visit_form', 3,
+        '@UVDELTA={"vs":"previous-event","max":1,"when":"{p} = \'1\'"' . $BIND . '} @UVDELTA={"vs":"first-event","max":5,"when":"[flag] = \'2\'"}') === []);
+    $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"previous-event","max":1,"when":"{p} = \'1\'","references":{"p":{"field":"flag","bogus":1}}} '
+        . '@UVDELTA={"vs":"[w9]","max":5,"when":"[flag] = \'2\'"}');
+    check('R12-2: a tag whose "references" are refused for themselves holds its group (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === $SELF9 . 'first-event".');
+
+    // R12-3: the lenient read, key by key. The reviewer's N5, K9, W4 and N1 offered an
+    // entry that is refused, or validates nothing at times, once that tag is fixed
+    // (N1 threw a TypeError on PHP 8 instead); K6 read a key the parser does not take.
+    foreach (['"direction":null (N5)' => ['{"vs":"previous-event","max":1,"direction":null}', ',"direction":"up"'],
+              'a misspelt key, "wehn" (K9)' => ['{"vs":"previous-event","max":1,"wehn":"[flag] = \'1\'"}', ',"when":"[flag] > 0"'],
+              'a "when" of only spaces, beside a tag with a "when" (W4)' => ['{"vs":"previous-event","max":"x","when":"  "}', ',"when":"[flag] > 0"'],
+              'an extra key the tag does not take, "label" (K6)' => ['{"vs":"previous-event","max":1,"label":"x"}', ''],
+              'a "vs" that is a list (N1)' => ['{"vs":["previous-event"],"max":1}', ''],
+              'a "vs" that is a number (N1)' => ['{"vs":5,"max":1}', '']] as $how => $c) {
+        try {
+            $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[0] . ' @UVDELTA={"vs":"[w9]","max":5' . $c[1] . '}');
+        } catch (\Throwable $t) {
+            $e = [get_class($t) . ': ' . $t->getMessage()];
+        }
+        check('R12-3: beside a tag that failed to parse with ' . $how . ' nothing is offered, and the refusal says why (got ' . json_encode($e) . ')',
+            count($e) === 2 && $e[1] === $UNREAD11);
+    }
+    // N4, D1, D2, T1: what the parser reads once that tag is fixed, the lenient read
+    // reads too, so the suggestion beside it stands.
+    foreach (['"when":null, no condition (N4)' => ['{"vs":"previous-event","max":"x","when":null}', '', '{"vs":"previous-event","max":1,"when":null}'],
+              'direction "both" (D1)' => ['{"vs":"previous-event","max":"x","direction":"both"}', '', '{"vs":"previous-event","max":1,"direction":"both"}'],
+              'direction "down" (D2)' => ['{"vs":"previous-event","max":"x","direction":"down"}', ',"direction":"down"', '{"vs":"previous-event","max":1,"direction":"down"}'],
+              'a "vs" with spaces around it (T1)' => ['{"vs":" previous-event ","max":"x"}', '', '{"vs":" previous-event ","max":1}']] as $how => $c) {
+        $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[0] . ' @UVDELTA={"vs":"[w9]","max":5' . $c[1] . '}');
+        check('R12-3: a tag that failed to parse with ' . $how . ' holds the group its "vs" names (got ' . json_encode($e) . ')',
+            count($e) === 2 && $e[1] === $SELF9 . 'first-event".');
+        check('... which is accepted next to it once that tag is fixed',
+            $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[2] . ' @UVDELTA={"vs":"first-event","max":5' . $c[1] . '}') === []);
+    }
+    // G1 (round 11's Q): a tag that failed to parse holds the group its JSON names, not
+    // the one its refusal would suggest once fixed, since how it is fixed is not known.
+    // Either way the suggestions go together once it is fixed.
+    $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[w9]","max":"x"} @UVDELTA={"vs":"[w9]","max":5}');
+    check('R12-3 G1: a tag that failed to parse and names the field itself holds its own "vs", not its suggestion (got ' . json_encode($e) . ')',
+        count($e) === 2 && $e[1] === $SELF9 . 'previous-event".');
+    $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"[w9]","max":1} @UVDELTA={"vs":"previous-event","max":5}');
+    check('... fixed, that tag is offered the first event (got ' . json_encode($e) . ')', $e === [$SELF9 . 'first-event".']);
+    check('... and the two are accepted together',
+        $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"first-event","max":1} @UVDELTA={"vs":"previous-event","max":5}') === []);
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

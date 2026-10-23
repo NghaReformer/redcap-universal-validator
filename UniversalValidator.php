@@ -7401,7 +7401,8 @@ class UniversalValidator extends AbstractExternalModule
      * (deltaTagsAsWritten), since fixing the key it failed on brings it back
      * (review R9-7); one that cannot be read even so (an unknown key, or a
      * "vs", "direction" or "when" the parser would refuse) could hold any,
-     * so the answer is every group (DELTA_ANY_GROUP, reviews R10-2, R11-1).
+     * so the answer is every group (DELTA_ANY_GROUP, reviews R10-2, R11-1,
+     * R12-2).
      * $frag's own tag is among them; its "vs" is never suggested back.
      *
      * Each hook asks this only once a suggestion is searched for, so an
@@ -7436,11 +7437,14 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * Said where nothing is suggested and an entry was passed over for
      * another tag's group (review R10-1), with the rule deltaGroupsTaken
-     * applies in the docs' words (Branching::whenExclusive, review R11-2).
+     * applies in the docs' words (Branching::whenExclusive, reviews R11-2,
+     * R12-1): Logic::requiredValues counts only a field written without an
+     * event or instance, and keys a checkbox by its box.
      */
     const DELTA_HELD = ' (an entry another @UVDELTA tag on this field compares with in the same direction is not suggested, '
-        . 'unless just one of the two tags has a "when", or each "when" tests the same field for equality with a value, '
-        . 'alone or as part of an "and", and no value equals both)';
+        . 'unless just one of the two tags has a "when", or each "when" tests one field, written without an event or instance '
+        . '(each checkbox box counts as its own field), for equality with a value, alone or as part of an "and", '
+        . 'and no value equals both as conditions compare values)';
 
     /** deltaTagsAsWritten's answers, by annotation, for one build of the rules. */
     private $deltaTagsMemo = [];
