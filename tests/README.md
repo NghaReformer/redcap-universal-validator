@@ -745,9 +745,11 @@ inner spaces.
 ## `justify_*` — values saved with a reason
 
 `justify_fixture.json` holds the cases of whether a reason field's value gives
-a reason: blank, every kind of space PHP's `trim()` takes and the ones it
-does not, Missing Data Codes with and without spaces round them, numbers, a
-checkbox map, null and booleans. `justify_php.php` runs them through
+a reason: blank, and blank as `@UVREQUIRED` reads it (a no-break space, a
+zero-width space, a byte-order mark, an ideographic space or a form feed
+alone, REQ-8), text after such a character, Missing Data Codes with and
+without PHP's `trim()` set round them, numbers, a checkbox map, null and
+booleans. `justify_php.php` runs them through
 `Logic::reasonGiven` and `justify_js.cjs` through `QRID_reasonGiven`, so the
 two runtimes cannot disagree. `justify_php.php` also pins the grammar (every
 refusal word for word), the registry's `"justify"` flags (the ID checks,
@@ -772,18 +774,25 @@ to a finding saved with a reason.
   the reason offered, and a reason releases it; the note sits beside the
   options, and after an autocomplete dropdown's text box. A reason field
   label holding `$&` or `$$` reads as written in the note and the alert.
+  Invisible characters alone give no reason. On a survey, Previous Page and
+  Save & Return Later skip a blank `@UVREQUIRED` field but still hold a
+  broken value until its own reason is given.
 - `justify_module_php.php` covers the server side: the field and dictionary
   hooks, `applyJustify` (a field no covered rule checks is an error of its
   own, split from a rule written alike on several fields; two tags on one
   field refused; a reason field that is the record ID field, that REDCap
-  fills in, that is read-only or that carries `@UVJUSTIFY` itself refused
-  word for word, and none of them releases a finding in the audit), the page config (no `justifyBy` reaches the page; a reason
+  fills in, that is read-only, that bare `@HIDDEN` hides, that carries
+  `@UVJUSTIFY` itself or `@UVWRITEONCE`, or that another rule's `"return"`
+  writes into refused word for word, in any letter case, and none of them
+  releases a finding in the audit; `@HIDDEN-FORM`, `-SURVEY`, `-APP`, `-PDF`
+  and a tag name inside another tag's value refuse nothing), the page config (no `justifyBy` reaches the page; a reason
   field never makes a locked field hold the save), the post-save audit
   (`uvalidate-justified` with `justified_by`, never the reason; a blank,
-  spaces or a code leaves `invalid-id-saved`; the reason read at the same
+  spaces, invisible characters or a code leaves `invalid-id-saved`; the reason read at the same
   event and instance only, also for an `@UVDELTA` that compares with the
-  previous event), and the legacy and durable scans (rows, counts, the "Saved
-  with a reason" column and sentence, the stored flag). Its `getData` stub
+  previous event), and the legacy and durable scans (rows, counts, a second
+  legacy scan on the same module counting afresh, the "Saved with a reason"
+  column and sentence, the stored flag). Its `getData` stub
   returns only the fields a read asks for, so a reason field the audit
   forgot to ask for reads as blank.
 - `missing_codes_php.php` adds a reason field holding a code (no reason) and
@@ -807,7 +816,7 @@ to a finding saved with a reason.
   that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
   read-only field, and a reason on another survey page. A reason typed in
   the embedded box releases the field (C8).
-- `justify_mutations.py` applies 91 mutations to a copy of the code, one at a
+- `justify_mutations.py` applies 114 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Seven mutate
   the stores, the rollup and the status poll of the durable scan and are
   killed only by `tests/mysql/run.php` (cases `justified` and `perf`); they run

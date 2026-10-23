@@ -326,6 +326,30 @@ namespace {
         && strpos($out[1]['configError'], 'on "y"') !== false && $out[1]['fields'] === ['y']);
     $out = $aj->invoke(null, [['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>0']]);
     check('applyJustify: no justify rule, nothing changes', $out === [['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>0']]);
+    // a reason field another rule returns a value to: the justify rule is refused on each of its fields
+    $out = $aj->invoke(null, [
+        ['type' => 'range', 'fields' => ['w'], 'rangeReturn' => ['range' => 'why']],
+        ['type' => 'range', 'fields' => ['a', 'b'], 'rangeHardLo' => '0'],
+        ['type' => 'justify', 'fields' => ['a', 'b'], 'justifyReason' => 'why'],
+    ]);
+    $retWhy = '"reason" names "[why]", which the rule on "w" returns a value to — the save writes it, so it would hold a reason nobody wrote; name a field the person fills in.';
+    check('applyJustify: a reason field another rule returns a value to is refused on each field (got ' . json_encode(array_column($out, 'configError')) . ')',
+        count($out) === 4 && $out[2]['fields'] === ['a'] && $out[2]['configError'] === '@UVJUSTIFY on "a": ' . $retWhy
+        && $out[3]['fields'] === ['b'] && $out[3]['configError'] === '@UVJUSTIFY on "b": ' . $retWhy);
+    check('applyJustify: ... and pairs nothing', !isset($out[1]['justifyBy']));
+    $out = $aj->invoke(null, [
+        ['type' => 'range', 'fields' => ['w'], 'branches' => [['when' => '[s]=1', 'rangeReturn' => ['z' => 'why']]]],
+        ['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>0'],
+        ['type' => 'justify', 'fields' => ['a'], 'justifyReason' => 'why'],
+    ]);
+    check('applyJustify: a branch that returns a value counts too', isset($out[2]['configError']) && strpos($out[2]['configError'], 'which the rule on "w" returns a value to') !== false);
+    $out = $aj->invoke(null, [
+        ['type' => 'range', 'fields' => ['w'], 'rangeReturn' => ['range' => 'why'], 'configError' => 'refused'],
+        ['type' => 'constraint', 'fields' => ['a'], 'assert' => '[a]>0'],
+        ['type' => 'justify', 'fields' => ['a'], 'justifyReason' => 'why'],
+    ]);
+    check('applyJustify: a returning rule that is refused itself writes nothing, so the reason field stands',
+        empty($out[2]['configError']) && $out[1]['justifyBy'] === ['a' => 'why']);
     $ml = new \ReflectionMethod(UniversalValidator::class, 'markLockReads');
     $ml->setAccessible(true);
     $out = $ml->invoke(null, [['type' => 'writeonce', 'fields' => ['a']],
@@ -337,16 +361,27 @@ namespace {
 
     // ---- 1b) a reason field that is never blank, or that nobody writes -------------------
     // Any value in the reason field stands for every broken value of the field, so
-    // the record ID field, a field REDCap fills in itself, a read-only field and a
-    // field with a @UVJUSTIFY of its own are refused, word for word.
+    // the record ID field, a field REDCap fills in itself, a read-only field, a
+    // field bare @HIDDEN hides, a field with a @UVJUSTIFY of its own and a
+    // write-once field are refused, word for word, in any letter case. A tag
+    // name inside another tag's value is text (AnnotationRules::maskValues).
     $R = function ($reason) use ($J) { return '@UVRANGE={"hard":[0,10]} ' . $J($reason); };
     $FILLED = ['ct_why' => '@CALCTEXT(if([r_ct]>10,"auto","auto"))', 'cd_why' => '@CALCDATE([r_cd],1,"d")', 'df_why' => '@DEFAULT="n/a"',
         'sv_why' => '@SETVALUE="checked"', 'pf_why' => '@PREFILL="checked"', 'now_why' => '@NOW', 'nows_why' => '@NOW-SERVER',
         'nowu_why' => '@NOW-UTC', 'td_why' => '@TODAY', 'tds_why' => '@TODAY-SERVER', 'tdu_why' => '@TODAY-UTC',
         'un_why' => '@USERNAME', 'aun_why' => '@APPUSERNAME-APP', 'lat_why' => '@LATITUDE', 'lon_why' => '@LONGITUDE',
-        'dc_why' => '@DOWNLOAD-COUNT(consent_file)', 'ro_why' => '@READONLY', 'rof_why' => '@READONLY-FORM', 'ros_why' => '@READONLY-SURVEY'];
+        'dc_why' => '@DOWNLOAD-COUNT(consent_file)', 'lcf_why' => '@LANGUAGE-CURRENT-FORM', 'lcs_why' => '@LANGUAGE-CURRENT-SURVEY',
+        'ro_why' => '@READONLY', 'rof_why' => '@READONLY-FORM', 'ros_why' => '@READONLY-SURVEY', 'hd_why' => '@HIDDEN', 'wo_why' => '@UVWRITEONCE',
+        // lower case, as REDCap reads its own tags
+        'dfl_why' => '@default="n/a"', 'rol_why' => '@readonly-survey', 'hdl_why' => '@hidden', 'wol_why' => '@uvwriteonce',
+        // a real tag after a value that holds a tag name
+        'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'"];
+    // reason fields that stay: the place-bound forms of @HIDDEN, and tag names inside another tag's value
+    $KEPT = ['hs_why' => '@HIDDEN-SURVEY', 'hf_why' => '@HIDDEN-FORM', 'ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF',
+        'tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
+        'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'"];
     $BADR = ['record_id' => f('visit_form'), 'r_rid' => f('visit_form', $R('record_id'), 'integer')];
-    foreach ($FILLED as $why => $tag) {
+    foreach ($FILLED + $KEPT as $why => $tag) {
         $BADR['r_' . substr($why, 0, -4)] = f('visit_form', $R($why), 'integer');
         $BADR[$why] = f('visit_form', $tag);
     }
@@ -354,6 +389,8 @@ namespace {
         // each the other's reason; and a chain: ca's reason cb is itself paired with cc
         'ma' => f('visit_form', $R('mb'), 'integer'), 'mb' => f('visit_form', $R('ma'), 'integer'),
         'ca' => f('visit_form', $R('cb'), 'integer'), 'cb' => f('visit_form', $R('cc'), 'integer'), 'cc' => f('visit_form'),
+        // the same pair in lower case
+        'la' => f('visit_form', $R('lb'), 'integer'), 'lb' => f('visit_form', '@uvrange={"hard":[0,10]} @uvjustify={"reason":"[la]"}', 'integer'),
         // tags that fill nothing in, and one that only starts like a refused one
         'r_ok' => f('visit_form', $R('ok_why'), 'integer'), 'ok_why' => f('visit_form', '@CHARLIMIT=200 @WORDLIMIT=50 @NOWRAP'),
     ];
@@ -368,13 +405,25 @@ namespace {
         . ' — it is never blank, so it would release every broken value; name a field the person fills in.');
     foreach ($FILLED as $why => $tag) {
         $f = 'r_' . substr($why, 0, -4);
-        $name = strtoupper(preg_replace('/^@([A-Z-]+).*$/s', '$1', $tag));
-        $want = strpos($name, 'READONLY') === 0
-            ? '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.'
-            : '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", which has @' . $name . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
-        check('a reason field with @' . $name . ' is refused (got ' . $berr($f) . ')', $berr($f) === $want);
+        // the last tag the annotation holds is the one refused (tv_why: the real @DEFAULT after the placeholder)
+        $name = strtoupper(preg_replace('/^.*@([A-Z-]+).*$/si', '$1', $tag));
+        $head = '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", ';
+        if (strpos($name, 'READONLY') === 0) {
+            $want = $head . 'which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.';
+        } elseif ($name === 'HIDDEN') {
+            $want = $head . 'which has @HIDDEN — the field is hidden on every page, so the person cannot write a reason there; name a field the person fills in.';
+        } elseif ($name === 'UVWRITEONCE') {
+            $want = $head . 'which carries @UVWRITEONCE — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.';
+        } else {
+            $want = $head . 'which has @' . $name . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
+        }
+        check('a reason field with ' . $tag . ' is refused (got ' . $berr($f) . ')', $berr($f) === $want);
     }
-    foreach (['ma' => 'mb', 'mb' => 'ma', 'ca' => 'cb'] as $f => $why) {
+    foreach ($KEPT as $why => $tag) {
+        $f = 'r_' . substr($why, 0, -4);
+        check('a reason field with ' . $tag . ' is kept (got ' . $berr($f) . ')', justifyOn($bp, $f) !== null && $berr($f) === '');
+    }
+    foreach (['ma' => 'mb', 'mb' => 'ma', 'ca' => 'cb', 'la' => 'lb', 'lb' => 'la'] as $f => $why) {
         check($f . ': a reason field that carries @UVJUSTIFY itself is refused (got ' . $berr($f) . ')', $berr($f) === '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why
             . ']", which carries @UVJUSTIFY itself — the two fields could stand for each other; name a field that only holds the reason.');
     }
@@ -382,16 +431,48 @@ namespace {
     check('tags that fill nothing in leave the reason field as it is (got ' . $berr('r_ok') . ')', justifyOn($bp, 'r_ok') !== null && $berr('r_ok') === '');
     // the audit: a broken value with a refused reason field stays open, whatever the field holds
     $brow = ['record_id' => '2', 'r_rid' => '99', 'ma' => '99', 'mb' => '99', 'ca' => '99', 'cb' => '99', 'cc' => 'scale reads high',
-        'r_ok' => '99', 'ok_why' => 'scale reads high'];
-    foreach ($FILLED as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+        'la' => '99', 'lb' => '99', 'r_ok' => '99', 'ok_why' => 'scale reads high'];
+    foreach ($FILLED + $KEPT as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
     $m = save($BADR, ['2' => [351 => $brow]], 'visit_form');
     $open = [];
-    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED))) as $f) {
+    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca', 'la', 'lb'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED))) as $f) {
         if (audit($m, $f) !== ['invalid-id-saved:range:hard-high']) $open[$f] = audit($m, $f);
     }
     check('a refused reason field releases nothing in the audit (got ' . json_encode($open) . ')', $open === []);
     check('... the end of a chain and a field with harmless tags still do (got ' . json_encode([audit($m, 'cb'), audit($m, 'r_ok')]) . ')',
         audit($m, 'cb') === ['uvalidate-justified:range:hard-high:cc'] && audit($m, 'r_ok') === ['uvalidate-justified:range:hard-high:ok_why']);
+    $kept = [];
+    foreach (array_keys($KEPT) as $why) {
+        $f = 'r_' . substr($why, 0, -4);
+        if (audit($m, $f) !== ['uvalidate-justified:range:hard-high:' . $why]) $kept[$f] = audit($m, $f);
+    }
+    check('... and so do the reason fields kept (got ' . json_encode($kept) . ')', $kept === []);
+
+    // ---- 1c) a reason field another rule returns a value to ------------------------------
+    // The save writes the weight's growth range into ht_why, so the field would hold
+    // a reason nobody wrote: the justify rule on ht is refused (applyJustify).
+    $G = '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[vdate]"},'
+        . '"soft":[-2,2],"hard":[-5,5],"return":{"range":"[ht_why]"}}';
+    $RET = ['record_id' => f('visit_form'), 'sex' => f('visit_form', '', '', 'radio', '1, Male | 2, Female'),
+        'dob' => f('visit_form', '', 'date_ymd'), 'vdate' => f('visit_form', '', 'date_ymd'),
+        'weight' => f('visit_form', $G, 'number_1dp'),
+        'ht' => f('visit_form', '@UVRANGE={"hard":[40,120]} ' . $J('ht_why'), 'integer'),
+        'ht_why' => f('visit_form')];
+    // ht_why as the save leaves it: holding the range the module wrote
+    $rrow = ['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10', 'vdate' => '2026-01-10', 'weight' => '9.6', 'ht' => '300', 'ht_why' => '7.8 to 11.9 kg'];
+    $rp = page(mod($RET, ['2' => [351 => $rrow]], $FULL), '2', 'visit_form');
+    $rerr = '';
+    foreach (rulesOn($rp, 'ht') as $r) if (!empty($r['configError']) && strpos((string) $r['configError'], '@UVJUSTIFY on "ht"') === 0) $rerr = (string) $r['configError'];
+    check('a reason field another rule returns a value to is refused (got ' . $rerr . ')', $rerr === '@UVJUSTIFY on "ht": "reason" names "[ht_why]", which the rule on "weight"'
+        . ' returns a value to — the save writes it, so it would hold a reason nobody wrote; name a field the person fills in.');
+    $wr = rulesOn($rp, 'weight', 'range');
+    check('... and the rule that returns the value keeps working', $wr && empty($wr[0]['configError']) && ($wr[0]['rangeReturn']['range'] ?? null) === 'ht_why');
+    $m = save($RET, ['2' => [351 => $rrow]], 'visit_form');
+    check('... so the value the save wrote releases nothing in the audit (got ' . json_encode(audit($m, 'ht')) . ')', audit($m, 'ht') === ['invalid-id-saved:range:hard-high']);
+    $named = array_filter(logged($m, 'uvalidate-unconfigurable'), function ($e) {
+        return strpos((string) ($e['why'] ?? ''), 'configuration error:') === 0 && strpos((string) $e['why'], 'which the rule on "weight" returns a value to') !== false;
+    });
+    check('... and the save logs the refusal as the other refused tags are logged (VAL-15)', count($named) === 1);
 
     // ---- 2) the post-save audit ----------------------------------------------------------
     $m = save($DICT, $data(), 'visit_form');
@@ -403,10 +484,15 @@ namespace {
     $text = json_encode($m->logCalls);
     check('the reason itself is never logged', strpos($text, 'recalibrated') === false);
     check('the justified entry keeps the value, as the open one does (log-values raw)', $j && $j[0]['value'] === '30');
-    foreach (['   ' => 'spaces', 'UNK' => 'a Missing Data Code', " NASK\n" => 'a Missing Data Code with spaces'] as $v => $what) {
+    // blank as @UVREQUIRED reads it (Logic::isBlank, REQ-8), and the codes
+    foreach (['   ' => 'spaces', "\u{00A0}" => 'a no-break space', "\u{200B}" => 'a zero-width space', "\u{FEFF}" => 'a byte-order mark',
+            "\u{3000}" => 'an ideographic space', "\f" => 'a form feed', " \u{00A0}\t\u{200B}\n" => 'spaces and invisible characters mixed',
+            'UNK' => 'a Missing Data Code', " NASK\n" => 'a Missing Data Code with spaces'] as $v => $what) {
         $m = save($DICT, $data(['wt_why' => $v]), 'visit_form');
         check($what . ' is no reason (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
     }
+    $m = save($DICT, $data(['wt_why' => "\u{00A0}re-weighed"]), 'visit_form');
+    check('a word after a no-break space is a reason (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
     $m = save($DICT, $data(['v_why' => '2']), 'visit_form');
     check('a dropdown choice is a reason (got ' . json_encode(audit($m, 'vdate')) . ')', audit($m, 'vdate') === ['uvalidate-justified:window:future:v_why']);
     $m = save($DICT, $data(['req_why' => '1']), 'visit_form');
@@ -452,6 +538,13 @@ namespace {
     check('scan: justified counted apart (got ' . json_encode($res['stats']) . ')', $res['stats']['justified'] === 3 && $just === 3
         && $res['stats']['violations'] === count($res['violations']) - 3);
     check('scan: the reason itself is in no finding', strpos(json_encode($res['violations']), 'recalibrated') === false);
+    // two legacy scans in one request on one module object: the second counts its own findings only
+    $m2 = mod($DICT, $data(['wt_why' => 'scale recalibrated', 'pair_why' => 'both above the scale']), $FULL);
+    $first = $m2->scanProject(PID);
+    $second = $m2->scanProject(PID);
+    check('scan: a second scan on the same module counts afresh (got ' . json_encode([$first['stats'], $second['stats']]) . ')',
+        $first['stats']['justified'] === 3 && $second['stats']['justified'] === 3
+        && $second['stats']['violations'] === $first['stats']['violations'] && count($second['violations']) === count($first['violations']));
     $dims = $m->scanDimensions(PID, $res['rules'] ?? null);
     $cols = ScanColumns::all($dims);
     $keys = array_column($cols, 'key');

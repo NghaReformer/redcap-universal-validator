@@ -716,7 +716,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($returns) $out['returns'] = $returns;
             }
             // judged by the branch it picked, justified by the field's reason (justifyBy is the rule's, never a branch's)
-            return $this->markJustified($out, $rule, $values, $resolution, $project_id);
+            return $this->markJustified($out, $rule, $values, $project_id);
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -799,19 +799,26 @@ class UniversalValidator extends AbstractExternalModule
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->withReturned($this->markJustified(
             $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta),
-            $rule, $values, $resolution, $project_id), $ret, $rule, $meta);
+            $rule, $values, $project_id), $ret, $rule, $meta);
     }
 
     /**
      * Marks each finding in $out justified, with justifiedBy, whose field
      * has its reason given in the same record, event and instance ($values):
      * the reason field named in the rule's justifyBy (applyJustify) holds a
-     * reason (Logic::reasonGiven). A reason field that was not read, or could
-     * not be resolved here, leaves the finding open, and so do Missing Data
-     * Codes that could not be read: a code is no reason, and without the list
-     * no value can be told apart from one.
+     * reason (Logic::reasonGiven). A reason field that was not read leaves
+     * the finding open, and so do Missing Data Codes that could not be read:
+     * a code is no reason, and without the list no value can be told apart
+     * from one.
+     *
+     * The reason field's resolution needs no test of its own. readValues
+     * returns a value only for a field it resolved. A scan or host context
+     * judges only the fields of its own form ($onForm), and the reason field
+     * sits on that same form (annotateJustifyDictionary; @UVJUSTIFY is an
+     * annotation tag only), so resolveOne finds it wherever it finds the
+     * field. Drop the same-form refusal and this needs the test again.
      */
-    private function markJustified(array $out, array $rule, array $values, array $resolution, $project_id)
+    private function markJustified(array $out, array $rule, array $values, $project_id)
     {
         if (empty($out['invalid']) || !isset($rule['justifyBy']) || !is_array($rule['justifyBy'])) return $out;
         $codes = null;
@@ -819,7 +826,6 @@ class UniversalValidator extends AbstractExternalModule
             $f = isset($v['field']) ? (string) $v['field'] : '';
             $reason = isset($rule['justifyBy'][$f]) && is_string($rule['justifyBy'][$f]) ? $rule['justifyBy'][$f] : '';
             if ($reason === '' || !array_key_exists($reason, $values)) continue;
-            if ((isset($resolution[$reason]) ? $resolution[$reason] : 'ok') !== 'ok') continue;
             if ($codes === null) {
                 $codes = $this->missingDataCodes($project_id);
                 // the codes come from the project object: either read failing leaves them unknown
@@ -4085,8 +4091,14 @@ class UniversalValidator extends AbstractExternalModule
      * It must also be a field only the person fills in, since any value in it
      * stands for every broken value of the field: not the record ID field,
      * not one REDCap fills in itself (JUSTIFY_FILLED_TAGS), not a read-only
-     * one, and not one with a @UVJUSTIFY of its own, which would let two
-     * fields stand for each other.
+     * one, not one bare @HIDDEN hides on every page (@HIDDEN-FORM, -SURVEY,
+     * -APP and -PDF hide it in one place, and a hidden row gives no reason on
+     * the page), not one with a @UVJUSTIFY of its own, which would let two
+     * fields stand for each other, and not a write-once one, since a reason
+     * must be cleared when the value changes for another reason. A tag name
+     * inside another tag's value is text (AnnotationRules::maskValues). A
+     * field another rule returns a value to is refused in applyJustify, which
+     * sees every rule.
      */
     private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -4108,7 +4120,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($reason === $this->recordIdFieldOf($pid)) {
             return $err('"reason" names "[' . $reason . ']", the record ID field — it is never blank, so it would release every broken value; name a field the person fills in.');
         }
-        $ann = isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '';
+        $ann = AnnotationRules::maskValues(isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '');
         $filled = implode('|', array_map(function ($t) { return preg_quote($t, '/'); }, self::JUSTIFY_FILLED_TAGS));
         if (preg_match('/@(' . $filled . ')(?![\w-])/i', $ann, $m)) {
             return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
@@ -4118,9 +4130,17 @@ class UniversalValidator extends AbstractExternalModule
             return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
                 . ' — the person cannot write a reason there; name a field the person fills in.');
         }
+        if (preg_match('/@HIDDEN(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN'
+                . ' — the field is hidden on every page, so the person cannot write a reason there; name a field the person fills in.');
+        }
         if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
             return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_JUSTIFY
                 . ' itself — the two fields could stand for each other; name a field that only holds the reason.');
+        }
+        if (preg_match('/' . preg_quote(AnnotationRules::TAG_WRITEONCE, '/') . '(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_WRITEONCE
+                . ' — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.');
         }
         return $frag;
     }
@@ -4134,7 +4154,8 @@ class UniversalValidator extends AbstractExternalModule
      */
     const JUSTIFY_FILLED_TAGS = ['CALCTEXT', 'CALCDATE', 'DEFAULT', 'SETVALUE', 'PREFILL',
         'NOW-SERVER', 'NOW-UTC', 'NOW', 'TODAY-SERVER', 'TODAY-UTC', 'TODAY',
-        'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT'];
+        'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT',
+        'LANGUAGE-CURRENT-FORM', 'LANGUAGE-CURRENT-SURVEY'];
 
     /**
      * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the
@@ -6233,9 +6254,38 @@ class UniversalValidator extends AbstractExternalModule
      * error on that field alone: a tag written alike on several fields is one
      * rule (AnnotationRules::groupMulti), so the field is split off into a
      * rule of its own, as markReturnClashes splits a lock.
+     *
+     * A justify rule whose reason field another live rule returns a value to
+     * (ModeRegistry::returnFields, read as markReturnClashes reads it for a
+     * lock) is refused on each of its fields: the save writes that field, so
+     * it would hold a reason nobody wrote. A returning rule that is refused
+     * itself writes nothing.
      */
     private static function applyJustify(array $rules)
     {
+        $writer = [];       // field => the first field of the live rule that returns a value to it
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            foreach (ModeRegistry::returnFields($r) as $f) {
+                if (!isset($writer[$f])) $writer[$f] = isset($r['fields'][0]) ? (string) $r['fields'][0] : '?';
+            }
+        }
+        $refused = [];
+        foreach ($rules as $i => $r) {
+            if (!$writer) break;
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            $reason = isset($r['justifyReason']) && is_string($r['justifyReason']) ? $r['justifyReason'] : '';
+            if (!isset($writer[$reason])) continue;
+            $why = '"reason" names "[' . $reason . ']", which the rule on "' . $writer[$reason] . '" returns a value to'
+                . ' — the save writes it, so it would hold a reason nobody wrote; name a field the person fills in.';
+            $mine = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => AnnotationRules::TAG_JUSTIFY . ' on "' . $f . '": ' . $why]);
+            }
+            $rules[$i] = $mine ? array_shift($mine) : array_merge($r, ['configError' => AnnotationRules::TAG_JUSTIFY . ': ' . $why]);
+            foreach ($mine as $x) $refused[] = $x;
+        }
+        foreach ($refused as $r) $rules[] = $r;
         $reasonOf = [];     // field => reason field
         foreach ($rules as $r) {
             if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;

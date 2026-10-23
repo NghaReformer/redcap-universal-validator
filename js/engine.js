@@ -684,19 +684,22 @@
     var t = s.slice(i, j);
     return t !== "" && QRID_MISSING_CODES[t] === true;
   }
-  /* Whether a reason field's value gives a reason (@UVJUSTIFY): text left
-     once PHP's trim() set is taken from both ends, and not a Missing Data
-     Code ($codes: code => true, the page's own when left out). Twin of
+  /* Whether a reason field's value gives a reason (@UVJUSTIFY): not blank by
+     the test @UVREQUIRED asks (QRID_isBlank, so a no-break space, a
+     zero-width space or a form feed alone gives none), and not a Missing
+     Data Code ($codes: code => true, the page's own when left out), compared
+     once PHP's trim() set is taken from both ends. Twin of
      Logic::reasonGiven; both read tests/justify_fixture.json. */
   function QRID_reasonGiven(value, codes){
     if(typeof value !== "string" && typeof value !== "number") return false;
+    if(QRID_isBlank(value)) return false;
     var set = (codes && typeof codes === "object") ? codes : QRID_MISSING_CODES;
     var s = String(value), i = 0, j = s.length;
     function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }
     while(i < j && ws(s.charCodeAt(i))) i++;
     while(j > i && ws(s.charCodeAt(j - 1))) j--;
     var t = s.slice(i, j);
-    return t !== "" && !(Object.prototype.hasOwnProperty.call(set, t) && set[t] === true);
+    return !(Object.prototype.hasOwnProperty.call(set, t) && set[t] === true);
   }
   /* The date and datetime fields of this form shown day- or month-first
      (config.dateFormats: field => [type, format]). REDCap stores every date as

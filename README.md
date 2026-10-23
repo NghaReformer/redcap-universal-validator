@@ -1292,9 +1292,14 @@ the open ones:
   fill it in, so the module refuses the record ID field, a field REDCap fills
   in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
   `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
-  `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`), a field
-  with any form of `@READONLY`, and a field that carries `@UVJUSTIFY` itself,
-  which would let two fields stand for each other.
+  `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
+  `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any
+  form of `@READONLY`, a field with bare `@HIDDEN` (`@HIDDEN-FORM`,
+  `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are allowed), a field
+  that carries `@UVJUSTIFY` itself, which would let two fields stand for each
+  other, a field with `@UVWRITEONCE`, whose reason could never be cleared,
+  and a field another rule's `"return"` writes into. A tag name inside
+  another tag's value, such as a message or a placeholder, refuses nothing.
 - **`message`** is the note under the field that asks for the reason (a map of
   language ids to texts is accepted, as for the other tags). Without it the
   note reads "Fix this value, or say why it is right in" the reason field's
@@ -1307,10 +1312,12 @@ the open ones:
   duplicate identifier safe, and never `@UVWRITEONCE`, since a reason gives
   no role. A `@UVJUSTIFY` on a field none of those rules checks, a bare
   `@UVJUSTIFY` and a second one on the field are configuration errors.
-- **What counts as a reason.** Any text left once spaces, tabs and line
-  breaks are taken from both ends. A blank field and a missing data code give
-  none, so a reason field marked "unknown" still asks for one. On the form, a
-  reason field the person cannot see gives none either: its row hidden by
+- **What counts as a reason.** Any value that is not blank by the test
+  `@UVREQUIRED` uses: spaces, tabs, line breaks, no-break and other Unicode
+  spaces, zero-width characters and byte-order marks alone give none. A
+  missing data code gives none either, so a reason field marked "unknown"
+  still asks for one. On the form, a
+  reason field the person cannot see gives no reason: its row hidden by
   branching logic, or, for a reason field embedded in another field's label,
   the row it sits in. A reason stands until someone clears it, so a later,
   different broken value of the field saves under the same reason. Clear the

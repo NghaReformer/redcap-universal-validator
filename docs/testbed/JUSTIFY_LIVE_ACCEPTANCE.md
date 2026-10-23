@@ -64,8 +64,9 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
 - A reason stands for `@UVALIDATE` (single and pooled), `@UVASSERT`,
   `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE` and
   `@UVDELTA`. It never stands for `@UVUNIQUE` or `@UVWRITEONCE` (section F).
-- A reason is text that is not blank, not only spaces and not a Missing Data
-  Code, or a choice picked in a dropdown, radio or SQL field. On the page, a
+- A reason is text that is not blank (spaces, a no-break space or a
+  zero-width space alone are blank, as for `@UVREQUIRED`) and not a Missing
+  Data Code, or a choice picked in a dropdown, radio or SQL field. On the page, a
   reason field whose row branching logic hides gives no reason. A reason
   field embedded in another field's label counts as shown while the row it
   sits in shows (C8). The audit and

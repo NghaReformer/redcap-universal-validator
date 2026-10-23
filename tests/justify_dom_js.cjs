@@ -192,10 +192,14 @@ function shown(env, field, suffix) {
 function submitEv() {
   return { _prevented: false, preventDefault() { this._prevented = true; }, stopImmediatePropagation() {} };
 }
-/* Submit and say what the guard did: "held" (alert), "asked" (confirm) or "saved". */
-function save(env) {
+/* Submit and say what the guard did: "held" (alert), "asked" (confirm) or "saved".
+   by: the name of the button that asked for the save (a survey's Previous Page
+   or Save & Return Later), none for a plain submit. */
+function save(env, by) {
   const a = env.win._alerts.length, c = env.win._confirms.length;
-  const ev = submitEv(); env.doc.fire('submit', ev);
+  const ev = submitEv();
+  if (by) { const b = makeEl('button'); b.setAttribute('name', by); ev.submitter = b; }
+  env.doc.fire('submit', ev);
   if (env.win._alerts.length > a) return 'held';
   if (env.win._confirms.length > c) return 'asked';
   return ev._prevented ? 'prevented' : 'saved';
@@ -239,6 +243,13 @@ for (const order of ['reason first', 'reason last']) {
   type(env, why, '   ');
   check(order + ': spaces are no reason: held again', save(env) === 'held');
   check(order + ': ... and the note is back', shown(env, 'wt', 'j') === NOTE('wt_why'));
+  // blank as @UVREQUIRED reads it (QRID_isBlank, REQ-8)
+  type(env, why, ' ​﻿　\f');
+  check(order + ': no-break, zero-width and ideographic spaces, a byte-order mark and a form feed are no reason: held',
+    save(env) === 'held' && shown(env, 'wt', 'j') === NOTE('wt_why'), shown(env, 'wt', 'j'));
+  type(env, why, ' re-weighed');
+  check(order + ': ... a word after a no-break space is one', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+  type(env, why, '');
 
   type(env, wt, '50');
   check(order + ': once the value is fixed, nothing holds and nothing asks', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
@@ -554,6 +565,31 @@ function checkboxOption(field, code) {
   check('an autocomplete dropdown: the note sits after the text box\'s wrapper, not between it and the select',
     j && j.parentNode === row && row.children.indexOf(j) > row.children.indexOf(wrap) && row.children.indexOf(dose) + 1 !== row.children.indexOf(j)
     && shown(env, 'dose', 'j') === NOTE('dose_why'), row.children.map((c) => c.id || c.tagName));
+}
+
+// ---- 17) a survey save that does not finish the response (REQ-7) --------------------------
+/* Previous Page and Save & Return Later save the page without finishing the
+   response. A blank @UVREQUIRED field (its mode waits for a complete
+   response) does not hold them, reason or not. A broken value still does,
+   since it is saved either way, until its own reason is given: a reason
+   field on the page releases only the field whose reason it holds. */
+{
+  const PARTIAL = { buttons: ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], types: ['required'] };
+  const wt = text('wt', '30'), why = text('wt_why', ''), req = text('req', ''), rwhy = text('req_why', '');
+  const env = boot([wt, why, req, rwhy], { context: 'survey', partialSave: PARTIAL, rules: [
+    LIGHT('hard'), J(['wt'], 'wt_why'), { type: 'required', fields: ['req'], blockSave: 'hard' }, J(['req'], 'req_why')] });
+  for (const nm of PARTIAL.buttons) {
+    check(nm + ': a broken value with no reason holds the save; the blank required field does not',
+      save(env, nm) === 'held' && /• wt \(or give a reason in “wt_why”\)/.test(said(env)) && !/• req/.test(said(env)), said(env));
+  }
+  check('Next / Submit holds both', save(env, 'submit-btn-saverecord') === 'held'
+    && /• wt \(or give a reason/.test(said(env)) && /• req \(or give a reason in “req_why”\)/.test(said(env)), said(env));
+  type(env, why, 'scale recalibrated');
+  for (const nm of PARTIAL.buttons) check(nm + ': with the reason given the save goes through', save(env, nm) === 'saved', said(env));
+  check('Next / Submit still holds the blank required field, and only it',
+    save(env, 'submit-btn-saverecord') === 'held' && /• req/.test(said(env)) && !/• wt/.test(said(env)), said(env));
+  type(env, rwhy, 'not asked at this visit');
+  check('... until its own reason is given', save(env, 'submit-btn-saverecord') === 'saved', said(env));
 }
 
 console.log('justify_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

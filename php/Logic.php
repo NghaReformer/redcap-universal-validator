@@ -1302,18 +1302,20 @@ class Logic
     }
 
     /**
-     * Whether a reason field's value gives a reason (@UVJUSTIFY): text left
-     * once PHP's trim() set is taken from both ends, and not one of the
-     * project's Missing Data Codes ($codes: code => true, as
-     * UniversalValidator::missingDataCodes gives them). A checkbox map, a
-     * null or a boolean gives none. The browser's twin is QRID_reasonGiven
-     * in js/engine.js; both read tests/justify_fixture.json.
+     * Whether a reason field's value gives a reason (@UVJUSTIFY): it is not
+     * blank by the test @UVREQUIRED asks (isBlank, so a no-break space, a
+     * zero-width space or a form feed alone gives none), and it is not one of
+     * the project's Missing Data Codes ($codes: code => true, as
+     * UniversalValidator::missingDataCodes gives them), compared once PHP's
+     * trim() set is taken from both ends, as isMissingCode compares. A
+     * checkbox map, a null or a boolean gives none. The browser's twin is
+     * QRID_reasonGiven in js/engine.js; both read tests/justify_fixture.json.
      */
     public static function reasonGiven($value, array $codes = [])
     {
         if (!is_string($value) && !is_int($value) && !is_float($value)) return false;
-        $t = trim((string) $value);
-        return $t !== '' && !isset($codes[$t]);
+        if (self::isBlank($value)) return false;
+        return !isset($codes[trim((string) $value)]);
     }
 
     /**

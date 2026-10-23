@@ -712,6 +712,12 @@ final class Schema
      * apart (ScanPromotion::findingsOf, justifiedOf). 0 for every existing
      * run. Two ALTERs, each skipped when its column is there.
      *
+     * VERSION 6 STAYS OPEN until the release that ships it, then freezes as
+     * 1 and 2 did. No release holds it yet (2.3.0-rc.2 is at 5), which is why
+     * detail_justified could still join it. A test database created at 6
+     * before detail_justified existed reports version 6 and gets nothing from
+     * migrate(): drop it and create it again.
+     *
      * @return array[] each ['sql' => string, 'skipIf' => ?array]
      */
     private static function statementsV6()

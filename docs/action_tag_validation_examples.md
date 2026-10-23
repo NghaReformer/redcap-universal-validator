@@ -4741,11 +4741,13 @@ to texts.
 - Never for `@UVUNIQUE`: a reason does not make a duplicate identifier safe.
   Never for `@UVWRITEONCE`: a locked field stays locked, and only the roles
   that tag names can change it.
-- A reason is any text left once spaces, tabs and line breaks are taken from
-  both ends. A blank field and a missing data code give none, so a reason field
-  marked "unknown" still asks for one. On the form, a reason field the person
-  cannot see gives none either: its row hidden by branching logic, or, for a
-  reason field embedded in another field's label, the row it sits in.
+- A reason is any value that is not blank by the test `@UVREQUIRED` uses:
+  spaces, tabs, line breaks, no-break and other Unicode spaces, zero-width
+  characters and byte-order marks alone give none. A missing data code gives
+  none, so a reason field marked "unknown" still asks for one. On the form, a
+  reason field the person cannot see gives none either: its row hidden by
+  branching logic, or, for a reason field embedded in another field's label,
+  the row it sits in.
 - A reason stands until someone clears it. A later, different broken value of
   the field saves under the same reason, so clear the reason field when the
   value changes for another reason.
@@ -4794,11 +4796,19 @@ It refuses a reason field the person does not fill in, since any value there
 would stand for every broken value: the record ID field, a field REDCap fills
 in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
 `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
-`@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`), a field
-with any form of `@READONLY`, and a field that carries `@UVJUSTIFY` itself.
-These refusals read the reason field's own annotation, so the blocks above
-cannot show them. With `weight_reason` given `@DEFAULT="n/a"`, the form
-shows under the weight:
+`@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
+`@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any form
+of `@READONLY`, a field with bare `@HIDDEN`, which hides it on every page
+(`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are
+allowed), and a field that carries `@UVJUSTIFY` itself. It refuses a field
+with `@UVWRITEONCE`, since a reason must be cleared when the value changes
+for another reason, and a field another rule's `"return"` writes into, such
+as an `@UVRANGE` that returns its growth range there, since the save would
+fill it with a reason nobody wrote. A tag name inside another tag's value,
+as in `@PLACEHOLDER='not @DEFAULT'`, refuses nothing. These refusals read the
+reason field's own annotation, or the other rules of the project, so the
+blocks above cannot show them. With `weight_reason` given `@DEFAULT="n/a"`,
+the form shows under the weight:
 
 ```text
 ⚠ Configuration error: @UVJUSTIFY on "weight": "reason" names "[weight_reason]", which has @DEFAULT — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.
@@ -6462,7 +6472,7 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 
 | Key       | Type          | Default         | Notes                                                                              |
 | --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
-| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in (not the record ID field, a field REDCap fills in, a read-only field or one with `@UVJUSTIFY`) |
+| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in and can clear (not the record ID field, a field REDCap fills in, a read-only field, one with bare `@HIDDEN`, `@UVJUSTIFY` or `@UVWRITEONCE`, or one another rule's `"return"` writes into) |
 | `message` | string or map | generic line    | The note under the field that asks for the reason                                  |
 
 No `when`, `caseSensitive`, `blockSave` or `references`.

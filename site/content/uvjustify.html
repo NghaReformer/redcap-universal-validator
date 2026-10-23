@@ -25,8 +25,14 @@ reason", apart from the open ones.</p>
     <code>@SETVALUE</code>, <code>@PREFILL</code>, <code>@NOW</code>,
     <code>@TODAY</code> and their <code>-SERVER</code> and <code>-UTC</code> forms,
     <code>@USERNAME</code>, <code>@APPUSERNAME-APP</code>, <code>@LATITUDE</code>,
-    <code>@LONGITUDE</code>, <code>@DOWNLOAD-COUNT</code>), a field with any form of
-    <code>@READONLY</code>, and a field that carries <code>@UVJUSTIFY</code> itself</td></tr>
+    <code>@LONGITUDE</code>, <code>@DOWNLOAD-COUNT</code>,
+    <code>@LANGUAGE-CURRENT-FORM</code>, <code>@LANGUAGE-CURRENT-SURVEY</code>), a field
+    with any form of <code>@READONLY</code>, a field with bare <code>@HIDDEN</code>
+    (<code>@HIDDEN-FORM</code>, <code>@HIDDEN-SURVEY</code>, <code>@HIDDEN-APP</code> and
+    <code>@HIDDEN-PDF</code> are allowed), a field that carries <code>@UVJUSTIFY</code>
+    itself, a field with <code>@UVWRITEONCE</code>, whose reason could never be cleared,
+    and a field another rule's <code>"return"</code> writes into. A tag name inside
+    another tag's value, such as a message or a placeholder, refuses nothing</td></tr>
 <tr><td><code>message</code></td><td>The note under the field that asks for the reason.
     It may be a map of language ids to texts, as for the other tags. Without it the note
     reads "Fix this value, or say why it is right in" the reason field's label</td></tr>
@@ -52,8 +58,9 @@ shows a configuration error under that field.</p>
 <h2>What counts as a reason</h2>
 
 <ul>
-<li>Any text left after spaces, tabs and line breaks are taken from both ends. A blank
-    field gives no reason.</li>
+<li>Any value that is not blank by the test <code>@UVREQUIRED</code> uses. Spaces,
+    tabs, line breaks, no-break and other Unicode spaces, zero-width characters and
+    byte-order marks alone give no reason.</li>
 <li>A <strong>missing data code</strong> gives no reason. A reason field marked "unknown"
     still asks for one.</li>
 <li>On the form, a reason field the person cannot see gives no reason: its row hidden

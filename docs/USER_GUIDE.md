@@ -970,11 +970,14 @@ with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
 FHIR or another). A reason (`@UVJUSTIFY`) may stand for the rules of
 any field another tag checks, and the reason field itself is a Text, Notes,
 dropdown, radio or SQL field on the same form that the person fills in: not
-the record ID field, a field with any form of `@READONLY`, a field that
-carries `@UVJUSTIFY` itself, or a field REDCap fills in (`@CALCTEXT`,
-`@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`, `@NOW`, `@TODAY` and their
-`-SERVER` and `-UTC` forms, `@USERNAME`, `@APPUSERNAME-APP`, `@LATITUDE`,
-`@LONGITUDE`, `@DOWNLOAD-COUNT`).
+the record ID field, a field with any form of `@READONLY`, a field with bare
+`@HIDDEN` (`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF`
+are allowed), a field that carries `@UVJUSTIFY` itself, a field with
+`@UVWRITEONCE`, a field another rule's `"return"` writes into, or a field
+REDCap fills in (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`,
+`@PREFILL`, `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms,
+`@USERNAME`, `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`,
+`@DOWNLOAD-COUNT`, `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`).
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1216,12 +1219,15 @@ field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
 never releases `@UVUNIQUE` or `@UVWRITEONCE`, and never turns a warning into a
 block. On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
 compares with another event or instance) a reason shows no note on the page;
-it only labels the finding in the audit and the scan. A blank reason, a
-missing data code and a reason field the person cannot see (its row hidden by
-branching logic, or the row it is embedded in hidden) count as no reason. The
-module refuses a reason field the person does not fill in: the record ID
-field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`, `@NOW` and the
-like), a field with `@READONLY`, and a field with its own `@UVJUSTIFY`. A
+it only labels the finding in the audit and the scan. A blank reason (blank
+as `@UVREQUIRED` reads it, so a no-break space or a zero-width space alone is
+blank too), a missing data code and a reason field the person cannot see (its
+row hidden by branching logic, or the row it is embedded in hidden) count as
+no reason. The module refuses a reason field the person does not fill in: the
+record ID field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`,
+`@NOW` and the like), a field with `@READONLY` or bare `@HIDDEN`, a field with
+its own `@UVJUSTIFY`, a field with `@UVWRITEONCE`, and a field another rule's
+`"return"` writes into. A
 reason stands until someone clears it, so a later, different broken value of
 the field saves under the same reason; clear the reason field when the value
 changes for another reason. The audit

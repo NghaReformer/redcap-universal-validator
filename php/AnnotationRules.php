@@ -371,7 +371,8 @@ class AnnotationRules
      * next quote of its kind; a JSON value is brace-balanced, with strings
      * skipped). REDCap's own tags count too: @DEFAULT='...', @CALCTEXT(...).
      * @IF(...) is left to ifSpans, which refuses a module tag inside it. A
-     * value that never closes has no span, so it hides no tag after it.
+     * value that never closes has no span, so it hides no tag after it. Each
+     * span carries a third offset, where the value itself starts (maskValues).
      */
     private static function valueSpans($ann)
     {
@@ -394,10 +395,33 @@ class AnnotationRules
             }
             $end = $k < $len ? self::valueEnd($ann, $k) : null;
             if ($end === null) { $i = $j; continue; }
-            $spans[] = [$p, $end];
+            $spans[] = [$p, $end, $k];
             $i = $end;
         }
         return $spans;
+    }
+
+    /**
+     * The annotation with every action tag's quoted, {JSON} or (...) value
+     * (valueSpans) turned to spaces, so a tag name written inside another
+     * tag's value no longer reads as a tag, while each tag's own name and
+     * every byte offset stay where they were. For a check that looks for a
+     * tag anywhere in an annotation, such as the reason-field refusals of
+     * @UVJUSTIFY (UniversalValidator::annotateJustifyDictionary), as
+     * extractTagsDetailed skips those values (VAL-7, AST-9).
+     */
+    public static function maskValues($annotation)
+    {
+        $ann = (string) $annotation;
+        if (strpos($ann, '@') === false) return $ann;
+        // the spans come in order and never overlap
+        $out = '';
+        $at = 0;
+        foreach (self::valueSpans($ann) as $sp) {
+            $out .= substr($ann, $at, $sp[2] - $at) . str_repeat(' ', $sp[1] - $sp[2]);
+            $at = $sp[1];
+        }
+        return $out . substr($ann, $at);
     }
 
     /** Where the quoted, {JSON} or (...) value at $k ends (exclusive), or null when it is none of those or never closes. */
