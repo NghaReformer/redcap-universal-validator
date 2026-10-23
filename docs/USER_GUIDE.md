@@ -1104,7 +1104,9 @@ values come from the entry where the value matched (same record, event and
 repeat instance), so each copied field must be on the form of `in` or on a
 form that does not repeat. With `"in":"record"` in a longitudinal project,
 `event` names the event the values are read from. The rule owns the fields,
-so make them `@READONLY`: a value found fills them, "not found", a blank
+so each must be `@READONLY` or `@HIDDEN` (`@READONLY-FORM` is enough, since
+a rule with `return` never runs on a survey); a field a person could type into
+is refused. A value found fills them, "not found", a blank
 value or a `when` that is false empties them, and "could not check" leaves
 them. When several saved entries hold the value with different values to
 copy, nothing is copied and an amber line says so; add `match` to narrow the
@@ -1238,8 +1240,10 @@ table in kg) the bounds are in grams; add `"unit":"g"` to name the unit in
 them again, for an import or the API as well, writing only what differs. The
 save writes these values before it checks the other rules, so a rule on
 `wfa_z` checks the new value. When there is nothing to report (the sex is
-blank, the age is outside the reference) the fields are emptied, so make them
-`@READONLY`, since a value typed there is replaced. A `range` field takes no
+blank, the age is outside the reference) the fields are emptied. Each must be
+`@READONLY` or `@HIDDEN` on the form and on the survey page (the `-FORM` and
+`-SURVEY` forms count): a field a person could type into is refused, since a
+value typed there is replaced. A `range` field takes no
 validation. `z`, `lower` and `upper` take none, number validation without a
 place count, or exactly the places they are written with (two for `z`), and a
 bound written with no decimals may go into an integer field. Two references on one field each fill their own fields, and

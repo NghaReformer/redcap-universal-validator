@@ -660,6 +660,9 @@ module's own `scanRecord()` and `ruleFindings()`, which the durable scan and
 the save audit use, so a verdict it finds is the module's verdict. Batching,
 leases and memory of the durable scan are tested in `scan_service_php.php`,
 `scan_worker_php.php` and the MySQL matrix, not here.
+`return_targets.php` gives every field a `"return"` writes to `@READONLY`,
+which the module requires (EXS-13), so a suite can build its dictionary
+without action tags; a check of that refusal leaves its field as written.
 
 ## `hook_php.php` — the audit-path contract
 

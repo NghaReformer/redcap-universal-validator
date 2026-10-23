@@ -185,6 +185,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
 
@@ -346,8 +347,8 @@ namespace {
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => array_merge(['log-values' => 'raw', 'missing-data-codes' => 'NA'], $settings), 300 => []];
-        \REDCap::$dictionaries = [149 => $DICT];
-        \REDCap::$data = [149 => $DATA];
+        \REDCap::$dictionaries = [149 => \lock_return_targets($DICT)];
+        \REDCap::$data = [149 => \lock_return_targets($DATA)];
         \REDCap::$repeats = [149 => [351 => ['rep_form' => null]]];
         \REDCap::$rightsBy = [149 => ['nurse' => $FULL, 'nolab' => $NOLAB, 'nometa' => $NOMETA, 'nokey' => $NOKEY, 'north' => ['group_id' => 7] + $FULL]];
         \REDCap::reset();
@@ -459,7 +460,7 @@ namespace {
     $d4['t_any3'] = f('result');
     foreach ($d4 as $k => $_) $d4[$k]['field_name'] = $k;
     $m = mod();
-    \REDCap::$dictionaries = [149 => $d4];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d4)];
     check('longitudinal: "in":"record" copying a form the "event" lacks is refused',
         strpos(errOf(page($m), 'r_rec_ev2'), 'which is not in every event "visit_arm_1" names') !== false);
     $keepEf = \Project::$eventsFormsBy[149];
@@ -473,7 +474,7 @@ namespace {
     $d5['t_hc'] = f('result');
     foreach ($d5 as $k => $_) $d5[$k]['field_name'] = $k;
     $m = mod();
-    \REDCap::$dictionaries = [149 => $d5];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d5)];
     $cfgE = page($m);
     check('longitudinal: an event of the searched form without the copied field\'s form refuses the rule',
         strpos(errOf($cfgE, 'r_meta'), 'is on the form "lab_meta"') !== false && strpos(errOf($cfgE, 'r_home_copy'), 'is on the form "enrol"') !== false);
@@ -492,9 +493,9 @@ namespace {
     $d2['r_two'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[r_from]"}}'));
     $d2['r_reads'] = f('result', ux('{"in":"[specimen_id]","match":{"code_id":"[r_code]"},"return":{"lab_site":"[t_any]"}}'));
     $d2['r_selfwhen'] = f('result', ux('{"in":"[specimen_id]","when":"[t_mail]<>\'\'","return":{"mail":"[t_mail]"}}'));
-    \REDCap::$dictionaries = [149 => $d2];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d2)];
     $m = mod();
-    \REDCap::$dictionaries = [149 => $d2];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d2)];
     $cfg3 = page($m);
     check('two rules writing one field are both refused', strpos(errOf($cfg3, 'r_two'), 'shares "[r_from]"') !== false
         && strpos(errOf($cfg3, 'r_spec'), 'shares "[r_from]"') !== false);
@@ -511,15 +512,36 @@ namespace {
     $d6['r_dup_d'] = f('result', ux('{"in":"[specimen_id]"}'));
     $d6['t_dup'] = f('result');
     foreach ($d6 as $k => $_) $d6[$k]['field_name'] = $k;
-    \REDCap::$dictionaries = [149 => $d6];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d6)];
     $m = mod();
-    \REDCap::$dictionaries = [149 => $d6];
+    \REDCap::$dictionaries = [149 => \lock_return_targets($d6)];
     $cfg6 = page($m);
     check('one "return" tag on two fields is refused on both (got ' . json_encode(errOf($cfg6, 'r_dup_a')) . ')',
         strpos(errOf($cfg6, 'r_dup_a'), '@UVEXISTS "return": it is on 2 fields ("r_dup_a", "r_dup_b"), and each would write "[t_dup]"') !== false
         && errOf($cfg6, 'r_dup_b') === errOf($cfg6, 'r_dup_a'));
     check('...the same tag without "return" on two fields is still one sound rule',
         errOf($cfg6, 'r_dup_c') === '' && ruleFor($cfg6, 'r_dup_c') === ruleFor($cfg6, 'r_dup_d'));
+    // A field a person can type into (EXS-13): the next answer replaces what
+    // was typed. Only the data-entry form counts: "return" never runs on a
+    // survey page.
+    $d7 = \lock_return_targets($DICT);
+    $d7['r_lock'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[t_lock]"}}'));
+    $locks = ['' => 'can be typed into on the data-entry form', '@READONLY-SURVEY' => 'can be typed into on the data-entry form',
+              '@HIDDEN-PDF' => 'can be typed into on the data-entry form', '@READONLY' => null, '@READONLY-FORM' => null, '@HIDDEN' => null, '@HIDDEN-FORM' => null];
+    foreach ($locks as $tagHere => $want) {
+        $d7['t_lock'] = f('result', $tagHere);
+        foreach ($d7 as $k => $_) $d7[$k]['field_name'] = $k;
+        $m = mod();
+        \REDCap::$dictionaries = [149 => $d7];
+        $e = errOf(page($m), 'r_lock');
+        check('a target with "' . $tagHere . '" is ' . ($want === null ? 'taken' : 'refused') . ' (got ' . json_encode($e) . ')',
+            $want === null ? $e === '' : strpos($e, '"return" "code_id" field "t_lock" ' . $want) !== false && strpos($e, 'give it @READONLY') !== false);
+    }
+    $d7['t_lock'] = f('result', '@CALCTEXT("x")');
+    foreach ($d7 as $k => $_) $d7[$k]['field_name'] = $k;
+    $m = mod();
+    \REDCap::$dictionaries = [149 => $d7];
+    check('...a field that cannot take the value says that first', strpos(errOf(page($m), 'r_lock'), 'filled by REDCap\'s @CALCTEXT') !== false);
 
     // ---- 3) the exists-check endpoint ------------------------------------------------------------
     $m = mod();
@@ -889,7 +911,7 @@ namespace {
         $m->subSettingsBy = [300 => ['exists-consumers' => [$row === null ? [
             'exists-consumer-project' => '149', 'exists-consumer-targets' => 'specimen_id',
             'exists-consumer-returns' => 'site_code, lab_date, record, lab_note, rep_note, site_pick, v_note', 'exists-consumer-mode' => 'rights'] : $row]]];
-        \REDCap::$dictionaries = [149 => $DICT_X, 300 => $DICT_B];
+        \REDCap::$dictionaries = [149 => \lock_return_targets($DICT_X), 300 => $DICT_B];
         \REDCap::$data = [149 => $DATA, 300 => [
             'L1' => [901 => ['record_id' => 'L1', 'specimen_id' => 'LS-1', 'site_code' => 'North', 'lab_date' => '2026-02-01', 'donor_name' => 'Ada',
                              'lab_note' => 'kept cold']],
@@ -964,7 +986,7 @@ namespace {
     $d = $DICT_X;
     unset($d['x_spec'], $d['x_note'], $d['x_rep'], $d['x_pick'], $d['x_v']);
     $m = xmod();
-    \REDCap::$dictionaries[149] = $d;
+    \REDCap::$dictionaries[149] = \lock_return_targets($d);
     \REDCap::reset();
     $cfg = page($m);
     check('another project: a rule the agreement refuses never reads the dictionary there',

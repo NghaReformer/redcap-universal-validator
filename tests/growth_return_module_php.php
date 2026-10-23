@@ -155,6 +155,7 @@ namespace {
 
     require_once __DIR__ . '/../UniversalValidator.php';
     require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\GrowthOutputs;
@@ -198,13 +199,14 @@ namespace {
     function row(array $over = []) {
         return array_merge(['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6'], $over);
     }
-    function mod($dict, $data, array $settings = []) {
+    /** $lock: mark the fields a "return" writes to @READONLY, as the module requires (EXS-13). */
+    function mod($dict, $data, array $settings = [], $lock = true) {
         $GLOBALS['__TEST_USER'] = 'nurse';
         GrowthReference::reset();
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectSettings = array_merge(['log-values' => 'raw'], $settings);
         $m->projectIdReturn = PID;
-        \REDCap::$dictionary = $dict;
+        \REDCap::$dictionary = $lock ? \lock_return_targets($dict) : $dict;
         \REDCap::$data = $data;
         \REDCap::$rights = ['nurse' => ['forms' => ['enrol_form' => '1', 'anthro_form' => '1']]];
         \REDCap::$repeats = [];
@@ -789,6 +791,16 @@ NASK, Not asked";
     $m = mod(dict(['weight2' => f('anthro_form', tag(), 'number_1dp')], tag()), ['2' => [EVT => row()]]);
     check('...the same tag without "return" on two fields is still one sound rule',
         empty(ruleOn($m, 'weight')['configError']) && ruleOn($m, 'weight2') === ruleOn($m, 'weight'));
+    // A field a person can type into (EXS-13). A growth rule fills its fields
+    // on a survey page too, so both pages count.
+    foreach (['' => 'can be typed into, and', '@READONLY-FORM' => 'can be typed into on a survey page',
+              '@HIDDEN-SURVEY' => 'can be typed into on the data-entry form', '@READONLY' => null, '@HIDDEN' => null,
+              '@READONLY-FORM @HIDDEN-SURVEY' => null] as $tagHere => $want) {
+        $m = mod(dict(['wfa_z' => f('anthro_form', $tagHere)], tag('"return":{"z":"[wfa_z]"}')), ['2' => [EVT => row()]], [], false);
+        $e = (string) (ruleOn($m, 'weight')['configError'] ?? '');
+        check('a target with "' . $tagHere . '" is ' . ($want === null ? 'taken' : 'refused') . ' (got ' . json_encode($e) . ')',
+            $want === null ? $e === '' : strpos($e, '"return" "z" field "wfa_z" ' . $want) !== false);
+    }
 
     // ---- 19) the live fixture: section J of docs/testbed/RANGE_LIVE_ACCEPTANCE.md expects these -------------------------------
     $fx = fopen(__DIR__ . '/../docs/testbed/uvrange_return_test_fields.csv', 'r');
@@ -800,7 +812,7 @@ NASK, Not asked";
     }
     fclose($fx);
     $m = mod($live, ['2' => [EVT => ['record_id' => '2', 'ugr_sex' => '1', 'ugr_dob' => '2025-01-10', 'ugr_visit' => '2026-01-10',
-        'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]]);
+        'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]], [], false);
     // The person who saves the form may change it: the save writes returned
     // values only into such a form (EXS-3).
     \REDCap::$rights['nurse']['forms']['uv_growth_return'] = '1';

@@ -225,6 +225,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     $fail = 0;
     $n = 0;
@@ -244,7 +245,7 @@ namespace {
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => ['log-values' => 'raw']];
-        \REDCap::$dictionaries = [149 => named($dict)];
+        \REDCap::$dictionaries = [149 => \lock_return_targets(named($dict))];
         \REDCap::$data = [149 => $data];
         \REDCap::$rightsBy = [149 => $rights];
         \REDCap::$confineTo = null;

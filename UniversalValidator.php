@@ -6845,6 +6845,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             if (self::numberMarkOf($ddHere[(string) $t]) !== null) $numbers[] = (string) $t;
         }
+        // Asked last, so a field that cannot take the value at all says why.
+        // A rule with "return" never runs on a survey page.
+        foreach ($frag['existsReturn'] as $s => $t) {
+            $why = self::returnTargetTypable((string) $t, '"return" "' . $s . '" field "' . $t . '"', $ddHere, false);
+            if ($why !== null) return $why;
+        }
         $frag['existsReturnNumbers'] = $numbers;
         return null;
     }
@@ -7745,6 +7751,11 @@ class UniversalValidator extends AbstractExternalModule
             $marks = [];
             $why = $this->returnTargetsProblem($frag, $name, is_array($dd) ? $dd : [], $inputFields, $marks);
             if ($why !== null) return $refuse($why);
+            // A growth rule fills its fields on a survey page too.
+            foreach ($frag['rangeReturn'] as $k => $t) {
+                $why = self::returnTargetTypable((string) $t, '"return" "' . $k . '" field "' . $t . '"', is_array($dd) ? $dd : [], true);
+                if ($why !== null) return $refuse($why);
+            }
             $frag['rangeReturnComma'] = $marks;
         }
         return $frag;
@@ -7879,6 +7890,27 @@ class UniversalValidator extends AbstractExternalModule
             return $label . ' searches an ontology (BioPortal), whose search box keeps its own text — write to a field without one.';
         }
         return null;
+    }
+
+    /**
+     * Why a person could type into field $t, which a rule fills, or null
+     * (EXS-13). The next answer replaces or empties what was typed, without a
+     * word, so the field must be @READONLY or @HIDDEN where the rule fills
+     * it: on the data-entry form, and with $surveys on a survey page too. The
+     * -FORM and -SURVEY forms of each tag count for their own page.
+     */
+    private static function returnTargetTypable($t, $label, array $dd, $surveys)
+    {
+        $note = isset($dd[$t]['field_annotation']) ? (string) $dd[$t]['field_annotation'] : '';
+        $locked = function ($page) use ($note) {
+            return preg_match('/@(?:READONLY|HIDDEN)(?:-' . $page . ')?(?![-\w])/i', $note) === 1;
+        };
+        $form = $locked('FORM');
+        $survey = !$surveys || $locked('SURVEY');
+        if ($form && $survey) return null;
+        $where = !$form && !$survey ? '' : (!$form ? ' on the data-entry form' : ' on a survey page');
+        return $label . ' can be typed into' . $where . ', and the rule replaces what is typed there — give it @READONLY'
+            . ($where === '' ? '' : ' (or @READONLY' . (!$form ? '-FORM' : '-SURVEY') . ')') . '.';
     }
 
     /**

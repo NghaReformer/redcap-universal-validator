@@ -884,7 +884,9 @@ the specimen ID on the collection form.
   fields of the entry the lookup found (`record`: its record ID) into fields of
   this form, up to 10, from the same record, event and instance as the match.
   The rule owns them: found fills, *not found*, a blank value or a false
-  `when` empties, *could not check* leaves them. Several entries with
+  `when` empties, *could not check* leaves them. Each must be `@READONLY` or
+  `@HIDDEN` (or the `-FORM` form) on the data-entry form; a field a person
+  could type into is refused. Several entries with
   different values copy nothing and an amber line says so; a user in a Data
   Access Group gets values only from their own group. The page fills the
   fields for a user who may open every form the lookup reads, and the
@@ -1033,7 +1035,9 @@ slip:
   the saved inputs give as "Returned value out of date"; open the form and save
   it to write the current values.
   A field with nothing to report (sex blank, age outside the reference) is
-  emptied. The rule owns its fields, so mark them `@READONLY`. Two references
+  emptied. The rule owns its fields, so each must be `@READONLY` or `@HIDDEN`
+  on the form and on the survey page (the `-FORM` and `-SURVEY` forms count);
+  a field a person could type into is refused. Two references
   on one field each fill their own fields, the same tag with `return` on two
   fields is refused on both, and a rule that returns values may not read a
   returned field. The project setting "@UVRANGE returned values"
