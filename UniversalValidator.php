@@ -20,6 +20,7 @@ namespace INSPIRE\UniversalValidator;
 
 use ExternalModules\AbstractExternalModule;
 
+require_once __DIR__ . '/php/Faults.php';
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/ModeRegistry.php';
@@ -122,7 +123,11 @@ class UniversalValidator extends AbstractExternalModule
     {
         // Record context is threaded through so "when" conditions can snapshot
         // saved values of fields that are not on the rendered page.
-        $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
+        try {
+            $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
     }
 
     public function redcap_survey_page_top($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
@@ -131,7 +136,33 @@ class UniversalValidator extends AbstractExternalModule
         // detail in front of survey respondents (who cannot act on it); the
         // same problems stay fully visible on staff data-entry forms and in
         // the module log.
-        $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+        try {
+            $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /**
+     * Write what this request caught and carried on from (Faults) to the
+     * module log as one uvalidate-faults entry, when the project's debug
+     * setting is on (QUA-5): each place and exception class with its count,
+     * never a message. Called as each hook returns; the counts start again
+     * from nothing either way.
+     */
+    private function reportFaults($pid)
+    {
+        $f = Faults::take();
+        if (!$f['places'] && !$f['dropped']) return;
+        if (!$pid || !$this->debugEnabled($pid)) return;
+        try {
+            $this->log('uvalidate-faults', [
+                'places'  => (string) json_encode($f['places']),
+                'dropped' => (string) $f['dropped'],
+            ]);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::reportFaults');
+        }
     }
 
     /**
@@ -147,6 +178,16 @@ class UniversalValidator extends AbstractExternalModule
      * (some import/API contexts) every configured field is checked instead.
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash = null, $response_id = null, $repeat_instance = 1)
+    {
+        try {
+            $this->auditSave($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /** The body of redcap_save_record(); see there. */
+    private function auditSave($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
         // Resolve the log-privacy mode FIRST, outside the try, so the error
         // path below can honor it too — an exception must never leak a record
@@ -1487,6 +1528,7 @@ class UniversalValidator extends AbstractExternalModule
                         $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag, $prefer) : null;
                         if ($hit !== null) return ['state' => 'found'] + $hit;
                     } catch (\Throwable $e) {
+                        Faults::swallow($e, 'UniversalValidator::findExisting');
                         // a filter this build cannot run: the full read below decides
                     }
                 }
@@ -2368,6 +2410,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ((string) $unique === (string) $name) return $id;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::eventIdOf');
         }
         return null;
     }
@@ -2831,6 +2874,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::eventIdIn');
         }
         return null;
     }
@@ -2847,6 +2891,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (is_array($names)) return null;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::groupNameIn');
         }
         // No list at all: a read that failed (crossUnread()).
         $this->crossReadFailed[(int) $pid] = true;
@@ -3036,6 +3081,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->log('uv-exists-probe', $entry);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logCrossProbe');
         }
     }
 
@@ -3055,6 +3101,7 @@ class UniversalValidator extends AbstractExternalModule
                 'result'         => (string) $result,
             ]);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logCrossIndexRead');
         }
     }
 
@@ -3890,7 +3937,7 @@ class UniversalValidator extends AbstractExternalModule
     private function weekStart($pid)
     {
         $v = null;
-        try { $v = $this->getProjectSetting('window-week-start', $pid); } catch (\Throwable $e) {}
+        try { $v = $this->getProjectSetting('window-week-start', $pid); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::weekStart'); }
         return $v === 'sunday' ? 'sunday' : 'monday';
     }
 
@@ -3908,7 +3955,7 @@ class UniversalValidator extends AbstractExternalModule
         $key = (string) $pid;
         if (array_key_exists($key, $this->clockZoneMemo)) return $this->clockZoneMemo[$key];
         $name = null;
-        try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) {}
+        try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::clockZone'); }
         $name = is_string($name) ? trim($name) : '';
         return $this->clockZoneMemo[$key] = ($name === '' || !self::isClockZone($name)) ? null : new \DateTimeZone($name);
     }
@@ -4036,6 +4083,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->hmacKey = $key;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::hmacKey');
             // System settings unavailable: identifiers are OMITTED below rather
             // than falling back to an unkeyed hash an attacker could enumerate.
         }
@@ -4216,6 +4264,7 @@ class UniversalValidator extends AbstractExternalModule
                 'effect'     => 'the live duplicate check is inert on this page; the post-save audit and the Validation scan still apply',
             ]);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logNoUniqueTransport');
         }
     }
 
@@ -4256,6 +4305,7 @@ class UniversalValidator extends AbstractExternalModule
             $this->log('uvalidate-not-evaluated', $entry);
             $this->noteLogged('uvalidate-not-evaluated', $where, $scope, $fp);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logNotEvaluated');
         }
     }
 
@@ -4281,6 +4331,7 @@ class UniversalValidator extends AbstractExternalModule
             $this->log('uvalidate-unconfigurable', $entry);
             $this->noteLogged('uvalidate-unconfigurable', 'instrument', $entry['instrument'], $fp);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logUnconfigurable');
         }
     }
 
@@ -4312,6 +4363,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->log('uvalidate-audit-error', $entry);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logAuditError');
             // logging itself failed — nothing more we can safely do
         }
     }
@@ -4586,12 +4638,14 @@ class UniversalValidator extends AbstractExternalModule
                 [(int) $pid, (string) $record, (int) $event_id, $instrument, (int) ($instance ?: 1)]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
         try {
             $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
                 [(int) $pid, (string) $record]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
         return false;
     }
@@ -5513,6 +5567,7 @@ class UniversalValidator extends AbstractExternalModule
                 return true;                      // every instrument; see the tri-state above
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
 
         // 1. Framework-native: an unambiguous, project-scoped signature.
@@ -5533,6 +5588,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
 
         // 2. Fallback: the static, called with NO arguments so the parameter
@@ -5541,7 +5597,7 @@ class UniversalValidator extends AbstractExternalModule
         //    about any other project (rights elsewhere: userRightsIn()).
         try {
             $current = null;
-            try { $current = $this->getProjectId(); } catch (\Throwable $e) {}
+            try { $current = $this->getProjectId(); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::userFormRights'); }
             if ($current !== null && $current !== '' && (int) $current !== (int) $pid) return null;
             if (is_callable(['\REDCap', 'getUserRights'])) {
                 $all = \REDCap::getUserRights();
@@ -5551,6 +5607,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
         return null;   // fail closed
     }
@@ -5572,6 +5629,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::currentUsername');
         }
         if (defined('USERID')) {
             $name = constant('USERID');
@@ -6201,7 +6259,7 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_array($settings)) return null;
             if (!isset($settings['rules']) || !is_array($settings['rules'])) $settings['rules'] = [];
             $pid = null;
-            try { $pid = $this->getProjectId(); } catch (\Throwable $e) {}
+            try { $pid = $this->getProjectId(); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::validateSettings'); }
             $known = $pid ? $this->projectFieldNames($pid) : null;
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
@@ -7888,6 +7946,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $dd;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::dataDictionary');
             // outside project context (or dictionary unavailable): no annotation
             // rules and no field-name checking, never a fatal error
         }
@@ -8364,7 +8423,7 @@ class UniversalValidator extends AbstractExternalModule
             // Class only: the message comes from the framework's error path and
             // can carry statement text.
             try { $this->log('scan-rule-ids-mint-failed', ['error' => get_class($e)]); }
-            catch (\Throwable $ignored) { }
+            catch (\Throwable $ignored) { Faults::swallow($ignored, 'UniversalValidator::mintRuleIds'); }
         }
     }
 
@@ -8418,6 +8477,7 @@ class UniversalValidator extends AbstractExternalModule
                 'effect'     => 'the save audit and the validation scan do not run on this server',
             ]);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logMissingExtensions');
         }
     }
 
@@ -8520,7 +8580,7 @@ class UniversalValidator extends AbstractExternalModule
             // only: the message is written by the framework's error path and
             // can carry statement text.
             try { $this->log('scan-schema-install-failed', ['error' => get_class($e)]); }
-            catch (\Throwable $ignored) { }
+            catch (\Throwable $ignored) { Faults::swallow($ignored, 'UniversalValidator::installScanSchema'); }
         }
     }
 
@@ -8624,6 +8684,7 @@ class UniversalValidator extends AbstractExternalModule
                 $this->log('scan-cron-failed', ['what' => (string) $what,
                     'error' => get_class($e) . ': ' . $e->getMessage()]);
             } catch (\Throwable $ignored) {
+                Faults::swallow($ignored, 'UniversalValidator::scanMaintenance');
             }
             return $what . ': failed, logged to the module log';
         }
@@ -8883,6 +8944,7 @@ class UniversalValidator extends AbstractExternalModule
                         if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
+                    Faults::swallow($e, 'UniversalValidator::findCollision');
                     // filterLogic unsupported/malformed here — fall back below.
                 }
             }

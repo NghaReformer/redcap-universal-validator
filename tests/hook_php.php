@@ -3777,6 +3777,83 @@ namespace {
     $rc = ruleFor($p, 'pid_c');
     check('page: an "exact" rule ships the flag', $rc !== null && ($rc['exact'] ?? null) === true);
 
+    // ---- QUA-4: the sidebar link and the scan's four verbs, at the hook ----
+    {
+        $link = ['name' => 'Validation scan', 'url' => 'pages/scan.php'];
+        $m = newModule([], $dictionary, $classicData, 149);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        check('QUA-4: the scan link is shown to a user with design rights',
+            $m->redcap_module_link_check_display(149, $link) === $link);
+        $m->userReturn = new \ExternalModules\TestDesigner(false);
+        check('QUA-4: ...not to one without', $m->redcap_module_link_check_display(149, $link) === null);
+        $m->userReturn = null;
+        check('QUA-4: ...nor when no user is signed in', $m->redcap_module_link_check_display(149, $link) === null);
+        $m->userReturn = new class { public function hasDesignRights() { throw new \RuntimeException('no rights row'); } };
+        check('QUA-4: ...nor when the rights cannot be read', $m->redcap_module_link_check_display(149, $link) === null);
+
+        $ajax = function ($m, $action, $payload, $pid, $user) {
+            return $m->redcap_module_ajax($action, $payload, $pid, null, null, null, null, null, null, null, '', '', $user, null);
+        };
+        $m = newModule([], $dictionary, $classicData, 149);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        foreach (['scan-start', 'scan-work', 'scan-status', 'scan-cancel'] as $verb) {
+            $r = $ajax($m, $verb, ['run_id' => 5], 149, null);
+            check('QUA-4: ' . $verb . ' refuses a caller who is not signed in',
+                $r === ['ok' => false, 'why' => 'you are not signed in']);
+            $r = $ajax($m, $verb, ['run_id' => 5], null, 'alice');
+            check('QUA-4: ' . $verb . ' refuses outside a project',
+                $r === ['ok' => false, 'why' => 'this action only works inside a project']);
+        }
+        $NO_RUN = \INSPIRE\UniversalValidator\Scan\ScanService::NO_RUN;
+        foreach (['scan-work', 'scan-status', 'scan-cancel'] as $verb) {
+            foreach ([[], ['run_id' => 0], ['run_id' => 'abc'], ['run_id' => ['5']]] as $p) {
+                check('QUA-4: ' . $verb . ' with no usable run id ' . json_encode($p) . ' names no run',
+                    $ajax($m, $verb, $p, 149, 'alice') === ['ok' => false, 'why' => $NO_RUN]);
+            }
+        }
+        $r = $ajax($m, 'scan-start', [], 149, 'alice');
+        check('QUA-4: scan-start reaches the service, which says the scan is off (got ' . json_encode($r) . ')',
+            is_array($r) && ($r['ok'] ?? null) === false && is_string($r['why'] ?? null) && $r['why'] !== ''
+            && strpos($r['why'], 'not enabled') !== false);
+    }
+
+    // ---- QUA-5: what a request caught is logged once, in debug mode only ----
+    {
+        $F = '\INSPIRE\UniversalValidator\Faults';
+        $probe = function () use ($F) {
+            $F::take();
+            $F::swallow(new \RuntimeException('value 1ABC-00002E'), 'Probe::place');
+        };
+        $faultsOf = function ($m) {
+            return array_map(function ($c) { return json_decode($c[1]['places'], true); }, logsOf($m, 'uvalidate-faults'));
+        };
+        $debug = ['log-values' => '', 'debug-log' => true];
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, $debug);
+        $probe();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $fl = $faultsOf($m);
+        check('QUA-5: a save in debug mode logs what the request caught, in one entry (got ' . json_encode($fl) . ')',
+            count($fl) === 1 && ($fl[0]['Probe::place|RuntimeException'] ?? null) === 1);
+        check('QUA-5: ...without the message', strpos(json_encode(logsOf($m, 'uvalidate-faults')), '1ABC') === false);
+        check('QUA-5: ...and starts the count again', $F::peek()['places'] === []);
+        $m = newModule($dialogRules, $dictionary, $classicData, 149);
+        $probe();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        check('QUA-5: without the debug setting nothing is logged, and the count still starts again',
+            logsOf($m, 'uvalidate-faults') === [] && $F::peek()['places'] === []);
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, $debug);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        $probe();
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '2', 'id_validation_test', 351, null, 1);
+        ob_end_clean();
+        check('QUA-5: a form page reports too', count($faultsOf($m)) === 1);
+        $m = newModule([], $dictionary, $classicData, 149, false, $debug);
+        $probe();
+        $m->redcap_module_ajax('scan-status', ['run_id' => 0], 149, null, null, null, null, null, null, null, '', '', 'alice', null);
+        check('QUA-5: ...and an AJAX answer', count($faultsOf($m)) === 1);
+    }
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

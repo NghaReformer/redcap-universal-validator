@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 /**
  * What this REDCap installation can actually support, and what a scan run on it
  * is therefore ALLOWED TO CLAIM.
@@ -231,6 +233,7 @@ final class ScanCapabilities
                 return self::yes('Project::getRepeatingFormsEvents');
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::repeatMetadata');
             // the project's object could not be built: try the static sources
         }
         if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return self::yes('getRepeatingFormsEvents');
@@ -455,6 +458,7 @@ final class ScanCapabilities
                 // database, and a wrong answer is a refusal rather than a pass.
                 if (is_string($t) && $t !== '') return $t;
             } catch (\Throwable $e) {
+                Faults::swallow($e, 'ScanCapabilities::dataTableFor');
                 // A resolution that fails is not a capability answer; the probe
                 // below is. Fall through to the default and let it decide.
             }
@@ -470,6 +474,7 @@ final class ScanCapabilities
                 if (is_string($pk) && $pk !== '') return $pk;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::recordIdField');
         }
         return null;
     }
@@ -506,6 +511,7 @@ final class ScanCapabilities
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::fetchAll');
         }
         return $rows;
     }
@@ -523,6 +529,7 @@ final class ScanCapabilities
             if (is_object($q) && is_callable([$q, 'fetch_row'])) return $q->fetch_row();
             if (is_array($q)) return array_shift($q);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::fetchRow');
         }
         return null;
     }

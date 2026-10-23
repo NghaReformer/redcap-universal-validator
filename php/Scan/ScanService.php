@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 // Both live in the parent namespace: ScanPageView is shared with the pages, and
 // ScanCapabilities answers what an installation may claim. Imported rather than
 // duplicated - a second copy of a security decision is a second copy that ages
@@ -1598,6 +1600,7 @@ final class ScanService
                 if (is_string($f) && $f !== '') return $f;
             }
         } catch (\Throwable $e) {
+            \INSPIRE\UniversalValidator\Faults::swallow($e, 'ScanService::recordIdField');
         }
         return null;
     }
@@ -1710,6 +1713,7 @@ final class ScanService
                 if ($u && is_callable([$u, 'getUsername'])) return (string) $u->getUsername();
             }
         } catch (\Throwable $e) {
+            \INSPIRE\UniversalValidator\Faults::swallow($e, 'ScanService::username');
         }
         return '';
     }
@@ -1781,6 +1785,7 @@ final class ScanService
         try {
             if (is_callable([$this->module, 'log'])) $this->module->log($event, $context);
         } catch (\Throwable $ignored) {
+            \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanService::note');
         }
     }
 }

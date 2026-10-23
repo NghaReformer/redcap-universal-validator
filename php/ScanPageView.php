@@ -15,6 +15,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 class ScanPageView
 {
     /**
@@ -777,6 +779,7 @@ class ScanPageView
                 if (is_string($g) && $g !== '') return $g;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanPageView::dagNameOf');
         }
         return null;
     }
@@ -901,6 +904,7 @@ class ScanPageView
         try {
             if (is_callable([$user, 'isSuperUser'])) return (bool) $user->isSuperUser();
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanPageView::isAdministrator');
         }
         if (isset($GLOBALS['super_user'])) return ((string) $GLOBALS['super_user'] === '1');
         if (defined('SUPER_USER')) return ((string) constant('SUPER_USER') === '1');

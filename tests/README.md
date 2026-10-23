@@ -14,6 +14,7 @@ node tests/risky_js.cjs         # JS risky-pattern heuristic vs risky_patterns.j
 php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
 php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
 php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
+php  tests/faults_php.php        # caught exceptions are counted (Faults); no empty catch block in the shipped PHP
 php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, coverage, bad file
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture

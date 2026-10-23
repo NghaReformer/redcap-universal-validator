@@ -10,6 +10,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 trait ScanRuns
 {
     /**
@@ -569,6 +571,7 @@ trait ScanRuns
             $m = $this->getProjectSetting('scan-value-storage', $pid);
             if (self::valueRank($m, -1) >= 0) return $m;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanRuns::scanValueMode');
         }
         // An External Modules dropdown stores NOTHING until the settings dialog
         // is saved, so this is null on every project nobody has reconfigured -

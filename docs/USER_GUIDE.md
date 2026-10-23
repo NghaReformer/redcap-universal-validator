@@ -813,6 +813,10 @@ Three log entry types make sure nothing passes silently:
   Check those values by hand. A rule refused when it was read (its `why` starts
   with "configuration error:") is logged on the first save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
+- `uvalidate-faults`, written only with the project's debug setting on, lists
+  the places where this request caught an exception and carried on (a rights
+  read that failed, a log write given up), each with the exception's class and
+  a count, never the message. One entry per request.
 
 Each problem is logged once, not on every save. An entry carries a keyed
 `fingerprint` of what it reports: the record, field, event, instance, rule kind,

@@ -9,6 +9,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 trait LiveLookups
 {
     /**
@@ -26,6 +28,17 @@ trait LiveLookups
      * is inside the user's Data Access Group (or the user has none).
      */
     public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
+    {
+        try {
+            return $this->answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /** The body of redcap_module_ajax(); see there. */
+    private function answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
         // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
         // scan reads and stores record values, so there is no version of it an
@@ -668,6 +681,7 @@ trait LiveLookups
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'LiveLookups::callerFormRights');
         }
         return null;
     }
@@ -867,6 +881,7 @@ trait LiveLookups
                 'detail'     => Scan\DbError::safe($e),
             ]);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'LiveLookups::noteThrottleUnavailable');
             // A failure to record a failure is not worth a second failure.
         }
     }
