@@ -680,7 +680,12 @@ class ScanPageView
             }
             $ceiling = self::valueCeilingFor($rights);
             $mayExport = self::mayExportFor($rights);
-            if (empty($rights['group_id'])) {
+            // "No group" is a group id that is absent, blank or null, and
+            // nothing else: ScanAuthorization::readable() reads it the same
+            // way. empty() also took "0", 0 and false for it, so such a user
+            // got the whole project as their scope (SEC-2). They now go to
+            // the group lookup below, which refuses a group it cannot name.
+            if (!isset($rights['group_id']) || $rights['group_id'] === '' || $rights['group_id'] === null) {
                 // The rights array travels with the answer, because the durable
                 // scan re-checks the SAME array against its entitlement form set
                 // and a second read of getRights() could legitimately differ

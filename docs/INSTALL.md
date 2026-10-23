@@ -58,7 +58,8 @@ JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
 `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
 `suggestFix`, `note`. Use double quotes inside the JSON. A malformed tag
 (typo'd key, unknown algorithm, bad JSON) — or a tag on a non-Text/Notes field
-— shows a configuration error in a notice at the top of the form. Fields with
+— shows a configuration error in a notice at the top of the form (a user
+without design rights sees only the errors of the fields on that form). Fields with
 identical tags are grouped into one rule automatically. Tags work on Text and
 Notes fields.
 

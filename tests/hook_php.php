@@ -21,6 +21,13 @@
 namespace ExternalModules {
     // Minimal stand-in for the framework base class. Test scripts set the public
     // fixtures; the module calls these methods exactly as in production.
+    /** A signed-in user whose design rights decide which configuration errors a page lists (LIVE-4). */
+    class TestDesigner {
+        private $design;
+        public function __construct($design = true) { $this->design = $design; }
+        public function hasDesignRights() { return $this->design; }
+    }
+
     class AbstractExternalModule {
         public $logCalls = [];
         public $subSettings = [];
@@ -46,6 +53,9 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
+        /** The signed-in user; null (no user) unless a test sets one (LIVE-4). */
+        public $userReturn = null;
+        public function getUser() { return $this->userReturn; }
 
         /**
          * The rate-limit bucket table, and only that.
@@ -452,6 +462,7 @@ namespace {
     $dd = ['study_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f1'],
            'specimen_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f1']];
     $m = newModule($csvRule, $dd, [], 149);
+    $m->userReturn = new \ExternalModules\TestDesigner(true);
     ob_start();
     $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
     $html = ob_get_clean();
@@ -467,6 +478,29 @@ namespace {
     check('config-error rule keeps the typed field names', $errRule && $errRule['fields'] === ['studyid', 'specimenid']);
     check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
     check('form hook injects context=form', $cfg && isset($cfg['context']) && $cfg['context'] === 'form');
+    // LIVE-4: a user without design rights sees only the configuration errors
+    // of the fields on their page; these name fields of no form.
+    $errsFor = function ($user, $rules, $dict, $instrument) {
+        $m = newModule($rules, $dict, [], 149);
+        $m->userReturn = $user;
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '1', $instrument, 351, null, 1);
+        $html = ob_get_clean();
+        $cfg = preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm) ? json_decode($mm[1], true) : null;
+        $out = [];
+        foreach (($cfg['rules'] ?? []) as $r) if (!empty($r['configError'])) $out[] = $r['fields'];
+        return $out;
+    };
+    check('LIVE-4: a user without design rights is not shown errors of fields off the page',
+        $errsFor(new \ExternalModules\TestDesigner(false), $csvRule, $dd, 'id_validation_test') === []
+        && $errsFor(null, $csvRule, $dd, 'id_validation_test') === []);
+    $offRule = [array_merge($csvRule[0], ['fields' => ['study_id'], 'fields-csv' => '', 'algorithm' => 'nope'])];
+    $dd2 = $dd + ['site' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f2']];
+    check('LIVE-4: ...nor errors of another form\'s fields',
+        $errsFor(new \ExternalModules\TestDesigner(false), $offRule, $dd2, 'f2') === []
+        && $errsFor(new \ExternalModules\TestDesigner(true), $offRule, $dd2, 'f2') === [['study_id']]);
+    check('LIVE-4: an error of a field on the page is shown to everyone',
+        $errsFor(new \ExternalModules\TestDesigner(false), $offRule, $dd2, 'f1') === [['study_id']]);
 
     // A survey page carries no configuration error of fields it does not
     // show: the notice is muted there, and the rule names other forms (LIVE-2).
@@ -1078,6 +1112,8 @@ namespace {
         return [$row];
     }
     function injectedRuleFor($m, $field) {
+        // A designer's page: it lists every configuration error (LIVE-4).
+        if ($m->userReturn === null) $m->userReturn = new \ExternalModules\TestDesigner(true);
         ob_start();
         $m->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
         $html = ob_get_clean();

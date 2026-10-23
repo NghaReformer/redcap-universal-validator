@@ -4314,7 +4314,8 @@ class UniversalValidator extends AbstractExternalModule
         // EVERY form, so a single DOM mutation fans out to all of them and freezes
         // the tab (PER-003, the 1.5.1 known perf issue). The post-save audit and the
         // Validation scan still cover every rule on every form.
-        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey');
+        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey',
+            $context !== 'survey' && $this->currentUserDesigns());
 
         $config = array_merge($this->defaults(), [
             'singleFields' => [],
@@ -7921,14 +7922,21 @@ class UniversalValidator extends AbstractExternalModule
      * surfaces. An unknown instrument or dictionary means "do not filter" — the
      * conservative choice for contexts where the form is not identifiable, matching
      * fieldsOnInstrument()'s null contract elsewhere in the audit.
+     *
+     * Configuration errors: a user with design rights ($designer) sees every
+     * one, on any form, since they can fix them. Anyone else sees only those
+     * of the fields on this page. Every data-entry page listed the whole
+     * project's errors, with field names and code lists of forms the user
+     * may not open, to every user (LIVE-4).
      */
-    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false)
+    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false, $designer = false)
     {
         $onForm = $this->fieldsOnInstrument($pid, $instrument);
         if ($onForm === null) {
-            // A survey page carries no configuration error it cannot place:
-            // the notice is muted there, and the rule names other forms (LIVE-2).
-            if (!$survey) return $rules;
+            // A page that cannot place its errors keeps them only for a
+            // designer: the notice is muted on a survey, and the rule names
+            // other forms (LIVE-2, LIVE-4).
+            if (!$survey && $designer) return $rules;
             return array_values(array_filter($rules, function ($r) { return empty($r['configError']); }));
         }
         // A survey shown one section per page renders only this page's fields.
@@ -7936,11 +7944,12 @@ class UniversalValidator extends AbstractExternalModule
         $out = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) {
-                // Staff see every configuration error, on any form. A survey
-                // page keeps only those of its own fields, as "not available"
-                // under the field (ModeRegistry::clientShape): it showed none of
-                // the others, and its source carried them all (LIVE-2, CHO-6).
-                if ($survey) {
+                // A designer sees every configuration error, on any form.
+                // Any other page keeps only those of its own fields; a survey
+                // shows them as "not available" under the field
+                // (ModeRegistry::clientShape): it showed none of the others,
+                // and its source carried them all (LIVE-2, CHO-6, LIVE-4).
+                if ($survey || !$designer) {
                     $own = [];
                     foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
                         if (isset($onForm[$f]) && ($onPage === null || isset($onPage[$f]))) $own[] = $f;
@@ -8434,12 +8443,22 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_link_check_display($project_id, $link)
     {
+        return $this->currentUserDesigns() ? $link : null;
+    }
+
+    /**
+     * Whether the signed-in user has design rights in this project; false
+     * when that cannot be read. is_callable, not method_exists: the framework
+     * serves some methods through __call().
+     */
+    private function currentUserDesigns()
+    {
         try {
             $user = $this->getUser();
-            if ($user && is_callable([$user, 'hasDesignRights']) && $user->hasDesignRights()) return $link;
+            return $user && is_callable([$user, 'hasDesignRights']) && $user->hasDesignRights();
         } catch (\Throwable $e) {
+            return false;
         }
-        return null;
     }
 
     /** Longest value the report will carry. A report is not a second copy of the project. */

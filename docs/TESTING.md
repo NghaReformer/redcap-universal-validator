@@ -156,7 +156,9 @@ text, it follows the language on screen
 - [ ] Fast entry, ALL names wrong (no picker field): a rule whose fast-entry box
       contains only mis-typed names must NOT vanish silently — a page-level
       "configuration error(s)" notice appears at the top of the form naming the
-      unknown fields.
+      unknown fields. Test this as a user with design rights. A user without
+      them sees only the errors of fields on the form, and these names are on
+      none.
 - [ ] `@UVALIDATE` bare tag in a field's Action Tags box → default check runs on
       that field with no module-dialog rule.
 - [ ] `@UVALIDATE=verhoeff` → that algorithm runs.

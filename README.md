@@ -430,7 +430,10 @@ enforced with the same message/confirm/block modes as everything else:
   on a survey shown one section per page), each without its text. Up to
   2.3.0-rc.2 the page source stated, for example, `"when":"[hiv]='1'"` next to
   `"whenAst":["const",true]`, and every configuration error of the project.
-  Staff forms keep the full config.
+  Staff forms keep the full config, except for configuration errors: a user
+  with design rights sees every one, on any form, and any other user sees only
+  those of the fields on the form. Up to 2.3.0-rc.2 every data-entry page
+  listed the whole project's errors to every user.
 - **A reference the module cannot resolve is refused** (1.6.0) — a field on a
   different repeating instrument, a field not collected in this event, or a read
   that failed. The rule stops checking, and the reason names the field instead of
