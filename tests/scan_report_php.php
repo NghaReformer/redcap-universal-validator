@@ -163,7 +163,12 @@ namespace {
             'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
             'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
             'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => (int) $ord, 'check_type' => 'unique',
-            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON, 'reason_bits' => 0,
+            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON,
+            // UniqueFinalizer::emit(): the branch the candidate was stored
+            // with (rv11a2-2), 0 when it was stored with none.
+            'reason_bits' => \INSPIRE\UniversalValidator\Scan\ReasonCode::bits(
+                \INSPIRE\UniversalValidator\Scan\ReasonCode::split(\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON),
+                isset($cand['branch']) ? (int) $cand['branch'] : null),
             'dag_key' => $dag,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
             'as_of' => null, 'z_score' => null, 'growth_reference' => null,
@@ -397,8 +402,8 @@ namespace {
             $written !== []
             && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at'],
                                array_keys($written)) === []
-            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '0'
-            && strpos($fin, "\$ord, 'unique', self::REASON, \$dag, \$g['group_hmac']") !== false
+            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '?'
+            && strpos($fin, "\$ord, 'unique', self::REASON, \$bits, \$dag, \$g['group_hmac']") !== false
             && \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON === 'duplicate-value');
 
         // The group a duplicate is given is read off the record node by
