@@ -199,9 +199,9 @@ check('dialog wording, check', ModeRegistry::eligibility('check')['dialogWhy'] =
 check('dialog wording, constraint', ModeRegistry::eligibility('constraint')['dialogWhy']
     === 'a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider fields');
 check('dialog wording, required', ModeRegistry::eligibility('required')['dialogWhy']
-    === 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)');
+    === 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields (not calc — the person entering data cannot fill it)');
 check('dialog wording, unique', ModeRegistry::eligibility('unique')['dialogWhy']
-    === 'a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fix a calc collision)');
+    === 'a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields (not calc — the person entering data cannot fix a calc collision)');
 
 // The ruleFindings algorithm gate: only the check mode carries an algorithm.
 foreach (['check' => true, 'constraint' => false, 'required' => false, 'unique' => false, 'choices' => false] as $m => $want) {

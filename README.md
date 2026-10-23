@@ -456,7 +456,7 @@ the two things it lacks: a **condition** and a **real block**:
   or `@UVASSERT` for that (modes compose, each with its own save-block state:
   on a blank field only `@UVREQUIRED` fires; on a filled-but-wrong value only
   the value checks fire).
-- Works on **Text, Notes, dropdown, radio, yes/no, true/false and slider**
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider**
   fields. Not calc — the person entering data cannot fill a calc, so requiring
   one would trap them (the same reasoning as the read-only exemption: a
   read-only field, a `@READONLY` radio or autocomplete dropdown included, shows
@@ -471,6 +471,10 @@ the two things it lacks: a **condition** and a **real block**:
   problem, never as a missing value.
 - Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
   conditions true at once is a visible conflict that never blocks.
+- **On a survey shown one section per page**, a condition over a field of
+  another page reads the answer saved when the page was drawn, since REDCap
+  draws only the current page's fields. `[consent]='1'` on page 2 reads the
+  consent given on page 1.
 - The server audit logs a blank-while-required save as `type: required`,
   `reason: required-blank` (a blank carries nothing identifying, so this entry
   is safe in every privacy mode).
@@ -603,7 +607,7 @@ enforcement:
   stands: an *already recorded* is enforced, and a *not used before* lets the
   save through. Surveys never show *could not check* and are never held: there a
   failed check simply lets the save through, and the audit is the net.
-- Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
+- Works on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields;
   composes with the other modes on the same field.
 
 ## Dynamic choice filtering — the `@UVCHOICES` tag

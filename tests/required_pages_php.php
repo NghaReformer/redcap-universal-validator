@@ -323,6 +323,19 @@ namespace {
         check('audit, blank fixture "' . $brow['name'] . '": ' . ($brow['blank'] ? 'a finding' : 'an answer'), $isFinding === $brow['blank']);
     }
 
+    // ---- REQ-10: a save with no instrument leaves required rules to the scan -------
+    // Every rule was in scope, so each required field of a form nobody had
+    // opened was logged as blank, while the scan asks only started forms.
+    $enrolOnly = ['1' => [351 => ['record_id' => '1', 'consent' => '0', 'age' => '40']]];
+    $m = mod($enrolOnly);
+    $m->redcap_save_record(149, '1', null, 351, null, null, null, 1);
+    $req = array_values(array_filter(logged($m, 'invalid-id-saved'), function ($e) { return ($e['type'] ?? '') === 'required'; }));
+    check('REQ-10: a save with no instrument logs no required field of the visit form nobody opened (got ' . json_encode(fieldsOf($req)) . ')', $req === []);
+    $m = mod($enrolOnly);
+    $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+    check('REQ-10 control: a save of the visit form still reports its empty required field',
+        in_array('plain', fieldsOf(logged($m, 'invalid-id-saved')), true));
+
     echo "required_pages_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

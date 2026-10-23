@@ -248,6 +248,17 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // With no saved instrument every rule is in scope, and a required rule
+        // would report a missing value on every form nobody has opened yet.
+        // The scan asks a required rule only where its form was started
+        // (R2O-2), so these rules are left to it (REQ-10).
+        if ($onForm === null) {
+            $rules = array_filter($rules, function ($r) {
+                return ModeRegistry::modeOfType(isset($r['type']) ? (string) $r['type'] : '') !== 'required';
+            });
+            if (!$rules) return;
+        }
+
         $fields = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
@@ -775,7 +786,9 @@ class UniversalValidator extends AbstractExternalModule
             $rule['fields'] = $kept;
         }
 
-        // The mode's own verdict (php/modes.json "evaluator").
+        // The mode's own verdict (php/modes.json "evaluator"). Every evaluator
+        // takes the same ten arguments; $meta carries the Missing Data Codes
+        // and what the rule returns, which only some of them read (REQ-13).
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->withReturned(
             $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret, $rule, $meta);
@@ -789,7 +802,7 @@ class UniversalValidator extends AbstractExternalModule
      * detects duplicates in one aggregate pass over the scanned data
      * instead of one whole-project read per record.)
      */
-    private function findingsUnique(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsUnique(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -3190,7 +3203,7 @@ class UniversalValidator extends AbstractExternalModule
      * references a value this context could not resolve, leaves the field
      * unchecked and says so as a rule problem, never as a finding.
      */
-    private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         foreach ($rule['fields'] as $field) {
@@ -3286,7 +3299,7 @@ class UniversalValidator extends AbstractExternalModule
      * flagged. Checkbox values arrive as code=>0/1 maps (keepArrays); this
      * is the one mode that must judge them.
      */
-    private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
@@ -3350,7 +3363,7 @@ class UniversalValidator extends AbstractExternalModule
      * condition is re-parsed here (config-validated, cheap) and evaluated
      * against the full value map, so no fold is needed server-side.
      */
-    private function findingsConstraint(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsConstraint(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
@@ -3641,7 +3654,7 @@ class UniversalValidator extends AbstractExternalModule
      * growth finding carries the reference id, and the z-score when there is
      * one.
      */
-    private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $spec = ['decimalComma' => !empty($rule['decimalComma'])];
@@ -3856,7 +3869,7 @@ class UniversalValidator extends AbstractExternalModule
      * format of each value, through the same verdict functions the browser
      * twins.
      */
-    private function findingsCheck(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsCheck(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';

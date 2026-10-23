@@ -1063,7 +1063,7 @@ note, is not read.
 
 ### Semantics worth knowing
 
-- Sits on Text, Notes, dropdown, radio, yes/no, true/false and slider fields. **Not
+- Sits on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields. **Not
   calc** — the person entering data cannot fill a calc, so requiring one would trap
   them. Same reasoning as the read-only exemption: a read-only field shows the notice
   but never blocks the save.
@@ -1198,7 +1198,7 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
 
 ### Semantics worth knowing
 
-- Sits on Text, Notes, dropdown, radio, yes/no, true/false and slider fields — not calc
+- Sits on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields — not calc
   (a data enterer cannot fix a calc collision).
 - **Privacy posture.** The endpoint answers only for fields that carry a unique rule, so
   it cannot be used to probe arbitrary fields for value existence. Staff see the

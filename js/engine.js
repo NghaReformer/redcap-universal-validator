@@ -3721,7 +3721,9 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       try { (bad[0] || pend[0]).focus(); } catch(_f){}
       return false;
     }
-    if(window.confirm("Validation FAILED for:" + names + "\n\nSave anyway?")){
+    /* An empty required field failed no validation: name what it is (REQ-13). */
+    var onlyBlank = bad.length > 0 && bad.every(function(el){ return el.__qridType === "required"; });
+    if(window.confirm((onlyBlank ? "These fields are still empty:" : "Validation FAILED for:") + names + "\n\nSave anyway?")){
       UV_guard.passUntil = new Date().getTime() + 2000;
       return true;
     }
@@ -4680,7 +4682,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "c", null); setGuard(false); }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
@@ -4696,7 +4698,7 @@ function QRIDConstraintInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); return;
+        QRID_setModeState(input, "c", null); setGuard(false); return;
       }
       var V = act[0];
       /* Frozen assert: state no VERDICT rather than a stale one (see
@@ -6604,7 +6606,7 @@ function QRIDRequiredInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); }
+    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); }
     function check(){
       /* REDCap hides the row of a field whose branching logic is false (or
          that carries @HIDDEN), leaves it out of its own required check, and
@@ -6625,7 +6627,7 @@ function QRIDRequiredInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The requirement was <b>NOT</b> enforced; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); return;
       }
       var V = act[0];
       /* deferred: the server could not resolve this rule's references (or its
@@ -6637,14 +6639,13 @@ function QRIDRequiredInit(QRID_CONFIG){
         } else {
           msg.style.display = "none"; msg.innerHTML = "";
         }
-        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); return;
       }
       var blank = QRID_isBlank(QRID_WHEN.readRef(fieldName, null));
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
       setGuard(true, V.blockSave);
-      QRID_setModeState(input, "r", "bad");
       msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
         : "This field must not be left blank" + (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") + ".");
     }
@@ -7382,7 +7383,7 @@ function QRIDUniqueInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> checked; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); return;
+        QRID_setModeState(input, "q", null); setGuard(false); return;
       }
       var V = act[0];
       /* Surveys are opt-in per rule: a used/free answer is record-derived

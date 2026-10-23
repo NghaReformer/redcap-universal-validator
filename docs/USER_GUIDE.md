@@ -133,7 +133,7 @@ Two limits to keep in mind from the start:
   Pointing a Single-value or Pooled rule at a dropdown, radio, date, or calc
   field produces a configuration error. The newer **Constraint** (`@UVASSERT`)
   and **Required** (`@UVREQUIRED`) rules are wider: they also accept dropdown,
-  radio, yes/no, true/false and slider fields (constraints additionally accept
+  radio, yes/no, true/false, SQL and slider fields (constraints additionally accept
   calc; a Required rule rejects calc because the person entering data cannot
   fill one). See the README sections on those two tags.
 - **The browser is the enforcement point.** *Compulsory* blocks a human form or
@@ -603,6 +603,10 @@ One condition may mix `and`, `or` and `not` with parentheses:
 | | arithmetic and piping |
 | | a character outside printable ASCII, such as `'Yaoundé'` (compare the code a choice stores) |
 | | a field compared with itself, such as `[dose]>[dose]` |
+
+On a survey shown one section per page, REDCap draws only the current page's
+fields, so a condition over a field of another page reads the answer saved when
+the page was drawn: `[consent]='1'` on page 2 reads the consent given on page 1.
 
 `not` binds tightest, then `and`, then `or`, as in REDCap:
 `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
