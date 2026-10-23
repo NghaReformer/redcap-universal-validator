@@ -4972,6 +4972,20 @@ namespace INSPIRE\UniversalValidator\Scan {
     $m3->user->rights['group_id'] = null;
     check('rv11a1-3 (control): the same run read by an unconfined reader is withheld the same way',
         $wvPage($m3, $s3, 203, $w3, null)['report'] === $pg3['report']);
+    // rv11b1-4: the day a run's date rules were judged as of counts nothing,
+    // so a withheld answer keeps it, as the status does (preFenceStatus()).
+    list($s4, $m4) = $wv(['R06', 'R07']);
+    $m4->clock = ['today' => '2026-10-21', 'now' => '2026-10-21 10:00:00'];
+    $m4->user->rights['group_id'] = 31;
+    $w4 = (int) (new ScanService($m4, $s4))->start(204)['run_id'];
+    $m4->readSleep = 3.2;
+    (new ScanService($m4, $s4))->work(204, $w4);
+    (new ScanService($m4, $s4))->cancel(204, $w4);
+    $st4 = (new ScanService($m4, $s4))->status(204, $w4);
+    $pg4 = $wvPage($m4, $s4, 204, $w4, 31);
+    check('rv11b1-4: a withheld findings answer keeps the day its run was judged as of, as its status does',
+        $st4['withheld'] === true && $st4['asOf'] === '2026-10-21' && $pg4['withheld'] === true
+        && isset($pg4['report']['asOf']) && $pg4['report']['asOf'] === '2026-10-21');
 
     /* rv11a1-5 / rv11a2-1  A REPORT ANOTHER RUN HAS REPLACED IS REFUSED,
      * AND A FILE EARNS ITS TRAILER AT THE END. Run A over the whole

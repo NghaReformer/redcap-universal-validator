@@ -481,6 +481,37 @@ function noZero(label) {
     els['uv-scan-report-summary'].textContent
       === 'This scan covered Data Access Group site_b only, not the whole project. This result does not certify the project.');
 
+  // -- rv11b1-3: a withheld run names no rule count -------------------------
+  // The main panel said "...not a complete picture of the group. This result
+  // does not certify the project." while the report said "2 rules could not
+  // be evaluated". The server drops the count from such an answer (rv11a1-3);
+  // the panel does not read one that arrives.
+  reset([page({ withheld: true, withheldWhy: UV.labels.withheldEnded, clean: 0, ruleProblems: 2, rows: [], next: null, facets: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-3: a withheld run shows no rule count, whatever the answer carries',
+    els['uv-scan-report-summary'].textContent === 'This result does not certify the project.'
+    && els['uv-scan-report-summary'].textContent.indexOf('could not be evaluated') === -1);
+  reset([page({ clean: 0, ruleProblems: 2, next: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-3 (control): a run that proved its scope says its rule count',
+    els['uv-scan-report-summary'].textContent.indexOf('2 rules could not be evaluated') !== -1);
+
+  // -- rv11b1-4: the judged-as-of day in the summary -------------------------
+  reset([page({ next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.',
+                                      expectedRows: 1, asOf: '2026-10-21' } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-4: a report opened from the page says the day its dates were judged as of',
+    els['uv-scan-report-summary'].textContent === 'Every record was checked, including changes made while it ran. '
+      + 'This result does not certify the project. Dates were judged as of 2026-10-21.');
+  reset([page({ next: null, report: { coverageSentence: 'x', expectedRows: 1, asOf: '21/10/2026' } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-4 (control): a day not in the stored form is not said',
+    els['uv-scan-report-summary'].textContent.indexOf('judged as of') === -1);
+
   // -- README's three marks of an incomplete report (item 10) ---------------
   // The words are ScanService::incompleteMarks()'s, which tests/scan_service_php.php
   // and tests/scan_export_php.php pin; the page shows them where the file has them.

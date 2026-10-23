@@ -1250,8 +1250,18 @@
         if (sc.kind === 'group' && typeof sc.label === 'string' && sc.label !== '') {
             parts.push(fill(L.reportGroupOnly || 'This scan covered {group} only, not the whole project.', { group: sc.label }));
         }
-        var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.ruleProblems });
+        // A WITHHELD RUN NAMES NO RULE COUNT (review rv11b1-3): how many rules
+        // it could not evaluate is a statement about what it read, and its
+        // status says only that it does not certify (preFenceStatus()). The
+        // server leaves the count out of such an answer (rv11a1-3); this
+        // does not read one that arrives anyway.
+        var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.withheld ? 0 : a.ruleProblems });
         if (v) parts.push(v);
+        // AND THE DAY IT WAS JUDGED AS OF (review rv11b1-4), as the panel says
+        // it for a run this tab watched to its end: a report opened from the
+        // page never said it.
+        var d = asOfText({ asOf: rep.asOf });
+        if (d) parts.push(d);
         text(el('uv-scan-report-summary'), parts.join(' '));
         var n = rep.expectedRows, count;
         if (typeof n === 'number' && n >= 0 && n === Math.floor(n)) {

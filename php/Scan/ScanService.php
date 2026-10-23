@@ -1372,8 +1372,10 @@ final class ScanService
     private static function withheldAnswer(array $out, $why)
     {
         $keep = ['ok', 'run_id', 'runScope', 'columns', 'after', 'limit', 'filter', 'report', 'marks', 'clean'];
+        // `asOf` as preFenceStatus() keeps it (review rv11b1-4): the day the
+        // run's date rules were judged as of counts nothing.
         $reportKeeps = ['schema', 'columns', 'legend', 'coverage', 'coverageSentence', 'mayCertify', 'suffix',
-                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows'];
+                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf'];
         $kept = [];
         foreach ($keep as $k) if (array_key_exists($k, $out)) $kept[$k] = $out[$k];
         $report = [];

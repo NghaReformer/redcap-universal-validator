@@ -1065,7 +1065,8 @@ appear when no run of the reader's is going, and open by themselves when a
 run the tab is watching finishes. Earlier runs are not listed. The summary
 above the table says what the run covered: a run over one group says "This
 scan covered Data Access Group north only, not the whole project.", whoever
-reads it, as its file does.
+reads it, as its file does. It also gives the day the run's dates were
+judged as of, as the panel does for a run it watched.
 
 Findings come 50 to a page, in the order they were stored, with "Next page"
 and "Previous page". The table's caption gives the page, and a line above it
