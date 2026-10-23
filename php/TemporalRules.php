@@ -183,6 +183,14 @@ final class TemporalRules
                 $validation=$meta['validation']??'';
                 $tv=TemporalValue::fromValidation($validation);$expected=$tv?$tv['type']:null;
                 if($expected!==$binding['type'])$errors[]='Binding '.$alias.' date type must match the field validation type.';
+                // The "from" date is read with the same type, so a date "from" for a datetime
+                // binding could never be read (wargame C7).
+                $from=is_string($binding['elapsedFrom']??null)?ModeRegistry::operandRef($binding['elapsedFrom'],['qualified'=>true]):null;
+                $fromMeta=$from?$shape->field($from[1]):null;
+                if($fromMeta){
+                    $ftv=TemporalValue::fromValidation($fromMeta['validation']??'');
+                    if(($ftv?$ftv['type']:null)!==$binding['type'])$errors[]='Binding '.$alias.' elapsedFrom field must have the same date type as the binding ('.(is_scalar($binding['type'])?$binding['type']:'?').').';
+                }
             }
             foreach(is_array($binding['match']??null)?$binding['match']:[] as $target=>$source){
                 $key=$shape->field($target);

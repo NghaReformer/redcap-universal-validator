@@ -71,7 +71,7 @@ An unresolved part of a condition joined by `and` or `or` leaves the condition u
 @UVASSERT={"assert":"{elapsed}<=48","references":{"elapsed":{"field":"result_time","type":"datetime","elapsedFrom":"[collection_arm_1][collection_time][first-instance]","unit":"hours"}}}
 ```
 
-Elapsed values are signed (`target - elapsedFrom`). `elapsedFrom` is one scalar reference; `any-instance` and `all-instances` are rejected there. Units are days, hours, minutes, or seconds. Date-only bindings allow calendar days. Datetimes use timezone-less wall-clock arithmetic, with no browser-local timezone or daylight-saving conversion. This is not a general REDCap `datediff()` evaluator.
+Elapsed values are signed (`target - elapsedFrom`). `elapsedFrom` is one scalar reference; `any-instance` and `all-instances` are rejected there. Its field must have the binding's date type. A date `elapsedFrom` for a `datetime` binding is read as a datetime and never resolves, so it is a configuration error. Units are days, hours, minutes, or seconds. Date-only bindings allow calendar days. Datetimes use timezone-less wall-clock arithmetic, with no browser-local timezone or daylight-saving conversion. This is not a general REDCap `datediff()` evaluator.
 
 ## Within-record uniqueness
 

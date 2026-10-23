@@ -246,6 +246,9 @@ Tests in `tests/temporal_integration_php.php`.
   `tests/temporal_fixture.json` (both evaluators) and `tests/binding_php.php`.
 - **C7** `TemporalRules.php:129-134` checks the binding field's type, not the
   `elapsedFrom` field's. Repro: `php tools/temporal_sem_elapsed_type.php`.
+  **Fixed 2026-10-23:** `validateProject` also checks the `elapsedFrom`
+  field's date type against the binding's `type`. Tests in
+  `tests/temporal_integration_php.php`.
 - **C8** Designed gaps (Baseline has no previous visit, instance 1 has no
   previous instance) write a `uvalidate-unconfigurable` row on every save:
   replaying the seed saves once produced 40 distinct such entries, 2 of them

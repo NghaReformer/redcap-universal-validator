@@ -596,6 +596,14 @@ namespace {
         $c3Errors(['assert'=>'{x}>0','references'=>['x'=>['field'=>'xs_id','event'=>'baseline_arm_1','aggregate'=>'count']]],['n1'])===[]);
     check('C3: a withheld "from" with notFuture is left to the page',
         $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]','windowNotFuture'=>true],['n1'])===[]);
+    // Wargame C7: the "from" date of an elapsed binding is read with the binding's type.
+    $c7=new \INSPIRE\UniversalValidator\ProjectShape([1=>['name'=>'base_arm_1','arm'=>1,'order'=>0,'forms'=>['visit'],'repeats'=>[],'eventRepeats'=>false]],
+        ['consent_date'=>['form'=>'visit','type'=>'text','validation'=>'date_ymd'],'consent_dt'=>['form'=>'visit','type'=>'text','validation'=>'datetime_dmy'],
+         'result_time'=>['form'=>'visit','type'=>'text','validation'=>'datetime_ymd'],'note'=>['form'=>'visit','type'=>'text','validation'=>'']]);
+    $c7Errors=function($from)use($c7){return \INSPIRE\UniversalValidator\TemporalRules::validateProject(['assert'=>'{h}<=48','references'=>['h'=>['field'=>'result_time','type'=>'datetime','elapsedFrom'=>$from,'unit'=>'hours']]],$c7);};
+    check('C7: a date "from" for a datetime binding is refused',$c7Errors('[consent_date]')===['Binding h elapsedFrom field must have the same date type as the binding (datetime).']);
+    check('C7: ... as is a "from" that is not a date',$c7Errors('[base_arm_1][note]')===['Binding h elapsedFrom field must have the same date type as the binding (datetime).']);
+    check('C7: a datetime "from" in another order is fine',$c7Errors('[consent_dt]')===[]);
     check('C3: ... and refused without it, when nothing of the rule could be checked',
         $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]'],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
 
