@@ -130,6 +130,27 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('walk: exactly once each, by their real bytes',
         $seen === array('T1', 'T1 ', 'T1  ', 'T2'));
 
+    // ONE ROW PER ARM (PRF-8). A record in two arms is two rows of REDCap's
+    // record index with the same id. The walk lists it once, also when the
+    // two rows fall on either side of a page boundary.
+    $A->query('DELETE FROM redcap_record_list');
+    foreach (array(array(1, 'M1'), array(2, 'M1'), array(1, 'M2'), array(2, 'M3'), array(1, 'M3')) as $ar) {
+        $A->query("INSERT INTO redcap_record_list (project_id, arm, record, dag_id) VALUES (" . $PID . ", "
+            . $ar[0] . ", '" . $ar[1] . "', NULL)");
+    }
+    foreach (array(1, 2, 10) as $size) {
+        $seen = array(); $cursor = null; $carry = array(); $pages = 0;
+        while ($pages++ < 20) {
+            $pg = $src->page($cursor, $carry, $size);
+            if (!$pg['ok']) break;
+            foreach ($pg['rows'] as $r) $seen[] = $r['id'];
+            $cursor = $pg['cursor']; $carry = $pg['emitted'];
+            if ($pg['done']) break;
+        }
+        check('walk: a record in two arms is listed once, in pages of ' . $size . ' (got ' . json_encode($seen) . ')',
+            $seen === array('M1', 'M2', 'M3'));
+    }
+
     // The fallback source: no record index for this project at all.
     $A->query('DELETE FROM redcap_record_list');
     for ($i = 1; $i <= 4; $i++) {
@@ -141,10 +162,23 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
     $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
         VALUES (" . $PID . ", 1, 'D2', '__GROUPID__', '31')");
-    $fb = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, $PID, array('pk' => 'record_id'));
+    $recFb = new UvRecordingDb($dbA);
+    $fb = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($recFb, $PID, array('pk' => 'record_id'));
     check('walk: an empty record index falls through to the data table',
         $fb['ok'] === true && strpos($fb['source']->via(), 'redcap_data') === 0);
+    $recFb->log = array();
     $pg = $fb['source']->page(null, array(), 10);
+    // PRF-8: the fallback page is told to use the (project_id, record, ...)
+    // index REDCap's data table has, so it reads records in order and sorts
+    // nothing; under (project_id, field_name) it sorted the whole project.
+    $pageSql = $recFb->matching('select', array('ORDER BY record'));
+    $plan = $pageSql ? $A->query('EXPLAIN ' . uv_inline_params($A, $pageSql[0][1], $pageSql[0][2]))->fetch_assoc() : null;
+    $planCols = ($plan && $plan['key'] !== null) ? uv_index_columns($A, 'redcap_data', $plan['key']) : array();
+    check('walk: the fallback page walks an index that leads with (project_id, record) (got '
+        . json_encode($plan ? array($plan['key'], $plan['Extra']) : null) . ')',
+        array_slice($planCols, 0, 2) === array('project_id', 'record')
+        && strpos($pageSql[0][1], 'FORCE INDEX (`proj_record_field`)') !== false);
+    check('walk: and sorts nothing', $plan && stripos((string) $plan['Extra'], 'filesort') === false);
     $ids = array();
     foreach ($pg['rows'] as $r) $ids[] = $r['id'];
     check('walk: a record held in several events is listed once',

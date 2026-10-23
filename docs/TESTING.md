@@ -60,7 +60,7 @@ Everything it asserts lives in one file per area:
 | `cases/slots.php` | the installation-wide worker semaphore, and what a worker says when nobody provisioned one |
 | `cases/retention.php` | three clocks, and nothing silently losing a finding |
 | `cases/fault.php` | what the store does when the server refuses a write |
-| `cases/walk.php` | `RecordManifestSource` over REDCap-shaped tables, including the collation that decides whether a record can be skipped |
+| `cases/walk.php` | `RecordManifestSource` over REDCap-shaped tables, including the collation that decides whether a record can be skipped, a record in two arms, and the index the data-table walk reads |
 | `cases/fence.php` | `SourceFence`: the opening fence, per-record versions, a pruned log, catch-up paging |
 | `cases/planning.php` | `ScanPlanner`: a project to a frozen manifest |
 | `cases/worker.php` | `ScanWorker` against the real store and a real fence |
@@ -368,6 +368,12 @@ afford to have read repeatedly.
       as ready.
 - [ ] Turn the SYSTEM switch on and leave the project switch off. The page still
       says unavailable. Then the reverse. Both are required.
+- [ ] Record the server's real indexes, which the test fixture only models:
+      `SHOW INDEX FROM redcap_record_list` and `SHOW INDEX FROM redcap_data`.
+      The record walk needs an index that starts with `project_id, record` on
+      each. Without one on `redcap_record_list`, every page of the walk sorts
+      the project's record list, and without one on `redcap_data` the
+      data-table walk does the same. Send the output with the pilot results.
 
 ### One run, watched
 

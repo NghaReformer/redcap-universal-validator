@@ -70,6 +70,7 @@ final class RecordManifestSource
     private $dagCol;      // allowlisted, or null
     private $via;
     private $pkField;     // only for the data-table fallback
+    private $walkIndex = null;  // the index the ordered reads name (walkFrom), or none
     private $dataTable;   // for the __GROUPID__ lookup when $dagCol is null
 
     private function __construct()
@@ -112,6 +113,7 @@ final class RecordManifestSource
             // group-scoped scan rather than silently scanning the project.
             $s->dagCol = isset($cols['dag_id']) ? 'dag_id' : (isset($cols['group_id']) ? 'group_id' : null);
             $s->via = 'redcap_record_list';
+            $s->walkIndex = self::walkIndexOf($db, 'redcap_record_list');
             $probe = $s->probe();
             if ($probe['ok']) {
                 $s->dataTable = self::dataTable($db, $pid);
@@ -146,6 +148,7 @@ final class RecordManifestSource
         $s->dagCol = null;      // groups come from __GROUPID__ rows, per page
         $s->via = $dt . ' (record-id field only)';
         $s->pkField = $pk;
+        $s->walkIndex = self::walkIndexOf($db, $dt);
         $probe = $s->probe();
         if (!$probe['ok']) {
             return ['ok' => false, 'source' => null, 'why' => $probe['why']];
@@ -381,7 +384,7 @@ final class RecordManifestSource
         // DISTINCT there would forbid selecting the group column beside it.
         $sql = 'SELECT ' . ($this->pkField === null ? '' : 'DISTINCT ') . $this->recordCol
              . ($this->dagCol === null ? '' : ', ' . $this->dagCol)
-             . ' FROM ' . $this->table . ' WHERE project_id = ?';
+             . ' FROM ' . $this->walkFrom() . ' WHERE project_id = ?';
         $params = [$this->pid];
         if ($this->pkField !== null) {
             $sql .= ' AND field_name = ?';
@@ -412,9 +415,17 @@ final class RecordManifestSource
 
         $skip = array_flip($emitted);
         $out = [];
+        // ONE ROW PER ARM (PRF-8). REDCap's record index keys a record by
+        // project, arm and record, so a record in two arms of a project is two
+        // rows with the same id, next to each other in this order. It was
+        // listed twice; the walk lists each id once, by its exact bytes, so
+        // ids the collation ties are still kept apart.
+        $inPage = [];
         foreach ($rows as $row) {
             $id = (string) $row[0];
             if (isset($skip[$id])) continue;         // already emitted at this boundary
+            if (isset($inPage[$id])) continue;       // the same record in another arm
+            $inPage[$id] = true;
             $out[] = ['id' => $id,
                       // THE GROUP ID, VERBATIM. dag_id on the record index and
                       // the __GROUPID__ value on the data table are both
@@ -557,7 +568,7 @@ final class RecordManifestSource
     private function boundaryGroup($id)
     {
         $sql = 'SELECT ' . ($this->pkField === null ? '' : 'DISTINCT ') . $this->recordCol
-             . ' FROM ' . $this->table . ' WHERE project_id = ?';
+             . ' FROM ' . $this->walkFrom() . ' WHERE project_id = ?';
         $params = [$this->pid];
         if ($this->pkField !== null) {
             $sql .= ' AND field_name = ?';
@@ -582,7 +593,7 @@ final class RecordManifestSource
     private function probe()
     {
         try {
-            $sql = 'SELECT ' . $this->recordCol . ' FROM ' . $this->table . ' WHERE project_id = ?';
+            $sql = 'SELECT ' . $this->recordCol . ' FROM ' . $this->walkFrom() . ' WHERE project_id = ?';
             $params = [$this->pid];
             if ($this->pkField !== null) {
                 $sql .= ' AND field_name = ?';
@@ -638,6 +649,56 @@ final class RecordManifestSource
      * its first run. The table name is still validated by shape, because a name
      * can never be a bound parameter anywhere it is interpolated.
      */
+    /**
+     * The table, with the index the ordered reads must use when there is one.
+     *
+     * PRF-8. REDCap's data table is keyed (project_id, field_name) and
+     * (project_id, record, field_name), among others. For the
+     * fallback walk, WHERE project_id = ? AND field_name = ? ORDER BY record,
+     * the server chose the first and sorted every record of the project for
+     * each page of 1,000, so a walk cost about n squared over 1,000 row sorts.
+     * Told to use an index that leads with (project_id, record), it reads the
+     * records in order and stops at the page's end, with no sort.
+     */
+    private function walkFrom()
+    {
+        return $this->walkIndex === null ? $this->table
+            : $this->table . ' FORCE INDEX (`' . $this->walkIndex . '`)';
+    }
+
+    /**
+     * An index on $table whose first two columns are project_id and record,
+     * read from the server and never assumed: REDCap's index names are not
+     * part of any contract. One that also holds field_name is preferred, as
+     * the fallback walk then reads the index alone. Null when there is none,
+     * when its name is not a plain identifier, or when the read fails; the
+     * reads then run without a hint, as before.
+     */
+    private static function walkIndexOf(ScanDb $db, $table)
+    {
+        if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $table)) return null;
+        try {
+            $rows = $db->select('SELECT index_name, seq_in_index, column_name FROM information_schema.statistics
+                WHERE table_schema = DATABASE() AND table_name = ? ORDER BY index_name, seq_in_index', [$table]);
+        } catch (\Throwable $e) {
+            \INSPIRE\UniversalValidator\Faults::swallow($e, 'RecordManifestSource::walkIndexOf');
+            return null;
+        }
+        $cols = [];
+        foreach ((array) $rows as $r) {
+            if (!is_array($r) || !isset($r[0], $r[1], $r[2])) continue;
+            $cols[(string) $r[0]][(int) $r[1]] = strtolower((string) $r[2]);
+        }
+        $pick = null;
+        foreach ($cols as $name => $c) {
+            if (!preg_match('/^[A-Za-z0-9_]+\z/', $name)) continue;
+            if (($c[1] ?? null) !== 'project_id' || ($c[2] ?? null) !== 'record') continue;
+            if (in_array('field_name', $c, true)) return $name;
+            if ($pick === null) $pick = $name;
+        }
+        return $pick;
+    }
+
     private static function columnsOf(ScanDb $db, $table)
     {
         if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $table)) return null;

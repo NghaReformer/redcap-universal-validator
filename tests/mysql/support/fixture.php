@@ -213,12 +213,24 @@ function uv_generation($name) {
 function uv_redcap_schema($conn) {
     $conn->query('CREATE TABLE redcap_projects (project_id INT PRIMARY KEY,
         log_event_table VARCHAR(64) NULL, data_table VARCHAR(64) NULL) ENGINE=InnoDB');
+    // REDCap's own index shapes (PRF-8). The record index holds one row per
+    // arm; REDCap's key on (project_id, arm, record) is modeled as a plain key
+    // so the collation-tie cases can still store ids the column treats as
+    // equal, and (project_id, record) is the key REDCap's record lookups by id
+    // need, which the walk's ORDER BY rides on. The data table carries the
+    // three keys REDCap gives it, with no (project_id, field_name, record):
+    // that one made the fallback walk look index-only when REDCap's schema
+    // does not offer it.
     $conn->query('CREATE TABLE redcap_record_list (project_id INT NOT NULL,
-        record VARCHAR(100) NOT NULL, dag_id INT NULL, KEY (project_id, record)) ENGINE=InnoDB');
+        arm TINYINT NOT NULL DEFAULT 1, record VARCHAR(100) NOT NULL, dag_id INT NULL,
+        KEY project_arm_record (project_id, arm, record),
+        KEY project_record (project_id, record)) ENGINE=InnoDB');
     $conn->query('CREATE TABLE redcap_data (project_id INT NOT NULL, event_id INT NOT NULL,
         record VARCHAR(100) NOT NULL, field_name VARCHAR(100) NOT NULL,
         `value` TEXT NULL, instance INT NULL,
-        KEY (project_id, field_name, record)) ENGINE=InnoDB');
+        KEY event_id_instance (event_id, instance),
+        KEY proj_record_field (project_id, record, field_name),
+        KEY project_field (project_id, field_name)) ENGINE=InnoDB');
 }
 
 /**
