@@ -2658,6 +2658,33 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W10BF-4 E2E: read in full again, the run finishes complete',
         $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
 
+    // rv11b2-6: "NO RULES" READ IN FULL IS SETTLED. The findings answer said
+    // it with final:false and the file answered 503, so the page offered the
+    // finished run, its panel asked again on its ladder for as long as the
+    // tab was open, and the download said "try again" about a project the
+    // next read would describe the same way. A refusal resting on a failed
+    // read stays one to ask again.
+    $gm->refuse = ScanService::NO_RULES;
+    $gm->unread = [];
+    $nrPage = (new ScanService($gm, $gs))->findings(166, $grun);
+    $nrFile = (new ScanService($gm, $gs))->exportOpen(166, $grun);
+    $nrStatus = (new ScanService($gm, $gs))->status(166, $grun);
+    check('rv11b2-6: no rules, nothing unread: the findings refusal is final, and the file is refused 403',
+        $nrPage === ['ok' => false, 'why' => ScanService::NO_RULES, 'final' => true]
+        && $nrFile['ok'] === false && $nrFile['http'] === 403 && $nrStatus['final'] === true);
+    $gm->unread = ['the growth reference folder'];
+    $nuPage = (new ScanService($gm, $gs))->findings(166, $grun);
+    $nuFile = (new ScanService($gm, $gs))->exportOpen(166, $grun);
+    check('rv11b2-6 (control): the same refusal resting on a read that failed is asked again, and the file 503',
+        $nuPage['ok'] === false && $nuPage['final'] === false
+        && strpos((string) $nuPage['why'], 'could not be read just now') !== false
+        && $nuFile['http'] === 503);
+    check('rv11b2-6: the sentence is the one durableScanContext() refuses with',
+        strpos((string) file_get_contents(__DIR__ . '/../UniversalValidator.php'),
+               "'why' => '" . ScanService::NO_RULES . "'") !== false);
+    $gm->refuse = null;
+    $gm->unread = [];
+
     // rvc2-3: A RUN STAYS STOPPABLE WHEN NO CONTEXT CAN BE BUILT. Stop and
     // status built the full scan context, so a configuration read in part, or
     // rules that can no longer be evaluated, refused both: the page never
@@ -2671,15 +2698,17 @@ namespace INSPIRE\UniversalValidator\Scan {
         $sm->refuse = 'this project has no rules this scan can evaluate';
         $sm->unread = $unreadNow;
         $sst = (new ScanService($sm, $ss))->status(169, $srun);
-        check('rvc2-3 (' . $how . '): the status is still refused, and not for good',
-            $sst['ok'] === false && $sst['final'] === false
+        // For good only when nothing was unread (rv11b2-6): "no rules" read
+        // in full is settled.
+        check('rvc2-3 (' . $how . '): the status is still refused, for good only when nothing was unread',
+            $sst['ok'] === false && $sst['final'] === ($how !== 'unread')
             && strpos((string) $sst['why'], $how === 'unread' ? 'could not be read just now' : 'no rules') !== false);
         check('rvc2-3 (' . $how . '): but it says this run is active and this reader may stop it',
             isset($sst['mayCancel'], $sst['active'], $sst['run_id']) && $sst['mayCancel'] === true
             && $sst['active'] === true && $sst['run_id'] === $srun && !isset($sst['total']) && !isset($sst['findings']));
         check('rvc2-3 (' . $how . '): an id that is no run gets the same refusal, and no offer',
             (new ScanService($sm, $ss))->status(169, 999)
-            === ['ok' => false, 'why' => $sst['why'], 'final' => false]);
+            === ['ok' => false, 'why' => $sst['why'], 'final' => $sst['final']]);
         $sc = (new ScanService($sm, $ss))->cancel(169, $srun);
         $srow = $ss->run(169, $srun);
         check('rvc2-3 (' . $how . '): Stop stops it, and frees the project',
@@ -4455,9 +4484,12 @@ namespace INSPIRE\UniversalValidator\Scan {
     $bsvc = new ScanService($broken, $os);
     $bnone = ['status' => $bsvc->status(185, 999), 'work' => $bsvc->work(185, 999),
               'cancel' => $bsvc->cancel(185, 999)];
+    // Final since rv11b2-6: "no rules" with nothing unread is settled, and
+    // a read that failed says CONFIG_UNREAD (W10BF-4) and stays non-final
+    // (the rv11b2-6 checks below).
     check('rv5b-4: a context that cannot be built for another group\'s run does not say so',
         $bsvc->status(185, $o31) === $bnone['status'] && $bsvc->cancel(185, $o31) === $bnone['cancel']
-        && $bsvc->work(185, $o31) === $bnone['work'] && $bnone['status']['final'] === false);
+        && $bsvc->work(185, $o31) === $bnone['work'] && $bnone['status']['final'] === true);
     $broken->user->rights['group_id'] = 31;
     check('rv5b-4 control: the run\'s own group is told why its context could not be built',
         (new ScanService($broken, $os))->status(185, $o31)['why']

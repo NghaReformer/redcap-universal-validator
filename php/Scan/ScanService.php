@@ -2303,11 +2303,12 @@ final class ScanService
         // about a run - the plan's ownership map does not depend on the group
         // it is built for - so it is decided here, from a planning context
         // for the reader's own scope, before any run row is read. A context
-        // that cannot be built is refused here too, the same for every id;
-        // it is never final, as entitlementNow() says it.
+        // that cannot be built is refused here too, the same for every id,
+        // and final only when settled (contextFinal()), as entitlementNow()
+        // says it.
         $f = $this->readerForms($pid);
         if (empty($f['ok'])) {
-            $no = ['ok' => false, 'why' => $f['why'], 'final' => false];
+            $no = ['ok' => false, 'why' => $f['why'], 'final' => !empty($f['final'])];
             // STOP DOES NOT WAIT FOR A CONTEXT (review rvc2-3): it is asked
             // of every instrument instead, as cancelAuth() asks it.
             if ($verb !== 'cancel') return $no;
@@ -2349,7 +2350,7 @@ final class ScanService
             // contextRefusal(), as entitlementNow() says it: a context refused
             // on a read that failed names what could not be read (W10BF-4).
             $this->readerForms[$key] = empty($ctx['ok'])
-                ? ['ok' => false, 'why' => self::contextRefusal($ctx)]
+                ? ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx)]
                 : ['ok' => true, 'why' => null] + self::formsOf($ctx);
         }
         return $this->readerForms[$key];
@@ -2387,11 +2388,13 @@ final class ScanService
             // judged after midnight is judged as of the same day.
             'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
-        // Never final: the commonest reason is a rule list or a dictionary that
-        // could not be read just now. `unplanned` tells cancelAuth() the run
-        // can still be stopped by another question (review rvc2-3).
+        // Final only when settled (contextFinal()): the commonest reason is a
+        // rule list or a dictionary that could not be read just now.
+        // `unplanned` tells cancelAuth() the run can still be stopped by
+        // another question (review rvc2-3).
         if (empty($ctx['ok'])) {
-            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false, 'unplanned' => true];
+            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx),
+                    'unplanned' => true];
         }
 
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
@@ -3035,6 +3038,29 @@ final class ScanService
     {
         if (!empty($ctx['unread']) && is_array($ctx['unread'])) return self::configUnread($ctx['unread']);
         return isset($ctx['why']) ? $ctx['why'] : null;
+    }
+
+    /**
+     * durableScanContext()'s sentence for a project whose rule list was read
+     * in full and holds no rule a scan can evaluate: none at all, or every
+     * one a configuration error.
+     */
+    const NO_RULES = 'this project has no rules this scan can evaluate';
+
+    /**
+     * Is a context's refusal SETTLED (review rv11b2-6)? Only NO_RULES with
+     * nothing unread. It was never final, because before W10BF-4 a growth
+     * reference folder that would not open read as this same sentence; now
+     * a read that failed says CONFIG_UNREAD (contextRefusal()), so this one
+     * says the rules were read and none can be evaluated. Answered as not
+     * final, the findings panel asked again on its ladder for as long as the
+     * tab was open, and the file answered 503, "try again", about a project
+     * the next read would describe the same way. Every other refusal stays
+     * one to ask again.
+     */
+    private static function contextFinal(array $ctx)
+    {
+        return empty($ctx['unread']) && isset($ctx['why']) && $ctx['why'] === self::NO_RULES;
     }
 
     /**
