@@ -106,7 +106,7 @@
       "eligibility": {
         "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "calc", "sql", "slider"],
         "annotationWhy": "@UVASSERT does not support \"{type}\" fields — it checks one scalar field's value against a condition.",
-        "dialogWhy": "a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields"
+        "dialogWhy": "a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider fields"
       },
       "hooks": {},
       "evaluator": "findingsConstraint",
@@ -138,7 +138,7 @@
         "annotationWhyFor": {
           "calc": "@UVREQUIRED does not support \"calc\" fields — a calc value is computed, the person entering data cannot fill it in."
         },
-        "dialogWhy": "a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)"
+        "dialogWhy": "a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields (not calc — the person entering data cannot fill it)"
       },
       "hooks": {},
       "evaluator": "findingsRequired",
@@ -165,7 +165,7 @@
       "eligibility": {
         "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "sql", "slider"],
         "annotationWhy": "@UVUNIQUE does not support \"{type}\" fields — it compares one scalar field's value across records.",
-        "dialogWhy": "a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fix a calc collision)"
+        "dialogWhy": "a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields (not calc — the person entering data cannot fix a calc collision)"
       },
       "hooks": {"field": "annotateUniqueField", "dictionary": "annotateUniqueDictionary"},
       "evaluator": "findingsUnique",
@@ -250,7 +250,7 @@
       "js": {"factories": {"window": "QRIDWindowInit"}},
       "scan": {"issueLabels": {"future": "Date in the future", "past": "Date in the past", "*": "Date outside allowed window"},
                "detailKeys": ["windowFrom", "windowAnchor", "windowLo", "windowHi", "windowUnit", "windowPeriod", "windowOffLo", "windowOffHi"],
-               "detailDerive": "TemporalLogic::periodDetail"}
+               "detailDerive": "TemporalLogic::windowDetail"}
     },
     {
       "mode": "exists",

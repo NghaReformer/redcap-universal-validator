@@ -20,6 +20,7 @@ namespace INSPIRE\UniversalValidator;
 
 use ExternalModules\AbstractExternalModule;
 
+require_once __DIR__ . '/php/Faults.php';
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/ModeRegistry.php';
@@ -127,7 +128,11 @@ class UniversalValidator extends AbstractExternalModule
     {
         // Record context is threaded through so "when" conditions can snapshot
         // saved values of fields that are not on the rendered page.
-        $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
+        try {
+            $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
     }
 
     public function redcap_survey_page_top($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
@@ -136,7 +141,33 @@ class UniversalValidator extends AbstractExternalModule
         // detail in front of survey respondents (who cannot act on it); the
         // same problems stay fully visible on staff data-entry forms and in
         // the module log.
-        $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+        try {
+            $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /**
+     * Write what this request caught and carried on from (Faults) to the
+     * module log as one uvalidate-faults entry, when the project's debug
+     * setting is on (QUA-5): each place and exception class with its count,
+     * never a message. Called as each hook returns; the counts start again
+     * from nothing either way.
+     */
+    private function reportFaults($pid)
+    {
+        $f = Faults::take();
+        if (!$f['places'] && !$f['dropped']) return;
+        if (!$pid || !$this->debugEnabled($pid)) return;
+        try {
+            $this->log('uvalidate-faults', [
+                'places'  => (string) json_encode($f['places']),
+                'dropped' => (string) $f['dropped'],
+            ]);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::reportFaults');
+        }
     }
 
     /**
@@ -153,10 +184,21 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash = null, $response_id = null, $repeat_instance = 1)
     {
+        try {
+            $this->auditSave($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /** The body of redcap_save_record(); see there. */
+    private function auditSave($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    {
         // Resolve the log-privacy mode FIRST, outside the try, so the error
         // path below can honor it too — an exception must never leak a record
         // ID that the project's mode says to hash or omit (SEC-003).
         $logMode = $this->logMode($project_id);
+        $this->auditPid = $project_id;
         // The module's own write of the values a rule returns is a save of this
         // record too (ReturnedValues::applyReturns). It changes nothing a person
         // entered, so it is not audited a second time.
@@ -182,6 +224,14 @@ class UniversalValidator extends AbstractExternalModule
             // EVERY settings/dictionary read (SEC-002).
             $rules = $this->getRules($project_id);
             if (!$rules) return;
+            // Without mbstring or ctype the audit died part way and logged
+            // only uvalidate-audit-error. It now stops here and says what is
+            // missing, once per request (COMPAT-1).
+            $missing = $this->missingPhpExtensions();
+            if ($missing) {
+                $this->logMissingExtensions($missing, 'save');
+                return;
+            }
             // Two phases when a rule returns values to fields (@UVRANGE
             // "return"): those rules are judged first, on both paths (the
             // event/instance audit too), and what they return is written before
@@ -255,6 +305,17 @@ class UniversalValidator extends AbstractExternalModule
                 $this->logUnconfigurable($ruleIndex, $own, 'configuration error: ' . (string) $r['configError'],
                     $instrument, $event_id, $repeat_instance);
             }
+        }
+
+        // With no saved instrument every rule is in scope, and a required rule
+        // would report a missing value on every form nobody has opened yet.
+        // The scan asks a required rule only where its form was started
+        // (R2O-2), so these rules are left to it (REQ-10).
+        if ($onForm === null) {
+            $rules = array_filter($rules, function ($r) {
+                return ModeRegistry::modeOfType(isset($r['type']) ? (string) $r['type'] : '') !== 'required';
+            });
+            if (!$rules) return;
         }
 
         $fields = [];
@@ -635,7 +696,7 @@ class UniversalValidator extends AbstractExternalModule
                         continue 2;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id))) $active[$g][] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id), $this->missingDataCodes($project_id))) $active[$g][] = $bi;
             }
             if ($broken && count($groups) === 1) {
                 // One group: the field as a whole is not checked.
@@ -761,7 +822,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id))) {
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id), $this->missingDataCodes($project_id))) {
                 // inert here: nothing to report, and the fields it returns to are emptied
                 if (!empty($meta['returns']) && ($blank = self::ownedReturns($rule, $meta))) $out['returns'] = $blank;
                 return $out;
@@ -795,7 +856,9 @@ class UniversalValidator extends AbstractExternalModule
             $rule['fields'] = $kept;
         }
 
-        // The mode's own verdict (php/modes.json "evaluator").
+        // The mode's own verdict (php/modes.json "evaluator"). Every evaluator
+        // takes the same ten arguments; $meta carries the Missing Data Codes
+        // and what the rule returns, which only some of them read (REQ-13).
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->withReturned($this->markJustified(
             $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta),
@@ -847,7 +910,7 @@ class UniversalValidator extends AbstractExternalModule
      * detects duplicates in one aggregate pass over the scanned data
      * instead of one whole-project read per record.)
      */
-    private function findingsUnique(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsUnique(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -1523,6 +1586,7 @@ class UniversalValidator extends AbstractExternalModule
                         $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag, $prefer) : null;
                         if ($hit !== null) return ['state' => 'found'] + $hit;
                     } catch (\Throwable $e) {
+                        Faults::swallow($e, 'UniversalValidator::findExisting');
                         // a filter this build cannot run: the full read below decides
                     }
                 }
@@ -1933,8 +1997,9 @@ class UniversalValidator extends AbstractExternalModule
      * condition; true for a rule without one. The condition reads the entry
      * as REDCap stores it, with the rule's letter case (existsSpec 'fold'),
      * and a blank side of < > <= >= gives no answer, so the comparison fails
-     * (Logic::BLANK_INERT). Missing Data Codes are plain values, as in
-     * "when". A field that holds numbers with a decimal comma is read by
+     * (Logic::BLANK_INERT). A Missing Data Code answers = and <> as itself
+     * and gives no answer to < > <= >=, as in "when" (AST-10). A field that
+     * holds numbers with a decimal comma is read by
      * value ("3,5" is 3.5). A repeat instance carries its event row's values
      * (recordContexts), except a checkbox: REDCap gives every row of an
      * export the checkbox's codes, all "0" where the form is not that row's,
@@ -1958,7 +2023,8 @@ class UniversalValidator extends AbstractExternalModule
                 $vals[$f] = $base[$f];
             }
         }
-        return AnnotationRules::existsWhereHolds($spec['where']['ast'], $vals, !$spec['fold'], $comma);
+        return AnnotationRules::existsWhereHolds($spec['where']['ast'], $vals, !$spec['fold'], $comma,
+            isset($spec['codes']) && is_array($spec['codes']) ? $spec['codes'] : []);
     }
 
     /**
@@ -2402,6 +2468,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ((string) $unique === (string) $name) return $id;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::eventIdOf');
         }
         return null;
     }
@@ -2850,7 +2917,7 @@ class UniversalValidator extends AbstractExternalModule
     /** Whether $value, trimmed, is one of $codes (from missingDataCodes). */
     private static function isMissingCode($value, array $codes)
     {
-        return $codes && is_scalar($value) && isset($codes[trim((string) $value)]);
+        return Logic::isMissingCode($value, $codes);
     }
 
     /** The event id of a unique event name in ANOTHER project, or null. */
@@ -2865,6 +2932,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::eventIdIn');
         }
         return null;
     }
@@ -2881,6 +2949,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (is_array($names)) return null;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::groupNameIn');
         }
         // No list at all: a read that failed (crossUnread()).
         $this->crossReadFailed[(int) $pid] = true;
@@ -3070,6 +3139,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->log('uv-exists-probe', $entry);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logCrossProbe');
         }
     }
 
@@ -3089,6 +3159,7 @@ class UniversalValidator extends AbstractExternalModule
                 'result'         => (string) $result,
             ]);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logCrossIndexRead');
         }
     }
 
@@ -3203,6 +3274,10 @@ class UniversalValidator extends AbstractExternalModule
         }
         $r['record'] = null;
         $r['dag'] = null;
+        // Under "answer" the other project agreed to found or not found and
+        // nothing more: "saved there, but not where the conditions hold" is a
+        // third answer it never gave (EXS-10). Its own log still records it.
+        if ($c['mode'] === 'answer') unset($r['filtered']);
         return $r;
     }
 
@@ -3246,7 +3321,7 @@ class UniversalValidator extends AbstractExternalModule
      * references a value this context could not resolve, leaves the field
      * unchecked and says so as a rule problem, never as a finding.
      */
-    private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         foreach ($rule['fields'] as $field) {
@@ -3342,28 +3417,24 @@ class UniversalValidator extends AbstractExternalModule
      * flagged. Checkbox values arrive as code=>0/1 maps (keepArrays); this
      * is the one mode that must judge them.
      */
-    private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
-        $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
-            ? array_map('strval', $rule['choicesAll']) : [];
-        if (isset($rule['choicesShow']) && is_array($rule['choicesShow'])) {
-            if (!$all) {
-                // A "show" whitelist is only meaningful against the full
-                // list — without it the complement cannot be computed.
-                $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                    'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
-                return $out;
-            }
-            $hidden = array_diff($all, array_map('strval', $rule['choicesShow']));
-        } elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) {
-            $hidden = array_map('strval', $rule['choicesHide']);
-        } else {
+        $sets = $this->choicesSets($rule);
+        if ($sets === null) {
             $out['unconfigurable'][] = ['fields' => $rule['fields'],
                 'why' => 'the choices rule carries neither a "show" nor a "hide" list — rule skipped'];
             return $out;
         }
-        $hiddenSet = array_fill_keys(array_values($hidden), true);
+        if ($sets['show'] && !$sets['allSet']) {
+            // A "show" whitelist is only meaningful against the full
+            // list — without it the complement cannot be computed.
+            $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
+            return $out;
+        }
+        $all = $sets['allSet'];
+        $hiddenSet = $sets['hiddenSet'];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3372,7 +3443,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($value as $code => $checked) {
                     if ((string) $checked !== '1') continue;
                     $c = (string) $code;
-                    if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
+                    if ($all && !isset($all[$c])) continue; // outside the choice list — out of scope
                     if (isset($hiddenSet[$c])) {
                         // locus: WHICH hidden code. A checkbox can have
                         // several ticked at once, and every one of them is
@@ -3389,13 +3460,50 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($value === null || trim((string) $value) === '') continue;
             $v = trim((string) $value);
-            if ($all && !in_array($v, $all, true)) continue; // outside the choice list — out of scope
+            if ($all && !isset($all[$v])) continue; // outside the choice list — out of scope
             if (isset($hiddenSet[$v])) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'choices',
                                      'type' => 'choices', 'reason' => 'hidden-choice'];
             }
         }
         return $out;
+    }
+
+    /** @var array the code sets of each choices rule or branch seen this request (CHO-8) */
+    private $choicesMemo = [];
+
+    /**
+     * The full and hidden code sets of a choices rule or branch, as
+     * code => true, or null when it carries neither list. The scan judged
+     * every record context by building them again: 218 us each on a
+     * 2,000-code field (CHO-8). They depend only on the lists, so they are
+     * kept for the request. The scan hands every context the same arrays,
+     * which === matches without reading them; a list built again still
+     * matches by content.
+     *
+     * @return array|null ['show' => bool, 'allSet' => array, 'hiddenSet' => array, ...]
+     */
+    private function choicesSets(array $rule)
+    {
+        $allRaw = (isset($rule['choicesAll']) && is_array($rule['choicesAll'])) ? $rule['choicesAll'] : [];
+        $show = isset($rule['choicesShow']) && is_array($rule['choicesShow']);
+        if ($show) $listRaw = $rule['choicesShow'];
+        elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) $listRaw = $rule['choicesHide'];
+        else return null;
+        $key = ($show ? 's' : 'h') . count($allRaw) . ':' . count($listRaw);
+        if (isset($this->choicesMemo[$key])) {
+            foreach ($this->choicesMemo[$key] as $m) {
+                if ($m['all'] === $allRaw && $m['list'] === $listRaw) return $m;
+            }
+        }
+        $all = array_map('strval', $allRaw);
+        $hidden = $show ? array_diff($all, array_map('strval', $listRaw)) : array_map('strval', $listRaw);
+        $m = ['all' => $allRaw, 'list' => $listRaw, 'show' => $show,
+              'allSet' => $all ? array_fill_keys($all, true) : [],
+              'hiddenSet' => array_fill_keys(array_values($hidden), true)];
+        // A few entries per shape: the branches of one rule alternate.
+        if (!isset($this->choicesMemo[$key]) || count($this->choicesMemo[$key]) < 16) $this->choicesMemo[$key][] = $m;
+        return $m;
     }
 
     /**
@@ -3406,7 +3514,7 @@ class UniversalValidator extends AbstractExternalModule
      * condition is re-parsed here (config-validated, cheap) and evaluated
      * against the full value map, so no fold is needed server-side.
      */
-    private function findingsConstraint(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsConstraint(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
@@ -3430,6 +3538,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         $numbers = $this->conditionNumbers($project_id);
+        $codes = $this->missingDataCodes($project_id);
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3441,7 +3550,7 @@ class UniversalValidator extends AbstractExternalModule
             // server logged a violation (M-04).
             if ($value === null || is_array($value)) continue;
             if (trim((string) $value, " \t\r\n") === '') continue;
-            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers)) {
+            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers, $codes)) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
             }
         }
@@ -3696,7 +3805,7 @@ class UniversalValidator extends AbstractExternalModule
      * growth finding carries the reference id, and the z-score when there is
      * one.
      */
-    private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $spec = ['decimalComma' => !empty($rule['decimalComma'])];
@@ -4392,24 +4501,46 @@ class UniversalValidator extends AbstractExternalModule
     private function weekStart($pid)
     {
         $v = null;
-        try { $v = $this->getProjectSetting('window-week-start', $pid); } catch (\Throwable $e) {}
+        try { $v = $this->getProjectSetting('window-week-start', $pid); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::weekStart'); }
         return $v === 'sunday' ? 'sunday' : 'monday';
     }
 
-    /** The project's "window-timezone" setting as a zone; null for none or an unknown name. */
+    /** @var array pid => the "window-timezone" zone (null for none), read once per request */
+    private $clockZoneMemo = [];
+
+    /**
+     * The project's "window-timezone" setting as a zone; null for none or an
+     * unknown name. Read once per request: the scan read and checked the
+     * setting for every value it judged, 4,000 times in a scan of 4,000
+     * values (WIN-5).
+     */
     private function clockZone($pid = null)
     {
+        $key = (string) $pid;
+        if (array_key_exists($key, $this->clockZoneMemo)) return $this->clockZoneMemo[$key];
         $name = null;
-        try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) {}
+        try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::clockZone'); }
         $name = is_string($name) ? trim($name) : '';
-        if ($name === '' || !self::isClockZone($name)) return null;
-        return new \DateTimeZone($name);
+        return $this->clockZoneMemo[$key] = ($name === '' || !self::isClockZone($name)) ? null : new \DateTimeZone($name);
     }
 
-    /** Whether $name is a timezone the "window-timezone" setting accepts (an IANA name). */
+    /** @var array|null every zone name the "window-timezone" setting accepts, name => true */
+    private static $clockZoneNames = null;
+
+    /**
+     * Whether $name is a timezone the "window-timezone" setting accepts: an
+     * IANA name, the backward-compatible ones included. A name saved while it
+     * was current (Europe/Kiev before tzdata 2022b, then Europe/Kyiv) was
+     * dropped without a word after a tzdata update, and today became the
+     * server's date (WIN-4). PHP still builds every one of them.
+     */
     private static function isClockZone($name)
     {
-        return is_string($name) && in_array($name, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL), true);
+        if (!is_string($name)) return false;
+        if (self::$clockZoneNames === null) {
+            self::$clockZoneNames = array_fill_keys(\DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true);
+        }
+        return isset(self::$clockZoneNames[$name]);
     }
 
     /**
@@ -4417,7 +4548,7 @@ class UniversalValidator extends AbstractExternalModule
      * format of each value, through the same verdict functions the browser
      * twins.
      */
-    private function findingsCheck(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    private function findingsCheck(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
@@ -4516,6 +4647,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->hmacKey = $key;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::hmacKey');
             // System settings unavailable: identifiers are OMITTED below rather
             // than falling back to an unkeyed hash an attacker could enumerate.
         }
@@ -4531,6 +4663,82 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * PRF-9. What the module log already holds, read once per request: a key
+     * of loggedAlready() => [fingerprint => true], or false when the log could
+     * not be read, and then every entry is written as before.
+     */
+    private $loggedBefore = [];
+
+    /** The project of the save being audited, for logUnconfigurable(). */
+    private $auditPid = null;
+
+    /**
+     * A keyed fingerprint of what one log entry says, or null without a key.
+     * Each part is length-prefixed, so no value can pass for two parts. The
+     * key differs from hashedIdentifier()'s, so a fingerprint never equals a
+     * value_hmac or record_hmac.
+     */
+    private function logFingerprint($pid, array $parts)
+    {
+        if ($pid === null || $pid === '') return null;
+        $key = $this->hmacKey();
+        if ($key === null) return null;
+        $s = '';
+        foreach ($parts as $p) {
+            $p = (string) $p;
+            $s .= strlen($p) . ':' . $p . '|';
+        }
+        return hash_hmac('sha256', $s, $key . '|fingerprint|' . (string) $pid);
+    }
+
+    /**
+     * Whether the module log holds an entry with this fingerprint. The read is
+     * narrowed by one column or parameter ($where: record, record_hmac or
+     * instrument) and made once per request for each value of it. Without a
+     * fingerprint, without queryLogs(), or when the read fails, the answer is
+     * no, so a standing problem is logged again rather than lost.
+     */
+    private function loggedAlready($message, $where, $value, $fp)
+    {
+        if ($fp === null || $value === null || $value === '') return false;
+        $k = $message . "\0" . $where . "\0" . $value;
+        if (!array_key_exists($k, $this->loggedBefore)) {
+            $this->loggedBefore[$k] = $this->readFingerprints($message, $where, $value);
+        }
+        return $this->loggedBefore[$k] !== false && isset($this->loggedBefore[$k][$fp]);
+    }
+
+    /** Count an entry just written, so a second save in this request skips it. */
+    private function noteLogged($message, $where, $value, $fp)
+    {
+        $k = $message . "\0" . $where . "\0" . $value;
+        if ($fp !== null && isset($this->loggedBefore[$k]) && $this->loggedBefore[$k] !== false) {
+            $this->loggedBefore[$k][$fp] = true;
+        }
+    }
+
+    /** @return array|false fingerprint => true, or false when the log cannot be read */
+    private function readFingerprints($message, $where, $value)
+    {
+        if (!in_array($where, ['record', 'record_hmac', 'instrument'], true)) return false;
+        if (!is_callable([$this, 'queryLogs'])) return false;
+        try {
+            $res = $this->queryLogs('select fingerprint where message = ? and ' . $where . ' = ?',
+                [(string) $message, (string) $value]);
+            if (!is_object($res) || !is_callable([$res, 'fetch_assoc'])) return false;
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                if (isset($row['fingerprint']) && is_string($row['fingerprint']) && $row['fingerprint'] !== '') {
+                    $out[$row['fingerprint']] = true;
+                }
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
      * Record an invalid value found on the server. The "log-values" project
      * setting controls how much identifying material the entry carries (UV-005):
      *   hashed (default) — value as project-keyed HMAC, record ID raw (staff can
@@ -4542,6 +4750,13 @@ class UniversalValidator extends AbstractExternalModule
      * Field / instrument / event / instance are logged in every mode except off.
      * A keyed hash is pseudonymization, not anonymity: treat the module log as
      * identifying data for access/retention purposes (see README).
+     *
+     * ONE ENTRY PER PROBLEM, NOT PER SAVE (PRF-9). Each entry carries a keyed
+     * "fingerprint" of the record, field, event, instance, rule kind, reason
+     * and value (no value in the none mode), and an entry whose fingerprint the
+     * log already holds for the record is not written again. A standing
+     * violation was logged on every save: one save of a 500-tag form wrote
+     * 249 rows, and the next save of the same values 249 more.
      */
     private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [], $message = 'invalid-id-saved')
     {
@@ -4571,7 +4786,28 @@ class UniversalValidator extends AbstractExternalModule
             if ($h !== null) $entry['value_hmac'] = $h;
             else $entry['hmac_unavailable'] = '1';
         }
+        list($where, $scope) = self::logScope($mode, $entry);
+        $parts = [$message, $record, $field, $event_id, $entry['instance'], $type, $algo, $reason,
+                  $mode === 'none' ? '' : (string) $value];
+        ksort($extra);
+        foreach ($extra as $k => $v) { $parts[] = (string) $k; $parts[] = (string) $v; }
+        $fp = $this->logFingerprint($pid, $parts);
+        if ($this->loggedAlready($message, $where, $scope, $fp)) return;
+        if ($fp !== null) $entry['fingerprint'] = $fp;
         $this->log($message, $entry);
+        $this->noteLogged($message, $where, $scope, $fp);
+    }
+
+    /**
+     * The column or parameter that holds an entry's record: "record" where
+     * the mode stores the record id, "record_hmac" in the none mode.
+     *
+     * @return array{0:string, 1:?string}
+     */
+    private static function logScope($mode, array $entry)
+    {
+        if ($mode === 'none') return ['record_hmac', isset($entry['record_hmac']) ? $entry['record_hmac'] : null];
+        return ['record', isset($entry['record']) ? $entry['record'] : null];
     }
 
     /**
@@ -4592,6 +4828,7 @@ class UniversalValidator extends AbstractExternalModule
                 'effect'     => 'the live duplicate check is inert on this page; the post-save audit and the Validation scan still apply',
             ]);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logNoUniqueTransport');
         }
     }
 
@@ -4623,23 +4860,42 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 $entry['record'] = (string) $record;
             }
+            // Once per value it could not work out, as logInvalid() (PRF-9).
+            list($where, $scope) = self::logScope($mode, $entry);
+            $fp = $this->logFingerprint($pid, ['uvalidate-not-evaluated', $record, $entry['rule'], $entry['field'],
+                $entry['why'], $entry['event_id'], $entry['instance'], isset($entry['reference']) ? $entry['reference'] : '']);
+            if ($this->loggedAlready('uvalidate-not-evaluated', $where, $scope, $fp)) return;
+            if ($fp !== null) $entry['fingerprint'] = $fp;
             $this->log('uvalidate-not-evaluated', $entry);
+            $this->noteLogged('uvalidate-not-evaluated', $where, $scope, $fp);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logNotEvaluated');
         }
     }
 
+    /**
+     * A rule problem names no record, so it is written once for each problem
+     * at each place of the instrument, not once per save (PRF-9).
+     */
     private function logUnconfigurable($ruleIndex, array $fields, $why, $instrument, $event_id, $repeat_instance)
     {
         try {
-            $this->log('uvalidate-unconfigurable', [
+            $entry = [
                 'rule'       => (string) ($ruleIndex + 1),
                 'fields'     => implode(', ', $fields),
                 'why'        => (string) $why,
                 'instrument' => (string) $instrument,
                 'event_id'   => (string) $event_id,
                 'instance'   => (string) ($repeat_instance ?: 1),
-            ]);
+            ];
+            $fp = $this->logFingerprint($this->auditPid, ['uvalidate-unconfigurable', $entry['rule'], $entry['fields'],
+                $entry['why'], $entry['instrument'], $entry['event_id'], $entry['instance']]);
+            if ($this->loggedAlready('uvalidate-unconfigurable', 'instrument', $entry['instrument'], $fp)) return;
+            if ($fp !== null) $entry['fingerprint'] = $fp;
+            $this->log('uvalidate-unconfigurable', $entry);
+            $this->noteLogged('uvalidate-unconfigurable', 'instrument', $entry['instrument'], $fp);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logUnconfigurable');
         }
     }
 
@@ -4671,17 +4927,43 @@ class UniversalValidator extends AbstractExternalModule
             }
             $this->log('uvalidate-audit-error', $entry);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::logAuditError');
             // logging itself failed — nothing more we can safely do
         }
     }
 
     // -- client injection ---------------------------------------------------
 
+    /**
+     * The shape of the client config, stated on the page as "configShape".
+     * js/engine.js declares the same number (QRID_CONFIG_SHAPE) and checks
+     * nothing on a page whose config states another, with a notice to reload,
+     * so a cached script never reads a config it was not written for (QUA-7).
+     * Raise both together when a change to the config would mislead an older
+     * engine; tests/hook_php.php fails while they differ.
+     */
+    const CONFIG_SHAPE = 1;
+
+    /**
+     * The engine's URL with a ?v= that changes whenever the file does. The
+     * module folder carries the version, but a release candidate redeployed
+     * under the same folder kept the URL, and a browser could serve the old
+     * engine from its cache.
+     */
+    private function engineUrl()
+    {
+        $url = $this->getUrl('js/engine.js');
+        $file = __DIR__ . '/js/engine.js';
+        $stamp = self::CONFIG_SHAPE . '.' . (int) @filemtime($file) . '.' . (int) @filesize($file);
+        return $url . (strpos($url, '?') === false ? '?' : '&') . 'v=' . rawurlencode($stamp);
+    }
+
     private function injectClient($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
-        $engineUrl = $this->getUrl('js/engine.js');
+        $engineUrl = $this->engineUrl();
+        $config['configShape'] = self::CONFIG_SHAPE;
         // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
         // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
         // Initialized only when a unique rule is live, so other pages carry no
@@ -4805,7 +5087,8 @@ class UniversalValidator extends AbstractExternalModule
         // EVERY form, so a single DOM mutation fans out to all of them and freezes
         // the tab (PER-003, the 1.5.1 known perf issue). The post-save audit and the
         // Validation scan still cover every rule on every form.
-        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey');
+        $rules = $this->rulesOnInstrument($rules, $pid, $instrument, $context === 'survey',
+            $context !== 'survey' && $this->currentUserDesigns());
 
         $config = array_merge($this->defaults(), [
             'singleFields' => [],
@@ -4938,12 +5221,14 @@ class UniversalValidator extends AbstractExternalModule
                 [(int) $pid, (string) $record, (int) $event_id, $instrument, (int) ($instance ?: 1)]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
         try {
             $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
                 [(int) $pid, (string) $record]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
         return false;
     }
@@ -5065,9 +5350,12 @@ class UniversalValidator extends AbstractExternalModule
                 if ($why === null) {
                     $want = $this->growthPageNeed($n, $entries[$id][0], $config);
                     $merged = isset($need[$id]) ? self::mergePageNeed($need[$id], $want) : $want;
+                    $weigh = function ($rid, array $nn) use (&$entries) {
+                        return GrowthReference::pageWeight($nn, $entries[$rid][0], $entries[$rid][1]);
+                    };
                     $before = 0.0;
-                    foreach ($need as $nid => $nn) $before += GrowthReference::pageWeight($nn);
-                    $after = $before - (isset($need[$id]) ? GrowthReference::pageWeight($need[$id]) : 0.0) + GrowthReference::pageWeight($merged);
+                    foreach ($need as $nid => $nn) $before += $weigh($nid, $nn);
+                    $after = $before - (isset($need[$id]) ? $weigh($id, $need[$id]) : 0.0) + $weigh($id, $merged);
                     if ($after > $cap + 1e-9) {
                         $num = function ($w) { return floor($w) == $w ? (string) (int) $w : rtrim(sprintf('%.1f', $w), '0'); };
                         $why = 'this form already carries the rows of ' . $num($before) . ' growth reference table'
@@ -5201,6 +5489,7 @@ class UniversalValidator extends AbstractExternalModule
         $cap = null;
         $sets = [];      // curve key => the curve set
         $setWhy = [];    // curve key => why its curves cannot be sent
+        $setZoom = [];   // curve key => the zoom its curves were built for
         $tables = [];    // table key => [sex => rows]
         $tableKeys = []; // what a table of reference values holds => its table key
         $entries = [];   // reference id => [entry, table], or null when it cannot be read
@@ -5272,6 +5561,20 @@ class UniversalValidator extends AbstractExternalModule
                         $why['chart'] = self::chartCapWhy($used(), $cap);
                     } else {
                         $set = isset($sets[$key]) ? $sets[$key] : null;
+                        // Charts that share these curves may zoom differently: a
+                        // fixed span never zooms, an "auto" one zooms to MAX_ZOOM.
+                        // The curves are built for the deepest zoom any of them
+                        // needs; a set built for a fixed span first drew a
+                        // zoomable chart up to 1.43 plot units off, where 0.5 is
+                        // the promise (RNG-5).
+                        $zoom = $fixed ? 1 : GrowthCurve::MAX_ZOOM;
+                        $redo = [];
+                        if ($set !== null && isset($setZoom[$key]) && $setZoom[$key] < $zoom) {
+                            foreach (['male', 'female'] as $s) {
+                                if (array_key_exists($s, $set)) { $redo[] = $s; unset($set[$s]); }
+                            }
+                        }
+                        $setZoom[$key] = isset($setZoom[$key]) ? max($setZoom[$key], $zoom) : $zoom;
                         if ($set === null) {
                             $at = count($c['lines']['values']);
                             $bandAt = null;
@@ -5281,9 +5584,9 @@ class UniversalValidator extends AbstractExternalModule
                             $set = ['kind' => $c['lines']['kind'], 'values' => $c['lines']['values'], 'band' => $bandAt,
                                     'span' => $span, 'xScale' => $table['scale']];
                         }
-                        foreach ($sexes as $sex) {
+                        foreach (array_values(array_unique(array_merge($redo, $sexes))) as $sex) {
                             if (array_key_exists($sex, $set)) continue;
-                            $b = GrowthCurve::build($entry, $table, $sex, $zs, $span, $scale, $fixed ? 1 : GrowthCurve::MAX_ZOOM);
+                            $b = GrowthCurve::build($entry, $table, $sex, $zs, $span, $scale, $setZoom[$key]);
                             if (isset($b['why'])) {
                                 $setWhy[$key] = $b['why'];
                                 break;
@@ -5492,6 +5795,7 @@ class UniversalValidator extends AbstractExternalModule
         $folded = [];
         $foldedAssert = [];
         $numbers = $this->conditionNumbers($pid);
+        $codes = $pid !== null ? $this->missingDataCodes($pid) : [];
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -5500,14 +5804,14 @@ class UniversalValidator extends AbstractExternalModule
             $b = [];
             $sn = [];
             $folded[$w] = [];
-            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers);
+            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers, $codes);
             // Freshness diagnostics come from reference resolution and liveness
             // alone, never from a verdict, so the pass above already recorded
             // them; this one discards its own.
             $fCs = false;
             $bCs = [];
             $snCs = [];
-            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers);
+            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers, $codes);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
@@ -5527,7 +5831,7 @@ class UniversalValidator extends AbstractExternalModule
                 $f2 = false;
                 $b2 = [];
                 $sn2 = [];
-                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers);
+                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers, $codes);
             }
         }
         // With the form unknown, NOTHING is live — not because these fields are
@@ -5846,6 +6150,7 @@ class UniversalValidator extends AbstractExternalModule
                 return true;                      // every instrument; see the tri-state above
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
 
         // 1. Framework-native: an unambiguous, project-scoped signature.
@@ -5866,6 +6171,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
 
         // 2. Fallback: the static, called with NO arguments so the parameter
@@ -5874,7 +6180,7 @@ class UniversalValidator extends AbstractExternalModule
         //    about any other project (rights elsewhere: userRightsIn()).
         try {
             $current = null;
-            try { $current = $this->getProjectId(); } catch (\Throwable $e) {}
+            try { $current = $this->getProjectId(); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::userFormRights'); }
             if ($current !== null && $current !== '' && (int) $current !== (int) $pid) return null;
             if (is_callable(['\REDCap', 'getUserRights'])) {
                 $all = \REDCap::getUserRights();
@@ -5884,6 +6190,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::userFormRights');
         }
         return null;   // fail closed
     }
@@ -5905,6 +6212,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::currentUsername');
         }
         if (defined('USERID')) {
             $name = constant('USERID');
@@ -6479,7 +6787,8 @@ class UniversalValidator extends AbstractExternalModule
         $layout = $pid ? $this->eventLayout($pid) : null;
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd, $layout);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd, $layout,
+                $pid ? $this->missingDataCodes($pid) : []);
             if ($rule === null) continue;
             // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
             //
@@ -6544,7 +6853,7 @@ class UniversalValidator extends AbstractExternalModule
         return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
     }
 
-    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null, $layout = null)
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null, $layout = null, array $codes = [])
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
@@ -6688,7 +6997,7 @@ class UniversalValidator extends AbstractExternalModule
                     if (!empty($w['ok'])) {
                         $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey);
                         foreach ($refErrs as $e) $errors[] = $e;
-                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false) : null;
+                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false, $codes) : null;
                         if ($why !== null) $errors[] = $why;
                     }
                 }
@@ -6845,7 +7154,7 @@ class UniversalValidator extends AbstractExternalModule
             if (!empty($w['ok'])) {
                 $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []);
                 foreach ($refErrs as $e) $errors[] = $e;
-                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false) : null;
+                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false, $codes) : null;
                 if ($why !== null) $errors[] = $why;
             }
         }
@@ -6870,7 +7179,7 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_array($settings)) return null;
             if (!isset($settings['rules']) || !is_array($settings['rules'])) $settings['rules'] = [];
             $pid = null;
-            try { $pid = $this->getProjectId(); } catch (\Throwable $e) {}
+            try { $pid = $this->getProjectId(); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::validateSettings'); }
             $known = $pid ? $this->projectFieldNames($pid) : null;
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
@@ -6892,7 +7201,8 @@ class UniversalValidator extends AbstractExternalModule
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd, $layout);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd, $layout,
+                    $pid ? $this->missingDataCodes($pid) : []);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -7129,7 +7439,8 @@ class UniversalValidator extends AbstractExternalModule
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices, $condKey);
                     if (!$errs && $types !== null) {
                         $ddNow = $this->dataDictionary($pid);
-                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false) : null;
+                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false,
+                            $pid ? $this->missingDataCodes($pid) : []) : null;
                         if ($why !== null) $errs = [$why];
                     }
                     if ($errs) {
@@ -7541,7 +7852,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $errs = Logic::checkRefs($p['ast'], $types, $choices, 'where');
         if ($errs) return $hide(implode(' ', $errs));
-        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);
+        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true, $pidThere ? $this->missingDataCodes($pidThere) : []);
         if ($why !== null) return $hide($why);
         $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"where"', 'tested');
         if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
@@ -7564,17 +7875,19 @@ class UniversalValidator extends AbstractExternalModule
      * and passed every date before 2000). $sameMark also asks two number
      * fields for the same decimal mark: a "where" compares stored text, while
      * "assert" and "when" read each number by its own mark (AST-1).
+     * $codes are the project's Missing Data Codes: = and <> may compare a
+     * field with one as written, [visit_date]<>'UNK' (AST-10).
      */
-    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark)
+    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark, array $codes = [])
     {
         if ($n[0] === 'and' || $n[0] === 'or') {
             foreach ($n[1] as $c) {
-                $why = self::conditionKindProblem($c, $dd, $key, $sameMark);
+                $why = self::conditionKindProblem($c, $dd, $key, $sameMark, $codes);
                 if ($why !== null) return $why;
             }
             return null;
         }
-        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark);
+        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark, $codes);
         if ($n[0] !== 'cmp') return null;
         $label = '"' . $key . '"';
         // A checkbox box ([cb(code)]) reads "1" or "0": no kind to compare.
@@ -7597,6 +7910,9 @@ class UniversalValidator extends AbstractExternalModule
         if ($f === null || $lit === null || $lit[1] === '') return null;
         $k = $kind($f);
         $v = (string) $lit[1];
+        // A field marked with a Missing Data Code holds it as written, so =
+        // and <> may test for one. < > <= >= on a code have no answer.
+        if (($n[1] === '=' || $n[1] === '<>') && Logic::isMissingCode($v, $codes)) return null;
         $shown = '"[' . $f . ']"';
         if (strpos($k, 'dates') === 0 && !preg_match(AnnotationRules::WINDOW_LITERAL_RE, $v)) {
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
@@ -8320,7 +8636,7 @@ class UniversalValidator extends AbstractExternalModule
      * Text field of the measured field's own form (and so of its event and
      * instance), and not the measured field, an input of the rule or the record
      * ID. What each value is comes from php/growth_outputs.json
-     * (GrowthOutputs): a text ("range", "7.7 to 12.0 kg") needs a field without
+     * (GrowthOutputs): a text ("range", "7.8 to 11.9 kg") needs a field without
      * validation; a number needs none or number validation that takes the
      * decimals it is written with (number_Ndp: exactly N): two for z,
      * "decimals" for a bound or a value at a z-score or percentile,
@@ -8353,7 +8669,7 @@ class UniversalValidator extends AbstractExternalModule
             $v = strtolower(self::validationOf($m));
             if ($spec['written'] === 'text') {
                 if ($v !== '') {
-                    return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.7 to 12.0 kg" — remove the validation.';
+                    return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.8 to 11.9 kg" — remove the validation.';
                 }
                 $marks[$k] = $own;
                 continue;
@@ -9296,7 +9612,10 @@ class UniversalValidator extends AbstractExternalModule
                 . 'datetime-with-seconds validation.');
         }
         $own = isset($frag['dateType']) ? $frag['dateType'] : null;
-        if (TemporalValue::family($tv['type']) !== TemporalValue::family($own)) {
+        // A period reads only the "from" date's day, so it may count from
+        // either kind of date, as the verdict and a written "from" already
+        // allowed (WIN-8).
+        if (!isset($frag['windowPeriod']) && TemporalValue::family($tv['type']) !== TemporalValue::family($own)) {
             return $refuse('"from" field "' . $from . '" holds ' . ($tv['type'] === 'date' ? 'dates' : 'dates with a time')
                 . ' and this field holds ' . ($own === 'date' ? 'dates' : 'dates with a time')
                 . ' — a window counts a date from a date, or a datetime from a datetime.');
@@ -9359,6 +9678,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $dd;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::dataDictionary');
             // outside project context (or dictionary unavailable): no annotation
             // rules and no field-name checking, never a fatal error
         }
@@ -9548,14 +9868,21 @@ class UniversalValidator extends AbstractExternalModule
      * surfaces. An unknown instrument or dictionary means "do not filter" — the
      * conservative choice for contexts where the form is not identifiable, matching
      * fieldsOnInstrument()'s null contract elsewhere in the audit.
+     *
+     * Configuration errors: a user with design rights ($designer) sees every
+     * one, on any form, since they can fix them. Anyone else sees only those
+     * of the fields on this page. Every data-entry page listed the whole
+     * project's errors, with field names and code lists of forms the user
+     * may not open, to every user (LIVE-4).
      */
-    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false)
+    private function rulesOnInstrument(array $rules, $pid, $instrument, $survey = false, $designer = false)
     {
         $onForm = $this->fieldsOnInstrument($pid, $instrument);
         if ($onForm === null) {
-            // A survey page carries no configuration error it cannot place:
-            // the notice is muted there, and the rule names other forms (LIVE-2).
-            if (!$survey) return $rules;
+            // A page that cannot place its errors keeps them only for a
+            // designer: the notice is muted on a survey, and the rule names
+            // other forms (LIVE-2, LIVE-4).
+            if (!$survey && $designer) return $rules;
             return array_values(array_filter($rules, function ($r) { return empty($r['configError']); }));
         }
         // A survey shown one section per page renders only this page's fields.
@@ -9563,11 +9890,12 @@ class UniversalValidator extends AbstractExternalModule
         $out = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) {
-                // Staff see every configuration error, on any form. A survey
-                // page keeps only those of its own fields, as "not available"
-                // under the field (ModeRegistry::clientShape): it showed none of
-                // the others, and its source carried them all (LIVE-2, CHO-6).
-                if ($survey) {
+                // A designer sees every configuration error, on any form.
+                // Any other page keeps only those of its own fields; a survey
+                // shows them as "not available" under the field
+                // (ModeRegistry::clientShape): it showed none of the others,
+                // and its source carried them all (LIVE-2, CHO-6, LIVE-4).
+                if ($survey || !$designer) {
                     $own = [];
                     foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
                         if (isset($onForm[$f]) && ($onPage === null || isset($onPage[$f]))) $own[] = $f;
@@ -9827,7 +10155,7 @@ class UniversalValidator extends AbstractExternalModule
             // Class only: the message comes from the framework's error path and
             // can carry statement text.
             try { $this->log('scan-rule-ids-mint-failed', ['error' => get_class($e)]); }
-            catch (\Throwable $ignored) { }
+            catch (\Throwable $ignored) { Faults::swallow($ignored, 'UniversalValidator::mintRuleIds'); }
         }
     }
 
@@ -9845,6 +10173,44 @@ class UniversalValidator extends AbstractExternalModule
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
+        $missing = $this->missingPhpExtensions();
+        if ($missing) $this->logMissingExtensions($missing, 'enable');
+    }
+
+    /**
+     * The PHP extensions the module needs that this server does not load
+     * (ScanCapabilities::PHP_EXTENSIONS); [] on a standard install. Public so
+     * ScanService can ask the module, and a test can answer for a server
+     * without them.
+     *
+     * @return string[]
+     */
+    public function missingPhpExtensions()
+    {
+        return ScanCapabilities::missingExtensions();
+    }
+
+    /** Whether this request has logged the missing extensions already. */
+    private $missingLogged = false;
+
+    /**
+     * One module log entry, uvalidate-missing-extension, naming what is
+     * missing and where it was found: 'enable', 'upgrade' or 'save'. Once per
+     * request, so an import of many records writes one.
+     */
+    private function logMissingExtensions(array $missing, $where)
+    {
+        if ($this->missingLogged) return;
+        $this->missingLogged = true;
+        try {
+            $this->log('uvalidate-missing-extension', [
+                'extensions' => implode(',', $missing),
+                'where'      => (string) $where,
+                'effect'     => 'the save audit and the validation scan do not run on this server',
+            ]);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::logMissingExtensions');
+        }
     }
 
     /**
@@ -9857,6 +10223,8 @@ class UniversalValidator extends AbstractExternalModule
     {
         Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
+        $missing = $this->missingPhpExtensions();
+        if ($missing) $this->logMissingExtensions($missing, 'upgrade');
     }
 
     /**
@@ -9944,7 +10312,7 @@ class UniversalValidator extends AbstractExternalModule
             // only: the message is written by the framework's error path and
             // can carry statement text.
             try { $this->log('scan-schema-install-failed', ['error' => get_class($e)]); }
-            catch (\Throwable $ignored) { }
+            catch (\Throwable $ignored) { Faults::swallow($ignored, 'UniversalValidator::installScanSchema'); }
         }
     }
 
@@ -9984,16 +10352,15 @@ class UniversalValidator extends AbstractExternalModule
      * The column, not the row: the finding stays true and stops being a copy of
      * the project. Daily, because a value's window is measured in days.
      *
-     * PURGING WHOLE RUNS IS DELIBERATELY NOT WIRED HERE, and that is not an
-     * oversight. ScanRetention::purgeRuns() used to delete findings with
-     * `DELETE FROM uv_finding WHERE generation_id = ?` while every run in every
-     * project was written with generation_id = 1, so one project's purge deleted
-     * every project's findings. 2.0.0 scopes those deletes by project and
-     * generation, but they are still unpaged: measured, an unpaged DELETE of
-     * 500,000 findings is one 160-second statement holding row locks throughout.
-     * Run retention stays manual until the remediation plan's wave 8 pages it.
-     * The value sweep below is the same kind of unpaged statement (an UPDATE),
-     * and is also on wave 8's list.
+     * PURGING WHOLE RUNS IS NOT WIRED HERE. ScanRetention::purgeRuns() used to
+     * delete findings with `DELETE FROM uv_finding WHERE generation_id = ?`
+     * while every run in every project was written with generation_id = 1, so
+     * one project's purge deleted every project's findings. 2.0.0 scopes those
+     * deletes by project and generation, and every statement ScanRetention
+     * sends is now a page of at most ScanRetention::PAGE rows (P6), but no cron
+     * calls purgeRuns() yet: finished runs stay until one is scheduled.
+     * The value sweep below runs in id windows (expireValuesPage()), one
+     * UPDATE per window.
      */
     public function uvScanExpireValuesCron($cronInfo = [])
     {
@@ -10049,6 +10416,7 @@ class UniversalValidator extends AbstractExternalModule
                 $this->log('scan-cron-failed', ['what' => (string) $what,
                     'error' => get_class($e) . ': ' . $e->getMessage()]);
             } catch (\Throwable $ignored) {
+                Faults::swallow($ignored, 'UniversalValidator::scanMaintenance');
             }
             return $what . ': failed, logged to the module log';
         }
@@ -10061,12 +10429,22 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_link_check_display($project_id, $link)
     {
+        return $this->currentUserDesigns() ? $link : null;
+    }
+
+    /**
+     * Whether the signed-in user has design rights in this project; false
+     * when that cannot be read. is_callable, not method_exists: the framework
+     * serves some methods through __call().
+     */
+    private function currentUserDesigns()
+    {
         try {
             $user = $this->getUser();
-            if ($user && is_callable([$user, 'hasDesignRights']) && $user->hasDesignRights()) return $link;
+            return $user && is_callable([$user, 'hasDesignRights']) && $user->hasDesignRights();
         } catch (\Throwable $e) {
+            return false;
         }
-        return null;
     }
 
     /** Longest value the report will carry. A report is not a second copy of the project. */
@@ -10158,7 +10536,8 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($need as $f) {
             $tv = isset($target[$f]) ? $target[$f] : '';
             if ($tv === '') continue;                                       // don't constrain a blank component
-            if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/', $tv)) return null;    // unsafe to inline -> full scan
+            // unsafe to inline -> full scan; D: a line break before the end does not pass (UNQ-10)
+            if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/D', $tv)) return null;
             $slots = $f === $primary ? array_merge([$f], $also) : [$f];
             $any = [];
             foreach ($slots as $sf) $any[] = self::collisionClause($sf, $tv, $fold, isset($marks[$sf]) ? $marks[$sf] : null);
@@ -10297,6 +10676,7 @@ class UniversalValidator extends AbstractExternalModule
                         if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
+                    Faults::swallow($e, 'UniversalValidator::findCollision');
                     // filterLogic unsupported/malformed here — fall back below.
                 }
             }

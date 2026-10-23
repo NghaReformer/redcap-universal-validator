@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 require_once __DIR__ . '/ModeRegistry.php';
 require_once __DIR__ . '/TemporalLogic.php';
 
@@ -165,6 +167,7 @@ final class ScanDimensions
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanDimensions::build');
         }
 
         // Instrument labels.
@@ -310,6 +313,7 @@ final class ScanDimensions
             // Older builds expose the count but not the flag.
             if (isset($p->numEvents) && is_numeric($p->numEvents)) return ((int) $p->numEvents) > 1;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanDimensions::projectIsLongitudinal');
         }
         return null;
     }

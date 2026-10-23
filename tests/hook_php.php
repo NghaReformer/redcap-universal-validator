@@ -21,6 +21,13 @@
 namespace ExternalModules {
     // Minimal stand-in for the framework base class. Test scripts set the public
     // fixtures; the module calls these methods exactly as in production.
+    /** A signed-in user whose design rights decide which configuration errors a page lists (LIVE-4). */
+    class TestDesigner {
+        private $design;
+        public function __construct($design = true) { $this->design = $design; }
+        public function hasDesignRights() { return $this->design; }
+    }
+
     class AbstractExternalModule {
         public $logCalls = [];
         public $subSettings = [];
@@ -46,6 +53,9 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
+        /** The signed-in user; null (no user) unless a test sets one (LIVE-4). */
+        public $userReturn = null;
+        public function getUser() { return $this->userReturn; }
 
         /**
          * The rate-limit bucket table, and only that.
@@ -353,6 +363,130 @@ namespace {
     check('annotation-rule invalid is audited', in_array('main_id_tag', $fields, true));
     check('valid field is NOT audited', !in_array('main_id_2', $fields, true));
 
+    // ---- COMPAT-1: a server without mbstring ----
+    // The audit used to die part way and log uvalidate-audit-error on every
+    // save. It now stops before reading the record, with one entry per request
+    // that names the extension.
+    {
+        $noMb = function () use ($dialogRules, $dictionary, $classicData) {
+            $m = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+                public function missingPhpExtensions() { return ['mbstring']; }
+            };
+            $m->subSettings = $dialogRules;
+            $m->projectSettings = ['log-values' => ''];
+            $m->projectIdReturn = 149;
+            \REDCap::$dictionary = $dictionary;
+            \REDCap::$data = $classicData;
+            \REDCap::$dataThrows = false;
+            return $m;
+        };
+        $m = $noMb();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $m->redcap_save_record(149, '3', 'id_validation_test', 351, null, null, null, 1);
+        $miss = logsOf($m, 'uvalidate-missing-extension');
+        check('COMPAT-1: a save without mbstring logs one entry naming it, for two saves (got ' . json_encode($miss) . ')',
+            count($miss) === 1 && $miss[0][1]['extensions'] === 'mbstring' && $miss[0][1]['where'] === 'save');
+        check('COMPAT-1: ...and audits nothing, without an audit error',
+            invalidLogs($m) === [] && logsOf($m, 'uvalidate-audit-error') === []);
+        $m = $noMb();
+        $m->rateStatements = [];
+        $m->systemSettings['scan-system-enable-durable'] = '0';
+        $m->redcap_module_system_enable('2.3.0');
+        $miss = logsOf($m, 'uvalidate-missing-extension');
+        check('COMPAT-1: enabling the module on such a server logs it',
+            count($miss) === 1 && $miss[0][1]['where'] === 'enable');
+        $m = newModule($dialogRules, $dictionary, $classicData, 149);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        check('COMPAT-1: a standard server logs no missing extension',
+            logsOf($m, 'uvalidate-missing-extension') === [] && $m->missingPhpExtensions() === []);
+    }
+
+    // ---- PRF-9: a standing violation is logged once, not on every save ----
+    // Each module below is one request. queryLogs() answers from the entries
+    // of earlier requests ($stored), the way the framework's log table would.
+    {
+        $KEY = str_repeat('ab', 32);
+        $req = function ($stored, $data, $mode = '', $subs = null, $dict = null, $throws = false)
+            use ($dialogRules, $dictionary, $KEY) {
+            $m = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+                public $stored = [];
+                public $logQueries = [];
+                public $queryThrows = false;
+                public function queryLogs($sql, $params)
+                {
+                    $this->logQueries[] = [$sql, $params];
+                    if ($this->queryThrows) throw new \Exception('log table unreadable');
+                    if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                        throw new \Exception('unexpected log query: ' . $sql);
+                    }
+                    $rows = [];
+                    foreach ($this->stored as $c) {
+                        if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1]
+                            && isset($c[1]['fingerprint'])) $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                    }
+                    return new class($rows) {
+                        private $r;
+                        public function __construct($r) { $this->r = $r; }
+                        public function fetch_assoc() { return array_shift($this->r); }
+                    };
+                }
+            };
+            $m->stored = $stored;
+            $m->queryThrows = $throws;
+            $m->subSettings = $subs === null ? $dialogRules : $subs;
+            $m->projectSettings = ['log-values' => $mode];
+            $m->projectIdReturn = 149;
+            $m->systemSettings['log-hmac-key'] = $KEY;
+            \REDCap::$dictionary = $dict === null ? $dictionary : $dict;
+            \REDCap::$data = $data;
+            \REDCap::$dataThrows = false;
+            $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+            return $m;
+        };
+        $fieldsOf = function ($m) { return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m)); };
+
+        $r1 = $req([], $classicData);
+        $first = invalidLogs($r1);
+        check('PRF-9: the first save logs both invalid values, each with a fingerprint',
+            count($first) === 2 && strlen($first[0][1]['fingerprint'] ?? '') === 64
+            && $first[0][1]['fingerprint'] !== $first[1][1]['fingerprint']
+            && $first[0][1]['fingerprint'] !== ($first[0][1]['value_hmac'] ?? null));
+        $r2 = $req($r1->logCalls, $classicData);
+        check('PRF-9: a second save of the same values logs nothing (got ' . json_encode($fieldsOf($r2)) . ')',
+            invalidLogs($r2) === []);
+        $reads = array_values(array_filter($r2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
+        check('PRF-9: ...after one read of the log for the record',
+            count($reads) === 1 && $reads[0][1] === ['invalid-id-saved', '2']);
+        $changed = $classicData;
+        $changed[2][351]['main_id_1'] = '1ABC-00003E';
+        $r3 = $req(array_merge($r1->logCalls, $r2->logCalls), $changed);
+        check('PRF-9: a new invalid value is logged, and only that one (got ' . json_encode($fieldsOf($r3)) . ')',
+            $fieldsOf($r3) === ['main_id_1']);
+        $r4 = $req($r1->logCalls, $classicData, '', null, null, true);
+        check('PRF-9: a log that cannot be read loses nothing: every value is logged',
+            count(invalidLogs($r4)) === 2);
+
+        // The none mode keeps no value, so its fingerprint names the place:
+        // a different invalid value at a logged place is not logged again.
+        $n1 = $req([], $classicData, 'none');
+        $n2 = $req($n1->logCalls, $changed, 'none');
+        $nReads = array_values(array_filter($n2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
+        check('PRF-9: none mode logs once per place, read by record_hmac',
+            count(invalidLogs($n1)) === 2 && invalidLogs($n2) === []
+            && count($nReads) === 1 && strpos($nReads[0][0], 'record_hmac = ?') !== false
+            && $nReads[0][1][1] === invalidLogs($n1)[0][1]['record_hmac']);
+
+        // A rule problem names no record: once for each place of the instrument.
+        $badDict = $dictionary;
+        $badDict['main_id_tag']['field_annotation'] = '@UVALIDATE=bogus';
+        $u1 = $req([], $classicData, '', [], $badDict);
+        $u2 = $req($u1->logCalls, $classicData, '', [], $badDict);
+        $uReads = array_values(array_filter($u2->logQueries, function ($q) { return $q[1][0] === 'uvalidate-unconfigurable'; }));
+        check('PRF-9: a refused rule is logged on the first save of its form only',
+            count(logsOf($u1, 'uvalidate-unconfigurable')) === 1 && logsOf($u2, 'uvalidate-unconfigurable') === []
+            && count($uReads) === 1 && $uReads[0][1] === ['uvalidate-unconfigurable', 'id_validation_test']);
+    }
+
     // ---- 2) import/API context (getProjectId()==null): the strict mocks return
     //         NO settings without an explicit pid, so this passing proves the
     //         module threads the hook's project_id into getSubSettings AND
@@ -452,6 +586,7 @@ namespace {
     $dd = ['study_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f1'],
            'specimen_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f1']];
     $m = newModule($csvRule, $dd, [], 149);
+    $m->userReturn = new \ExternalModules\TestDesigner(true);
     ob_start();
     $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
     $html = ob_get_clean();
@@ -467,6 +602,38 @@ namespace {
     check('config-error rule keeps the typed field names', $errRule && $errRule['fields'] === ['studyid', 'specimenid']);
     check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
     check('form hook injects context=form', $cfg && isset($cfg['context']) && $cfg['context'] === 'form');
+    // QUA-7: the config states its shape, the engine reads the same one, and
+    // the script URL changes when the file does.
+    $UVC = \INSPIRE\UniversalValidator\UniversalValidator::CONFIG_SHAPE;
+    check('QUA-7: the page config states its shape', $cfg && ($cfg['configShape'] ?? null) === $UVC);
+    check('QUA-7: the engine URL carries the shape, the file time and size',
+        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+    $engineSrc = file_get_contents(__DIR__ . '/../js/engine.js');
+    check('QUA-7: js/engine.js reads the shape the server states (UniversalValidator::CONFIG_SHAPE)',
+        preg_match('/var QRID_CONFIG_SHAPE = ([0-9]+);/', $engineSrc, $shapeM) === 1 && (int) $shapeM[1] === $UVC);
+    // LIVE-4: a user without design rights sees only the configuration errors
+    // of the fields on their page; these name fields of no form.
+    $errsFor = function ($user, $rules, $dict, $instrument) {
+        $m = newModule($rules, $dict, [], 149);
+        $m->userReturn = $user;
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '1', $instrument, 351, null, 1);
+        $html = ob_get_clean();
+        $cfg = preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm) ? json_decode($mm[1], true) : null;
+        $out = [];
+        foreach (($cfg['rules'] ?? []) as $r) if (!empty($r['configError'])) $out[] = $r['fields'];
+        return $out;
+    };
+    check('LIVE-4: a user without design rights is not shown errors of fields off the page',
+        $errsFor(new \ExternalModules\TestDesigner(false), $csvRule, $dd, 'id_validation_test') === []
+        && $errsFor(null, $csvRule, $dd, 'id_validation_test') === []);
+    $offRule = [array_merge($csvRule[0], ['fields' => ['study_id'], 'fields-csv' => '', 'algorithm' => 'nope'])];
+    $dd2 = $dd + ['site' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f2']];
+    check('LIVE-4: ...nor errors of another form\'s fields',
+        $errsFor(new \ExternalModules\TestDesigner(false), $offRule, $dd2, 'f2') === []
+        && $errsFor(new \ExternalModules\TestDesigner(true), $offRule, $dd2, 'f2') === [['study_id']]);
+    check('LIVE-4: an error of a field on the page is shown to everyone',
+        $errsFor(new \ExternalModules\TestDesigner(false), $offRule, $dd2, 'f1') === [['study_id']]);
 
     // A survey page carries no configuration error of fields it does not
     // show: the notice is muted there, and the rule names other forms (LIVE-2).
@@ -1078,6 +1245,8 @@ namespace {
         return [$row];
     }
     function injectedRuleFor($m, $field) {
+        // A designer's page: it lists every configuration error (LIVE-4).
+        if ($m->userReturn === null) $m->userReturn = new \ExternalModules\TestDesigner(true);
         ob_start();
         $m->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
         $html = ob_get_clean();
@@ -1607,6 +1776,42 @@ namespace {
                 $flagged === in_array($code, $case['hidden'], true));
         }
     }
+
+    // CHO-8: the code sets of a choices rule are built once per request, not
+    // once per record context, and the lookups keep codes such as "01" apart
+    // from "1".
+    $m = newModule([], $cDict, [], 149);
+    $fc = new \ReflectionMethod($m, 'findingsChoices');
+    $fc->setAccessible(true);
+    $memo = new \ReflectionProperty($m, 'choicesMemo');
+    $memo->setAccessible(true);
+    $codes = array_map('strval', range(1, 2000));
+    $show = ['rule' => ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => $codes, 'choicesShow' => array_slice($codes, 0, 200)]];
+    $hide = ['rule' => ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => $codes, 'choicesHide' => array_slice($codes, 0, 200)]];
+    $flaggedAt = function ($rule, $value) use ($fc, $m) {
+        $r = $fc->invoke($m, $rule, 'choices', ['big' => $value], [], null, 149, '1', 351, [], []);
+        return count($r['invalid']);
+    };
+    $ok = true;
+    for ($i = 1; $i <= 1000; $i++) {
+        $branch = ($i % 2) ? $show['rule'] : $hide['rule'];
+        $hidden = ($i % 2) ? ($i > 200) : ($i <= 200);
+        if (($flaggedAt($branch, (string) $i) === 1) !== $hidden) $ok = false;
+    }
+    check('CHO-8: 1,000 contexts over two alternating branches give the right verdicts', $ok);
+    $entries = 0;
+    foreach ($memo->getValue($m) as $list) $entries += count($list);
+    check('CHO-8: the two branches built their code sets once each (got ' . $entries . ')', $entries === 2);
+    $rebuilt = ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => array_map('strval', range(1, 2000)),
+                'choicesHide' => array_map('strval', range(1, 200))];
+    check('CHO-8: a list built again matches by content', $flaggedAt($rebuilt, '5') === 1 && $flaggedAt($rebuilt, '500') === 0);
+    $entries = 0;
+    foreach ($memo->getValue($m) as $list) $entries += count($list);
+    check('CHO-8: ...and adds no entry', $entries === 2);
+    $lead = ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => ['1', '01', '1.50'], 'choicesHide' => ['01']];
+    check('CHO-8: "01" and "1" stay different codes',
+        $flaggedAt($lead, '01') === 1 && $flaggedAt($lead, '1') === 0 && $flaggedAt($lead, '1.5') === 0
+        && $flaggedAt($lead, ['01' => '1', '1' => '0']) === 1 && $flaggedAt($lead, ['1' => '1']) === 0);
 
     // ---- Configure-dialog channel for the new modes (Phase 3) -----------------
     // Constraint and Required rules built from dialog rows (settingRowToRule),
@@ -2973,6 +3178,20 @@ namespace {
         isset($r['used']) && $r['used'] === true && $r['record'] === null);
     $r = $u5('enrol_token', 'EN-1', 'enrol');
     check('UNQ-5: an enrolment respondent is answered about the token', isset($r['used']) && $r['used'] === true);
+    // UNQ-9: a field with no rule, a field that does not exist and a field with
+    // a rule a respondent may not ask about get one wording, so the survey link
+    // does not list the project's unique rules.
+    $words = [];
+    foreach (['record_id', 'no_such_field', 'Bad-Name', 'enrol_token'] as $f) $words[$f] = $u5($f, 'X-1', 'screen');
+    check('UNQ-9: every refusal of a respondent reads the same (got ' . json_encode($words) . ')',
+        count(array_unique(array_map('json_encode', $words))) === 1 && $words['record_id'] === ['error' => 'not enabled on surveys']);
+    // UNQ-10: the read filter inlines only values of a safe charset; "$" without
+    // D let a value ending in a line break through.
+    $cf = new \ReflectionMethod(get_class(newModule([], $u5Dict, $u5Data, 149)), 'collisionFilterLogic');
+    $cf->setAccessible(true);
+    check('UNQ-10: a value ending in a line break is never inlined into the read filter',
+        $cf->invoke(null, ['screen_code'], ['screen_code' => "SC-1\n"]) === null
+        && $cf->invoke(null, ['screen_code'], ['screen_code' => 'SC-1']) === "[screen_code] = 'SC-1'");
     $r = $u5('enrol_token', 'EN-1', null);
     check('UNQ-5: a caller with no instrument is answered about nothing',
         isset($r['error']) && !isset($r['used']));
@@ -3557,6 +3776,83 @@ namespace {
         isset($p['cfg']['numberMarks']) && $p['cfg']['numberMarks'] === ['hb' => 'comma', 'hb2' => 'comma', 'x' => 'point']);
     $rc = ruleFor($p, 'pid_c');
     check('page: an "exact" rule ships the flag', $rc !== null && ($rc['exact'] ?? null) === true);
+
+    // ---- QUA-4: the sidebar link and the scan's four verbs, at the hook ----
+    {
+        $link = ['name' => 'Validation scan', 'url' => 'pages/scan.php'];
+        $m = newModule([], $dictionary, $classicData, 149);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        check('QUA-4: the scan link is shown to a user with design rights',
+            $m->redcap_module_link_check_display(149, $link) === $link);
+        $m->userReturn = new \ExternalModules\TestDesigner(false);
+        check('QUA-4: ...not to one without', $m->redcap_module_link_check_display(149, $link) === null);
+        $m->userReturn = null;
+        check('QUA-4: ...nor when no user is signed in', $m->redcap_module_link_check_display(149, $link) === null);
+        $m->userReturn = new class { public function hasDesignRights() { throw new \RuntimeException('no rights row'); } };
+        check('QUA-4: ...nor when the rights cannot be read', $m->redcap_module_link_check_display(149, $link) === null);
+
+        $ajax = function ($m, $action, $payload, $pid, $user) {
+            return $m->redcap_module_ajax($action, $payload, $pid, null, null, null, null, null, null, null, '', '', $user, null);
+        };
+        $m = newModule([], $dictionary, $classicData, 149);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        foreach (['scan-start', 'scan-work', 'scan-status', 'scan-cancel'] as $verb) {
+            $r = $ajax($m, $verb, ['run_id' => 5], 149, null);
+            check('QUA-4: ' . $verb . ' refuses a caller who is not signed in',
+                $r === ['ok' => false, 'why' => 'you are not signed in']);
+            $r = $ajax($m, $verb, ['run_id' => 5], null, 'alice');
+            check('QUA-4: ' . $verb . ' refuses outside a project',
+                $r === ['ok' => false, 'why' => 'this action only works inside a project']);
+        }
+        $NO_RUN = \INSPIRE\UniversalValidator\Scan\ScanService::NO_RUN;
+        foreach (['scan-work', 'scan-status', 'scan-cancel'] as $verb) {
+            foreach ([[], ['run_id' => 0], ['run_id' => 'abc'], ['run_id' => ['5']]] as $p) {
+                check('QUA-4: ' . $verb . ' with no usable run id ' . json_encode($p) . ' names no run',
+                    $ajax($m, $verb, $p, 149, 'alice') === ['ok' => false, 'why' => $NO_RUN]);
+            }
+        }
+        $r = $ajax($m, 'scan-start', [], 149, 'alice');
+        check('QUA-4: scan-start reaches the service, which says the scan is off (got ' . json_encode($r) . ')',
+            is_array($r) && ($r['ok'] ?? null) === false && is_string($r['why'] ?? null) && $r['why'] !== ''
+            && strpos($r['why'], 'not enabled') !== false);
+    }
+
+    // ---- QUA-5: what a request caught is logged once, in debug mode only ----
+    {
+        $F = '\INSPIRE\UniversalValidator\Faults';
+        $probe = function () use ($F) {
+            $F::take();
+            $F::swallow(new \RuntimeException('value 1ABC-00002E'), 'Probe::place');
+        };
+        $faultsOf = function ($m) {
+            return array_map(function ($c) { return json_decode($c[1]['places'], true); }, logsOf($m, 'uvalidate-faults'));
+        };
+        $debug = ['log-values' => '', 'debug-log' => true];
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, $debug);
+        $probe();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $fl = $faultsOf($m);
+        check('QUA-5: a save in debug mode logs what the request caught, in one entry (got ' . json_encode($fl) . ')',
+            count($fl) === 1 && ($fl[0]['Probe::place|RuntimeException'] ?? null) === 1);
+        check('QUA-5: ...without the message', strpos(json_encode(logsOf($m, 'uvalidate-faults')), '1ABC') === false);
+        check('QUA-5: ...and starts the count again', $F::peek()['places'] === []);
+        $m = newModule($dialogRules, $dictionary, $classicData, 149);
+        $probe();
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        check('QUA-5: without the debug setting nothing is logged, and the count still starts again',
+            logsOf($m, 'uvalidate-faults') === [] && $F::peek()['places'] === []);
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, $debug);
+        $m->userReturn = new \ExternalModules\TestDesigner(true);
+        $probe();
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '2', 'id_validation_test', 351, null, 1);
+        ob_end_clean();
+        check('QUA-5: a form page reports too', count($faultsOf($m)) === 1);
+        $m = newModule([], $dictionary, $classicData, 149, false, $debug);
+        $probe();
+        $m->redcap_module_ajax('scan-status', ['run_id' => 0], 149, null, null, null, null, null, null, null, '', '', 'alice', null);
+        check('QUA-5: ...and an AJAX answer', count($faultsOf($m)) === 1);
+    }
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

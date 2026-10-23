@@ -10,6 +10,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 trait ScanRuns
 {
     /**
@@ -573,6 +575,7 @@ trait ScanRuns
             $m = $this->getProjectSetting('scan-value-storage', $pid);
             if (self::valueRank($m, -1) >= 0) return $m;
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanRuns::scanValueMode');
         }
         // An External Modules dropdown stores NOTHING until the settings dialog
         // is saved, so this is null on every project nobody has reconfigured -
@@ -2313,6 +2316,7 @@ trait ScanRuns
         };
         // the plan's map of fields that hold numbers (conditionNumbers)
         $numbers = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
+        $codes = (isset($plan['missingCodes']) && is_array($plan['missingCodes'])) ? $plan['missingCodes'] : [];
 
         $cfg = $rule;
         if (isset($rule['branches']) && is_array($rule['branches'])) {
@@ -2332,7 +2336,7 @@ trait ScanRuns
                         . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
-                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']), $numbers)) $active[] = $bi;
+                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']), $numbers, $codes)) $active[] = $bi;
             }
             if (count($active) === 1) {
                 $pick = $active[0];
@@ -2361,7 +2365,7 @@ trait ScanRuns
                 $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
                 return;
             }
-            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']), $numbers)) return;
+            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']), $numbers, $codes)) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';

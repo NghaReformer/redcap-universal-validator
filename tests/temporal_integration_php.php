@@ -296,6 +296,24 @@ namespace {
     check('record unique branch retains condition',$pr['rule']['branches'][0]['whenAst'][0]==='temporal');
     $off=$m->validateSettings(['enable-event-instance-refs'=>false,'rules'=>[1],'rule-type'=>['constraint'],'fields-csv'=>['a_val'],'assert'=>['[b_open][2]>0']]);
     check('disabling preserves authored rules',$off===null);
+    // QUA-4: turning event/instance references on runs the preflight over the
+    // project's tags (temporalActivationProblems); keeping them on does not.
+    $on=['enable-event-instance-refs'=>true,'rules'=>[]];
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
+    check('QUA-4: turning references on with sound tags passes the preflight',$m->validateSettings($on)===null);
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
+    REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT='.json_encode(['assert'=>'[a_val]<[baseline_arm_1][nosuch][2]']);
+    $pre=$m->validateSettings($on);
+    check('QUA-4: ...a tag that reads a field the project lacks stops it, naming the field (got '.json_encode($pre).')',
+        is_string($pre)&&strpos($pre,'a_val: ')!==false&&strpos($pre,'nosuch')!==false);
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT='.json_encode(['assert'=>'[a_val]<[baseline_arm_1][nosuch][2]']);
+    check('QUA-4: ...a save that keeps them on does not run it again',$m->validateSettings($on)===null);
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
+    unset($GLOBALS['Proj']);REDCap::$eventMappings=null;
+    $pre=$m->validateSettings($on);
+    check('QUA-4: ...and events it cannot read stop it with that reason (got '.json_encode($pre).')',
+        is_string($pre)&&strpos($pre,'could not read')!==false);
     $m=temporal('[a_val]>0');$m->projectSettings['enable-event-instance-refs']=false;$before=render($m,'fa')['raw'];
     $m->projectSettings['enable-event-instance-refs']=true;$after=render($m,'fa')['raw'];
     check('enabled legacy-only browser payload identical',$before===$after);

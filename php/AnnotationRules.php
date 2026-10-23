@@ -132,10 +132,13 @@ class AnnotationRules
      *  each one widens every lookup's read by one field. */
     const MAX_UNIQUE_ALSO = 5;
 
-    /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
-     *  every re-evaluation, so the list must stay small. REDCap fields with
-     *  more choices than this belong in an autocomplete dropdown anyway. */
-    const MAX_CHOICE_CODES = 200;
+    /** Safety bound on the show/hide code list, checked before the field's
+     *  own choice list is at hand. The real limit is that list: every code
+     *  must be one of the field's (annotateChoicesDictionary). The page's work
+     *  follows the field's choices, not this list, and is bounded there
+     *  (CHO-1). At 200 a 600-site list whose region holds 250 sites could not
+     *  be written either way (CHO-7). */
+    const MAX_CHOICE_CODES = 10000;
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
@@ -311,12 +314,16 @@ class AnnotationRules
             $after = $start - 1;
             $read = self::readValue(substr($ann, $start), $bare);
             $eg = $tag . '="[a]=\'1\' and [b]=\'2\'".';
-            $out[] = ['value' => $read['value'], 'error' => $inIf !== null ? $inIf : (!$read['continues'] ? null
+            $out[] = ['value' => $read['value'], 'error' => $inIf !== null ? $inIf : (isset($read['quoteCut'])
+                ? 'has a quoted value that ends at its second ' . $read['quoteCut'][0] . ', and "' . $read['quoteCut'][1]
+                    . '" follows it. A value in ' . $read['quoteCut'][0] . '...' . $read['quoteCut'][0] . ' cannot hold that quote mark:'
+                    . ' use the other one inside it, or give the tag its JSON form.'
+                : (!$read['continues'] ? null
                 : (isset($read['hint'])
                     ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
                         . ' Then put the whole condition in quotes, e.g. ' . $eg
                     : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                        . $eg))];
+                        . $eg)))];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -487,8 +494,17 @@ class AnnotationRules
         }
         if ($c === '"' || $c === "'") {
             $end = strpos($rest, $c, 1);
-            return $end === false ? $plain(substr($rest, 1), strlen($rest))
-                : $plain(substr($rest, 1, $end - 1), $end + 1);
+            if ($end === false) return $plain(substr($rest, 1), strlen($rest));
+            $out = $plain(substr($rest, 1, $end - 1), $end + 1);
+            // Text right after the closing quote, not a space or the next tag:
+            // the value held its own quote mark, as in "[h]='a' or [h]="b"",
+            // and was cut there (AST-11).
+            $next = $end + 1 < strlen($rest) ? $rest[$end + 1] : '';
+            if ($next !== '' && $next !== '@' && !ctype_space($next)) {
+                preg_match('/^\S{1,20}/', substr($rest, $end + 1), $m);
+                $out['quoteCut'] = [$c, $m[0]];
+            }
+            return $out;
         }
         if ($bare === 'condition') {
             $p = Logic::parsePrefix($rest);
@@ -1105,7 +1121,7 @@ class AnnotationRules
      * z is the z-score of the measurement, lower and upper the smallest and
      * largest measurements, written with "decimals", that pass the low and high
      * z limit of the "soft" limits (or "hard", "returnLimits"), and range the
-     * two as "7.7 to 12.0 kg" (GrowthReference::bound). percentile is written
+     * two as "7.8 to 11.9 kg" (GrowthReference::bound). percentile is written
      * with "percentileDecimals", valueAtZ and valueAtPercentile with
      * "decimals" (GrowthReference::output). The keys php/growth_outputs.json
      * allows are read by GrowthOutputs::parse. They become rangeReturn (key =>
@@ -3243,17 +3259,19 @@ class AnnotationRules
      * < > <= >= gives no answer, so the comparison fails (Logic::BLANK_INERT);
      * text compares with $caseSensitive; a field listed in $commaFields holds
      * numbers with a decimal comma and is read by value ("3,5" is 3.5).
+     * $codes are the project's Missing Data Codes, which give no answer to
+     * < > <= >= (Logic::evaluate, AST-10).
      * UniversalValidator::existsWherePasses gives it an entry of a lookup's
      * read; tests/docs_examples_php.php the entries the docs describe.
      */
-    public static function existsWhereHolds(array $ast, array $values, $caseSensitive, array $commaFields = [])
+    public static function existsWhereHolds(array $ast, array $values, $caseSensitive, array $commaFields = [], array $codes = [])
     {
         foreach ($commaFields as $f) {
             if (!isset($values[$f]) || is_array($values[$f])) continue;
             $n = Logic::normalizeNumber($values[$f], true);
             if ($n !== null && $n !== '') $values[$f] = $n;
         }
-        return Logic::evaluate($ast, $values, Logic::BLANK_INERT, (bool) $caseSensitive);
+        return Logic::evaluate($ast, $values, Logic::BLANK_INERT, (bool) $caseSensitive, [], $codes);
     }
 
     /**
@@ -3685,7 +3703,7 @@ class AnnotationRules
      * rule would write what it reads). Bounds come from the "soft" limits
      * unless "returnLimits" says "hard", and the limits asked for must be
      * there: "lower" needs the low limit, "upper" the high one, and "range"
-     * either (one-sided it reads "at least 7.7 kg"), as the catalog's "needs"
+     * either (one-sided it reads "at least 7.8 kg"), as the catalog's "needs"
      * says. "decimals" is how many decimals the bounds and the values at a
      * z-score or percentile are written with; "percentileDecimals" is the
      * percentile's, and needs a "percentile" to apply to (returnKeyUnused).

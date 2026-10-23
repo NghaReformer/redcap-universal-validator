@@ -16,7 +16,11 @@ and the field-facing UI layer:
    `<script type="application/json" id="inspire-validator-config">` node that
    `UniversalValidator.php` emits (no executable config script, no config
    global); `window.INSPIRE_VALIDATOR_CONFIG` remains as a fallback for the Node
-   test harnesses. The config carries a `context` flag (`form`/`survey`).
+   test suites. The config carries a `context` flag (`form`/`survey`) and a
+   `configShape` number. The engine declares the same number
+   (`QRID_CONFIG_SHAPE`, twin of `UniversalValidator::CONFIG_SHAPE`) and, on a
+   page whose config states another, checks nothing and shows a notice to
+   reload, so a cached engine never reads a config it was not written for.
 2. **Security and performance hardening of the UI layer** (everything below the
    engine core):
    - All config-derived text (regex class bodies, config-error messages) is
@@ -36,7 +40,10 @@ and the field-facing UI layer:
      pooled work budget that shrinks the scan cap for expensive configs, and
      debounced keystroke validation (PER-002).
    - The `MutationObserver` is disconnected when a field never appears, instead of
-     observing the whole page for the life of the tab (UV-007).
+     observing the whole page for the life of the tab (UV-007). Every rule
+     shares one late-render timer and one observer (`QRID_lateAttach`), and the
+     poll for values written without an event stops after 10 s in which nothing
+     changed and starts again on the next user event (PRF-6).
 3. **Accessibility layer.** Validation messages render in polite live regions
    (`role=status`, `aria-live=polite`, stable ids) wired to their inputs with
    `aria-describedby`; inputs carry `aria-invalid`; save-block dialogs name

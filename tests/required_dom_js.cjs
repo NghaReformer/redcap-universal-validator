@@ -432,5 +432,43 @@ function radioField(name, value, disabled) {
   }
 }
 
+// ---- REQ-9: the blank test is one pass over the value --------------------------
+// The regex it replaced retried its end alternative from every space of an
+// inner run: 2.9 s per test at 60,000 spaces.
+{
+  const note = makeEl('textarea'); note.name = 'long_note'; note.value = 'a' + ' '.repeat(200000) + 'b';
+  const env = boot([note], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'required', fields: ['long_note'], blockSave: 'hard' }] });
+  let t0 = Date.now();
+  for (let i = 0; i < 5; i++) note.fire('change');
+  const ms = Date.now() - t0;
+  check('REQ-9: five checks of a 200,002-character value with one inner run of spaces take under 250 ms (took ' + ms + ' ms)', ms < 250);
+  note.value = '\n'.repeat(200000);
+  t0 = Date.now();
+  note.fire('change');
+  const ms2 = Date.now() - t0;
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-9: 200,000 line breaks are blank, found in under 100 ms (took ' + ms2 + ' ms)', ev._prevented === true && ms2 < 100);
+}
+
+// ---- REQ-13: an empty required field is not called a failed validation ---------
+{
+  const a = makeEl('input'); a.name = 'phone'; a.value = '';
+  const b = makeEl('input'); b.name = 'dose'; b.value = '50';
+  const asked = [];
+  const env = boot([a, b], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'required', fields: ['phone'], blockSave: 'confirm' },
+            { type: 'constraint', fields: ['dose'], assert: '[dose]<=10', blockSave: 'confirm' }] });
+  env.win.confirm = (m) => { asked.push(m); return false; };
+  b.value = '5'; b.fire('change');
+  env.doc.fire('submit', submitEv());
+  check('REQ-13: a confirm for empty required fields only says they are empty (got ' + JSON.stringify(asked[0]) + ')',
+    asked.length === 1 && /^These fields are still empty:\n• /.test(asked[0]) && !/FAILED/.test(asked[0]));
+  b.value = '50'; b.fire('change');
+  env.doc.fire('submit', submitEv());
+  check('REQ-13: with a failed check in the list it still says "Validation FAILED for:"',
+    asked.length === 2 && /^Validation FAILED for:/.test(asked[1]));
+}
+
 console.log(`required_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

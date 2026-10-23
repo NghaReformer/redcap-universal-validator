@@ -215,5 +215,21 @@
     {"args": ["week", 1, 2, "[x]", false], "out": "1 to 2 weeks after the week of [x]"},
     {"args": ["month", -1, 2, "[x]", false], "out": "1 month before the month of [x] to 2 months after the month of [x]"},
     {"args": ["month", 0, 0, "2026-01-01", false], "out": "the month of 2026-01-01"}
+  ],
+  "spans": [
+    {"args": [21, 35, "days", "[visit_date_bl]"], "out": "21 to 35 days after [visit_date_bl]"},
+    {"args": [-30, -7, "days", "today"], "out": "7 to 30 days before today"},
+    {"args": [-30, 0, "days", "today"], "out": "0 to 30 days before today"},
+    {"args": [-3, 5, "days", "[x]"], "out": "3 days before [x] to 5 days after [x]"},
+    {"args": [-7, -7, "minutes", "now"], "out": "7 minutes before now"},
+    {"args": [0, 0, "hours", "now"], "out": "now"},
+    {"args": [0, 0, "hours", "[dose_at]"], "out": "at the time of [dose_at]"},
+    {"args": [0, 0, "days", "[x]"], "out": "on the day of [x]"},
+    {"args": [1, 1, "weeks", "[x]"], "out": "1 week after [x]"},
+    {"args": [0, null, "days", "[dob]"], "out": "no earlier than [dob]"},
+    {"args": [null, -1, "months", "today"], "out": "no later than 1 month before today"},
+    {"args": [2, null, "years", "2026-01-01"], "out": "no earlier than 2 years after 2026-01-01"},
+    {"args": [0, 6, "hours", "[dose_given_at]"], "out": "0 to 6 hours after [dose_given_at]"},
+    {"args": [null, null, "days", "[x]"], "out": ""}
   ]
 }

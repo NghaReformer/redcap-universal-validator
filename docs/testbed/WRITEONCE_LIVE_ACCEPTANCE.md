@@ -124,7 +124,7 @@ Section I's steps each run on their own copy of the log in the twin, from
 
 | # | Action | Expect |
 |---|---|---|
-| A1 | Open the form for XE-3 | Under `uw_arm` and `uw_site`: "⚠ Configuration error: @UVWRITEONCE on "uw_arm": "UV Data manager" is not a role of this project — use the role name the User Rights page shows, or its unique role name." (with `uw_site` in its own). Under `uw_yn` the same, naming "uv data MANAGER". The `uw_site` error sits under the dropdown, not in a box at the top of the page |
+| A1 | Open the form for XE-3 | Under `uw_arm` and `uw_site`: "⚠ Validator configuration error: @UVWRITEONCE on "uw_arm": "UV Data manager" is not a role of this project — use the role name the User Rights page shows, or its unique role name." (with `uw_site` in its own). Under `uw_yn` the same, naming "uv data MANAGER". The `uw_site` error sits under the dropdown, not in a box at the top of the page |
 | A2 | User Rights: create a role named "UV Data manager" with the rights of Setup 5: edit rights to `uv_writeonce_test`, the Data Import Tool, User Rights, Project Design and Setup, and read access to every form. Section D moves the tester into this role, and D4 needs User Rights to move them out again. Assign nobody to it. Reload the form | The three errors are gone. The five `uw_bad_*` errors of section F stay. Nothing is locked, since the record has no saved value on this form yet |
 
 ## Section B: the first save and the page lock (the tester holds no role)
@@ -179,7 +179,7 @@ row past the first instance with "[instance = N]".
 ## Section F: configuration errors
 
 Open the form. Each `uw_bad_*` field shows its error under the field, after
-"⚠ Configuration error: ". A broken rule never blocks a save:
+"⚠ Validator configuration error: ". A broken rule never blocks a save:
 
 | Field | Error |
 |---|---|

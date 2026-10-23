@@ -10,6 +10,9 @@
  *    and overwrote the one its factory had read from the field's row.
  * 3. The save dialog joined the labels with ", ", so a label holding a comma
  *    read as two fields (pid 149, 2.3.0-rc.2). It lists one label a line.
+ * 4. PRF-6: the poll stops after 10 s in which nothing changed and starts
+ *    again on a user event, and every rule shares one late-render timer and
+ *    one MutationObserver.
  *
  * Run:  node tests/silent_change_dom_js.cjs
  */
@@ -55,7 +58,9 @@ function boot(els, config) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   intervals = [];
-  global.setInterval = (fn) => { intervals.push(fn); return { unref() {} }; };
+  // A handle clearInterval() can stop: tick() runs only the live ones.
+  global.setInterval = (fn) => { const h = { fn, cleared: false, unref() {} }; intervals.push(h); return h; };
+  global.clearInterval = (h) => { if (h && typeof h === 'object') h.cleared = true; };
   const allEls = [];
   const body = makeEl('body');
   body.contains = (el) => allEls.indexOf(el) >= 0;
@@ -85,7 +90,8 @@ function boot(els, config) {
   require(enginePath);
   return { doc, win, holders, allEls, NS: win.INSPIREUniversalValidator };
 }
-function tick() { intervals.slice().forEach((fn) => fn()); }
+function tick() { intervals.slice().forEach((h) => { if (!h.cleared) h.fn(); }); }
+function liveIntervals() { return intervals.filter((h) => !h.cleared).length; }
 function nMsg(env, field) {
   const kids = env.holders[field].children;
   for (let i = 1; i < kids.length; i++) if (kids[i].id && /-n$/.test(kids[i].id)) return kids[i];
@@ -237,6 +243,65 @@ const BMI = { type: 'range', fields: ['bmi'], rangeSoftLo: '16', rangeSoftHi: '3
   check('pooled: the rule is off, Save goes through', !held(env));
   flag2.value = '1';
   check('pooled: the rule now applies to a bad ID, Save at once is held (VAL-6)', held(env));
+}
+
+// ---- 4) PRF-6: the poll stops when nothing changes, and wakes on a user event ----
+{
+  const bmi = numEl('bmi', ''); bmi.className = 'rci-calc'; bmi.readOnly = true;
+  const env = boot([bmi], { rules: [Object.assign({}, BMI)] });
+  const msg = nMsg(env, 'bmi');
+  check('PRF-6: the poll runs after boot', liveIntervals() === 1);
+  for (let i = 0; i < 24; i++) tick();
+  check('PRF-6: 24 quiet ticks leave it running', liveIntervals() === 1);
+  tick();
+  check('PRF-6: the 25th quiet tick (10 s) stops it', liveIntervals() === 0);
+  bmi.value = '71.1';
+  tick();
+  check('PRF-6: a stopped poll judges nothing', !shown(msg));
+  env.doc.fire('click', {});
+  check('PRF-6: a click on the page starts it again', liveIntervals() === 1);
+  tick();
+  check('PRF-6: ...and the value written meanwhile is judged', shown(msg) && /above the plausible range/.test(msg.innerHTML));
+  for (let i = 0; i < 20; i++) tick();
+  bmi.value = '22';
+  tick();
+  check('PRF-6: a change resets the count: 20 ticks later it still polls', liveIntervals() === 1 && !shown(msg));
+}
+
+// ---- 5) PRF-6: one late-render timer and observer, whatever the number of rules ----
+{
+  const observers = [];
+  global.MutationObserver = class {
+    constructor(fn) { this.fn = fn; this.live = false; observers.push(this); }
+    observe() { this.live = true; }
+    disconnect() { this.live = false; }
+  };
+  const RANGE = (f) => ({ type: 'range', fields: [f], rangeSoftLo: '12', rangeSoftHi: '17.5', rangeSoftText: '12 to 17.5' });
+  const ghosts = (k) => {
+    const all = [RANGE('g1'), { type: 'single', fields: ['g2'] }, { type: 'required', fields: ['g3'] },
+      { type: 'constraint', fields: ['g4'], assert: '[g4]>1' }, { type: 'pooled', fields: ['g5'] }, RANGE('g6')];
+    return all.slice(0, k);
+  };
+  const here = numEl('here', '');
+  observers.length = 0;
+  boot([here], { rules: ghosts(1) });
+  const oneObs = observers.length, oneLive = liveIntervals();
+  observers.length = 0;
+  const env = boot([here], { rules: ghosts(6) });
+  check('PRF-6: six rules whose fields are not on the page arm no more observers than one ('
+    + oneObs + ' and ' + observers.length + ')', observers.length === oneObs && oneObs >= 1);
+  check('PRF-6: ...nor more timers (' + oneLive + ' and ' + liveIntervals() + ')', liveIntervals() === oneLive);
+  // A field that arrives late is attached when the page changes.
+  const late = numEl('g6', ''); const holder = makeEl('div');
+  holder.appendChild(late); env.doc.body.appendChild(holder); env.allEls.push(late, holder);
+  observers.forEach((o) => { if (o.live) o.fn([]); });
+  late.value = '20'; late.fire('change');
+  const lateMsg = holder.children.find((c) => c.id && /-n$/.test(c.id));
+  check('PRF-6: a field that arrives late is attached and judged', !!lateMsg && /higher than usual/.test(lateMsg.innerHTML));
+  for (let i = 0; i < 20; i++) tick();
+  check('PRF-6: after 20 ticks every observer is disconnected', observers.every((o) => !o.live));
+  check('PRF-6: ...and only the poll of the late field still runs', liveIntervals() === 1);
+  delete global.MutationObserver;
 }
 
 console.log('silent_change_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

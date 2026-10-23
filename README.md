@@ -62,7 +62,9 @@ validate identically here, in Excel, and in the browser (same verified engine).
   it on your own instance (the step is in [`docs/TESTING.md`](docs/TESTING.md)).
   A rule the server cannot evaluate leaves a `uvalidate-unconfigurable` entry
   and a hook failure leaves a `uvalidate-audit-error` entry, so neither can pass
-  silently. Raw identifiers are not stored in the log by default — a keyed,
+  silently. Each problem is logged once. A save of a value the log already
+  reports for that record and field writes no new entry (see the user guide,
+  Part 7). Raw identifiers are not stored in the log by default — a keyed,
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. A keyed hash is pseudonymization, not
   anonymity: treat the module log as identifying data in access and retention
@@ -301,7 +303,9 @@ Semantics worth knowing before relying on it:
 - **A false condition skips the rule — it never erases the value.** That is
   the deliberate difference from REDCap's own field branching, which erases
   hidden fields on save. Combine `when` with normal field branching if you
-  also want erasure.
+  also want erasure. The fields a `@UVRANGE` or `@UVEXISTS` rule fills with
+  `return` are the exception: the rule owns them, and a false `when` empties
+  them.
 - **The server-side audit honors the same condition** against the record's
   saved values, so browser and audit skip (or check) a rule consistently.
 - Caps: 500 characters, 20 field references, 10 nesting levels. References are
@@ -365,7 +369,11 @@ enforced with the same message/confirm/block modes as everything else:
   compare correctly; the evaluator is the one parity-locked engine, used here as
   the *test* rather than a gate. A field validated as a number, a calc and a slider
   are read as the number they hold (a saved `12,5` is 12.5), and two numbers compare
-  by value, so `02` equals `2`.
+  by value, so `02` equals `2`. A condition holds printable ASCII only, so
+  `[city]='Yaoundé'` is refused; compare the code a choice field stores instead.
+  A field marked with a Missing Data Code gives no answer to `<`, `>`, `<=` and
+  `>=`, as a blank field gives none, so `[end_date]>=[start_date]` with the start
+  marked `UNK` is no violation. `=` and `<>` read the code as written.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
   constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
   `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
@@ -386,8 +394,10 @@ enforced with the same message/confirm/block modes as everything else:
 - Optional `when` enforces the constraint only while a condition is true; several
   `@UVASSERT` tags with different `when` conditions **branch** (plus at most one
   without, as the fallback), exactly like `@UVALIDATE`.
-- Works on **Text, Notes, dropdown, radio, yes/no, true/false, calc and slider**
-  fields (check-character/regex validation stays Text/Notes). A field may carry
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and
+  slider** fields (check-character/regex validation stays Text/Notes). On a calc
+  field the rule shows its note but never holds the save: nobody can change a
+  calc on the form. A field may carry
   `@UVASSERT` **alongside** `@UVALIDATE` and other modes — they **compose**, and
   all must pass; each keeps an independent save-block state.
 - The server audit honors the constraint against saved values (logged as
@@ -422,7 +432,10 @@ enforced with the same message/confirm/block modes as everything else:
   on a survey shown one section per page), each without its text. Up to
   2.3.0-rc.2 the page source stated, for example, `"when":"[hiv]='1'"` next to
   `"whenAst":["const",true]`, and every configuration error of the project.
-  Staff forms keep the full config.
+  Staff forms keep the full config, except for configuration errors: a user
+  with design rights sees every one, on any form, and any other user sees only
+  those of the fields on the form. Up to 2.3.0-rc.2 every data-entry page
+  listed the whole project's errors to every user.
 - **A reference the module cannot resolve is refused** (1.6.0) — a field on a
   different repeating instrument, a field not collected in this event, or a read
   that failed. The rule stops checking, and the reason names the field instead of
@@ -450,7 +463,7 @@ the two things it lacks: a **condition** and a **real block**:
   or `@UVASSERT` for that (modes compose, each with its own save-block state:
   on a blank field only `@UVREQUIRED` fires; on a filled-but-wrong value only
   the value checks fire).
-- Works on **Text, Notes, dropdown, radio, yes/no, true/false and slider**
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider**
   fields. Not calc — the person entering data cannot fill a calc, so requiring
   one would trap them (the same reasoning as the read-only exemption: a
   read-only field, a `@READONLY` radio or autocomplete dropdown included, shows
@@ -465,6 +478,10 @@ the two things it lacks: a **condition** and a **real block**:
   problem, never as a missing value.
 - Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
   conditions true at once is a visible conflict that never blocks.
+- **On a survey shown one section per page**, a condition over a field of
+  another page reads the answer saved when the page was drawn, since REDCap
+  draws only the current page's fields. `[consent]='1'` on page 2 reads the
+  consent given on page 1.
 - The server audit logs a blank-while-required save as `type: required`,
   `reason: required-blank` (a blank carries nothing identifying, so this entry
   is safe in every privacy mode).
@@ -558,7 +575,12 @@ enforcement:
   In a field that holds numbers (an integer or number Text field, or a slider)
   values compare by value, so `007` duplicates `7`. `@UVEXISTS` compares the same
   way. Up to 2.1.0-rc.2 the comparison was exact: a project that holds both
-  spellings of a value gets duplicate findings after the upgrade.
+  spellings of a value gets duplicate findings after the upgrade. Values that
+  only look alike are different values: an accented letter typed as one
+  character or as a letter and an accent, an en dash for a hyphen, full-width
+  digits, or a zero-width space or byte-order mark left by a paste. Pair the
+  field with `@UVALIDATE` or a format pattern when such characters must not be
+  saved at all.
 - **Surveys: opt-in, and never on an identifier.** Survey respondents are not
   logged in, so an "already used" answer tells anyone holding the survey link
   that a specific value is in the study — one value at a time. `{"surveys":true}`
@@ -597,7 +619,7 @@ enforcement:
   stands: an *already recorded* is enforced, and a *not used before* lets the
   save through. Surveys never show *could not check* and are never held: there a
   failed check simply lets the save through, and the audit is the net.
-- Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
+- Works on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields;
   composes with the other modes on the same field.
 
 ## Dynamic choice filtering — the `@UVCHOICES` tag
@@ -620,14 +642,21 @@ field instead of one near-duplicate field per country:
 - **JSON form only.** Exactly one of `show` (whitelist — every other code of
   the field hides) or `hide` (blacklist) per tag, plus optional `when`,
   `message`, `blockSave`. Codes must exist in the field's own choice list — an
-  unknown code is a configuration error naming the real codes.
+  unknown code is a configuration error naming the real codes. A list holds up
+  to 10,000 codes, so the field's own list is the limit in practice. Up to
+  2.3.0-rc.2 the limit was 200, which left a 600-site list whose region holds
+  250 sites impossible to write either way.
 - **Branches like every other mode.** Repeat the tag with different `when`
   conditions (plus at most one without, as the fallback). Exactly one true
   condition filters; none (and no fallback) shows everything; more than one
   true is a visible conflict — the filter is **not** applied and the save is
   never blocked on a configuration problem. Conditions may reference fields on
-  other instruments; those are resolved server-side against saved values
-  (nothing off-page leaks into the browser).
+  other instruments; the server reads their saved values. A comparison of such
+  a field with a fixed value reaches the page as its answer only, true or
+  false. A comparison with a field on the form needs the saved value on the
+  page to follow what is typed: a user with REDCap rights to the other
+  instrument gets that value, and on a survey or without those rights the page
+  gets the answer as of page load (the rule of 1.6.0).
 - **A hidden selection is never cleared.** If the stored/selected choice
   becomes hidden (the user changes the country after picking a site), the
   module keeps it visible — dropdowns keep the option in place, greyed and
@@ -637,6 +666,8 @@ field instead of one near-duplicate field per country:
   mode refuses to do; fix it by picking one of the shown choices.
 - **Out-of-list values are out of scope.** A value that is not in the field's
   choice list at all (e.g. a missing-data code like `-99`) is never flagged.
+  Nor is a project Missing Data Code that is also one of the field's codes: the
+  page and the server both leave such a field alone.
 - Works on radio, dropdown and checkbox fields; **not** yes/no, true/false,
   sql, or matrix fields (matrix rows render different markup — the tag is
   refused there rather than half-working). Dropdown filtering physically
@@ -649,9 +680,14 @@ field instead of one near-duplicate field per country:
   2.3.0-rc.2 the buttons stayed clickable. On any form the filter gives back
   only the display it took away, so an option row that REDCap or a script hid
   stays hidden.
-- **Audited like everything else.** A save that lands a hidden choice (API,
-  import, a race) is logged by the post-save audit as `type: choices`,
-  `reason: hidden-choice`, and the Validation scan reports it retrospectively.
+- **Audited on form saves; imports and API writes through the scan.** A form or
+  survey save that lands a hidden choice (under `blockSave` `off`, after "Save
+  anyway", or in a race between two users) is logged by the post-save audit as
+  `type: choices`, `reason: hidden-choice`. Whether that audit runs for Data
+  Import Tool and API writes depends on the REDCap version (see the coverage
+  caveat above): on REDCap 17.0.6 a Data Import Tool import left no entry. The
+  Validation scan reads the saved values whatever wrote them, so run it after
+  an import.
 
 ## Dates within a window — the `@UVWINDOW` tag
 
@@ -694,17 +730,20 @@ that it is not after today or not before it:
   moved forward while the form is open moves it too; the post-save audit reads the
   server clock and still logs the date. The project setting **Time zone for
   @UVWINDOW "notFuture"** sets the time zone, when it differs from the server's.
-- **Blank checks nothing.** A blank field, or a blank `from` date, is not
-  checked; a date still being typed shows no verdict.
+- **Blank checks nothing.** A blank field is not checked, and a date still
+  being typed shows no verdict. A blank `from` date leaves the window part
+  unchecked; `notFuture` and `notPast` still apply.
 - **Other forms and events.** A `from` date on another form is read when the page
-  opens and the window part is advisory (it never blocks); `notFuture` keeps its
-  `blockSave`. On a survey, or without rights to that form, the value never
-  reaches the page: the browser checks only `notFuture`, and staff see a note
+  opens and the window part is advisory (it never blocks); `notFuture` and
+  `notPast` keep their `blockSave`. On a survey, or without rights to that form,
+  the value never reaches the page: the browser checks only `notFuture` and
+  `notPast`, and staff see a note
   that the window is checked on save. With event and instance references
   enabled, `from` may name another event: `[baseline_arm_1][visit_date]`. Its
-  window part is advisory on the page and `notFuture` keeps its `blockSave`. A
+  window part is advisory on the page, and `notFuture` and `notPast` keep their
+  `blockSave`. A
   `when`, or a branch selector, that reads a value from another form or event
-  makes the whole rule advisory, `notFuture` included. On a multi-page survey, put the `from` field on the same page as the date it
+  makes the whole rule advisory, `notFuture` and `notPast` included. On a multi-page survey, put the `from` field on the same page as the date it
   anchors, or the window is checked only after the save.
 - **Audited.** The post-save audit logs `type: window` with reason
   `window-early`, `window-late`, `future` or `past`, and saving the `from` date's form
@@ -781,8 +820,9 @@ the specimen ID on the collection form.
 - **Who gets an answer.** Signed-in users are answered only when they may open
   every form the lookup reads (the searched field, the `match` fields and the
   `where` fields; a record-ID lookup without `where` needs no extra form), and at most 60 lookups a minute per
-  session, shared with `@UVUNIQUE`. A user in a Data Access Group is answered
-  only on records of their own group. Staff in no group see the record the value
+  session, shared with `@UVUNIQUE`. A user in a Data Access Group may check
+  only records of their own group; they learn whether a value is saved in
+  another group, never which record holds it. Staff in no group see the record the value
   was found in; staff in a group see it only when it is in their group. A
   record-ID lookup never names a record.
 - **Data Access Groups.** REDCap may confine a group user's reads to their own
@@ -1412,9 +1452,10 @@ filtering — over every saved record and stores what it finds.
   `scan-system-max-detail-bytes` of detail (default 512 MiB); a project may set
   lower limits. Past either limit the run keeps counting every finding, stops
   storing detail, and labels itself truncated. Stored values expire after
-  `scan-value-retention-days` and finished runs are purged after
-  `scan-run-retention-days`; the server sets the most days a project may choose
-  (30 and 90 by default).
+  `scan-value-retention-days`, and a daily cron clears them. Finished runs are
+  to be purged after `scan-run-retention-days`, but no cron purges runs yet, so
+  they stay in the scan's tables until one is scheduled. The server sets the
+  most days a project may choose (30 and 90 by default).
 - **Values are a policy choice.** The project setting *Validation scan report*
   decides whether the offending value is stored beside each finding: locations
   only (the default), Identifier fields redacted, or every value. Redaction
@@ -1686,7 +1727,7 @@ node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
-node tests/config_notice_js.cjs     # page-level config-error notice
+node tests/config_notice_js.cjs     # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
 ```

@@ -625,13 +625,26 @@ final class GrowthReference
 
     /**
      * How much of a page's table cap one copy uses: every row of both sexes
-     * is 1, every row of one sex 0.5, and rows limited to a few axis values
-     * (pageCopy 'xs') nothing.
+     * is 1, every row of one sex 0.5. A copy limited to a few axis values
+     * (pageCopy 'xs') weighs the share of each sex's rows it carries: two
+     * saved ages far apart carry every row between them, which counted as
+     * nothing, so the cap stopped bounding the page (RNG-6: seven such copies
+     * put 575 KB on a page capped at four tables). Without the table such a
+     * copy weighs nothing.
      */
-    public static function pageWeight(array $need)
+    public static function pageWeight(array $need, ?array $entry = null, ?array $table = null)
     {
-        if (isset($need['xs']) && is_array($need['xs'])) return 0.0;
         $sexes = isset($need['sexes']) ? $need['sexes'] : ['male' => true, 'female' => true];
+        if (isset($need['xs']) && is_array($need['xs'])) {
+            if ($entry === null || $table === null) return 0.0;
+            $copy = self::pageCopy($entry, $table, $need);
+            $w = 0.0;
+            foreach (['male', 'female'] as $s) {
+                $all = (isset($table[$s]) && is_array($table[$s])) ? count($table[$s]) : 0;
+                if ($all > 0 && !empty($sexes[$s])) $w += 0.5 * count($copy[$s]) / $all;
+            }
+            return $w;
+        }
         return 0.5 * ((empty($sexes['male']) ? 0 : 1) + (empty($sexes['female']) ? 0 : 1));
     }
 
@@ -1016,7 +1029,7 @@ final class GrowthReference
      *   lower  the smallest measurement, to $decimals, that the low z limit
      *          passes (bound());
      *   upper  the largest one that the high z limit passes;
-     *   range  "7.7 to 12.0 kg", "at least 7.7 kg" or "at most 12.0 kg"
+     *   range  "7.8 to 11.9 kg", "at least 7.8 kg" or "at most 11.9 kg"
      *          ($comma writes a decimal comma).
      * $y is the measurement in the reference's unit (measure() applied the
      * rule's $scale). The bounds are in the measured field's own unit, so with

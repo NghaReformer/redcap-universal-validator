@@ -111,7 +111,8 @@ notice but never block a save.
 
 **`when` gates any rule.** Any tag may carry a `when` condition; the rule validates
 only while that condition is true. A false `when` skips the rule — it never erases
-the value. See [The `when` condition language](#the-when-condition-language).
+the value. The fields a rule fills with `return` are the exception: the rule owns
+them, and a false `when` empties them. See [The `when` condition language](#the-when-condition-language).
 
 **Text ignores letter case.** `[status]='active'` is true for `Active` and `ACTIVE`,
 in every tag's `when`, in branch selectors and in `@UVASSERT`. The values
@@ -1070,7 +1071,7 @@ note, is not read.
 
 ### Semantics worth knowing
 
-- Sits on Text, Notes, dropdown, radio, yes/no, true/false and slider fields. **Not
+- Sits on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields. **Not
   calc** — the person entering data cannot fill a calc, so requiring one would trap
   them. Same reasoning as the read-only exemption: a read-only field shows the notice
   but never blocks the save.
@@ -1205,7 +1206,7 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
 
 ### Semantics worth knowing
 
-- Sits on Text, Notes, dropdown, radio, yes/no, true/false and slider fields — not calc
+- Sits on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields — not calc
   (a data enterer cannot fix a calc collision).
 - **Privacy posture.** The endpoint answers only for fields that carry a unique rule, so
   it cannot be used to probe arbitrary fields for value existence. Staff see the
@@ -1216,7 +1217,8 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
   a number, or a slider) values compare by value: `007` and `7.0` both duplicate `7`.
   On a plain Text field they stay text, so `007` and `7` differ. Dropdown and radio
   values compare by code. `@UVEXISTS` compares the same way, so the two tags agree when
-  one field carries both.
+  one field carries both. Values that only look alike stay different: `SP–1` with an
+  en dash is not `SP-1`, and neither is `SP-1` after a zero-width space from a paste.
 - **Save asks again.** A value the page found already used 30 seconds or more
   before Save is clicked is asked once more, so a record changed since then no
   longer blocks the save. That click waits for the answer; the next one is decided
@@ -1406,7 +1408,7 @@ limit is the current time, not the end of the day.
 of 2026-01-01 the rule accepts 2026-01-22 to 2026-02-05, and the message names
 those dates in the field's own format:
 
-> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days from [visit_date_bl])
+> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days after [visit_date_bl])
 
 The part in brackets is shown to staff only; a survey respondent sees the dates
 without the other field's name. The example assumes a D-M-Y field.
@@ -1562,24 +1564,26 @@ warning.
   validation, in any display format (Y-M-D, M-D-Y or D-M-Y). Any other field shows a
   configuration error.
 - **The `from` field must be the same kind of date.** A date window counts from a
-  date field, a datetime window from a datetime field. A `from` field that does
+  date field, a datetime window from a datetime field. A `period` reads only the
+  day of its `from` date, so it may count from either kind. A `from` field that does
   not exist, is not a date field, or is the tagged field itself is a configuration
   error.
 - **Blank means nothing to check.** A blank field checks nothing, and so does a
   blank `from` date: the visit that anchors the window may not have happened yet.
-  `notFuture` still applies while `from` is blank.
+  `notFuture` and `notPast` still apply while `from` is blank.
 - **A date still being typed shows no verdict.** REDCap's own date check covers
   half-typed values.
 - **A `from` date on another form is read when the page opens.** If the user may
   read that form, its saved value is used and the check is **advisory**: it shows
   the verdict but never blocks the save, because that form could change while
   this one is open. On a survey, or without rights to that form, the value is not
-  sent to the page at all. The browser then checks only `notFuture`; staff see a
+  sent to the page at all. The browser then checks only `notFuture` and
+  `notPast`; staff see a
   note that the window is checked when the record is saved, and a survey
   respondent sees nothing about it.
-- **`notFuture` keeps its `blockSave`.** "After today" does not depend on the
-  `from` date, so a hard rule still blocks a future date when the window part is
-  advisory or not sent. A `from` in another event works the same way: the window
+- **`notFuture` and `notPast` keep their `blockSave`.** "After today" and
+  "before today" do not depend on the `from` date, so a hard rule still blocks a
+  future date, or a new past one, when the window part is advisory or not sent. A `from` in another event works the same way: the window
   part is advisory, and `notFuture` blocks as set. A `from` that resolves to a
   field on this page (`[visit_date_bl][current-instance]`, where both dates are
   on one form) blocks as set too.
@@ -1587,7 +1591,7 @@ warning.
   a `when`, or the condition that picks a branch, reads a value from another
   form or event, the page judges with the value it read when it opened. Whether
   the rule applies may have changed since, so nothing in the rule blocks there,
-  `notFuture` included. A count or set of entries, in this event or another,
+  `notFuture` and `notPast` included. A count or set of entries, in this event or another,
   counts as such a value, even when it holds no entries or only this one.
 - **Multi-page surveys.** The browser reads a `from` date only on the page being
   shown. If the `from` field is on an earlier page of the survey, the window is
@@ -1640,8 +1644,9 @@ warning.
   windows counted from it.
 - **The Validation scan** reports the same findings, with "Date outside allowed
   window", "Date in the future" or "Date in the past" in the Issue column and
-  the missed bound in the detail line, such as "The window opens 21 days from
-  [visit_date_bl]." or "The date must be in last month.". Where the log does not
+  the missed bound in the detail line, such as "The window opens 21 days after
+  [visit_date_bl].", "The window opens 30 days before today." or "The date must
+  be in last month.". Where the log does not
   show when a value was saved, `notFuture` is judged against the day the scan
   runs. Each part of a durable scan reads the clock when that part runs, and
   stores with each finding the day it was judged against (`as_of`); the durable
@@ -2244,7 +2249,9 @@ this record.
   rule with `return`, the copied fields. A record-ID lookup without `where` needs
   no extra form.
   At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
-  user in a Data Access Group is answered only on records of their own group.
+  user in a Data Access Group may check only records of their own group; they
+  learn whether a value is saved in another group, never which record holds
+  it.
 - **Which records are read.** The module asks the project's data table which
   records hold the value (in any spelling the rule accepts) and reads only
   those through REDCap. A *not found* reads no record at all. When the data
@@ -3980,8 +3987,9 @@ bundled reference.
   `UNK` or `-99`. REDCap does not validate it and neither does `@UVRANGE`: the
   field is treated as blank, on the page, in the post-save audit and in the
   scan. Every other tag does the same, except `@UVREQUIRED`, which counts a
-  missing data code as an answer. A `when` condition reads the code as itself,
-  as REDCap's branching logic does.
+  missing data code as an answer. In a `when` condition `=` and `<>` read the
+  code as written, as REDCap's branching logic does, and `<`, `>`, `<=` and `>=`
+  get no answer from it, as from a blank field.
 - **Comma decimals.** On a field with comma-decimal validation
   (`number_1dp_comma_decimal` and the like), `17,5` is read as 17.5 and the
   notes write the limits with a comma. Limits in the tag are always written
@@ -4832,7 +4840,7 @@ blocks above cannot show them. With `weight_reason` given `@DEFAULT="n/a"`,
 the form shows under the weight:
 
 ```text
-⚠ Configuration error: @UVJUSTIFY on "weight": "reason" names "[weight_reason]", which has @DEFAULT — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.
+⚠ Validator configuration error: @UVJUSTIFY on "weight": "reason" names "[weight_reason]", which has @DEFAULT — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.
 ```
 
 ---
@@ -5041,7 +5049,8 @@ Semantics:
   `@UVRANGE` references on one field, no branch of that reference).
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
-  branching if you also want erasure.
+  branching if you also want erasure. The fields a `@UVRANGE` or `@UVEXISTS` rule
+  fills with `return` are the exception: a false `when` empties them.
 - **The server audit honors the same condition** against saved values, so the browser and
   the audit skip (or check) a rule consistently.
 - **Caps:** 500 characters, 20 field references, 10 nesting levels. Field references are
@@ -6398,7 +6407,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 
 | Key               | Type            | Default        | Notes                                                                  |
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
-| `show`          | list of strings | *(one of)*   | Offer only these choice codes; up to 200 codes                         |
+| `show`          | list of strings | *(one of)*   | Offer only these choice codes; each one must be a code of the field, up to 10,000 |
 | `hide`          | list of strings | *(one of)*   | Offer every code except these. Exactly one of `show`/`hide`        |
 | `when`          | string          | *(none)*     | The branch applies while true; a tag without `when` is the fallback  |
 | `message`       | string or map   | generic line   | Shown when a saved or selected code is not offered                     |

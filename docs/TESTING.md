@@ -156,7 +156,9 @@ text, it follows the language on screen
 - [ ] Fast entry, ALL names wrong (no picker field): a rule whose fast-entry box
       contains only mis-typed names must NOT vanish silently — a page-level
       "configuration error(s)" notice appears at the top of the form naming the
-      unknown fields.
+      unknown fields. Test this as a user with design rights. A user without
+      them sees only the errors of fields on the form, and these names are on
+      none.
 - [ ] `@UVALIDATE` bare tag in a field's Action Tags box → default check runs on
       that field with no module-dialog rule.
 - [ ] `@UVALIDATE=verhoeff` → that algorithm runs.
@@ -279,6 +281,10 @@ text, it follows the language on screen
 > - *no* entry at all means the hook did not fire for that path on your version —
 >   treat import/API coverage as unavailable and rely on the client block plus a
 >   periodic Data-Quality/export check instead.
+
+Use a new invalid value, or a new record, for each step below. The log holds
+one entry for each invalid value at a field of a record, so saving the same
+value again writes nothing.
 
 - [ ] Save a data-entry **form** with an invalid ID (rule set to *Informational*
       so the save completes) → a `invalid-id-saved` log entry appears with reason

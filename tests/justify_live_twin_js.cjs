@@ -250,7 +250,7 @@ const W = (f) => '✗ This value is above the plausible range (allowed 30 to 250
 {
   const env = boot(PAGES.form, V.A1, { ready: READONLY });
   for (const f of Object.keys(PAGES.errors)) {
-    check('A1 ' + f + ': its error is shown under the field, word for word', cfgErr(env, f) === '⚠ Configuration error: ' + PAGES.errors[f], cfgErr(env, f));
+    check('A1 ' + f + ': its error is shown under the field, word for word', cfgErr(env, f) === '⚠ Validator configuration error: ' + PAGES.errors[f], cfgErr(env, f));
   }
   const clean = Object.keys(env.holders).filter((f) => !PAGES.errors[f] && cfgErr(env, f) !== '');
   check('A1 no other field shows an error', clean.length === 0, clean);
@@ -609,7 +609,7 @@ const SECTION = (letter) => Array.from(new Set(Object.values(PAGES.sections))).f
   // J4: an administrator added the SQL field "uj_sql_why"
   const env = boot(PAGES.sql, V.J4, { ready: READONLY, sql: true });
   check('J4 the respiratory rate\'s configuration error is gone', cfgErr(env, 'uj_rr') === '', cfgErr(env, 'uj_rr'));
-  check('J4 ... the six other errors stay', Object.keys(PAGES.errors).filter((f) => f !== 'uj_rr').every((f) => cfgErr(env, f) === '⚠ Configuration error: ' + PAGES.errors[f]));
+  check('J4 ... the six other errors stay', Object.keys(PAGES.errors).filter((f) => f !== 'uj_rr').every((f) => cfgErr(env, f) === '⚠ Validator configuration error: ' + PAGES.errors[f]));
   type(env, 'uj_rr', '70');
   check('J4 70: the range note, and the note asking for the reason in the SQL field', shown(env, 'uj_rr', 'n') === '✗ This value is above the plausible range (allowed 5 to 60).'
     && ask(env, 'uj_rr') === NOTE('uj_sql_why'), notes(env, 'uj_rr'));

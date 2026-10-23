@@ -605,6 +605,19 @@ namespace {
             is_file($fxFile) && file_get_contents($fxFile) === $fixture);
     }
 
+    // RNG-5: a chart with a fixed span and one that zooms can draw the same
+    // curves under one key; the curves are built for the deeper zoom, whichever
+    // chart comes first.
+    $both = page(dict(['fx' => tag('{"chart":{"span":[0,1826.25]}}'), 'au' => tag('{"chart":true}')]), $SAVED);
+    $auto = page(dict(['au' => tag('{"chart":true}')]), $SAVED);
+    $flat = page(dict(['fx' => tag('{"chart":{"span":[0,1826.25]}}')]), $SAVED);
+    $kBoth = ruleFor($both, 'au')['growthCurveKey'] ?? null;
+    check('RNG-5: the two charts share one key', $kBoth !== null && (ruleFor($both, 'fx')['growthCurveKey'] ?? null) === $kBoth);
+    $setOf = function ($p, $f) { $k = ruleFor($p, $f)['growthCurveKey'] ?? ''; return $p['cfg']['growthCurves'][$k]['male'] ?? null; };
+    check('RNG-5: the shared curves are the ones a zoomable chart alone gets',
+        $setOf($both, 'au') !== null && $setOf($both, 'au') === $setOf($auto, 'au'));
+    check('RNG-5: ...which differ from those a fixed span alone gets', $setOf($flat, 'fx') !== null && $setOf($flat, 'fx') !== $setOf($auto, 'au'));
+
     fwrite(STDOUT, "growth_chart_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
 }

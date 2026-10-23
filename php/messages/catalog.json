@@ -45,14 +45,16 @@
   "window/window-early": {
     "staff":  "The date is earlier than its allowed window.",
     "survey": "This date is too early.",
-    "detail": ["The window opens {windowLo} {windowUnit} from {windowFrom}.",
+    "detail": ["The window opens {windowOpens}.",
+               "The window opens {windowLo} {windowUnit} from {windowFrom}.",
                "The window opens {windowLo} {windowUnit} from {windowAnchor}.",
                "The date must be in {windowPeriodText}."]
   },
   "window/window-late": {
     "staff":  "The date is later than its allowed window.",
     "survey": "This date is too late.",
-    "detail": ["The window closes {windowHi} {windowUnit} from {windowFrom}.",
+    "detail": ["The window closes {windowCloses}.",
+               "The window closes {windowHi} {windowUnit} from {windowFrom}.",
                "The window closes {windowHi} {windowUnit} from {windowAnchor}.",
                "The date must be in {windowPeriodText}."]
   },

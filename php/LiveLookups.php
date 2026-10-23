@@ -9,6 +9,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 trait LiveLookups
 {
     /**
@@ -26,6 +28,17 @@ trait LiveLookups
      * is inside the user's Data Access Group (or the user has none).
      */
     public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
+    {
+        try {
+            return $this->answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id);
+        } finally {
+            $this->reportFaults($project_id);
+        }
+    }
+
+    /** The body of redcap_module_ajax(); see there. */
+    private function answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
         // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
         // scan reads and stores record values, so there is no version of it an
@@ -67,10 +80,15 @@ trait LiveLookups
             // this caller"; a survey hash is caller-supplied and proves nothing.
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            // One wording for every refusal of a caller REDCap did not sign
+            // in: "not a checkable field" for a field with no rule beside "not
+            // enabled on surveys" for one with a rule listed the project's
+            // unique rules to anyone with the survey link (UNQ-9).
+            $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';
             $field = (isset($payload['field']) && is_string($payload['field']))
                 ? strtolower(trim($payload['field'])) : '';
             if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) {
-                return ['error' => 'not a checkable field'];
+                return ['error' => $refused];
             }
             $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
             if (count($raw) > 8) return ['error' => 'too many values'];
@@ -85,7 +103,7 @@ trait LiveLookups
             $live = $this->liveCondValues($payload, $project_id, $instrument);
             if ($live === null) return ['error' => 'malformed request'];
             $rule = $this->uniqueRuleFor($this->getRules($project_id, [$field]), $field, $project_id, $record, $event_id, $instrument, $repeat_instance, $isAuthenticated && !$isSurvey, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
+            if ($rule === null) return ['error' => $refused];
             if (!$isAuthenticated) {
                 // An unauthenticated caller gets an answer ONLY for a rule whose
                 // designer opted surveys in...
@@ -292,8 +310,9 @@ trait LiveLookups
         try {
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';   // one wording, as unique-check (UNQ-9)
             $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
-            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => 'not a checkable field'];
+            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => $refused];
             $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
             if (count($raw) > 8) return ['error' => 'too many values'];
             $values = [];
@@ -307,7 +326,7 @@ trait LiveLookups
             if ($live === null) return ['error' => 'malformed request'];
             $rule = $this->activeRuleFor($this->getRules($project_id, [$field]), 'exists', $field, $project_id, $record,
                 $event_id, $instrument, $repeat_instance, false, $live);
-            if ($rule === null) return ['error' => 'not a checkable field'];
+            if ($rule === null) return ['error' => $refused];
             $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
             $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
             if (!$isAuthenticated) {
@@ -321,6 +340,13 @@ trait LiveLookups
                 }
                 $ids = $this->projectIdentifierFields($project_id);
                 if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
+                // ...nor about a tagged field of another instrument (EXS-8, as
+                // UNQ-5 for unique-check): "surveys" on a staff form that is
+                // sometimes a survey must not open the lookup to the link of
+                // every other survey in the project.
+                if (!self::onSurveyInstrument($this->dataDictionary($project_id), $field, $instrument)) {
+                    return ['error' => 'not enabled on surveys'];
+                }
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
                 // Flagged, so a rule that blocks holds the save until the next
@@ -352,10 +378,11 @@ trait LiveLookups
             foreach ($locals as $lf) {
                 // A match field the page shows is sent, blank or not. One it does
                 // not show (another form, or another page of a multi-page
-                // survey) is left out and read from the saved record; so is a
-                // blank sent for a field of another form.
-                if (array_key_exists($lf, $values)
-                        && (Logic::lookupTrim($values[$lf]) !== '' || ($onForm !== null && isset($onForm[$lf])))) {
+                // survey) is left out and read from the saved record. A value
+                // sent for a field of another form is never taken: it let a
+                // request choose the saved value it was matched against (EXS-9).
+                // Where the form's fields cannot be listed, every one is read.
+                if (array_key_exists($lf, $values) && $onForm !== null && isset($onForm[$lf])) {
                     $lv[$lf] = Logic::lookupTrim($values[$lf]);
                     continue;
                 }
@@ -654,6 +681,7 @@ trait LiveLookups
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'LiveLookups::callerFormRights');
         }
         return null;
     }
@@ -853,6 +881,7 @@ trait LiveLookups
                 'detail'     => Scan\DbError::safe($e),
             ]);
         } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'LiveLookups::noteThrottleUnavailable');
             // A failure to record a failure is not worth a second failure.
         }
     }
@@ -921,7 +950,7 @@ trait LiveLookups
             }
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid))) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid), $this->missingDataCodes($pid))) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;

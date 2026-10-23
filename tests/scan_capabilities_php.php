@@ -643,6 +643,14 @@ namespace {
             $C::recordEnumeration($emptyProject, PID)['state'] === $OK);
     }
 
+    // COMPAT-1: the extensions the module calls without a guard.
+    $CX = '\INSPIRE\UniversalValidator\ScanCapabilities';
+    check('COMPAT-1: this server loads every extension the module needs', $CX::missingExtensions() === []);
+    check('COMPAT-1: a server without mbstring is told so',
+        $CX::missingExtensions(function ($x) { return $x !== 'mbstring'; }) === ['mbstring']);
+    check('COMPAT-1: ...and one without either is told both, in order',
+        $CX::missingExtensions(function ($x) { return false; }) === ['mbstring', 'ctype']);
+
     echo "scan_capabilities_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

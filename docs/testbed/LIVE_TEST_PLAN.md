@@ -287,7 +287,8 @@ that is the first thing to fix, not the test.
    regions show.
 2. **Stale-kept semantics** — pick a region, change country: the stale choice
    stays visible + flagged, save blocked (hard) until repicked; a stale
-   dropdown site stays in the list but disabled.
+   dropdown site stays in the list, greyed but enabled (a disabled selected
+   option would not be submitted).
 3. **Hide-list + confirm** — `uch_method` option 9 vs the `uch_legacy` flag
    (confirm-mode block).
 4. **Checkbox** — `uch_reach` restricted while `uch_pilot(1)` is ticked; a

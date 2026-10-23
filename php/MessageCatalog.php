@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 /**
  * Turns a finding into one plain sentence.
  *
@@ -49,6 +51,7 @@ final class MessageCatalog
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'MessageCatalog::catalog');
         }
         return self::$catalog;
     }

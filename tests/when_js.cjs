@@ -60,21 +60,22 @@ for (const c of fx.eval) {
        default. Defaults resolve exactly as in tests/when_php.php. */
     const has = (k) => Object.prototype.hasOwnProperty.call(c, k);
     const nums = c.numbers || undefined;
+    const codes = c.codes || undefined;   /* the project's Missing Data Codes (AST-10) */
     check('eval verdict (assert): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, true, nums) === c.expect);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, true, nums, codes) === c.expect);
     const wantGate = has('expectGate') ? c.expectGate : c.expect;
     check('eval verdict (gate): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, true, nums) === wantGate);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, true, nums, codes) === wantGate);
     const wantCi = has('expectCi') ? c.expectCi : c.expect;
     check('eval verdict (assert, case-insensitive): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, false, nums) === wantCi);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, false, nums, codes) === wantCi);
     const wantGateCi = has('expectGateCi') ? c.expectGateCi : (has('expectGate') ? c.expectGate : wantCi);
     check('eval verdict (gate, case-insensitive): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, false, nums) === wantGateCi);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, false, nums, codes) === wantGateCi);
     /* 'expectExact': the test under "exact" (AST-2), defaulting to 'expect'. */
     const wantExact = has('expectExact') ? c.expectExact : c.expect;
     check('eval verdict (assert, exact): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, W.EXACT, nums) === wantExact);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, W.EXACT, nums, codes) === wantExact);
   }
 }
 

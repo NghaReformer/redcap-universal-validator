@@ -58,7 +58,8 @@ JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
 `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
 `suggestFix`, `note`. Use double quotes inside the JSON. A malformed tag
 (typo'd key, unknown algorithm, bad JSON) — or a tag on a non-Text/Notes field
-— shows a configuration error in a notice at the top of the form. Fields with
+— shows a configuration error in a notice at the top of the form (a user
+without design rights sees only the errors of the fields on that form). Fields with
 identical tags are grouped into one rule automatically. Tags work on Text and
 Notes fields.
 
@@ -206,7 +207,12 @@ says planning could not finish.
   other characters is left to the client and check-character validation rather
   than risking a browser/server disagreement.
 - Requires REDCap 13.7+ and PHP 7.4+ with the `mbstring` and `ctype` extensions
-  (both ship enabled in standard PHP builds, but some minimal builds omit them;
-  declared in `config.json`; External Module Framework version 14).
+  (External Module Framework version 14). Both ship enabled in standard PHP
+  builds, but some minimal builds omit them. `config.json` declares the REDCap
+  and PHP versions; the framework has no key for extensions, so the module's
+  description names them. On a server without one, enabling the module and
+  each save request write a `uvalidate-missing-extension` entry to the module
+  log, the save audit does not run, and the Validation scan page says which
+  extension is missing.
 - After installing or upgrading, run the manual integration checklist in
   [`TESTING.md`](TESTING.md) on a test project.

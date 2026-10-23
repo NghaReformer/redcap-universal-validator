@@ -2,7 +2,7 @@
 
 Comprehensive live test of dynamic choice filtering on a real REDCap. This is
 the executable companion to the automated suites (`tests/choices_php.php`,
-`tests/choices_dom_js.cjs`, 37 + 58 checks) — those prove the LOGIC in
+`tests/choices_dom_js.cjs`, 47 + 148 checks) — those prove the LOGIC in
 isolation; this proves the module behaves correctly against **real REDCap
 markup, real save paths, and real browsers**, which the stubs cannot.
 
@@ -53,7 +53,7 @@ Fields: `uch_country` (radio) → `uch_region` (radio) → `uch_site` (dropdown)
 | A3 | `uch_country` = Nigeria (2) | `uch_region` switches live to **only** 201,202 |
 | A4 | Country=1, then `uch_region` = 101 | `uch_site` dropdown lists **only** 1101,1102 (+ blank); 1201/2101/2201 absent from the list, not just greyed |
 | A5 | Keep country=1, change region → 102 | `uch_site` switches live to **only** 1201 |
-| A6 | Country=1, region=102, pick site 1201; then change region → 101 | site 1201 becomes stale: it **stays in the dropdown but disabled**, the field is flagged red with the message, and the option order for the now-valid set is 1101,1102 with 1201 kept at its original position |
+| A6 | Country=1, region=102, pick site 1201; then change region → 101 | site 1201 becomes stale: it **stays in the dropdown, greyed and marked `data-uv-stale` but still enabled** (a disabled selected option is not submitted), the field is flagged red with the message, and the option order for the now-valid set is 1101,1102 with 1201 kept at its original position |
 | A7 | From A6, pick site 1102 | flag clears; 1201 is now **removed** from the list; save allowed |
 | A8 | Country=1/region=101/site=1102, then change country → 2 | region AND site both go stale together; both flagged; save blocked (hard) |
 
@@ -68,7 +68,7 @@ blockSave **confirm**).
 |---|---|---|
 | B1 | Load form, `uch_legacy` unset (≠ Yes) | `uch_method` option 9 hidden (hide-list active while legacy≠1) |
 | B2 | `uch_legacy` = Yes (1) | option 9 appears live |
-| B3 | legacy=Yes, pick method 9, then legacy = No (0) | 9 stays visible but disabled + flagged with the custom "Legacy culture is retired…" message |
+| B3 | legacy=Yes, pick method 9, then legacy = No (0) | 9 stays visible, greyed but enabled, and is flagged with the custom "Legacy culture is retired…" message |
 | B4 | From B3, click Save | a **confirm** dialog ("Save anyway?") appears; clicking **Cancel** keeps you on the form (save trapped) |
 | B5 | From B3, click Save → **OK** | save proceeds (confirm accepted); no second prompt |
 | B6 | Pick method 2 (shown), Save | no dialog; saves cleanly |
@@ -108,7 +108,7 @@ Fields: `uch_mdc`.
 
 | # | Action | Expect |
 |---|---|---|
-| E1 | Set legacy=Yes so `uch_mdc`'s filter (`show:["1"]`) is active; import a record with `uch_mdc = -99` (a missing-data code) via **Data Import Tool** | the value is NOT flagged as a hidden choice on the form OR in the audit (a value outside the choice list is out of the filter's scope) |
+| E1 | Set legacy=Yes so `uch_mdc`'s filter (`show:["1"]`) is active; import a record with `uch_mdc = -99` (a missing-data code) via **Data Import Tool**, then open it on the form and save | the value is NOT flagged as a hidden choice on the form or by the audit of that save, and the Validation scan does not list it (H4): a value outside the choice list is out of the filter's scope. The import itself leaves no module entry on REDCap 17.0.6 |
 | E2 | Enter a valid shown value (1) then trigger the filter | not flagged |
 
 ---
@@ -157,15 +157,16 @@ Use a sentinel that appears in no note or label (`ZZCHOICES99`).
 ## Section H — server audit & Validation scan
 
 Since 1.8.9 the Validation scan page shows counts only while the scan is being
-rebuilt (see the README), so H3 and H4 read the count: the H1/H2 violations
+rebuilt (see the README), so H3 and H4 read the count: the H1, H2 and H2b violations
 are counted and the E1 record adds nothing. The listing and CSV in H3 come
 back with the report page.
 
 | # | Action | Expect |
 |---|---|---|
-| H1 | Import (or race a save so) a record where `uch_region = 201` while `uch_country = 1` | module log gains `invalid-id-saved` with `type: choices`, `reason: hidden-choice`, scoped to the right instrument/event/instance (value stored per the project's log-privacy mode) |
-| H2 | Import a checked-and-hidden checkbox code (`uch_reach` code 9 checked, pilot active) | logged the same way, one entry per hidden checked code |
-| H3 | Open the **Validation scan** project page | it lists the H1/H2 violations with `type=choices, reason=hidden-choice`, names record/event/instance/field, and **never shows the stored value**; CSV export matches |
+| H1 | Save a record on the form where `uch_region = 201` while `uch_country = 1` (set that rule's `blockSave` to `off`, or race two saves) | module log gains `invalid-id-saved` with `type: choices`, `reason: hidden-choice`, scoped to the right instrument/event/instance (value stored per the project's log-privacy mode) |
+| H2 | Save a checked-and-hidden checkbox code the same way (`uch_reach` code 9 checked, pilot active) | logged the same way, one entry per hidden checked code |
+| H2b | Import a record with `uch_region = 201` while `uch_country = 1` via the Data Import Tool | no module entry on REDCap 17.0.6 (the save hook does not run for the import); the Validation scan lists the record (H3). If an entry does appear, record the REDCap version: the README's coverage caveat depends on it |
+| H3 | Open the **Validation scan** project page | it lists the H1, H2 and H2b violations with `type=choices, reason=hidden-choice`, names record/event/instance/field, and **never shows the stored value**; CSV export matches |
 | H4 | The E1 MDC record | does NOT appear in the scan (out of scope) |
 | H5 | A record with a currently-VALID selection | not logged, not scanned |
 

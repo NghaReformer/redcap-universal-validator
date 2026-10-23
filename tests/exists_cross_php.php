@@ -437,7 +437,11 @@ namespace {
     check('rights: a missing record ID is not found', (ask(mod(), 'x_rec', ['x_rec' => 'L9'])['state'] ?? null) === 'not-found');
     check('rights: match uses this record\'s value', (ask(mod(), 'x_m', ['x_m' => 'SP-1'])['state'] ?? null) === 'found'
         && (ask(mod(), 'x_m', ['x_m' => 'SP-2'])['state'] ?? null) === 'not-found');
-    check('rights: a match value sent by the page counts', (ask(mod(), 'x_m', ['x_m' => 'SP-2', 'site' => 'B'])['state'] ?? null) === 'found');
+    // EXS-9: [site] is on another form, so a value the request sends for it is
+    // not taken; the saved one decides.
+    check('rights: a match value sent for a field of another form is not taken',
+        (ask(mod(), 'x_m', ['x_m' => 'SP-2', 'site' => 'B'])['state'] ?? null) === 'not-found'
+        && (ask(mod(), 'x_m', ['x_m' => 'SP-1', 'site' => 'B'])['state'] ?? null) === 'found');
     check('rights: "event" stays in that event there', (ask(mod(), 'x_ev', ['x_ev' => 'SP-1'])['state'] ?? null) === 'found'
         && (ask(mod(), 'x_ev', ['x_ev' => 'SP-EV2'])['state'] ?? null) === 'not-found');
     check('rights: a date typed as shown is looked up as stored', (ask(mod(), 'x_date', ['x_date' => '01-03-2026'])['state'] ?? null) === 'found');
@@ -1230,6 +1234,15 @@ namespace {
     $last = end($probe);
     check('where there: a value saved nowhere is not filtered', ($r['state'] ?? null) === 'not-found' && empty($r['filtered'])
         && $last && !isset($last['filtered']));
+    // EXS-10: under "answer" the other project agreed to found or not found
+    // and nothing more; its own log still says why.
+    $m = mod('outsider', [consent('answer', $WHERE_OK)]);
+    $r = ask($m, 'x_where', ['x_where' => 'SP-2']);
+    $probe = logsOf($m, 'uv-exists-probe');
+    $last = end($probe);
+    check('EXS-10: "answer" gives no third answer for an entry that fails "where"',
+        ($r['state'] ?? null) === 'not-found' && !array_key_exists('filtered', $r));
+    check('EXS-10: ...while the probe log there still says filtered', $last && ($last['filtered'] ?? null) === 'true');
     $m = mod('nurse', [consent('rights', $WHERE_OK)]);
     $r = ask($m, 'x_wq', ['x_wq' => 'SP-1']);
     check('where there: rights mode needs the form of every "where" field', ($r['state'] ?? null) === 'unknown'

@@ -2064,6 +2064,34 @@ namespace {
         }
     }
 
+    {
+        /* -----------------------------------------------------------------
+         * SEC-2. A group id of "0", 0 or false is a group to resolve, not
+         * "no group". empty() took all three for "no group", so the scope
+         * was the whole project. No group has id 0, so the lookup finds no
+         * name and the scan is refused.
+         * ----------------------------------------------------------------- */
+        \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+        \REDCap::$groupThrows = false;
+        foreach (['0', 0, false] as $gid) {
+            $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+            $m->projectIdReturn = PID;
+            $m->userReturn = new \ExternalModules\PlainUser(true, $gid);
+            $sc = \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID);
+            check('SEC-2: group id ' . var_export($gid, true) . ' is refused, not read as the whole project',
+                $sc['ok'] === false && $sc['dag'] === null && $sc['rights'] === null);
+        }
+        foreach ([null, ''] as $gid) {
+            $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+            $m->projectIdReturn = PID;
+            $m->userReturn = new \ExternalModules\PlainUser(true, $gid);
+            $sc = \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID);
+            check('SEC-2: group id ' . var_export($gid, true) . ' still means no group',
+                $sc['ok'] === true && $sc['dag'] === null);
+        }
+        \REDCap::$groupNames = [];
+    }
+
     echo "scan_page_php: $n checks, $fail failure(s)
 ";
     exit($fail ? 1 : 0);

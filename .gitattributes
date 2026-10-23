@@ -14,9 +14,18 @@
 
 # Development-only trees stay out of `git archive` — the release package must
 # contain exactly the module directory REDCap installs (checked by the CI
-# "package" job). Tests and docs ship on purpose: they are user-facing.
+# "package" job). Tests and docs ship on purpose: they are user-facing, and the
+# README tells an administrator how to run the suites on their own server.
 .github        export-ignore
 reports        export-ignore
 tools          export-ignore
 .gitattributes export-ignore
 .gitignore     export-ignore
+# The project website, the assistant notes, plans, the flier and the graph
+# scope file are for the repository, not for a REDCap server (QUA-6).
+site           export-ignore
+CLAUDE.md      export-ignore
+.graphifyignore export-ignore
+PLAN-*.md      export-ignore
+*.pdf          export-ignore
+/*temporal*    export-ignore

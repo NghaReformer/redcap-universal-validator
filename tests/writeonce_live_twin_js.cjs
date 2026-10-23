@@ -196,7 +196,7 @@ const TAGGED = ['uw_consent', 'uw_arm', 'uw_site', 'uw_yn', 'uw_notes', 'uw_pain
 {
   const env = boot(PAGES.a1, PAGES.a1_values);
   for (const f of ['uw_arm', 'uw_site', 'uw_yn']) {
-    check('A1 ' + f + ': refused until the role exists, under the field (a dropdown too)', cfgErr(env, f).indexOf('&#9888; Configuration error: @UVWRITEONCE on "' + f + '": ') === 0
+    check('A1 ' + f + ': refused until the role exists, under the field (a dropdown too)', cfgErr(env, f).indexOf('&#9888; Validator configuration error: @UVWRITEONCE on "' + f + '": ') === 0
       && /is not a role of this project/.test(cfgErr(env, f)) && !isLocked(env, f), cfgErr(env, f));
   }
   check('A1 no error is left for the page-level notice', env.doc.getElementById('uvalidate-config-errors') === null);

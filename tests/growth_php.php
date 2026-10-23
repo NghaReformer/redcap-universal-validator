@@ -860,5 +860,18 @@ check('pageCopy: the index fields and the rows, nothing else',
 foreach (glob($dir . '/*') as $x) unlink($x);
 rmdir($dir);
 
+// RNG-6: a copy of a few saved ages weighs the rows it carries, so two ages
+// far apart count as most of a table against the page cap.
+$wfaT = G::table($wfa);
+$rowsM = count($wfaT['male']);
+$one = G::pageWeight(['sexes' => ['male' => true, 'female' => false], 'xs' => [92]], $wfa, $wfaT);
+$two = G::pageWeight(['sexes' => ['male' => true, 'female' => false], 'xs' => [92, 1820]], $wfa, $wfaT);
+$copy = G::pageCopy($wfa, $wfaT, ['sexes' => ['male' => true, 'female' => false], 'xs' => [92, 1820]]);
+check('RNG-6: one saved age weighs a few rows (got ' . $one . ')', $one > 0 && $one < 0.01);
+check('RNG-6: two saved ages far apart weigh the rows between them (got ' . $two . ')',
+    abs($two - 0.5 * count($copy['male']) / $rowsM) < 1e-12 && $two > 0.45);
+check('RNG-6: both sexes of every row still weigh 1', G::pageWeight(['sexes' => ['male' => true, 'female' => true], 'xs' => null]) == 1.0);
+check('RNG-6: without the table a copy of saved ages weighs nothing', G::pageWeight(['sexes' => ['male' => true], 'xs' => [92, 1820]]) === 0.0);
+
 echo "growth_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

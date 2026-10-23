@@ -133,7 +133,7 @@ Two limits to keep in mind from the start:
   Pointing a Single-value or Pooled rule at a dropdown, radio, date, or calc
   field produces a configuration error. The newer **Constraint** (`@UVASSERT`)
   and **Required** (`@UVREQUIRED`) rules are wider: they also accept dropdown,
-  radio, yes/no, true/false and slider fields (constraints additionally accept
+  radio, yes/no, true/false, SQL and slider fields (constraints additionally accept
   calc; a Required rule rejects calc because the person entering data cannot
   fill one). See the README sections on those two tags.
 - **The browser is the enforcement point.** *Compulsory* blocks a human form or
@@ -601,6 +601,12 @@ One condition may mix `and`, `or` and `not` with parentheses:
 | `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` and instance selectors, unless extended references are on for the project |
 | `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (the error says which word to write) |
 | | arithmetic and piping |
+| | a character outside printable ASCII, such as `'Yaoundé'` (compare the code a choice stores) |
+| | a field compared with itself, such as `[dose]>[dose]` |
+
+On a survey shown one section per page, REDCap draws only the current page's
+fields, so a condition over a field of another page reads the answer saved when
+the page was drawn: `[consent]='1'` on page 2 reads the consent given on page 1.
 
 `not` binds tightest, then `and`, then `or`, as in REDCap:
 `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
@@ -808,8 +814,22 @@ Four log entry types make sure nothing passes silently:
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
   Check those values by hand. A rule refused when it was read (its `why` starts
-  with "configuration error:") is logged once for each save of its form.
+  with "configuration error:") is logged on the first save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
+- `uvalidate-faults`, written only with the project's debug setting on, lists
+  the places where this request caught an exception and carried on (a rights
+  read that failed, a log write given up), each with the exception's class and
+  a count, never the message. One entry per request.
+
+Each problem is logged once, not on every save. An entry carries a keyed
+`fingerprint` of what it reports: the record, field, event, instance, rule kind,
+reason and value. A save whose finding the log already holds for that record
+writes nothing, so saving a form with a standing invalid value again adds no
+rows; a new invalid value at the same field is logged. In the `none` mode the
+log keeps no value, so the fingerprint leaves the value out too and a field is
+logged once while it stays invalid. A rule problem names no record and is
+logged once for each place of its instrument. When the module cannot read its
+log, it writes every entry, as before.
 
 ### The coverage caveat (read before relying on it)
 
@@ -870,6 +890,12 @@ accept dropdown/radio/yes-no/true-false/slider; (4) the field name in the rule
 is spelled correctly (unknown names show a configuration error); (5) the field
 is not claimed by two rules **of the same kind** (that shows a configuration
 error instead of validating — different kinds compose and are fine).
+
+**A notice says the page's validator script does not match the server.**
+The browser kept an older or newer copy of the module's script than the one the
+server's settings were written for, usually after an upgrade. Nothing on that
+page is checked as you type until you reload it without the cache (Ctrl+F5, or
+Cmd+Shift+R on a Mac). The server still audits each save.
 
 **A value I know is correct is flagged as invalid.**
 The rule's **algorithm** probably does not match how the ID was minted, or the
@@ -951,7 +977,8 @@ no label of the rule's own) is English only. Details and limits:
 
 **Which fields can I validate?**
 Check-character and format rules: Text and Notes fields only. Constraint
-rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
+rules: Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider;
+on a calc field the rule shows its note and never holds the save.
 Required and Unique rules: the same minus calc. Choice-filter rules
 (`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
 rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
@@ -1036,10 +1063,12 @@ date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit
 allowed dates. `"notFuture":true` refuses a date after today, where "today" is
 the server's date, not the computer's. If the study runs in another time zone
 than the server, name it in the project setting **Time zone for @UVWINDOW
-"notFuture"** (for example `Africa/Douala`). A blank `from` date checks nothing. A
+"notFuture"** (for example `Africa/Douala`). A blank `from` date leaves the
+window unchecked; `notFuture` and `notPast` still apply. A
 `from` date on another form only advises, because that form could change while
 this one is open. On a survey, or for a user without rights to that form, the
-`from` date is not sent to the page; the page then checks only `notFuture`, and
+`from` date is not sent to the page; the page then checks only `notFuture` and
+`notPast`, and
 the window is checked when the record is saved. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
@@ -1062,8 +1091,9 @@ way. "Could not check" never blocks a save, but a "not found" held for 30
 seconds or more is asked again at Save and stands if that second question gets
 no answer. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
-about forms they may open, and a user in a Data Access Group only on records
-of their group. A value saved nowhere is "not found" for a user in a group
+about forms they may open. A user in a Data Access Group may check only
+records of their own group, and learns whether a value is saved in another
+group, never which record holds it. A value saved nowhere is "not found" for a user in a group
 too: the module reads which records hold the value from the data table, which
 REDCap does not confine to a group. Surveys need `"surveys":true`, which is refused when the lookup
 touches an Identifier field. Letter case is ignored (`sp-1` finds `SP-1`)
@@ -1396,9 +1426,15 @@ compares with also counts as blank. `@UVWRITEONCE` locks no code, so a field
 marked "unknown" can be filled in later, and reports a code saved over a
 locked value as a clearing. A code in a `@UVJUSTIFY` reason field gives no
 reason.
-In a `when` condition or an `@UVASSERT` expression the code is read as itself,
-the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
-`when` to leave such records out.
+In a `when` condition, an `@UVASSERT` expression or an `@UVEXISTS` `where`,
+`=` and `<>` read the code as written, the way REDCap's branching logic reads
+it: `[visit_date]<>'UNK'` in `when` leaves such records out. On a date field a
+code is the one value that need not be written as Y-M-D. `<`, `>`, `<=` and
+`>=` get no answer from a code, as from a blank field, so
+`[end_date]>=[start_date]` with the start marked `UNK` is no violation and a
+`when` of `[start_date]>='2025-01-01'` does not apply. A reference to another
+event or instance, such as `[start_date][baseline_arm_1]`, reads the code as
+written in every comparison.
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
 In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as

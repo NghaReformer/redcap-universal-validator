@@ -14,6 +14,7 @@ node tests/risky_js.cjs         # JS risky-pattern heuristic vs risky_patterns.j
 php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
 php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
 php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
+php  tests/faults_php.php        # caught exceptions are counted (Faults); no empty catch block in the shipped PHP
 php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, coverage, bad file
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
@@ -36,7 +37,7 @@ php  tests/unique_also_scan_php.php  # @UVUNIQUE lookups in the durable scan: se
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
-node tests/silent_change_dom_js.cjs  # values written without an event (calc, slider, Today button); save dialog names labels
+node tests/silent_change_dom_js.cjs  # values written without an event (calc, slider, Today button); save dialog names labels; idle poll and shared late-render observer
 node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown choices get translated, dialog labels read live, survey rows
 node tests/mlm_messages_dom_js.cjs  # rule messages in the MLM language on screen; string messages unchanged, a switch asks nothing
 php  tests/message_i18n_php.php  # "message" as a language map: grammar, refusals, string messages unchanged, branches, page shape
@@ -74,7 +75,7 @@ php  tests/convert_php.php        # data/references/convert.php: WHO and CDC sha
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in js/engine.js (--check: fail if stale)
-node tests/config_notice_js.cjs  # page-level config-error notice
+node tests/config_notice_js.cjs  # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
 node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)

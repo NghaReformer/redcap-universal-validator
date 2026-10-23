@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * The durable store, over MySQL or MariaDB.
  *
@@ -109,6 +111,7 @@ final class SqlScanStore implements ScanStore
         try {
             $this->db->rollback();
         } catch (\Throwable $ignored) {
+            \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'SqlScanStore::rolledBack');
             // Nothing to do and nothing to say: the caller is about to be told
             // the storage is unavailable, which is already true.
         }

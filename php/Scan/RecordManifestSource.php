@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * Walking a project's record ids in bounded memory — the hard gate the whole
  * rebuild stands on.
@@ -615,6 +617,7 @@ final class RecordManifestSource
             $t = isset($r[0][0]) ? (string) $r[0][0] : '';
             if ($t !== '' && preg_match('/^redcap_data[0-9]*\z/', $t)) return $t;
         } catch (\Throwable $e) {
+            \INSPIRE\UniversalValidator\Faults::swallow($e, 'RecordManifestSource::dataTable');
             // No such column on this build: fall through to the default, which
             // is then itself proved to exist.
         }

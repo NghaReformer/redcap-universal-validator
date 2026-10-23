@@ -772,33 +772,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] < \"+3\"",
@@ -855,41 +829,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"+3\" <> [cb(3)] or [a] <> 2 And NOT [stype] > 2 And [age] != \"2.5\" OR not not [stype] >= [stype]",
@@ -900,29 +840,7 @@
     "stype": "yes",
     "age": "a"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not ([stype] <= [b])",
@@ -1301,29 +1219,7 @@
     "c": "1",
     "stype": "00"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] >= \"-1\"",
@@ -1555,29 +1451,7 @@
     "stype": "10",
     "age": "9"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\".5\" <> \"2\"",
@@ -1978,33 +1852,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [b]",
@@ -2191,21 +2039,7 @@
     "c": "A",
     "age": "1"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= [c]",
@@ -3901,17 +3735,7 @@
     "c": " 2 ",
     "stype": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -4055,33 +3879,7 @@
     "c": "02",
     "age": "2.0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"+3\" != [c]",
@@ -4263,29 +4061,7 @@
     "b": "02",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] >= \"0\")",
@@ -4322,37 +4098,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [age])",
@@ -4745,17 +4491,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [cb(1)]",
@@ -4983,25 +4719,7 @@
      "1": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [cb(2)]",
@@ -5179,21 +4897,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] != [stype]",
@@ -5407,17 +5111,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -5520,33 +5214,7 @@
     "stype": "",
     "age": "2.50"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -6193,25 +5861,7 @@
     "stype": "0",
     "age": "-1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 <= \"\"",
@@ -6290,33 +5940,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] >= [b]",
@@ -6411,17 +6035,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'2.5' != 1",
@@ -6520,25 +6134,7 @@
     "stype": ".5",
     "age": "00"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([age] < [c])",
@@ -6572,17 +6168,7 @@
     "stype": "-1",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -7227,29 +6813,7 @@
     "c": "2.50",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -7478,33 +7042,7 @@
     "c": "a",
     "stype": "10"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not NOT [age] != [c]",
@@ -7927,21 +7465,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < \"02\"",
@@ -8540,17 +8064,7 @@
     "stype": "Yes",
     "age": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -8562,17 +8076,7 @@
     "age": "1",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -9033,33 +8537,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(2)] = \"\" and [cb(2)] = 1",
@@ -9788,17 +9266,7 @@
     "age": "+3",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] <= 1",
@@ -9856,17 +9324,7 @@
     "stype": "02",
     "age": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -10246,25 +9704,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -10299,29 +9739,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age] and [b] > [b] Or [cb(3)] >= [b] and [c] <> [age] AND [cb(2)] >= [cb(1)] Or [age] > [cb(3)]",
@@ -10335,41 +9753,7 @@
      "1": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2 = [cb(3)]",
@@ -10891,17 +10275,7 @@
     "c": "yes",
     "stype": "2.0"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] > [a]",
@@ -16552,17 +15926,7 @@
      "1": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(2)] <> 1",
@@ -16785,17 +16149,7 @@
     "stype": "yes",
     "age": "2.50"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not (([a] != [b]))",
@@ -16987,17 +16341,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "NOT [stype] <= [cb(3)]",
@@ -17272,29 +16616,7 @@
     "stype": "10",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] <= [cb(1)]",
@@ -18466,37 +17788,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2 > [age]",
@@ -18780,17 +18072,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "1 != '-1'",
@@ -18993,21 +18275,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([cb(1)] >= 1) OR [age] < [a] OR '9' = [cb(2)] And [stype] <= '2.5' and (\"A\" <= -1) and \"0\" = 1 Or [a] = [b] And [b] < ''",
@@ -19196,25 +18464,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "1 != '0' and [cb(1)] < [cb(1)] AND [stype] != [b]",
@@ -19228,25 +18478,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] <= [stype] AND [cb(2)] != [stype]",
@@ -19368,17 +18600,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([stype] <> \"-1\")",
@@ -19433,25 +18655,7 @@
     "a": "2x",
     "b": "10"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= '10')",
@@ -19647,29 +18851,7 @@
     "stype": "0x10",
     "age": "A"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < \"1\"",
@@ -19902,17 +19084,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 > [b]",
@@ -20382,25 +19554,7 @@
     "stype": "-1",
     "age": "2.50"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] != [stype]",
@@ -20413,17 +19567,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] <> [cb(1)]",
@@ -20646,33 +19790,7 @@
     "c": "A",
     "age": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -20733,17 +19851,7 @@
     "b": "2.50",
     "c": ".5"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -21106,21 +20214,7 @@
     "c": "1",
     "age": ""
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <= [cb(3)] AND 1 = [a] and -1 < [stype]",
@@ -21407,17 +20501,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 >= [a] AND \".5\" = -1 or \"-1\" < [age] and [c] = [a]",
@@ -21625,33 +20709,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [b]",
@@ -21838,21 +20896,7 @@
     "c": "A",
     "age": "1"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= [c]",
@@ -23548,17 +22592,7 @@
     "c": " 2 ",
     "stype": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -23702,33 +22736,7 @@
     "c": "02",
     "age": "2.0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"+3\" != [c]",
@@ -23910,29 +22918,7 @@
     "b": "02",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] >= \"0\")",
@@ -23969,37 +22955,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [age])",
@@ -24392,17 +23348,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [cb(1)]",
@@ -24630,25 +23576,7 @@
      "1": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [cb(2)]",
@@ -24826,21 +23754,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] != [stype]",
@@ -25054,17 +23968,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -25167,33 +24071,7 @@
     "stype": "",
     "age": "2.50"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -25840,25 +24718,7 @@
     "stype": "0",
     "age": "-1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 <= \"\"",
@@ -25937,33 +24797,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] >= [b]",
@@ -26058,17 +24892,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'2.5' != 1",
@@ -26167,25 +24991,7 @@
     "stype": ".5",
     "age": "00"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([age] < [c])",
@@ -26219,17 +25025,7 @@
     "stype": "-1",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -26874,29 +25670,7 @@
     "c": "2.50",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -27125,33 +25899,7 @@
     "c": "a",
     "stype": "10"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not NOT [age] != [c]",
@@ -33287,29 +32035,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'02' <> [c]",
@@ -33399,17 +32125,7 @@
     "c": "-2",
     "age": "2x"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] > [b]",
@@ -33419,17 +32135,7 @@
     "c": "2.50",
     "age": "0"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] >= [stype] And ([age] < '10') And [a] > 2 Or [c] <> [c] Or [age] >= 2.5",
@@ -33439,29 +32145,7 @@
     "stype": "0",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] <> [a]",
@@ -33498,25 +32182,7 @@
     "stype": "",
     "age": "A"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < [age]",
@@ -33605,29 +32271,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] != \"\" or (2 > [stype] AND [cb(3)] = [age] AND [cb(1)] != '-1') or [a] >= -1",
@@ -33790,17 +32434,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(not [a] = \"2.5\")",
@@ -34250,17 +32884,7 @@
     "stype": "2x",
     "age": "10"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] >= -1",
@@ -34874,29 +33498,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] = [c]",
@@ -35079,17 +33681,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(2.5 >= 1)",
@@ -35280,33 +33872,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] <> 1",
@@ -35540,21 +34106,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] >= \"02\" And [age] <> 1 And [stype] = [a]",
@@ -35922,17 +34474,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] <> [cb(3)]",
@@ -35996,17 +34538,7 @@
     "stype": "1",
     "age": "A"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -36049,21 +34581,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(\"10\" < [age] AND [a] <= 1 AND [age] <= \"0\")",
@@ -36212,17 +34730,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] != -1 or 1 < [age]",
@@ -37197,33 +35705,7 @@
     "stype": "",
     "age": "2.50"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -37870,25 +36352,7 @@
     "stype": "0",
     "age": "-1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 <= \"\"",
@@ -37967,33 +36431,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] >= [b]",
@@ -38088,17 +36526,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'2.5' != 1",
@@ -38197,25 +36625,7 @@
     "stype": ".5",
     "age": "00"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([age] < [c])",
@@ -38249,17 +36659,7 @@
     "stype": "-1",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -38904,29 +37304,7 @@
     "c": "2.50",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -39155,33 +37533,7 @@
     "c": "a",
     "stype": "10"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not NOT [age] != [c]",
@@ -39604,21 +37956,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < \"02\"",
@@ -40217,17 +38555,7 @@
     "stype": "Yes",
     "age": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -40239,17 +38567,7 @@
     "age": "1",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -40710,33 +39028,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(2)] = \"\" and [cb(2)] = 1",
@@ -41465,17 +39757,7 @@
     "age": "+3",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] <= 1",
@@ -41533,17 +39815,7 @@
     "stype": "02",
     "age": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -41923,25 +40195,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -41976,29 +40230,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age] and [b] > [b] Or [cb(3)] >= [b] and [c] <> [age] AND [cb(2)] >= [cb(1)] Or [age] > [cb(3)]",
@@ -42012,41 +40244,7 @@
      "1": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2 = [cb(3)]",
@@ -42568,17 +40766,7 @@
     "c": "yes",
     "stype": "2.0"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] > [a]",
@@ -43012,33 +41200,7 @@
     "c": "A",
     "age": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -43099,17 +41261,7 @@
     "b": "2.50",
     "c": ".5"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -48680,37 +46832,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] < [c]",
@@ -48724,17 +46846,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = 'A' and [a] <= 10",
@@ -48813,33 +46925,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] <> 2.5",
@@ -49348,17 +47434,7 @@
     "c": "yes",
     "stype": "2.0"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] > [a]",
@@ -49792,33 +47868,7 @@
     "c": "A",
     "age": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -49879,17 +47929,7 @@
     "b": "2.50",
     "c": ".5"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -50252,21 +48292,7 @@
     "c": "1",
     "age": ""
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <= [cb(3)] AND 1 = [a] and -1 < [stype]",
@@ -50553,17 +48579,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 >= [a] AND \".5\" = -1 or \"-1\" < [age] and [c] = [a]",
@@ -50771,33 +48787,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [b]",
@@ -50984,21 +48974,7 @@
     "c": "A",
     "age": "1"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= [c]",
@@ -52694,17 +50670,7 @@
     "c": " 2 ",
     "stype": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -52848,33 +50814,7 @@
     "c": "02",
     "age": "2.0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"+3\" != [c]",
@@ -53056,29 +50996,7 @@
     "b": "02",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] >= \"0\")",
@@ -53115,37 +51033,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [age])",
@@ -53538,17 +51426,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [cb(1)]",
@@ -53776,25 +51654,7 @@
      "1": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [cb(2)]",
@@ -53972,21 +51832,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] != [stype]",
@@ -54200,17 +52046,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -54313,33 +52149,7 @@
     "stype": "",
     "age": "2.50"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -54986,25 +52796,7 @@
     "stype": "0",
     "age": "-1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 <= \"\"",
@@ -55083,33 +52875,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] >= [b]",
@@ -55204,17 +52970,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'2.5' != 1",
@@ -55313,25 +53069,7 @@
     "stype": ".5",
     "age": "00"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([age] < [c])",
@@ -55365,17 +53103,7 @@
     "stype": "-1",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -56020,29 +53748,7 @@
     "c": "2.50",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -56271,33 +53977,7 @@
     "c": "a",
     "stype": "10"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not NOT [age] != [c]",
@@ -56720,21 +54400,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < \"02\"",
@@ -57333,17 +54999,7 @@
     "stype": "Yes",
     "age": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -57355,17 +55011,7 @@
     "age": "1",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -57826,33 +55472,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(2)] = \"\" and [cb(2)] = 1",
@@ -58581,17 +56201,7 @@
     "age": "+3",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] <= 1",
@@ -58649,17 +56259,7 @@
     "stype": "02",
     "age": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -64520,17 +62120,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(2)] <= \"9\"",
@@ -65143,25 +62733,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -65196,29 +62768,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age] and [b] > [b] Or [cb(3)] >= [b] and [c] <> [age] AND [cb(2)] >= [cb(1)] Or [age] > [cb(3)]",
@@ -65232,41 +62782,7 @@
      "1": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2 = [cb(3)]",
@@ -65788,17 +63304,7 @@
     "c": "yes",
     "stype": "2.0"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] > [a]",
@@ -66232,33 +63738,7 @@
     "c": "A",
     "age": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -66319,17 +63799,7 @@
     "b": "2.50",
     "c": ".5"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -66692,21 +64162,7 @@
     "c": "1",
     "age": ""
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <= [cb(3)] AND 1 = [a] and -1 < [stype]",
@@ -66993,17 +64449,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 >= [a] AND \".5\" = -1 or \"-1\" < [age] and [c] = [a]",
@@ -67211,33 +64657,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [b]",
@@ -67424,21 +64844,7 @@
     "c": "A",
     "age": "1"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= [c]",
@@ -69134,17 +66540,7 @@
     "c": " 2 ",
     "stype": "yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -69288,33 +66684,7 @@
     "c": "02",
     "age": "2.0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"+3\" != [c]",
@@ -69496,29 +66866,7 @@
     "b": "02",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] >= \"0\")",
@@ -69555,37 +66903,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [age])",
@@ -69978,17 +67296,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [cb(1)]",
@@ -70216,25 +67524,7 @@
      "1": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [cb(2)]",
@@ -70412,21 +67702,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] != [stype]",
@@ -70640,17 +67916,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -70753,33 +68019,7 @@
     "stype": "",
     "age": "2.50"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -71426,25 +68666,7 @@
     "stype": "0",
     "age": "-1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 <= \"\"",
@@ -71523,33 +68745,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] >= [b]",
@@ -71644,17 +68840,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'2.5' != 1",
@@ -71753,25 +68939,7 @@
     "stype": ".5",
     "age": "00"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([age] < [c])",
@@ -71805,17 +68973,7 @@
     "stype": "-1",
     "age": "-2"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -72460,29 +69618,7 @@
     "c": "2.50",
     "stype": "0"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -72711,33 +69847,7 @@
     "c": "a",
     "stype": "10"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not NOT [age] != [c]",
@@ -73160,21 +70270,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < \"02\"",
@@ -73773,17 +70869,7 @@
     "stype": "Yes",
     "age": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -73795,17 +70881,7 @@
     "age": "1",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -74266,33 +71342,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(2)] = \"\" and [cb(2)] = 1",
@@ -81071,33 +78121,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] <= [cb(1)]",
@@ -81244,25 +78268,7 @@
     "stype": "b",
     "age": "NO"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] >= 10 or [a] != [age] or 1 < [stype]",
@@ -82053,33 +79059,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2 != \"b\"",
@@ -82623,17 +79603,7 @@
     "c": "abc",
     "stype": "no"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] <= 1 Or [age] <= 2.5 Or [cb(2)] <> [age]",
@@ -82875,25 +79845,7 @@
     "stype": "yes",
     "age": "ABC"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[b] = 1",
@@ -83844,17 +80796,7 @@
     "c": "YES",
     "stype": "Abc"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= [age])",
@@ -83936,17 +80878,7 @@
     "stype": "B",
     "age": "a1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -84115,17 +81047,7 @@
     "age": "b",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"yes\" >= [a]",
@@ -84364,21 +81286,7 @@
     "stype": "_",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(NOT [age] < [a])",
@@ -84679,29 +81587,7 @@
     "c": "ABC",
     "stype": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -85511,25 +82397,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 != [a] or [stype] != [b] OR [c] = [a] OR -1 = [c]",
@@ -85997,17 +82865,7 @@
     "stype": "CAFé",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -86019,17 +82877,7 @@
     "age": "YES",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -86141,21 +82989,7 @@
     "age": "2",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age]",
@@ -86198,25 +83032,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"z\" != [c] or 1 <= 10",
@@ -86335,33 +83151,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] > [age]",
@@ -86369,17 +83159,7 @@
     "b": "yes",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"A1\" >= [cb(2)]",
@@ -86889,17 +83669,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [a])",
@@ -87330,17 +84100,7 @@
     "stype": "NO",
     "age": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -87498,25 +84258,7 @@
     "age": "Yes",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -87721,25 +84463,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -88707,25 +85431,7 @@
     "stype": "a1",
     "age": "NO"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"_\" > [b] and [cb(1)] < [c] and [stype] < [b]",
@@ -88833,29 +85539,7 @@
     "c": "École",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -88916,17 +85600,7 @@
     "b": "ABC",
     "c": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -89148,17 +85822,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not 2.5 = [age]",
@@ -89198,17 +85862,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c] or [c] != [a] or 1 <> [c]",
@@ -89711,25 +86365,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(1)] >= '_'",
@@ -90072,21 +86708,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "10 != [cb(3)]",
@@ -90624,25 +87246,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= 1 Or \"z\" <> [b]",
@@ -90920,25 +87524,7 @@
     "stype": "no",
     "age": "YES"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [b] = [a] And \"_\" >= [stype]",
@@ -91124,33 +87710,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] < \"ABC\"",
@@ -91889,17 +88449,7 @@
     "c": "café",
     "stype": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -92018,17 +88568,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"b\" = 2.5",
@@ -92255,25 +88795,7 @@
     "c": "NO",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'b' > \"B\"",
@@ -92477,17 +88999,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] > [c]",
@@ -92500,17 +89012,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] > 2.5",
@@ -92798,25 +89300,7 @@
     "age": "ABC",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > 2.5",
@@ -92957,17 +89441,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not ([a] >= [cb(1)])",
@@ -93210,17 +89684,7 @@
     "stype": "2",
     "age": "café"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] != [b]",
@@ -93234,17 +89698,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'z' = [a]",
@@ -93317,25 +89771,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < [b] or [c] <> \"b\"",
@@ -93465,17 +89901,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -93599,17 +90025,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [a] != [c]",
@@ -94577,17 +90993,7 @@
     "c": "YES",
     "stype": "Abc"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= [age])",
@@ -94669,17 +91075,7 @@
     "stype": "B",
     "age": "a1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -94848,17 +91244,7 @@
     "age": "b",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"yes\" >= [a]",
@@ -95097,21 +91483,7 @@
     "stype": "_",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(NOT [age] < [a])",
@@ -95412,29 +91784,7 @@
     "c": "ABC",
     "stype": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -96244,25 +92594,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 != [a] or [stype] != [b] OR [c] = [a] OR -1 = [c]",
@@ -96730,17 +93062,7 @@
     "stype": "CAFé",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -96752,17 +93074,7 @@
     "age": "YES",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -96874,21 +93186,7 @@
     "age": "2",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age]",
@@ -96931,25 +93229,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"z\" != [c] or 1 <= 10",
@@ -97068,33 +93348,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] > [age]",
@@ -97102,17 +93356,7 @@
     "b": "yes",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"A1\" >= [cb(2)]",
@@ -97622,17 +93866,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [a])",
@@ -98063,17 +94297,7 @@
     "stype": "NO",
     "age": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -98231,25 +94455,7 @@
     "age": "Yes",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -98454,25 +94660,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -99440,25 +95628,7 @@
     "stype": "a1",
     "age": "NO"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"_\" > [b] and [cb(1)] < [c] and [stype] < [b]",
@@ -99566,29 +95736,7 @@
     "c": "École",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -99649,17 +95797,7 @@
     "b": "ABC",
     "c": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -99881,17 +96019,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not 2.5 = [age]",
@@ -99931,17 +96059,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c] or [c] != [a] or 1 <> [c]",
@@ -100444,25 +96562,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(1)] >= '_'",
@@ -100805,21 +96905,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "10 != [cb(3)]",
@@ -101357,25 +97443,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= 1 Or \"z\" <> [b]",
@@ -101653,25 +97721,7 @@
     "stype": "no",
     "age": "YES"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [b] = [a] And \"_\" >= [stype]",
@@ -101857,33 +97907,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] < \"ABC\"",
@@ -102622,17 +98646,7 @@
     "c": "café",
     "stype": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -102751,17 +98765,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"b\" = 2.5",
@@ -102988,25 +98992,7 @@
     "c": "NO",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'b' > \"B\"",
@@ -103210,17 +99196,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] > [c]",
@@ -103233,17 +99209,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] > 2.5",
@@ -103531,25 +99497,7 @@
     "age": "ABC",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > 2.5",
@@ -103690,17 +99638,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not ([a] >= [cb(1)])",
@@ -103943,17 +99881,7 @@
     "stype": "2",
     "age": "café"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] != [b]",
@@ -103967,17 +99895,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'z' = [a]",
@@ -104050,25 +99968,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < [b] or [c] <> \"b\"",
@@ -104198,17 +100098,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -104332,17 +100222,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [a] != [c]",
@@ -105310,17 +101190,7 @@
     "c": "YES",
     "stype": "Abc"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= [age])",
@@ -105402,17 +101272,7 @@
     "stype": "B",
     "age": "a1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -105581,17 +101441,7 @@
     "age": "b",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"yes\" >= [a]",
@@ -105830,21 +101680,7 @@
     "stype": "_",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(NOT [age] < [a])",
@@ -106145,29 +101981,7 @@
     "c": "ABC",
     "stype": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -106977,25 +102791,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 != [a] or [stype] != [b] OR [c] = [a] OR -1 = [c]",
@@ -107463,17 +103259,7 @@
     "stype": "CAFé",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -107485,17 +103271,7 @@
     "age": "YES",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -107607,21 +103383,7 @@
     "age": "2",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age]",
@@ -107664,25 +103426,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"z\" != [c] or 1 <= 10",
@@ -107801,33 +103545,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] > [age]",
@@ -107835,17 +103553,7 @@
     "b": "yes",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"A1\" >= [cb(2)]",
@@ -108355,17 +104063,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [a])",
@@ -108796,17 +104494,7 @@
     "stype": "NO",
     "age": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -108964,25 +104652,7 @@
     "age": "Yes",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -109187,25 +104857,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -110173,25 +105825,7 @@
     "stype": "a1",
     "age": "NO"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"_\" > [b] and [cb(1)] < [c] and [stype] < [b]",
@@ -110299,29 +105933,7 @@
     "c": "École",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -110382,17 +105994,7 @@
     "b": "ABC",
     "c": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -110614,17 +106216,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not 2.5 = [age]",
@@ -110664,17 +106256,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c] or [c] != [a] or 1 <> [c]",
@@ -111177,25 +106759,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(1)] >= '_'",
@@ -111538,21 +107102,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "10 != [cb(3)]",
@@ -112090,25 +107640,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= 1 Or \"z\" <> [b]",
@@ -112386,25 +107918,7 @@
     "stype": "no",
     "age": "YES"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [b] = [a] And \"_\" >= [stype]",
@@ -112590,33 +108104,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] < \"ABC\"",
@@ -113355,17 +108843,7 @@
     "c": "café",
     "stype": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -113484,17 +108962,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"b\" = 2.5",
@@ -113721,25 +109189,7 @@
     "c": "NO",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'b' > \"B\"",
@@ -113943,17 +109393,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] > [c]",
@@ -113966,17 +109406,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] > 2.5",
@@ -114264,25 +109694,7 @@
     "age": "ABC",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > 2.5",
@@ -114423,17 +109835,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not ([a] >= [cb(1)])",
@@ -114676,17 +110078,7 @@
     "stype": "2",
     "age": "café"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] != [b]",
@@ -114700,17 +110092,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'z' = [a]",
@@ -114783,25 +110165,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < [b] or [c] <> \"b\"",
@@ -114931,17 +110295,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -115065,17 +110419,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [a] != [c]",
@@ -116043,17 +111387,7 @@
     "c": "YES",
     "stype": "Abc"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= [age])",
@@ -116135,17 +111469,7 @@
     "stype": "B",
     "age": "a1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -116314,17 +111638,7 @@
     "age": "b",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"yes\" >= [a]",
@@ -116563,21 +111877,7 @@
     "stype": "_",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(NOT [age] < [a])",
@@ -116878,29 +112178,7 @@
     "c": "ABC",
     "stype": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -117710,25 +112988,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 != [a] or [stype] != [b] OR [c] = [a] OR -1 = [c]",
@@ -118196,17 +113456,7 @@
     "stype": "CAFé",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -118218,17 +113468,7 @@
     "age": "YES",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -118340,21 +113580,7 @@
     "age": "2",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age]",
@@ -118397,25 +113623,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"z\" != [c] or 1 <= 10",
@@ -118534,33 +113742,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] > [age]",
@@ -118568,17 +113750,7 @@
     "b": "yes",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"A1\" >= [cb(2)]",
@@ -119088,17 +114260,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [a])",
@@ -119529,17 +114691,7 @@
     "stype": "NO",
     "age": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -119697,25 +114849,7 @@
     "age": "Yes",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -119920,25 +115054,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",
@@ -120906,25 +116022,7 @@
     "stype": "a1",
     "age": "NO"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"_\" > [b] and [cb(1)] < [c] and [stype] < [b]",
@@ -121032,29 +116130,7 @@
     "c": "École",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] = [age] AND 10 <> [stype]",
@@ -121115,17 +116191,7 @@
     "b": "ABC",
     "c": ""
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] > [cb(3)])",
@@ -121347,17 +116413,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not 2.5 = [age]",
@@ -121397,17 +116453,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c] or [c] != [a] or 1 <> [c]",
@@ -121910,25 +116956,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [cb(1)] >= '_'",
@@ -122271,21 +117299,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "10 != [cb(3)]",
@@ -122823,25 +117837,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": true,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] >= 1 Or \"z\" <> [b]",
@@ -123119,25 +118115,7 @@
     "stype": "no",
     "age": "YES"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [b] = [a] And \"_\" >= [stype]",
@@ -123323,33 +118301,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] < \"ABC\"",
@@ -124088,17 +119040,7 @@
     "c": "café",
     "stype": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 >= [c]",
@@ -124217,17 +119159,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"b\" = 2.5",
@@ -124454,25 +119386,7 @@
     "c": "NO",
     "age": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'b' > \"B\"",
@@ -124676,17 +119590,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] > [c]",
@@ -124699,17 +119603,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] > 2.5",
@@ -124997,25 +119891,7 @@
     "age": "ABC",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "age",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > 2.5",
@@ -125156,17 +120032,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not ([a] >= [cb(1)])",
@@ -125409,17 +120275,7 @@
     "stype": "2",
     "age": "café"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [b] != [b]",
@@ -125433,17 +120289,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "'z' = [a]",
@@ -125516,25 +120362,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(3)] < [b] or [c] <> \"b\"",
@@ -125664,17 +120492,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(([stype] != 2))",
@@ -125798,17 +120616,7 @@
      "2": "0"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "Not [a] != [c]",
@@ -126776,17 +121584,7 @@
     "c": "YES",
     "stype": "Abc"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(-1 >= [age])",
@@ -126868,17 +121666,7 @@
     "stype": "B",
     "age": "a1"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "not [stype] <> [age]",
@@ -127047,17 +121835,7 @@
     "age": "b",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"yes\" >= [a]",
@@ -127296,21 +122074,7 @@
     "stype": "_",
     "age": "abc"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "stype",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "(NOT [age] < [a])",
@@ -127611,29 +122375,7 @@
     "c": "ABC",
     "stype": "Yes"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[stype] < [c]",
@@ -128443,25 +123185,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "1"
-    ],
-    [
-     "stype",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "2.5 != [a] or [stype] != [b] OR [c] = [a] OR -1 = [c]",
@@ -128929,17 +123653,7 @@
     "stype": "CAFé",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([b] <> [b])",
@@ -128951,17 +123665,7 @@
     "age": "YES",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[c] != [cb(3)]",
@@ -129073,21 +123777,7 @@
     "age": "2",
     "cb": {}
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[a] > [age]",
@@ -129130,25 +123820,7 @@
      "3": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "b",
-     null
-    ],
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"z\" != [c] or 1 <= 10",
@@ -129267,33 +123939,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "cb",
-     "3"
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ],
-    [
-     "cb",
-     "2"
-    ],
-    [
-     "cb",
-     "1"
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] > [age]",
@@ -129301,17 +123947,7 @@
     "b": "yes",
     "age": "yes"
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "\"A1\" >= [cb(2)]",
@@ -129821,17 +124457,7 @@
      "2": "1"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "([c] != [a])",
@@ -130262,17 +124888,7 @@
     "stype": "NO",
     "age": "école"
    },
-   "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[age] = [c]",
@@ -130430,25 +125046,7 @@
     "age": "Yes",
     "cb": {}
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "c",
-     null
-    ],
-    [
-     "stype",
-     null
-    ],
-    [
-     "age",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "[cb(1)] <> [a]",
@@ -130653,25 +125251,7 @@
      "3": "0"
     }
    },
-   "ok": true,
-   "js": false,
-   "jsInert": false,
-   "jsCi": false,
-   "jsInertCi": false,
-   "jsRefs": [
-    [
-     "a",
-     null
-    ],
-    [
-     "c",
-     null
-    ],
-    [
-     "b",
-     null
-    ]
-   ]
+   "ok": false
   },
   {
    "expr": "-1 < [cb(2)]",

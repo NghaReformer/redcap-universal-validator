@@ -6,7 +6,7 @@
      1. Config source: parsed from the inert <script type="application/json"
         id="inspire-validator-config"> node UniversalValidator.php emits (with
         window.INSPIRE_VALIDATOR_CONFIG as a test-only fallback) instead of a
-        hardcoded literal.
+        hardcoded literal. A config of another configShape is not read.
      2. UI-layer security hardening: HTML-escaping of config-derived text,
         catastrophic-regex (ReDoS) rejection at config time, per-field input
         length caps, pooled work caps, input debouncing, and MutationObserver
@@ -640,27 +640,62 @@
   /* Config source: the inert JSON node emitted by UniversalValidator.php is
      authoritative; the window fallback exists for the Node test harnesses and
      legacy JavaScript-Injector use. */
+  /* The config shape this script reads; twin of UniversalValidator::
+     CONFIG_SHAPE, and tests/hook_php.php fails while the two differ. A page
+     whose config states another shape was built for a different engine.js
+     (a cached copy after an upgrade): the script checks nothing there and a
+     notice says to reload, rather than read keys it does not know (QUA-7). A
+     config that states no shape (the Node test suites) is read as it is. */
+  var QRID_CONFIG_SHAPE = 1;
+  var QRID_SHAPE_MISMATCH = null;
+  function QRID_emptyConfig(context){
+    return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
+      idPattern: null, alternates: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
+      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off",
+      context: context === "survey" ? "survey" : "form" };
+  }
+  function QRID_shapeChecked(cfg){
+    if (cfg && typeof cfg === "object" && cfg.configShape !== undefined && cfg.configShape !== QRID_CONFIG_SHAPE){
+      QRID_SHAPE_MISMATCH = String(cfg.configShape);
+      return QRID_emptyConfig(cfg.context);
+    }
+    return cfg;
+  }
   function QRID_readConfig(){
     try {
       if (typeof document !== "undefined" && document.getElementById) {
         var el = document.getElementById("inspire-validator-config");
-        if (el && el.textContent) return JSON.parse(el.textContent);
+        if (el && el.textContent) return QRID_shapeChecked(JSON.parse(el.textContent));
       }
     } catch(e){
       if (typeof console !== "undefined" && console.error)
         console.error("Universal Field Validator: could not parse config", e);
     }
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
-      return window.INSPIRE_VALIDATOR_CONFIG;
-    return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, alternates: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
-      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
+      return QRID_shapeChecked(window.INSPIRE_VALIDATOR_CONFIG);
+    var none = QRID_emptyConfig("form");
+    delete none.context;
+    return none;
   }
   var QRID_COMBINED_CONFIG = QRID_readConfig();
   /* Survey pages face respondents who cannot act on configuration problems:
      technical config detail is muted there (UX-001) — admins still see every
      detail on data-entry forms, in the Configure dialog, and in the module log. */
   var QRID_IS_SURVEY = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.context === "survey");
+  /* A config of another shape: the console always, and the page-level notice
+     on a staff form (QRID_configErrorNotice is muted on surveys). */
+  if (QRID_SHAPE_MISMATCH !== null){
+    var QRID_shapeText = "This page's validator script (config shape " + QRID_CONFIG_SHAPE +
+      ") does not match the server's settings (config shape " + QRID_SHAPE_MISMATCH +
+      "), so nothing on this page is checked as you type. Reload the page without the browser cache " +
+      "(Ctrl+F5). The server still audits each save.";
+    if (typeof console !== "undefined" && console.warn) console.warn("Universal Field Validator: " + QRID_shapeText);
+    var QRID_shapeNotice = function(){ try { QRID_configErrorNotice(QRID_shapeText); } catch(e){} };
+    if (typeof document !== "undefined"){
+      if (document.readyState === "loading" && document.addEventListener) document.addEventListener("DOMContentLoaded", QRID_shapeNotice);
+      else QRID_shapeNotice();
+    }
+  }
   /* The project's Missing Data Codes. A field marked with REDCap's "M" button
      holds the code itself; REDCap does not validate it, and neither does a
      check that judges the value (php/modes.json "missingCodes":"skip"). Every
@@ -672,17 +707,17 @@
     return set;
   })();
   var QRID_HAS_MISSING_CODES = (function(){ for(var k in QRID_MISSING_CODES) return true; return false; })();
-  /* PHP's trim() set (UniversalValidator::isMissingCode), scanned from each
-     end: an end-anchored pattern is retried from every space of a long run
-     (1.8 seconds for 50,000 spaces), and every mode asks this on each check. */
-  function QRID_isMissingCode(value){
-    if(!QRID_HAS_MISSING_CODES || value === null || value === undefined) return false;
-    var s = String(value), i = 0, j = s.length;
-    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }
-    while(i < j && ws(s.charCodeAt(i))) i++;
-    while(j > i && ws(s.charCodeAt(j - 1))) j--;
-    var t = s.slice(i, j);
-    return t !== "" && QRID_MISSING_CODES[t] === true;
+  function QRID_isMissingCode(value){ return QRID_HAS_MISSING_CODES && QRID_codeIn(value, QRID_MISSING_CODES); }
+  /* Whether value, trimmed, is a key of set (code => true). Twin of
+     Logic::isMissingCode. */
+  function QRID_codeIn(value, set){
+    if(value === null || value === undefined) return false;
+    /* PHP trim()'s set (space, tab, CR, LF, NUL, vertical tab), by index (AST-8) */
+    var t = String(value), i = 0, j = t.length, c;
+    while(i < j && ((c = t.charCodeAt(i)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) i++;
+    while(j > i && ((c = t.charCodeAt(j - 1)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) j--;
+    t = t.slice(i, j);
+    return t !== "" && set[t] === true;
   }
   /* Whether a reason field's value gives a reason (@UVJUSTIFY): not blank by
      the test @UVREQUIRED asks (QRID_isBlank, so a no-break space, a
@@ -1676,6 +1711,30 @@ function QRID_fieldAnchor(name, codes){
   el.__qridAnchorOf = name;
   return { el: el, checkbox: true };
 }
+/* Where "Cannot save yet" puts the focus for a field's guard item. The anchor
+   of a radio or checkbox field is a hidden mirror that cannot take it, so the
+   focus stayed on the page body (CHO-9): the field's checked option, else its
+   first option on show. A dropdown with REDCap's autocomplete takes it in the
+   text box. Any other field takes it on the anchor itself. */
+function QRID_focusTarget(input, fieldName){
+  if(typeof document === "undefined") return input;
+  if((input && input.tagName || "").toLowerCase() === "select"){
+    var ac = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
+    return ac || input;
+  }
+  if(!document.getElementsByName) return input;
+  var opts = [], els, i;
+  els = document.getElementsByName(fieldName + "___radio");
+  for(i = 0; i < els.length; i++) opts.push(els[i]);
+  els = document.getElementsByName("__chkn__" + fieldName);
+  for(i = 0; i < els.length; i++) opts.push(els[i]);
+  for(i = 0; i < opts.length; i++) if(opts[i].checked) return opts[i];
+  for(i = 0; i < opts.length; i++){
+    var row = opts[i].parentNode;
+    if(!(row && (row.__qridHidden || (row.style && row.style.display === "none")))) return opts[i];
+  }
+  return input;
+}
 /* Whether the person cannot change the field on this page (REQ-2). @READONLY
    leaves the anchor of a radio, yes/no, true/false or checkbox field enabled,
    because that anchor is the hidden mirror REDCap keeps, and disables the
@@ -1797,6 +1856,9 @@ var QRID_BLANK_INERT  = false;
    caseSensitive flag goes: = and <> compare character for character. Twin of
    Logic::EXACT. */
 var QRID_WHEN_EXACT = "exact";
+/* The ordered operators. A field marked with a Missing Data Code has no answer
+   to them, as a blank has none (AST-10). Twin of Logic::ORDERED_OPS. */
+var QRID_WHEN_ORDERED = { "<": true, ">": true, "<=": true, ">=": true };
 
 function QRID_whenErr(msg){ return { ok: false, error: msg }; }
 
@@ -2172,6 +2234,29 @@ function QRID_windowPeriodLabel(p, a, b, name, rel){
   if(!rel && a > 0) return a + " to " + plural(b) + " after the " + p + " of " + name;
   return one(a) + " to " + one(b);
 }
+/* A window's bounds by name: "21 to 35 days after [visit_date_bl]", "7 to 30
+   days before today", "3 days before [x] to 5 days after [x]"; one bound
+   alone is "no earlier than ..." or "no later than ...". A negative bound
+   reads as "before": the note printed the count with its sign, as "-7 to -7
+   minutes from now" (WIN-7). Twin of TemporalLogic::spanLabel; the "spans"
+   cases of tests/window_fixture.json lock both. */
+function QRID_windowSpanLabel(lo, hi, unit, name){
+  var u = String(unit);
+  function count(n){ var one = /s$/.test(u) ? u.slice(0, -1) : u; return n + " " + one + (n === 1 ? "" : "s"); }
+  function bound(n){
+    if(n > 0) return count(n) + " after " + name;
+    if(n < 0) return count(-n) + " before " + name;
+    if(name === "today" || name === "now") return name;
+    return (QRID_WINDOW_UNITS[u] !== undefined && QRID_WINDOW_UNITS[u] < 86400 ? "at the time of " : "on the day of ") + name;
+  }
+  if(lo == null && hi == null) return "";
+  if(hi == null) return "no earlier than " + (lo === 0 ? name : bound(lo));
+  if(lo == null) return "no later than " + (hi === 0 ? name : bound(hi));
+  if(lo === hi) return bound(lo);
+  if(lo >= 0) return lo + " to " + count(hi) + " after " + name;
+  if(hi <= 0) return (-hi) + " to " + count(-lo) + " before " + name;
+  return bound(lo) + " to " + bound(hi);
+}
 /* The verdict for a window counted from a moment known only to within a
    margin (a "from" of "now", which a computer a little off fills in): a value
    passes when some anchor between anchorLo and anchorHi accepts it. The
@@ -2422,6 +2507,14 @@ function QRID_whenCmp(st){
     return n[0] === "qref" && (n[4] === "any-instance" || n[4] === "all-instances");
   }).length;
   if(sets > 1) return {error: "allows at most one collection operand per comparison."};
+  /* [h]>[h] is always false and [h]=[h] always true: a rule built on it never
+     reads the value (AST-11). Twin of Logic::parseCmp. */
+  if(lhs.node[0] !== "lit" && JSON.stringify(lhs.node) === JSON.stringify(rhs.node)){
+    var nd = lhs.node;
+    var name = nd[0] === "ref" ? '"[' + nd[1] + (nd[2] !== null ? "(" + nd[2] + ")" : "") + ']"' : "a reference";
+    return { error: "compares " + name + " with itself, so the answer never depends on the value. " +
+      "Compare it with another field or a value." };
+  }
   return { node: ["cmp", op, lhs.node, rhs.node] };
 }
 /* operand := ref | string | number */
@@ -2469,12 +2562,25 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
          answer" means. */
       return !QRID_whenEvaluateWith(ast[1], resolve, !blank, caseSensitive);
     case "cmp":
+      if(typeof resolve.isMissing === "function" && QRID_whenCodeCompared(ast, resolve)) return blank;
       return QRID_whenCompare(ast[1],
         QRID_whenOperandVal(ast[2], resolve),
         QRID_whenOperandVal(ast[3], resolve),
         blank, caseSensitive);
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
+}
+/* Whether the comparison is ordered (< > <= >=) and a plain [field] operand
+   holds a Missing Data Code (resolve.isMissing), so it has no answer: [end] >=
+   [start] with start UNK passes as a test and leaves a "when" inert, while =
+   and <> read the code as itself (AST-10). Twin of Logic::codeCompared. */
+function QRID_whenCodeCompared(ast, resolve){
+  if(QRID_WHEN_ORDERED[ast[1]] !== true) return false;
+  for(var s = 2; s <= 3; s++){
+    var op = ast[s];
+    if(op[0] === "ref" && op[2] === null && resolve.isMissing(resolve(op[1], null))) return true;
+  }
+  return false;
 }
 /* The value of field f as a condition reads it: a field that holds numbers
    (marks: field => "point" | "comma") as its number, written as NUM_RE
@@ -2501,8 +2607,9 @@ function QRID_whenOperandVal(op, resolve){
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0').
    numbers (field => "point" | "comma") names the fields that hold numbers,
-   as the $numbers map of Logic::evaluate does. */
-function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
+   as the $numbers map of Logic::evaluate does; codes lists the project's
+   Missing Data Codes, as its $codes does. */
+function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers, codes){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   var resolve = function(f, code, extended){
     if(extended && (!values || !Object.prototype.hasOwnProperty.call(values, f) || values[f] === null || typeof values[f] === "object")) throw new Error("Unresolved extended reference.");
@@ -2519,6 +2626,11 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
   resolve.extendedValues = true;
   if(numbers){
     resolve.logicValue = resolve.numberValue = function(f, v){ return QRID_numberValue(f, v, numbers); };
+  }
+  if(Array.isArray(codes) && codes.length){
+    var set = Object.create(null);
+    for(var i = 0; i < codes.length; i++) set[String(codes[i])] = true;
+    resolve.isMissing = function(v){ return QRID_codeIn(v, set); };
   }
   return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
@@ -3483,6 +3595,7 @@ var QRID_WHEN = (function(){
   function readLogic(f, code){ return readRef(f, code); }
   readLogic.logicValue = QRID_logicValue;
   readLogic.numberValue = QRID_pageNumberValue;
+  readLogic.isMissing = QRID_isMissingCode;
   /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
      only values the page really has (QRID_condValues). */
   function has(f, code){
@@ -3511,7 +3624,24 @@ var QRID_WHEN = (function(){
      as known, so the poll never judges a number half typed. REDCap's Today and
      Now buttons set the value of a field that keeps the focus, and raise no
      change either. */
-  var silent = [], silentTimer = null;
+  /* The poll stops after SILENT_IDLE_TICKS ticks (10 s) in which no value
+     changed, and starts again on the next input, change, click, key or focus
+     anywhere on the page (PRF-6). It ran every 400 ms for the life of the
+     page, about 10 ms a tick at 1,000 tags. A script writes a value after
+     something the user did (a calc after a typed input, the Today button
+     after a click) or while the page loads, when the poll is running. */
+  var silent = [], silentTimer = null, silentIdle = 0, silentWake = false;
+  var SILENT_IDLE_TICKS = 25;
+  function startSilent(){
+    silentIdle = 0;
+    if(silentTimer !== null || !silent.length || typeof setInterval !== "function") return;
+    silentTimer = setInterval(pollSilent, 400);
+    if(silentTimer && typeof silentTimer.unref === "function") silentTimer.unref();
+  }
+  function stopSilent(){
+    if(silentTimer !== null && typeof clearInterval === "function") clearInterval(silentTimer);
+    silentTimer = null;
+  }
   function watchSilent(el, field){
     var ty = (el.type || "").toLowerCase();
     if(ty === "radio" || ty === "checkbox" || ty === "file" || ty === "submit" || ty === "button") return;
@@ -3519,13 +3649,15 @@ var QRID_WHEN = (function(){
     el.__qridSilent = true;
     el.__qridLast = el.value;
     silent.push({ el: el, field: field });
-    if(silentTimer === null && typeof setInterval === "function"){
-      silentTimer = setInterval(pollSilent, 400);
-      if(silentTimer && typeof silentTimer.unref === "function") silentTimer.unref();
+    if(!silentWake && typeof document !== "undefined" && document.addEventListener){
+      silentWake = true;
+      var wake = ["input", "change", "click", "keydown", "focusin"];
+      for(var w = 0; w < wake.length; w++) document.addEventListener(wake[w], startSilent, true);
     }
+    startSilent();
   }
   function pollSilent(){
-    var live = [];
+    var live = [], changed = false;
     var doc = typeof document !== "undefined" ? document : null;
     for(var i = 0; i < silent.length; i++){
       var s = silent[i], el = s.el;
@@ -3536,9 +3668,12 @@ var QRID_WHEN = (function(){
       var v = el.value;
       if(v === el.__qridLast) continue;
       el.__qridLast = v;
+      changed = true;
       fire(s.field);
     }
     silent = live;
+    if(changed) silentIdle = 0;
+    else if(++silentIdle >= SILENT_IDLE_TICKS || !silent.length) stopSilent();
   }
   /* Bind the recheck trigger to every element carrying this target name.
      Returns true once at least one element is hooked (or was already). */
@@ -3961,7 +4096,9 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       try { (bad[0] || pend[0]).focus(); } catch(_f){}
       return false;
     }
-    if(window.confirm("Validation FAILED for:" + names + "\n\nSave anyway?")){
+    /* An empty required field failed no validation: name what it is (REQ-13). */
+    var onlyBlank = bad.length > 0 && bad.every(function(el){ return el.__qridType === "required"; });
+    if(window.confirm((onlyBlank ? "These fields are still empty:" : "Validation FAILED for:") + names + "\n\nSave anyway?")){
       UV_guard.passUntil = new Date().getTime() + 2000;
       return true;
     }
@@ -4174,9 +4311,12 @@ function QRID_setInvalidState(input, state){  /* true | false | null (empty fiel
    generic line instead of technical detail; staff see the full message. A
    separate bound-marker and region id keep this from ever claiming the field
    against a live validator. Returns false when the field is not on this page
-   (caller falls back to the page-level notice). */
+   (caller falls back to the page-level notice). A dropdown has no text input,
+   so its error went only to the page-level notice (CHO-10): the select is the
+   anchor then, and the region goes at the end of its cell, which keeps the
+   select next to the companion input REDCap's autocomplete builds after it.
+   Every mode shares the region, so its label names none of them. */
 function QRID_attachErrorRegion(fieldName, configError){
-  /* any field's widget: a refused tag of any mode can sit on a dropdown */
   var input = QRID_findField(fieldName) || QRID_findAnchor(fieldName);
   if(!input || !input.parentNode) return false;
   if(input.getAttribute && input.getAttribute("data-qrid-err-bound")) return true;
@@ -4190,14 +4330,15 @@ function QRID_attachErrorRegion(fieldName, configError){
   }
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-  input.parentNode.insertBefore(msg, input.nextSibling);
+  if((input.tagName || "").toLowerCase() === "select") input.parentNode.appendChild(msg);
+  else input.parentNode.insertBefore(msg, input.nextSibling);
   if(input.setAttribute && input.getAttribute){
     var desc = input.getAttribute("aria-describedby") || "";
     input.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
   }
   msg.innerHTML = QRID_IS_SURVEY
     ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
-    : "&#9888; Configuration error: " + QRID_escapeHtml(configError);
+    : "&#9888; Validator configuration error: " + QRID_escapeHtml(configError);
   return true;
 }
 /* Show a configuration error that has no field widget to sit under — a rule whose
@@ -4228,6 +4369,48 @@ function QRID_configErrorNotice(message){
   line.style.marginTop = "4px";
   line.innerHTML = "&bull; " + QRID_escapeHtml(message);
   box.appendChild(line);
+}
+/* One retry timer and one MutationObserver for every factory's late-render
+   sweep (PRF-6). Each factory's boot() armed its own pair: on a page that
+   lacks a rule's field (a multi-page survey, a form a rule does not belong
+   to) 1,000 tags kept 232 observers and 233 intervals alive for 10 s, and
+   each DOM change ran 232 callbacks. QRID_lateAttach(sweep) runs sweep at
+   once; while it answers false it runs again on each 500 ms tick, at most 20
+   ticks, and on each DOM change. The timer and the observer stop when no
+   sweep is waiting. sweep(tick) is told whether a timer tick called it. A
+   sweep that throws counts as a try, and the others still run. */
+var QRID_late = { list: [], timer: null, mo: null };
+function QRID_lateRun(tick){
+  var list = QRID_late.list, keep = [];
+  QRID_late.list = [];                    /* a sweep added while this runs waits for the next */
+  for(var i = 0; i < list.length; i++){
+    var e = list[i], done = false;
+    try { done = e.sweep(tick === true) === true; } catch(err){ done = false; }
+    if(done) continue;
+    if(tick === true) e.tries++;
+    if(e.tries < 20) keep.push(e);
+  }
+  QRID_late.list = keep.concat(QRID_late.list);
+  if(!QRID_late.list.length) QRID_lateStop();
+}
+function QRID_lateStop(){
+  if(QRID_late.timer !== null && typeof clearInterval === "function") clearInterval(QRID_late.timer);
+  QRID_late.timer = null;
+  if(QRID_late.mo){ QRID_late.mo.disconnect(); QRID_late.mo = null; }
+}
+function QRID_lateAttach(sweep){
+  var done = false;
+  try { done = sweep(false) === true; } catch(err){ done = false; }
+  if(done) return true;
+  QRID_late.list.push({ sweep: sweep, tries: 0 });
+  if(QRID_late.timer === null && typeof setInterval === "function"){
+    QRID_late.timer = setInterval(function(){ QRID_lateRun(true); }, 500);
+  }
+  if(!QRID_late.mo && typeof MutationObserver !== "undefined" && typeof document !== "undefined" && document.body){
+    QRID_late.mo = new MutationObserver(function(){ QRID_lateRun(false); });
+    QRID_late.mo.observe(document.body, { childList: true, subtree: true });
+  }
+  return false;
 }
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
 /* ---- branched validation: shared variant plumbing (module feature) ---------
@@ -4857,23 +5040,13 @@ function QRIDSingleInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
-    function sweep(){
+    /* REDCap builds the form progressively: fields that are not there yet
+       are retried on the page's one late-render timer and observer, which
+       give up after 10 s (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){
       pending = pending.filter(function(f){ return !attach(f); });
-      if(pending.length === 0){ stop(); return true; }
-      return false;
-    }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){                 /* REDCap builds the form progressively */
-      tries++;
-      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
-    }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
-    }
+      return pending.length === 0;
+    });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -4981,7 +5154,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 /* re-judged at save: a referenced value changed without an
                    event (a calc, a radio reset) must not leave a stale
                    verdict (AST-7) */
@@ -4989,7 +5162,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "constraint");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "c", null); setGuard(false); }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
@@ -5005,7 +5178,7 @@ function QRIDConstraintInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); return;
+        QRID_setModeState(input, "c", null); setGuard(false); return;
       }
       var V = act[0];
       /* Frozen assert: state no VERDICT rather than a stale one (see
@@ -5096,16 +5269,8 @@ function QRIDConstraintInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -5337,9 +5502,7 @@ function QRIDWindowInit(QRID_CONFIG){
              : l ? "This date must be on or before " + l + "."
              : "This date is outside its allowed window.";
     if(named && V.fromName && V.spec.period === null){
-      var lo = V.spec.lo, hi = V.spec.hi, u = V.spec.unit;
-      var range = (lo !== null && hi !== null) ? lo + " to " + hi : (lo !== null ? "at least " + lo : "at most " + hi);
-      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(range + " " + u + " from " + V.fromName) + ")</span>";
+      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(QRID_windowSpanLabel(V.spec.lo, V.spec.hi, V.spec.unit, V.fromName)) + ")</span>";
     }
     return text;
   }
@@ -5358,7 +5521,7 @@ function QRIDWindowInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock !== "off" ? VS.firstBlock : FUTURE_BLOCK, "window");
     }
@@ -5486,16 +5649,8 @@ function QRIDWindowInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -6625,7 +6780,7 @@ function QRIDRangeInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, "off", "range");
     }
@@ -6643,8 +6798,9 @@ function QRIDRangeInit(QRID_CONFIG){
        still has its z-score. Each reference (branch group) fills its own
        fields. A group that cannot be told here (a deferral, a selector this
        page cannot read, an input on a form this page does not carry) leaves
-       its fields as they are, and so does a branch conflict, for every group:
-       the save fills them. The first fill, made as the page opens, does not
+       its fields as they are, and the save fills them. A branch conflict
+       leaves every group's fields as they are, and the save keeps them too:
+       the server returns nothing on a conflict. The first fill, made as the page opens, does not
        mark the form as changed. */
     var opening = true;
     function publish(act){
@@ -6842,16 +6998,8 @@ function QRIDRangeInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7537,14 +7685,14 @@ function QRIDRequiredInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridType: QRID_CONFIG.type,
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 /* re-judged at save: a "when" over a calc flipped without an
                    event must not let a blank field through (REQ-3) */
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "required");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); }
+    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); }
     function check(){
       /* REDCap hides the row of a field whose branching logic is false (or
          that carries @HIDDEN), leaves it out of its own required check, and
@@ -7565,7 +7713,7 @@ function QRIDRequiredInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The requirement was <b>NOT</b> enforced; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); return;
       }
       var V = act[0];
       /* deferred: the server could not resolve this rule's references (or its
@@ -7577,14 +7725,13 @@ function QRIDRequiredInit(QRID_CONFIG){
         } else {
           msg.style.display = "none"; msg.innerHTML = "";
         }
-        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); return;
       }
       var blank = QRID_isBlank(QRID_WHEN.readRef(fieldName, null));
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
       QRID_setModeState(input, "r", "bad");
       setGuard(true, V.blockSave);
-      QRID_setModeState(input, "r", "bad");
       msg.innerHTML = "&#10007; " + (V.message ? QRID_ruleHtml(V, "message")
         : "This field must not be left blank" + (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") + ".");
     }
@@ -7622,16 +7769,8 @@ function QRIDRequiredInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7683,10 +7822,13 @@ function QRID_choiceParking(fieldName){
                  parent wrapper; the hidden mirror input is never touched;
      checkbox  — the input named __chk__<field>_RC_<code> hides its parent.
    A currently-SELECTED choice is NEVER hidden or cleared: it stays visible
-   (dropdown: kept + disabled), the field is flagged invalid with the message,
+   (dropdown: kept and marked stale, never disabled, so the browser still
+   submits it), the field is flagged invalid with the message,
    and blockSave (off/confirm/hard) decides whether the save is challenged —
    silently destroying an entered value is the one thing this mode must never
-   do. A value outside choicesAll (e.g. a missing-data code) is out of scope.
+   do. A value outside choicesAll is out of scope, and so is a project Missing
+   Data Code, even one that is also a choice code (CHO-3): the server skips
+   such a field (php/modes.json "missingCodes":"skip").
    tests/choices_dom_js.cjs locks this contract (tests/choices_fixture.json is
    the hidden-set contract); UniversalValidator::ruleFindings (type "choices")
    is the server twin. */
@@ -7777,7 +7919,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 __qridRecheck: function(){ check(); },
-                focus: function(){ try { (autocompleteInput || input).focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "choices");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -7787,7 +7929,31 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var selectOrig = [];   /* options retain their original parent and order */
     var parking = null;    /* where hidden options wait (QRID_choiceParking) */
     var activeHidden = Object.create(null), autocompleteInput = null;
+    function inSelect(o){
+      var at = o.parentNode;
+      return !!at && (at === select || at.parentNode === select);
+    }
     function snapshotOptions(){
+      /* An option this module did not park that has left the select means its
+         options were replaced (a piping refresh, another module, a script).
+         The old nodes were put back by the next render, so every choice showed
+         twice (CHO-5). The select's options are then the list: every entry not
+         in it is dropped, and the old nodes waiting in the parking select go.
+         selectOrig keeps its identity, which the expando below compares. */
+      var rebuilt = false, d;
+      for(d = 0; d < selectOrig.length && !rebuilt; d++){
+        if(!selectOrig[d].parked && !inSelect(selectOrig[d].node)) rebuilt = true;
+      }
+      if(rebuilt){
+        var kept = 0;
+        for(d = 0; d < selectOrig.length; d++){
+          var e = selectOrig[d];
+          if(inSelect(e.node)){ selectOrig[kept++] = e; continue; }
+          e.node.__qridSnap = null;
+          if(e.parked && e.node.parentNode && e.node.parentNode.removeChild) e.node.parentNode.removeChild(e.node);
+        }
+        selectOrig.length = kept;
+      }
       function visit(parent){
         for(var i = 0; i < parent.children.length; i++){
           var o = parent.children[i], tag = (o.tagName || "").toLowerCase();
@@ -7798,7 +7964,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
              main thread for seconds per selection). */
           if(o.__qridSnap === selectOrig) continue;
           o.__qridSnap = selectOrig;
-          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled });
+          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled, parked: false });
         }
       }
       visit(select); // also discover options populated after page initialization
@@ -7880,11 +8046,13 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         if(show && o.parentNode !== parent){
           if(o.parentNode && o.parentNode.removeChild) o.parentNode.removeChild(o);   /* out of the parking select */
           parent.insertBefore(o, parent.__qridNext || null);
+          entry.parked = false;
           changed = true;
         } else if(!show && o.parentNode === parent){
           parent.removeChild(o);
           if(!parking || parking.parentNode == null) parking = QRID_choiceParking(fieldName);
           if(parking) parking.appendChild(o);
+          entry.parked = true;   /* held here, in the parking select or out of the page */
           changed = true;
         }
         /* The kept stale answer is MARKED, never disabled. A browser leaves a
@@ -7962,7 +8130,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
         var v = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
-        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
+        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v)) && !QRID_isMissingCode(v)) out.push(v);
         return out;
       }
       for(var i = 0; i < V.hiddenList.length; i++){        /* checkbox: any checked hidden code */
@@ -8088,6 +8256,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
         var v = QRID_whenTrim(QRID_WHEN.readRef(f, null));
+        if(v !== "" && QRID_isMissingCode(v)) return null;   /* not judged (CHO-3) */
         if(v !== "") return !a[0].hiddenSet[v];
         for(var i = 0; i < a[0].hiddenList.length; i++){
           if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;
@@ -8101,16 +8270,8 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -8232,7 +8393,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -8308,7 +8469,7 @@ function QRIDUniqueInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> checked; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); return;
+        QRID_setModeState(input, "q", null); setGuard(false); return;
       }
       var V = act[0];
       /* Surveys are opt-in per rule: a used/free answer is record-derived
@@ -8472,16 +8633,8 @@ function QRIDUniqueInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -8574,7 +8727,7 @@ function QRIDExistsInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off", "exists");
     }
     function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -8922,16 +9075,8 @@ function QRIDExistsInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -9515,23 +9660,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       return;
     }
     var pending = (QRID_MULTI_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
-    function sweep(){
+    /* REDCap builds the form progressively: fields that are not there yet
+       are retried on the page's one late-render timer and observer, which
+       give up after 10 s (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){
       pending = pending.filter(function(f){ return !attach(f); });
-      if(pending.length === 0){ stop(); return true; }
-      return false;
-    }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){                 /* REDCap builds the form progressively */
-      tries++;
-      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
-    }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
-    }
+      return pending.length === 0;
+    });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -9786,6 +9921,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
    fields attach. */
 window.INSPIREUniversalValidator = {
   config: QRID_COMBINED_CONFIG,
+  configShape: QRID_CONFIG_SHAPE,           /* twin of UniversalValidator::CONFIG_SHAPE (QUA-7) */
   engine: Q,
   riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
   gatePattern: QRID_gatePattern,            /* the one pattern admission point, locked by tests/risky_js.cjs */
@@ -9810,7 +9946,7 @@ window.INSPIREUniversalValidator = {
     keywordAnchorType: QRID_keywordAnchorType, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
     clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS, calendarUnits: QRID_CALENDAR_UNITS,
-    periodLabel: QRID_windowPeriodLabel,
+    periodLabel: QRID_windowPeriodLabel, spanLabel: QRID_windowSpanLabel,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
   },

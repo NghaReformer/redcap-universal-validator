@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/Faults.php';
+
 /**
  * What this REDCap installation can actually support, and what a scan run on it
  * is therefore ALLOWED TO CLAIM.
@@ -34,6 +36,32 @@ final class ScanCapabilities
     const OK = 'available';
     /** A capability that is absent, degraded, or unprovable. */
     const NO = 'unavailable';
+
+    /**
+     * The PHP extensions the module calls without a guard (COMPAT-1): mb_*
+     * for lengths, case and encoding checks, ctype_* for character classes.
+     * REDCap needs mbstring itself and standard PHP builds load both, but a
+     * minimal build that leaves one out made the save audit and the scan die
+     * part way.
+     */
+    const PHP_EXTENSIONS = ['mbstring', 'ctype'];
+
+    /**
+     * The extensions of PHP_EXTENSIONS this server does not load, in that
+     * order; [] on a standard install.
+     *
+     * @param callable|null $loaded extension_loaded(), or a stand-in for a test
+     * @return string[]
+     */
+    public static function missingExtensions($loaded = null)
+    {
+        $loaded = $loaded === null ? 'extension_loaded' : $loaded;
+        $out = [];
+        foreach (self::PHP_EXTENSIONS as $x) {
+            if (!$loaded($x)) $out[] = $x;
+        }
+        return $out;
+    }
 
     /** @return array{state:string, via:?string, why:?string} */
     private static function yes($via)
@@ -205,6 +233,7 @@ final class ScanCapabilities
                 return self::yes('Project::getRepeatingFormsEvents');
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::repeatMetadata');
             // the project's object could not be built: try the static sources
         }
         if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return self::yes('getRepeatingFormsEvents');
@@ -429,6 +458,7 @@ final class ScanCapabilities
                 // database, and a wrong answer is a refusal rather than a pass.
                 if (is_string($t) && $t !== '') return $t;
             } catch (\Throwable $e) {
+                Faults::swallow($e, 'ScanCapabilities::dataTableFor');
                 // A resolution that fails is not a capability answer; the probe
                 // below is. Fall through to the default and let it decide.
             }
@@ -444,6 +474,7 @@ final class ScanCapabilities
                 if (is_string($pk) && $pk !== '') return $pk;
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::recordIdField');
         }
         return null;
     }
@@ -480,6 +511,7 @@ final class ScanCapabilities
                 }
             }
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::fetchAll');
         }
         return $rows;
     }
@@ -497,6 +529,7 @@ final class ScanCapabilities
             if (is_object($q) && is_callable([$q, 'fetch_row'])) return $q->fetch_row();
             if (is_array($q)) return array_shift($q);
         } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanCapabilities::fetchRow');
         }
         return null;
     }

@@ -317,6 +317,8 @@ jobs:
         run: php tests/namespace_lint_php.php
       - name: 'Call-resolution lint (every $this->, self::, static::, parent:: call names a method that exists)'
         run: php tests/call_resolution_php.php
+      - name: Caught exceptions leave a trace (no empty catch block; Faults counter)
+        run: php tests/faults_php.php
       - name: Durable scan wiring (no safeguard without a production caller)
         run: php tests/scan_wiring_php.php
       - name: Durable scan rule identity (which rule a finding is filed against)
@@ -364,7 +366,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           # Every bundled growth table ships, byte for byte as index.json pins it.
@@ -377,9 +379,13 @@ jobs:
                   sys.exit('growth table of ' + rid + ' does not match its sha256 in the package')
           print('growth tables OK:', len(idx['references']))
           PY
-          for d in .github reports tools; do
+          for d in .github reports tools site CLAUDE.md .graphifyignore; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }
           done
+          # Plans, PDFs and temporal scripts at the root are development files too.
+          if ls PLAN-*.md *.pdf *temporal* 2>/dev/null | grep -q .; then
+            echo "development-only file shipped in the package:"; ls PLAN-*.md *.pdf *temporal* 2>/dev/null; exit 1
+          fi
           python3 -m json.tool config.json > /dev/null
           grep -qF 'INSPIRE\\UniversalValidator' config.json \
             || { echo "config.json namespace mismatch"; exit 1; }

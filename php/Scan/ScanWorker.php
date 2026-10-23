@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * One bounded unit of scanning: claim some records, prove they held still, look
  * at them, and commit — or commit nothing at all.
@@ -349,6 +351,7 @@ final class ScanWorker
             $note('scan storage failure', ['run_id' => (int) $runId,
                                            'detail' => $e->safeDetail()]);
         } catch (\Throwable $ignored) {
+            \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanWorker::noteStorageFailure');
             // A failure while reporting a failure is not worth a second one.
         }
     }
@@ -1140,6 +1143,7 @@ final class ScanWorker
                 'detail' => $n . ' record(s) left claimed by a worker that stopped had no attempts '
                           . 'left, so they were reported as not examined rather than tried again']);
         } catch (\Throwable $ignored) {
+            \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanWorker::noteRetired');
             // A failure while reporting a failure is not worth a second one.
         }
     }
@@ -1152,6 +1156,7 @@ final class ScanWorker
         try {
             $note('scan batch refused', ['run_id' => (int) $runId, 'detail' => (string) $why]);
         } catch (\Throwable $ignored) {
+            \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanWorker::noteBatchRefused');
             // A failure while reporting a failure is not worth a second one.
         }
     }

@@ -342,6 +342,8 @@ trait TemporalIntegration
     {
         $extended=[];$dd=$this->dataDictionary($pid)?:[];$only=$only===null?null:array_fill_keys($only,true);
         foreach($rules as $i=>$r){if(!empty($r['configError'])||!TemporalRules::extended($r)||($only!==null&&!isset($only[$i])))continue;
+            // No saved instrument: a required rule is left to the scan, as in auditPhase (REQ-10).
+            if($instrument===null&&ModeRegistry::modeOfType((string)($r['type']??''))==='required')continue;
             // A field the rule only searches ("also") does not re-check it when saved.
             foreach(TemporalRules::fields($r,false) as $f)if($instrument===null||($dd[$f]['form_name']??null)===$instrument){$extended[$i]=$r;break;}}
         if(!$extended)return;
