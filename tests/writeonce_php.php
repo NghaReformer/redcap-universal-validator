@@ -471,11 +471,22 @@ check('parse: a forged run through a field no one types is caught from its first
 check('parse: in order, nothing is doubted', $pf("notes = 'n',\ndob = 'd',\nsite = 'A'") === [1 => ['notes' => 'n', 'dob' => 'd', 'site' => 'A']]);
 check('parse: a stray line still makes every field not plain', $pf("site = 'A',\nwhat is this") === [1 => ['site' => null]]);
 // Each line is looked at once (review W2-10): a long notes value costs one pass.
-$long = "notes = 'start\n" . str_repeat("a line\n", 130000) . "end',\nsite = 'A'";
-$t0 = microtime(true);
-$r = ValueHistory::parseRow($long, $ord, $free);
-$took = microtime(true) - $t0;
-check('parse: 130,000 lines of one value read in under a second (took ' . round($took, 2) . ' s)', $took < 1.0 && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
+// Ten times the lines must cost about ten times the time, not a hundred; the
+// ratio holds on a loaded machine, where a fixed time limit does not.
+$parseTime = function (int $lines) use ($ord, $free) {
+    $text = "notes = 'start\n" . str_repeat("a line\n", $lines) . "end',\nsite = 'A'";
+    $best = INF;
+    for ($i = 0; $i < 3; $i++) {
+        $t0 = microtime(true);
+        $r = ValueHistory::parseRow($text, $ord, $free);
+        $best = min($best, microtime(true) - $t0);
+    }
+    return [$best, $r];
+};
+[$small] = $parseTime(13000);
+[$took, $r] = $parseTime(130000);
+$ratio = $took / max($small, 0.0005);
+check('parse: 130,000 lines of one value cost about ten times 13,000 (took ' . round($took, 2) . ' s, ' . round($ratio, 1) . ' times)', $ratio < 30 && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
 
 // Paging: a record read across pages, then the cap.
 $db = new FakeHistoryLog();
