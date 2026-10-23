@@ -430,13 +430,50 @@ namespace {
      * three that nothing ran (the findings panel, the export and the reason
      * bits): green on the machine that wrote them and checked nowhere else.
      * A suite no workflow names is a safeguard nothing calls.
+     *
+     * Review rv11b1-6: the check matched any text in the workflow files, so a
+     * suite named only in a YAML comment, a step name or a shell comment
+     * counted as run. It now reads only the commands of `run:` keys, inline
+     * or as a block, with comments taken off, and it covers the mutation
+     * runners (tests/*_mutations.py) as well as the suites.
      * ===================================================================== */
     {
-        /** The suites whose file names no workflow text mentions as tests/<name>. */
+        /**
+         * The commands a workflow runs: the value of every `run:` key, inline
+         * or a `|` / `>` block (the lines indented deeper than the key), each
+         * line with its comment removed. A `#` starts a comment at the start
+         * of a line or after a space, in YAML and in the shell alike.
+         */
+        function uv_workflow_commands($yaml) {
+            $lines = preg_split('/\r\n|\n|\r/', (string) $yaml);
+            $out = [];
+            $block = null;   // the key's indent while inside a block run
+            foreach ($lines as $line) {
+                if ($block !== null) {
+                    if (trim($line) === '') continue;
+                    if (strlen($line) - strlen(ltrim($line, ' ')) > $block) {
+                        $out[] = $line;
+                        continue;
+                    }
+                    $block = null;
+                }
+                if (!preg_match('/^( *)(?:- +)?run: *(.*)$/', $line, $m)) continue;
+                $value = $m[2];
+                if (preg_match('/^[|>][+-]?[0-9]?\s*(?:#.*)?$/', $value)) {
+                    $block = strlen($m[1]) + (strpos(ltrim($line, ' '), '-') === 0 ? 2 : 0);
+                    continue;
+                }
+                $out[] = $value;
+            }
+            foreach ($out as $i => $c) $out[$i] = preg_replace('/(^|\s)#.*$/', '', $c);
+            return implode("\n", $out) . "\n";
+        }
+        /** The suites whose file names no workflow command runs as tests/<name>. */
         function uv_unrun_suites(array $names, $workflows) {
+            $commands = uv_workflow_commands($workflows);
             $out = [];
             foreach ($names as $b) {
-                if (!preg_match('~tests/' . preg_quote($b, '~') . '(?![\w.])~', $workflows)) $out[] = $b;
+                if (!preg_match('~tests/' . preg_quote($b, '~') . '(?![\w.])~', $commands)) $out[] = $b;
             }
             sort($out);
             return $out;
@@ -444,8 +481,11 @@ namespace {
         $root = dirname(__DIR__);
         $wf = '';
         foreach (glob($root . '/.github/workflows/*.yml') as $f) $wf .= file_get_contents($f) . "\n";
-        $suites = array_map('basename', array_merge(glob($root . '/tests/*_php.php'), glob($root . '/tests/*_js.cjs')));
+        $suites = array_map('basename', array_merge(glob($root . '/tests/*_php.php'), glob($root . '/tests/*_js.cjs'),
+            glob($root . '/tests/*_mutations.py')));
         check('W-06: the suites and the workflows were found', count($suites) >= 50 && $wf !== '');
+        check('W-06: the mutation runners are among them',
+            in_array('exists_where_mutations.py', $suites, true) && in_array('temporal_mutations.py', $suites, true));
         $unrun = uv_unrun_suites($suites, $wf);
         if ($unrun) {
             fwrite(STDERR, "  suites in tests/ that no workflow runs - add them to .github/workflows/parity.yml:\n    "
@@ -456,6 +496,27 @@ namespace {
             uv_unrun_suites(['a_js.cjs', 'b_php.php'], "run: node tests/a_js.cjs\n") === ['b_php.php']);
         check('W-06 (control): and a longer name does not count for a shorter one',
             uv_unrun_suites(['a_php.php'], "run: php tests/a_php.php.bak\n") === ['a_php.php']);
+        // rv11b1-6: the reviewer's case, a suite named only in a comment.
+        $yaml = "jobs:\n  j:\n    steps:\n"
+              . "      # php tests/c_php.php is left out for now\n"
+              . "      - name: runs tests/d_php.php in its name only\n"
+              . "        run: php tests/a_php.php  # and tests/e_php.php in a trailing comment\n"
+              . "      - run: |\n"
+              . "          php tests/b_php.php\n"
+              . "          # php tests/f_php.php\n"
+              . "\n"
+              . "          python3 tests/g_mutations.py\n"
+              . "        env:\n"
+              . "          NOTE: tests/h_php.php\n"
+              . "      - name: x\n"
+              . "        run: >-\n"
+              . "          node tests/i_js.cjs\n";
+        check('W-06 (control): only run commands count, never a YAML comment, a step name, a shell comment or another key',
+            uv_unrun_suites(['a_php.php', 'b_php.php', 'c_php.php', 'd_php.php', 'e_php.php', 'f_php.php',
+                             'g_mutations.py', 'h_php.php', 'i_js.cjs'], $yaml)
+            === ['c_php.php', 'd_php.php', 'e_php.php', 'f_php.php', 'h_php.php']);
+        check('W-06 (control): a comment character inside a word is not a comment',
+            uv_unrun_suites(['a_php.php'], "run: php tests/a_php.php --tag=x#1\n") === []);
     }
 
     /* =====================================================================

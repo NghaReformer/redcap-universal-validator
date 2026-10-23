@@ -675,7 +675,11 @@ stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
 `when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
-matching). Green CI means the module's client and server engines agree with
+matching). On each PHP version it also runs the two mutation runners,
+`tests/temporal_mutations.py` and `tests/exists_where_mutations.py`.
+`tests/scan_wiring_php.php` fails when a suite or a mutation runner in `tests/`
+is not named by the command of some workflow `run:` key; a name in a comment, a
+step name or another key does not count. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 
