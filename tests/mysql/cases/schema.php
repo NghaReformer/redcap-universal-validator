@@ -312,8 +312,10 @@ foreach (['unstored', 'stored_findings'] as $rc) {
             . ' WHERE run_id = ?', [$v5run])[0][0] === 0);
 }
 foreach (['open_unstored', 'open_findings'] as $oc) {
-    check('v6 upgrade: uv_scan_run.' . $oc . ' is NULL on the run in flight, so it is counted the old way',
-        $colOf('scan_run', $oc) === ['YES', '0']
+    // No default (review rvc1-3): MySQL reports SQL NULL, MariaDB the word.
+    $def = $colOf('scan_run', $oc);
+    check('v6 upgrade: uv_scan_run.' . $oc . ' is nullable with no default, and NULL on the run in flight, so it is counted the old way',
+        is_array($def) && $def[0] === 'YES' && ($def[1] === null || strtoupper((string) $def[1]) === 'NULL')
         && $ca->query('SELECT ' . $oc . ' FROM ' . Schema::table('scan_run')
             . ' WHERE run_id = ?', [$v5run])[0][0] === null);
 }
@@ -331,3 +333,50 @@ check('v6 upgrade: migrating again applies nothing',
     $r6b['ok'] === true && $r6b['applied'] === 0
     && $ca->query('SELECT open_unstored, open_findings FROM ' . Schema::table('scan_run')
         . ' WHERE run_id = ?', [$v5run])[0] === [null, null]);
+
+// -- A RUN THE PREVIOUS BUILD STARTS WHILE THE UPGRADE RUNS (review rvc1-3) ----
+//
+// The version 5 build passes health() until the version row is written, and
+// its INSERT names neither run count. With DEFAULT 0 set mid-migration, such a
+// run read as one keeping counts that no commit of its build maintained, and
+// dropped its left-out findings from the working count (the reviewer's
+// window repro: 1 where the old rule says 3). With no default it is NULL and
+// counted the old way.
+foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
+for ($v5 = 1; $v5 <= 5; $v5++) {
+    foreach (Schema::statements($v5) as $item) $A->query(is_array($item) ? $item['sql'] : $item);
+}
+$A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES (5, NOW())');
+$v6sql = Schema::statements(6);
+// Every version 6 statement that touches a run's columns has run; the
+// version row has not.
+foreach ($v6sql as $item) {
+    if (strpos($item['sql'], Schema::table('scan_run')) !== false || strpos($item['sql'], Schema::table('scan_record')) !== false) {
+        $A->query($item['sql']);
+    }
+}
+check('rvc1-3 window: the server still reports version 5, so the version 5 build still answers Start',
+    Schema::currentVersion($ca) === 5);
+$A->query('INSERT INTO ' . Schema::table('scan_run') . '
+    (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+     coverage, detail, values_state, policy_json, policy_revision, fingerprint,
+     created_at, updated_at, active_slot)
+    VALUES (UNHEX(REPLACE(UUID(), "-", "")), ' . $PID . ', 1, 1, "alice", "global", "full", "scanning",
+            "partial", "complete", "none", "{}", 1, REPEAT("a", 64), NOW(), NOW(), 1)');
+$winRun = (int) $A->insert_id;
+$rWin = Schema::migrate($ca);
+check('rvc1-3 window: the migration then completes', $rWin['ok'] === true && Schema::currentVersion($ca) === 6);
+$winStore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+$winRow = $winStore->run($PID, $winRun);
+check('rvc1-3 window: the run the version 5 build made keeps NULL on both counts',
+    $winRow !== null && $winRow['open_unstored'] === null && $winRow['open_findings'] === null);
+// What a version 5 commit wrote while the run was in flight: one row stored,
+// two left out, counted only in the detail-unstored aggregate.
+$A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 1 WHERE run_id = ' . $winRun);
+$winStore->addAggregate($winRun, \INSPIRE\UniversalValidator\Scan\ScanStore::DETAIL_UNSTORED, '', '', 2);
+check('rvc1-3 window: and is counted the old way while it works: 1 stored and 2 left out',
+    \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($winStore, $winStore->run($PID, $winRun)) === 3);
+$winNew = $winStore->startRun($NEIGHBOUR, ['created_by' => 'bob']);
+check('rvc1-3 window: while a run this build starts writes 0 on both counts itself',
+    $winNew['ok'] === true && $winNew['run']['open_unstored'] !== null && (int) $winNew['run']['open_unstored'] === 0
+    && $winNew['run']['open_findings'] !== null && (int) $winNew['run']['open_findings'] === 0);

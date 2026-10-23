@@ -714,16 +714,21 @@ final class Schema
      * read them per record.
      *
      * uv_scan_run.open_unstored and uv_scan_run.open_findings are the run's
-     * sums of them, kept in the same transactions. Each is added as below,
-     * after its row column. NULL ON EVERY RUN THAT EXISTS WHEN IT IS ADDED, and 0 on
-     * every run created after: a run in flight across the upgrade did not
-     * keep the count from its start, and NULL tells ScanPromotion to read it
-     * the old way (the run-wide detail-unstored aggregate). The column is
-     * added NULL with no default, so the rows already there are NULL; the
-     * default is set afterwards, which changes no row. Re-run, the first is
-     * skipped, and so is the second once the default reads 0. Should the
-     * second not take, new runs are NULL too and are read the old way: the
-     * weaker count, never a wrong one.
+     * sums of them, kept in the same transactions. NULL, WITH NO DEFAULT, and
+     * written 0 by this build's startRun() (review rvc1-3). A NULL run is
+     * counted the old way (the run-wide detail-unstored aggregate and
+     * detail_rows), because it did not keep the counts from its start: every
+     * run that exists at the upgrade, and every run the previous build starts
+     * while the upgrade runs. The previous build passes health() until the
+     * version row is written, and its INSERT names neither column, so a
+     * DEFAULT 0 set mid-migration (as this version first did) made such a run
+     * read as one that kept counts no commit of its build maintained.
+     *
+     * ONE ALTER PER TABLE for the two pairs, so MySQL 5.7, which rebuilds a
+     * table for every ADD COLUMN, rebuilds uv_scan_record once; 8.0 and
+     * MariaDB add both columns in place either way. Each is skipped when its
+     * first column is there: the two columns of one ALTER arrive together or
+     * not at all.
      *
      * uv_unique_candidate.ix_record (project_id, generation_id, record_hash)
      * is what lets catch-up delete the candidates of a record it sends back
@@ -739,20 +744,34 @@ final class Schema
         $run = self::table('scan_run');
         $rec = self::table('scan_record');
         $uc  = self::table('unique_candidate');
-        return [['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0',
+        return [['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0, '
+                        . 'ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
                  'skipIf' => ['column', $rec, 'unstored']],
-                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL',
+                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL, '
+                        . 'ADD COLUMN open_findings BIGINT UNSIGNED NULL',
                  'skipIf' => ['column', $run, 'open_unstored']],
-                ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_unstored SET DEFAULT 0',
-                 'skipIf' => ['zerodefault', $run, 'open_unstored']],
-                ['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0',
-                 'skipIf' => ['column', $rec, 'stored_findings']],
-                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_findings BIGINT UNSIGNED NULL',
-                 'skipIf' => ['column', $run, 'open_findings']],
-                ['sql' => 'ALTER TABLE ' . $run . ' ALTER COLUMN open_findings SET DEFAULT 0',
-                 'skipIf' => ['zerodefault', $run, 'open_findings']],
                 ['sql' => 'ALTER TABLE ' . $uc . ' ADD KEY ix_record (project_id, generation_id, record_hash)',
                  'skipIf' => ['index', $uc, 'ix_record']]];
+    }
+
+    /**
+     * Prove version 6 is on the server before saying so: its columns and its
+     * index.
+     *
+     * @return ?string null when everything holds, otherwise what does not
+     */
+    private static function verifyV6($module)
+    {
+        foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
+                  ['scan_record', 'stored_findings'], ['scan_run', 'open_findings']] as $tc) {
+            if (!self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) {
+                return 'the ' . $tc[0] . ' table has no ' . $tc[1] . ' column';
+            }
+        }
+        if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
+            return 'the unique_candidate table has no ix_record index';
+        }
+        return null;
     }
 
     /**
@@ -968,19 +987,11 @@ final class Schema
                 }
             }
             if ($v === 6) {
-                foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
-                          ['scan_record', 'stored_findings'], ['scan_run', 'open_findings']] as $tc) {
-                    if (self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) continue;
+                $bad = self::verifyV6($module);
+                if ($bad !== null) {
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
-                            'why' => 'schema version 6 did not verify after it was applied: the ' . $tc[0]
-                                   . ' table has no ' . $tc[1] . ' column. The version is NOT recorded and '
-                                   . 'the scan stays disabled.'];
-                }
-                if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
-                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
-                            'why' => 'schema version 6 did not verify after it was applied: the unique_candidate '
-                                   . 'table has no ix_record index. The version is NOT recorded and the scan '
-                                   . 'stays disabled.'];
+                            'why' => 'schema version 6 did not verify after it was applied: ' . $bad
+                                   . '. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
             try {
@@ -1168,12 +1179,6 @@ final class Schema
             $sql = 'SELECT COUNT(*) FROM information_schema.columns
                     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
                       AND is_nullable = "NO"';
-        } elseif ($kind === 'zerodefault') {
-            // '0', not IS NOT NULL: MariaDB reports a nullable column with no
-            // default as the string 'NULL', where MySQL reports SQL NULL.
-            $sql = 'SELECT COUNT(*) FROM information_schema.columns
-                    WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
-                      AND column_default = "0"';
         } else {
             throw new \RuntimeException('unknown skipIf kind: ' . $kind);
         }

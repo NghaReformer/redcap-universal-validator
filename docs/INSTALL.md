@@ -190,17 +190,20 @@ the largest, is not touched.
 
 - `uv_scan_record` gains `unstored` and `stored_findings`: for each record, how
   many findings of its latest reading the detail limit left out, and how many
-  it stored.
+  it stored. One `ALTER`, so MySQL 5.7 rebuilds the table once.
 - `uv_scan_run` gains `open_unstored` and `open_findings`, their sums for the
-  run. Both are NULL on every run that exists at the upgrade, and 0 on runs
-  created after it.
+  run, in one `ALTER`. Neither has a default. Both are NULL on every run that
+  exists at the upgrade and on any run the previous version starts while the
+  upgrade runs; the new version writes 0 on each run it starts.
 - `uv_unique_candidate` gains the index
   `ix_record (project_id, generation_id, record_hash)`, so catch-up can remove
   the duplicate candidates of a record it reads again, or that was deleted,
   without reading every candidate of the run.
 
-That is seven statements, and their time grows with the rows in those three
-tables; the index is the slowest.
+That is three statements, and their time grows with the rows in those three
+tables. Measured with 400,000 records and 400,000 candidates: MySQL 8.0 adds
+the columns at once and spends about 17 seconds on the index; MySQL 5.7
+spends about 19 seconds rebuilding `uv_scan_record` and 5 on the index.
 
 Runs that exist at the upgrade are counted the old way, from every finding
 row they wrote. That shows only where such a run has no summary: one still in

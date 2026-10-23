@@ -244,11 +244,16 @@ final class SqlScanStore implements ScanStore
         // the policy that caused it (ScanRetention::revokePreviews()).
         $rev = isset($run['policy_revision']) ? (int) $run['policy_revision'] : $this->projectRevision($pid);
 
+        // open_unstored and open_findings ARE WRITTEN, 0 (review rvc1-3).
+        // The columns have no default, so a run the previous build starts
+        // while the version 6 migration runs is NULL there and is counted
+        // the old way; this build's runs keep the counts from their start.
         $sql = 'INSERT INTO ' . Schema::table('scan_run') . '
             (run_uuid, project_id, run_seq, generation_id, created_by, scope_dag, scope_kind,
              run_kind, baseline_generation, phase, coverage, detail, values_state, policy_json,
-             policy_revision, fingerprint, fence_open, created_at, updated_at, active_slot)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)';
+             policy_revision, fingerprint, fence_open, created_at, updated_at, active_slot,
+             open_unstored, open_findings)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,0)';
         $params = [
             isset($run['uuid']) ? $run['uuid'] : random_bytes(16),
             $pid,
