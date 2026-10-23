@@ -471,8 +471,10 @@ check('parse: a forged run through a field no one types is caught from its first
 check('parse: in order, nothing is doubted', $pf("notes = 'n',\ndob = 'd',\nsite = 'A'") === [1 => ['notes' => 'n', 'dob' => 'd', 'site' => 'A']]);
 check('parse: a stray line still makes every field not plain', $pf("site = 'A',\nwhat is this") === [1 => ['site' => null]]);
 // Each line is looked at once (review W2-10): a long notes value costs one pass.
-// Ten times the lines must cost about ten times the time, not a hundred; the
-// ratio holds on a loaded machine, where a fixed time limit does not.
+// Ten times the lines must cost about ten times the time, not a hundred.
+// Either test passes it: the ratio holds on a loaded machine, where a fixed
+// limit does not, and the limit holds when the small run is too quick for the
+// timer to measure. A parse that walks the value once per line fails both.
 $parseTime = function (int $lines) use ($ord, $free) {
     $text = "notes = 'start\n" . str_repeat("a line\n", $lines) . "end',\nsite = 'A'";
     $best = INF;
@@ -486,7 +488,7 @@ $parseTime = function (int $lines) use ($ord, $free) {
 [$small] = $parseTime(13000);
 [$took, $r] = $parseTime(130000);
 $ratio = $took / max($small, 0.0005);
-check('parse: 130,000 lines of one value cost about ten times 13,000 (took ' . round($took, 2) . ' s, ' . round($ratio, 1) . ' times)', $ratio < 30 && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
+check('parse: 130,000 lines of one value cost about ten times 13,000 (took ' . round($took, 2) . ' s, ' . round($ratio, 1) . ' times)', ($ratio < 30 || $took < 1.0) && $r[1]['site'] === 'A' && strlen($r[1]['notes']) === 5 + 7 * 130000 + 4);
 
 // Paging: a record read across pages, then the cap.
 $db = new FakeHistoryLog();
