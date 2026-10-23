@@ -172,8 +172,9 @@ Have record 100 and record 200 open in a second tab before you start.
 
 ## Section G: the findings page (Project A)
 
-The page shows, under the panel, the findings of the newest finished run in
-your own scope, once no run of yours is going. Earlier runs are not listed.
+The page shows, under the panel, the current report of your own scope (the
+newest run that completed and that no later whole-project run replaced),
+once no run of yours is going. Earlier runs are not listed.
 Before this section, as designer, run a scan to the end (96 findings) and do
 not start another.
 
@@ -187,6 +188,8 @@ not start another.
 | G6 | Set Reason to the duplicate reason and Data Access Group to `south`. | "No findings match these filters." and no row: both duplicates are in `north`. Set both back to "All". |
 | G7 | Use only the keyboard (Tab, Enter, Space) to move pages and set a filter. | Every control is reachable and works. |
 | G8 | Start a scan and let it finish. Watch the area under the panel. | The new run's findings open by themselves when the phase reads "Finished", with no reload. |
+| G9 | Start a scan, press Stop during "Checking records", then reload the page. | The report of the run from G8 opens, and above it "Scan N started after this one and did not complete, so this report is still the current one." with a button "Show what scan N found". The button opens the stopped run's findings; "Show the current report" goes back. |
+| G10 | As north, run a scan of the group to the end. Then, as designer, run a whole-project scan to the end. As north, reload the page. | No findings table. "A scan of the whole project has replaced the last report of this Data Access Group. Start a scan of the group to see its current findings." |
 
 ## Section H: the CSV file (Project A)
 

@@ -2146,42 +2146,114 @@ final class ScanService
     }
 
     /**
-     * The newest finished run of THIS reader's scope, for the findings panel
-     * to open on, or null.
+     * The report the findings panel opens on for THIS reader, and what the
+     * page says beside it, or null.
      *
      * The panel shows a finished run's report (B5), and a run that finished
      * after its tab was closed had no way back onto the page: activeRun()
-     * answers only the run holding the slot. A group reader is offered the
-     * newest finished run of their group, an unrestricted reader the newest
-     * whole-project run - the scope a Start from this page would have.
+     * answers only the run holding the slot. The scope is the reader's own -
+     * a group reader's group, the whole project for anyone else - the scope a
+     * Start from this page would have. A group reader is never offered a
+     * whole-project run, which they may not read (rv5b-4).
      *
-     * A LOCATOR, NOT A GRANT. The id is printed into the page for the client
+     * THE CURRENT REPORT, NOT THE NEWEST ROW (reviews rv11b1-1, rv11b2-1,
+     * rv11b2-2, rv11b2-5). This was the newest terminal run of the scope, and
+     * three kinds of run were offered that scan-findings then refused or
+     * showed empty:
+     *   - a run a later complete whole-project run has superseded. That run
+     *     closes every older generation, group runs included, so after any
+     *     whole-project scan a group reader's page opened on "This report
+     *     holds 2 findings." over "This scan stored no findings.", and since
+     *     rv11a1-5 on a refusal. Superseded is ScanStore::supersededBy()'s
+     *     test: a complete whole-project run of a later generation, read here
+     *     as the newest such generation, so no run that the report would
+     *     refuse as replaced is offered;
+     *   - a run retention has begun removing, which every verb answers as no
+     *     run (ScanStore::REMOVING_WHY);
+     *   - a run that stopped, failed or expired after the complete one the
+     *     store still treats as current (supersedePrevious() keeps the
+     *     previous report for any end but `complete`), which hid that report
+     *     behind a partial one.
+     * So the page opens the newest COMPLETE run of the scope that nothing
+     * superseded and retention keeps, and names the newest unfinished one
+     * after it as `newer`, for the reader to open. With no complete run left
+     * it opens the newest finished one. When the scope's newest finished run
+     * was superseded, a group reader has nothing readable left, and
+     * `replaced` says so: the page tells them a whole-project scan replaced
+     * their group's report, rather than opening an empty one.
+     *
+     * A LOCATOR, NOT A GRANT. The ids are printed into the page for the client
      * to ask scan-findings about, and that verb decides everything again,
      * before the run row (L8): a reader it refuses is refused the same way for
-     * this id as for any other. Nothing about the run but its id is read here.
+     * these ids as for any other. Nothing about the runs but their ids and
+     * generations is read here.
      *
-     * ONE ROW, THROUGH ix_project_created, newest first (run_id breaks a tie in
-     * the same second; it is the key's own suffix, so there is no sort). A
-     * project keeps one row per run, and retention purges old ones.
+     * ONE STATEMENT, BOUNDED BY THE PROJECT'S OWN RUNS. Three branches through
+     * ix_project_created: the scope's newest finished run and its newest
+     * complete one, each newest first with run_id breaking a tie in the same
+     * second (the key's own suffix, so there is no sort) and LIMIT 1; and the
+     * newest generation a complete whole-project run of the project reached.
+     * Each walks at most the project's retained runs once, so the read is
+     * linear in them at worst, never in the findings. Generations rise with
+     * the runs (one active slot per project), so a run is superseded exactly
+     * when its generation is below that one.
      *
      * @param array|null $scope ScanPageView::scanScope()'s answer, as the page holds it
-     * @return int|null null for no such run, no readable scope, or a read that failed
+     * @return array{run_id:?int, newer:?int, replaced:bool}|null null for no
+     *         readable scope, or a read that failed or answered in a shape
+     *         this does not know; run_id null when there is nothing to open
      */
     public function finishedRun($pid, $scope = null)
     {
         if (!is_array($scope) || empty($scope['ok']) || !array_key_exists('dag', $scope)) return null;
+        $t = Schema::table('scan_run') . ' FORCE INDEX (ix_project_created)';
+        $mine = 'project_id = ? AND phase = ? AND '
+              . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
+              . ' AND (terminal_reason IS NULL OR terminal_reason <> ?)';
+        $newest = ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
+        $sql = '(SELECT 1, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine . $newest . ')'
+             . ' UNION ALL (SELECT 2, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine
+             . ' AND terminal = ?' . $newest . ')'
+             . ' UNION ALL (SELECT 3, NULL, MAX(generation_id) FROM ' . $t
+             . ' WHERE project_id = ? AND terminal = ? AND scope_dag IS NULL)';
+        $p = [(int) $pid, ScanPhase::TERMINAL];
+        if ($scope['dag'] !== null) $p[] = (string) $scope['dag'];
+        $p[] = ScanStore::REMOVING_WHY;
         try {
-            $sql = 'SELECT run_id FROM ' . Schema::table('scan_run')
-                 . ' WHERE project_id = ? AND phase = ? AND '
-                 . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
-                 . ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
-            $params = [(int) $pid, ScanPhase::TERMINAL];
-            if ($scope['dag'] !== null) $params[] = (string) $scope['dag'];
-            $r = $this->db->select($sql, $params);
-            return (isset($r[0][0]) && ctype_digit((string) $r[0][0])) ? (int) $r[0][0] : null;
+            $rows = $this->db->select($sql, array_merge($p, $p,
+                [ScanOutcome::COMPLETE, (int) $pid, ScanOutcome::COMPLETE]));
         } catch (\Throwable $e) {
             return null;
         }
+        $found = [];
+        $whole = false;
+        foreach ($rows as $row) {
+            $row = array_values((array) $row);
+            if (count($row) < 3) return null;
+            $k = (string) $row[0];
+            if ($k === '3') {
+                if ($row[2] !== null && !ctype_digit((string) $row[2])) return null;
+                $whole = $row[2] === null ? null : (int) $row[2];
+                continue;
+            }
+            if (($k !== '1' && $k !== '2') || !ctype_digit((string) $row[1]) || !ctype_digit((string) $row[2])) {
+                return null;
+            }
+            $found[$k] = ['id' => (int) $row[1], 'gen' => (int) $row[2]];
+        }
+        // MAX() answers one row whatever the project holds. No row is a read
+        // that did not work, and reading it as "nothing superseded" would
+        // offer a replaced report.
+        if ($whole === false) return null;
+        $live = function ($x) use ($whole) { return $x !== null && ($whole === null || $x['gen'] >= $whole); };
+        $last = isset($found['1']) ? $found['1'] : null;
+        $complete = isset($found['2']) ? $found['2'] : null;
+        $open = $live($complete) ? $complete : ($live($last) ? $last : null);
+        return [
+            'run_id'   => $open === null ? null : $open['id'],
+            'newer'    => ($open !== null && $live($last) && $last['id'] !== $open['id']) ? $last['id'] : null,
+            'replaced' => $open === null && $last !== null && $scope['dag'] !== null,
+        ];
     }
 
     /**

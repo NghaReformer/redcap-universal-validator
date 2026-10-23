@@ -970,6 +970,7 @@
         skips: 0,               // empty pages read past for this press
         stopped: false,         // a final refusal: never asked again
         facetsFor: null,        // the run the filter options were built for
+        offer: null,            // {current, newer}: the page's two runs (rv11b2-5), or null
         filter: { form: '', reason: '', type: '', group: '' }
     };
 
@@ -996,16 +997,27 @@
 
     function reportNote(s) { text(el('uv-scan-report-note'), s); }
 
-    /** Put the report away: a new run is going, or the page has none. */
+    /**
+     * Put the report away: a new run is going, or the page has none. The
+     * page's offer of a newer run goes with it: once a new run is going,
+     * which report is current is that run's to say.
+     */
     function reportReset() {
         var r = UV.report;
         r.runId = null;
         r.gen++;
         r.waiting = false;
+        r.offer = null;
+        reportOther();
         show(el('uv-scan-report'), false);
     }
 
-    /** Open a run's report on its first page, once per run. */
+    /**
+     * Open a run's report on its first page, once per run. THE RUNS IT IS
+     * HANDED are the page's two (finishedRun(): the current report and a
+     * newer run that did not complete) and the run this tab watched to its
+     * end (review rv11b1-2); the answer says which scope each covered.
+     */
     function reportLoad(runId) {
         var r = UV.report;
         if (!el('uv-scan-report') || !isRunId(runId) || r.runId === runId) return;
@@ -1013,7 +1025,50 @@
         r.filter = { form: '', reason: '', type: '', group: '' };
         r.facetsFor = null;
         r.stopped = false;
+        reportOther();
         reportAsk(0, true);
+    }
+
+    /**
+     * THE NEWER RUN BESIDE THE CURRENT REPORT (review rv11b2-5). A scan
+     * stopped seconds after it started hid the report the store still treats
+     * as current, which stayed reachable only by its id. The page opens the
+     * current report and names the newer run here, with a control that opens
+     * it, and from it the way back. Shown only while one of the two is open.
+     */
+    function reportOther() {
+        var r = UV.report, o = r.offer, L = labels();
+        var p = el('uv-scan-report-other'), b = el('uv-scan-report-switch');
+        var on = o !== null && (r.runId === o.current || r.runId === o.newer);
+        if (on && r.runId === o.current) {
+            text(p, fill(L.reportNewer || 'Scan {run} started after this one and did not complete, so this report is still the current one.', { run: o.newer }));
+            text(b, fill(L.reportShowNewer || 'Show what scan {run} found', { run: o.newer }));
+        } else if (on) {
+            text(p, fill(L.reportViewingNewer || 'This is scan {run}, which did not complete. The current report is scan {current}.', { run: o.newer, current: o.current }));
+            text(b, L.reportShowCurrent || 'Show the current report');
+        }
+        show(p, on);
+        show(b, on);
+    }
+
+    function reportSwitch() {
+        var r = UV.report, o = r.offer;
+        if (o === null || (r.runId !== o.current && r.runId !== o.newer)) return;
+        reportLoad(r.runId === o.current ? o.newer : o.current);
+    }
+
+    /**
+     * A GROUP WHOSE LAST REPORT A WHOLE-PROJECT SCAN REPLACED (review
+     * rv11b1-1). That scan closed the group's findings, and the group may not
+     * read it, so there is no report to open: the page says so in one
+     * sentence, instead of opening an empty report under a count of findings.
+     */
+    function reportReplaced() {
+        var L = labels();
+        if (!el('uv-scan-report')) return;
+        show(el('uv-scan-report'), true);
+        reportBody(false);
+        reportNote(L.reportReplaced || 'A scan of the whole project has replaced the last report of this Data Access Group. Start a scan of the group to see its current findings.');
     }
 
     /**
@@ -1156,9 +1211,15 @@
             reportNote('');
         } else if (r.stack.length) {
             reportNote(L.reportNoMore || 'No further findings match these filters.');
+        } else if (filtered()) {
+            reportNote(L.reportEmpty || 'No findings match these filters.');
         } else {
-            reportNote(filtered() ? (L.reportEmpty || 'No findings match these filters.')
-                                  : (L.reportNone || 'This scan stored no findings.'));
+            // NEVER "STORED NO FINDINGS" UNDER A COUNT OF SOME (review
+            // rv11b1-1): a report whose rows were closed since its count was
+            // taken reads as missing them, not as clean.
+            reportNote(whole((a.report || {}).expectedRows) > 0
+                ? (L.reportMissing || 'This report counts findings that could not be read now. It may have been replaced since this page was opened; reload the page to open the current report.')
+                : (L.reportNone || 'This scan stored no findings.'));
         }
     }
 
@@ -1333,13 +1394,18 @@
         if (typeof opts.exportUrl === 'string') UV.exportUrl = opts.exportUrl;
         if ((b = el('uv-scan-report-next'))) b.addEventListener('click', quietly(reportNext));
         if ((b = el('uv-scan-report-prev'))) b.addEventListener('click', quietly(reportPrev));
+        if ((b = el('uv-scan-report-switch'))) b.addEventListener('click', quietly(reportSwitch));
         for (i = 0; i < FILTERS.length; i++) {
             (function (name) {
                 var sel = el('uv-scan-filter-' + name);
                 if (sel) sel.addEventListener('change', quietly(function () { reportFilter(name, sel.value); }));
             })(FILTERS[i]);
         }
-        if (isRunId(opts.reportRunId)) reportLoad(opts.reportRunId);
+        var current = isRunId(opts.reportRunId) ? opts.reportRunId : null;
+        var newer = (isRunId(opts.reportNewerId) && opts.reportNewerId !== current) ? opts.reportNewerId : null;
+        UV.report.offer = (current !== null && newer !== null) ? { current: current, newer: newer } : null;
+        if (current !== null) reportLoad(current);
+        else if (opts.reportReplaced === true) reportReplaced();
     }
 
     /**

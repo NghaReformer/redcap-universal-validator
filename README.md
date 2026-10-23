@@ -1051,11 +1051,18 @@ project.
 
 ### The findings page
 
-Under the panel, the page shows the findings of the newest finished run in
-the reader's own scope. For a user outside any group that is the newest
-whole-project run; for a group user, the newest run of their group. The
-findings appear when no run of the reader's is going, and open by themselves
-when a run the tab is watching finishes. Earlier runs are not listed.
+Under the panel, the page shows the current report of the reader's own
+scope: the newest run that completed, that no later whole-project run has
+replaced, and that retention is not removing. For a user outside any group
+that is a whole-project run; for a group user, a run of their group. A newer
+run that was stopped, failed or expired leaves that report current, and the
+page names it beside the report with a button that opens its findings. With
+no complete run, the page opens the newest finished one. A whole-project run
+that completes replaces every earlier report, group runs included, so a
+group user whose group's last report was replaced is told so and asked to
+start a scan of the group, rather than shown an empty report. The findings
+appear when no run of the reader's is going, and open by themselves when a
+run the tab is watching finishes. Earlier runs are not listed.
 
 Findings come 50 to a page, in the order they were stored, with "Next page"
 and "Previous page". The table's caption gives the page, and a line above it

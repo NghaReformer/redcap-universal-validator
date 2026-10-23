@@ -151,11 +151,16 @@ $asked = (isset($_GET['run']) && $_GET['run'] === '1')
       || (isset($_GET['csv']) && $_GET['csv'] === '1')
       || (isset($_POST['csv']) && $_POST['csv'] === '1');
 
-// THE LAST FINISHED RUN OF THIS READER'S SCOPE, for the findings panel (B5).
+// THE CURRENT REPORT OF THIS READER'S SCOPE, for the findings panel (B5):
+// the run to open, a newer run that did not complete (reviews rv11b2-5), and
+// whether a whole-project scan replaced the group's last report (rv11b1-1).
 // Only when no run of theirs holds the slot: a run in progress has no report
 // yet, and the panel opens on its report once the status says it finished.
-// A locator only - scan-findings decides everything again before the run row.
-$finishedRun = ($available['ok'] && $activeRun === null) ? $svc->finishedRun($pid, $scope) : null;
+// Locators only - scan-findings decides everything again before the run row.
+$finished = ($available['ok'] && $activeRun === null) ? $svc->finishedRun($pid, $scope) : null;
+$finishedRun = is_array($finished) ? $finished['run_id'] : null;
+$newerRun = is_array($finished) ? $finished['newer'] : null;
+$replaced = is_array($finished) && !empty($finished['replaced']);
 ?>
 <h4 id="uv-scan-heading" style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
 
@@ -316,6 +321,8 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
 <?php } ?>
 <?php if ($finishedRun !== null) { ?>
     <p style="color:#a30">The findings of the last finished scan are shown with JavaScript.</p>
+<?php } elseif ($replaced) { ?>
+    <p style="color:#a30"><?php echo ScanPageView::h(ScanPageView::REPORT_REPLACED); ?></p>
 <?php } ?>
   </noscript>
 </div>
@@ -329,6 +336,11 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
 <section id="uv-scan-report" aria-labelledby="uv-scan-report-heading" aria-busy="false"
          style="display:none;max-width:1100px;margin-top:14px;border:1px solid #ddd;border-radius:6px;padding:14px">
   <h5 id="uv-scan-report-heading" style="margin-top:0">Findings of the last finished scan</h5>
+  <?php // A newer run that did not complete, beside the current report it
+        // leaves current (review rv11b2-5), and the control that opens the
+        // other of the two. Filled and shown by js/scan.js. ?>
+  <p id="uv-scan-report-other" style="display:none;font-size:13px;margin:4px 0"></p>
+  <button type="button" id="uv-scan-report-switch" class="btn btn-secondary btn-sm" style="display:none"></button>
   <?php // README's three marks of a report that cannot certify, on the page as in
         // the file (item 10): this banner above the table, the terminal row
         // below it, and the file name's suffix beside the download. ?>
@@ -408,6 +420,10 @@ reporting a clean project.
         // CSV is downloaded from. The URL is the framework's, encoded as the
         // labels are; the client appends the run id and nothing else.
         reportRunId: <?php echo $finishedRun === null ? 'null' : (int) $finishedRun; ?>,
+        // A newer run of the same scope that did not complete, offered beside
+        // it; and whether a whole-project scan replaced the group's report.
+        reportNewerId: <?php echo $newerRun === null ? 'null' : (int) $newerRun; ?>,
+        reportReplaced: <?php echo $replaced ? 'true' : 'false'; ?>,
         exportUrl: <?php echo json_encode((string) $module->getUrl('pages/export.php'),
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>
     });

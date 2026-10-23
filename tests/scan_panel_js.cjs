@@ -66,12 +66,16 @@ const IDS = ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume
   'uv-scan-report-next', 'uv-scan-report-note', 'uv-scan-report-export-wrap', 'uv-scan-report-export',
   'uv-scan-filter-form-wrap', 'uv-scan-filter-form', 'uv-scan-filter-reason-wrap', 'uv-scan-filter-reason',
   'uv-scan-filter-type-wrap', 'uv-scan-filter-type', 'uv-scan-filter-group-wrap', 'uv-scan-filter-group',
-  'uv-scan-report-banner', 'uv-scan-report-row', 'uv-scan-report-suffix'];
+  'uv-scan-report-banner', 'uv-scan-report-row', 'uv-scan-report-suffix', 'uv-scan-report-other',
+  'uv-scan-report-switch'];
 let els = {};
 function freshDom() {
   els = {};
   IDS.forEach((id) => { els[id] = makeEl(/filter-(form|reason|type|group)$/.test(id) ? 'select' : 'div', id); });
   els['uv-scan-report'].style.display = 'none';
+  // Hidden in the markup until the client shows them (pages/scan.php).
+  els['uv-scan-report-other'].style.display = 'none';
+  els['uv-scan-report-switch'].style.display = 'none';
 }
 freshDom();
 global.window = {};
@@ -119,6 +123,12 @@ UV.labels = {
   reportFailed: 'The findings of this scan could not be read just now.',
   filterAll: 'All',
   reportSuffix: 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.',
+  reportReplaced: 'A scan of the whole project has replaced the last report of this Data Access Group. Start a scan of the group to see its current findings.',
+  reportNewer: 'Scan {run} started after this one and did not complete, so this report is still the current one.',
+  reportShowNewer: 'Show what scan {run} found',
+  reportViewingNewer: 'This is scan {run}, which did not complete. The current report is scan {current}.',
+  reportShowCurrent: 'Show the current report',
+  reportMissing: 'This report counts findings that could not be read now. It may have been replaced since this page was opened; reload the page to open the current report.',
   coverage: {}, phase: {},
 };
 
@@ -401,8 +411,9 @@ function noZero(label) {
     els['uv-scan-report-prev'].getAttribute('aria-disabled') === 'true'
     && els['uv-scan-report-caption'].textContent === 'Findings of this scan, page 1');
 
-  // "No findings" only when next is null and nothing was shown.
-  reset([page({ rows: [], next: null })]);
+  // "No findings" only when next is null, nothing was shown, and the report
+  // counts none (rv11b1-1).
+  reset([page({ rows: [], next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 0 } })]);
   UV.attach({ reportRunId: 61 });
   await ticks();
   check('empty: a run with no findings says so, when the server says there is no more',
@@ -498,6 +509,52 @@ function noZero(label) {
   await ticks(10);
   check('run: a new Start puts the last report away', !shown('uv-scan-report'));
   noZero('run');
+
+  // -- rv11b1-1: which report opens -----------------------------------------
+  // A group whose last report a whole-project scan replaced has none to open
+  // (ScanService::finishedRun() says `replaced`): one sentence, nothing asked.
+  reset([]);
+  UV.attach({ reportRunId: null, reportNewerId: null, reportReplaced: true, exportUrl: '/x/export.php' });
+  await ticks();
+  check('rv11b1-1: a group report a whole-project scan replaced is said in one sentence, and nothing is asked for',
+    findingsSent().length === 0 && shown('uv-scan-report')
+    && els['uv-scan-report-note'].textContent === UV.labels.reportReplaced
+    && !shown('uv-scan-report-table') && !shown('uv-scan-report-export-wrap') && !shown('uv-scan-report-other'));
+  reset([page({ rows: [], next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 2 } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-1: an empty report that counts findings never says it stored none',
+    els['uv-scan-report-note'].textContent === UV.labels.reportMissing
+    && els['uv-scan-report-note'].textContent !== UV.labels.reportNone);
+
+  // -- rv11b2-5: a newer run that did not complete --------------------------
+  reset([page({ next: null }), page({ run_id: 64, rows: rowsOf(9, 1), next: null }), page({ next: null })]);
+  UV.attach({ reportRunId: 61, reportNewerId: 64 });
+  await ticks();
+  check('rv11b2-5: the current report opens, and the newer run is named beside it with a control',
+    sentAt(0).run_id === 61 && shown('uv-scan-report-other') && shown('uv-scan-report-switch')
+    && els['uv-scan-report-other'].textContent
+       === 'Scan 64 started after this one and did not complete, so this report is still the current one.'
+    && els['uv-scan-report-switch'].textContent === 'Show what scan 64 found');
+  els['uv-scan-report-switch'].click();
+  await ticks();
+  check('rv11b2-5: the control opens the newer run, which names the current report',
+    sentAt(1).run_id === 64 && cells()[0][0] === 'R9'
+    && els['uv-scan-report-other'].textContent === 'This is scan 64, which did not complete. The current report is scan 61.'
+    && els['uv-scan-report-switch'].textContent === UV.labels.reportShowCurrent);
+  els['uv-scan-report-switch'].click();
+  await ticks();
+  check('rv11b2-5: and the way back', sentAt(2).run_id === 61 && findingsSent().length === 3);
+  script = [{ ok: true, run_id: 70 }, { ok: false, why: 'stop here' }];
+  UV.start();
+  await ticks(10);
+  check('rv11b2-5: a new Start puts the offer away with the report',
+    !shown('uv-scan-report-other') && !shown('uv-scan-report-switch') && UV.report.offer === null);
+  reset([page({ next: null })]);
+  UV.attach({ reportRunId: 61, reportNewerId: null });
+  await ticks();
+  check('rv11b2-5 (control): with nothing newer, nothing is offered beside the report',
+    !shown('uv-scan-report-other') && !shown('uv-scan-report-switch'));
 
   // Without the panel on the page the client asks for no findings at all,
   // which is what tests/scan_client_js.cjs relies on.

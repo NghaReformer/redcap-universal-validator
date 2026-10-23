@@ -819,11 +819,16 @@ record has been read.
 
 ### Reading the findings
 
-Under the panel, the page shows the findings of your newest finished scan:
-the newest whole-project scan, or, if you work in a Data Access Group, the
-newest scan of your group. They appear when you have no scan running, and
-open by themselves when a scan you are watching finishes. Earlier scans are
-not listed.
+Under the panel, the page shows your current report: the newest scan that
+completed, of the whole project or, if you work in a Data Access Group, of
+your group. If a later scan was stopped, failed or expired, the page still
+opens the completed one, says a newer scan did not complete, and offers a
+button that shows what the newer scan found. A scan of the whole project
+replaces every earlier report, group reports included; if that has happened
+to your group's last report, the page says so, and a new scan of your group
+brings its findings back. The findings appear when you have no scan running,
+and open by themselves when a scan you are watching finishes. Earlier scans
+are not listed.
 
 The findings come 50 to a page. Use "Next page" and "Previous page" to move
 through them, and the Instrument, Reason, Check and Data Access Group filters

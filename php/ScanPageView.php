@@ -527,6 +527,25 @@ class ScanPageView
      */
     const REPORT_SUFFIX    = 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.';
 
+    /**
+     * WHICH REPORT THE PANEL OPENS ON (reviews rv11b1-1, rv11b2-1, rv11b2-5;
+     * ScanService::finishedRun()). A group whose last report a whole-project
+     * scan replaced has nothing left to open, and is told so rather than shown
+     * an empty report. A newer run that did not complete is named beside the
+     * current report, with a control that opens it ({run} and {current} are
+     * run ids). A report that counts findings none of whose rows can be read
+     * is never "stored no findings".
+     */
+    const REPORT_REPLACED      = 'A scan of the whole project has replaced the last report of this Data Access '
+                               . 'Group. Start a scan of the group to see its current findings.';
+    const REPORT_NEWER         = 'Scan {run} started after this one and did not complete, so this report is '
+                               . 'still the current one.';
+    const REPORT_SHOW_NEWER    = 'Show what scan {run} found';
+    const REPORT_VIEWING_NEWER = 'This is scan {run}, which did not complete. The current report is scan {current}.';
+    const REPORT_SHOW_CURRENT  = 'Show the current report';
+    const REPORT_MISSING       = 'This report counts findings that could not be read now. It may have been '
+                               . 'replaced since this page was opened; reload the page to open the current report.';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -569,6 +588,12 @@ class ScanPageView
             'reportFailed'    => self::REPORT_FAILED,
             'filterAll'       => self::FILTER_ALL,
             'reportSuffix'    => self::REPORT_SUFFIX,
+            'reportReplaced'  => self::REPORT_REPLACED,
+            'reportNewer'     => self::REPORT_NEWER,
+            'reportShowNewer' => self::REPORT_SHOW_NEWER,
+            'reportViewingNewer' => self::REPORT_VIEWING_NEWER,
+            'reportShowCurrent'  => self::REPORT_SHOW_CURRENT,
+            'reportMissing'   => self::REPORT_MISSING,
         ];
     }
 

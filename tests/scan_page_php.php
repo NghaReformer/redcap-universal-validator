@@ -123,12 +123,22 @@ namespace ExternalModules {
          * asked to find it: [sql, params] per ask.
          */
         public $finishedRunId = null;
+        /**
+         * The three branches finishedRun()'s statement answers (reviews
+         * rv11b1-1, rv11b2-5): [branch, run_id, generation_id]. Null builds
+         * them from $finishedRunId, as one current complete run.
+         */
+        public $finishedRows = null;
         public $finishedAsks = [];
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
             if (strpos($sql, 'uv_scan_run') !== false && strpos($sql, 'ORDER BY created_at DESC') !== false) {
                 $this->finishedAsks[] = [$sql, $params];
-                return new \ExternalModules\FakeRes($this->finishedRunId === null ? [] : [[(string) $this->finishedRunId]]);
+                $rows = $this->finishedRows !== null ? $this->finishedRows
+                    : ($this->finishedRunId === null ? [['3', null, null]]
+                        : [['1', (string) $this->finishedRunId, '5'], ['2', (string) $this->finishedRunId, '5'],
+                           ['3', null, '5']]);
+                return new \ExternalModules\FakeRes($rows);
             }
             if (strpos($sql, 'SELECT lease_expires_at FROM') !== false) {
                 return new \ExternalModules\FakeRes($this->runRow === null ? [] : [[$this->leaseExpires]]);
@@ -412,6 +422,7 @@ namespace {
         $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
         $m->leaseExpires = isset($opts['lease']) ? $opts['lease'] : null;
         $m->finishedRunId = isset($opts['finishedRun']) ? $opts['finishedRun'] : null;
+        $m->finishedRows = isset($opts['finishedRows']) ? $opts['finishedRows'] : null;
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -1438,9 +1449,10 @@ namespace {
         // A button with no type inside REDCap's project form defaults to
         // type=submit, and one thrown handler away from preventDefault that is a
         // page navigation in the middle of a scan.
-        // Every button, the findings panel's two included (B5).
+        // Every button, the findings panel's three included (B5; the switch
+        // between the current report and a newer run, rv11b2-5).
         check('PANEL: no control can submit the project form it sits inside',
-            substr_count($html, 'type="button" id="uv-scan-') === 5
+            substr_count($html, 'type="button" id="uv-scan-') === 6
             && substr_count($html, '<button') === substr_count($html, '<button type="button" id="uv-scan-'));
 
         /* -- THE FINDINGS PANEL (B5) -----------------------------------------
@@ -1457,11 +1469,14 @@ namespace {
             && strpos($noFin, 'id="uv-scan-report-heading"') !== false);
         check('REPORT: with no finished run the client is told there is none',
             strpos($noFin, 'reportRunId: null,') !== false && count($mNoFin->finishedAsks) === 1);
-        check('REPORT: an unrestricted reader is offered the newest whole-project run, in one bounded read',
+        $GONE = \INSPIRE\UniversalValidator\Scan\ScanStore::REMOVING_WHY;
+        check('REPORT: an unrestricted reader is offered the current whole-project report, in one bounded read',
             strpos($mNoFin->finishedAsks[0][0], 'scope_dag IS NULL') !== false
             && strpos($mNoFin->finishedAsks[0][0], 'WHERE project_id = ? AND phase = ?') !== false
-            && strpos($mNoFin->finishedAsks[0][0], 'ORDER BY created_at DESC, run_id DESC LIMIT 1') !== false
-            && $mNoFin->finishedAsks[0][1] === [PID, 'terminal']);
+            && substr_count($mNoFin->finishedAsks[0][0], 'ORDER BY created_at DESC, run_id DESC LIMIT 1') === 2
+            && substr_count($mNoFin->finishedAsks[0][0], 'FORCE INDEX (ix_project_created)') === 3
+            && $mNoFin->finishedAsks[0][1] === [PID, 'terminal', $GONE, PID, 'terminal', $GONE, 'complete',
+                                               PID, 'complete']);
         list($fin, ) = render($U(), $D, $data, [], $on(['finishedRun' => 61]));
         check('REPORT: the newest finished run is handed to the client to open', strpos($fin, 'reportRunId: 61,') !== false);
         check('REPORT: with the download route, encoded as the labels are',
@@ -1474,7 +1489,44 @@ namespace {
         \REDCap::$groupNames = [];
         check('REPORT: a group reader is offered the newest run of their own group, by its id',
             count($mGroup->finishedAsks) === 1 && strpos($mGroup->finishedAsks[0][0], 'scope_dag = ?') !== false
-            && $mGroup->finishedAsks[0][1] === [PID, 'terminal', '7']);
+            && $mGroup->finishedAsks[0][1] === [PID, 'terminal', '7', $GONE, PID, 'terminal', '7', $GONE,
+                                                'complete', PID, 'complete']);
+        // reviews rv11b1-1, rv11b2-1, rv11b2-2, rv11b2-5: which run the page
+        // opens, from the three branches of that one read.
+        $offer = function (array $rows, $user = null) use ($U, $D, $data, $on) {
+            list($h, ) = render($user === null ? $U() : $user, $D, $data, [], $on(['finishedRows' => $rows]));
+            preg_match('/reportRunId: (\w+),\s*(?:\/\/[^\n]*\n\s*)*reportNewerId: (\w+),\s*reportReplaced: (\w+),/', $h, $mm);
+            return isset($mm[3]) ? [$mm[1], $mm[2], $mm[3], $h] : ['?', '?', '?', $h];
+        };
+        $o = $offer([['1', '64', '9'], ['2', '61', '8'], ['3', null, '8']]);
+        check('rv11b2-5: a newer run that did not complete leaves the complete one current, and is named beside it',
+            [$o[0], $o[1], $o[2]] === ['61', '64', 'false']);
+        $o = $offer([['1', '61', '8'], ['2', '61', '8'], ['3', null, '8']]);
+        check('rv11b2-5 (control): with nothing newer, the current report alone',
+            [$o[0], $o[1], $o[2]] === ['61', 'null', 'false']);
+        $o = $offer([['1', '64', '9'], ['3', null, null]]);
+        check('rv11b2-5: with no complete run, the newest finished one is opened',
+            [$o[0], $o[1], $o[2]] === ['64', 'null', 'false']);
+        \REDCap::$groupNames = [7 => 'north'];
+        $o = $offer([['1', '61', '4'], ['2', '61', '4'], ['3', null, '6']], new \ExternalModules\PlainUser(true, '7'));
+        \REDCap::$groupNames = [];
+        check('rv11b1-1: a group report a later whole-project run superseded is not opened; the page says it was replaced',
+            [$o[0], $o[1], $o[2]] === ['null', 'null', 'true']
+            && strpos($o[3], \INSPIRE\UniversalValidator\ScanPageView::REPORT_REPLACED) !== false);
+        \REDCap::$groupNames = [7 => 'north'];
+        $o = $offer([['1', '65', '7'], ['2', '61', '4'], ['3', null, '6']], new \ExternalModules\PlainUser(true, '7'));
+        \REDCap::$groupNames = [];
+        check('rv11b1-1: a group run after the whole-project one is opened, though an older one was replaced',
+            [$o[0], $o[1], $o[2]] === ['65', 'null', 'false']);
+        $o = $offer([['1', '61', '6'], ['2', '61', '6'], ['3', null, '6']]);
+        check('rv11b1-1 (control): the whole-project run that superseded others is itself current',
+            [$o[0], $o[1], $o[2]] === ['61', 'null', 'false']);
+        $o = $offer([['1', '61', '6'], ['2', '61', '6']]);
+        check('rv11b1-1: an answer without its supersede branch offers nothing rather than a report it cannot vouch for',
+            [$o[0], $o[1], $o[2]] === ['null', 'null', 'false']);
+        $o = $offer([['3', null, '6']]);
+        check('rv11b2-2: no run left that retention keeps opens nothing, and says nothing was replaced',
+            [$o[0], $o[1], $o[2]] === ['null', 'null', 'false']);
         list($busyHtml, $mBusy) = render($U(), $D, $data, [], $on(['activeRun' => 55, 'finishedRun' => 61]));
         check('REPORT: while a run of theirs holds the slot nothing older is offered: the panel opens on that run when it ends',
             count($mBusy->finishedAsks) === 0 && strpos($busyHtml, 'reportRunId: null,') !== false);
@@ -2248,7 +2300,8 @@ namespace {
                       'withheldEnded', 'stoppedWithheld', 'stoppedProved', 'upgraded', 'emptyLeft',
                       'emptyLeftDeleted', 'none', 'asOf', 'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty',
                       'reportNoMore', 'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed',
-                      'filterAll', 'reportSuffix'];
+                      'filterAll', 'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer',
+                      'reportViewingNewer', 'reportShowCurrent', 'reportMissing'];
         $all = '';
         foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
@@ -2263,7 +2316,8 @@ namespace {
                   'emptyLeftDeleted', 'none', 'asOf',
                   'reportCaption', 'reportLoading', 'reportCount', 'reportNone', 'reportEmpty', 'reportNoMore',
                   'reportLooking', 'reportSearching', 'reportRetry', 'reportFailed', 'filterAll',
-                  'reportSuffix'] as $k) {
+                  'reportSuffix', 'reportReplaced', 'reportNewer', 'reportShowNewer', 'reportViewingNewer',
+                  'reportShowCurrent', 'reportMissing'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }
