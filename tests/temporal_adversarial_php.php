@@ -6,8 +6,10 @@
  * collection once per record instead of once per host context. It must return
  * exactly what the unshared resolver returns, from every host context, for
  * every reference and binding shape, on randomized records. The only permitted
- * difference is the per-asker `self` flag on the members of a memoized
- * aggregate, which the shared path removes on purpose.
+ * differences are the per-asker `self` flag on the members of a memoized
+ * aggregate, which the shared path removes on purpose, and the pool a shared
+ * set names (wargame P3): its index, less the skipped entry, must hold the
+ * members' values.
  *
  * Part 2 pins exact-decimal arithmetic against independently computed answers.
  */
@@ -43,7 +45,8 @@ $shape = new ProjectShape([
 ]);
 
 function randomRecord() {
-    $values = ['', '', '0', '5', '5', '07', '7.50', '-3', '12', 'abc', ' 9 ', '1000000000000000000000'];
+    // '5', ' 5' and '5.0' tie: minimum and maximum must keep the first of them.
+    $values = ['', '', '0', '5', '5', ' 5', '5.0', '07', '7.50', '-3', '12', 'abc', ' 9 ', '1000000000000000000000'];
     $keys = ['A', 'B', 'B', 'C', '', 'a'];
     $row = function ($form) use ($values, $keys) {
         if ($form === 'visit') return ['weight'=>pick($values), 'vkey'=>pick($keys), 'flags'=>['1'=>(string)rnd(2), '2'=>(string)rnd(2)], 'visit_complete'=>'2'];
@@ -93,6 +96,10 @@ foreach (['count','exists','populated-count','distinct-count','sum','minimum','m
     $bindings[] = ['field'=>'weight','instance'=>'previous-instance','aggregate'=>$aggregate];
     $bindings[] = ['field'=>'weight','instance'=>'current-instance','aggregate'=>$aggregate];
     $bindings[] = ['field'=>'result','event'=>'base_arm_1','match'=>['lkey'=>'[vkey]'],'aggregate'=>$aggregate];
+    // Pooled per record (wargame P3): a key of the asker's own form, and its own event row.
+    $bindings[] = ['field'=>'weight','match'=>['vkey'=>'[vkey]'],'aggregate'=>$aggregate];
+    $bindings[] = ['field'=>'weight','match'=>['vkey'=>'[vkey]'],'aggregate'=>$aggregate,'excludeCurrent'=>true];
+    $bindings[] = ['field'=>'sex','events'=>['base_arm_1','follow_arm_1'],'aggregate'=>$aggregate,'excludeCurrent'=>true];
 }
 $bindings[] = ['field'=>'result','event'=>'base_arm_1','match'=>['lkey'=>'[vkey]']];
 $bindings[] = ['field'=>'weight','instance'=>'previous-instance'];
@@ -104,6 +111,17 @@ function comparable(array $result, $memoizable) {
     if ($memoizable && isset($result['members'])) foreach ($result['members'] as $k=>$m) unset($result['members'][$k]['self']);
     return $result;
 }
+/** A shared set's pool must hold its members; the pool itself is not compared. */
+function unpooled(array $result, AddressResolver $shared) {
+    global $pools, $poolErrors;
+    if (!isset($result['pool'])) return $result;
+    $pools++;
+    $index = $shared->collectionIndex($result['pool'], function ($m) { return $m['value']; });
+    if (!$index || $index->values($result['pool']['skip']) !== array_column($result['members'], 'value')) $poolErrors++;
+    unset($result['pool']);
+    return $result;
+}
+$pools = 0; $poolErrors = 0;
 
 $records = 60; $compared = 0; $collections = 0;
 for ($r = 0; $r < $records; $r++) {
@@ -112,7 +130,7 @@ for ($r = 0; $r < $records; $r++) {
     foreach (contexts($record) as $context) {
         $plain = new AddressResolver($shape, $record, 10000, new ReferenceBudget(PHP_INT_MAX));
         foreach ($refs as $ref) {
-            $a = $plain->resolve($ref, $context); $b = $shared->resolve($ref, $context);
+            $a = $plain->resolve($ref, $context); $b = unpooled($shared->resolve($ref, $context), $shared);
             if (isset($a['members'])) $collections++;
             $compared++;
             if ($a !== $b) { check('shared resolve differs: ' . json_encode([$ref, $context['event'], $context['instrument'], $context['instance'], $a, $b]), false); break 3; }
@@ -120,7 +138,7 @@ for ($r = 0; $r < $records; $r++) {
         foreach ($bindings as $binding) {
             $memoizable = isset($binding['aggregate']) && empty($binding['match']) && empty($binding['excludeCurrent']);
             $a = comparable($plain->resolveBinding($binding, $context), $memoizable);
-            $b = comparable($shared->resolveBinding($binding, $context), $memoizable);
+            $b = comparable(unpooled($shared->resolveBinding($binding, $context), $shared), $memoizable);
             $compared++;
             if ($a !== $b) { check('shared binding differs: ' . json_encode([$binding, $context['event'], $context['instrument'], $context['instance'], $a, $b]), false); break 3; }
         }
@@ -128,6 +146,7 @@ for ($r = 0; $r < $records; $r++) {
 }
 check("shared and unshared resolvers agree on $compared resolutions", $compared > 20000);
 check('the comparison exercised real collections', $collections > 1000);
+check("every pooled set ($pools) holds its members", $pools > 1000 && $poolErrors === 0);
 
 // A live value that differs from the saved one must not be answered from the memo.
 $record = ['repeat_instances'=>[1=>['visit'=>[1=>['weight'=>'10','visit_complete'=>'2'], 2=>['weight'=>'20','visit_complete'=>'2']]]]];
@@ -332,6 +351,58 @@ $p = TemporalRules::compile(['assert'=>'[a_val]<=[visit_arm_1][b_val][2]'], new 
     ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>$mNode['repeat_instances'][1]['fa'][1]], true);
 check('offPage: ... while one to another instance does (got ' . json_encode([$p['offPage'], $p['rule']['assertAst'] ?? null]) . ')',
     $p['offPage'] === true && ($p['rule']['assertAst'][1][3] ?? null) === ['lit', '3']);
+
+// P3: every host context of a record asks about the same saved collection. The shared
+// resolver pools it once and the evaluator counts from one index, so the work and the
+// budget grow with the entries, not with their square.
+$kShape = new ProjectShape([1=>['name'=>'visit_arm_1','arm'=>1,'order'=>1,'forms'=>['fa'],'repeats'=>['fa'],'eventRepeats'=>false]],
+    ['a_val'=>['form'=>'fa','type'=>'text'],'k'=>['form'=>'fa','type'=>'text']]);
+$n3 = 3000; $rows = []; $total = 0; $keys = [];
+for ($i = 1; $i <= $n3; $i++) { $rows[$i] = ['a_val'=>(string)($i % 97), 'k'=>'k' . intdiv($i, 2)]; $total += $i % 97; $keys[$rows[$i]['k']] = ($keys[$rows[$i]['k']] ?? 0) + 1; }
+$p3 = function (array $rule) use ($kShape, $rows, $n3) {
+    $resolver = (new AddressResolver($kShape, ['repeat_instances'=>[1=>['fa'=>$rows]]], 10000, new ReferenceBudget()))->shareAcrossContexts();
+    $pass = [];
+    for ($i = 1; $i <= $n3; $i++) {
+        $p = TemporalRules::compile($rule, $resolver, $kShape, ['event'=>1,'instrument'=>'fa','instance'=>$i,'values'=>$rows[$i]]);
+        if ($p['problems']) return 'deferred at ' . $i . ': ' . implode(',', $p['problems']);
+        if ($p['rule']['assert'] === '1=1') $pass[] = $i;
+    }
+    return $pass;
+};
+$want = function (callable $holds) use ($rows) { $out = []; foreach ($rows as $i=>$row) if ($holds($i, $row)) $out[] = $i; return $out; };
+$t = microtime(true);
+$got = $p3(['assert'=>'[a_val]>=[a_val][all-instances]']);
+check('P3: all-instances from 3,000 host contexts, each judged', $got === $want(function ($i, $row) { return $row['a_val'] === '96'; }));
+$got = $p3(['assert'=>'[a_val]<={x}', 'references'=>['x'=>['field'=>'a_val','aggregate'=>'average','excludeCurrent'=>true]]]);
+check('P3: the average of the other entries, from every one', $got === $want(function ($i, $row) use ($total, $n3) { return (int)$row['a_val'] * $n3 <= $total; }));
+$got = $p3(['assert'=>'{x}>=1', 'references'=>['x'=>['field'=>'a_val','aggregate'=>'count','match'=>['k'=>'[k]'],'excludeCurrent'=>true]]]);
+check('P3: another entry with the same key, from every one', $got === $want(function ($i, $row) use ($keys) { return $keys[$row['k']] > 1; }));
+$got = $p3(['assert'=>'[a_val]<>[a_val][any-instance]']);
+check('P3: any-instance includes the asker itself', $got === $want(function () { return true; }));
+check('P3: four rules over 3,000 entries end in seconds', microtime(true) - $t < 20.0);
+// A live value that differs from the saved one is not in the saved index.
+$edit = ['repeat_instances'=>[1=>['fa'=>[1=>['a_val'=>'5','k'=>'A'], 2=>['a_val'=>'9','k'=>'B']]]]];
+$resolver = (new AddressResolver($kShape, $edit, 10000, new ReferenceBudget()))->shareAcrossContexts();
+$rule = ['assert'=>'[a_val][any-instance]>=10'];
+$p = TemporalRules::compile($rule, $resolver, $kShape, ['event'=>1,'instrument'=>'fa','instance'=>2,'values'=>['a_val'=>'9','k'=>'B']]);
+check('P3: the saved entries hold no value of 10', $p['rule']['assert'] === '1=0');
+$p = TemporalRules::compile($rule, $resolver, $kShape, ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>['a_val'=>'20','k'=>'A']]);
+check('P3: an edited own value of 20 is judged, not the saved 5', $p['rule']['assert'] === '1=1');
+$rule = ['assert'=>'[a_val]>{x}', 'references'=>['x'=>['field'=>'a_val','aggregate'=>'all','excludeCurrent'=>true]]];
+$resolver = (new AddressResolver($kShape, $edit, 10000, new ReferenceBudget()))->shareAcrossContexts();
+$verdicts = [];
+foreach ([1, 2] as $i) $verdicts[] = TemporalRules::compile($rule, $resolver, $kShape, ['event'=>1,'instrument'=>'fa','instance'=>$i,'values'=>$edit['repeat_instances'][1]['fa'][$i]])['rule']['assert'];
+check('P3: 9 is above every other entry and 5 is not (got ' . json_encode($verdicts) . ')', $verdicts === ['1=0', '1=1']);
+// A matched pool is the saved entries: an edited own value or key is read live instead.
+$keyed = ['repeat_instances'=>[1=>['fa'=>[1=>['a_val'=>'5','k'=>'A'], 2=>['a_val'=>'9','k'=>'A']]]]];
+$resolver = (new AddressResolver($kShape, $keyed, 10000, new ReferenceBudget()))->shareAcrossContexts();
+$sum = ['field'=>'a_val','aggregate'=>'sum','match'=>['k'=>'[k]']];
+$sums = [$resolver->resolveBinding($sum, ['event'=>1,'instrument'=>'fa','instance'=>2,'values'=>$keyed['repeat_instances'][1]['fa'][2]])['value'] ?? null,
+    $resolver->resolveBinding($sum, ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>['a_val'=>'20','k'=>'A']])['value'] ?? null,
+    $resolver->resolveBinding($sum, ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>['a_val'=>'20','k'=>'B']])['value'] ?? null,
+    $resolver->resolveBinding($sum, ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>['a_val'=>'5','k'=>'B']])['value'] ?? null];
+check('P3: saved 5+9, edited value 20+9, edited key B holds only the entry itself (got ' . json_encode($sums) . ')', $sums === ['14', '29', '20', '5']);
+check('P3: and its set names no pool', !isset($resolver->resolve(['qref','a_val',null,null,'any-instance'], ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>['a_val'=>'20']])['pool']));
 
 echo "temporal_adversarial_php: $n checks, $fail failures\n";
 exit($fail ? 1 : 0);

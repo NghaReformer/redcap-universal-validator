@@ -250,7 +250,17 @@ final class TemporalRules
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
-        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems,&$matched,$unresolved,$protected){
+        // A set of saved entries. Every host context of a record asks about the same saved
+        // collection, so saved-data callers index it once and count from the index; each
+        // context compared every member, which was quadratic (wargame P3).
+        $collection=function(array $r,$quantifier)use($member,$resolver,$browser){
+            if(!$browser&&isset($r['pool'])){
+                $index=$resolver->collectionIndex($r['pool'],function(array $m)use($member){$node=$member($m);return $node[0]==='lit'?$node[1]:null;});
+                if($index)return ['value',['set'=>$quantifier,'index'=>$index,'skip'=>$r['pool']['skip']]];
+            }
+            $members=[];foreach($r['members'] as $m)$members[]=$member($m);return ['set',$quantifier,$members];
+        };
+        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$collection,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems,&$matched,$unresolved,$protected){
             if($op[0]==='lit')return $op;
             if($op[0]==='binding'){
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
@@ -270,8 +280,9 @@ final class TemporalRules
                     // rebuilding it from the member list repeated the whole sum per host context.
                     $node=isset($r['numerator'])?['value',['numerator'=>$r['numerator'],'denominator'=>$r['denominator']]]:['lit',$r['value']];
                 }
-                elseif(isset($b['aggregate'])){$members=[];foreach($r['members']??[] as $m)$members[]=$member($m);$kind=$b['aggregate'];$node=[in_array($kind,['any','all'],true)?'set':'aggregate',$kind,$members];}
-                elseif(isset($r['members'])){$members=[];foreach($r['members'] as $m)$members[]=$member($m);$node=['set',$r['quantifier'],$members];}
+                elseif(isset($b['aggregate'])&&in_array($b['aggregate'],['any','all'],true))$node=$collection($r,$b['aggregate']);
+                elseif(isset($b['aggregate'])){$members=[];foreach($r['members']??[] as $m)$members[]=$member($m);$node=['aggregate',$b['aggregate'],$members];}
+                elseif(isset($r['members']))$node=$collection($r,$r['quantifier']);
                 else $node=$member($r,$type);
                 if($from!==null){$p=Logic::parse($from."=''",['qualified'=>true]);if(empty($p['ok'])||!in_array($p['ast'][2][0],['ref','qref'],true)){$problems[]='invalid';return ['unknown'];}
                     $fr=$resolver->resolve($p['ast'][2],$context);
@@ -285,7 +296,7 @@ final class TemporalRules
             $r=$resolver->resolve($op,$context);
             if(($r['state']!=='ok'||isset($r['members']))&&$protected($shape->field($op[1])['form']??null)){$denied=true;if($r['state']!=='ok')$r=['state'=>'unresolved'];}
             // Which entries the set holds was read when the page was built, as for a binding.
-            if(isset($r['members'])){if($browser)$snapshot=true;$members=[];foreach($r['members'] as $m)$members[]=$member($m);return ['set',$r['quantifier'],$members];}
+            if(isset($r['members'])){if($browser)$snapshot=true;return $collection($r,$r['quantifier']);}
             return $member($r);
         };
         $walk=function(array $ast)use(&$walk,$operand){

@@ -167,6 +167,18 @@ unresolved. `excludeCurrent` 2.5 s at n=1,000; self-key `match` 2.2 s.
 The docs claim cost grows with the number of entries, not its square.
 Cached aggregates and record uniqueness are linear (5,000 in <0.5 s).
 Repro: `php tools/temporal_perf_allinst.php 500,1500,3000`, `php tools/temporal_perf_curve.php 100,1000,1500,5000`.
+**Fixed 2026-10-23:** saved data pools each collection once per record. A set
+is sorted into a `CollectionIndex` (`php/CollectionIndex.php`) and each host
+context counts its `any`/`all` answer with binary searches; matched and
+`excludeCurrent` bindings are grouped by key once, and each context takes its
+group less its own entry. At n=1,000 the scan went from 4.7 s to 0.24 s
+(`excludeCurrent` average), 5.8 s with the budget spent to 0.16 s resolved
+(self-key `match`), and 10.2 s to 0.24 s (`any-instance`); the audit of
+`all-instances` at n=3,000 from 15.3 s to 0.18 s. Verdicts are unchanged.
+Tests: `tests/collection_index_php.php` (index against the loop on 115,200
+comparisons), the shared/unshared differential in
+`tests/temporal_adversarial_php.php`, which now checks every pool and adds
+self-key and own-event-row bindings, and its P3 section (3,000 host contexts).
 
 ### P4. Audit order and log flood
 `php/TemporalIntegration.php:261-270` re-checks every host context in record
