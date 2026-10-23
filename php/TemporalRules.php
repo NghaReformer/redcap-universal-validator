@@ -171,9 +171,11 @@ final class TemporalRules
         $errors=[];$references=[];
         foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);
-            if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$references[]=[$ref[1],$ref[3],$ref[4]];
+            if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$references[]=[$ref[1],$ref[3],$ref[4],true];
         }
-        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$references[]=[$op[1],$op[3],$op[4]];
+        // [field, event, instance, true: reads one entry | false: a set or count | null: withheld when
+        // unresolved, so the rest of the rule is checked without it].
+        foreach(self::operands($rule) as list($rk,$op))if($op[0]==='qref')$references[]=[$op[1],$op[3],$op[4],ModeRegistry::withholds($rk,$rule)?null:true];
         foreach($rule['references']??[] as $alias=>$binding)if(is_array($binding)&&is_string($binding['field']??null)){
             $field=$binding['field'];$meta=$shape->field($field);
             if(($meta['type']??null)==='checkbox')$errors[]='Binding '.$alias.' needs a scalar field; use a qualified checkbox-code reference for checkbox values.';
@@ -193,7 +195,8 @@ final class TemporalRules
                 if(!$collected)$errors[]='Binding '.$alias.' names arm '.(is_scalar($binding['arm']??null)?$binding['arm']:'?').', where no event collects this instrument.';
             }
             $events=is_array($binding['events']??null)?$binding['events']:[$binding['event']??null];
-            foreach($events as $event)$references[]=[$field,$event,$binding['instance']??null];
+            $one=!isset($binding['aggregate'])&&empty($binding['match'])&&!isset($binding['events'])&&empty($binding['excludeCurrent']);
+            foreach($events as $event)$references[]=[$field,$event,$binding['instance']??null,$one];
         }
         foreach($references as $ref){
             list($field,$event,$instance)=$ref;
@@ -205,8 +208,51 @@ final class TemporalRules
             if($bucket['state']==='missing')$errors[]='Referenced instrument is not designated in '.$event.'.';
             if($bucket['state']==='ok'&&$bucket['bucket']===null&&$instance!==null)$errors[]='Instance selector targets a non-repeating instrument in '.$event.'.';
         }
+        // A branch has no fields of its own: a reference only it reads sets aside that branch alone.
+        $errors=array_merge($errors,self::unresolvable($references,$rule['fields']??[],$shape));
         foreach($rule['branches']??[] as $branch)$errors=array_merge($errors,self::validateProject($branch,$shape));
         return array_values(array_unique($errors));
+    }
+
+    /**
+     * References that no host context of the rule can resolve, which a page or a save
+     * could only defer, every time (wargame C3). A relative instance needs the host's
+     * entry and its target to repeat. A reference that reads one entry of a repeating
+     * instrument without an instance selector must be the host's own entry. A host
+     * context is an event that collects the instrument of one of $hostFields; one
+     * where the event reference itself does not resolve is no evidence either way.
+     * A withheld operand (null) stops only its own part of the rule, so it is left to
+     * the run time, as is a branch, whose failure sets aside that branch alone.
+     */
+    private static function unresolvable(array $references,$hostFields,ProjectShape $shape)
+    {
+        $hosts=[];
+        foreach(is_array($hostFields)?$hostFields:[] as $hostField){
+            $form=$shape->field($hostField)['form']??null;if($form===null)continue;
+            foreach($shape->events() as $id=>$event){$b=$shape->bucket($id,$form);if($b['state']==='ok')$hosts[]=[$id,$b['bucket']];}
+        }
+        $errors=[];
+        if($hosts)foreach($references as $ref){
+            list($field,$event,$instance,$one)=$ref;
+            if($one===null)continue;
+            $relative=in_array($instance,['current-instance','previous-instance','next-instance'],true);
+            if(!$relative&&!($one&&$instance===null))continue;
+            $form=$shape->field($field)['form']??null;if($form===null)continue;
+            $judged=false;$fine=false;$repeats=false;
+            foreach($hosts as list($id,$hostBucket)){
+                $target=$event===null?['state'=>'ok','event'=>$id]:$shape->eventId($event,$id,$form);
+                if($target['state']!=='ok')continue;
+                $bucket=$shape->bucket($target['event'],$form);if($bucket['state']!=='ok')continue;
+                $judged=true;
+                if($relative){$repeats=$repeats||$hostBucket!==null;$fine=$fine||($hostBucket!==null&&$bucket['bucket']!==null);}
+                else $fine=$fine||$bucket['bucket']===null||((string)$target['event']===(string)$id&&$bucket['bucket']===$hostBucket);
+            }
+            if(!$judged||$fine)continue;
+            if(!$relative)$errors[]='Reference to ['.$field.']'.($event===null?'':' in '.$event).' is ambiguous: its instrument repeats there, so it needs an instance selector.';
+            elseif(!$repeats)$errors[]='Relative instance selector '.$instance.' needs a repeating source: the instrument of this rule does not repeat in any event.';
+            else $errors[]='Relative instance selector '.$instance.' targets a non-repeating instrument.';
+        }
+        return $errors;
     }
 
     /** Whether a compiled condition reads a value live on the page: a plain reference or a guard's key. */

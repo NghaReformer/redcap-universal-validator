@@ -67,10 +67,10 @@ read `JSON.parse(document.getElementById('inspire-validator-config').textContent
 
 - [ ] **[auto]** Each `xn_*` field except `xn_xss` shows a configuration error
       whose text matches its field note.
-- [ ] **[auto]** Known gaps from the offline run, confirm live:
-      `xn_rel_nonrep` and `xn_ambiguous` show NO configuration error; they
-      are dropped at run time as "invalid, unresolved" / "ambiguous,
-      unresolved" (finding C3).
+- [ ] **[auto]** `xn_rel_nonrep` and `xn_ambiguous` show a configuration
+      error ("needs a repeating source" / "is ambiguous ... needs an instance
+      selector"). Before the C3 fix they were dropped at run time as
+      "invalid, unresolved" / "ambiguous, unresolved".
 - [ ] **[auto]** `xn_xss`: type `x`; the message shows the literal text
       `<img src=x ...><b>bold?</b>`, no image request, no bold.
 - [ ] **[auto]** `wb_err_event` on wb_test (event 351) was a config error

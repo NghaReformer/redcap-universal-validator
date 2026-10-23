@@ -23,6 +23,8 @@ Instance selectors are positive integers, `current-instance`, `previous-instance
 
 Without an instance selector, a reference into an independent repeat bucket is ambiguous. Use an explicit selector or shared-key match. A missing row is unresolved, not a blank answer. Existing all-blank repeat rows are retained using instrument completion markers.
 
+A reference that no entry of the rule can resolve is a configuration error, not a deferral on every save: a relative instance selector where the rule's instrument repeats in no event, one whose target never repeats, and a reference without an instance selector into a repeating instrument that is never the rule's own entry. The check looks at every event that collects the rule's field; a reference that resolves from one of them is accepted, and the others defer at run time. Two cases keep their run-time behaviour, because the rest of the rule still works without the reference: a `@UVWINDOW` `from` with `notFuture` or `notPast`, which stops only the window part, and a reference read by one `@UVRANGE` branch, which sets aside only that branch.
+
 An event, or an instance of a repeating event, holds an entry of an instrument only where that instrument was entered there: its form status, or one of its fields, holds a value. REDCap keeps one row per event and per repeating-event instance, so another instrument's data in the same event does not make an entry of this one. `count` and `exists` leave such an event out, and a reference into it is a missing row, the same as for an event with no data at all. A reference into the asking entry's own event or instance reads a field of another instrument there as blank, as REDCap's own logic does.
 
 ## Named bindings and matching

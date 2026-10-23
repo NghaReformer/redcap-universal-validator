@@ -230,6 +230,14 @@ Tests in `tests/temporal_integration_php.php`.
   (numeric `[2]` on a non-repeating target does). They defer at run time and
   log `uvalidate-unconfigurable` on every save. pid 149 fields
   `xn_rel_nonrep`, `xn_ambiguous`.
+  **Fixed 2026-10-23:** `TemporalRules::validateProject` refuses a reference
+  that no event collecting the rule's field can resolve: a relative instance
+  where the rule's instrument never repeats or its target never does, and a
+  one-entry reference into a repeating instrument that is never the rule's
+  own entry. A withheld `@UVWINDOW` `from` (with `notFuture`/`notPast`) and a
+  reference of one `@UVRANGE` branch keep their run-time behaviour, as the
+  docs promise. Tests in `tests/temporal_integration_php.php`; its `@UVRANGE`
+  group fixtures now use a saved value that cannot be read.
 - **C6** `AddressResolver.php:219`, `TemporalLogic.php:56`, `engine.js:1305`:
   `"  "` is blank to comparisons but populated to `populated-count`, and makes
   `sum`/`average`/`minimum`/`maximum` unresolved. Repro: `php tools/temporal_sem_whitespace.php`.

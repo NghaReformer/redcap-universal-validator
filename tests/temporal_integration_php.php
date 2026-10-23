@@ -575,6 +575,29 @@ namespace {
     check('an arm that collects nothing is a configuration error',(bool)array_filter($bad,function($e){return strpos($e,'arm 7')!==false;}));
     $res=$m->scanProject(PID);
     check('and never a confident count of zero',!$res['violations']&&count($res['unconfigurable'])>=1);
+    // Wargame C3: a reference no host context can resolve is refused when the rule is
+    // configured, instead of being deferred and logged on every save.
+    $c3=new \INSPIRE\UniversalValidator\ProjectShape([
+        1=>['name'=>'baseline_arm_1','arm'=>1,'order'=>1,'forms'=>['neg','xs','visit'],'repeats'=>['xs'],'eventRepeats'=>false],
+        2=>['name'=>'followup_arm_1','arm'=>1,'order'=>2,'forms'=>['neg','visit'],'repeats'=>['visit'],'eventRepeats'=>false],
+    ],['n1'=>['form'=>'neg'],'xe_code'=>['form'=>'neg'],'xs_id'=>['form'=>'xs'],'xs_host'=>['form'=>'xs'],'v'=>['form'=>'visit']]);
+    $c3Errors=function(array $rule,array $fields)use($c3){return \INSPIRE\UniversalValidator\TemporalRules::validateProject($rule+['fields'=>$fields],$c3);};
+    check('C3: a relative instance on a page that never repeats is refused',
+        $c3Errors(['assert'=>'[n1]=[xe_code][previous-instance]'],['n1'])===['Relative instance selector previous-instance needs a repeating source: the instrument of this rule does not repeat in any event.']);
+    check('C3: ... and one whose target never repeats',
+        $c3Errors(['assert'=>'[xs_host]=[xe_code][previous-instance]'],['xs_host'])===['Relative instance selector previous-instance targets a non-repeating instrument.']);
+    check('C3: a repeating form named without an instance is refused',
+        $c3Errors(['assert'=>'[n1]=[baseline_arm_1][xs_id]'],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
+    check('C3: ... as is a plain binding to it',
+        $c3Errors(['assert'=>'[n1]={x}','references'=>['x'=>['field'=>'xs_id','event'=>'baseline_arm_1']]],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
+    check('C3: the same reference from its own repeating entry is fine',$c3Errors(['assert'=>'[xs_host]=[baseline_arm_1][xs_id]'],['xs_host'])===[]);
+    check('C3: a relative instance from a form that repeats in one event is fine',$c3Errors(['assert'=>'[v]=[v][previous-instance]'],['v'])===[]);
+    check('C3: a count over the repeating form needs no instance',
+        $c3Errors(['assert'=>'{x}>0','references'=>['x'=>['field'=>'xs_id','event'=>'baseline_arm_1','aggregate'=>'count']]],['n1'])===[]);
+    check('C3: a withheld "from" with notFuture is left to the page',
+        $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]','windowNotFuture'=>true],['n1'])===[]);
+    check('C3: ... and refused without it, when nothing of the rule could be checked',
+        $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]'],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
 
     // @UVWINDOW counted from a date in another event (2.2.0): the "from" operand
     // goes through the same resolver, entitlement and snapshot rules as a condition.
@@ -643,8 +666,11 @@ namespace {
     $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-02-31';$res=$m->scanProject(PID);
     check('...an unreadable value is never called "not in the future"',
         strpos(json_encode($res['unconfigurable']),'and the saved date is not a date this rule can read')!==false);
+    // Without notFuture nothing of the rule could be checked: a "from" that can never
+    // resolve is a configuration error (wargame C3).
     $m=$win(str_replace(',"notFuture":true','',$amb));$r=ruleOf(render($m,'fa'),'a_val');
-    check('unresolved "from" without notFuture: deferred, as before',$r&&!empty($r['deferred']));
+    check('unresolved "from" without notFuture: a configuration error naming the fix (got '.json_encode($r['configError']??null).')',
+        $r&&strpos((string)($r['configError']??''),'Reference to [b_open] in baseline_arm_1 is ambiguous')!==false);
     // A plain "from" on another repeating form: the same, on the page path.
     $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}');$r=ruleOf(render($m,'fa'),'a_val');
     check('plain "from" on another repeating form, with notFuture: withheld with its reason, rule live',
@@ -798,15 +824,17 @@ namespace {
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('two true branches of one reference, extended: a problem, nothing judged (got '.json_encode([$res['violations'],$why]).')',
         !$res['violations']&&count(array_filter($why,function($w){return strpos($w,'multiple active branches')!==false;}))>=1);
-    // One group that cannot be prepared (who-wfh's "by" names a repeating form with no
-    // instance) is named, and the other group is still judged, in the scan and the audit.
+    // One group that cannot be prepared (who-wfh's "by" reads a saved value that cannot be
+    // read: a list where a number belongs) is named, and the other group is still judged,
+    // in the scan and the audit. A reference that can never resolve, such as a repeating
+    // form with no instance, is a configuration error instead (wargame C3).
     $withHt=function($ann)use($growth){
         $m=$growth($ann);
         REDCap::$dictionary['ht']=['field_type'=>'text','form_name'=>'fb','field_annotation'=>'','text_validation_type_or_show_slider_number'=>'number_1dp'];
-        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['ht']='80';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['ht']=['80'];
         return $m;
     };
-    $wfh=' @UVRANGE={"reference":"who-wfh","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B","by":"[baseline_arm_1][ht]","hard":[-5,5]}';
+    $wfh=' @UVRANGE={"reference":"who-wfh","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B","by":"[baseline_arm_1][ht][2]","hard":[-5,5]}';
     $m=$withHt($wfa.'}'.$wfh);$res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'].':'.$v['locus'];sort($hit);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
@@ -818,14 +846,14 @@ namespace {
     $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fa',1,1);
     $u=array_map(function($c){return $c[1]['why'];},unconf($m));
     check('... and in the audit of one entry\'s save, at that entry (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===1&&count($u)===1
-        &&strpos($u[0],'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0);
+        &&strpos($u[0],'Extended validation unavailable for part of this field: reference "who-wfh": invalid')===0);
     $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fb',1,null,null,null,2);
     $u=array_map(function($c){return $c[1]['why'];},unconf($m));
     check('... and in the audit of the entry all three read, at each of the three (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
-        &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0;}))===3);
+        &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": invalid')===0;}))===3);
     // A selector that cannot be resolved sets aside its own group: here who-wfa's
-    // "when" reads [baseline_arm_1][ht] with no instance, and the fixed limits judge.
-    $sel=$wfa.',"when":"[baseline_arm_1][ht]=\'80\'"} @UVRANGE={"hard":[5,40]}';
+    // "when" reads the unreadable [baseline_arm_1][ht][2], and the fixed limits judge.
+    $sel=$wfa.',"when":"[baseline_arm_1][ht][2]=\'80\'"} @UVRANGE={"hard":[5,40]}';
     $m=$withHt($sel);REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='4.0';$res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
@@ -866,7 +894,7 @@ namespace {
     check('... inputs withheld from this viewer: that reference is advisory, the fixed limits are not (got '.json_encode($adv).')',
         $adv===[['who-wfa',true,'off',['withheld']],['',false,null,null]]);
     // Every group with a problem: no part of the field is judged, and the problems are the rule's.
-    $m=$withHt($wfa.',"when":"[baseline_arm_1][ht]=\'80\'"}'.$wfh);$res=$m->scanProject(PID);
+    $m=$withHt($wfa.',"when":"[baseline_arm_1][ht][2]=\'80\'"}'.$wfh);$res=$m->scanProject(PID);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('every group with a problem, extended: the field as a whole is named (got '.json_encode([$res['violations'],$why]).')',
         !$res['violations']&&$why&&count(array_filter($why,function($w){return strpos($w,'part of this field')===false
