@@ -501,6 +501,25 @@ namespace {
     check('a returning rule that reads a returned field is refused, named by its tag', strpos(errOf($cfg3, 'r_reads'), '@UVEXISTS "return": it reads "[r_code]"') !== false);
     check('a rule whose "when" reads a field it fills itself is refused (got ' . json_encode(errOf($cfg3, 'r_selfwhen')) . ')',
         strpos(errOf($cfg3, 'r_selfwhen'), 'it reads "[t_mail]", which this rule returns a value to') !== false);
+    // The same tag on two fields: groupMulti() makes one rule of both, so the
+    // first loop of markReturnClashes() saw one owner while each field's
+    // lookup writes the same field.
+    $d6 = $DICT;
+    $d6['r_dup_a'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[t_dup]"}}'));
+    $d6['r_dup_b'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[t_dup]"}}'));
+    $d6['r_dup_c'] = f('result', ux('{"in":"[specimen_id]"}'));
+    $d6['r_dup_d'] = f('result', ux('{"in":"[specimen_id]"}'));
+    $d6['t_dup'] = f('result');
+    foreach ($d6 as $k => $_) $d6[$k]['field_name'] = $k;
+    \REDCap::$dictionaries = [149 => $d6];
+    $m = mod();
+    \REDCap::$dictionaries = [149 => $d6];
+    $cfg6 = page($m);
+    check('one "return" tag on two fields is refused on both (got ' . json_encode(errOf($cfg6, 'r_dup_a')) . ')',
+        strpos(errOf($cfg6, 'r_dup_a'), '@UVEXISTS "return": it is on 2 fields ("r_dup_a", "r_dup_b"), and each would write "[t_dup]"') !== false
+        && errOf($cfg6, 'r_dup_b') === errOf($cfg6, 'r_dup_a'));
+    check('...the same tag without "return" on two fields is still one sound rule',
+        errOf($cfg6, 'r_dup_c') === '' && ruleFor($cfg6, 'r_dup_c') === ruleFor($cfg6, 'r_dup_d'));
 
     // ---- 3) the exists-check endpoint ------------------------------------------------------------
     $m = mod();

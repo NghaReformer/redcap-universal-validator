@@ -5837,7 +5837,17 @@ class UniversalValidator extends AbstractExternalModule
         $why = [];      // rule index => further reasons
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError'])) continue;
-            foreach (ModeRegistry::returnFields($r) as $f) {
+            // One tag written the same way on several fields is one rule with
+            // several fields (AnnotationRules::groupMulti), so it is the only
+            // owner here, while the value of each field would write the same
+            // fields.
+            $targets = ModeRegistry::returnFields($r);
+            $own = isset($r['fields']) && is_array($r['fields']) ? array_values(array_unique($r['fields'])) : [];
+            if ($targets && count($own) > 1) {
+                $why[$i][] = 'it is on ' . count($own) . ' fields ("' . implode('", "', $own) . '"), and each would write "['
+                    . implode(']", "[', $targets) . ']" — a field takes the value of one rule, so give each field a "return" of its own.';
+            }
+            foreach ($targets as $f) {
                 if (isset($owner[$f]) && $owner[$f] !== $i) {
                     $clash[$i][$f] = $owner[$f];
                     $clash[$owner[$f]][$f] = $i;

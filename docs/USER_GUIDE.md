@@ -1124,7 +1124,9 @@ users who have rights". The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
 change to the entry found reaches this record when it is saved again. The save
 writes them only into a form the person who saved may change, and a locked
-form, or one the user may only read, is not filled on the page.
+form, or one the user may only read, is not filled on the page. A tag with
+`return` belongs on one field: copied onto a second field, both would fill
+the same fields, so both show a configuration error.
 
 **Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
 Yes. Add `where`, a condition on the entry found:
@@ -1241,7 +1243,8 @@ blank, the age is outside the reference) the fields are emptied, so make them
 validation. `z`, `lower` and `upper` take none, number validation without a
 place count, or exactly the places they are written with (two for `z`), and a
 bound written with no decimals may go into an integer field. Two references on one field each fill their own fields, and
-cannot share one. A rule that returns values cannot read a returned field,
+cannot share one. The same tag with `return` on two fields is refused on
+both, since both would fill the same fields. A rule that returns values cannot read a returned field,
 its own or another rule's. When the date of birth or another input sits in
 another event, saving that event refills the fields in every visit that reads
 it. The project setting "@UVRANGE returned values" keeps the page fill and

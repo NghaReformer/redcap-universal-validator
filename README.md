@@ -901,7 +901,9 @@ the specimen ID on the collection form.
   `in` or a form that does not repeat (in every event the entry can be found
   in), each field here can hold what the field there holds (choice codes, kind
   of date, decimal mark and places, validation), an Identifier goes only into
-  an Identifier. Refused with `"surveys":true`. Another project must list
+  an Identifier. Refused with `"surveys":true`, and on every field when the
+  same tag is written on several fields, since each would fill the same
+  fields. Another project must list
   the fields it lets others copy, under "Only users who have rights"; its
   probe log then names the fields the rule copies and, when values were
   handed over, the record they came from.
@@ -1032,8 +1034,9 @@ slip:
   it to write the current values.
   A field with nothing to report (sex blank, age outside the reference) is
   emptied. The rule owns its fields, so mark them `@READONLY`. Two references
-  on one field each fill their own fields, and a rule that returns values may
-  not read a returned field. The project setting "@UVRANGE returned values"
+  on one field each fill their own fields, the same tag with `return` on two
+  fields is refused on both, and a rule that returns values may not read a
+  returned field. The project setting "@UVRANGE returned values"
   turns the save-time write off, and the scan's comparison with it. The save
   writes only into a form the person who saved may change, and a locked form
   or one the user may only read is not filled on the page.

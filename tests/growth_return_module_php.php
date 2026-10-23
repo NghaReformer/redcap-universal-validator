@@ -777,6 +777,18 @@ NASK, Not asked";
     $m = mod(dict([], tag('"when":"[sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' ' . tag('"when":"[sex]=\'2\'","return":{"z":"[wfa_z]"}')),
         ['2' => [EVT => row()]]);
     check('two branches of one reference may share a field (one is active)', empty(ruleOn($m, 'weight')['configError']));
+    // The same tag on two fields is one rule with two fields (groupMulti), and
+    // each field's value would write the same fields.
+    $m = mod(dict(['weight2' => f('anthro_form', tag(RET_ALL), 'number_1dp')]), ['2' => [EVT => row()]]);
+    check('one "return" tag on two fields is refused on both (got ' . json_encode(ruleOn($m, 'weight')['configError'] ?? null) . ')',
+        strpos((string) (ruleOn($m, 'weight')['configError'] ?? ''), '@UVRANGE "return": it is on 2 fields ("weight", "weight2"), and each would write "[wfa_z]", "[wfa_lo]", "[wfa_hi]", "[wfa_rng]"') !== false
+        && ruleOn($m, 'weight2') === ruleOn($m, 'weight'));
+    $m = mod(dict(['weight2' => f('anthro_form', tag('"return":{"z":"[wfa_z2]"}'), 'number_1dp'), 'wfa_z2' => f('anthro_form')]),
+        ['2' => [EVT => row()]]);
+    check('...a "return" of its own on the second field is taken', empty(ruleOn($m, 'weight')['configError']) && empty(ruleOn($m, 'weight2')['configError']));
+    $m = mod(dict(['weight2' => f('anthro_form', tag(), 'number_1dp')], tag()), ['2' => [EVT => row()]]);
+    check('...the same tag without "return" on two fields is still one sound rule',
+        empty(ruleOn($m, 'weight')['configError']) && ruleOn($m, 'weight2') === ruleOn($m, 'weight'));
 
     // ---- 19) the live fixture: section J of docs/testbed/RANGE_LIVE_ACCEPTANCE.md expects these -------------------------------
     $fx = fopen(__DIR__ . '/../docs/testbed/uvrange_return_test_fields.csv', 'r');
