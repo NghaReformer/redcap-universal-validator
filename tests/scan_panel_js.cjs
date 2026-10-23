@@ -304,8 +304,14 @@ function noZero(label) {
     && formSel.children[1].value === 'fa' && formSel.children[1].textContent === 'Form A (1,200)');
   check('filters: one with nothing to choose from is not offered',
     !shown('uv-scan-filter-group-wrap') && shown('uv-scan-filter-form-wrap') && shown('uv-scan-report-filters'));
+  const optionsBefore = formSel.children.slice();
   els['uv-scan-report-next'].click();
   await ticks();
+  // rv11b1-7 (b): counting the options cannot tell a rebuild from none, since
+  // a rebuild makes the same three. The nodes themselves must be the same.
+  check('rv11b1-7: a page turn keeps the very option nodes the reader may be choosing from',
+    sentAt(findingsSent().length - 1).after === 3 && formSel.children.length === optionsBefore.length
+    && formSel.children.every((o, i) => o === optionsBefore[i]));
   formSel.value = 'fb';
   script = [page({ rows: rowsOf(9, 1), next: null })];
   formSel.fire('change');
@@ -614,6 +620,25 @@ function noZero(label) {
   await ticks(10);
   check('run: a new Start puts the last report away', !shown('uv-scan-report'));
   noZero('run');
+
+  // rv11b1-7 (a): the reviewer's F2. A page of the last report, asked for
+  // before Start, lands while the new run is still going. Start moved the
+  // report on to a new generation, so that answer is dropped, not shown.
+  reset([{ ok: true, run_id: 8 },
+         { ok: true, worked: 1, status: { ok: true, run_id: 8, phase: 'checking', total: 10, done: 1,
+                                          findings: 0, active: true, mayCancel: true } }]);
+  holdNext = true;
+  UV.attach({ reportRunId: 5 });
+  await ticks();
+  const oldAsk = findingsSent().length;
+  UV.start();
+  await ticks(16);
+  const startedNew = sent.some((s) => s.action === 'scan-start') && UV.state.runId === 8;
+  held.resolve(page({ run_id: 5, rows: rowsOf(40, 4), next: null }));
+  await ticks(16);
+  check('rv11b1-7: the old run\'s page landing while the new run goes is not shown',
+    oldAsk === 1 && startedNew && !shown('uv-scan-report') && cells().length === 0
+    && els['uv-scan-report-summary'].textContent === '');
 
   // -- rv11b1-1: which report opens -----------------------------------------
   // A group whose last report a whole-project scan replaced has none to open
