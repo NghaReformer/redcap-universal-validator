@@ -180,8 +180,8 @@ The number is the version the installation is at, which
 2.3.0 release candidate, `Schema::plan(1)` for 1.9.x, `Schema::plan(0)` for an
 installation with no scan tables. Run the statements in order, then save the
 system configuration once. The module finds the changes already made, skips
-them, runs the steps that are not DDL (the version-2 data step below),
-verifies the result and records the version.
+them, runs the steps that are not DDL (the version-2 and version-6 data
+steps below), verifies the result and records the version.
 
 ### Upgrading from a 2.3.0 release candidate (schema version 5 to 6)
 
@@ -204,6 +204,14 @@ That is three statements, and their time grows with the rows in those three
 tables. Measured with 400,000 records and 400,000 candidates: MySQL 8.0 adds
 the columns at once and spends about 17 seconds on the index; MySQL 5.7
 spends about 19 seconds rebuilding `uv_scan_record` and 5 on the index.
+
+Then one data step: each run that had already finished its catch-up pass is
+marked as having done so, 5,000 runs per `UPDATE`. The row shows this for a
+run in either finishing phase, and for a stopped or ended run whose summary
+had begun. A scan of one Data Access Group stopped or ended after that point
+shows its counts again. One stopped earlier in the finishing phases cannot be
+told apart from one stopped before catch-up ended, so it keeps saying its
+counts are shown once it has confirmed its group.
 
 Runs that exist at the upgrade are counted the old way, from every finding
 row they wrote. That shows only where such a run has no summary: one still in

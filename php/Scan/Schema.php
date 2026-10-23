@@ -737,6 +737,8 @@ final class Schema
      * without it that DELETE reads every candidate of the generation. An
      * index only; skipped once it exists.
      *
+     * The data step after these is upgradeDataV6().
+     *
      * @return array[] each ['sql' => string, 'skipIf' => ?array]
      */
     private static function statementsV6()
@@ -754,9 +756,65 @@ final class Schema
                  'skipIf' => ['index', $uc, 'ix_record']]];
     }
 
+    /** The scan_run rows one page of upgradeDataV6() covers, by run_id. */
+    const DATA_V6_PAGE = 5000;
+
     /**
-     * Prove version 6 is on the server before saying so: its columns and its
-     * index.
+     * Version 6's data step (review rvfix-N1): a run that left catch-up
+     * before this build is marked as having left it.
+     *
+     * advancePhase() writes catchup_dirty = ScanStore::CAUGHT_UP with the
+     * move out of catch-up (rvf1-1), because a group-scoped run stopped,
+     * expired or failed later shows its counts only with that mark
+     * (ScanAuthorization::scopeProved()). The previous build did not write
+     * it, so a run in unique-finalize or rollup-finalize at the upgrade, and
+     * stopped or ended after it, was withheld for good.
+     *
+     * WHAT THE ROW CAN TELL. A run in either finalizer has left catch-up. So
+     * has a stopped or ended run whose rollup cursor moved: only the summary
+     * phase moves it (RollupBuilder). A stopped or ended run whose cursor did
+     * not move cannot say which phase it stopped in (a summary with nothing
+     * to page never moves it either), so it is left as it is: withheld, the
+     * weaker claim. A run that finished complete or partial is proved by its
+     * terminal and needs no mark.
+     *
+     * IDEMPOTENT AND BOUNDED: a row already marked is not matched, and the
+     * table is walked by primary-key range, DATA_V6_PAGE runs a statement.
+     */
+    private static function upgradeDataV6($module)
+    {
+        $t = self::table('scan_run');
+        $q = $module->query('SELECT MAX(run_id) FROM ' . $t, []);
+        $row = $q ? self::firstRow($q) : null;
+        if ($row === null) throw new \RuntimeException('could not read how many scan runs there are');
+        $top = (int) (isset($row[0]) ? $row[0] : 0);
+        list($where, $args) = self::leftCatchUpWhere();
+        for ($from = 0; $from < $top; $from += self::DATA_V6_PAGE) {
+            $module->query('UPDATE ' . $t . ' SET catchup_dirty = ? WHERE run_id > ? AND run_id <= ? AND '
+                . $where, array_merge([ScanStore::CAUGHT_UP, $from, $from + self::DATA_V6_PAGE], $args));
+        }
+    }
+
+    /**
+     * upgradeDataV6()'s rows: runs the row shows left catch-up, not yet marked.
+     *
+     * @return array{0:string, 1:array}
+     */
+    private static function leftCatchUpWhere()
+    {
+        return ['catchup_dirty <> ? AND (phase IN (?, ?) OR (phase IN (?, ?) AND rollup_cursor > 0))',
+                [ScanStore::CAUGHT_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP,
+                 ScanPhase::CANCELLING, ScanPhase::TERMINAL]];
+    }
+
+    /**
+     * Prove version 6 is on the server before saying so: its columns, its
+     * index, and no run left unmarked that the data step marks.
+     *
+     * A run the previous build moves out of catch-up after the data step,
+     * before the version row ends that build's work, is unmarked; the step
+     * is run again once for it, and only a run still unmarked after that
+     * fails the check.
      *
      * @return ?string null when everything holds, otherwise what does not
      */
@@ -771,7 +829,15 @@ final class Schema
         if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
             return 'the unique_candidate table has no ix_record index';
         }
-        return null;
+        list($where, $args) = self::leftCatchUpWhere();
+        for ($try = 0; $try < 2; $try++) {
+            $q = $module->query('SELECT COUNT(*) FROM ' . self::table('scan_run') . ' WHERE ' . $where, $args);
+            $row = $q ? self::firstRow($q) : null;
+            if ($row === null) return 'the scan runs could not be checked for the mark the data step writes';
+            if ((int) (isset($row[0]) ? $row[0] : 0) === 0) return null;
+            if ($try === 0) self::upgradeDataV6($module);
+        }
+        return 'a scan run that left catch-up is still not marked as having left it';
     }
 
     /**
@@ -987,7 +1053,17 @@ final class Schema
                 }
             }
             if ($v === 6) {
-                $bad = self::verifyV6($module);
+                // The data step first, as version 2's: it reads catchup_dirty,
+                // phase and rollup_cursor, which version 1 created.
+                try {
+                    self::upgradeDataV6($module);
+                    $bad = self::verifyV6($module);
+                } catch (\Throwable $e) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 6 was installed but its data could not be brought '
+                                   . 'forward (' . get_class($e) . '), so the version is NOT recorded and the '
+                                   . 'scan stays disabled. Re-saving the configuration retries it.'];
+                }
                 if ($bad !== null) {
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                             'why' => 'schema version 6 did not verify after it was applied: ' . $bad

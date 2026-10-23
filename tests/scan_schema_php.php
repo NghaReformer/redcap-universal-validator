@@ -79,6 +79,16 @@ namespace {
         public $tableListAnswer = null;
         /** Answer health()'s table read in upper case, as a case-folding server may. */
         public $upperNames = false;
+        /**
+         * Version 6's data step (rvfix-N1): the run ids that left catch-up and
+         * are not marked, the highest run id, runs that turn up unmarked when
+         * the check first looks (a run the previous build moved after the
+         * step), and an UPDATE that marks nothing.
+         */
+        public $unmarkedRuns = [];
+        public $runTop = 0;
+        public $lateUnmarked = [];
+        public $stubbornRuns = false;
 
         /**
          * Model the DDL rather than merely record it.
@@ -183,6 +193,27 @@ namespace {
                 $t = isset($params[0]) ? $params[0] : '';
                 $i = isset($params[1]) ? $params[1] : '';
                 return [[in_array($t . '.' . $i, $this->indexes, true) ? 1 : 0]];
+            }
+            // Version 6's data step and its check: the highest run id, one
+            // primary-key page of marks, and how many runs are still unmarked.
+            if (strpos($sql, 'SELECT MAX(run_id) FROM uv_scan_run') === 0) {
+                return [[max(array_merge([$this->runTop], $this->unmarkedRuns))]];
+            }
+            if (strpos($sql, 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0) {
+                if (!$this->stubbornRuns) {
+                    $lo = (int) $params[1];
+                    $hi = (int) $params[2];
+                    $this->unmarkedRuns = array_values(array_filter($this->unmarkedRuns,
+                        function ($id) use ($lo, $hi) { return $id <= $lo || $id > $hi; }));
+                }
+                return [];
+            }
+            if (strpos($sql, 'SELECT COUNT(*) FROM uv_scan_run WHERE catchup_dirty <> ?') === 0) {
+                if ($this->lateUnmarked) {
+                    $this->unmarkedRuns = array_merge($this->unmarkedRuns, $this->lateUnmarked);
+                    $this->lateUnmarked = [];
+                }
+                return [[count($this->unmarkedRuns)]];
             }
             // "How many rows still belong to no project" - asked by the data
             // step while it pages, and again by the verification afterwards.
@@ -728,7 +759,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('rvc1-3: and no default is set on the run counts, so a run the previous build starts mid-migration stays NULL',
             !array_filter(Schema::plan(5), function ($q) { return stripos($q, 'DEFAULT 0') !== false
                 && stripos($q, 'open_') !== false; }));
-        check('v6: with no data step, and records version 6',
+        check('v6: with no run to mark, the data step writes nothing, and version 6 is recorded',
             !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'UPDATE uv_') === 0; })
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $before = count($m->sql);
@@ -758,6 +789,78 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
         check('v6: a fresh install ends with all three statements, in order',
             strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v6)) !== false);
+
+        // THE DATA STEP (review rvfix-N1). Runs that left catch-up under the
+        // previous build carry no mark, so a stopped group-scoped run was
+        // withheld for good. The step marks them by primary-key page.
+        $pages = function ($mod) {
+            $out = [];
+            foreach ($mod->calls as $c) {
+                if (strpos($c[0], 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0) {
+                    $out[] = [$c[1][0], $c[1][1], $c[1][2]];
+                }
+            }
+            return $out;
+        };
+        $counts = function ($mod) {
+            return count(array_filter($mod->sql, function ($q) {
+                return strpos($q, 'SELECT COUNT(*) FROM uv_scan_run WHERE catchup_dirty <> ?') === 0; }));
+        };
+        $d = new \FakeModule();
+        $d->version = '5';
+        $d->recordCalls = true;
+        $d->runTop = 12000;
+        $d->unmarkedRuns = [3, 5001, 11999];
+        $rd = Schema::migrate($d);
+        check('rvfix-N1: the runs that left catch-up are marked, and version 6 is recorded',
+            $rd['ok'] === true && $d->unmarkedRuns === []
+            && (bool) array_filter($d->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('rvfix-N1: in primary-key pages of ' . Schema::DATA_V6_PAGE . ' runs, each writing the caught-up mark (got '
+            . json_encode($pages($d)) . ')',
+            $pages($d) === [[ScanStore::CAUGHT_UP, 0, 5000], [ScanStore::CAUGHT_UP, 5000, 10000],
+                            [ScanStore::CAUGHT_UP, 10000, 15000]]);
+        $upd = array_values(array_filter($d->calls, function ($c) {
+            return strpos($c[0], 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0; }));
+        check('rvfix-N1: matching only unmarked runs in a finalizer phase, or stopped or ended after the summary began',
+            isset($upd[0]) && strpos($upd[0][0], 'catchup_dirty <> ? AND (phase IN (?, ?) OR (phase IN (?, ?) AND rollup_cursor > 0))') !== false
+            && array_slice($upd[0][1], 3) === [ScanStore::CAUGHT_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP,
+                                               ScanPhase::CANCELLING, ScanPhase::TERMINAL]);
+        check('rvfix-N1: and the check after it reads once, finding none left',
+            $counts($d) === 1);
+        $before = count($d->sql);
+        $d->version = '6';
+        Schema::migrate($d);
+        check('rvfix-N1: once version 6 is recorded the step is not run again',
+            !array_filter(array_slice($d->sql, $before), function ($q) { return strpos($q, 'UPDATE uv_') === 0; }));
+
+        $late = new \FakeModule();
+        $late->version = '5';
+        $late->recordCalls = true;
+        $late->runTop = 4000;
+        $late->unmarkedRuns = [7];
+        $late->lateUnmarked = [4001];
+        $rl = Schema::migrate($late);
+        check('rvfix-N1: a run the previous build moves out of catch-up after the step is marked by one more pass',
+            $rl['ok'] === true && $late->unmarkedRuns === [] && count($pages($late)) === 2 && $counts($late) === 2);
+
+        $stub = new \FakeModule();
+        $stub->version = '5';
+        $stub->runTop = 10;
+        $stub->unmarkedRuns = [10];
+        $stub->stubbornRuns = true;
+        $rs = Schema::migrate($stub);
+        check('rvfix-N1: a mark that does not take is not recorded as version 6, and says why',
+            $rs['ok'] === false && strpos((string) $rs['why'], 'version 6 did not verify') !== false
+            && strpos((string) $rs['why'], 'still not marked') !== false
+            && !array_filter($stub->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+
+        $blind = new \FakeModule();
+        $blind->version = '5';
+        $blind->failOn = 'SELECT MAX(run_id)';
+        $rb = Schema::migrate($blind);
+        check('rvfix-N1: a data step that cannot read the runs is not recorded as version 6, and says so',
+            $rb['ok'] === false && strpos((string) $rb['why'], 'version 6 was installed but its data could not be brought forward') !== false
+            && !array_filter($blind->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
     }
 
     /* =====================================================================
