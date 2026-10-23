@@ -3302,25 +3302,21 @@ class UniversalValidator extends AbstractExternalModule
     private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
-        $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
-            ? array_map('strval', $rule['choicesAll']) : [];
-        if (isset($rule['choicesShow']) && is_array($rule['choicesShow'])) {
-            if (!$all) {
-                // A "show" whitelist is only meaningful against the full
-                // list — without it the complement cannot be computed.
-                $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                    'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
-                return $out;
-            }
-            $hidden = array_diff($all, array_map('strval', $rule['choicesShow']));
-        } elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) {
-            $hidden = array_map('strval', $rule['choicesHide']);
-        } else {
+        $sets = $this->choicesSets($rule);
+        if ($sets === null) {
             $out['unconfigurable'][] = ['fields' => $rule['fields'],
                 'why' => 'the choices rule carries neither a "show" nor a "hide" list — rule skipped'];
             return $out;
         }
-        $hiddenSet = array_fill_keys(array_values($hidden), true);
+        if ($sets['show'] && !$sets['allSet']) {
+            // A "show" whitelist is only meaningful against the full
+            // list — without it the complement cannot be computed.
+            $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
+            return $out;
+        }
+        $all = $sets['allSet'];
+        $hiddenSet = $sets['hiddenSet'];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3329,7 +3325,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($value as $code => $checked) {
                     if ((string) $checked !== '1') continue;
                     $c = (string) $code;
-                    if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
+                    if ($all && !isset($all[$c])) continue; // outside the choice list — out of scope
                     if (isset($hiddenSet[$c])) {
                         // locus: WHICH hidden code. A checkbox can have
                         // several ticked at once, and every one of them is
@@ -3346,13 +3342,50 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($value === null || trim((string) $value) === '') continue;
             $v = trim((string) $value);
-            if ($all && !in_array($v, $all, true)) continue; // outside the choice list — out of scope
+            if ($all && !isset($all[$v])) continue; // outside the choice list — out of scope
             if (isset($hiddenSet[$v])) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'choices',
                                      'type' => 'choices', 'reason' => 'hidden-choice'];
             }
         }
         return $out;
+    }
+
+    /** @var array the code sets of each choices rule or branch seen this request (CHO-8) */
+    private $choicesMemo = [];
+
+    /**
+     * The full and hidden code sets of a choices rule or branch, as
+     * code => true, or null when it carries neither list. The scan judged
+     * every record context by building them again: 218 us each on a
+     * 2,000-code field (CHO-8). They depend only on the lists, so they are
+     * kept for the request. The scan hands every context the same arrays,
+     * which === matches without reading them; a list built again still
+     * matches by content.
+     *
+     * @return array|null ['show' => bool, 'allSet' => array, 'hiddenSet' => array, ...]
+     */
+    private function choicesSets(array $rule)
+    {
+        $allRaw = (isset($rule['choicesAll']) && is_array($rule['choicesAll'])) ? $rule['choicesAll'] : [];
+        $show = isset($rule['choicesShow']) && is_array($rule['choicesShow']);
+        if ($show) $listRaw = $rule['choicesShow'];
+        elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) $listRaw = $rule['choicesHide'];
+        else return null;
+        $key = ($show ? 's' : 'h') . count($allRaw) . ':' . count($listRaw);
+        if (isset($this->choicesMemo[$key])) {
+            foreach ($this->choicesMemo[$key] as $m) {
+                if ($m['all'] === $allRaw && $m['list'] === $listRaw) return $m;
+            }
+        }
+        $all = array_map('strval', $allRaw);
+        $hidden = $show ? array_diff($all, array_map('strval', $listRaw)) : array_map('strval', $listRaw);
+        $m = ['all' => $allRaw, 'list' => $listRaw, 'show' => $show,
+              'allSet' => $all ? array_fill_keys($all, true) : [],
+              'hiddenSet' => array_fill_keys(array_values($hidden), true)];
+        // A few entries per shape: the branches of one rule alternate.
+        if (!isset($this->choicesMemo[$key]) || count($this->choicesMemo[$key]) < 16) $this->choicesMemo[$key][] = $m;
+        return $m;
     }
 
     /**

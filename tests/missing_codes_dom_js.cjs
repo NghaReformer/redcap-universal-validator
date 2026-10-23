@@ -313,5 +313,28 @@ function flagged(env, field) {
   check('AST-10 control: without codes the ordered "when" compares UNK as text and applies', flagged(env3, 'dose') && !saves(env3));
 }
 
+// CHO-3: @UVCHOICES leaves a field that holds a code alone, even when the code
+// is also one of its choices and the filter hides it, as the server does.
+{
+  const rule = { type: 'choices', fields: ['pick'], choicesHide: ['NA'], choicesAll: ['1', 'NA'], blockSave: 'hard' };
+  const field = () => {
+    const mirror = input('pick', 'NA'); mirror.type = 'hidden';
+    const r1 = input('pick___radio', '1'); r1.type = 'radio';
+    const r2 = input('pick___radio', 'NA'); r2.type = 'radio'; r2.checked = true;
+    return [mirror, r1, r2];
+  };
+  const els = field();
+  const env = boot(els, Object.assign({ rules: [rule] }, { missingCodes: ['NA'] }));
+  check('CHO-3: a hidden choice that is a code is not judged', !flagged(env, 'pick') && els[0].getAttribute('aria-invalid') !== 'true');
+  check('CHO-3: ...and does not hold the save', saves(env));
+  const reg = env.win.INSPIREUniversalValidator.validators;
+  check('CHO-3: the field test answers null for it', reg.pick && reg.pick.test() === null);
+  set(env, els[0], '1');
+  check('CHO-3: a choice on show is fine', !flagged(env, 'pick') && saves(env));
+  const els2 = field();
+  const env2 = boot(els2, { rules: [rule], missingCodes: ['UNK'] });
+  check('CHO-3 control: where NA is not a code, the hidden choice is flagged', flagged(env2, 'pick') && !saves(env2));
+}
+
 console.log('missing_codes_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

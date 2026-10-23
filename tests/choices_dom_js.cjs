@@ -7,7 +7,9 @@
  * and asserts:
  *   - dropdown: hidden options are REMOVED and re-inserted in original order
  *     when the "when" gate flips; the blank placeholder is never removed; a
- *     selected-but-hidden option is KEPT (disabled) and flagged, never cleared,
+ *     selected-but-hidden option is KEPT (enabled, marked stale, so the browser
+ *     still submits it) and flagged, never cleared; options replaced by new
+ *     nodes are never shown twice (CHO-5),
  *   - radio: hidden codes hide their wrapper; a checked hidden code stays
  *     visible and flags invalid; branches switch the visible set live,
  *   - checkbox: a checked hidden code is stale (message + block); unchecking
@@ -17,6 +19,9 @@
  *   - "show" without choicesAll -> visible config error, no filtering,
  *   - survey context mutes condition detail in messages,
  *   - a value outside choicesAll (missing-data code) is never flagged,
+ *   - "Cannot save yet" focuses an option a person can reach (CHO-9), and a
+ *     set-up error sits under a dropdown with a label that names no mode
+ *     (CHO-10),
  *   - tests/choices_fixture.json: the hidden set matches the PHP audit
  *     (tests/hook_php.php consumes the same file) for every case.
  *
@@ -820,6 +825,104 @@ function withButtons(labels) {
     + small.walked + ' -> ' + big.walked + ')', big.walked <= small.walked * 16);
   check('CHO-1: a row already hidden is not written again (got ' + big.writes + ' writes)',
     big.writes === 0 && big.disp === 'none');
+}
+
+// ---- CHO-5: options replaced by new nodes are never shown twice ---------------
+{
+  const mk = (v, t) => { const o = option(v); o.text = t; return o; };
+  const pick = makeEl('select'); pick.name = 'pick';
+  ['', '1', '2', '3'].forEach((v) => pick.appendChild(mk(v, v ? 'Label ' + v : '')));
+  pick.value = '';
+  const g = makeEl('input'); g.name = 'g'; g.value = '1';
+  const env = boot([pick, g], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['pick'], choicesHide: ['1'], choicesAll: ['1', '2', '3'],
+              when: "[g]='1'", blockSave: 'hard' }] });
+  check('CHO-5: the filter hides 1 before the rebuild', selectValues(pick).join(',') === ',2,3');
+  // A script replaces every option with new nodes, the hidden one included.
+  pick.children.slice().forEach((o) => pick.removeChild(o));
+  ['', '1', '2', '3'].forEach((v) => pick.appendChild(mk(v, v ? 'New ' + v : '')));
+  pick.fire('change');
+  check('CHO-5: no choice shows twice after the rebuild (got ' + selectValues(pick).join(',') + ')',
+    selectValues(pick).join(',') === ',2,3');
+  g.value = '0'; g.fire('change');
+  check('CHO-5: the whole list once when no filter applies (got ' + selectValues(pick).join(',') + ')',
+    selectValues(pick).join(',') === ',1,2,3');
+  check('CHO-5: only the new labels', pick.children.map((o) => o.text).join('/') === '/New 1/New 2/New 3');
+  const parking = env.allEls.filter((e) => e.getAttribute && e.getAttribute('data-uv-parking') === 'pick');
+  check('CHO-5: the old nodes left the parking select', parking.every((p) => p.children.length === 0));
+  g.value = '1'; g.fire('change');
+  check('CHO-5: the filter hides the new node', selectValues(pick).join(',') === ',2,3');
+  g.value = '0'; g.fire('change');
+  check('CHO-5: and puts it back in its place', selectValues(pick).join(',') === ',1,2,3');
+}
+
+// ---- CHO-9: "Cannot save yet" focuses an option a person can reach -----------
+{
+  const country = makeEl('input'); country.name = 'country'; country.value = '2';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '201';
+  const radios = ['101', '201'].map((v) => {
+    const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
+  });
+  radios[1].checked = true;
+  const env = boot([country, mirror, ...radios], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], when: "[country]='1'", choicesShow: ['101'],
+              choicesAll: ['101', '201'], blockSave: 'hard' }] });
+  country.value = '1'; country.fire('change');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('CHO-9: a stale radio blocks the save', ev._prevented === true);
+  check('CHO-9: the focus goes to the checked radio, not the hidden mirror',
+    radios[1]._focused === true && !mirror._focused);
+}
+{
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '1';
+  const reach = ['1', '2', '9'].map((v) => r17chk('reach', v));
+  reach[2].visible.checked = true; reach[2].hidden.value = '9';
+  const flat = reach.reduce((a, o) => a.concat([o.hidden, o.visible]), []);
+  const env = boot([pilot, ...flat], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesHide: ['9'], choicesAll: ['1', '2', '9'],
+              when: "[pilot]='1'", blockSave: 'hard' }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('CHO-9: a stale REDCap 17 checkbox blocks the save', ev._prevented === true);
+  check('CHO-9: the focus goes to its visible box',
+    reach[2].visible._focused === true && !flat.some((e) => e.type === 'hidden' && e._focused));
+}
+{
+  // Every mode's guard shares the target: a blank required radio focuses the
+  // first option on show, skipping one the choices filter hides.
+  const country = makeEl('input'); country.name = 'country'; country.value = '1';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '201';
+  const r2 = makeEl('input'); r2.name = 'site___radio'; r2.type = 'radio'; r2.value = '101';
+  const env = boot([country, mirror, r1, r2], { singleFields: [], pooledFields: [],
+    rules: [
+      { type: 'choices', fields: ['site'], choicesShow: ['101'], choicesAll: ['101', '201'],
+        when: "[country]='1'", blockSave: 'hard' },
+      { type: 'required', fields: ['site'], blockSave: 'hard' },
+    ] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('CHO-9: a blank required radio blocks the save', ev._prevented === true);
+  check('CHO-9: the focus skips the hidden option and lands on the one on show',
+    r2._focused === true && !r1._focused && !mirror._focused);
+}
+
+// ---- CHO-10: set-up errors name no mode, and sit under a dropdown ------------
+{
+  // The select and the element after it (where REDCap's autocomplete puts
+  // its companion) share one cell.
+  const dd = makeEl('select'); dd.name = 'dd'; dd.groupKey = 'cell:dd';
+  ['', '1', '2'].forEach((v) => dd.appendChild(option(v)));
+  const after = makeEl('span'); after.id = 'rc-ac-companion'; after.groupKey = 'cell:dd';
+  const env = boot([dd, after], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['dd'], choicesShow: ['1'] }] });
+  const cell = env.holders.dd;
+  const cfg = env.allEls.find((e) => e.id === 'uvalidate-msg-dd-cfg');
+  check('CHO-10: a dropdown set-up error sits in the field\'s cell', !!cfg && cfg.parentNode === cell);
+  check('CHO-10: the select keeps the element after it next to it',
+    cell.children.indexOf(after) === cell.children.indexOf(dd) + 1 && cell.children.indexOf(cfg) > cell.children.indexOf(after));
+  check('CHO-10: the label names no mode', !!cfg && /^&#9888; Validator configuration error: /.test(cfg.innerHTML)
+    && !/ID-check/.test(cfg.innerHTML));
+  check('CHO-10: no page-level notice for it', !env.allEls.some((e) => e.id === 'uvalidate-config-errors'));
+  check('CHO-10: the select is described by the region', /uvalidate-msg-dd-cfg/.test(dd.getAttribute('aria-describedby') || ''));
 }
 
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

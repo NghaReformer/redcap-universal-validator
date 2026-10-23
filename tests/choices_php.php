@@ -70,8 +70,13 @@ $r = frag('@UVCHOICES={"show":[]}');
 check('empty show list -> error', isset($r['error']) && strpos($r['error'], 'non-empty') !== false);
 $r = frag('@UVCHOICES={"hide":["2","2"]}');
 check('duplicate code -> error', isset($r['error']) && strpos($r['error'], 'twice') !== false);
-$r = frag('@UVCHOICES={"show":' . json_encode(array_map('strval', range(1, 201))) . '}');
-check('code list over the cap -> error', isset($r['error']) && strpos($r['error'], '200') !== false);
+$r = frag('@UVCHOICES={"show":' . json_encode(array_map('strval', range(1, 10001))) . '}');
+check('code list over the cap -> error', isset($r['error']) && strpos($r['error'], 'limited to 10000 codes') !== false);
+// CHO-7: a 600-site list whose region holds 250 sites, written either way.
+$r = frag('@UVCHOICES={"when":"[region]=\'1\'","show":' . json_encode(array_map('strval', range(1, 250))) . '}');
+check('CHO-7: a "show" list of 250 codes is accepted', !isset($r['error']) && count($r['choicesShow']) === 250);
+$r = frag('@UVCHOICES={"when":"[region]=\'1\'","hide":' . json_encode(array_map('strval', range(251, 600))) . '}');
+check('CHO-7: the complementary "hide" list of 350 codes is accepted', !isset($r['error']) && count($r['choicesHide']) === 350);
 $r = frag('@UVCHOICES={"show":[["1"]]}');
 check('non-scalar code entry -> error', isset($r['error']) && strpos($r['error'], 'not a choice code') !== false);
 $r = frag('@UVCHOICES={"show":[""]}');

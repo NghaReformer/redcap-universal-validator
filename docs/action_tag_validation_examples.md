@@ -5746,7 +5746,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 
 | Key               | Type            | Default        | Notes                                                                  |
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
-| `show`          | list of strings | *(one of)*   | Offer only these choice codes; up to 200 codes                         |
+| `show`          | list of strings | *(one of)*   | Offer only these choice codes; each one must be a code of the field, up to 10,000 |
 | `hide`          | list of strings | *(one of)*   | Offer every code except these. Exactly one of `show`/`hide`        |
 | `when`          | string          | *(none)*     | The branch applies while true; a tag without `when` is the fallback  |
 | `message`       | string or map   | generic line   | Shown when a saved or selected code is not offered                     |

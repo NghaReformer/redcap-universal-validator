@@ -111,10 +111,13 @@ class AnnotationRules
      *  each one widens every lookup's read by one field. */
     const MAX_UNIQUE_ALSO = 5;
 
-    /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
-     *  every re-evaluation, so the list must stay small. REDCap fields with
-     *  more choices than this belong in an autocomplete dropdown anyway. */
-    const MAX_CHOICE_CODES = 200;
+    /** Safety bound on the show/hide code list, checked before the field's
+     *  own choice list is at hand. The real limit is that list: every code
+     *  must be one of the field's (annotateChoicesDictionary). The page's work
+     *  follows the field's choices, not this list, and is bounded there
+     *  (CHO-1). At 200 a 600-site list whose region holds 250 sites could not
+     *  be written either way (CHO-7). */
+    const MAX_CHOICE_CODES = 10000;
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',

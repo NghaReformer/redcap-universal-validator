@@ -1608,6 +1608,42 @@ namespace {
         }
     }
 
+    // CHO-8: the code sets of a choices rule are built once per request, not
+    // once per record context, and the lookups keep codes such as "01" apart
+    // from "1".
+    $m = newModule([], $cDict, [], 149);
+    $fc = new \ReflectionMethod($m, 'findingsChoices');
+    $fc->setAccessible(true);
+    $memo = new \ReflectionProperty($m, 'choicesMemo');
+    $memo->setAccessible(true);
+    $codes = array_map('strval', range(1, 2000));
+    $show = ['rule' => ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => $codes, 'choicesShow' => array_slice($codes, 0, 200)]];
+    $hide = ['rule' => ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => $codes, 'choicesHide' => array_slice($codes, 0, 200)]];
+    $flaggedAt = function ($rule, $value) use ($fc, $m) {
+        $r = $fc->invoke($m, $rule, 'choices', ['big' => $value], [], null, 149, '1', 351, [], []);
+        return count($r['invalid']);
+    };
+    $ok = true;
+    for ($i = 1; $i <= 1000; $i++) {
+        $branch = ($i % 2) ? $show['rule'] : $hide['rule'];
+        $hidden = ($i % 2) ? ($i > 200) : ($i <= 200);
+        if (($flaggedAt($branch, (string) $i) === 1) !== $hidden) $ok = false;
+    }
+    check('CHO-8: 1,000 contexts over two alternating branches give the right verdicts', $ok);
+    $entries = 0;
+    foreach ($memo->getValue($m) as $list) $entries += count($list);
+    check('CHO-8: the two branches built their code sets once each (got ' . $entries . ')', $entries === 2);
+    $rebuilt = ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => array_map('strval', range(1, 2000)),
+                'choicesHide' => array_map('strval', range(1, 200))];
+    check('CHO-8: a list built again matches by content', $flaggedAt($rebuilt, '5') === 1 && $flaggedAt($rebuilt, '500') === 0);
+    $entries = 0;
+    foreach ($memo->getValue($m) as $list) $entries += count($list);
+    check('CHO-8: ...and adds no entry', $entries === 2);
+    $lead = ['type' => 'choices', 'fields' => ['big'], 'choicesAll' => ['1', '01', '1.50'], 'choicesHide' => ['01']];
+    check('CHO-8: "01" and "1" stay different codes',
+        $flaggedAt($lead, '01') === 1 && $flaggedAt($lead, '1') === 0 && $flaggedAt($lead, '1.5') === 0
+        && $flaggedAt($lead, ['01' => '1', '1' => '0']) === 1 && $flaggedAt($lead, ['1' => '1']) === 0);
+
     // ---- Configure-dialog channel for the new modes (Phase 3) -----------------
     // Constraint and Required rules built from dialog rows (settingRowToRule),
     // not annotations — same audit semantics, same shared validator.

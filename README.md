@@ -635,14 +635,21 @@ field instead of one near-duplicate field per country:
 - **JSON form only.** Exactly one of `show` (whitelist — every other code of
   the field hides) or `hide` (blacklist) per tag, plus optional `when`,
   `message`, `blockSave`. Codes must exist in the field's own choice list — an
-  unknown code is a configuration error naming the real codes.
+  unknown code is a configuration error naming the real codes. A list holds up
+  to 10,000 codes, so the field's own list is the limit in practice. Up to
+  2.3.0-rc.2 the limit was 200, which left a 600-site list whose region holds
+  250 sites impossible to write either way.
 - **Branches like every other mode.** Repeat the tag with different `when`
   conditions (plus at most one without, as the fallback). Exactly one true
   condition filters; none (and no fallback) shows everything; more than one
   true is a visible conflict — the filter is **not** applied and the save is
   never blocked on a configuration problem. Conditions may reference fields on
-  other instruments; those are resolved server-side against saved values
-  (nothing off-page leaks into the browser).
+  other instruments; the server reads their saved values. A comparison of such
+  a field with a fixed value reaches the page as its answer only, true or
+  false. A comparison with a field on the form needs the saved value on the
+  page to follow what is typed: a user with REDCap rights to the other
+  instrument gets that value, and on a survey or without those rights the page
+  gets the answer as of page load (the rule of 1.6.0).
 - **A hidden selection is never cleared.** If the stored/selected choice
   becomes hidden (the user changes the country after picking a site), the
   module keeps it visible — dropdowns keep the option in place, greyed and
@@ -652,6 +659,8 @@ field instead of one near-duplicate field per country:
   mode refuses to do; fix it by picking one of the shown choices.
 - **Out-of-list values are out of scope.** A value that is not in the field's
   choice list at all (e.g. a missing-data code like `-99`) is never flagged.
+  Nor is a project Missing Data Code that is also one of the field's codes: the
+  page and the server both leave such a field alone.
 - Works on radio, dropdown and checkbox fields; **not** yes/no, true/false,
   sql, or matrix fields (matrix rows render different markup — the tag is
   refused there rather than half-working). Dropdown filtering physically
@@ -664,9 +673,14 @@ field instead of one near-duplicate field per country:
   2.3.0-rc.2 the buttons stayed clickable. On any form the filter gives back
   only the display it took away, so an option row that REDCap or a script hid
   stays hidden.
-- **Audited like everything else.** A save that lands a hidden choice (API,
-  import, a race) is logged by the post-save audit as `type: choices`,
-  `reason: hidden-choice`, and the Validation scan reports it retrospectively.
+- **Audited on form saves; imports and API writes through the scan.** A form or
+  survey save that lands a hidden choice (under `blockSave` `off`, after "Save
+  anyway", or in a race between two users) is logged by the post-save audit as
+  `type: choices`, `reason: hidden-choice`. Whether that audit runs for Data
+  Import Tool and API writes depends on the REDCap version (see the coverage
+  caveat above): on REDCap 17.0.6 a Data Import Tool import left no entry. The
+  Validation scan reads the saved values whatever wrote them, so run it after
+  an import.
 
 ## Dates within a window — the `@UVWINDOW` tag
 

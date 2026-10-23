@@ -1558,6 +1558,30 @@ function QRID_findAnchor(name){
   }
   return fallback;
 }
+/* Where "Cannot save yet" puts the focus for a field's guard item. The anchor
+   of a radio or checkbox field is a hidden mirror that cannot take it, so the
+   focus stayed on the page body (CHO-9): the field's checked option, else its
+   first option on show. A dropdown with REDCap's autocomplete takes it in the
+   text box. Any other field takes it on the anchor itself. */
+function QRID_focusTarget(input, fieldName){
+  if(typeof document === "undefined") return input;
+  if((input && input.tagName || "").toLowerCase() === "select"){
+    var ac = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
+    return ac || input;
+  }
+  if(!document.getElementsByName) return input;
+  var opts = [], els, i;
+  els = document.getElementsByName(fieldName + "___radio");
+  for(i = 0; i < els.length; i++) opts.push(els[i]);
+  els = document.getElementsByName("__chkn__" + fieldName);
+  for(i = 0; i < els.length; i++) opts.push(els[i]);
+  for(i = 0; i < opts.length; i++) if(opts[i].checked) return opts[i];
+  for(i = 0; i < opts.length; i++){
+    var row = opts[i].parentNode;
+    if(!(row && (row.__qridHidden || (row.style && row.style.display === "none")))) return opts[i];
+  }
+  return input;
+}
 /* Whether the person cannot change the field on this page (REQ-2). @READONLY
    leaves the anchor of a radio, yes/no, true/false or checkbox field enabled,
    because that anchor is the hidden mirror REDCap keeps, and disables the
@@ -3915,10 +3939,14 @@ function QRID_setInvalidState(input, state){  /* true | false | null (empty fiel
    generic line instead of technical detail; staff see the full message. A
    separate bound-marker and region id keep this from ever claiming the field
    against a live validator. Returns false when the field is not on this page
-   (caller falls back to the page-level notice). */
+   (caller falls back to the page-level notice). A dropdown has no text input,
+   so its error went only to the page-level notice (CHO-10): the select is the
+   anchor then, and the region goes at the end of its cell, which keeps the
+   select next to the companion input REDCap's autocomplete builds after it.
+   Every mode shares the region, so its label names none of them. */
 function QRID_attachErrorRegion(fieldName, configError){
-  var input = QRID_findField(fieldName);
-  if(!input) return false;
+  var input = QRID_findField(fieldName) || QRID_findAnchor(fieldName);
+  if(!input || !input.parentNode) return false;
   if(input.getAttribute && input.getAttribute("data-qrid-err-bound")) return true;
   if(input.setAttribute) input.setAttribute("data-qrid-err-bound", "1");
   var msg = document.createElement("div");
@@ -3930,14 +3958,15 @@ function QRID_attachErrorRegion(fieldName, configError){
   }
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-  input.parentNode.insertBefore(msg, input.nextSibling);
+  if((input.tagName || "").toLowerCase() === "select") input.parentNode.appendChild(msg);
+  else input.parentNode.insertBefore(msg, input.nextSibling);
   if(input.setAttribute && input.getAttribute){
     var desc = input.getAttribute("aria-describedby") || "";
     input.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
   }
   msg.innerHTML = QRID_IS_SURVEY
     ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
-    : "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
+    : "&#9888; Validator configuration error: " + QRID_escapeHtml(configError);
   return true;
 }
 /* Show a configuration error that has no field widget to sit under — a rule whose
@@ -4674,7 +4703,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 /* re-judged at save: a referenced value changed without an
                    event (a calc, a radio reset) must not leave a stale
                    verdict (AST-7) */
@@ -5051,7 +5080,7 @@ function QRIDWindowInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock !== "off" ? VS.firstBlock : FUTURE_BLOCK);
     }
@@ -6318,7 +6347,7 @@ function QRIDRangeInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, "off");
     }
@@ -6599,7 +6628,7 @@ function QRIDRequiredInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridType: QRID_CONFIG.type,
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 /* re-judged at save: a "when" over a calc flipped without an
                    event must not let a blank field through (REQ-3) */
                 __qridRecheck: function(){ check(); } };
@@ -6744,10 +6773,13 @@ function QRID_choiceParking(fieldName){
                  parent wrapper; the hidden mirror input is never touched;
      checkbox  — the input named __chk__<field>_RC_<code> hides its parent.
    A currently-SELECTED choice is NEVER hidden or cleared: it stays visible
-   (dropdown: kept + disabled), the field is flagged invalid with the message,
+   (dropdown: kept and marked stale, never disabled, so the browser still
+   submits it), the field is flagged invalid with the message,
    and blockSave (off/confirm/hard) decides whether the save is challenged —
    silently destroying an entered value is the one thing this mode must never
-   do. A value outside choicesAll (e.g. a missing-data code) is out of scope.
+   do. A value outside choicesAll is out of scope, and so is a project Missing
+   Data Code, even one that is also a choice code (CHO-3): the server skips
+   such a field (php/modes.json "missingCodes":"skip").
    tests/choices_dom_js.cjs locks this contract (tests/choices_fixture.json is
    the hidden-set contract); UniversalValidator::ruleFindings (type "choices")
    is the server twin. */
@@ -6852,7 +6884,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 __qridRecheck: function(){ check(); },
-                focus: function(){ try { (autocompleteInput || input).focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -6862,7 +6894,31 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var selectOrig = [];   /* options retain their original parent and order */
     var parking = null;    /* where hidden options wait (QRID_choiceParking) */
     var activeHidden = Object.create(null), autocompleteInput = null;
+    function inSelect(o){
+      var at = o.parentNode;
+      return !!at && (at === select || at.parentNode === select);
+    }
     function snapshotOptions(){
+      /* An option this module did not park that has left the select means its
+         options were replaced (a piping refresh, another module, a script).
+         The old nodes were put back by the next render, so every choice showed
+         twice (CHO-5). The select's options are then the list: every entry not
+         in it is dropped, and the old nodes waiting in the parking select go.
+         selectOrig keeps its identity, which the expando below compares. */
+      var rebuilt = false, d;
+      for(d = 0; d < selectOrig.length && !rebuilt; d++){
+        if(!selectOrig[d].parked && !inSelect(selectOrig[d].node)) rebuilt = true;
+      }
+      if(rebuilt){
+        var kept = 0;
+        for(d = 0; d < selectOrig.length; d++){
+          var e = selectOrig[d];
+          if(inSelect(e.node)){ selectOrig[kept++] = e; continue; }
+          e.node.__qridSnap = null;
+          if(e.parked && e.node.parentNode && e.node.parentNode.removeChild) e.node.parentNode.removeChild(e.node);
+        }
+        selectOrig.length = kept;
+      }
       function visit(parent){
         for(var i = 0; i < parent.children.length; i++){
           var o = parent.children[i], tag = (o.tagName || "").toLowerCase();
@@ -6873,7 +6929,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
              main thread for seconds per selection). */
           if(o.__qridSnap === selectOrig) continue;
           o.__qridSnap = selectOrig;
-          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled });
+          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled, parked: false });
         }
       }
       visit(select); // also discover options populated after page initialization
@@ -6955,11 +7011,13 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         if(show && o.parentNode !== parent){
           if(o.parentNode && o.parentNode.removeChild) o.parentNode.removeChild(o);   /* out of the parking select */
           parent.insertBefore(o, parent.__qridNext || null);
+          entry.parked = false;
           changed = true;
         } else if(!show && o.parentNode === parent){
           parent.removeChild(o);
           if(!parking || parking.parentNode == null) parking = QRID_choiceParking(fieldName);
           if(parking) parking.appendChild(o);
+          entry.parked = true;   /* held here, in the parking select or out of the page */
           changed = true;
         }
         /* The kept stale answer is MARKED, never disabled. A browser leaves a
@@ -7037,7 +7095,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
         var v = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
-        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
+        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v)) && !QRID_isMissingCode(v)) out.push(v);
         return out;
       }
       for(var i = 0; i < V.hiddenList.length; i++){        /* checkbox: any checked hidden code */
@@ -7163,6 +7221,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       test: function(){ var a = QRID_activeVariants(VS);
         if(a.length !== 1) return null;
         var v = QRID_whenTrim(QRID_WHEN.readRef(f, null));
+        if(v !== "" && QRID_isMissingCode(v)) return null;   /* not judged (CHO-3) */
         if(v !== "") return !a[0].hiddenSet[v];
         for(var i = 0; i < a[0].hiddenList.length; i++){
           if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;
@@ -7307,7 +7366,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
@@ -7649,7 +7708,7 @@ function QRIDExistsInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off");
     }
     function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
