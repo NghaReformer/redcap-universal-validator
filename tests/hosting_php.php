@@ -68,6 +68,11 @@ namespace ExternalModules {
             if (strpos($sql, 'information_schema.columns') !== false
                     || strpos($sql, 'information_schema.statistics') !== false) return [[1]];
             if (strpos($sql, 'project_id = 0') !== false) return [[0]];
+            // Version 6's data step and its check (rvfix-N1): no run to mark.
+            // A server answers both with one row, and an empty answer is a
+            // read that did not work, which migrate() refuses.
+            if (strpos($sql, 'SELECT MAX(run_id)') === 0
+                    || strpos($sql, 'WHERE catchup_dirty <> ?') !== false) return [[0]];
             return [];
         }
         public function getProjectId() { return $this->projectIdReturn; }
