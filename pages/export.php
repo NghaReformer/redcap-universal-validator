@@ -16,28 +16,39 @@
  * it is in the history at 1.8.8 and is not coming back. This one reads only
  * what a run already stored, a page at a time.
  *
- * A GET WITH NO TOKEN, AND WHAT THAT LEAVES (review rv11a1, observation (b)).
- * The external-module framework checks a `redcap_csrf_token` on POST requests
- * to module pages from framework version 8 (this module declares 14), and
- * $module->getCSRFToken() gives the token; it checks nothing on a GET, and
- * offers no token for one. The panel downloads this page through a link, so
- * a page on another site can send a signed-in user here by a top-level
+ * A POST WITH THE PAGE'S TOKEN, AND NOTHING ELSE (review rv11a1, observation
+ * (b); W11F-N5). The external-module framework checks a `redcap_csrf_token`
+ * on POST requests to module pages from framework version 8 (this module
+ * declares 14), and $module->getCSRFToken() gives the token; it checks
+ * nothing on a GET. The panel downloaded this page through a link, so a page
+ * on another site could send a signed-in user here by a top-level
  * navigation, which carries the session cookie under SameSite=Lax as well as
- * with none set. What that gets: the user's browser downloads a file the
- * user may already read, which the other site cannot see, and the server
- * streams one report. Every check in exportOpen() still applies; nothing is
- * written. REDCap's own SameSite setting was not confirmed. The residual
- * closes when the panel posts a form (run_id and redcap_csrf_token) in
- * place of the link, and this page then reads run_id from $_POST and refuses
- * a GET.
+ * with none set, and the server streamed one report into that user's
+ * browser. The panel now posts a form with run_id and the token, and this
+ * page answers nothing else: any other method is refused with 405, plain
+ * text, before the run id is read, so no link, bookmark or typed address
+ * fetches a file.
  */
 
 namespace INSPIRE\UniversalValidator;
 
 /** @var UniversalValidator $module */
 
+$method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper((string) $_SERVER['REQUEST_METHOD']) : '';
+if ($method !== 'POST') {
+    header('Content-Type: text/plain; charset=UTF-8', true, 405);
+    header('Allow: POST');
+    header('Cache-Control: no-store');
+    echo "# EXPORT REFUSED\n";
+    foreach (explode("\n", wordwrap(Scan\ScanService::EXPORT_POST_ONLY, 92)) as $line) {
+        echo '# ' . $line . "\n";
+    }
+    echo "# No file was produced.\n";
+    return;
+}
+
 $pid = (int) $module->getProjectId();
-$runId = (isset($_GET['run_id']) && is_scalar($_GET['run_id'])) ? (int) $_GET['run_id'] : 0;
+$runId = (isset($_POST['run_id']) && is_scalar($_POST['run_id'])) ? (int) $_POST['run_id'] : 0;
 
 $export = ($pid > 0 && $runId > 0)
     ? (new Scan\ScanService($module))->exportOpen($pid, $runId)

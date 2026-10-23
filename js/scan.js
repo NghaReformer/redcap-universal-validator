@@ -970,6 +970,8 @@
         skips: 0,               // empty pages read past for this press
         stopped: false,         // a final refusal: never asked again
         facetsFor: null,        // the run the filter options were built for
+        offer: null,            // {current, newer}: the page's two runs (rv11b2-5), or null
+        exportFor: null,        // the run the download is offered for, or null
         filter: { form: '', reason: '', type: '', group: '' }
     };
 
@@ -996,16 +998,27 @@
 
     function reportNote(s) { text(el('uv-scan-report-note'), s); }
 
-    /** Put the report away: a new run is going, or the page has none. */
+    /**
+     * Put the report away: a new run is going, or the page has none. The
+     * page's offer of a newer run goes with it: once a new run is going,
+     * which report is current is that run's to say.
+     */
     function reportReset() {
         var r = UV.report;
         r.runId = null;
         r.gen++;
         r.waiting = false;
+        r.offer = null;
+        reportOther();
         show(el('uv-scan-report'), false);
     }
 
-    /** Open a run's report on its first page, once per run. */
+    /**
+     * Open a run's report on its first page, once per run. THE RUNS IT IS
+     * HANDED are the page's two (finishedRun(): the current report and a
+     * newer run that did not complete) and the run this tab watched to its
+     * end (review rv11b1-2); the answer says which scope each covered.
+     */
     function reportLoad(runId) {
         var r = UV.report;
         if (!el('uv-scan-report') || !isRunId(runId) || r.runId === runId) return;
@@ -1013,7 +1026,50 @@
         r.filter = { form: '', reason: '', type: '', group: '' };
         r.facetsFor = null;
         r.stopped = false;
+        reportOther();
         reportAsk(0, true);
+    }
+
+    /**
+     * THE NEWER RUN BESIDE THE CURRENT REPORT (review rv11b2-5). A scan
+     * stopped seconds after it started hid the report the store still treats
+     * as current, which stayed reachable only by its id. The page opens the
+     * current report and names the newer run here, with a control that opens
+     * it, and from it the way back. Shown only while one of the two is open.
+     */
+    function reportOther() {
+        var r = UV.report, o = r.offer, L = labels();
+        var p = el('uv-scan-report-other'), b = el('uv-scan-report-switch');
+        var on = o !== null && (r.runId === o.current || r.runId === o.newer);
+        if (on && r.runId === o.current) {
+            text(p, fill(L.reportNewer || 'Scan {run} started after this one and did not complete, so this report is still the current one.', { run: o.newer }));
+            text(b, fill(L.reportShowNewer || 'Show what scan {run} found', { run: o.newer }));
+        } else if (on) {
+            text(p, fill(L.reportViewingNewer || 'This is scan {run}, which did not complete. The current report is scan {current}.', { run: o.newer, current: o.current }));
+            text(b, L.reportShowCurrent || 'Show the current report');
+        }
+        show(p, on);
+        show(b, on);
+    }
+
+    function reportSwitch() {
+        var r = UV.report, o = r.offer;
+        if (o === null || (r.runId !== o.current && r.runId !== o.newer)) return;
+        reportLoad(r.runId === o.current ? o.newer : o.current);
+    }
+
+    /**
+     * A GROUP WHOSE LAST REPORT A WHOLE-PROJECT SCAN REPLACED (review
+     * rv11b1-1). That scan closed the group's findings, and the group may not
+     * read it, so there is no report to open: the page says so in one
+     * sentence, instead of opening an empty report under a count of findings.
+     */
+    function reportReplaced() {
+        var L = labels();
+        if (!el('uv-scan-report')) return;
+        show(el('uv-scan-report'), true);
+        reportBody(false);
+        reportNote(L.reportReplaced || 'A scan of the whole project has replaced the last report of this Data Access Group. Start a scan of the group to see its current findings.');
     }
 
     /**
@@ -1156,9 +1212,15 @@
             reportNote('');
         } else if (r.stack.length) {
             reportNote(L.reportNoMore || 'No further findings match these filters.');
+        } else if (filtered()) {
+            reportNote(L.reportEmpty || 'No findings match these filters.');
         } else {
-            reportNote(filtered() ? (L.reportEmpty || 'No findings match these filters.')
-                                  : (L.reportNone || 'This scan stored no findings.'));
+            // NEVER "STORED NO FINDINGS" UNDER A COUNT OF SOME (review
+            // rv11b1-1): a report whose rows were closed since its count was
+            // taken reads as missing them, not as clean.
+            reportNote(whole((a.report || {}).expectedRows) > 0
+                ? (L.reportMissing || 'This report counts findings that could not be read now. It may have been replaced since this page was opened; reload the page to open the current report.')
+                : (L.reportNone || 'This scan stored no findings.'));
         }
     }
 
@@ -1179,9 +1241,29 @@
         var rep = a.report || {}, L = labels();
         // A withheld run says why in its own sentence; its coverage sentence
         // is about records its reader is not shown.
-        var s = (!a.withheld && typeof rep.coverageSentence === 'string') ? rep.coverageSentence : '';
-        var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.ruleProblems });
-        text(el('uv-scan-report-summary'), v ? (s ? s + ' ' + v : v) : s);
+        var parts = [];
+        if (!a.withheld && typeof rep.coverageSentence === 'string' && rep.coverageSentence !== '') {
+            parts.push(rep.coverageSentence);
+        }
+        // WHAT THE RUN COVERED (review rv11b1-2): a run over one group says
+        // so, whoever reads it, as its file does.
+        var sc = a.runScope || {};
+        if (sc.kind === 'group' && typeof sc.label === 'string' && sc.label !== '') {
+            parts.push(fill(L.reportGroupOnly || 'This scan covered {group} only, not the whole project.', { group: sc.label }));
+        }
+        // A WITHHELD RUN NAMES NO RULE COUNT (review rv11b1-3): how many rules
+        // it could not evaluate is a statement about what it read, and its
+        // status says only that it does not certify (preFenceStatus()). The
+        // server leaves the count out of such an answer (rv11a1-3); this
+        // does not read one that arrives anyway.
+        var v = verdictText({ terminal: true, clean: a.clean, ruleProblems: a.withheld ? 0 : a.ruleProblems });
+        if (v) parts.push(v);
+        // AND THE DAY IT WAS JUDGED AS OF (review rv11b1-4), as the panel says
+        // it for a run this tab watched to its end: a report opened from the
+        // page never said it.
+        var d = asOfText({ asOf: rep.asOf });
+        if (d) parts.push(d);
+        text(el('uv-scan-report-summary'), parts.join(' '));
         var n = rep.expectedRows, count;
         if (typeof n === 'number' && n >= 0 && n === Math.floor(n)) {
             count = fill(L.reportCount || 'This report holds {findings}.',
@@ -1271,20 +1353,37 @@
         show(el('uv-scan-report-filters'), any);
     }
 
-    /** The download, offered only beside an answer that showed the report. */
+    /**
+     * The download, offered only beside an answer that showed the report.
+     *
+     * A BUTTON THAT POSTS, NOT A LINK (W11F-N5). The link was a GET, which
+     * the framework does not check for its CSRF token, so another site could
+     * send a signed-in reader to the file by a top-level navigation.
+     * pages/export.php now answers only a POST with run_id and the page's
+     * redcap_csrf_token (reportDownload()); without a token nothing is
+     * offered. The button names the whole report and its count (review
+     * rv11b1-5): the filters narrow the table on the page, never the file.
+     */
     function reportExport(a) {
-        var r = UV.report, link = el('uv-scan-report-export'), L = labels();
+        var r = UV.report, btn = el('uv-scan-report-export'), L = labels();
         var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
-        var ok = a && a.ok === true && !a.withheld && url !== '' && isRunId(r.runId) && a.run_id === r.runId;
+        var token = (typeof UV.csrfToken === 'string') ? UV.csrfToken : '';
+        var ok = a && a.ok === true && !a.withheld && url !== '' && token !== '' && isRunId(r.runId)
+            && a.run_id === r.runId;
         var suffix = el('uv-scan-report-suffix');
         if (!ok) {
-            attr(link, 'href', null);
+            r.exportFor = null;
             show(el('uv-scan-report-export-wrap'), false);
             text(suffix, '');
             show(suffix, false);
             return;
         }
-        attr(link, 'href', url + (url.indexOf('?') === -1 ? '?' : '&') + 'run_id=' + r.runId);
+        r.exportFor = r.runId;
+        var n = (a.report || {}).expectedRows;
+        text(btn, (typeof n === 'number' && n >= 0 && n === Math.floor(n))
+            ? fill(L.reportDownload || 'Download the whole report as a CSV file ({findings})',
+                   { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's') })
+            : (L.reportDownloadPlain || 'Download the whole report as a CSV file'));
         show(el('uv-scan-report-export-wrap'), true);
         // The third mark: the file's name says it, wherever the file goes.
         var m = a.marks || {};
@@ -1293,6 +1392,38 @@
             : '';
         text(suffix, said);
         show(suffix, said !== '');
+    }
+
+    /**
+     * Post the download (W11F-N5): a form built for the press, outside any
+     * form on the page - the panel sits inside REDCap's project form, and a
+     * nested form is no form - carrying the run the button was offered for
+     * and the token, and taken away again once sent.
+     */
+    function reportDownload() {
+        var r = UV.report, body = document.body;
+        var url = (typeof UV.exportUrl === 'string') ? UV.exportUrl : '';
+        var token = (typeof UV.csrfToken === 'string') ? UV.csrfToken : '';
+        if (!isRunId(r.exportFor) || r.exportFor !== r.runId || url === '' || token === '' || !body) return;
+        var f = document.createElement('form'), fields = { run_id: String(r.exportFor), redcap_csrf_token: token }, k;
+        attr(f, 'method', 'post');
+        attr(f, 'action', url);
+        f.style.display = 'none';
+        for (k in fields) {
+            if (Object.prototype.hasOwnProperty.call(fields, k)) {
+                var input = document.createElement('input');
+                attr(input, 'type', 'hidden');
+                attr(input, 'name', k);
+                attr(input, 'value', fields[k]);
+                f.appendChild(input);
+            }
+        }
+        body.appendChild(f);
+        try {
+            f.submit();
+        } finally {
+            body.removeChild(f);
+        }
     }
 
     function reportNext() {
@@ -1331,15 +1462,22 @@
     function attachReport(opts) {
         var b, i;
         if (typeof opts.exportUrl === 'string') UV.exportUrl = opts.exportUrl;
+        if (typeof opts.csrfToken === 'string') UV.csrfToken = opts.csrfToken;
+        if ((b = el('uv-scan-report-export'))) b.addEventListener('click', quietly(reportDownload));
         if ((b = el('uv-scan-report-next'))) b.addEventListener('click', quietly(reportNext));
         if ((b = el('uv-scan-report-prev'))) b.addEventListener('click', quietly(reportPrev));
+        if ((b = el('uv-scan-report-switch'))) b.addEventListener('click', quietly(reportSwitch));
         for (i = 0; i < FILTERS.length; i++) {
             (function (name) {
                 var sel = el('uv-scan-filter-' + name);
                 if (sel) sel.addEventListener('change', quietly(function () { reportFilter(name, sel.value); }));
             })(FILTERS[i]);
         }
-        if (isRunId(opts.reportRunId)) reportLoad(opts.reportRunId);
+        var current = isRunId(opts.reportRunId) ? opts.reportRunId : null;
+        var newer = (isRunId(opts.reportNewerId) && opts.reportNewerId !== current) ? opts.reportNewerId : null;
+        UV.report.offer = (current !== null && newer !== null) ? { current: current, newer: newer } : null;
+        if (current !== null) reportLoad(current);
+        else if (opts.reportReplaced === true) reportReplaced();
     }
 
     /**

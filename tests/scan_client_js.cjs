@@ -965,6 +965,28 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     (await refusedFrom('', plain)) === '');
   check('rvc2-3: and a hidden one hidden',
     (await refusedFrom('none', plain)) === 'none');
+  // rv11b1-8. A reader barred only from an instrument a rule's operand sits
+  // on (W11A-N3) is refused status, FINAL, and may still stop the run. This
+  // is the service's own answer for them (tools/temporal_pfx_g_status.php,
+  // pinned in tests/scan_service_php.php "refused a run and no run alike"):
+  // the page shows Stop, and Stop sends the cancel for that run.
+  const barred = { ok: false, final: true, run_id: 42, active: true, mayCancel: true,
+    why: 'this scan reads instrument(s) you do not have access to, so the whole report is refused rather '
+       + 'than quietly narrowed: fb' };
+  check('rv11b1-8: a final refusal for a reader who may still stop the run shows Stop',
+    (await refusedFrom('none', barred)) === ''
+    && els['uv-scan-note'].textContent === barred.why && els['uv-scan-counts'].textContent === '');
+  const askedAfter = sent.length;
+  await ticks(4);
+  for (let i = 0; i < 6 && pending.length; i++) { const t = pending.shift(); t.fn(); await ticks(4); }
+  check('rv11b1-8: and the final refusal is not asked again', sent.length === askedAfter);
+  sent.length = 0;
+  script = [{ ok: true, stopped: true, why: null }];
+  els['uv-scan-cancel'].click();
+  await ticks(6);
+  check('rv11b1-8: Stop sends the cancel for that run, and only the run id',
+    sent.length >= 1 && sent[0].action === 'scan-cancel' && sent[0].payload.run_id === 42
+    && Object.keys(sent[0].payload).join() === 'run_id');
 
   // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
   // sentence sending the reader to Stop, with Continue hidden; the list now
@@ -1243,6 +1265,22 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('W12-N4 client: and without the labels of the page it still says so',
     els['uv-scan-done'].textContent.indexOf(keptUpLabels.upgraded) === 0);
   UV.labels = keptUpLabels;
+
+  // CFXB-N4. EVERY ENDING, THE PANEL'S HALF. tests/scan_service_php.php walks
+  // each ending of a real run through its status, its findings answer and its
+  // file, requires one sentence of all three, and holds
+  // tests/scan_endings_fixture.json to the statuses it was given. Here the
+  // panel's own chooser (endedSentence() in js/scan.js) is given each of
+  // those statuses and must open on the same sentence.
+  const endings = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'scan_endings_fixture.json'), 'utf8'));
+  check('CFXB-N4 client: the endings fixture has its cases', Array.isArray(endings.cases) && endings.cases.length >= 15);
+  for (const c of endings.cases) {
+    await show(Object.assign({ ok: true, run_id: 42, values: 'none', total: 0, done: 0, settled: 0, findings: 0,
+                               mayCancel: false, why: null }, c.status));
+    check('CFXB-N4 client: ' + c.name + ': the panel opens on the sentence the report and the file give (got '
+      + JSON.stringify(els['uv-scan-done'].textContent.slice(0, 80)) + ')',
+      typeof c.sentence === 'string' && c.sentence !== '' && els['uv-scan-done'].textContent.indexOf(c.sentence) === 0);
+  }
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

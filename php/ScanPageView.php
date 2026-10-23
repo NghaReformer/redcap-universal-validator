@@ -527,6 +527,65 @@ class ScanPageView
      */
     const REPORT_SUFFIX    = 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.';
 
+    /**
+     * WHICH REPORT THE PANEL OPENS ON (reviews rv11b1-1, rv11b2-1, rv11b2-5;
+     * ScanService::finishedRun()). A group whose last report a whole-project
+     * scan replaced has nothing left to open, and is told so rather than shown
+     * an empty report. A newer run that did not complete is named beside the
+     * current report, with a control that opens it ({run} and {current} are
+     * run ids). A report that counts findings none of whose rows can be read
+     * is never "stored no findings".
+     */
+    const REPORT_REPLACED      = 'A scan of the whole project has replaced the last report of this Data Access '
+                               . 'Group. Start a scan of the group to see its current findings.';
+    const REPORT_NEWER         = 'Scan {run} started after this one and did not complete, so this report is '
+                               . 'still the current one.';
+    const REPORT_SHOW_NEWER    = 'Show what scan {run} found';
+    const REPORT_VIEWING_NEWER = 'This is scan {run}, which did not complete. The current report is scan {current}.';
+    const REPORT_SHOW_CURRENT  = 'Show the current report';
+    const REPORT_MISSING       = 'This report counts findings that could not be read now. It may have been '
+                               . 'replaced since this page was opened; reload the page to open the current report.';
+
+    /**
+     * Said in the report summary of a run over one group (review rv11b1-2),
+     * as the file says it after its coverage line (ScanService::GROUP_ONLY,
+     * the same sentence with %s): {group} is the run's scope label, e.g.
+     * "Data Access Group site_b". An unrestricted reader who watched a group
+     * run to its end read "Every record was checked" above a count of the
+     * group's findings, with nothing saying the other groups were not read.
+     */
+    const REPORT_GROUP_ONLY    = 'This scan covered {group} only, not the whole project.';
+
+    /**
+     * The download button (review rv11b1-5). It sat beside a filtered table
+     * as "Download these findings as a CSV file" and gave the whole report:
+     * three rows shown, 1,203 in the file. The file is the whole report, and
+     * the button says so with the report's count ({findings} as the count
+     * line words it); the plain form is the markup's, for a report whose
+     * count is not known. The filters stay a way to read the table: a file
+     * of one filter would need its own expected count and its own end check
+     * (ScanService::streamFindings()), which the report's summary does not
+     * give for two filters at once.
+     */
+    const REPORT_DOWNLOAD       = 'Download the whole report as a CSV file ({findings})';
+    const REPORT_DOWNLOAD_PLAIN = 'Download the whole report as a CSV file';
+
+    /**
+     * The framework's CSRF token for the download's POST (W11F-N5), or '' when
+     * the framework gives none or fails: the page then offers no download,
+     * since pages/export.php answers only a POST the framework has checked.
+     */
+    public static function csrfToken($module)
+    {
+        if (!is_object($module) || !is_callable([$module, 'getCSRFToken'])) return '';
+        try {
+            $t = $module->getCSRFToken();
+        } catch (\Throwable $e) {
+            return '';
+        }
+        return is_string($t) ? $t : '';
+    }
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -569,6 +628,15 @@ class ScanPageView
             'reportFailed'    => self::REPORT_FAILED,
             'filterAll'       => self::FILTER_ALL,
             'reportSuffix'    => self::REPORT_SUFFIX,
+            'reportReplaced'  => self::REPORT_REPLACED,
+            'reportNewer'     => self::REPORT_NEWER,
+            'reportShowNewer' => self::REPORT_SHOW_NEWER,
+            'reportViewingNewer' => self::REPORT_VIEWING_NEWER,
+            'reportShowCurrent'  => self::REPORT_SHOW_CURRENT,
+            'reportMissing'   => self::REPORT_MISSING,
+            'reportGroupOnly' => self::REPORT_GROUP_ONLY,
+            'reportDownload'  => self::REPORT_DOWNLOAD,
+            'reportDownloadPlain' => self::REPORT_DOWNLOAD_PLAIN,
         ];
     }
 

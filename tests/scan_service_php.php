@@ -2686,6 +2686,82 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W10BF-4 E2E: read in full again, the run finishes complete',
         $gs->run(166, $grun)['terminal'] === ScanOutcome::COMPLETE);
 
+    // rv11b2-6: "NO RULES" READ IN FULL IS SETTLED. The findings answer said
+    // it with final:false and the file answered 503, so the page offered the
+    // finished run, its panel asked again on its ladder for as long as the
+    // tab was open, and the download said "try again" about a project the
+    // next read would describe the same way. A refusal resting on a failed
+    // read stays one to ask again.
+    $gm->refuse = ScanService::NO_RULES;
+    $gm->unread = [];
+    $nrPage = (new ScanService($gm, $gs))->findings(166, $grun);
+    $nrFile = (new ScanService($gm, $gs))->exportOpen(166, $grun);
+    $nrStatus = (new ScanService($gm, $gs))->status(166, $grun);
+    check('rv11b2-6: no rules, nothing unread: the findings refusal is final, and the file is refused 403',
+        $nrPage === ['ok' => false, 'why' => ScanService::NO_RULES, 'final' => true]
+        && $nrFile['ok'] === false && $nrFile['http'] === 403 && $nrStatus['final'] === true);
+    $gm->unread = ['the growth reference folder'];
+    $nuPage = (new ScanService($gm, $gs))->findings(166, $grun);
+    $nuFile = (new ScanService($gm, $gs))->exportOpen(166, $grun);
+    check('rv11b2-6 (control): the same refusal resting on a read that failed is asked again, and the file 503',
+        $nuPage['ok'] === false && $nuPage['final'] === false
+        && strpos((string) $nuPage['why'], 'could not be read just now') !== false
+        && $nuFile['http'] === 503);
+    check('rv11b2-6: the sentence is the one durableScanContext() refuses with',
+        strpos((string) file_get_contents(__DIR__ . '/../UniversalValidator.php'),
+               "'why' => '" . ScanService::NO_RULES . "'") !== false);
+    $gm->refuse = null;
+    $gm->unread = [];
+
+    // CFXB-N2: A RUN WHOSE RULES ALL WENT IS ENDED BY A WORK REQUEST. Every
+    // work request was refused before the run row, so the run held the
+    // project's slot until Stop or the reaper. Now the request ends it,
+    // failed, with a stored reason that says the rules are gone - for a
+    // reader who may stop it, asked as Stop asks.
+    $rgS = new ArrayScanStore();
+    $rgM = new \E2eModule($rgS);
+    $rgRun = (int) (new ScanService($rgM, $rgS))->start(171)['run_id'];
+    $rgM->refuse = ScanService::NO_RULES;
+    $rgM->unread = [];
+    $rgNone = (new ScanService($rgM, $rgS))->work(171, 999);
+    $rgW = (new ScanService($rgM, $rgS))->work(171, $rgRun);
+    $rgRow = $rgS->run(171, $rgRun);
+    check('CFXB-N2: a work request on a run whose rules are all gone ends it, failed, with a reason that says so',
+        $rgRun > 0 && $rgW['ok'] === false && $rgW['why'] === ScanService::RULES_GONE
+        && $rgW['phase'] === ScanPhase::TERMINAL && $rgW['stop'] === 'changed'
+        && $rgRow['terminal'] === ScanOutcome::FAILED && $rgRow['terminal_reason'] === ScanService::RULES_GONE_WHY);
+    check('CFXB-N2: and frees the project for the next scan', !empty((clone $rgS)->startRun(171, [])['ok']));
+    check('CFXB-N2: an id that is no run is refused as before',
+        $rgNone === ['ok' => false, 'why' => ScanService::NO_RULES]);
+    check('CFXB-N2: a later request on the ended run is refused as before, and ends nothing twice',
+        (new ScanService($rgM, $rgS))->work(171, $rgRun) === $rgNone
+        && $rgS->run(171, $rgRun)['terminal_reason'] === ScanService::RULES_GONE_WHY);
+    // A reader Stop would refuse - barred from an instrument of the project,
+    // which is what Stop asks when no context can be built - ends nothing.
+    $rbS = new ArrayScanStore();
+    $rbM = new \E2eModule($rbS);
+    $rbRun = (int) (new ScanService($rbM, $rbS))->start(172)['run_id'];
+    $rbM->refuse = ScanService::NO_RULES;
+    $rbM->instruments = ['fa', 'fx'];
+    $rbM->user->rights['forms'] = ['fa' => '1', 'fx' => '0'];
+    $rbW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2 (control): a reader who may not stop the run is refused as before, and the run goes on',
+        $rbW === ['ok' => false, 'why' => ScanService::NO_RULES] && $rbS->run(172, $rbRun)['terminal'] === null);
+    // A read that failed is not settled, so it ends nothing (W10BF-4 above).
+    $rbM->user->rights['forms'] = ['fa' => '1', 'fx' => '1'];
+    $rbM->unread = ['the growth reference folder'];
+    $ruW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2 (control): nor does a refusal resting on a read that failed',
+        $ruW['ok'] === false && strpos((string) $ruW['why'], 'could not be read just now') !== false
+        && $rbS->run(172, $rbRun)['terminal'] === null);
+    // A stopped run is finished as stopped.
+    $rbM->unread = [];
+    $rbS->cancel(172, $rbRun, 'bob');
+    $rcW = (new ScanService($rbM, $rbS))->work(172, $rbRun);
+    check('CFXB-N2: a run already asked to stop is finished as stopped, not as failed',
+        $rcW['ok'] === true && $rcW['stop'] === 'cancelled'
+        && $rbS->run(172, $rbRun)['terminal'] === ScanOutcome::CANCELLED);
+
     // rvc2-3: A RUN STAYS STOPPABLE WHEN NO CONTEXT CAN BE BUILT. Stop and
     // status built the full scan context, so a configuration read in part, or
     // rules that can no longer be evaluated, refused both: the page never
@@ -2699,15 +2775,17 @@ namespace INSPIRE\UniversalValidator\Scan {
         $sm->refuse = 'this project has no rules this scan can evaluate';
         $sm->unread = $unreadNow;
         $sst = (new ScanService($sm, $ss))->status(169, $srun);
-        check('rvc2-3 (' . $how . '): the status is still refused, and not for good',
-            $sst['ok'] === false && $sst['final'] === false
+        // For good only when nothing was unread (rv11b2-6): "no rules" read
+        // in full is settled.
+        check('rvc2-3 (' . $how . '): the status is still refused, for good only when nothing was unread',
+            $sst['ok'] === false && $sst['final'] === ($how !== 'unread')
             && strpos((string) $sst['why'], $how === 'unread' ? 'could not be read just now' : 'no rules') !== false);
         check('rvc2-3 (' . $how . '): but it says this run is active and this reader may stop it',
             isset($sst['mayCancel'], $sst['active'], $sst['run_id']) && $sst['mayCancel'] === true
             && $sst['active'] === true && $sst['run_id'] === $srun && !isset($sst['total']) && !isset($sst['findings']));
         check('rvc2-3 (' . $how . '): an id that is no run gets the same refusal, and no offer',
             (new ScanService($sm, $ss))->status(169, 999)
-            === ['ok' => false, 'why' => $sst['why'], 'final' => false]);
+            === ['ok' => false, 'why' => $sst['why'], 'final' => $sst['final']]);
         $sc = (new ScanService($sm, $ss))->cancel(169, $srun);
         $srow = $ss->run(169, $srun);
         check('rvc2-3 (' . $how . '): Stop stops it, and frees the project',
@@ -4376,6 +4454,148 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $covLine($kept['csv'], $V::coverageSentence(ScanOutcome::FENCED)));
 
     /* -----------------------------------------------------------------
+     * CFXB-N4  EVERY ENDING, THROUGH ALL THREE
+     *
+     * The panel, the findings answer and the file each say how a run
+     * ended, and the report and the file chose that sentence from the
+     * coverage and the detail alone: a group run stopped after it proved
+     * its group, a withheld run that was stopped and a run an upgrade
+     * ended read the partial or failed sentence there, under a panel that
+     * said otherwise. ScanReport::endingOf() now reads the run row once
+     * for all three. Each ending below is a real run of its kind; its
+     * status, its findings answer and its file must give one sentence.
+     * tests/scan_endings_fixture.json holds each status and sentence, so
+     * tests/scan_client_js.cjs holds the panel's own chooser
+     * (js/scan.js endedSentence()) to the same sentence; this walk fails
+     * when the fixture no longer matches the service. UV_UPDATE_ENDINGS=1
+     * rewrites it.
+     * ----------------------------------------------------------------- */
+    $endingRun = function ($pid, $group, $to, $end) use ($groupModule) {
+        $es = new ArrayScanStore();
+        $em = $group ? $groupModule($es) : new \E2eModule($es);
+        $rid = (int) (new ScanService($em, $es))->start($pid)['run_id'];
+        $ep = (int) $es->run($pid, $rid)['lease_epoch'];
+        // To the phase the run ends in: a group run in catch-up has not
+        // proved its group, one past it has (ScanAuthorization::scopeProved).
+        foreach ([ScanPhase::SCANNING, ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $ph) {
+            if ($to === ScanPhase::PLANNING) break;
+            $es->advancePhase($rid, $ep, $ph);
+            if ($ph === ScanPhase::CATCH_UP) {
+                $es->setProgressState($rid, $ep, ['fenceTarget' => '120', 'catchupCursor' => null,
+                                                  'catchupRound' => 1, 'catchupDirty' => 0]);
+            }
+            if ($ph === $to) break;
+        }
+        if ($end === 'cancel') {
+            (new ScanService($em, $es))->cancel($pid, $rid);
+        } elseif ($end === 'expire') {
+            $es->expireAbandoned($pid, 1, 'cron', time() + 2 * 86400);
+        } elseif ($end === 'drive') {
+            for ($i = 0; $i < 25 && $es->run($pid, $rid)['terminal'] === null; $i++) {
+                (new ScanService($em, $es))->work($pid, $rid);
+            }
+        } else {
+            $es->finish($rid, $end);
+        }
+        $x = (new ScanService($em, $es))->exportOpen($pid, $rid);
+        $csv = '';
+        if (!empty($x['ok'])) $x['stream'](function ($s) use (&$csv) { $csv .= $s; }, function () {});
+        $st = (new ScanService($em, $es))->status($pid, $rid);
+        return ['row' => $es->run($pid, $rid), 'status' => $st, 'export' => $x, 'csv' => $csv,
+                'page' => (new ScanService($em, $es))->findings($pid, $rid),
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    $failedAs = function ($why, $detail = null) {
+        $o = ScanOutcome::derive(['failed' => true]);
+        if ($detail !== null) $o['detail'] = $detail;
+        $o['why'] = $why;
+        return $o;
+    };
+    $endedAs = function ($terminal, $coverage, $detail) {
+        return ['terminal' => $terminal, 'coverage' => $coverage, 'detail' => $detail, 'why' => 'ended by the test'];
+    };
+    $T = ScanOutcome::DETAIL_TRUNCATED;
+    $UP = ScanPromotion::ENGINE_UPGRADED;
+    $endings = [
+        'project, complete'                         => [261, false, ScanPhase::PLANNING, 'drive'],
+        'project, complete, findings not all kept'  => [262, false, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::COMPLETE, ScanOutcome::FENCED, $T)],
+        'project, stopped'                          => [263, false, ScanPhase::SCANNING, 'cancel'],
+        'project, expired'                          => [264, false, ScanPhase::SCANNING, 'expire'],
+        'project, failed'                           => [265, false, ScanPhase::SCANNING, $failedAs('the test failed it')],
+        'project, ended by an upgrade'              => [266, false, ScanPhase::SCANNING, $failedAs($UP)],
+        'project, ended by an upgrade, not all kept'=> [267, false, ScanPhase::SCANNING, $failedAs($UP, $T)],
+        'group, complete'                           => [268, true, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::COMPLETE, ScanOutcome::FENCED, ScanOutcome::DETAIL_COMPLETE)],
+        'group, stopped after it proved its group'  => [269, true, ScanPhase::UNIQUE, 'cancel'],
+        'group, expired after it proved its group'  => [270, true, ScanPhase::UNIQUE, 'expire'],
+        'group, stopped after proving, not all kept'=> [271, true, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::CANCELLED, ScanOutcome::COV_PARTIAL, $T)],
+        'group, stopped before it proved its group' => [272, true, ScanPhase::CATCH_UP, 'cancel'],
+        'group, expired before it proved its group' => [273, true, ScanPhase::CATCH_UP, 'expire'],
+        'group, ended by an upgrade before proving' => [274, true, ScanPhase::CATCH_UP, $failedAs($UP)],
+        'group, failed after it proved its group'   => [275, true, ScanPhase::UNIQUE, $failedAs('the test failed it')],
+    ];
+    $walked = [];
+    $endingKeys = ['phase', 'terminal', 'coverage', 'detail', 'scope', 'withheld', 'withheldWhy', 'upgraded',
+                   'leftGroup', 'removed', 'active', 'clean'];
+    $walk = function ($name, array $e) use (&$walked, $endingKeys, $V, $covLine) {
+        $st = $e['status'];
+        $sentence = $V::endedSentence($st);
+        $seen = [];
+        foreach ($endingKeys as $k) if (array_key_exists($k, $st)) $seen[$k] = $st[$k];
+        $walked[] = ['name' => $name, 'status' => $seen, 'sentence' => $sentence];
+        $group = isset($st['scope']) && $st['scope'] === 'group';
+        check('CFXB-N4 ' . $name . ': the run ended and its status says so',
+            !empty($st['ok']) && $st['phase'] === ScanPhase::TERMINAL && is_string($sentence) && $sentence !== '');
+        check('CFXB-N4 ' . $name . ': the panel opens on that sentence',
+            strpos((string) $e['pf']['done'], $sentence) === 0);
+        check('CFXB-N4 ' . $name . ': the findings answer says the same (got '
+            . json_encode(isset($e['page']['report']['coverageSentence']) ? $e['page']['report']['coverageSentence'] : $e['page']) . ')',
+            !empty($e['page']['ok']) && $e['page']['report']['coverageSentence'] === $sentence);
+        $marks = isset($e['page']['marks']) ? $e['page']['marks'] : [];
+        check('CFXB-N4 ' . $name . ': and its terminal row ends on it, when it has one',
+            empty($marks['incomplete']) ? $marks['row'] === null
+                : substr((string) $marks['row'], -strlen($sentence)) === $sentence);
+        if (!empty($st['withheld'])) {
+            check('CFXB-N4 ' . $name . ': a withheld run gives no file, and says why',
+                empty($e['export']['ok']) && $e['export']['why'] === $st['withheldWhy'] && $e['csv'] === '');
+            return;
+        }
+        $line = $group ? $covLine($e['csv'], $sentence)
+                       : strpos($e['csv'], '"# coverage","' . $sentence . '"') !== false;
+        check('CFXB-N4 ' . $name . ': the file\'s header says the same',
+            (isset($e['export']) ? !empty($e['export']['ok']) : $e['csv'] !== '') && $line);
+        $row = preg_match('/^"INCOMPLETE SCAN","([^"]*)"/m', $e['csv'], $rm) === 1 ? $rm[1] : null;
+        check('CFXB-N4 ' . $name . ': and so does its terminal row, when it has one',
+            empty($marks['incomplete']) ? $row === null : ($row !== null && substr($row, -strlen($sentence)) === $sentence));
+    };
+    foreach ($endings as $name => $c) $walk($name, $endingRun($c[0], $c[1], $c[2], $c[3]));
+    // The two empty scopes records left, through the rvf1-2 runs above.
+    $walk('group, every record moved away', $gone);
+    $walk('group, records moved away or deleted', $mixed);
+    $want = [];
+    foreach ($walked as $w) $want[$w['sentence']] = true;
+    foreach ([$V::STOPPED_PROVED, $V::STOPPED_PROVED . ' ' . $V::DETAIL_TRUNCATED, $V::STOPPED_WITHHELD,
+              $V::UPGRADED, $V::UPGRADED . ' ' . $V::DETAIL_TRUNCATED, $V::EMPTY_SCOPE_LEFT,
+              $V::EMPTY_SCOPE_LEFT_DELETED, $V::coverageSentence(ScanOutcome::FENCED),
+              $V::coverageSentence(ScanOutcome::FENCED, $T), $V::coverageSentence(ScanOutcome::COV_PARTIAL),
+              $V::coverageSentence('failed')] as $s) {
+        check('CFXB-N4: the walk reaches the ending ' . json_encode(substr($s, 0, 60)), isset($want[$s]));
+    }
+    $fxPath = __DIR__ . '/scan_endings_fixture.json';
+    $fx = ['_comment' => 'Every ending of a durable scan run: the status the panel is given and the sentence the '
+                       . 'panel, the findings answer and the file all give. Written by tests/scan_service_php.php '
+                       . '(UV_UPDATE_ENDINGS=1), read by tests/scan_client_js.cjs.',
+           'cases' => $walked];
+    if (getenv('UV_UPDATE_ENDINGS') === '1') {
+        file_put_contents($fxPath, json_encode($fx, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+    }
+    $onDisk = is_file($fxPath) ? json_decode((string) file_get_contents($fxPath), true) : null;
+    check('CFXB-N4: tests/scan_endings_fixture.json is what the service gives today (UV_UPDATE_ENDINGS=1 rewrites it)',
+        is_array($onDisk) && isset($onDisk['cases']) && $onDisk['cases'] === $walked);
+
+    /* -----------------------------------------------------------------
      * rvf2-1  A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING
      * SWITCHED OFF ENDS THAT RUN
      *
@@ -4560,9 +4780,12 @@ namespace INSPIRE\UniversalValidator\Scan {
     $bsvc = new ScanService($broken, $os);
     $bnone = ['status' => $bsvc->status(185, 999), 'work' => $bsvc->work(185, 999),
               'cancel' => $bsvc->cancel(185, 999)];
+    // Final since rv11b2-6: "no rules" with nothing unread is settled, and
+    // a read that failed says CONFIG_UNREAD (W10BF-4) and stays non-final
+    // (the rv11b2-6 checks below).
     check('rv5b-4: a context that cannot be built for another group\'s run does not say so',
         $bsvc->status(185, $o31) === $bnone['status'] && $bsvc->cancel(185, $o31) === $bnone['cancel']
-        && $bsvc->work(185, $o31) === $bnone['work'] && $bnone['status']['final'] === false);
+        && $bsvc->work(185, $o31) === $bnone['work'] && $bnone['status']['final'] === true);
     $broken->user->rights['group_id'] = 31;
     check('rv5b-4 control: the run\'s own group is told why its context could not be built',
         (new ScanService($broken, $os))->status(185, $o31)['why']
@@ -4763,6 +4986,46 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('W11A-N3 (control): and can still stop the run, as before, while an id that is none is no run',
         (new ScanService($opMod, $opStore))->cancel(190, 999)['why'] === ScanService::NO_RUN
         && (new ScanService($opMod, $opStore))->cancel(190, $opRun)['ok'] === true);
+    check('rv11b1-8: the refusal that offers that reader Stop is final, so the page shows Stop and stops asking',
+        $opNone['final'] === true);
+    // rv11b2-3. THE OTHER HALF OF THE PRE-RUN QUESTION: a field a rule
+    // depends on that the plan cannot place on an instrument. Its access
+    // cannot be checked, so every verb refuses, and it must refuse a run and
+    // an id that is no run in the same words. Without the unknown-ownership
+    // half of readerRefusal() a run was told which field and an id that is
+    // none was told NO_RUN, the oracle W11A-N3 closed for instruments.
+    $unStore = new ArrayScanStore();
+    $unMod = new class($unStore) extends \E2eModule {
+        public $unplace = false;
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $c = parent::durableScanContext($pid, $opts, $dag);
+            if (!empty($c['ok']) && $this->unplace) $c['ownership']['b_lost'] = null;
+            return $c;
+        }
+    };
+    $unMod->user->rights['forms'] = ['fa' => '1'];
+    $unRun = (int) (new ScanService($unMod, $unStore))->start(190)['run_id'];
+    $unMod->unplace = true;
+    $unVerbs = function ($id) use ($unMod, $unStore) {
+        return ['status' => (new ScanService($unMod, $unStore))->status(190, $id),
+                'work'   => (new ScanService($unMod, $unStore))->work(190, $id),
+                'page'   => (new ScanService($unMod, $unStore))->findings(190, $id),
+                'export' => (new ScanService($unMod, $unStore))->exportOpen(190, $id)];
+    };
+    $unOn = $unVerbs($unRun);
+    $unOff = $unVerbs(999);
+    check('rv11b2-3: a field no instrument holds refuses a run and no run alike, by every verb and the download',
+        $unRun > 0 && $unOff['status']['ok'] === false && $unOff['status']['final'] === true
+        && strpos($unOff['status']['why'], 'could not be located on an instrument') !== false
+        && strpos($unOff['status']['why'], 'b_lost') !== false
+        && $unOn['work'] === $unOff['work'] && $unOn['page'] === $unOff['page']
+        && $unOn['export'] === $unOff['export'] && $unOff['export']['http'] === 403
+        && $unOff['work']['why'] === $unOff['status']['why'] && $unOff['export']['why'] === $unOff['status']['why']
+        && $unOn['status'] === $unOff['status'] + ['run_id' => $unRun, 'active' => true, 'mayCancel' => true]);
+    $unMod->unplace = false;
+    check('rv11b2-3 (control): with the field placed again, the run is there and the id is not',
+        !empty($unVerbs($unRun)['status']['ok']) && $unVerbs(999)['status']['why'] === ScanService::NO_RUN);
 
     // A RUN THAT HAS NOT FINISHED HAS NO REPORT, AND ONE THAT HAS NOT PROVED
     // ITS GROUP SHOWS NO ROW.
@@ -5007,6 +5270,20 @@ namespace INSPIRE\UniversalValidator\Scan {
     $m3->user->rights['group_id'] = null;
     check('rv11a1-3 (control): the same run read by an unconfined reader is withheld the same way',
         $wvPage($m3, $s3, 203, $w3, null)['report'] === $pg3['report']);
+    // rv11b1-4: the day a run's date rules were judged as of counts nothing,
+    // so a withheld answer keeps it, as the status does (preFenceStatus()).
+    list($s4, $m4) = $wv(['R06', 'R07']);
+    $m4->clock = ['today' => '2026-10-21', 'now' => '2026-10-21 10:00:00'];
+    $m4->user->rights['group_id'] = 31;
+    $w4 = (int) (new ScanService($m4, $s4))->start(204)['run_id'];
+    $m4->readSleep = 3.2;
+    (new ScanService($m4, $s4))->work(204, $w4);
+    (new ScanService($m4, $s4))->cancel(204, $w4);
+    $st4 = (new ScanService($m4, $s4))->status(204, $w4);
+    $pg4 = $wvPage($m4, $s4, 204, $w4, 31);
+    check('rv11b1-4: a withheld findings answer keeps the day its run was judged as of, as its status does',
+        $st4['withheld'] === true && $st4['asOf'] === '2026-10-21' && $pg4['withheld'] === true
+        && isset($pg4['report']['asOf']) && $pg4['report']['asOf'] === '2026-10-21');
 
     /* rv11a1-5 / rv11a2-1  A REPORT ANOTHER RUN HAS REPLACED IS REFUSED,
      * AND A FILE EARNS ITS TRAILER AT THE END. Run A over the whole

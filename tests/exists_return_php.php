@@ -42,8 +42,11 @@ namespace ExternalModules {
             $p = ($pid !== null && $pid !== '') ? (int) $pid : (int) $this->projectIdReturn;
             return isset($this->subSettingsBy[$p][$k]) ? $this->subSettingsBy[$p][$k] : [];
         }
+        /** pid => [key => true] for setting reads that throw (CFXB-N3). */
+        public $settingThrowsBy = [];
         public function getProjectSetting($k, $pid = null) {
             $p = ($pid !== null && $pid !== '') ? (int) $pid : (int) $this->projectIdReturn;
+            if (!empty($this->settingThrowsBy[$p][$k])) throw new \RuntimeException('the settings could not be read');
             return isset($this->settingsBy[$p][$k]) ? $this->settingsBy[$p][$k] : null;
         }
         public function getSystemSetting($k) { return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null; }
@@ -868,6 +871,18 @@ namespace {
     ask($m, 'x_spec', 'LS-1');
     $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
     check('...a log that keeps no values keeps the record as a keyed hash', !isset($probe[0][1]['copied_from']) && isset($probe[0][1]['copied_from_hmac']));
+    // CFXB-N3: the searched project's log-values unreadable, or a value this
+    // build does not know: its log keeps the record as a keyed hash and no
+    // value hash, as "none" does, never the raw record id.
+    foreach (['cannot be read' => null, 'is not a mode this build knows' => 'Strict'] as $how => $odd) {
+        $m = xmod('nurse', null, $odd === null ? 'none' : $odd);
+        if ($odd === null) $m->settingThrowsBy[300] = ['log-values' => true];
+        ask($m, 'x_spec', 'LS-1');
+        $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
+        check('CFXB-N3: a searched project whose log-values ' . $how . ' logs the record copied from as a keyed hash only',
+            count($probe) === 1 && !isset($probe[0][1]['copied_from']) && isset($probe[0][1]['copied_from_hmac'])
+            && !isset($probe[0][1]['value_hash']) && strpos(json_encode($probe), 'L1') === false);
+    }
     $m = xmod();
     ask($m, 'x_spec', 'LS-404');
     $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));

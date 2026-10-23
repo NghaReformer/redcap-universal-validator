@@ -448,18 +448,76 @@ $whole = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => null]);
 $inNorth = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => '7']);
 $inSouth = $fsvc->finishedRun($PID, ['ok' => true, 'dag' => '9']);
 check('report panel: the newest finished whole-project run is offered, not a newer group run, the one still going nor the neighbour\'s',
-    $north > $newest && $going > $north && $neighbourNewer > $newest && $whole === $newest);
+    $north > $newest && $going > $north && $neighbourNewer > $newest
+    && $whole === ['run_id' => $newest, 'newer' => null, 'replaced' => false]);
 check('report panel: a group reader is offered their group\'s run, and a group with none is offered nothing',
-    $inNorth === $north && $inSouth === null);
+    $inNorth === ['run_id' => $north, 'newer' => null, 'replaced' => false]
+    && $inSouth === ['run_id' => null, 'newer' => null, 'replaced' => false]);
 check('report panel: and a scope that cannot be read is offered nothing, without a statement',
     count($fm->log) === 3 && $fsvc->finishedRun($PID, ['ok' => false, 'dag' => null]) === null && count($fm->log) === 3);
+
+// WHICH REPORT IS CURRENT (reviews rv11b1-1, rv11b2-1, rv11b2-2, rv11b2-5),
+// on a project of its own, in order: a whole-project run that completes,
+// one stopped after it, a group run that completes, then a whole-project
+// run that completes and supersedes the generations below it.
+$PNL = 887;
+$endAs = function ($rid, $terminal, $reason = null) use ($A, $runT) {
+    $A->query("UPDATE $runT SET phase = 'terminal', terminal = '" . $A->real_escape_string($terminal)
+        . "', terminal_reason = " . ($reason === null ? 'NULL' : "'" . $A->real_escape_string($reason) . "'")
+        . ', active_slot = NULL WHERE run_id = ' . (int) $rid);
+};
+$startIn = function ($pid, $dag = null) use ($fs) {
+    $o = ['created_by' => 'alice'];
+    if ($dag !== null) $o['scope_dag'] = $dag;
+    return (int) $fs->startRun($pid, $o)['run']['run_id'];
+};
+$w1 = $startIn($PNL);
+$endAs($w1, 'complete');
+$w2 = $startIn($PNL);
+$endAs($w2, 'cancelled');
+// Every id offered is asked of the store at once: no run it calls gone or
+// replaced (the questions every verb and reportOf() ask) may be offered.
+$offered = 0;
+$disagree = [];
+$offer = function ($dag) use ($fsvc, $fs, $PNL, &$offered, &$disagree) {
+    $o = $fsvc->finishedRun($PNL, ['ok' => true, 'dag' => $dag]);
+    foreach (is_array($o) ? ['run_id', 'newer'] : [] as $k) {
+        if ($o[$k] === null) continue;
+        $offered++;
+        if ($fs->run($PNL, $o[$k]) === null || $fs->supersededBy($PNL, $o[$k]) !== null) $disagree[] = $o[$k];
+    }
+    return $o;
+};
+check('rv11b2-5 report panel: a run stopped after the complete one leaves that one current, and is named as newer',
+    $offer(null) === ['run_id' => $w1, 'newer' => $w2, 'replaced' => false]);
+$g1 = $startIn($PNL, '7');
+$endAs($g1, 'complete');
+check('rv11b1-1 report panel: a group run after the last whole-project run is its group\'s current report',
+    $offer('7') === ['run_id' => $g1, 'newer' => null, 'replaced' => false]);
+$w3 = $startIn($PNL);
+$endAs($w3, 'complete');
+check('rv11b1-1 report panel: once a later whole-project run completes, the group is told its report was replaced',
+    $offer('7') === ['run_id' => null, 'newer' => null, 'replaced' => true]);
+check('rv11b1-1 report panel: and the whole-project reader is offered that run, with nothing newer',
+    $offer(null) === ['run_id' => $w3, 'newer' => null, 'replaced' => false]);
+$g2 = $startIn($PNL, '7');
+$endAs($g2, 'expired');
+check('rv11b1-1 report panel: a group run after it is offered again, though it did not complete',
+    $offer('7') === ['run_id' => $g2, 'newer' => null, 'replaced' => false]);
+$endAs($w3, 'complete', ScanStore::REMOVING_WHY);
+check('rv11b2-2 report panel: a run retention is removing is never offered, and what it superseded stays superseded',
+    $offer(null) === ['run_id' => null, 'newer' => null, 'replaced' => false]);
+check('report panel: no run it offered is one the store calls gone or replaced (' . $offered . ' offers)',
+    $offered >= 5 && $disagree === []);
+
 $bad = [];
 $sorts = [];
+$three = ['ix_project_created', 'ix_project_created', 'ix_project_created'];
 foreach ($fm->log as $q) {
     $keys = uv_explain_keys($A, $q[0], $q[1]);
-    if ($keys !== ['ix_project_created']) $bad[] = implode(',', $keys) . ' <- ' . implode(' ', uv_explain_rows($A, $q[0], $q[1]));
+    if ($keys !== $three) $bad[] = implode(',', $keys) . ' <- ' . implode(' ', uv_explain_rows($A, $q[0], $q[1]));
     if (stripos($extra($q[0], $q[1]), 'filesort') !== false) $sorts[] = $q[0];
 }
-check('report panel: each read names ix_project_created', $bad === []);
+check('report panel: each branch of each read names ix_project_created (' . count($fm->log) . ' reads)', $bad === []);
 if ($bad) fwrite(STDERR, '  panel: ' . implode("\n    ", array_unique($bad)) . "\n");
 check('report panel: and none of them sorts', $sorts === []);

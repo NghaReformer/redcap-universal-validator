@@ -28,6 +28,8 @@ namespace ExternalModules {
         public $systemSettings = [];
         public $projectIdReturn = null;      // what getProjectId() returns (null models import/API)
         public $settingReads = [];           // records [method, key, pid] for threading assertions
+        /** Project setting keys whose read throws, as a settings table that cannot be read does. */
+        public $settingThrows = [];
         public function getSubSettings($key, $pid = null) {
             $this->settingReads[] = ['getSubSettings', $key, $pid];
             $effective = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
@@ -35,6 +37,7 @@ namespace ExternalModules {
         }
         public function getProjectSetting($key, $pid = null) {
             $this->settingReads[] = ['getProjectSetting', $key, $pid];
+            if (!empty($this->settingThrows[$key])) throw new \RuntimeException('the settings could not be read');
             $effective = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
             if (!$effective) return null;
             return isset($this->projectSettings[$key]) ? $this->projectSettings[$key] : null;
@@ -408,6 +411,39 @@ namespace {
     $errs = logsOf($m, 'uvalidate-audit-error');
     check('off mode: audit-error is logged without ANY record identifier',
         count($errs) === 1 && !isset($errs[0][1]['record']) && !isset($errs[0][1]['record_hmac']));
+
+    // CFXB-N3. A "log-values" that cannot be read, or holds a value this
+    // build does not know, is strict mode: it was read as "hashed", which
+    // writes the record id raw, so a "none" project whose settings read
+    // failed for one request logged its participants' ids raw.
+    $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
+    $m->settingThrows = ['log-values' => true];
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $inv = invalidLogs($m);
+    check('CFXB-N3: a log-values read that throws still logs the detection',
+        count($inv) >= 1 && $inv[0][1]['field'] !== '');
+    check('CFXB-N3: and logs it as strict mode does: the record as its keyed hash, no value',
+        isset($inv[0][1]['record_hmac']) && !isset($inv[0][1]['record'])
+        && !isset($inv[0][1]['value']) && !isset($inv[0][1]['value_hmac'])
+        && $inv[0][1]['record_hmac'] === hash_hmac('sha256', '2', $m->systemSettings['log-hmac-key'] . '|149'));
+    foreach (['strict', 'Hashed', 'RAW', ' none', '1', 0, ['raw']] as $odd) {
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => $odd]);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $inv = invalidLogs($m);
+        check('CFXB-N3: a log-values of ' . json_encode($odd) . ' this build does not know is strict mode',
+            count($inv) >= 1 && isset($inv[0][1]['record_hmac']) && !isset($inv[0][1]['record'])
+            && !isset($inv[0][1]['value']) && !isset($inv[0][1]['value_hmac']));
+    }
+    $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => 'none']);
+    $m->settingThrows = ['log-values' => true];
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $errs = logsOf($m, 'uvalidate-audit-error');
+    check('CFXB-N3: and on the audit-error path a read that throws gives the record as its keyed hash, never raw',
+        count($errs) === 1 && !isset($errs[0][1]['record']) && isset($errs[0][1]['record_hmac']));
+    $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => '']);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    check('CFXB-N3 (control): an unset log-values is still the default, with the record raw',
+        isset(invalidLogs($m)[0][1]['record']) && invalidLogs($m)[0][1]['record'] === '2');
 
     // ---- 5) no rules -> no logs (and no crash) ----
     $m = newModule([], [], [2 => [351 => ['main_id_1' => '1ABC-00002E']]], 149);

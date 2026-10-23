@@ -422,7 +422,10 @@ final class ScanService
 
         // The reader before the run (L8): see readerScope().
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return ['ok' => false, 'why' => $no['why']];
+        if ($no !== null) {
+            $gone = (!empty($no['final']) && $no['why'] === self::NO_RULES) ? $this->endRulesGone($pid, $runId) : null;
+            return $gone !== null ? $gone : ['ok' => false, 'why' => $no['why']];
+        }
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
@@ -591,6 +594,63 @@ final class ScanService
         // must not describe the run after it - so then status() reads again.
         $known = empty($p['wrote']) ? ['run' => $p['run'], 'census' => $p['census']] : [];
         return $this->disclosed($run, $r, $this->statusOf($pid, $runId, $known));
+    }
+
+    /** What a work request answers when it has ended a run whose rules are gone (CFXB-N2). */
+    const RULES_GONE = 'Every rule this scan was checking has been removed or now has a configuration '
+        . 'error, so the scan was ended rather than left holding the project. Fix the rules and start a '
+        . 'new scan.';
+
+    /** The stored reason of that run, as promotion words the reason of a run the rules moved under. */
+    const RULES_GONE_WHY = 'every rule this scan was checking was removed or now has a configuration error, '
+        . 'so the scan was ended rather than left holding the project; fix the rules and run it again';
+
+    /**
+     * End $runId when its project has no rule left to evaluate (CFXB-N2), or
+     * null to answer the refusal as before.
+     *
+     * A RUN WHOSE RULES ALL WENT WAS ENDED BY NOBODY'S WORK. The rules were
+     * deleted, or each became a configuration error, while it ran: every
+     * work request was refused before the run row ("no rules this scan can
+     * evaluate"), the worker that would have met the moved fingerprint was
+     * never built, and the run held the project's one slot until Stop or the
+     * reaper ended it. Since rv11b2-6 that refusal is settled (contextFinal()),
+     * so a work request on such a run ends it, failed, with a stored reason
+     * that says why - as promote() ends a run the configuration moved under.
+     *
+     * ASKED AS STOP IS ASKED (cancelAuth()). No context can be built, so the
+     * instruments the rules read cannot be named; a reader cancel() would let
+     * stop the run may end it, since ending reads no value, and anyone else
+     * is given the refusal unchanged, the same for every id. A stopped run is
+     * finished as stopped, by the one finisher. A finished run, or an id that
+     * is no run of this project, is left to the refusal.
+     *
+     * @return ?array the work answer, or null
+     */
+    private function endRulesGone($pid, $runId)
+    {
+        $store = $this->store();
+        $run = $store->run($pid, $runId);
+        if ($run === null || (isset($run['terminal']) && $run['terminal'] !== null && $run['terminal'] !== '')
+                || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return null;
+        }
+        if ($this->readerRefusal($pid, 'cancel') !== null) return null;
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return null;
+        $answer = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                   'phase' => ScanPhase::TERMINAL, 'done' => false];
+        if (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING) {
+            ScanPromotion::finishCancelled($store, $pid, $runId, self::limitsOf($this->policy($pid)));
+            return ['ok' => true, 'stop' => 'cancelled',
+                    'why' => 'this scan was stopped, so the records after that point were never examined'] + $answer;
+        }
+        $outcome = ScanOutcome::derive(['failed' => true]);
+        $outcome['why'] = self::RULES_GONE_WHY;
+        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        if (!$store->finish((int) $runId, $outcome)) return null;
+        $this->note('scan run ended: no rules left to evaluate', ['project_id' => (int) $pid, 'run_id' => (int) $runId]);
+        return ['stop' => 'changed', 'why' => self::RULES_GONE] + $answer;
     }
 
     /**
@@ -857,6 +917,9 @@ final class ScanService
         // the phase, the verdict and the controls. The findings read is not
         // made for a status that will not carry it.
         $proved = ScanAuthorization::scopeProved($run);
+        // The ending's inputs as the report and the file read them (review
+        // CFXB-N4): one reading of the run row for all three.
+        $ending = ScanReport::endingOf($run);
 
         $full = [
             'ok'        => true,
@@ -890,10 +953,10 @@ final class ScanService
             'findings'  => $proved ? ScanPromotion::findingsOf($store, $run) : null,
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
-            'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            'scope'     => $ending['scope'],
             // Whether an upgrade of the module ended it (W12-N4): its stored
             // reason, so the page says so and not only that it failed.
-            'upgraded'  => self::endedByUpgrade($run),
+            'upgraded'  => $ending['upgraded'],
             // The day the run's date rules are judged as of (W10BF-3), or
             // null for a run whose rules read no clock.
             'asOf'      => ScanPlanner::frozenDay($run),
@@ -1312,8 +1375,10 @@ final class ScanService
     private static function withheldAnswer(array $out, $why)
     {
         $keep = ['ok', 'run_id', 'runScope', 'columns', 'after', 'limit', 'filter', 'report', 'marks', 'clean'];
+        // `asOf` as preFenceStatus() keeps it (review rv11b1-4): the day the
+        // run's date rules were judged as of counts nothing.
         $reportKeeps = ['schema', 'columns', 'legend', 'coverage', 'coverageSentence', 'mayCertify', 'suffix',
-                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows'];
+                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf'];
         $kept = [];
         foreach ($keep as $k) if (array_key_exists($k, $out)) $kept[$k] = $out[$k];
         $report = [];
@@ -1692,6 +1757,15 @@ final class ScanService
                     return $out;
                 }];
     }
+
+    /**
+     * Why pages/export.php refuses anything but a POST (W11F-N5): the file
+     * comes only from the scan page's download button, which posts run_id
+     * with the page's redcap_csrf_token. Sent with HTTP 405.
+     */
+    const EXPORT_POST_ONLY = 'the file is sent only in answer to the download button on the scan page, '
+        . 'which sends the page\'s token with it; a link or an address typed into the browser cannot '
+        . 'fetch it. Open the scan page and press the download button.';
 
     /** Said after the coverage of a run over one group, in its file: %s is runScope()'s label. */
     const GROUP_ONLY = 'This scan covered %s only, not the whole project.';
@@ -2113,42 +2187,114 @@ final class ScanService
     }
 
     /**
-     * The newest finished run of THIS reader's scope, for the findings panel
-     * to open on, or null.
+     * The report the findings panel opens on for THIS reader, and what the
+     * page says beside it, or null.
      *
      * The panel shows a finished run's report (B5), and a run that finished
      * after its tab was closed had no way back onto the page: activeRun()
-     * answers only the run holding the slot. A group reader is offered the
-     * newest finished run of their group, an unrestricted reader the newest
-     * whole-project run - the scope a Start from this page would have.
+     * answers only the run holding the slot. The scope is the reader's own -
+     * a group reader's group, the whole project for anyone else - the scope a
+     * Start from this page would have. A group reader is never offered a
+     * whole-project run, which they may not read (rv5b-4).
      *
-     * A LOCATOR, NOT A GRANT. The id is printed into the page for the client
+     * THE CURRENT REPORT, NOT THE NEWEST ROW (reviews rv11b1-1, rv11b2-1,
+     * rv11b2-2, rv11b2-5). This was the newest terminal run of the scope, and
+     * three kinds of run were offered that scan-findings then refused or
+     * showed empty:
+     *   - a run a later complete whole-project run has superseded. That run
+     *     closes every older generation, group runs included, so after any
+     *     whole-project scan a group reader's page opened on "This report
+     *     holds 2 findings." over "This scan stored no findings.", and since
+     *     rv11a1-5 on a refusal. Superseded is ScanStore::supersededBy()'s
+     *     test: a complete whole-project run of a later generation, read here
+     *     as the newest such generation, so no run that the report would
+     *     refuse as replaced is offered;
+     *   - a run retention has begun removing, which every verb answers as no
+     *     run (ScanStore::REMOVING_WHY);
+     *   - a run that stopped, failed or expired after the complete one the
+     *     store still treats as current (supersedePrevious() keeps the
+     *     previous report for any end but `complete`), which hid that report
+     *     behind a partial one.
+     * So the page opens the newest COMPLETE run of the scope that nothing
+     * superseded and retention keeps, and names the newest unfinished one
+     * after it as `newer`, for the reader to open. With no complete run left
+     * it opens the newest finished one. When the scope's newest finished run
+     * was superseded, a group reader has nothing readable left, and
+     * `replaced` says so: the page tells them a whole-project scan replaced
+     * their group's report, rather than opening an empty one.
+     *
+     * A LOCATOR, NOT A GRANT. The ids are printed into the page for the client
      * to ask scan-findings about, and that verb decides everything again,
      * before the run row (L8): a reader it refuses is refused the same way for
-     * this id as for any other. Nothing about the run but its id is read here.
+     * these ids as for any other. Nothing about the runs but their ids and
+     * generations is read here.
      *
-     * ONE ROW, THROUGH ix_project_created, newest first (run_id breaks a tie in
-     * the same second; it is the key's own suffix, so there is no sort). A
-     * project keeps one row per run, and retention purges old ones.
+     * ONE STATEMENT, BOUNDED BY THE PROJECT'S OWN RUNS. Three branches through
+     * ix_project_created: the scope's newest finished run and its newest
+     * complete one, each newest first with run_id breaking a tie in the same
+     * second (the key's own suffix, so there is no sort) and LIMIT 1; and the
+     * newest generation a complete whole-project run of the project reached.
+     * Each walks at most the project's retained runs once, so the read is
+     * linear in them at worst, never in the findings. Generations rise with
+     * the runs (one active slot per project), so a run is superseded exactly
+     * when its generation is below that one.
      *
      * @param array|null $scope ScanPageView::scanScope()'s answer, as the page holds it
-     * @return int|null null for no such run, no readable scope, or a read that failed
+     * @return array{run_id:?int, newer:?int, replaced:bool}|null null for no
+     *         readable scope, or a read that failed or answered in a shape
+     *         this does not know; run_id null when there is nothing to open
      */
     public function finishedRun($pid, $scope = null)
     {
         if (!is_array($scope) || empty($scope['ok']) || !array_key_exists('dag', $scope)) return null;
+        $t = Schema::table('scan_run') . ' FORCE INDEX (ix_project_created)';
+        $mine = 'project_id = ? AND phase = ? AND '
+              . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
+              . ' AND (terminal_reason IS NULL OR terminal_reason <> ?)';
+        $newest = ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
+        $sql = '(SELECT 1, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine . $newest . ')'
+             . ' UNION ALL (SELECT 2, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine
+             . ' AND terminal = ?' . $newest . ')'
+             . ' UNION ALL (SELECT 3, NULL, MAX(generation_id) FROM ' . $t
+             . ' WHERE project_id = ? AND terminal = ? AND scope_dag IS NULL)';
+        $p = [(int) $pid, ScanPhase::TERMINAL];
+        if ($scope['dag'] !== null) $p[] = (string) $scope['dag'];
+        $p[] = ScanStore::REMOVING_WHY;
         try {
-            $sql = 'SELECT run_id FROM ' . Schema::table('scan_run')
-                 . ' WHERE project_id = ? AND phase = ? AND '
-                 . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
-                 . ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
-            $params = [(int) $pid, ScanPhase::TERMINAL];
-            if ($scope['dag'] !== null) $params[] = (string) $scope['dag'];
-            $r = $this->db->select($sql, $params);
-            return (isset($r[0][0]) && ctype_digit((string) $r[0][0])) ? (int) $r[0][0] : null;
+            $rows = $this->db->select($sql, array_merge($p, $p,
+                [ScanOutcome::COMPLETE, (int) $pid, ScanOutcome::COMPLETE]));
         } catch (\Throwable $e) {
             return null;
         }
+        $found = [];
+        $whole = false;
+        foreach ($rows as $row) {
+            $row = array_values((array) $row);
+            if (count($row) < 3) return null;
+            $k = (string) $row[0];
+            if ($k === '3') {
+                if ($row[2] !== null && !ctype_digit((string) $row[2])) return null;
+                $whole = $row[2] === null ? null : (int) $row[2];
+                continue;
+            }
+            if (($k !== '1' && $k !== '2') || !ctype_digit((string) $row[1]) || !ctype_digit((string) $row[2])) {
+                return null;
+            }
+            $found[$k] = ['id' => (int) $row[1], 'gen' => (int) $row[2]];
+        }
+        // MAX() answers one row whatever the project holds. No row is a read
+        // that did not work, and reading it as "nothing superseded" would
+        // offer a replaced report.
+        if ($whole === false) return null;
+        $live = function ($x) use ($whole) { return $x !== null && ($whole === null || $x['gen'] >= $whole); };
+        $last = isset($found['1']) ? $found['1'] : null;
+        $complete = isset($found['2']) ? $found['2'] : null;
+        $open = $live($complete) ? $complete : ($live($last) ? $last : null);
+        return [
+            'run_id'   => $open === null ? null : $open['id'],
+            'newer'    => ($open !== null && $live($last) && $last['id'] !== $open['id']) ? $last['id'] : null,
+            'replaced' => $open === null && $last !== null && $scope['dag'] !== null,
+        ];
     }
 
     /**
@@ -2330,11 +2476,12 @@ final class ScanService
         // about a run - the plan's ownership map does not depend on the group
         // it is built for - so it is decided here, from a planning context
         // for the reader's own scope, before any run row is read. A context
-        // that cannot be built is refused here too, the same for every id;
-        // it is never final, as entitlementNow() says it.
+        // that cannot be built is refused here too, the same for every id,
+        // and final only when settled (contextFinal()), as entitlementNow()
+        // says it.
         $f = $this->readerForms($pid);
         if (empty($f['ok'])) {
-            $no = ['ok' => false, 'why' => $f['why'], 'final' => false];
+            $no = ['ok' => false, 'why' => $f['why'], 'final' => !empty($f['final'])];
             // STOP DOES NOT WAIT FOR A CONTEXT (review rvc2-3): it is asked
             // of every instrument instead, as cancelAuth() asks it.
             if ($verb !== 'cancel') return $no;
@@ -2376,7 +2523,7 @@ final class ScanService
             // contextRefusal(), as entitlementNow() says it: a context refused
             // on a read that failed names what could not be read (W10BF-4).
             $this->readerForms[$key] = empty($ctx['ok'])
-                ? ['ok' => false, 'why' => self::contextRefusal($ctx)]
+                ? ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx)]
                 : ['ok' => true, 'why' => null] + self::formsOf($ctx);
         }
         return $this->readerForms[$key];
@@ -2414,11 +2561,13 @@ final class ScanService
             // judged after midnight is judged as of the same day.
             'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
-        // Never final: the commonest reason is a rule list or a dictionary that
-        // could not be read just now. `unplanned` tells cancelAuth() the run
-        // can still be stopped by another question (review rvc2-3).
+        // Final only when settled (contextFinal()): the commonest reason is a
+        // rule list or a dictionary that could not be read just now.
+        // `unplanned` tells cancelAuth() the run can still be stopped by
+        // another question (review rvc2-3).
         if (empty($ctx['ok'])) {
-            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => false, 'unplanned' => true];
+            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx),
+                    'unplanned' => true];
         }
 
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
@@ -3020,17 +3169,6 @@ final class ScanService
      */
     const ENGINE_CHANGED = ScanPageView::UPGRADED;
 
-    /**
-     * Did an upgrade of this module end $run (W12-N4)? Read from the reason
-     * promotion stored (ScanPromotion::ENGINE_UPGRADED).
-     */
-    private static function endedByUpgrade(array $run)
-    {
-        return isset($run['terminal'], $run['terminal_reason'])
-            && $run['terminal'] === ScanOutcome::FAILED
-            && $run['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED;
-    }
-
     /** What a work request answers when the run it was sent for has just been ended for this. */
     const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '
         . 'this scan was running, so the scan was ended rather than finished against two '
@@ -3062,6 +3200,29 @@ final class ScanService
     {
         if (!empty($ctx['unread']) && is_array($ctx['unread'])) return self::configUnread($ctx['unread']);
         return isset($ctx['why']) ? $ctx['why'] : null;
+    }
+
+    /**
+     * durableScanContext()'s sentence for a project whose rule list was read
+     * in full and holds no rule a scan can evaluate: none at all, or every
+     * one a configuration error.
+     */
+    const NO_RULES = 'this project has no rules this scan can evaluate';
+
+    /**
+     * Is a context's refusal SETTLED (review rv11b2-6)? Only NO_RULES with
+     * nothing unread. It was never final, because before W10BF-4 a growth
+     * reference folder that would not open read as this same sentence; now
+     * a read that failed says CONFIG_UNREAD (contextRefusal()), so this one
+     * says the rules were read and none can be evaluated. Answered as not
+     * final, the findings panel asked again on its ladder for as long as the
+     * tab was open, and the file answered 503, "try again", about a project
+     * the next read would describe the same way. Every other refusal stays
+     * one to ask again.
+     */
+    private static function contextFinal(array $ctx)
+    {
+        return empty($ctx['unread']) && isset($ctx['why']) && $ctx['why'] === self::NO_RULES;
     }
 
     /**

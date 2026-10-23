@@ -663,9 +663,22 @@ Each case has a rule in the shape the page gives the engine, one finding, the
 form's values, and for staff and survey both sentences with a mark, `same`
 or `differs`. The PHP half renders the report's sentence and the JS half
 reads the form's, and each fails when a sentence or its mark no longer holds.
+The PHP half renders the staff sentence twice: from the rule as planned, and
+as a stored run's report gives it, with the finding written as a stored row,
+read back by `FindingRowMapper::toFinding()`, over the labels snapshot read
+back by `ScanDimensions::fromSnapshot()`.
 A catalogue key with no case fails the PHP half. Of the 58 sentences the form
 shows, 9 match the catalogue; the fixture records the rest, and changes
 neither side.
+
+`scan_endings_fixture.json` holds every way a durable scan run can end: the
+status the panel is given and the one sentence that says how the run ended.
+`scan_service_php.php` ends a real run each way and requires that sentence of
+the panel's status, the findings answer (its summary and its terminal row) and
+the file (its `# coverage` line and its terminal row), and that the fixture
+matches what the service gives; `UV_UPDATE_ENDINGS=1` rewrites it.
+`scan_client_js.cjs` gives each status to the panel and requires the same
+sentence from `js/scan.js`.
 
 ## CI
 
@@ -675,7 +688,11 @@ stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
 `when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
-matching). Green CI means the module's client and server engines agree with
+matching). On each PHP version it also runs the two mutation runners,
+`tests/temporal_mutations.py` and `tests/exists_where_mutations.py`.
+`tests/scan_wiring_php.php` fails when a suite or a mutation runner in `tests/`
+is not named by the command of some workflow `run:` key; a name in a comment, a
+step name or another key does not count. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 

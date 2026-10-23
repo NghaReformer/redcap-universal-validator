@@ -772,7 +772,7 @@ namespace {
             $rawPosture['recordIds'] === FindingRowMapper::IDS_RAW && $rawPosture['hashRecordId'] === null
             && mapper($rawPosture)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] === 'PATIENT-0042');
         // rvc2-4: A "log-values" READ THAT THROWS HASHES. The posture asked
-        // logMode(), whose answer to a failed read is "hashed" - for the log,
+        // logMode(), whose answer to a failed read was "hashed" - for the log,
         // values kept out; for a report, raw record ids.
         $failing = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
             public $logValuesThrows = true;

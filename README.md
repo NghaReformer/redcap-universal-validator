@@ -64,8 +64,10 @@ validate identically here, in Excel, and in the browser (same verified engine).
   and a hook failure leaves a `uvalidate-audit-error` entry, so neither can pass
   silently. Raw identifiers are not stored in the log by default — a keyed,
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
-  per project down to logging nothing. A keyed hash is pseudonymization, not
-  anonymity: treat the module log as identifying data in access and retention
+  per project down to logging nothing. When the `log-values` setting cannot be
+  read, or holds a value this version does not know, the log uses the strict
+  mode (`none`): the record ID as its keyed hash and no value. A keyed hash is
+  pseudonymization, not anonymity: treat the module log as identifying data in access and retention
   policies. Format-pattern audits cover printable-ASCII values; other values are
   left to the client and the check-character math, because JavaScript and PCRE
   regex semantics are only proven to agree on that subset.
@@ -1061,11 +1063,22 @@ project.
 
 ### The findings page
 
-Under the panel, the page shows the findings of the newest finished run in
-the reader's own scope. For a user outside any group that is the newest
-whole-project run; for a group user, the newest run of their group. The
-findings appear when no run of the reader's is going, and open by themselves
-when a run the tab is watching finishes. Earlier runs are not listed.
+Under the panel, the page shows the current report of the reader's own
+scope: the newest run that completed, that no later whole-project run has
+replaced, and that retention is not removing. For a user outside any group
+that is a whole-project run; for a group user, a run of their group. A newer
+run that was stopped, failed or expired leaves that report current, and the
+page names it beside the report with a button that opens its findings. With
+no complete run, the page opens the newest finished one. A whole-project run
+that completes replaces every earlier report, group runs included, so a
+group user whose group's last report was replaced is told so and asked to
+start a scan of the group, rather than shown an empty report. The findings
+appear when no run of the reader's is going, and open by themselves when a
+run the tab is watching finishes. Earlier runs are not listed. The summary
+above the table says what the run covered: a run over one group says "This
+scan covered Data Access Group north only, not the whole project.", whoever
+reads it, as its file does. It also gives the day the run's dates were
+judged as of, as the panel does for a run it watched.
 
 Findings come 50 to a page, in the order they were stored, with "Next page"
 and "Previous page". The table's caption gives the page, and a line above it
@@ -1081,8 +1094,10 @@ An incomplete report shows its banner above the table and its terminal row
 below it, and beside the download it says that the file name ends in the
 run's suffix. A group-scoped run that never confirmed its group
 shows only the sentence saying why, with no table, filters or download. The
-link "Download these findings as a CSV file" is offered only beside a report
-the page has just read.
+button "Download the whole report as a CSV file" is offered only beside a report
+the page has just read, and it names how many findings the report holds. The
+file is always the whole report: the filters narrow the table on the page,
+never the file.
 
 The columns are Issue, Record, Data Access Group, Event, Instrument, Instance,
 Field, Field label, Value, Check, Reason code, Rule, Rule name, What is wrong
@@ -1102,7 +1117,11 @@ so.
 ### The CSV file
 
 The download is `pages/export.php`, which streams the stored run a page at a
-time and runs no scan of its own. It asks the same questions as the findings
+time and runs no scan of its own. The button posts a form with the run id and
+the page's `redcap_csrf_token`, which the module framework checks. Any other
+request method, such as a link, a bookmark or an address typed into the
+browser, is refused with HTTP 405 and a plain-text `# EXPORT REFUSED` answer
+before the run is read. It asks the same questions as the findings
 page. The file is UTF-8 with a byte-order mark. It opens with `# ` lines about
 the report (schema, project, run, when it was generated, scope, coverage,
 whether it certifies, values, labels, a column legend and how many rows to

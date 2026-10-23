@@ -53,9 +53,16 @@ function makeEl(tag, id) {
     addEventListener(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); },
     fire(ev) { (this._handlers[ev] || []).forEach((f) => f({ preventDefault() {} })); },
     click() { this.fire('click'); },
+    // A form the client posts (W11F-N5): what it sent, and where it was then.
+    submit() {
+      submitted.push({ attrs: Object.assign({}, this._attrs), inBody: this.parentNode === global.document.body,
+        fields: this.children.map((c) => Object.assign({ tag: c.tagName }, c._attrs)) });
+    },
   };
   return e;
 }
+/** Every form the client submitted, as submit() saw it. */
+let submitted = [];
 
 const IDS = ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume', 'uv-scan-phase',
   'uv-scan-bar-track', 'uv-scan-bar', 'uv-scan-counts', 'uv-scan-found', 'uv-scan-done',
@@ -66,18 +73,23 @@ const IDS = ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume
   'uv-scan-report-next', 'uv-scan-report-note', 'uv-scan-report-export-wrap', 'uv-scan-report-export',
   'uv-scan-filter-form-wrap', 'uv-scan-filter-form', 'uv-scan-filter-reason-wrap', 'uv-scan-filter-reason',
   'uv-scan-filter-type-wrap', 'uv-scan-filter-type', 'uv-scan-filter-group-wrap', 'uv-scan-filter-group',
-  'uv-scan-report-banner', 'uv-scan-report-row', 'uv-scan-report-suffix'];
+  'uv-scan-report-banner', 'uv-scan-report-row', 'uv-scan-report-suffix', 'uv-scan-report-other',
+  'uv-scan-report-switch'];
 let els = {};
 function freshDom() {
   els = {};
   IDS.forEach((id) => { els[id] = makeEl(/filter-(form|reason|type|group)$/.test(id) ? 'select' : 'div', id); });
   els['uv-scan-report'].style.display = 'none';
+  // Hidden in the markup until the client shows them (pages/scan.php).
+  els['uv-scan-report-other'].style.display = 'none';
+  els['uv-scan-report-switch'].style.display = 'none';
 }
 freshDom();
 global.window = {};
 global.document = {
   getElementById: (id) => els[id] || null,
   createElement: (t) => makeEl(t),
+  body: makeEl('body'),
 };
 
 const pending = [];
@@ -119,6 +131,13 @@ UV.labels = {
   reportFailed: 'The findings of this scan could not be read just now.',
   filterAll: 'All',
   reportSuffix: 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.',
+  reportReplaced: 'A scan of the whole project has replaced the last report of this Data Access Group. Start a scan of the group to see its current findings.',
+  reportNewer: 'Scan {run} started after this one and did not complete, so this report is still the current one.',
+  reportShowNewer: 'Show what scan {run} found',
+  reportViewingNewer: 'This is scan {run}, which did not complete. The current report is scan {current}.',
+  reportShowCurrent: 'Show the current report',
+  reportMissing: 'This report counts findings that could not be read now. It may have been replaced since this page was opened; reload the page to open the current report.',
+  reportGroupOnly: 'This scan covered {group} only, not the whole project.',
   coverage: {}, phase: {},
 };
 
@@ -170,6 +189,8 @@ function reset(s) {
   holdNext = false;
   pending.length = 0;
   freshDom();
+  global.document.body = makeEl('body');
+  UV.csrfToken = 'tok-fixture';   // the page prints one; a check that wants none clears it
   UV.report.runId = null;
   UV.report.inflight = false;
   UV.report.waiting = false;
@@ -216,10 +237,21 @@ function noZero(label) {
     els['uv-scan-report-summary'].textContent
       === 'Every record was checked, including changes made while it ran. This result does not certify the project.');
   check('panel: and the count is the report\'s', els['uv-scan-report-count'].textContent === 'This report holds 1,203 findings.');
-  check('panel: the download is offered beside the answer, for this run only',
+  check('panel: the download is offered beside the answer, and names the whole report and its count (rv11b1-5)',
     shown('uv-scan-report-export-wrap')
-    && els['uv-scan-report-export'].getAttribute('href')
-       === '/redcap/ExternalModules/?prefix=uv&page=pages%2Fexport&pid=13&run_id=61');
+    && els['uv-scan-report-export'].textContent === 'Download the whole report as a CSV file (1,203 findings)'
+    && els['uv-scan-report-export'].getAttribute('href') === null);
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  const posted = submitted[0] || { attrs: {}, fields: [] };
+  check('W11F-N5: the download posts run_id and the page\'s token to the export route, and nothing else',
+    submitted.length === 1 && posted.inBody && posted.attrs.method === 'post'
+    && posted.attrs.action === '/redcap/ExternalModules/?prefix=uv&page=pages%2Fexport&pid=13'
+    && JSON.stringify(posted.fields) === JSON.stringify([
+      { tag: 'INPUT', type: 'hidden', name: 'run_id', value: '61' },
+      { tag: 'INPUT', type: 'hidden', name: 'redcap_csrf_token', value: 'tok-fixture' }]));
+  check('W11F-N5: and the form is taken away again once sent', global.document.body.children.length === 0);
+  check('W11F-N5: the client never builds an export address of its own', SRC.indexOf("'run_id='") === -1);
 
   // -- Next and Previous on the keyset cursor --------------------------------
   reset([page({ next: 3 }), page({ rows: rowsOf(4, 3), next: 6 }), page({ rows: rowsOf(7, 2), next: null }),
@@ -272,8 +304,14 @@ function noZero(label) {
     && formSel.children[1].value === 'fa' && formSel.children[1].textContent === 'Form A (1,200)');
   check('filters: one with nothing to choose from is not offered',
     !shown('uv-scan-filter-group-wrap') && shown('uv-scan-filter-form-wrap') && shown('uv-scan-report-filters'));
+  const optionsBefore = formSel.children.slice();
   els['uv-scan-report-next'].click();
   await ticks();
+  // rv11b1-7 (b): counting the options cannot tell a rebuild from none, since
+  // a rebuild makes the same three. The nodes themselves must be the same.
+  check('rv11b1-7: a page turn keeps the very option nodes the reader may be choosing from',
+    sentAt(findingsSent().length - 1).after === 3 && formSel.children.length === optionsBefore.length
+    && formSel.children.every((o, i) => o === optionsBefore[i]));
   formSel.value = 'fb';
   script = [page({ rows: rowsOf(9, 1), next: null })];
   formSel.fire('change');
@@ -284,6 +322,15 @@ function noZero(label) {
     && els['uv-scan-report-caption'].textContent === 'Findings of this scan, page 1'
     && els['uv-scan-report-prev'].getAttribute('aria-disabled') === 'true');
   check('filters: and the options are not rebuilt under the reader', formSel.children.length === 3);
+  // rv11b1-5: a filter narrows the table, never the file, and the button says so.
+  check('rv11b1-5: with a filter chosen, the button still names the whole report and its count',
+    shown('uv-scan-report-export-wrap')
+    && els['uv-scan-report-export'].textContent === 'Download the whole report as a CSV file (1,203 findings)');
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  check('rv11b1-5: and the file it asks for carries no filter: run_id and the token only',
+    submitted.length === 1
+    && JSON.stringify(submitted[0].fields.map((f) => f.name)) === JSON.stringify(['run_id', 'redcap_csrf_token']));
 
   // A filter changed while a page is out: that answer is not shown, and the
   // filtered page is asked for once it lands.
@@ -313,9 +360,26 @@ function noZero(label) {
     !shown('uv-scan-report-table') && !shown('uv-scan-report-filters') && !shown('uv-scan-report-nav'));
   check('withheld: its own sentence instead', shown('uv-scan-report-withheld')
     && els['uv-scan-report-withheld'].textContent === UV.labels.withheldEnded);
+  submitted = [];
+  els['uv-scan-report-export'].click();
   check('withheld: and nothing to download', !shown('uv-scan-report-export-wrap')
-    && els['uv-scan-report-export'].getAttribute('href') === null);
+    && UV.report.exportFor === null && submitted.length === 0);
   check('withheld: no count is shown for it either', els['uv-scan-report-count'].textContent === '');
+
+  // -- W11F-N5: a page that printed no token offers no download --------------
+  reset([page({ next: null })]);
+  UV.csrfToken = '';
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  submitted = [];
+  els['uv-scan-report-export'].click();
+  check('W11F-N5: without the page\'s token the download is not offered, and a press sends nothing',
+    shown('uv-scan-report-table') && !shown('uv-scan-report-export-wrap') && UV.report.exportFor === null
+    && submitted.length === 0);
+  reset([page({ next: null })]);
+  UV.attach({ reportRunId: 61, exportUrl: '/x/export.php' });
+  await ticks();
+  check('W11F-N5 (control): with the token it is', shown('uv-scan-report-export-wrap') && UV.report.exportFor === 61);
 
   // -- refusals --------------------------------------------------------------
   reset([{ ok: false, why: 'no scan with that reference is running for this project', final: true }]);
@@ -401,8 +465,9 @@ function noZero(label) {
     els['uv-scan-report-prev'].getAttribute('aria-disabled') === 'true'
     && els['uv-scan-report-caption'].textContent === 'Findings of this scan, page 1');
 
-  // "No findings" only when next is null and nothing was shown.
-  reset([page({ rows: [], next: null })]);
+  // "No findings" only when next is null, nothing was shown, and the report
+  // counts none (rv11b1-1).
+  reset([page({ rows: [], next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 0 } })]);
   UV.attach({ reportRunId: 61 });
   await ticks();
   check('empty: a run with no findings says so, when the server says there is no more',
@@ -442,6 +507,63 @@ function noZero(label) {
   check('summary: a certified run says what it checked and nothing more, and an uncounted report says so',
     els['uv-scan-report-summary'].textContent === 'Every record was checked, including changes made while it ran.'
     && els['uv-scan-report-count'].textContent === UV.labels.foundUnknown);
+
+  // -- rv11b1-2: the run's scope in the summary -----------------------------
+  // An unrestricted reader who watched a group run to its end read "Every
+  // record was checked" over the group's count, with nothing saying the
+  // other groups were not read. scan-findings carries `runScope` (rv11a1-1).
+  const GROUP_RUN = { kind: 'group', group: 'site_b', label: 'Data Access Group site_b' };
+  reset([{ ok: true, run_id: 9, phase: 'terminal', terminal: 'complete', coverage: 'complete-through-fence',
+           detail: 'complete', total: 5, done: 5, findings: 0, active: false, clean: 1, scope: 'group' },
+         page({ run_id: 9, runScope: GROUP_RUN, clean: 1, rows: [], next: null,
+                report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 0 } })]);
+  UV.attach({ runId: 9 });
+  await ticks(10);
+  check('rv11b1-2: a group run watched to its end says in its summary that it covered that group only',
+    sentAt(0).run_id === 9 && els['uv-scan-report-summary'].textContent
+      === 'Every record was checked, including changes made while it ran. This scan covered Data Access Group site_b only, not the whole project.');
+  reset([page({ runScope: { kind: 'project', group: null, label: 'whole project' }, next: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-2 (control): a whole-project run says nothing about a group',
+    els['uv-scan-report-summary'].textContent.indexOf('only, not the whole project') === -1);
+  reset([page({ withheld: true, withheldWhy: UV.labels.withheldEnded, runScope: GROUP_RUN, rows: [], next: null, facets: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-2: and a withheld group run says which group, with no coverage sentence',
+    els['uv-scan-report-summary'].textContent
+      === 'This scan covered Data Access Group site_b only, not the whole project. This result does not certify the project.');
+
+  // -- rv11b1-3: a withheld run names no rule count -------------------------
+  // The main panel said "...not a complete picture of the group. This result
+  // does not certify the project." while the report said "2 rules could not
+  // be evaluated". The server drops the count from such an answer (rv11a1-3);
+  // the panel does not read one that arrives.
+  reset([page({ withheld: true, withheldWhy: UV.labels.withheldEnded, clean: 0, ruleProblems: 2, rows: [], next: null, facets: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-3: a withheld run shows no rule count, whatever the answer carries',
+    els['uv-scan-report-summary'].textContent === 'This result does not certify the project.'
+    && els['uv-scan-report-summary'].textContent.indexOf('could not be evaluated') === -1);
+  reset([page({ clean: 0, ruleProblems: 2, next: null })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-3 (control): a run that proved its scope says its rule count',
+    els['uv-scan-report-summary'].textContent.indexOf('2 rules could not be evaluated') !== -1);
+
+  // -- rv11b1-4: the judged-as-of day in the summary -------------------------
+  reset([page({ next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.',
+                                      expectedRows: 1, asOf: '2026-10-21' } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-4: a report opened from the page says the day its dates were judged as of',
+    els['uv-scan-report-summary'].textContent === 'Every record was checked, including changes made while it ran. '
+      + 'This result does not certify the project. Dates were judged as of 2026-10-21.');
+  reset([page({ next: null, report: { coverageSentence: 'x', expectedRows: 1, asOf: '21/10/2026' } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-4 (control): a day not in the stored form is not said',
+    els['uv-scan-report-summary'].textContent.indexOf('judged as of') === -1);
 
   // -- README's three marks of an incomplete report (item 10) ---------------
   // The words are ScanService::incompleteMarks()'s, which tests/scan_service_php.php
@@ -498,6 +620,71 @@ function noZero(label) {
   await ticks(10);
   check('run: a new Start puts the last report away', !shown('uv-scan-report'));
   noZero('run');
+
+  // rv11b1-7 (a): the reviewer's F2. A page of the last report, asked for
+  // before Start, lands while the new run is still going. Start moved the
+  // report on to a new generation, so that answer is dropped, not shown.
+  reset([{ ok: true, run_id: 8 },
+         { ok: true, worked: 1, status: { ok: true, run_id: 8, phase: 'checking', total: 10, done: 1,
+                                          findings: 0, active: true, mayCancel: true } }]);
+  holdNext = true;
+  UV.attach({ reportRunId: 5 });
+  await ticks();
+  const oldAsk = findingsSent().length;
+  UV.start();
+  await ticks(16);
+  const startedNew = sent.some((s) => s.action === 'scan-start') && UV.state.runId === 8;
+  held.resolve(page({ run_id: 5, rows: rowsOf(40, 4), next: null }));
+  await ticks(16);
+  check('rv11b1-7: the old run\'s page landing while the new run goes is not shown',
+    oldAsk === 1 && startedNew && !shown('uv-scan-report') && cells().length === 0
+    && els['uv-scan-report-summary'].textContent === '');
+
+  // -- rv11b1-1: which report opens -----------------------------------------
+  // A group whose last report a whole-project scan replaced has none to open
+  // (ScanService::finishedRun() says `replaced`): one sentence, nothing asked.
+  reset([]);
+  UV.attach({ reportRunId: null, reportNewerId: null, reportReplaced: true, exportUrl: '/x/export.php' });
+  await ticks();
+  check('rv11b1-1: a group report a whole-project scan replaced is said in one sentence, and nothing is asked for',
+    findingsSent().length === 0 && shown('uv-scan-report')
+    && els['uv-scan-report-note'].textContent === UV.labels.reportReplaced
+    && !shown('uv-scan-report-table') && !shown('uv-scan-report-export-wrap') && !shown('uv-scan-report-other'));
+  reset([page({ rows: [], next: null, report: { coverageSentence: 'Every record was checked, including changes made while it ran.', expectedRows: 2 } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('rv11b1-1: an empty report that counts findings never says it stored none',
+    els['uv-scan-report-note'].textContent === UV.labels.reportMissing
+    && els['uv-scan-report-note'].textContent !== UV.labels.reportNone);
+
+  // -- rv11b2-5: a newer run that did not complete --------------------------
+  reset([page({ next: null }), page({ run_id: 64, rows: rowsOf(9, 1), next: null }), page({ next: null })]);
+  UV.attach({ reportRunId: 61, reportNewerId: 64 });
+  await ticks();
+  check('rv11b2-5: the current report opens, and the newer run is named beside it with a control',
+    sentAt(0).run_id === 61 && shown('uv-scan-report-other') && shown('uv-scan-report-switch')
+    && els['uv-scan-report-other'].textContent
+       === 'Scan 64 started after this one and did not complete, so this report is still the current one.'
+    && els['uv-scan-report-switch'].textContent === 'Show what scan 64 found');
+  els['uv-scan-report-switch'].click();
+  await ticks();
+  check('rv11b2-5: the control opens the newer run, which names the current report',
+    sentAt(1).run_id === 64 && cells()[0][0] === 'R9'
+    && els['uv-scan-report-other'].textContent === 'This is scan 64, which did not complete. The current report is scan 61.'
+    && els['uv-scan-report-switch'].textContent === UV.labels.reportShowCurrent);
+  els['uv-scan-report-switch'].click();
+  await ticks();
+  check('rv11b2-5: and the way back', sentAt(2).run_id === 61 && findingsSent().length === 3);
+  script = [{ ok: true, run_id: 70 }, { ok: false, why: 'stop here' }];
+  UV.start();
+  await ticks(10);
+  check('rv11b2-5: a new Start puts the offer away with the report',
+    !shown('uv-scan-report-other') && !shown('uv-scan-report-switch') && UV.report.offer === null);
+  reset([page({ next: null })]);
+  UV.attach({ reportRunId: 61, reportNewerId: null });
+  await ticks();
+  check('rv11b2-5 (control): with nothing newer, nothing is offered beside the report',
+    !shown('uv-scan-report-other') && !shown('uv-scan-report-switch'));
 
   // Without the panel on the page the client asks for no findings at all,
   // which is what tests/scan_client_js.cjs relies on.

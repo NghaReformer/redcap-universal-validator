@@ -138,6 +138,11 @@ jobs:
           php tests/temporal_adversarial_php.php
           php tests/docs_examples_php.php
           python3 tests/temporal_mutations.py
+      # 28 defects of @UVEXISTS "where" and of reading a condition whole, each
+      # applied to a disposable copy and required to fail the suite named
+      # beside it. About 45 seconds; Node is on the runner image.
+      - name: '@UVEXISTS where mutations'
+        run: PHP_BIN=php python3 tests/exists_where_mutations.py
       - name: PHP syntax check
         run: |
           php -l php/CheckCharacter.php

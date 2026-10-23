@@ -12,7 +12,11 @@
  *   - staff: the report's "What is wrong" cell, rendered by the report's own
  *     column (ScanColumns) over a ScanDimensions built from the case's rule,
  *     so the detail sentence and the rule's own message come the way the
- *     panel and the CSV get them;
+ *     panel and the CSV get them. And the same cell the way a STORED run
+ *     renders it (review rv11b2-4): the finding written as the scan writes
+ *     a row, read back through FindingRowMapper::toFinding(), over the
+ *     labels' snapshot round trip (ruleFieldsOnly, toSnapshot, fromSnapshot)
+ *     that the panel and the CSV of a stored run read;
  *   - survey: MessageCatalog::explain() for a respondent.
  *
  * And it holds the fixture to itself: every key of catalog.json has a case,
@@ -29,10 +33,15 @@ namespace {
     require_once __DIR__ . '/../php/MessageCatalog.php';
     require_once __DIR__ . '/../php/ScanDimensions.php';
     require_once __DIR__ . '/../php/ScanColumns.php';
+    require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
+    require_once __DIR__ . '/../php/Scan/ReasonCode.php';
+    require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
     use INSPIRE\UniversalValidator\MessageCatalog;
     use INSPIRE\UniversalValidator\ScanColumns;
     use INSPIRE\UniversalValidator\ScanDimensions;
+    use INSPIRE\UniversalValidator\Scan\FindingRowMapper;
+    use INSPIRE\UniversalValidator\Scan\ReasonCode;
 
     $n = 0;
     $fail = 0;
@@ -67,6 +76,39 @@ namespace {
         return isset($row['problem']) ? $row['problem'] : null;
     }
 
+    /**
+     * The same cell for a STORED run (rv11b2-4). The labels go through the
+     * snapshot as ScanService::planningLabels() writes it and runDimensions()
+     * reads it back, with the store's string columns; the finding is written
+     * as UniversalValidator::durableFindings() writes a row (the reason split
+     * once into a code and its bits) and read back by the mapper the report
+     * uses.
+     */
+    function storedProblemCell(array $finding, ScanDimensions $d)
+    {
+        $rows = [];
+        foreach ($d->ruleFieldsOnly()->toSnapshot() as $r) {
+            $rows[] = ['kind' => (string) $r['kind'], 'key' => (string) $r['key'],
+                       'label' => $r['label'] === null ? null : (string) $r['label'],
+                       'meta' => $r['meta'] === null ? null : (string) $r['meta']];
+        }
+        $stored = ScanDimensions::fromSnapshot($rows);
+        if ($stored === null) return null;
+        $split = ReasonCode::split($finding['reason'], isset($finding['type']) ? (string) $finding['type'] : null);
+        $row = [
+            'finding_id' => 1, 'project_id' => 149, 'record_id_bin' => 'R-1', 'event_id' => null,
+            'instance' => 1, 'host_form' => isset($finding['instrument']) ? (string) $finding['instrument'] : 'fa',
+            'field' => (string) $finding['field'], 'rule_source_id' => 'src-1', 'rule_ord' => (int) $finding['rule'],
+            'check_type' => (string) $finding['type'], 'reason_code' => $split['code'],
+            'reason_bits' => ReasonCode::bits($split, isset($finding['branch']) ? $finding['branch'] : null),
+            'dag_key' => null, 'value_bin' => null, 'value_len' => null, 'value_truncated' => 0,
+            'value_expires_at' => null, 'as_of' => null, 'z_score' => null, 'growth_reference' => null,
+        ];
+        $map = new FindingRowMapper(['pid' => 149, 'now' => '2026-10-23 00:00:00', 'recordIds' => 'raw',
+                                     'valuesState' => 'none']);
+        return problemCell($map->toFinding($row), $stored);
+    }
+
     $covered = [];
     $same = 0;
     foreach ($cases as $i => $c) {
@@ -82,6 +124,9 @@ namespace {
             'staff'  => problemCell($finding, $d),
             'survey' => MessageCatalog::explain($finding, $rule, 'survey')['text'],
         ];
+        $storedCell = storedProblemCell($finding, $d);
+        check($id . ' staff: a stored run\'s report renders the same ' . json_encode($c['staff']['catalogue'])
+            . ' (got ' . json_encode($storedCell) . ')', $storedCell === $c['staff']['catalogue']);
         foreach (['staff', 'survey'] as $a) {
             $s = $c[$a];
             check($id . ' ' . $a . ': the catalogue renders ' . json_encode($s['catalogue'])

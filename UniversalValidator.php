@@ -3628,15 +3628,33 @@ class UniversalValidator extends AbstractExternalModule
 
     // -- logging ------------------------------------------------------------
 
-    /** The project's log-privacy mode, resolved with the explicit hook PID. */
+    /** The four "log-values" modes config.json offers. */
+    const LOG_MODES = ['hashed', 'none', 'raw', 'off'];
+
+    /**
+     * The project's log-privacy mode, resolved with the explicit hook PID.
+     * THE ONE READER of "log-values": the save audit, the cross-project
+     * lookup log and the reports' record-id posture (hashesRecordIds()) all
+     * ask here.
+     *
+     * A SETTING THAT CANNOT BE READ IS "none" (review CFXB-N3). This answered
+     * a read that throws with "hashed", the default mode, which keeps values
+     * out of the log but writes the record id raw; so for that request a
+     * "none" project, whose record ids identify its participants, logged
+     * them raw in every detection, not-evaluated and audit-error entry. A
+     * read that throws, and a stored value this build does not know, are
+     * "none" now: the record id goes in as its keyed hash and no value is
+     * logged. An unset setting is the default mode, "hashed", as before.
+     */
     private function logMode($pid)
     {
         try {
             $mode = $this->getProjectSetting('log-values', $pid);
-            return ($mode === null || $mode === '') ? 'hashed' : $mode;
         } catch (\Throwable $e) {
-            return 'hashed'; // never let a settings read decide between logging raw and not logging
+            return 'none';
         }
+        if ($mode === null || $mode === '') return 'hashed';
+        return in_array($mode, self::LOG_MODES, true) ? $mode : 'none';
     }
 
     /** Whether verbose diagnostic detail may be logged (admin opt-in per project). */
@@ -3688,24 +3706,18 @@ class UniversalValidator extends AbstractExternalModule
      * participant. ONE PLACE, read by the legacy report's plan and by the
      * stored report's posture alike (W7-R2).
      *
-     * A SETTING THAT CANNOT BE READ HASHES (review rvc2-4). This asked
-     * logMode(), which answers a read that throws with "hashed" - the right
-     * answer for the log, where it keeps values out, and the wrong one here,
-     * where "hashed" means raw record ids. So for that one request a
-     * "none" project's report and its file named every record raw. A read
-     * that throws, and a stored value this build does not know, now hash:
-     * neither can say the ids may be shown. An unset setting is the default
-     * mode ("hashed"), which names records raw, as before.
+     * A SETTING THAT CANNOT BE READ HASHES (review rvc2-4). logMode()
+     * answered a read that throws with "hashed", which means raw record ids,
+     * so for that one request a "none" project's report and its file named
+     * every record raw. rvc2-4 gave this method a reading of its own; since
+     * CFXB-N3 logMode() itself answers "none" for a read that throws and for
+     * a stored value this build does not know, and this asks it, so the log
+     * and the reports cannot disagree. An unset setting is the default mode
+     * ("hashed"), which names records raw, as before.
      */
     private function hashesRecordIds($pid)
     {
-        try {
-            $mode = $this->getProjectSetting('log-values', $pid);
-        } catch (\Throwable $e) {
-            return true;
-        }
-        if ($mode === null || $mode === '') return false;
-        return !in_array($mode, ['hashed', 'raw', 'off'], true);
+        return $this->logMode($pid) === 'none';
     }
 
     /**

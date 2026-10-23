@@ -1,0 +1,274 @@
+{
+    "_comment": "Every ending of a durable scan run: the status the panel is given and the sentence the panel, the findings answer and the file all give. Written by tests/scan_service_php.php (UV_UPDATE_ENDINGS=1), read by tests/scan_client_js.cjs.",
+    "cases": [
+        {
+            "name": "project, complete",
+            "status": {
+                "phase": "terminal",
+                "terminal": "complete",
+                "coverage": "complete-through-fence",
+                "detail": "complete",
+                "scope": "project",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": 1
+            },
+            "sentence": "Every record was checked, including changes made while it ran."
+        },
+        {
+            "name": "project, complete, findings not all kept",
+            "status": {
+                "phase": "terminal",
+                "terminal": "complete",
+                "coverage": "complete-through-fence",
+                "detail": "truncated",
+                "scope": "project",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": 0
+            },
+            "sentence": "Every record was checked, including changes made while it ran. Some findings were not kept, because the scan reached the limit this project allows."
+        },
+        {
+            "name": "project, stopped",
+            "status": {
+                "phase": "terminal",
+                "terminal": "cancelled",
+                "coverage": "partial",
+                "detail": "complete",
+                "scope": "project",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "Some records could not be checked. This is not a complete picture of the project."
+        },
+        {
+            "name": "project, expired",
+            "status": {
+                "phase": "terminal",
+                "terminal": "expired",
+                "coverage": "partial",
+                "detail": "complete",
+                "scope": "project",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "Some records could not be checked. This is not a complete picture of the project."
+        },
+        {
+            "name": "project, failed",
+            "status": {
+                "phase": "terminal",
+                "terminal": "failed",
+                "coverage": "failed",
+                "detail": "complete",
+                "scope": "project",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "The scan failed, so it describes nothing."
+        },
+        {
+            "name": "project, ended by an upgrade",
+            "status": {
+                "phase": "terminal",
+                "terminal": "failed",
+                "coverage": "failed",
+                "detail": "complete",
+                "scope": "project",
+                "upgraded": true,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This module was upgraded while this scan was running, and the new version judges some values differently, so the scan was ended rather than finished half under each version. Start a new scan."
+        },
+        {
+            "name": "project, ended by an upgrade, not all kept",
+            "status": {
+                "phase": "terminal",
+                "terminal": "failed",
+                "coverage": "failed",
+                "detail": "truncated",
+                "scope": "project",
+                "upgraded": true,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This module was upgraded while this scan was running, and the new version judges some values differently, so the scan was ended rather than finished half under each version. Start a new scan. Some findings were not kept, because the scan reached the limit this project allows."
+        },
+        {
+            "name": "group, complete",
+            "status": {
+                "phase": "terminal",
+                "terminal": "complete",
+                "coverage": "complete-through-fence",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": 0
+            },
+            "sentence": "Every record was checked, including changes made while it ran."
+        },
+        {
+            "name": "group, stopped after it proved its group",
+            "status": {
+                "phase": "terminal",
+                "terminal": "cancelled",
+                "coverage": "partial",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This scan was stopped after it confirmed which records belong to this Data Access Group, so its counts are for the group. It ended before every check had run, so it is not a complete picture of the group."
+        },
+        {
+            "name": "group, expired after it proved its group",
+            "status": {
+                "phase": "terminal",
+                "terminal": "expired",
+                "coverage": "partial",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This scan was stopped after it confirmed which records belong to this Data Access Group, so its counts are for the group. It ended before every check had run, so it is not a complete picture of the group."
+        },
+        {
+            "name": "group, stopped after proving, not all kept",
+            "status": {
+                "phase": "terminal",
+                "terminal": "cancelled",
+                "coverage": "partial",
+                "detail": "truncated",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This scan was stopped after it confirmed which records belong to this Data Access Group, so its counts are for the group. It ended before every check had run, so it is not a complete picture of the group. Some findings were not kept, because the scan reached the limit this project allows."
+        },
+        {
+            "name": "group, stopped before it proved its group",
+            "status": {
+                "phase": "terminal",
+                "terminal": "cancelled",
+                "coverage": "partial",
+                "scope": "group",
+                "withheld": true,
+                "withheldWhy": "This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.",
+                "upgraded": false,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group."
+        },
+        {
+            "name": "group, expired before it proved its group",
+            "status": {
+                "phase": "terminal",
+                "terminal": "expired",
+                "coverage": "partial",
+                "scope": "group",
+                "withheld": true,
+                "withheldWhy": "This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.",
+                "upgraded": false,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This scan was stopped before it confirmed which records belong to this Data Access Group, so it is not a complete picture of the group."
+        },
+        {
+            "name": "group, ended by an upgrade before proving",
+            "status": {
+                "phase": "terminal",
+                "terminal": "failed",
+                "coverage": "failed",
+                "scope": "group",
+                "withheld": true,
+                "withheldWhy": "This scan covers one Data Access Group and ended before it confirmed which records belong to that group, so its counts cannot be shown.",
+                "upgraded": true,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "This module was upgraded while this scan was running, and the new version judges some values differently, so the scan was ended rather than finished half under each version. Start a new scan."
+        },
+        {
+            "name": "group, failed after it proved its group",
+            "status": {
+                "phase": "terminal",
+                "terminal": "failed",
+                "coverage": "failed",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": false,
+                "removed": 0,
+                "active": false,
+                "clean": null
+            },
+            "sentence": "The scan failed, so it describes nothing."
+        },
+        {
+            "name": "group, every record moved away",
+            "status": {
+                "phase": "terminal",
+                "terminal": "partial",
+                "coverage": "empty-scope",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": true,
+                "removed": 0,
+                "active": false,
+                "clean": 0
+            },
+            "sentence": "This scan has no record left to report on: every record it listed moved to another Data Access Group while it ran. Any findings it counted are on records no longer in the group. This result says nothing about the group."
+        },
+        {
+            "name": "group, records moved away or deleted",
+            "status": {
+                "phase": "terminal",
+                "terminal": "partial",
+                "coverage": "empty-scope",
+                "detail": "complete",
+                "scope": "group",
+                "upgraded": false,
+                "leftGroup": true,
+                "removed": 2,
+                "active": false,
+                "clean": 0
+            },
+            "sentence": "This scan has no record left to report on: every record it listed moved to another Data Access Group or was deleted while it ran. Any findings it counted are on records no longer in the group. This result says nothing about the group."
+        }
+    ]
+}
