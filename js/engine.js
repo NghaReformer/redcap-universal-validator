@@ -1862,7 +1862,8 @@ function QRID_temporalValue(op,read,raw){
   if(op[0]==='set'||op[0]==='aggregate'){
     var values=op[2].map(function(x){return QRID_temporalValue(x,read,raw);});if(values.includes(null))return null;
     if(op[0]==='set')return {set:op[1],values:values};var k=op[1];if(k==='count')return String(values.length);if(k==='exists')return values.length?'1':'0';
-    values=values.filter(function(v){return v!=='';});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
+    /* a value of spaces is blank to every comparison, so it is no value here either (wargame C6) */
+    values=values.filter(function(v){return !QRID_temporalBlank(v);});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
     if(!values.length)return null;var sum=QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
     var best=values[0];values.forEach(function(v){if(QRID_whenCompare(k==='minimum'?'<':'>',v,best,true,false))best=v;});return best;
   }

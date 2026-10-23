@@ -81,4 +81,12 @@ foreach([false,true] as $shared){
     check($out($r->resolve(['qref','w',null,null,'next-instance'],$meas))==='!absent','C2: an instance the form was not entered in is a missing row'.$tag);
     check($out($r->resolve(['ref','lab_date',null],$meas))==='','C2: the host\'s own instance reads another form\'s field as blank'.$tag);
 }
+// Wargame C6: a value of spaces is blank to comparisons, so aggregates leave it out.
+$shape=new ProjectShape([1=>['name'=>'base_arm_1','arm'=>1,'order'=>0,'forms'=>['meas'],'repeats'=>['meas'],'eventRepeats'=>false]],['w'=>['form'=>'meas']]);
+$r=new AddressResolver($shape,['repeat_instances'=>[1=>['meas'=>[1=>['w'=>'5'],2=>['w'=>" \t"],3=>['w'=>'7']]]]]);
+$c=['event'=>1,'instrument'=>'meas','instance'=>1,'values'=>[],'unsaved'=>false];
+check($r->resolveBinding(['field'=>'w','aggregate'=>'populated-count'],$c)['value']==='2','C6: populated-count leaves out a value of spaces');
+check($r->resolveBinding(['field'=>'w','aggregate'=>'distinct-count'],$c)['value']==='2','C6: distinct-count leaves it out too');
+check($r->resolveBinding(['field'=>'w','aggregate'=>'sum'],$c)['value']==='12','C6: sum ignores it, as it ignores a blank');
+check($r->resolveBinding(['field'=>'w','aggregate'=>'count'],$c)['value']==='3','C6: count still counts the entry');
 echo "binding_php: $n checks, 0 failures\n";

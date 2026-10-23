@@ -240,7 +240,8 @@ final class AddressResolver
         }
         if ($op==='count' || $op==='exists') return ['state'=>'ok','value'=>(string)($op==='count'?count($members):($members?1:0)),'members'=>$members];
         $values=[];
-        foreach ($members as $member) if ($member['value']!=='') $values[]=$member['value'];
+        // Blank as Logic::compare sees it: a value of spaces is no value (wargame C6).
+        foreach ($members as $member) if (trim($member['value']," \t\r\n")!=='') $values[]=$member['value'];
         if ($op==='populated-count' || $op==='distinct-count') return ['state'=>'ok','value'=>(string)($op==='populated-count'?count($values):count(array_unique($values,SORT_STRING))),'members'=>$members];
         if (!$members) return self::problem('absent');
         if ($op==='any' || $op==='all') return ['state'=>'ok','quantifier'=>$op,'members'=>$members];

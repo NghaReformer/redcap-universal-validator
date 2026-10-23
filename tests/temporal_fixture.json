@@ -2089,5 +2089,277 @@
     ],
     "expected": null,
     "values": {}
+  },
+  {
+    "name": "C6 populated-count leaves out a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "populated-count",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 distinct-count leaves out a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "distinct-count",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              " \t"
+            ],
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "\r\n"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 sum ignores a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "12"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 average ignores a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "average",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "6"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 minimum ignores a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "minimum",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "5"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 maximum ignores a value of spaces",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "maximum",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "7"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "C6 sum of spaces only is unresolved",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              " "
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "C6 count still counts the entry",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "count",
+          [
+            [
+              "lit",
+              "5"
+            ],
+            [
+              "lit",
+              "  "
+            ],
+            [
+              "lit",
+              "7"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "3"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
   }
 ]

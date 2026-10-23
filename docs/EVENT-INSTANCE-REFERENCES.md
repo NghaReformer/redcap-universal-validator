@@ -43,7 +43,7 @@ Direct predicates can use `[field][any-instance]` or `[field][all-instances]`. O
 @UVASSERT={"assert":"[weight]<={mean_weight}","references":{"mean_weight":{"field":"weight","aggregate":"average"}}}
 ```
 
-Bindings accept `aggregate`: `count`, `exists`, `populated-count`, `distinct-count`, `sum`, `minimum`, `maximum`, `average`, `any`, or `all`. `count` counts rows, including saved blank rows; `exists` returns `1` or `0`. Distinct count compares exact strings. Numeric operations ignore saved empty strings, reject populated nonnumeric values, and use exact decimal arithmetic. Average comparisons use a rational numerator/denominator, without rounding.
+Bindings accept `aggregate`: `count`, `exists`, `populated-count`, `distinct-count`, `sum`, `minimum`, `maximum`, `average`, `any`, or `all`. `count` counts rows, including saved blank rows; `exists` returns `1` or `0`. Distinct count compares exact strings. A value of spaces only is blank, as it is to every comparison: `populated-count` and `distinct-count` leave it out. Numeric operations ignore saved empty strings and values of spaces, reject populated nonnumeric values, and use exact decimal arithmetic. Average comparisons use a rational numerator/denominator, without rounding.
 
 Current-page members remain live and appear once. Set `excludeCurrent: true` to omit the exact current entry. Select several events with `events: ["baseline_arm_1", "followup_arm_1"]`, or use `events: "arm", arm: 1` for all designated events in that arm. A binding accepts `event` or `events`, not both, and an event listed twice in `events` is a configuration error.
 

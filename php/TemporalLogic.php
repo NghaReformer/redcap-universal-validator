@@ -58,7 +58,8 @@ final class TemporalLogic
             $kind=$op[1];
             if($kind==='count')return (string)count($v);
             if($kind==='exists')return $v?'1':'0';
-            $v=array_values(array_filter($v,function($x){return $x!=='';}));
+            // A value of spaces is blank to every comparison, so it is no value here either (wargame C6).
+            $v=array_values(array_filter($v,function($x){return !self::blank($x);}));
             if($kind==='populated-count')return (string)count($v);
             if($kind==='distinct-count')return (string)count(array_unique($v,SORT_STRING));
             if(!$v)return null;
