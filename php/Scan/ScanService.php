@@ -1342,12 +1342,10 @@ final class ScanService
         $columns = [];
         foreach (ScanColumns::all($dims) as $c) $columns[] = ['key' => $c['key'], 'label' => $c['label']];
 
-        // What the summary counted, for the facets and the expected count. A
-        // run that ended without a verdict may have no summary, and its count
-        // is then unknown rather than zero.
+        // What the summary counted, for the facets, and the expected count
+        // (expectedRows()).
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
-        $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
-            ? self::expectedRows($aggregates, $scope) : null;
+        $expected = ($withheld === null) ? self::expectedRows($run, $aggregates, $scope) : null;
         // HOW AN EMPTY SCOPE EMPTIED (review rvf1-2, deferred to here). The
         // report's coverage sentence and its terminal row said every record
         // was deleted for a group whose records all moved to another group;
@@ -1477,14 +1475,31 @@ final class ScanService
     }
 
     /**
-     * How many findings THIS reader's report holds, from the run's summary:
-     * every stored one for an unconfined reader, and for a group reader the
-     * count the summary filed under their group, because their pages hold out
-     * a row stored under another group's name. A count the file can be
+     * How many findings THIS reader's report holds. A count the file can be
      * checked against has to be the count of the file.
+     *
+     * FOR AN UNCONFINED READER OF A RUN THAT KEEPS ITS COUNT, the run row's
+     * (reviews rvc2-2, CONS-N1): ScanPromotion::storedOf(), which the store
+     * keeps equal to the run's active findings, in every state. So the
+     * file's expected_rows, its rows and the page's total are the stored part
+     * of the count the panel shows (ScanPromotion::findingsOf()), for a run
+     * stopped, expired or failed as for one that finished. It came from the
+     * summary, and a run with no verdict expected 'unknown'.
+     *
+     * Otherwise from the summary: every stored finding for an unconfined
+     * reader of a run from before schema version 6, and for a group reader
+     * the count the summary filed under their group, because their pages
+     * hold out a row stored under another group's name. A run that ended
+     * without a verdict may have no summary, and its count is then unknown
+     * rather than zero.
+     *
+     * @return int|null
      */
-    private static function expectedRows(array $aggregates, array $scope)
+    public static function expectedRows(array $run, array $aggregates, array $scope)
     {
+        $held = ScanPromotion::storedOf($run);
+        if ($scope['dag'] === null && $held !== null) return $held;
+        if (in_array($run['terminal'], ScanOutcome::NO_VERDICT, true)) return null;
         if ($scope['dag'] === null) return ScanPromotion::tally($aggregates)['stored'];
         $n = 0;
         foreach ($aggregates as $a) {

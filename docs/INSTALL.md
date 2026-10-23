@@ -218,8 +218,10 @@ told apart from one stopped before catch-up ended, so it keeps saying its
 counts are shown once it has confirmed its group.
 
 Runs that exist at the upgrade are counted the old way, from every finding
-row they wrote. That shows only where such a run has no summary: one still in
-progress, or one that failed, was cancelled or expired. A run in progress at
+row they wrote and from their summary. That shows only where such a run has
+no summary: one still in progress, or one that failed, was cancelled or
+expired, which may say its findings were not counted where a later run
+shows 0. A run in progress at
 the upgrade ends on its next batch as failed, with the reason that the module
 was upgraded while it ran, because this build judges some values differently;
 start it again. Runs started after the upgrade are counted as the README's

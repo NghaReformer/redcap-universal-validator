@@ -382,6 +382,8 @@ final class ArrayScanStore implements ScanStore
                         $this->records[$runId][$o]['claim_seq'] = 0;
                         $this->records[$runId][$o]['claimed_at'] = null;
                         $retired++;
+                        // And gives up a reading held from before a requeue (rvc1-2).
+                        $this->retireReadings($runId, [$o]);
                         continue;
                     }
                 }
@@ -573,14 +575,16 @@ final class ArrayScanStore implements ScanStore
         // record we lost is one whose new evidence we are about to drop, and
         // closing its old rows would blank the report for a record still under
         // examination.
+        //
+        // EVERY TERMINAL STATE (reviews rvc2-2, rvc1-2), as the SQL store
+        // closes them: a record read again keeps its earlier reading until
+        // this commit, so whatever it ends as - done, gone, or not examined -
+        // replaces that reading here. Written back below done, it keeps it.
         $closing = [];
         foreach ($records as $rec) {
             if (!isset($rec['record_hash'])) continue;
             if (empty($held[(int) $rec['ordinal']])) continue;
-            $st = (int) $rec['state'];
-            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE || $st === self::REC_DEPARTED) {
-                $closing[$rec['record_hash']] = true;
-            }
+            if ((int) $rec['state'] >= self::REC_DONE) $closing[$rec['record_hash']] = true;
         }
         $close = [];
         foreach ($this->findings as $i => $old) {
@@ -658,6 +662,10 @@ final class ArrayScanStore implements ScanStore
 
         $applied = 0;
         $openLeft = 0;
+        // What the readings this commit replaces had stored and left out,
+        // taken back as the new ones are added (reviews rvc2-2, rvc1-2).
+        $wasKept = 0;
+        $wasLeft = 0;
         // Each held record's stored findings (W5F-N2), as the SQL store
         // counts them: every finding kept is a held record's.
         $storedOf = [];
@@ -670,13 +678,19 @@ final class ArrayScanStore implements ScanStore
             if (empty($held[(int) $o])) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
             // The findings this reading stored and left out, on the row
-            // (reviews W5F-N2, rvf1-3), as the SQL store keeps them. Below
-            // done, where the row came from, its counts are 0.
-            $left = ((int) $rec['state'] === self::REC_DONE && isset($unstored[(int) $o]))
-                  ? (int) $unstored[(int) $o] : 0;
-            $this->records[$runId][$o]['unstored'] = $left;
-            $this->records[$runId][$o]['stored_findings'] = isset($storedOf[(int) $o]) ? $storedOf[(int) $o] : 0;
-            $openLeft += $left;
+            // (reviews W5F-N2, rvf1-3), as the SQL store keeps them, in place
+            // of the reading the row held from before a requeue. A record
+            // written back below done keeps that reading and its counts.
+            if ((int) $rec['state'] >= self::REC_DONE) {
+                $row = $this->records[$runId][$o];
+                $wasKept += isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
+                $wasLeft += isset($row['unstored']) ? (int) $row['unstored'] : 0;
+                $left = ((int) $rec['state'] === self::REC_DONE && isset($unstored[(int) $o]))
+                      ? (int) $unstored[(int) $o] : 0;
+                $this->records[$runId][$o]['unstored'] = $left;
+                $this->records[$runId][$o]['stored_findings'] = isset($storedOf[(int) $o]) ? $storedOf[(int) $o] : 0;
+                $openLeft += $left;
+            }
             // Saturating, as the SQL store's LEAST(attempts + 1, 254) does:
             // attempts is a TINYINT UNSIGNED there, and a store that counted
             // past 254 here would disagree with production at the exact point
@@ -731,10 +745,12 @@ final class ArrayScanStore implements ScanStore
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);
         if ($this->runs[$runId]['open_findings'] !== null) {
-            $this->runs[$runId]['open_findings'] += count($keep);
+            $this->runs[$runId]['open_findings']
+                = max(0, (int) $this->runs[$runId]['open_findings'] + count($keep) - $wasKept);
         }
         if ($this->runs[$runId]['open_unstored'] !== null) {
-            $this->runs[$runId]['open_unstored'] += $openLeft;
+            $this->runs[$runId]['open_unstored']
+                = max(0, (int) $this->runs[$runId]['open_unstored'] + $openLeft - $wasLeft);
         }
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
         // One of exactly two places, and only when a record actually finished.
@@ -898,6 +914,7 @@ final class ArrayScanStore implements ScanStore
         $counted = 0;
         $retired = 0;
         $released = [];
+        $out = [];
         foreach ($claims as $ordinal => $token) {
             if ((int) $token < 1) continue;                 // never the unclaimed default
             $o = (int) $ordinal;
@@ -913,6 +930,7 @@ final class ArrayScanStore implements ScanStore
             if ($now >= $cap) {
                 $this->records[$runId][$o]['state'] = (int) $exhausted;
                 $retired++;
+                $out[] = $o;
             } else {
                 // Handed back: a straggler returns to PENDING, a scanning row
                 // (already PENDING) loses its stamp.
@@ -923,6 +941,9 @@ final class ArrayScanStore implements ScanStore
             $this->records[$runId][$o]['claim_seq'] = 0;
             $this->records[$runId][$o]['claimed_at'] = null;
         }
+        // A retired record that held a reading from before a requeue gives
+        // it up (review rvc1-2).
+        $this->retireReadings($runId, $out);
         // Over rows actually released, as releaseClaims() moves it.
         if ($released) {
             $low = min($released) - 1;
@@ -1347,15 +1368,7 @@ final class ArrayScanStore implements ScanStore
         }
         if (!$left) return 0;
         // The SQL store's statement, by record hash in the run's generation.
-        foreach ($this->findings as $i => $f) {
-            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
-            if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
-            if ((int) $f['project_id'] !== (int) $r['project_id']) continue;
-            if ((int) $f['generation_id'] !== (int) $r['generation_id']) continue;
-            if (!isset($f['record_hash']) || !isset($left[(string) $f['record_hash']])) continue;
-            $this->findings[$i]['active_slot'] = null;
-            $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
-        }
+        $this->closeHeld($r, $left);
         $done = 0;
         foreach ($this->records[$runId] as $row) {
             if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
@@ -1392,16 +1405,20 @@ final class ArrayScanStore implements ScanStore
         $matched = [];
         $withdrawn = 0;
         $withdrawnKept = 0;
+        $closing = ((int) $state === ScanStore::REC_TOMBSTONE);
         foreach ($this->records[$runId] as $o => $row) {
             if (!isset($want[(string) $row['hash']])) continue;
             $matched[(string) $row['hash']] = true;
-            // What the row's reading stored and left out is taken back whether
-            // or not the row moves, as the SQL store's requeue takes it
-            // (rvf1-3, W5F-N2).
-            $withdrawn += isset($row['unstored']) ? (int) $row['unstored'] : 0;
-            $withdrawnKept += isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
-            $this->records[$runId][$o]['unstored'] = 0;
-            $this->records[$runId][$o]['stored_findings'] = 0;
+            // A deleted record's reading is taken back (rvf1-3, W5F-N2), as
+            // the SQL store takes it. A requeued one keeps its reading, its
+            // counts and its rows until the next reading replaces them
+            // (reviews rvc2-2, rvc1-2): see SqlScanStore::reState().
+            if ($closing) {
+                $withdrawn += isset($row['unstored']) ? (int) $row['unstored'] : 0;
+                $withdrawnKept += isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
+                $this->records[$runId][$o]['unstored'] = 0;
+                $this->records[$runId][$o]['stored_findings'] = 0;
+            }
             if ((int) $row['state'] === (int) $state) continue;
             $moved[(string) $row['hash']] = true;
             $this->records[$runId][$o]['state'] = $state;
@@ -1419,23 +1436,13 @@ final class ArrayScanStore implements ScanStore
         }
         // A TOMBSTONE CLOSES THE RECORD'S FINDINGS in the run's generation
         // (W5F-N4), the SQL store's statement, for the rows that moved here.
-        if ((int) $state === ScanStore::REC_TOMBSTONE && $moved) {
-            foreach ($this->findings as $i => $f) {
-                if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
-                if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
-                if ((int) $f['project_id'] !== (int) $r['project_id']) continue;
-                if ((int) $f['generation_id'] !== (int) $r['generation_id']) continue;
-                if (!isset($f['record_hash']) || !isset($moved[(string) $f['record_hash']])) continue;
-                $this->findings[$i]['active_slot'] = null;
-                $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
-            }
-        }
+        if ($closing && $moved) $this->closeHeld($r, $moved);
         $done = 0;
         foreach ($this->records[$runId] as $row) {
             if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
         }
         $this->runs[$runId]['manifest_done'] = $done;
-        $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
+        if ($closing) $this->withdrawReadings($runId, $withdrawnKept, $withdrawn);
         // The rows' uniqueness candidates (W5F-N1), the SQL store's rows:
         // every row a requeue names, every row a tombstone moves.
         $this->dropCandidatesOf($r, (int) $state === ScanStore::REC_TOMBSTONE ? $moved : $matched);
@@ -1456,6 +1463,61 @@ final class ArrayScanStore implements ScanStore
             if ((int) $c['generation_id'] !== (int) $run['generation_id']) continue;
             if (isset($hashes[(string) $c['record_hash']])) unset($this->candidates[$k]);
         }
+    }
+
+    /**
+     * The SQL store's close of a reading's rows: the active findings these
+     * records stored in the run's generation, closed at the run's sequence,
+     * duplicate-value (staged) rows left to the finalizer.
+     *
+     * @param array $run the run row
+     * @param array<string,true> $hashes raw record hash => true
+     * @return int rows closed
+     */
+    private function closeHeld(array $run, array $hashes)
+    {
+        $n = 0;
+        foreach ($this->findings as $i => $f) {
+            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
+            if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
+            if ((int) $f['project_id'] !== (int) $run['project_id']) continue;
+            if ((int) $f['generation_id'] !== (int) $run['generation_id']) continue;
+            if (!isset($f['record_hash']) || !isset($hashes[(string) $f['record_hash']])) continue;
+            $this->findings[$i]['active_slot'] = null;
+            $this->findings[$i]['valid_to_seq'] = (int) $run['run_seq'];
+            $n++;
+        }
+        return $n;
+    }
+
+    /**
+     * Records that just became terminal without a reading (out of attempts):
+     * a reading they held from before a requeue is no longer the run's
+     * (review rvc1-2). Its rows are closed and its counts taken back, as
+     * SqlScanStore::retireReadings() does.
+     *
+     * @param int[] $ordinals
+     */
+    private function retireReadings($runId, array $ordinals)
+    {
+        $gone = [];
+        $kept = 0;
+        $left = 0;
+        foreach ($ordinals as $o) {
+            if (!isset($this->records[$runId][$o])) continue;
+            $row = $this->records[$runId][$o];
+            $k = isset($row['stored_findings']) ? (int) $row['stored_findings'] : 0;
+            $u = isset($row['unstored']) ? (int) $row['unstored'] : 0;
+            if ($k === 0 && $u === 0) continue;
+            $kept += $k;
+            $left += $u;
+            $gone[(string) $row['hash']] = true;
+            $this->records[$runId][$o]['stored_findings'] = 0;
+            $this->records[$runId][$o]['unstored'] = 0;
+        }
+        if (!$gone) return;
+        $this->closeHeld($this->runs[$runId], $gone);
+        $this->withdrawReadings($runId, $kept, $left);
     }
 
     /** SqlScanStore::withdrawReadings(): never below 0, and NULL stays NULL (rvf1-3, W5F-N2). */
@@ -1550,6 +1612,14 @@ final class ArrayScanStore implements ScanStore
         if (isset($r['terminal']) && $r['terminal'] !== null) return self::HOLD_FINISHED;
         if ((string) $r['phase'] !== (string) $phase) return self::HOLD_MOVED;
         return true;
+    }
+
+    public function notePublished($runId, $opened, $closed)
+    {
+        // The SQL store's statement: never below 0, and NULL stays NULL.
+        if (!isset($this->runs[$runId]) || $this->runs[$runId]['open_findings'] === null) return;
+        $this->runs[$runId]['open_findings']
+            = max(0, (int) $this->runs[$runId]['open_findings'] + max(0, (int) $opened) - max(0, (int) $closed));
     }
 
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)

@@ -707,9 +707,12 @@ final class Schema
      *
      * uv_scan_record.unstored is how many findings the detail budget left out
      * of the record's latest examination in the run, and
-     * uv_scan_record.stored_findings how many it stored. They are set when the record is committed done and
-     * zeroed when it leaves done: sent back to be read again, deleted, or out
-     * of the run's group. 0 on every row that exists when they are added,
+     * uv_scan_record.stored_findings how many it stored. They are set when the
+     * record is committed done, kept when catch-up sends it back to be read
+     * again (its findings stay active until a new reading replaces them,
+     * review rvc1-2), replaced by the next reading's or withdrawn when that
+     * reading ends unread, and zeroed when the record is deleted, leaves the
+     * run's group or is retired. 0 on every row that exists when they are added,
      * which is what those rows hold under the old counting too, since nothing
      * read them per record.
      *

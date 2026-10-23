@@ -1009,11 +1009,21 @@ run's suffix starts with `_INCOMPLETE` and adds
 
 **The finding count.** For each record, a run counts the findings of the
 reading it holds for that record, the stored ones and any the detail limit
-left out. A record read again during catch-up counts once, from its new
-reading. A record deleted while the run went on, or moved out of the run's
-group, counts nothing, and its findings are closed with it. Duplicate values
-are counted when the run finishes, so the count shown while a run works can
-rise at the end.
+left out. A record that catch-up sends back to be read again keeps its
+findings until the new reading replaces them, and then counts once, from the
+new reading. If the record cannot be read again, its findings are closed and
+it counts nothing. A record deleted while the run went on, or moved out of
+the run's group, counts nothing, and its findings are closed with it.
+Duplicate values are counted as the run publishes each duplicate group near
+its end, so the count shown while a run works can rise at the end.
+
+For a reader outside any group, the panel's count, the findings page's total
+and the rows of the downloaded file agree, whether the run finished or was
+cancelled, failed or expired. The panel adds the findings the detail limit
+left out, which have no row. While a run works, its count is the findings it
+holds so far, counted the same way. A run
+that existed before the upgrade to schema version 6 is counted the old way
+(see docs/INSTALL.md).
 
 **The detail limit.** A run stores at most `scan-max-detail-findings` findings
 and `scan-max-detail-bytes` bytes of detail (1,000,000 and 512 MiB by default,

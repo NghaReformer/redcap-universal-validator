@@ -919,21 +919,34 @@ final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
     }
 
     /**
-     * publish()'s three statements, for a caller already inside held():
-     * publish() itself, and the last emit page (review W10BF-5), which also
-     * writes its cursor in the group's UPDATE.
+     * publish()'s statements, for a caller already inside held(): publish()
+     * itself, and the last emit page (review W10BF-5), which also writes its
+     * cursor in the group's UPDATE. The rows closed and published go into the
+     * run's count in the same transaction (ScanStore::notePublished()).
      */
     private function publishRows($generationId, array $g, $cursor)
     {
         $t = Schema::table('finding');
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+        // COUNTED (reviews rvc2-2, CONS-N1). Each statement changes every row
+        // it matches (active_slot 1 to NULL, NULL to 1), so what affected()
+        // reports is the rows closed and the rows published, and the run's
+        // count takes both in this transaction, behind the hold.
+        $this->db->exec('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
               AND stage_epoch <> ?',
             [$this->seq, $this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
+        $closed = $this->db->affected();
+        $this->db->exec('UPDATE ' . $t . ' SET active_slot = 1
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
               AND active_slot IS NULL',
             [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
+        $opened = $this->db->affected();
+        // Only for a finalizer bound to a run and its store: one driven
+        // directly writes for no run row (held()).
+        $store = isset($this->deps['store']) ? $this->deps['store'] : null;
+        if ($store instanceof ScanStore && $this->runId !== null) {
+            $store->notePublished($this->runId, $opened, $closed);
+        }
         $set = 'phase = ?, published_epoch = ?, staged_epoch = ?';
         $args = [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch']];
         if ($cursor !== null) {

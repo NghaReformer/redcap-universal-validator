@@ -1487,14 +1487,15 @@ $SUPER = 787;
         $afterU['open_findings'] === null && (int) $afterU['detail_rows'] === 2
         && (int) $rowsK[0][0] === 1 && (int) $rowsK[1][0] === 1
         && $us->run($UPID, $urid)['open_findings'] === null);
-    // The rows still say what each reading left out, then nothing once it
-    // left done, whatever the run's count.
+    // The rows still say what each reading left out, whatever the run's
+    // count: the requeued N1 keeps its reading until the next one replaces
+    // it (reviews rvc2-2, rvc1-2), and the departed N2 has given it up.
     $rowsU = $dbA->select('SELECT record_id_bin, unstored, stored_findings FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ? ORDER BY ordinal', [$urid]);
-    check('rvf1-3 server: and each row\'s own count is zeroed when it leaves done',
-        (int) $rowsU[0][1] === 0 && (int) $rowsU[1][1] === 0);
+    check('rvf1-3 server: and each row\'s own count is kept by a requeue and zeroed by a departure',
+        $rowsU[0][0] === 'N1' && (int) $rowsU[0][1] === 2 && (int) $rowsU[1][1] === 0);
     check('W5F-N2 server: and so is each row\'s stored count',
-        (int) $rowsU[0][2] === 0 && (int) $rowsU[1][2] === 0);
+        (int) $rowsU[0][2] === 1 && (int) $rowsU[1][2] === 0);
     $A->query('UPDATE ' . Schema::table('scan_run')
         . ' SET open_unstored = 1, open_findings = 1 WHERE run_id = ' . $urid);
     $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . ScanStore::REC_DONE

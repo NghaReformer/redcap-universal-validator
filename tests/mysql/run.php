@@ -158,6 +158,7 @@ $cases = array(
     'uniqueness',   // UniqueFinalizer: duplicates without holding the project
     'rollup',       // RollupBuilder: the summary and the two ways it lies
     'promotion',    // ScanPromotion: which terminal state a run has earned
+    'counting',     // one finding count for the panel, the page, the file and the summary
     'perf',         // ScanService: how many statements one request sends
     'cron',         // the scheduled maintenance, and the reaper Start runs
     'report',       // the findings read: its plans, and no project or group reading another's

@@ -1962,7 +1962,9 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     // -- what the detail budget left out, per record (review rvf1-3) -------
     //
     // A record committed done keeps its left-out count on its row and the
-    // run's open_unstored grows by it; every way out of done takes it back.
+    // run's open_unstored grows by it. A deleted or departed record takes it
+    // back; a requeued one keeps it until its next reading replaces it
+    // (reviews rvc2-2, rvc1-2).
     $su = $newStore();
     $ru = (int) $su->startRun(747, ['created_by' => 'alice'])['run']['run_id'];
     $hU = function ($id) { return hash('sha256', $id, true); };
@@ -1989,10 +1991,10 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('rvf1-3: the run holds what its done records left out, and a record committed in any other state holds none',
         $openU() === 5);
     $su->advancePhase($ru, $epU, ScanPhase::CATCH_UP);
-    $C('rvf1-3: a record sent back to be read again gives its count back',
-        $su->requeue($ru, $epU, [$hU('U1')]) === 1 && $openU() === 3);
+    $C('rvc2-2: a record sent back to be read again keeps its count until its next reading',
+        $su->requeue($ru, $epU, [$hU('U1')]) === 1 && $openU() === 5);
     $C('rvf1-3: a record that left the run\'s group gives its count back',
-        $su->depart($ru, $epU, [$hU('U2')]) === 1 && $openU() === 0);
+        $su->depart($ru, $epU, [$hU('U2')]) === 1 && $openU() === 2);
     $C('rvf1-3: a record read again keeps only what its new reading left out',
         (function () use ($su, $ru, $epU, $openU) {
             $c = $su->claimPending($ru, 'w2', $epU, 10);
@@ -2012,9 +2014,10 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     // -- what the run's records still hold, stored (review W5F-N2) ---------
     //
     // detail_rows counts every finding row the run wrote. open_findings
-    // counts those of the readings its done records hold: each held record
-    // keeps its stored count on its row, and every way out of done takes it
-    // back, as the left-out count above.
+    // counts those of the readings its records hold, which are its active
+    // rows: each held record keeps its stored count on its row, a deleted or
+    // departed record takes it back with its rows, and a requeued one keeps
+    // both until its next reading replaces them (reviews rvc2-2, rvc1-2).
     $sk = $newStore();
     $rk = (int) $sk->startRun(749, ['created_by' => 'alice'])['run']['run_id'];
     $rowK = $sk->run(749, $rk);
@@ -2052,8 +2055,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('W5F-N2: the run holds the 3 findings its records stored, as the table does',
         $openK() === 3 && (int) $sk->run(749, $rk)['detail_rows'] === 3 && $activeK() === 3);
     $sk->advancePhase($rk, $epK, ScanPhase::CATCH_UP);
-    $C('W5F-N2: a record sent back to be read again gives its count back, its findings staying active',
-        $sk->requeue($rk, $epK, [$hK('K1')]) === 1 && $openK() === 1 && $activeK() === 3);
+    $C('rvc2-2: a record sent back to be read again keeps its count and its findings, so the count is the rows',
+        $sk->requeue($rk, $epK, [$hK('K1')]) === 1 && $openK() === 3 && $activeK() === 3);
     $C('W5F-N2: a record read again holds its new reading only, the old one superseded',
         (function () use ($sk, $rk, $epK, $openK, $activeK, $findingK) {
             $c = $sk->claimPending($rk, 'w2', $epK, 10);
@@ -2073,6 +2076,97 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $sk->requeue($rk, $epK, [$hK('K3')]) === 1 && $sk->depart($rk, $epK, [$hK('K2')]) === 0
         && $sk->tombstone($rk, $epK, [$hK('K1')]) === 0 && $openK() === 0
         && (int) $sk->run(749, $rk)['detail_rows'] === 4);
+
+    // -- a requeued record's reading, replaced whatever comes next (reviews rvc2-2, rvc1-2)
+    //
+    // The run's count is its active rows in every state. requeue() leaves the
+    // record its reading. The record's next commit replaces it in any
+    // terminal state, so one that is then unreadable or unstable gives its
+    // rows and counts up; so does one retired out of attempts, by
+    // noteAttempts() or by a takeover in claimPending(). One written back
+    // below done keeps its reading. These rows used to stay active with
+    // nothing counting them.
+    $sq = $newStore();
+    $rq = (int) $sq->startRun(751, ['created_by' => 'alice'])['run']['run_id'];
+    $rowQ = $sq->run(751, $rq);
+    $epQ = (int) $rowQ['lease_epoch'];
+    $genQ = (int) $rowQ['generation_id'];
+    $hQ = function ($id) { return hash('sha256', 'q' . $id, true); };
+    $sq->writeManifest($rq, array_map(function ($id) use ($hQ) {
+        return ['id_bin' => $id, 'hash' => $hQ($id), 'dag' => null];
+    }, ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']));
+    $countQ = function ($col) use ($sq, $rq) {
+        $v = $sq->run(751, $rq)[$col];
+        return $v === null ? null : (int) $v;
+    };
+    $activeQ = function () use ($sq, $genQ) {
+        $out = [];
+        foreach ($sq->findings(751, $genQ, ['dag' => null], [], 0, 100) as $f) $out[] = (string) $f['record_id_bin'];
+        sort($out);
+        return $out;
+    };
+    $bQ = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+    foreach ($sq->claim($rq, 'w1', $epQ, 5) as $c) {
+        $bQ['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => ScanStore::REC_DONE, 'claim' => $c['claim']];
+        $bQ['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => 751, 'generation_id' => $genQ,
+            'host_form' => 'fa', 'field' => 'x', 'check_type' => 'required', 'reason_code' => 'required-blank',
+            'record_id_bin' => $c['id_bin'], 'identity' => hash('sha256', 'q|' . $c['id_bin'], true),
+            'valid_from_seq' => (int) $rowQ['run_seq'], 'record_hash' => $c['hash'],
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+        if ($c['id_bin'] === 'Q1') $bQ['unstored'][$c['ordinal']] = 2;
+    }
+    $C('rvc1-2: the fixture stores one finding for each of five records, and leaves two of one record out',
+        $sq->commitBatch($rq, 'w1', $epQ, $bQ) === true && $countQ('open_findings') === 5
+        && $countQ('open_unstored') === 2 && count($activeQ()) === 5);
+    $sq->advancePhase($rq, $epQ, ScanPhase::CATCH_UP);
+    $C('rvc2-2: four records sent back to be read again keep their readings: count, left-out count and rows',
+        $sq->requeue($rq, $epQ, [$hQ('Q1'), $hQ('Q2'), $hQ('Q3'), $hQ('Q4')]) === 4
+        && $countQ('open_findings') === 5 && $countQ('open_unstored') === 2 && count($activeQ()) === 5);
+    $cQ = $sq->claimPending($rq, 'w2', $epQ, 10);
+    $ordQ = [];
+    foreach (is_array($cQ) ? $cQ : [] as $c) $ordQ[$c['id_bin']] = $c;
+    $C('rvc1-2: the fixture takes the four back out', count($ordQ) === 4);
+    $recQ = function ($id, $state) use ($ordQ) {
+        return ['ordinal' => $ordQ[$id]['ordinal'], 'record_hash' => $ordQ[$id]['hash'], 'version' => '11',
+                'state' => $state, 'claim' => $ordQ[$id]['claim']];
+    };
+    $okQ = count($ordQ) === 4 && $sq->commitBatch($rq, 'w2', $epQ, ['bytes' => 0, 'findings' => [],
+        'records' => [$recQ('Q1', ScanStore::REC_UNREADABLE), $recQ('Q2', ScanStore::REC_UNSTABLE),
+                      $recQ('Q3', ScanStore::REC_PENDING)]]) === true;
+    $C('rvc1-2: a requeued record committed unreadable or unstable gives up its reading: rows and counts',
+        $okQ && $countQ('open_findings') === 3 && $countQ('open_unstored') === 0
+        && $activeQ() === ['Q3', 'Q4', 'Q5']);
+    $C('rvc1-2: one written back to be read again keeps it',
+        in_array('Q3', $activeQ(), true));
+    $C('rvc1-2: a requeued record retired out of attempts gives up its reading',
+        count($ordQ) === 4
+        && $sq->noteAttempts($rq, $epQ, 'w2', [$ordQ['Q4']['ordinal'] => $ordQ['Q4']['claim']], 1,
+                             ScanStore::REC_UNREADABLE)['retired'] === 1
+        && $countQ('open_findings') === 2 && $activeQ() === ['Q3', 'Q5']);
+    // Q3 is pending again with two attempts counted. A worker takes it and
+    // dies; the takeover at the limit retires it.
+    $dQ = $sq->claimPending($rq, 'w3', $epQ, 10);
+    $age($sq, $rq, 1000);
+    $retQ = -1;
+    $C('rvc1-2: and so does one a takeover retires',
+        is_array($dQ) && count($dQ) === 1
+        && $sq->claimPending($rq, 'w4', $epQ, 10, 900, 3, ScanStore::REC_UNREADABLE, $retQ) === [] && $retQ === 1
+        && $countQ('open_findings') === 1 && $activeQ() === ['Q5']);
+
+    // A published duplicate group goes into the count with its rows
+    // (ScanStore::notePublished(), reviews rvc2-2, CONS-N1).
+    $sq->notePublished($rq, 3, 0);
+    $C('CONS-N1: a published duplicate group adds the rows it made active', $countQ('open_findings') === 4);
+    $sq->notePublished($rq, 2, 3);
+    $C('CONS-N1: and takes back the rows of an earlier staging it closed', $countQ('open_findings') === 3);
+    $sq->notePublished($rq, 0, 50);
+    $C('CONS-N1: never below 0', $countQ('open_findings') === 0);
+    if ($setRun !== null) {
+        $setRun($sq, $rq, ['open_findings' => null]);
+        $sq->notePublished($rq, 4, 0);
+        $C('CONS-N1: and a run from before the count keeps NULL', $countQ('open_findings') === null);
+    }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

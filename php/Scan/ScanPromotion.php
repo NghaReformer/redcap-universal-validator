@@ -290,8 +290,9 @@ final class ScanPromotion
      * holds (review rvf1-3).
      *
      * The run row's open_unstored, which the store keeps per record: a record
-     * that is read again, deleted or leaves the run's group takes its count
-     * back. The DETAIL_UNSTORED aggregate only ever grows, so a departed
+     * that is deleted or leaves the run's group takes its count back, and one
+     * read again has it replaced by the new reading's (review rvc1-2). The
+     * DETAIL_UNSTORED aggregate only ever grows, so a departed
      * record's left-out findings stayed in the count and alone made the run
      * truncated. A run that began before schema version 6 has NULL here and
      * is counted from the aggregate, as it always was.
@@ -319,81 +320,81 @@ final class ScanPromotion
     /**
      * How many findings this run has to show.
      *
-     * A RUN THAT REACHED A VERDICT ANSWERS FROM ITS SUMMARY, because that is
-     * what the verdict was decided on: `detail_rows` misses every duplicate the
-     * finalizer wrote and keeps every finding catch-up superseded, so a page
-     * reading it could say "0 findings" beside a run refused `clean` for having
-     * some. A run still working has no summary yet and the counter is the only
-     * number there is.
+     * ONE NUMBER FOR A RUN THAT KEEPS ITS COUNT (reviews rvc2-2, rvc1-2,
+     * CONS-N1). A run started at schema version 6 or later answers from its
+     * row, in every state: open_findings, the findings stored by the readings
+     * it holds and the duplicate-value findings it has published, plus
+     * open_unstored, the findings those readings left out. The store keeps
+     * open_findings equal to the run's active rows in every transaction that
+     * changes them (ScanStore::commitBatch(), requeue(), noteAttempts(),
+     * notePublished()), so the findings page and the file, which list the
+     * active rows, and the summary, which counts them once every record is
+     * read and every group published, give the same number. It used to read
+     * the summary once the run had a verdict, and floor a run without one on
+     * whatever summary existed: a run stopped after catch-up sent records back
+     * to be read, or after some duplicate groups were published, counted
+     * fewer findings than its page and file listed, and a finished run's
+     * count could change at the finish. The one difference left is a working
+     * run in the duplicate check: a group not yet published is in no count,
+     * page or file until it is.
      *
-     * A RUN THAT ENDED WITHOUT A VERDICT GETS A FLOOR, OR NOTHING. Cancelled,
-     * failed and expired runs - ScanOutcome::NO_VERDICT - answered from
-     * `detail_rows` too, so a run cancelled during unique-finalize said
-     * "Nothing found yet" over the duplicates the finalizer had already
-     * written as active findings. Such a run may have a summary, part of one or
-     * none, and nothing on the row says which. So it answers with the floor
-     * promote() uses - the larger of the counter and whatever summary exists -
-     * and when that floor is zero it answers NULL: not counted. Zero there is
-     * indistinguishable from duplicates written and never summarised, and a
-     * zero that might be false is the one number this must not print.
+     * Zero is an answer for such a run, stopped or not: its rows are what it
+     * counts, and it has none.
+     *
+     * A RUN FROM BEFORE SCHEMA VERSION 6 IS COUNTED THE OLD WAY, its row
+     * keeping no count (NULL). Working, from detail_rows and the run-wide
+     * detail-unstored aggregate, one read a poll. Finished with a verdict,
+     * from its summary, which is what the verdict was decided on. Ended
+     * without one (ScanOutcome::NO_VERDICT), from the floor promote() uses -
+     * the larger of detail_rows and whatever summary exists - and NULL when
+     * that floor is zero: such a run may have written duplicates it never
+     * summarised, and a zero that might be false is the one number this must
+     * not print.
+     *
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
+     * found and not stored, so no row and no summary holds them, and they are
+     * added to what was stored (review rv10b1-3: a working run's count froze
+     * at the budget while the worker kept finding). From the run row, with no
+     * gate (review rvf2-4), so a status poll of a run that keeps its count
+     * reads no aggregates, as the perf case pins.
      *
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
-     *
-     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
-     * found and not stored, so the summary cannot count them and the floor is
-     * taken over what was stored, with them added. A run still working adds
-     * them to its counter too (review rv10b1-3): the counter stops growing
-     * at the budget, so "N findings so far" froze there while the worker kept
-     * finding, and jumped when the run ended. The run's aggregates are one
-     * read on uq_aggregate's leading column, and while a run works they are
-     * its marks, that count and, in its last phase, the summary being built:
-     * rows per rule, form, reason and group, never per record.
-     *
-     * FROM THE RUN ROW, WITH NO GATE (review rvf2-4). A working run's
-     * left-out count is the row's open_unstored, kept by the store in the
-     * commit that leaves the findings out (rvf1-3), so a status poll reads no
-     * aggregates, as the perf case pins. The read used to be gated on the
-     * budget the run froze in policy_json being spent. The worker stores
-     * against the budget in the settings NOW, and lowering
-     * scan-max-detail-findings mid-run does not end the run, so a run past
-     * the new limit and below the frozen one answered its frozen counter
-     * while the worker kept counting. A run that began before schema
-     * version 6 keeps no count on its row and reads the aggregate on every
-     * poll: the correct number, at one read a poll, for runs that were in
-     * flight across the upgrade only.
-     *
-     * WHAT THE RUN HOLDS, NOT WHAT IT EVER WROTE (review W5F-N2). The stored
-     * count beside them is the row's open_findings: the findings stored by
-     * the readings its done records hold. detail_rows counts every row the
-     * run wrote, which is what the detail budget limits, and it kept the
-     * findings catch-up superseded and those closed with a record that
-     * departed or was deleted. A group-scoped run shows its count from
-     * unique-finalize on, so it read the closed ones as found. A run from
-     * before schema version 6 has NULL there and is counted from
-     * detail_rows, the old way. Duplicate-value findings are counted from
-     * the summary only, once the run has one, as before.
      *
      * @return int|null null when the run ended before its findings could be counted
      */
     public static function findingsOf(ScanStore $store, array $run)
     {
+        $held = self::storedOf($run);
+        if ($held !== null) return $held + self::keptUnstored($run);
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
-        $rows = (isset($run['open_findings']) && $run['open_findings'] !== null)
-              ? max(0, (int) $run['open_findings'])
-              : (isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0);
+        $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
         if ($terminal === null) {
-            $kept = self::keptUnstored($run);
-            if ($kept !== null) return $rows + $kept;
             return $rows + self::kindTotal($store->aggregates((int) $run['run_id']), ScanStore::DETAIL_UNSTORED);
         }
         $t = self::tally($store->aggregates((int) $run['run_id']));
-        $unstored = self::unstoredOf($run, $t);
+        $unstored = (int) $t['unstored'];
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
             $floor = max($rows, $t['stored']) + $unstored;
             return $floor > 0 ? $floor : null;
         }
         return $t['stored'] + $unstored;
+    }
+
+    /**
+     * The findings a run that keeps its count shows as rows: its row's
+     * open_findings, which the store keeps equal to its active findings (see
+     * findingsOf()). Null for a run from before schema version 6, whose row
+     * keeps neither count; a row with one and not the other is read the same
+     * way, as the weaker claim.
+     *
+     * @return int|null
+     */
+    public static function storedOf(array $run)
+    {
+        if (!isset($run['open_findings']) || $run['open_findings'] === null) return null;
+        if (self::keptUnstored($run) === null) return null;
+        return max(0, (int) $run['open_findings']);
     }
 
     /**

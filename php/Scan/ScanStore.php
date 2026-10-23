@@ -172,10 +172,11 @@ interface ScanStore
         // holds (schema version 6, review rvf1-3). NULL on a run that began
         // before the column existed, and that run is counted the old way.
         'open_unstored',
-        // The findings stored by readings the run still holds (schema
-        // version 6, review W5F-N2): detail_rows less what catch-up
-        // superseded and what left with a departed or deleted record. NULL
-        // on a run that began before the column, as above.
+        // The findings the run shows (schema version 6, reviews W5F-N2,
+        // rvc2-2): those stored by the readings it holds, and the
+        // duplicate-value findings it has published. Always the run's active
+        // findings, so its page, its file and its summary count the same
+        // rows. NULL on a run that began before the column, as above.
         'open_findings',
     ];
 
@@ -575,9 +576,18 @@ interface ScanStore
      * open_unstored grows by it, in the same transaction; any other committed
      * state keeps 0. Every held record keeps the count of findings it stored
      * the same way (`stored_findings`), and open_findings grows by the batch's stored
-     * total. The rows' counts are what requeue(), tombstone() and depart()
-     * take back from the run when the record leaves done, so a finding of a
-     * reading the run no longer holds is no longer counted.
+     * total. The rows' counts are what tombstone() and depart() take back
+     * from the run when the record leaves, so a finding of a reading the run
+     * no longer holds is no longer counted.
+     *
+     * A COMMIT REPLACES THE READING A REQUEUED RECORD STILL HOLDS (reviews
+     * rvc2-2, rvc1-2). requeue() leaves a record its reading, its counts and
+     * its rows. A held record committed in any terminal state - done, gone,
+     * or not examined (unreadable, unstable, unstored) - has that reading's
+     * active non-staged rows closed at the run's sequence and its counts
+     * taken back from the run, in the same transaction as the new ones are
+     * added. One written back below done keeps it. So open_findings is
+     * always the number of the run's active non-staged rows.
      *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
@@ -653,6 +663,13 @@ interface ScanStore
      * @param int   $exhausted    the terminal state for rows that reach it -
      *                            REC_UNSTORED for a refused commit,
      *                            REC_UNREADABLE for a failed read
+     *
+     * A RETIRED RECORD GIVES UP A READING IT HELD (review rvc1-2): one
+     * requeued after an earlier reading and then retired here has that
+     * reading's rows closed and its counts taken back, in this transaction,
+     * as commitBatch() does for a record committed not examined. So does a
+     * row claimPending() retires.
+     *
      * @return array{counted:int, retired:int, released:int}
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
@@ -1017,13 +1034,14 @@ interface ScanStore
      * record_hash) finds the rows, where record_id_bin has no index and a
      * filter on it reads every row of the run.
      *
-     * Each row's counts (commitBatch(), rvf1-3, W5F-N2) are taken back from
-     * the run's open_unstored and open_findings and zeroed, in the same
-     * transaction: the reading that stored and left out those findings is
-     * the one being replaced. Its stored findings stay active until the new
-     * reading supersedes them, so the report is never blank for a record
-     * still being checked; the run's count leaves them out meanwhile, as it
-     * leaves the record out of `done`.
+     * THE RECORD KEEPS ITS READING UNTIL THE NEXT ONE REPLACES IT (reviews
+     * rvc2-2, rvc1-2). Its counts (commitBatch(), rvf1-3, W5F-N2) and its
+     * active rows stay as they are, so the report is never blank for a
+     * record still being checked, and the run's count is its rows: the next
+     * commit of the record closes those rows and takes the counts back as it
+     * adds its own, whatever state it commits. This took the counts back at
+     * once and left the rows active, so a run stopped before the re-read
+     * showed rows its count did not hold.
      *
      * @param string[] $hashes raw record hashes
      */
@@ -1042,7 +1060,7 @@ interface ScanStore
      * and a worker's tombstone commit close them: the run reports on records
      * the project holds, and counts a deleted one as removed. Duplicate-value
      * findings (staged) are the finalizer's and are not touched. Its
-     * stored and left-out counts are taken back as requeue() takes them.
+     * stored and left-out counts are taken back from the run and zeroed.
      *
      * @param string[] $hashes raw record hashes, as requeue() takes them
      * @return int rows that became tombstones
@@ -1059,7 +1077,7 @@ interface ScanStore
      * at the run's sequence, as a re-examination closes them. A deleted
      * record stays a tombstone: gone is the stronger fact. Duplicate-value
      * findings (staged) are the finalizer's and are not touched. Its stored
-     * and left-out counts are taken back as requeue() takes them (rvf1-3,
+     * and left-out counts are taken back from the run and zeroed (rvf1-3,
      * W5F-N2).
      *
      * Catch-up phase and current lease epoch only, like the other
@@ -1185,6 +1203,25 @@ interface ScanStore
      * @return true|string
      */
     public function holdRun($runId, $epoch, $phase);
+
+    /**
+     * Count a duplicate group's publish in the run's open_findings (reviews
+     * rvc2-2, CONS-N1): $opened rows the publish made active, less $closed
+     * rows of an earlier staging of the group it closed.
+     *
+     * CALLED INSIDE THE PUBLISH TRANSACTION, after holdRun(), by
+     * UniqueFinalizer, so the count moves with the rows it counts and a
+     * publish that rolls back moves neither. A duplicate was counted from the
+     * finalizer's summary only, so a run stopped after some groups were
+     * published showed their rows on its page and in its file and not in its
+     * count. Never below 0, and NULL stays NULL (a run from before schema
+     * version 6 is counted the old way).
+     *
+     * @param int $runId
+     * @param int $opened rows made active
+     * @param int $closed rows closed
+     */
+    public function notePublished($runId, $opened, $closed);
 
     /**
      * Add to a counted aggregate.
