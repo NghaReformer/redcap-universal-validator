@@ -3453,7 +3453,24 @@ var QRID_WHEN = (function(){
      as known, so the poll never judges a number half typed. REDCap's Today and
      Now buttons set the value of a field that keeps the focus, and raise no
      change either. */
-  var silent = [], silentTimer = null;
+  /* The poll stops after SILENT_IDLE_TICKS ticks (10 s) in which no value
+     changed, and starts again on the next input, change, click, key or focus
+     anywhere on the page (PRF-6). It ran every 400 ms for the life of the
+     page, about 10 ms a tick at 1,000 tags. A script writes a value after
+     something the user did (a calc after a typed input, the Today button
+     after a click) or while the page loads, when the poll is running. */
+  var silent = [], silentTimer = null, silentIdle = 0, silentWake = false;
+  var SILENT_IDLE_TICKS = 25;
+  function startSilent(){
+    silentIdle = 0;
+    if(silentTimer !== null || !silent.length || typeof setInterval !== "function") return;
+    silentTimer = setInterval(pollSilent, 400);
+    if(silentTimer && typeof silentTimer.unref === "function") silentTimer.unref();
+  }
+  function stopSilent(){
+    if(silentTimer !== null && typeof clearInterval === "function") clearInterval(silentTimer);
+    silentTimer = null;
+  }
   function watchSilent(el, field){
     var ty = (el.type || "").toLowerCase();
     if(ty === "radio" || ty === "checkbox" || ty === "file" || ty === "submit" || ty === "button") return;
@@ -3461,13 +3478,15 @@ var QRID_WHEN = (function(){
     el.__qridSilent = true;
     el.__qridLast = el.value;
     silent.push({ el: el, field: field });
-    if(silentTimer === null && typeof setInterval === "function"){
-      silentTimer = setInterval(pollSilent, 400);
-      if(silentTimer && typeof silentTimer.unref === "function") silentTimer.unref();
+    if(!silentWake && typeof document !== "undefined" && document.addEventListener){
+      silentWake = true;
+      var wake = ["input", "change", "click", "keydown", "focusin"];
+      for(var w = 0; w < wake.length; w++) document.addEventListener(wake[w], startSilent, true);
     }
+    startSilent();
   }
   function pollSilent(){
-    var live = [];
+    var live = [], changed = false;
     var doc = typeof document !== "undefined" ? document : null;
     for(var i = 0; i < silent.length; i++){
       var s = silent[i], el = s.el;
@@ -3478,9 +3497,12 @@ var QRID_WHEN = (function(){
       var v = el.value;
       if(v === el.__qridLast) continue;
       el.__qridLast = v;
+      changed = true;
       fire(s.field);
     }
     silent = live;
+    if(changed) silentIdle = 0;
+    else if(++silentIdle >= SILENT_IDLE_TICKS || !silent.length) stopSilent();
   }
   /* Bind the recheck trigger to every element carrying this target name.
      Returns true once at least one element is hooked (or was already). */
@@ -4055,6 +4077,48 @@ function QRID_configErrorNotice(message){
   line.style.marginTop = "4px";
   line.innerHTML = "&bull; " + QRID_escapeHtml(message);
   box.appendChild(line);
+}
+/* One retry timer and one MutationObserver for every factory's late-render
+   sweep (PRF-6). Each factory's boot() armed its own pair: on a page that
+   lacks a rule's field (a multi-page survey, a form a rule does not belong
+   to) 1,000 tags kept 232 observers and 233 intervals alive for 10 s, and
+   each DOM change ran 232 callbacks. QRID_lateAttach(sweep) runs sweep at
+   once; while it answers false it runs again on each 500 ms tick, at most 20
+   ticks, and on each DOM change. The timer and the observer stop when no
+   sweep is waiting. sweep(tick) is told whether a timer tick called it. A
+   sweep that throws counts as a try, and the others still run. */
+var QRID_late = { list: [], timer: null, mo: null };
+function QRID_lateRun(tick){
+  var list = QRID_late.list, keep = [];
+  QRID_late.list = [];                    /* a sweep added while this runs waits for the next */
+  for(var i = 0; i < list.length; i++){
+    var e = list[i], done = false;
+    try { done = e.sweep(tick === true) === true; } catch(err){ done = false; }
+    if(done) continue;
+    if(tick === true) e.tries++;
+    if(e.tries < 20) keep.push(e);
+  }
+  QRID_late.list = keep.concat(QRID_late.list);
+  if(!QRID_late.list.length) QRID_lateStop();
+}
+function QRID_lateStop(){
+  if(QRID_late.timer !== null && typeof clearInterval === "function") clearInterval(QRID_late.timer);
+  QRID_late.timer = null;
+  if(QRID_late.mo){ QRID_late.mo.disconnect(); QRID_late.mo = null; }
+}
+function QRID_lateAttach(sweep){
+  var done = false;
+  try { done = sweep(false) === true; } catch(err){ done = false; }
+  if(done) return true;
+  QRID_late.list.push({ sweep: sweep, tries: 0 });
+  if(QRID_late.timer === null && typeof setInterval === "function"){
+    QRID_late.timer = setInterval(function(){ QRID_lateRun(true); }, 500);
+  }
+  if(!QRID_late.mo && typeof MutationObserver !== "undefined" && typeof document !== "undefined" && document.body){
+    QRID_late.mo = new MutationObserver(function(){ QRID_lateRun(false); });
+    QRID_late.mo.observe(document.body, { childList: true, subtree: true });
+  }
+  return false;
 }
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
 /* ---- branched validation: shared variant plumbing (module feature) ---------
@@ -4637,23 +4701,13 @@ function QRIDSingleInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
-    function sweep(){
+    /* REDCap builds the form progressively: fields that are not there yet
+       are retried on the page's one late-render timer and observer, which
+       give up after 10 s (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){
       pending = pending.filter(function(f){ return !attach(f); });
-      if(pending.length === 0){ stop(); return true; }
-      return false;
-    }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){                 /* REDCap builds the form progressively */
-      tries++;
-      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
-    }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
-    }
+      return pending.length === 0;
+    });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -4876,16 +4930,8 @@ function QRIDConstraintInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -5264,16 +5310,8 @@ function QRIDWindowInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -6618,16 +6656,8 @@ function QRIDRangeInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -6769,16 +6799,8 @@ function QRIDRequiredInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7292,16 +7314,8 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7663,16 +7677,8 @@ function QRIDUniqueInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -8113,16 +8119,8 @@ function QRIDExistsInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -8706,23 +8704,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       return;
     }
     var pending = (QRID_MULTI_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
-    function sweep(){
+    /* REDCap builds the form progressively: fields that are not there yet
+       are retried on the page's one late-render timer and observer, which
+       give up after 10 s (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){
       pending = pending.filter(function(f){ return !attach(f); });
-      if(pending.length === 0){ stop(); return true; }
-      return false;
-    }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){                 /* REDCap builds the form progressively */
-      tries++;
-      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
-    }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
-    }
+      return pending.length === 0;
+    });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

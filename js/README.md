@@ -40,7 +40,10 @@ and the field-facing UI layer:
      pooled work budget that shrinks the scan cap for expensive configs, and
      debounced keystroke validation (PER-002).
    - The `MutationObserver` is disconnected when a field never appears, instead of
-     observing the whole page for the life of the tab (UV-007).
+     observing the whole page for the life of the tab (UV-007). Every rule
+     shares one late-render timer and one observer (`QRID_lateAttach`), and the
+     poll for values written without an event stops after 10 s in which nothing
+     changed and starts again on the next user event (PRF-6).
 3. **Accessibility layer.** Validation messages render in polite live regions
    (`role=status`, `aria-live=polite`, stable ids) wired to their inputs with
    `aria-describedby`; inputs carry `aria-invalid`; save-block dialogs name

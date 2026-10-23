@@ -36,7 +36,7 @@ php  tests/unique_also_scan_php.php  # @UVUNIQUE lookups in the durable scan: se
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
-node tests/silent_change_dom_js.cjs  # values written without an event (calc, slider, Today button); save dialog names labels
+node tests/silent_change_dom_js.cjs  # values written without an event (calc, slider, Today button); save dialog names labels; idle poll and shared late-render observer
 node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown choices get translated, dialog labels read live, survey rows
 node tests/mlm_messages_dom_js.cjs  # rule messages in the MLM language on screen; string messages unchanged, a switch asks nothing
 php  tests/message_i18n_php.php  # "message" as a language map: grammar, refusals, string messages unchanged, branches, page shape
