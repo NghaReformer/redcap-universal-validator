@@ -1266,6 +1266,22 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     els['uv-scan-done'].textContent.indexOf(keptUpLabels.upgraded) === 0);
   UV.labels = keptUpLabels;
 
+  // CFXB-N4. EVERY ENDING, THE PANEL'S HALF. tests/scan_service_php.php walks
+  // each ending of a real run through its status, its findings answer and its
+  // file, requires one sentence of all three, and holds
+  // tests/scan_endings_fixture.json to the statuses it was given. Here the
+  // panel's own chooser (endedSentence() in js/scan.js) is given each of
+  // those statuses and must open on the same sentence.
+  const endings = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'scan_endings_fixture.json'), 'utf8'));
+  check('CFXB-N4 client: the endings fixture has its cases', Array.isArray(endings.cases) && endings.cases.length >= 15);
+  for (const c of endings.cases) {
+    await show(Object.assign({ ok: true, run_id: 42, values: 'none', total: 0, done: 0, settled: 0, findings: 0,
+                               mayCancel: false, why: null }, c.status));
+    check('CFXB-N4 client: ' + c.name + ': the panel opens on the sentence the report and the file give (got '
+      + JSON.stringify(els['uv-scan-done'].textContent.slice(0, 80)) + ')',
+      typeof c.sentence === 'string' && c.sentence !== '' && els['uv-scan-done'].textContent.indexOf(c.sentence) === 0);
+  }
+
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);
 })();

@@ -917,6 +917,9 @@ final class ScanService
         // the phase, the verdict and the controls. The findings read is not
         // made for a status that will not carry it.
         $proved = ScanAuthorization::scopeProved($run);
+        // The ending's inputs as the report and the file read them (review
+        // CFXB-N4): one reading of the run row for all three.
+        $ending = ScanReport::endingOf($run);
 
         $full = [
             'ok'        => true,
@@ -950,10 +953,10 @@ final class ScanService
             'findings'  => $proved ? ScanPromotion::findingsOf($store, $run) : null,
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
-            'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            'scope'     => $ending['scope'],
             // Whether an upgrade of the module ended it (W12-N4): its stored
             // reason, so the page says so and not only that it failed.
-            'upgraded'  => self::endedByUpgrade($run),
+            'upgraded'  => $ending['upgraded'],
             // The day the run's date rules are judged as of (W10BF-3), or
             // null for a run whose rules read no clock.
             'asOf'      => ScanPlanner::frozenDay($run),
@@ -3138,17 +3141,6 @@ final class ScanService
      * the status and the panel show after it (W12-N4).
      */
     const ENGINE_CHANGED = ScanPageView::UPGRADED;
-
-    /**
-     * Did an upgrade of this module end $run (W12-N4)? Read from the reason
-     * promotion stored (ScanPromotion::ENGINE_UPGRADED).
-     */
-    private static function endedByUpgrade(array $run)
-    {
-        return isset($run['terminal'], $run['terminal_reason'])
-            && $run['terminal'] === ScanOutcome::FAILED
-            && $run['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED;
-    }
 
     /** What a work request answers when the run it was sent for has just been ended for this. */
     const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '

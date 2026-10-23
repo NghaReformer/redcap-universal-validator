@@ -4410,6 +4410,148 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $covLine($kept['csv'], $V::coverageSentence(ScanOutcome::FENCED)));
 
     /* -----------------------------------------------------------------
+     * CFXB-N4  EVERY ENDING, THROUGH ALL THREE
+     *
+     * The panel, the findings answer and the file each say how a run
+     * ended, and the report and the file chose that sentence from the
+     * coverage and the detail alone: a group run stopped after it proved
+     * its group, a withheld run that was stopped and a run an upgrade
+     * ended read the partial or failed sentence there, under a panel that
+     * said otherwise. ScanReport::endingOf() now reads the run row once
+     * for all three. Each ending below is a real run of its kind; its
+     * status, its findings answer and its file must give one sentence.
+     * tests/scan_endings_fixture.json holds each status and sentence, so
+     * tests/scan_client_js.cjs holds the panel's own chooser
+     * (js/scan.js endedSentence()) to the same sentence; this walk fails
+     * when the fixture no longer matches the service. UV_UPDATE_ENDINGS=1
+     * rewrites it.
+     * ----------------------------------------------------------------- */
+    $endingRun = function ($pid, $group, $to, $end) use ($groupModule) {
+        $es = new ArrayScanStore();
+        $em = $group ? $groupModule($es) : new \E2eModule($es);
+        $rid = (int) (new ScanService($em, $es))->start($pid)['run_id'];
+        $ep = (int) $es->run($pid, $rid)['lease_epoch'];
+        // To the phase the run ends in: a group run in catch-up has not
+        // proved its group, one past it has (ScanAuthorization::scopeProved).
+        foreach ([ScanPhase::SCANNING, ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $ph) {
+            if ($to === ScanPhase::PLANNING) break;
+            $es->advancePhase($rid, $ep, $ph);
+            if ($ph === ScanPhase::CATCH_UP) {
+                $es->setProgressState($rid, $ep, ['fenceTarget' => '120', 'catchupCursor' => null,
+                                                  'catchupRound' => 1, 'catchupDirty' => 0]);
+            }
+            if ($ph === $to) break;
+        }
+        if ($end === 'cancel') {
+            (new ScanService($em, $es))->cancel($pid, $rid);
+        } elseif ($end === 'expire') {
+            $es->expireAbandoned($pid, 1, 'cron', time() + 2 * 86400);
+        } elseif ($end === 'drive') {
+            for ($i = 0; $i < 25 && $es->run($pid, $rid)['terminal'] === null; $i++) {
+                (new ScanService($em, $es))->work($pid, $rid);
+            }
+        } else {
+            $es->finish($rid, $end);
+        }
+        $x = (new ScanService($em, $es))->exportOpen($pid, $rid);
+        $csv = '';
+        if (!empty($x['ok'])) $x['stream'](function ($s) use (&$csv) { $csv .= $s; }, function () {});
+        $st = (new ScanService($em, $es))->status($pid, $rid);
+        return ['row' => $es->run($pid, $rid), 'status' => $st, 'export' => $x, 'csv' => $csv,
+                'page' => (new ScanService($em, $es))->findings($pid, $rid),
+                'pf' => \INSPIRE\UniversalValidator\ScanPageView::panelPrefill($st)];
+    };
+    $failedAs = function ($why, $detail = null) {
+        $o = ScanOutcome::derive(['failed' => true]);
+        if ($detail !== null) $o['detail'] = $detail;
+        $o['why'] = $why;
+        return $o;
+    };
+    $endedAs = function ($terminal, $coverage, $detail) {
+        return ['terminal' => $terminal, 'coverage' => $coverage, 'detail' => $detail, 'why' => 'ended by the test'];
+    };
+    $T = ScanOutcome::DETAIL_TRUNCATED;
+    $UP = ScanPromotion::ENGINE_UPGRADED;
+    $endings = [
+        'project, complete'                         => [261, false, ScanPhase::PLANNING, 'drive'],
+        'project, complete, findings not all kept'  => [262, false, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::COMPLETE, ScanOutcome::FENCED, $T)],
+        'project, stopped'                          => [263, false, ScanPhase::SCANNING, 'cancel'],
+        'project, expired'                          => [264, false, ScanPhase::SCANNING, 'expire'],
+        'project, failed'                           => [265, false, ScanPhase::SCANNING, $failedAs('the test failed it')],
+        'project, ended by an upgrade'              => [266, false, ScanPhase::SCANNING, $failedAs($UP)],
+        'project, ended by an upgrade, not all kept'=> [267, false, ScanPhase::SCANNING, $failedAs($UP, $T)],
+        'group, complete'                           => [268, true, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::COMPLETE, ScanOutcome::FENCED, ScanOutcome::DETAIL_COMPLETE)],
+        'group, stopped after it proved its group'  => [269, true, ScanPhase::UNIQUE, 'cancel'],
+        'group, expired after it proved its group'  => [270, true, ScanPhase::UNIQUE, 'expire'],
+        'group, stopped after proving, not all kept'=> [271, true, ScanPhase::UNIQUE,
+                                                        $endedAs(ScanOutcome::CANCELLED, ScanOutcome::COV_PARTIAL, $T)],
+        'group, stopped before it proved its group' => [272, true, ScanPhase::CATCH_UP, 'cancel'],
+        'group, expired before it proved its group' => [273, true, ScanPhase::CATCH_UP, 'expire'],
+        'group, ended by an upgrade before proving' => [274, true, ScanPhase::CATCH_UP, $failedAs($UP)],
+        'group, failed after it proved its group'   => [275, true, ScanPhase::UNIQUE, $failedAs('the test failed it')],
+    ];
+    $walked = [];
+    $endingKeys = ['phase', 'terminal', 'coverage', 'detail', 'scope', 'withheld', 'withheldWhy', 'upgraded',
+                   'leftGroup', 'removed', 'active', 'clean'];
+    $walk = function ($name, array $e) use (&$walked, $endingKeys, $V, $covLine) {
+        $st = $e['status'];
+        $sentence = $V::endedSentence($st);
+        $seen = [];
+        foreach ($endingKeys as $k) if (array_key_exists($k, $st)) $seen[$k] = $st[$k];
+        $walked[] = ['name' => $name, 'status' => $seen, 'sentence' => $sentence];
+        $group = isset($st['scope']) && $st['scope'] === 'group';
+        check('CFXB-N4 ' . $name . ': the run ended and its status says so',
+            !empty($st['ok']) && $st['phase'] === ScanPhase::TERMINAL && is_string($sentence) && $sentence !== '');
+        check('CFXB-N4 ' . $name . ': the panel opens on that sentence',
+            strpos((string) $e['pf']['done'], $sentence) === 0);
+        check('CFXB-N4 ' . $name . ': the findings answer says the same (got '
+            . json_encode(isset($e['page']['report']['coverageSentence']) ? $e['page']['report']['coverageSentence'] : $e['page']) . ')',
+            !empty($e['page']['ok']) && $e['page']['report']['coverageSentence'] === $sentence);
+        $marks = isset($e['page']['marks']) ? $e['page']['marks'] : [];
+        check('CFXB-N4 ' . $name . ': and its terminal row ends on it, when it has one',
+            empty($marks['incomplete']) ? $marks['row'] === null
+                : substr((string) $marks['row'], -strlen($sentence)) === $sentence);
+        if (!empty($st['withheld'])) {
+            check('CFXB-N4 ' . $name . ': a withheld run gives no file, and says why',
+                empty($e['export']['ok']) && $e['export']['why'] === $st['withheldWhy'] && $e['csv'] === '');
+            return;
+        }
+        $line = $group ? $covLine($e['csv'], $sentence)
+                       : strpos($e['csv'], '"# coverage","' . $sentence . '"') !== false;
+        check('CFXB-N4 ' . $name . ': the file\'s header says the same',
+            (isset($e['export']) ? !empty($e['export']['ok']) : $e['csv'] !== '') && $line);
+        $row = preg_match('/^"INCOMPLETE SCAN","([^"]*)"/m', $e['csv'], $rm) === 1 ? $rm[1] : null;
+        check('CFXB-N4 ' . $name . ': and so does its terminal row, when it has one',
+            empty($marks['incomplete']) ? $row === null : ($row !== null && substr($row, -strlen($sentence)) === $sentence));
+    };
+    foreach ($endings as $name => $c) $walk($name, $endingRun($c[0], $c[1], $c[2], $c[3]));
+    // The two empty scopes records left, through the rvf1-2 runs above.
+    $walk('group, every record moved away', $gone);
+    $walk('group, records moved away or deleted', $mixed);
+    $want = [];
+    foreach ($walked as $w) $want[$w['sentence']] = true;
+    foreach ([$V::STOPPED_PROVED, $V::STOPPED_PROVED . ' ' . $V::DETAIL_TRUNCATED, $V::STOPPED_WITHHELD,
+              $V::UPGRADED, $V::UPGRADED . ' ' . $V::DETAIL_TRUNCATED, $V::EMPTY_SCOPE_LEFT,
+              $V::EMPTY_SCOPE_LEFT_DELETED, $V::coverageSentence(ScanOutcome::FENCED),
+              $V::coverageSentence(ScanOutcome::FENCED, $T), $V::coverageSentence(ScanOutcome::COV_PARTIAL),
+              $V::coverageSentence('failed')] as $s) {
+        check('CFXB-N4: the walk reaches the ending ' . json_encode(substr($s, 0, 60)), isset($want[$s]));
+    }
+    $fxPath = __DIR__ . '/scan_endings_fixture.json';
+    $fx = ['_comment' => 'Every ending of a durable scan run: the status the panel is given and the sentence the '
+                       . 'panel, the findings answer and the file all give. Written by tests/scan_service_php.php '
+                       . '(UV_UPDATE_ENDINGS=1), read by tests/scan_client_js.cjs.',
+           'cases' => $walked];
+    if (getenv('UV_UPDATE_ENDINGS') === '1') {
+        file_put_contents($fxPath, json_encode($fx, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+    }
+    $onDisk = is_file($fxPath) ? json_decode((string) file_get_contents($fxPath), true) : null;
+    check('CFXB-N4: tests/scan_endings_fixture.json is what the service gives today (UV_UPDATE_ENDINGS=1 rewrites it)',
+        is_array($onDisk) && isset($onDisk['cases']) && $onDisk['cases'] === $walked);
+
+    /* -----------------------------------------------------------------
      * rvf2-1  A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING
      * SWITCHED OFF ENDS THAT RUN
      *

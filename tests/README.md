@@ -671,6 +671,15 @@ A catalogue key with no case fails the PHP half. Of the 58 sentences the form
 shows, 9 match the catalogue; the fixture records the rest, and changes
 neither side.
 
+`scan_endings_fixture.json` holds every way a durable scan run can end: the
+status the panel is given and the one sentence that says how the run ended.
+`scan_service_php.php` ends a real run each way and requires that sentence of
+the panel's status, the findings answer (its summary and its terminal row) and
+the file (its `# coverage` line and its terminal row), and that the fixture
+matches what the service gives; `UV_UPDATE_ENDINGS=1` rewrites it.
+`scan_client_js.cjs` gives each status to the panel and requires the same
+sentence from `js/scan.js`.
+
 ## CI
 
 `.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite

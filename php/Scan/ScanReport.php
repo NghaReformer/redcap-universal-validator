@@ -161,21 +161,13 @@ final class ScanReport
             'detail'   => $this->run['detail'],
             'clean'    => ($this->run['clean'] !== null && (int) $this->run['clean'] === 1),
         ];
-        $count = function ($k) use ($emptied) {
-            return (is_array($emptied) && isset($emptied[$k])) ? max(0, (int) $emptied[$k]) : 0;
-        };
         return [
             'schema'           => self::SCHEMA,
             'columns'          => ScanColumns::headers($this->cols),
             'legend'           => ScanColumns::keyLegend($this->cols),
             'coverage'         => (string) $outcome['coverage'],
             'detail'           => (string) $outcome['detail'],
-            'coverageSentence' => ScanPageView::endedSentence([
-                'coverage'  => $outcome['coverage'],
-                'detail'    => $outcome['detail'],
-                'leftGroup' => $count('departed') > 0,
-                'removed'   => $count('removed'),
-            ]),
+            'coverageSentence' => ScanPageView::endedSentence(self::endingOf($this->run, $emptied)),
             'mayCertify'       => ScanOutcome::mayClaimClean($outcome),
             // THE FILENAME'S SUFFIX, from the one place that makes it (review
             // rv11a2-5). This was ScanOutcome::suffix() alone, so one answer
@@ -237,15 +229,58 @@ final class ScanReport
             'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
             'row'        => $incomplete
                 ? self::rowOpening($o['coverage'], $o['detail']) . ' '
-                  . ScanPageView::endedSentence([
-                        'coverage'  => $o['coverage'],
-                        'detail'    => $o['detail'],
-                        'leftGroup' => is_array($emptied) && isset($emptied['departed']) && (int) $emptied['departed'] > 0,
-                        'removed'   => (is_array($emptied) && isset($emptied['removed'])) ? max(0, (int) $emptied['removed']) : 0,
-                    ])
+                  . ScanPageView::endedSentence(self::endingOf($run, $emptied))
                 : null,
             'suffix'     => $suffix,
         ];
+    }
+
+    /**
+     * What ScanPageView::endedSentence() chooses a finished run's ending
+     * from, read from the run row: ONE ANSWER for the panel's status
+     * (ScanService::status()), the findings answer and the file (review
+     * CFXB-N4). runFacts() and the terminal row passed only the coverage,
+     * the detail and how an empty scope emptied, so a group run stopped
+     * after it proved its group, a withheld run that was stopped, and a run
+     * an upgrade of the module ended read the partial or failed sentence in
+     * the report and its file while the panel above them gave the
+     * rvfix-N2, rv5b-2 or W12-N4 one.
+     *
+     * `withheld` is a group run that has not proved its group
+     * (ScanAuthorization::scopeProved()), as status() decides it.
+     * `leftGroup` and `removed` come from the census, which the caller
+     * reads ($emptied); status() reads the same census every poll.
+     *
+     * @param array|null $emptied ['departed' => int, 'removed' => int], or null
+     * @return array{terminal:?string, coverage:?string, detail:?string, scope:string,
+     *               withheld:bool, upgraded:bool, leftGroup:bool, removed:int}
+     */
+    public static function endingOf(array $run, ?array $emptied = null)
+    {
+        $count = function ($k) use ($emptied) {
+            return (is_array($emptied) && isset($emptied[$k])) ? max(0, (int) $emptied[$k]) : 0;
+        };
+        return [
+            'terminal'  => isset($run['terminal']) ? $run['terminal'] : null,
+            'coverage'  => isset($run['coverage']) ? $run['coverage'] : null,
+            'detail'    => isset($run['detail']) ? $run['detail'] : null,
+            'scope'     => (isset($run['scope_dag']) && $run['scope_dag'] !== null) ? 'group' : 'project',
+            'withheld'  => !ScanAuthorization::scopeProved($run),
+            'upgraded'  => self::endedByUpgrade($run),
+            'leftGroup' => $count('departed') > 0,
+            'removed'   => $count('removed'),
+        ];
+    }
+
+    /**
+     * Did an upgrade of this module end $run (W12-N4)? Read from the reason
+     * promotion stored (ScanPromotion::ENGINE_UPGRADED).
+     */
+    public static function endedByUpgrade(array $run)
+    {
+        return isset($run['terminal'], $run['terminal_reason'])
+            && $run['terminal'] === ScanOutcome::FAILED
+            && $run['terminal_reason'] === ScanPromotion::ENGINE_UPGRADED;
     }
 
     /** The terminal row's opening for a run that did not reach every record. */
