@@ -601,6 +601,8 @@ One condition may mix `and`, `or` and `not` with parentheses:
 | `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` and instance selectors, unless extended references are on for the project |
 | `and` / `or` / `not` in any letter case, parentheses | `&&`, `\|\|` and `!` (the error says which word to write) |
 | | arithmetic and piping |
+| | a character outside printable ASCII, such as `'Yaoundé'` (compare the code a choice stores) |
+| | a field compared with itself, such as `[dose]>[dose]` |
 
 `not` binds tightest, then `and`, then `or`, as in REDCap:
 `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
@@ -948,7 +950,8 @@ no label of the rule's own) is English only. Details and limits:
 
 **Which fields can I validate?**
 Check-character and format rules: Text and Notes fields only. Constraint
-rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
+rules: Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider;
+on a calc field the rule shows its note and never holds the save.
 Required and Unique rules: the same minus calc. Choice-filter rules
 (`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
 rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
@@ -1280,9 +1283,15 @@ validate it, and the module treats it as blank: no check-character, format,
 page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
 an answer, so a field marked "unknown" is not reported as missing. A code in an
 `@UVEXISTS` `match` field or a `@UVWINDOW` "from" date also counts as blank.
-In a `when` condition or an `@UVASSERT` expression the code is read as itself,
-the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
-`when` to leave such records out.
+In a `when` condition, an `@UVASSERT` expression or an `@UVEXISTS` `where`,
+`=` and `<>` read the code as written, the way REDCap's branching logic reads
+it: `[visit_date]<>'UNK'` in `when` leaves such records out. On a date field a
+code is the one value that need not be written as Y-M-D. `<`, `>`, `<=` and
+`>=` get no answer from a code, as from a blank field, so
+`[end_date]>=[start_date]` with the start marked `UNK` is no violation and a
+`when` of `[start_date]>='2025-01-01'` does not apply. A reference to another
+event or instance, such as `[start_date][baseline_arm_1]`, reads the code as
+written in every comparison.
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
 In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as

@@ -3973,8 +3973,9 @@ bundled reference.
   `UNK` or `-99`. REDCap does not validate it and neither does `@UVRANGE`: the
   field is treated as blank, on the page, in the post-save audit and in the
   scan. Every other tag does the same, except `@UVREQUIRED`, which counts a
-  missing data code as an answer. A `when` condition reads the code as itself,
-  as REDCap's branching logic does.
+  missing data code as an answer. In a `when` condition `=` and `<>` read the
+  code as written, as REDCap's branching logic does, and `<`, `>`, `<=` and `>=`
+  get no answer from it, as from a blank field.
 - **Comma decimals.** On a field with comma-decimal validation
   (`number_1dp_comma_decimal` and the like), `17,5` is read as 17.5 and the
   notes write the limits with a comma. Limits in the tag are always written

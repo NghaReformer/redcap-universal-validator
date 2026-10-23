@@ -650,7 +650,22 @@
       "values": { "id": "00123", "id_confirm": "00123" },
       "expect": true,
       "expectExact": true
-    }
+    },
+
+    { "_comment": "AST-10: 'codes' lists the project's Missing Data Codes. A [field] holding one has no answer to < > <= >=, as a blank has none, so the caller's polarity decides (a test passes, a gate is inert). = and <> read the code as itself; a literal is never a code." },
+    { "name": "code_start_ge", "expr": "[end]>=[start]", "values": { "end": "2024-02-01", "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": true, "expectGate": false },
+    { "name": "code_start_le_flipped", "expr": "[start]<=[end]", "values": { "end": "2024-02-01", "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": true, "expectGate": false },
+    { "name": "code_under_not", "expr": "not([end]>=[start])", "values": { "end": "2024-02-01", "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": true, "expectGate": false },
+    { "name": "code_trimmed", "expr": "[end]>=[start]", "values": { "end": "2024-02-01", "start": " UNK " }, "codes": ["UNK", "NASK", "-99"], "expect": true, "expectGate": false },
+    { "name": "code_numeric", "expr": "[age]<5", "values": { "age": "-99" }, "numbers": { "age": "point" }, "codes": ["UNK", "NASK", "-99"], "expect": true, "expectGate": false },
+    { "name": "code_numeric_control", "expr": "[age]<5", "values": { "age": "-99" }, "numbers": { "age": "point" }, "expect": true },
+    { "name": "code_control_no_codes", "expr": "[end]>=[start]", "values": { "end": "2024-02-01", "start": "UNK" }, "expect": false },
+    { "name": "code_not_listed", "expr": "[end]>=[start]", "values": { "end": "2024-02-01", "start": "NA" }, "codes": ["UNK", "NASK", "-99"], "expect": false },
+    { "name": "code_codes_are_case_sensitive", "expr": "[end]>=[start]", "values": { "end": "2024-02-01", "start": "unk" }, "codes": ["UNK", "NASK", "-99"], "expect": false },
+    { "name": "code_ne_reads_itself", "expr": "[start]<>'UNK'", "values": { "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": false },
+    { "name": "code_eq_reads_itself", "expr": "[start]='UNK'", "values": { "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": true },
+    { "name": "code_literal_is_not_a_code", "expr": "[x]>='UNK'", "values": { "x": "ZZZ" }, "codes": ["UNK", "NASK", "-99"], "expect": true },
+    { "name": "code_other_term_still_counts", "expr": "[end]>=[start] and [n]<3", "values": { "end": "2024-02-01", "start": "UNK", "n": "5" }, "codes": ["UNK", "NASK", "-99"], "expect": false }
   ],
   "errors": [
     {
@@ -772,6 +787,21 @@
       "name": "lone_bang",
       "expr": "![a]='1'",
       "errorContains": "write \"not\" instead"
+    },
+    {
+      "name": "self_comparison_ordered",
+      "expr": "[h]>[h]",
+      "errorContains": "compares \"[h]\" with itself"
+    },
+    {
+      "name": "self_comparison_folded_name",
+      "expr": "[a]='1' or [H]<>[h]",
+      "errorContains": "compares \"[h]\" with itself"
+    },
+    {
+      "name": "self_comparison_checkbox",
+      "expr": "[cb(1)]=[cb(1)]",
+      "errorContains": "compares \"[cb(1)]\" with itself"
     }
   ],
   "astEval": [

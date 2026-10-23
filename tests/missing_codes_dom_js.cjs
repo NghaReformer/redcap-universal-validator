@@ -282,5 +282,36 @@ for (const after of ['UNK', '']) {
   check('required: blank is still missing', !saves(env));
 }
 
+/* A visible note under the field other than the green "OK". */
+function flagged(env, field) {
+  return env.holders[field].children.slice(1).some((k) => k.style.display !== 'none' && k.innerHTML !== '' && k.innerHTML.indexOf('&#10003;') !== 0);
+}
+
+// AST-10: a code in a referenced [field] has no answer to < > <= >=, as a
+// blank has none, so [end_date]>=[start_date] with start UNK is no violation.
+{
+  const rule = { type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]', blockSave: 'hard' };
+  const end = input('end_date', '2024-02-01');
+  const start = input('start_date', 'UNK');
+  const env = boot([end, start], Object.assign({ rules: [rule] }, CODES));
+  check('AST-10: a coded start does not hold a correct end date', !flagged(env, 'end_date') && saves(env));
+  set(env, start, '2024-03-01'); set(env, end, '2024-02-01');
+  check('AST-10: a real start after the end is still a violation', flagged(env, 'end_date') && !saves(env));
+  set(env, start, 'UNK'); set(env, end, '2024-02-01');
+  check('AST-10: back to the code clears it', !flagged(env, 'end_date') && saves(env));
+  const env2 = boot([input('end_date', '2024-02-01'), input('start_date', 'UNK')], { rules: [rule] });
+  check('AST-10 control: without codes UNK is compared as text', flagged(env2, 'end_date') && !saves(env2));
+}
+// AST-10: an ordered "when" on a coded field leaves the rule inert; "=" reads the code as itself.
+{
+  const gate = (when) => ({ rules: [{ type: 'constraint', fields: ['dose'], assert: '[dose]<=10', when, blockSave: 'hard' }] });
+  const env = boot([input('dose', '50'), input('start_date', 'UNK')], Object.assign(gate("[start_date]>='2025-01-01'"), CODES));
+  check('AST-10: an ordered "when" on a coded field is inert', !flagged(env, 'dose') && saves(env));
+  const env2 = boot([input('dose', '50'), input('start_date', 'UNK')], Object.assign(gate("[start_date]='UNK'"), CODES));
+  check('AST-10: "=" in a "when" reads the code as itself', flagged(env2, 'dose') && !saves(env2));
+  const env3 = boot([input('dose', '50'), input('start_date', 'UNK')], gate("[start_date]>='2025-01-01'"));
+  check('AST-10 control: without codes the ordered "when" compares UNK as text and applies', flagged(env3, 'dose') && !saves(env3));
+}
+
 console.log('missing_codes_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

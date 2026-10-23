@@ -671,14 +671,17 @@
     for(var i = 0; i < list.length; i++){ if(typeof list[i] === "string" && list[i] !== "") set[list[i]] = true; }
     return set;
   })();
-  function QRID_isMissingCode(value){
+  function QRID_isMissingCode(value){ return QRID_codeIn(value, QRID_MISSING_CODES); }
+  /* Whether value, trimmed, is a key of set (code => true). Twin of
+     Logic::isMissingCode. */
+  function QRID_codeIn(value, set){
     if(value === null || value === undefined) return false;
     /* PHP trim()'s set (space, tab, CR, LF, NUL, vertical tab), by index (AST-8) */
     var t = String(value), i = 0, j = t.length, c;
     while(i < j && ((c = t.charCodeAt(i)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) i++;
     while(j > i && ((c = t.charCodeAt(j - 1)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) j--;
     t = t.slice(i, j);
-    return t !== "" && QRID_MISSING_CODES[t] === true;
+    return t !== "" && set[t] === true;
   }
   /* The date and datetime fields of this form shown day- or month-first
      (config.dateFormats: field => [type, format]). REDCap stores every date as
@@ -1671,6 +1674,9 @@ var QRID_BLANK_INERT  = false;
    caseSensitive flag goes: = and <> compare character for character. Twin of
    Logic::EXACT. */
 var QRID_WHEN_EXACT = "exact";
+/* The ordered operators. A field marked with a Missing Data Code has no answer
+   to them, as a blank has none (AST-10). Twin of Logic::ORDERED_OPS. */
+var QRID_WHEN_ORDERED = { "<": true, ">": true, "<=": true, ">=": true };
 
 function QRID_whenErr(msg){ return { ok: false, error: msg }; }
 
@@ -2296,6 +2302,14 @@ function QRID_whenCmp(st){
     return n[0] === "qref" && (n[4] === "any-instance" || n[4] === "all-instances");
   }).length;
   if(sets > 1) return {error: "allows at most one collection operand per comparison."};
+  /* [h]>[h] is always false and [h]=[h] always true: a rule built on it never
+     reads the value (AST-11). Twin of Logic::parseCmp. */
+  if(lhs.node[0] !== "lit" && JSON.stringify(lhs.node) === JSON.stringify(rhs.node)){
+    var nd = lhs.node;
+    var name = nd[0] === "ref" ? '"[' + nd[1] + (nd[2] !== null ? "(" + nd[2] + ")" : "") + ']"' : "a reference";
+    return { error: "compares " + name + " with itself, so the answer never depends on the value. " +
+      "Compare it with another field or a value." };
+  }
   return { node: ["cmp", op, lhs.node, rhs.node] };
 }
 /* operand := ref | string | number */
@@ -2343,12 +2357,25 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
          answer" means. */
       return !QRID_whenEvaluateWith(ast[1], resolve, !blank, caseSensitive);
     case "cmp":
+      if(typeof resolve.isMissing === "function" && QRID_whenCodeCompared(ast, resolve)) return blank;
       return QRID_whenCompare(ast[1],
         QRID_whenOperandVal(ast[2], resolve),
         QRID_whenOperandVal(ast[3], resolve),
         blank, caseSensitive);
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
+}
+/* Whether the comparison is ordered (< > <= >=) and a plain [field] operand
+   holds a Missing Data Code (resolve.isMissing), so it has no answer: [end] >=
+   [start] with start UNK passes as a test and leaves a "when" inert, while =
+   and <> read the code as itself (AST-10). Twin of Logic::codeCompared. */
+function QRID_whenCodeCompared(ast, resolve){
+  if(QRID_WHEN_ORDERED[ast[1]] !== true) return false;
+  for(var s = 2; s <= 3; s++){
+    var op = ast[s];
+    if(op[0] === "ref" && op[2] === null && resolve.isMissing(resolve(op[1], null))) return true;
+  }
+  return false;
 }
 /* The value of field f as a condition reads it: a field that holds numbers
    (marks: field => "point" | "comma") as its number, written as NUM_RE
@@ -2375,8 +2402,9 @@ function QRID_whenOperandVal(op, resolve){
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0').
    numbers (field => "point" | "comma") names the fields that hold numbers,
-   as the $numbers map of Logic::evaluate does. */
-function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
+   as the $numbers map of Logic::evaluate does; codes lists the project's
+   Missing Data Codes, as its $codes does. */
+function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers, codes){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   var resolve = function(f, code, extended){
     if(extended && (!values || !Object.prototype.hasOwnProperty.call(values, f) || values[f] === null || typeof values[f] === "object")) throw new Error("Unresolved extended reference.");
@@ -2393,6 +2421,11 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers){
   resolve.extendedValues = true;
   if(numbers){
     resolve.logicValue = resolve.numberValue = function(f, v){ return QRID_numberValue(f, v, numbers); };
+  }
+  if(Array.isArray(codes) && codes.length){
+    var set = Object.create(null);
+    for(var i = 0; i < codes.length; i++) set[String(codes[i])] = true;
+    resolve.isMissing = function(v){ return QRID_codeIn(v, set); };
   }
   return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
@@ -3310,6 +3343,7 @@ var QRID_WHEN = (function(){
   function readLogic(f, code){ return readRef(f, code); }
   readLogic.logicValue = QRID_logicValue;
   readLogic.numberValue = QRID_pageNumberValue;
+  readLogic.isMissing = QRID_isMissingCode;
   /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
      only values the page really has (QRID_condValues). */
   function has(f, code){

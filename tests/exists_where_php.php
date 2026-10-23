@@ -564,6 +564,18 @@ namespace {
     $e = $explain(w('{"in":"[specimen_id]","message":"Register it first."}'), 'not-found');
     check('report: a rule without "where" is explained as before', $e['text'] === 'Register it first.');
 
+    // AST-10: an entry whose "where" field holds a Missing Data Code has no
+    // answer to < > <= >=, so it does not meet the condition; = reads the code.
+    $ge = \INSPIRE\UniversalValidator\Logic::parse("[visit]>='2025-01-01'")['ast'];
+    $eq = \INSPIRE\UniversalValidator\Logic::parse("[visit]='NA'")['ast'];
+    $NA = ['NA' => true];
+    check('AST-10 where: an entry holding a code does not meet an ordered condition',
+        \INSPIRE\UniversalValidator\AnnotationRules::existsWhereHolds($ge, ['visit' => 'NA'], false, [], $NA) === false);
+    check('AST-10 where control: without codes "na" sorts after "2025-01-01" and meets it',
+        \INSPIRE\UniversalValidator\AnnotationRules::existsWhereHolds($ge, ['visit' => 'NA'], false) === true);
+    check('AST-10 where: "=" reads the code as itself',
+        \INSPIRE\UniversalValidator\AnnotationRules::existsWhereHolds($eq, ['visit' => 'NA'], false, [], $NA) === true);
+
     fwrite(STDOUT, "exists_where_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
 }

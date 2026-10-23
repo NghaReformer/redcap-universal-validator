@@ -365,7 +365,11 @@ enforced with the same message/confirm/block modes as everything else:
   compare correctly; the evaluator is the one parity-locked engine, used here as
   the *test* rather than a gate. A field validated as a number, a calc and a slider
   are read as the number they hold (a saved `12,5` is 12.5), and two numbers compare
-  by value, so `02` equals `2`.
+  by value, so `02` equals `2`. A condition holds printable ASCII only, so
+  `[city]='Yaoundé'` is refused; compare the code a choice field stores instead.
+  A field marked with a Missing Data Code gives no answer to `<`, `>`, `<=` and
+  `>=`, as a blank field gives none, so `[end_date]>=[start_date]` with the start
+  marked `UNK` is no violation. `=` and `<>` read the code as written.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
   constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
   `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
@@ -386,8 +390,10 @@ enforced with the same message/confirm/block modes as everything else:
 - Optional `when` enforces the constraint only while a condition is true; several
   `@UVASSERT` tags with different `when` conditions **branch** (plus at most one
   without, as the fallback), exactly like `@UVALIDATE`.
-- Works on **Text, Notes, dropdown, radio, yes/no, true/false, calc and slider**
-  fields (check-character/regex validation stays Text/Notes). A field may carry
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and
+  slider** fields (check-character/regex validation stays Text/Notes). On a calc
+  field the rule shows its note but never holds the save: nobody can change a
+  calc on the form. A field may carry
   `@UVASSERT` **alongside** `@UVALIDATE` and other modes — they **compose**, and
   all must pass; each keeps an independent save-block state.
 - The server audit honors the constraint against saved values (logged as

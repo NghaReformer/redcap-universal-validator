@@ -1324,5 +1324,20 @@ check('VAL-11: a format with named groups is accepted',
     AnnotationRules::parseAllTags('@UVALIDATE={"algorithm":"none","pattern":"(?<site>[A-Z]{2})(?<num>[0-9]{4})"}')
     === [['algorithm' => 'none', 'idPattern' => '(?<site>[A-Z]{2})(?<num>[0-9]{4})']]);
 
+// ---- AST-11: a value cut by its own quote mark, and a field compared with itself ----
+$r = AnnotationRules::parseAllTags('@UVASSERT="[h]=\'a\' or [h]="b""');
+check('AST-11: a quoted value that holds its own quote mark is refused with a word on the quoting',
+    is_array($r) && count($r) === 1 && strpos($r[0]['error'] ?? '', 'has a quoted value that ends at its second "') !== false
+    && strpos($r[0]['error'], 'JSON form') !== false);
+check('AST-11: a quoted value right before the next tag is still read',
+    AnnotationRules::parseAllTags('@UVREQUIRED="[a]=\'1\'"@HIDDEN') === [['type' => 'required', 'when' => "[a]='1'"]]);
+check('AST-11: the other quote mark inside the value is fine',
+    AnnotationRules::parseAllTags('@UVASSERT=\'[h]="a"\'') === [['type' => 'constraint', 'assert' => '[h]="a"']]);
+$r = AnnotationRules::parseAllTags('@UVASSERT="[h]>[h]"');
+check('AST-11: an assert that compares a field with itself is refused',
+    is_array($r) && strpos($r[0]['error'] ?? '', 'compares "[h]" with itself') !== false);
+$r = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"[a]<>[a]"}');
+check('AST-11: so is a "when" that does', is_array($r) && strpos($r[0]['error'] ?? '', 'with itself') !== false);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

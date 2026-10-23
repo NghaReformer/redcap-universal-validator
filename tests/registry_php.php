@@ -197,7 +197,7 @@ check('a type value cannot inject a second placeholder pass',
 // The settings dialog's wording.
 check('dialog wording, check', ModeRegistry::eligibility('check')['dialogWhy'] === 'only Text and Notes fields can be validated');
 check('dialog wording, constraint', ModeRegistry::eligibility('constraint')['dialogWhy']
-    === 'a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields');
+    === 'a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider fields');
 check('dialog wording, required', ModeRegistry::eligibility('required')['dialogWhy']
     === 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)');
 check('dialog wording, unique', ModeRegistry::eligibility('unique')['dialogWhy']

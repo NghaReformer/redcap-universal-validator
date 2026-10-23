@@ -138,6 +138,10 @@ class Logic
     const BLANK_PASSES = true;
     const BLANK_INERT  = false;
 
+    // The ordered operators. A field marked with a Missing Data Code has no
+    // answer to them, as a blank has none (AST-10). Twin: QRID_WHEN_ORDERED.
+    const ORDERED_OPS = ['<' => true, '>' => true, '<=' => true, '>=' => true];
+
     // The text mode of a rule with "exact": true, passed where a caller passes
     // its "caseSensitive" flag: = and <> then compare the two values character
     // for character, never as numbers and never with case folded, so a
@@ -321,17 +325,23 @@ class Logic
      * self::EXACT. $numbers maps a field that holds numbers to its decimal
      * mark, 'point' or 'comma' (numberMark): its value is read as a number
      * first, so a saved 12,5 compares as 12.5 and 2.5E1 as 25 (AST-1, AST-3).
+     *
+     * $codes is the project's Missing Data Codes (code => true). A [field]
+     * that holds one has no answer to < > <= >=, as a blank has none, so
+     * [end]>=[start] with start UNK passes as a test and leaves a "when"
+     * inert; = and <> read the code as itself, so [start]<>'UNK' still works
+     * (AST-10). An event or instance reference reads it as itself.
      */
-    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [])
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return false; }
                 return true;
             case 'not':
                 // THE FLIP. "No answer" has to mean the same thing about the
@@ -342,8 +352,9 @@ class Logic
                 // which is the original defect wearing a different spelling.
                 // Case sensitivity does NOT flip: it describes how two strings
                 // are matched, not what "no answer" means.
-                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers);
+                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers, $codes);
             case 'cmp':
+                if ($codes && self::codeCompared($ast, $values, $codes)) return $blank;
                 return self::compare(
                     $ast[1],
                     self::operandValue($ast[2], $values, $numbers),
@@ -411,20 +422,20 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [])
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
     {
         if (self::qualifiedRefs($ast)) throw new \LogicException('Resolve extended references before folding.');
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers, $codes);
                 return [$ast[0], $out];
             case 'not':
                 // Flipped exactly as evaluate() flips it, so a comparison
                 // settled into a ['const', b] here sits under the same number
                 // of "not"s as the live one it replaced and agrees with it.
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers)];
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers, $codes)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -463,6 +474,13 @@ class Logic
                         if (!isset($disclosable[$ast[$slot][1]])) { $ok = false; break; }
                     }
                     if ($ok) {
+                        // An off-page Missing Data Code gives the comparison no
+                        // answer whatever the live side holds (AST-10); a baked
+                        // literal would lose that it was a code.
+                        if ($codes && self::codeCompared($ast, $values, $codes)) {
+                            foreach ($offPage as $slot) $snapshot[$ast[$slot][1]] = true;
+                            return ['const', $blank];
+                        }
                         foreach ($offPage as $slot) {
                             $snapshot[$ast[$slot][1]] = true;   // read once, at render
                             // baked as the number it holds (12,5 as 12.5): the
@@ -494,9 +512,30 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers)];
+                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers, $codes)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
+    }
+
+    /**
+     * Whether the comparison $cmp is ordered (< > <= >=) and a plain [field]
+     * operand holds one of $codes, so it has no answer (AST-10). A live
+     * comparison on the page asks the same (QRID_whenCodeCompared).
+     */
+    private static function codeCompared(array $cmp, array $values, array $codes)
+    {
+        if (!isset(self::ORDERED_OPS[$cmp[1]])) return false;
+        foreach ([2, 3] as $slot) {
+            $op = $cmp[$slot];
+            if ($op[0] === 'ref' && $op[2] === null && isset($values[$op[1]]) && self::isMissingCode($values[$op[1]], $codes)) return true;
+        }
+        return false;
+    }
+
+    /** Whether $value, trimmed as trim() trims, is one of $codes (code => true). Twin: QRID_codeIn. */
+    public static function isMissingCode($value, array $codes)
+    {
+        return $codes && is_scalar($value) && isset($codes[trim((string) $value)]);
     }
 
     /**
@@ -801,6 +840,14 @@ class Logic
             if ($operand[0] === 'qref' && in_array($operand[4], ['any-instance','all-instances'], true)) $sets++;
         }
         if ($sets > 1) return ['error' => 'allows at most one collection operand per comparison.'];
+        // [h]>[h] is always false and [h]=[h] always true: a rule built on it
+        // never reads the value (AST-11). Twin: QRID_whenCmp.
+        if ($lhs['node'][0] !== 'lit' && $lhs['node'] === $rhs['node']) {
+            $n = $lhs['node'];
+            $name = $n[0] === 'ref' ? '"[' . $n[1] . ($n[2] !== null ? '(' . $n[2] . ')' : '') . ']"' : 'a reference';
+            return ['error' => 'compares ' . $name . ' with itself, so the answer never depends on the value. '
+                . 'Compare it with another field or a value.'];
+        }
         return ['node' => ['cmp', $op, $lhs['node'], $rhs['node']]];
     }
 

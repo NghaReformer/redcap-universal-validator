@@ -301,6 +301,72 @@ namespace {
     $typed = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'm_typed'; }));
     check('also scan control: without codes it does', count($typed) === 1 && $typed[0]['record'] === '5');
 
+    // ---- 5c) a code in a condition's [field] has no answer to < > <= >= (AST-10) --------
+    // [m_end]>=[m_start] with start UNK held a correct record: the code was
+    // compared as text. = and <> still read it as itself.
+    $condMod = function ($codes) use ($DICT, $DATA) {
+        $m = mod($codes);
+        \REDCap::$dictionary = $DICT + [
+            'm_start' => f('result', '', 'date_ymd'),
+            'm_end'   => f('result', '@UVASSERT={"assert":"[m_end]>=[m_start]","blockSave":"hard"}', 'date_ymd'),
+            'm_gate'  => f('result', '@UVASSERT={"assert":"[m_gate]<=10","when":"[m_start]>=\'2025-01-01\'"}', 'number'),
+            'm_same'  => f('result', '@UVASSERT={"assert":"[m_same]<=10","when":"[m_start]=\'UNK\'"}', 'number'),
+            'e_start' => f('enrol', '', 'date_ymd'),
+            'm_off'   => f('result', '@UVASSERT={"assert":"[m_off]>=[e_start]"}', 'date_ymd'),
+        ];
+        \REDCap::$data = $DATA;
+        \REDCap::$data['1'][351] += ['m_start' => 'UNK', 'm_end' => '2026-02-01', 'm_gate' => '50',
+                                     'm_same' => '50', 'e_start' => 'UNK', 'm_off' => '2026-02-01'];
+        return $m;
+    };
+    $NEW = ['m_end', 'm_gate', 'm_off', 'm_same'];
+    $m = $condMod($CODES);
+    save($m, '1');
+    $got = array_values(array_intersect(fieldsOf(logged($m, 'invalid-id-saved')), $NEW));
+    check('AST-10 audit: a coded start is no answer to >=, so neither the test nor the "when" fails; = still reads UNK (got ' . json_encode($got) . ')',
+        $got === ['m_same']);
+    $m = $condMod('');
+    save($m, '1');
+    $got = array_values(array_intersect(fieldsOf(logged($m, 'invalid-id-saved')), $NEW));
+    check('AST-10 audit control: without codes UNK is compared as text (got ' . json_encode($got) . ')',
+        $got === ['m_end', 'm_gate', 'm_off']);
+    $refused = array_values(array_filter(logged($m, 'uvalidate-unconfigurable'), function ($e) {
+        return $e['fields'] === 'm_same' && strpos($e['why'], "with 'UNK'") !== false;
+    }));
+    check('AST-10 control: without codes, a date field compared with "UNK" is a configuration error', count($refused) === 1);
+    $m = $condMod($CODES);
+    save($m, '1');
+    $refused = array_values(array_filter(logged($m, 'uvalidate-unconfigurable'), function ($e) { return $e['fields'] === 'm_same'; }));
+    check('AST-10: with codes, [m_start]="UNK" on a date field is accepted', $refused === []);
+    $m = $condMod($CODES);
+    $res = $m->scanProject(149);
+    $got = [];
+    foreach ($res['violations'] as $v) if ($v['record'] === '1' && in_array($v['field'], $NEW, true)) $got[] = $v['field'];
+    sort($got);
+    check('AST-10 scan: the same answers (got ' . json_encode($got) . ')', $got === ['m_same']);
+    // The page: an off-page start this user may read is baked into the test.
+    // A coded one settles the comparison, as the audit does.
+    $assertOf = function ($m, $field) {
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '1', 'result', 351, null, 1);
+        $html = ob_get_clean();
+        preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
+        $cfg = json_decode(isset($mm[1]) ? $mm[1] : 'null', true);
+        foreach ((array) ($cfg['rules'] ?? []) as $r) {
+            if (in_array($field, (array) ($r['fields'] ?? []), true)) return $r['assertAst'] ?? null;
+        }
+        return null;
+    };
+    $ast = $assertOf($condMod($CODES), 'm_off');
+    check('AST-10 page: an off-page coded start settles [m_off]>=[e_start] to "no violation" (got ' . json_encode($ast) . ')',
+        $ast === ['const', true]);
+    $ast = $assertOf($condMod(''), 'm_off');
+    check('AST-10 page control: without codes the start is baked in as text (got ' . json_encode($ast) . ')',
+        $ast === ['cmp', '>=', ['ref', 'm_off', null], ['lit', 'UNK']]);
+    $ast = $assertOf($condMod($CODES), 'm_end');
+    check('AST-10 page: a start on the same form stays live for the browser to judge',
+        is_array($ast) && $ast[0] === 'cmp');
+
     // ---- 6) the page --------------------------------------------------------------------
     $cfgOf = function ($m) {
         ob_start();

@@ -616,7 +616,7 @@ class UniversalValidator extends AbstractExternalModule
                         continue 2;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id))) $active[$g][] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']), $this->conditionNumbers($project_id), $this->missingDataCodes($project_id))) $active[$g][] = $bi;
             }
             if ($broken && count($groups) === 1) {
                 // One group: the field as a whole is not checked.
@@ -741,7 +741,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id))) {
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']), $this->conditionNumbers($project_id), $this->missingDataCodes($project_id))) {
                 // inert here: nothing to report, and the fields it returns to are emptied
                 if (!empty($meta['returns']) && ($blank = self::ownedReturns($rule, $meta))) $out['returns'] = $blank;
                 return $out;
@@ -1875,8 +1875,9 @@ class UniversalValidator extends AbstractExternalModule
      * condition; true for a rule without one. The condition reads the entry
      * as REDCap stores it, with the rule's letter case (existsSpec 'fold'),
      * and a blank side of < > <= >= gives no answer, so the comparison fails
-     * (Logic::BLANK_INERT). Missing Data Codes are plain values, as in
-     * "when". A field that holds numbers with a decimal comma is read by
+     * (Logic::BLANK_INERT). A Missing Data Code answers = and <> as itself
+     * and gives no answer to < > <= >=, as in "when" (AST-10). A field that
+     * holds numbers with a decimal comma is read by
      * value ("3,5" is 3.5). A repeat instance carries its event row's values
      * (recordContexts), except a checkbox: REDCap gives every row of an
      * export the checkbox's codes, all "0" where the form is not that row's,
@@ -1900,7 +1901,8 @@ class UniversalValidator extends AbstractExternalModule
                 $vals[$f] = $base[$f];
             }
         }
-        return AnnotationRules::existsWhereHolds($spec['where']['ast'], $vals, !$spec['fold'], $comma);
+        return AnnotationRules::existsWhereHolds($spec['where']['ast'], $vals, !$spec['fold'], $comma,
+            isset($spec['codes']) && is_array($spec['codes']) ? $spec['codes'] : []);
     }
 
     /**
@@ -2792,7 +2794,7 @@ class UniversalValidator extends AbstractExternalModule
     /** Whether $value, trimmed, is one of $codes (from missingDataCodes). */
     private static function isMissingCode($value, array $codes)
     {
-        return $codes && is_scalar($value) && isset($codes[trim((string) $value)]);
+        return Logic::isMissingCode($value, $codes);
     }
 
     /** The event id of a unique event name in ANOTHER project, or null. */
@@ -3372,6 +3374,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         $numbers = $this->conditionNumbers($project_id);
+        $codes = $this->missingDataCodes($project_id);
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -3383,7 +3386,7 @@ class UniversalValidator extends AbstractExternalModule
             // server logged a violation (M-04).
             if ($value === null || is_array($value)) continue;
             if (trim((string) $value, " \t\r\n") === '') continue;
-            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers)) {
+            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, self::testTextMode($rule), $numbers, $codes)) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
             }
         }
@@ -4909,6 +4912,7 @@ class UniversalValidator extends AbstractExternalModule
         $folded = [];
         $foldedAssert = [];
         $numbers = $this->conditionNumbers($pid);
+        $codes = $pid !== null ? $this->missingDataCodes($pid) : [];
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -4917,14 +4921,14 @@ class UniversalValidator extends AbstractExternalModule
             $b = [];
             $sn = [];
             $folded[$w] = [];
-            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers);
+            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false, $numbers, $codes);
             // Freshness diagnostics come from reference resolution and liveness
             // alone, never from a verdict, so the pass above already recorded
             // them; this one discards its own.
             $fCs = false;
             $bCs = [];
             $snCs = [];
-            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers);
+            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true, $numbers, $codes);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
@@ -4944,7 +4948,7 @@ class UniversalValidator extends AbstractExternalModule
                 $f2 = false;
                 $b2 = [];
                 $sn2 = [];
-                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers);
+                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, $mode, $numbers, $codes);
             }
         }
         // With the form unknown, NOTHING is live — not because these fields are
@@ -5559,7 +5563,8 @@ class UniversalValidator extends AbstractExternalModule
         $layout = $pid ? $this->eventLayout($pid) : null;
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd, $layout);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd, $layout,
+                $pid ? $this->missingDataCodes($pid) : []);
             if ($rule === null) continue;
             // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
             //
@@ -5624,7 +5629,7 @@ class UniversalValidator extends AbstractExternalModule
         return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
     }
 
-    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null, $layout = null)
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null, $layout = null, array $codes = [])
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
@@ -5768,7 +5773,7 @@ class UniversalValidator extends AbstractExternalModule
                     if (!empty($w['ok'])) {
                         $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : [], $condKey);
                         foreach ($refErrs as $e) $errors[] = $e;
-                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false) : null;
+                        $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, $condKey, false, $codes) : null;
                         if ($why !== null) $errors[] = $why;
                     }
                 }
@@ -5925,7 +5930,7 @@ class UniversalValidator extends AbstractExternalModule
             if (!empty($w['ok'])) {
                 $refErrs = Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []);
                 foreach ($refErrs as $e) $errors[] = $e;
-                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false) : null;
+                $why = (!$refErrs && is_array($dd) && $dd) ? self::conditionKindProblem($w['ast'], $dd, 'when', false, $codes) : null;
                 if ($why !== null) $errors[] = $why;
             }
         }
@@ -5972,7 +5977,8 @@ class UniversalValidator extends AbstractExternalModule
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd, $layout);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd, $layout,
+                    $pid ? $this->missingDataCodes($pid) : []);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -6203,7 +6209,8 @@ class UniversalValidator extends AbstractExternalModule
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices, $condKey);
                     if (!$errs && $types !== null) {
                         $ddNow = $this->dataDictionary($pid);
-                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false) : null;
+                        $why = (is_array($ddNow) && $ddNow) ? self::conditionKindProblem($w['ast'], $ddNow, $condKey, false,
+                            $pid ? $this->missingDataCodes($pid) : []) : null;
                         if ($why !== null) $errs = [$why];
                     }
                     if ($errs) {
@@ -6615,7 +6622,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $errs = Logic::checkRefs($p['ast'], $types, $choices, 'where');
         if ($errs) return $hide(implode(' ', $errs));
-        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);
+        $why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true, $pidThere ? $this->missingDataCodes($pidThere) : []);
         if ($why !== null) return $hide($why);
         $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"where"', 'tested');
         if (isset($shape['problem'])) return $shape['hide'] ? $hide($shape['problem']) : $shape['problem'];
@@ -6638,17 +6645,19 @@ class UniversalValidator extends AbstractExternalModule
      * and passed every date before 2000). $sameMark also asks two number
      * fields for the same decimal mark: a "where" compares stored text, while
      * "assert" and "when" read each number by its own mark (AST-1).
+     * $codes are the project's Missing Data Codes: = and <> may compare a
+     * field with one as written, [visit_date]<>'UNK' (AST-10).
      */
-    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark)
+    private static function conditionKindProblem(array $n, array $dd, $key, $sameMark, array $codes = [])
     {
         if ($n[0] === 'and' || $n[0] === 'or') {
             foreach ($n[1] as $c) {
-                $why = self::conditionKindProblem($c, $dd, $key, $sameMark);
+                $why = self::conditionKindProblem($c, $dd, $key, $sameMark, $codes);
                 if ($why !== null) return $why;
             }
             return null;
         }
-        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark);
+        if ($n[0] === 'not') return self::conditionKindProblem($n[1], $dd, $key, $sameMark, $codes);
         if ($n[0] !== 'cmp') return null;
         $label = '"' . $key . '"';
         // A checkbox box ([cb(code)]) reads "1" or "0": no kind to compare.
@@ -6671,6 +6680,9 @@ class UniversalValidator extends AbstractExternalModule
         if ($f === null || $lit === null || $lit[1] === '') return null;
         $k = $kind($f);
         $v = (string) $lit[1];
+        // A field marked with a Missing Data Code holds it as written, so =
+        // and <> may test for one. < > <= >= on a code have no answer.
+        if (($n[1] === '=' || $n[1] === '<>') && Logic::isMissingCode($v, $codes)) return null;
         $shown = '"[' . $f . ']"';
         if (strpos($k, 'dates') === 0 && !preg_match(AnnotationRules::WINDOW_LITERAL_RE, $v)) {
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '

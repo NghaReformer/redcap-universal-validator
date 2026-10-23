@@ -921,7 +921,7 @@ trait LiveLookups
             }
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid))) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']), $this->conditionNumbers($pid), $this->missingDataCodes($pid))) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;

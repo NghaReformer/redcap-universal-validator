@@ -91,7 +91,7 @@
       "eligibility": {
         "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "calc", "sql", "slider"],
         "annotationWhy": "@UVASSERT does not support \"{type}\" fields — it checks one scalar field's value against a condition.",
-        "dialogWhy": "a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields"
+        "dialogWhy": "a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc, SQL and slider fields"
       },
       "hooks": {},
       "evaluator": "findingsConstraint",
