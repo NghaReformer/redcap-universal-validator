@@ -46,6 +46,13 @@
       "method": "uvScanExpireValuesCron",
       "cron_frequency": "86400",
       "cron_max_run_time": "1800"
+    },
+    {
+      "cron_name": "uv_lookup_index",
+      "cron_description": "Build the value index of the live @UVUNIQUE and @UVEXISTS lookups for fields too large to build during a lookup, refresh it weekly, and drop the index of fields no lookup has used in 30 days.",
+      "method": "uvLookupIndexCron",
+      "cron_frequency": "300",
+      "cron_max_run_time": "240"
     }
   ],
 
@@ -85,6 +92,11 @@
   ],
 
   "system-settings": [
+    {
+      "key": "lookup-index-system-off",
+      "name": "<b>Live lookups</b> — turn OFF the value index of @UVUNIQUE and @UVEXISTS. Leave this unchecked. The index answers a lookup from a few rows instead of reading every saved value of the field, which is what keeps lookups fast on projects with hundreds of thousands of records. A lookup builds a small field's index itself; the module's cron (every 5 minutes) builds the larger ones, so a lookup reads the data table until its field is built. The index is kept current from the project's log, and the lookups read the data table directly whenever it cannot be proved current. Check this only to rule the index out while you investigate a problem; the lookups then read the data table every time.",
+      "type": "checkbox"
+    },
     {
       "key": "scan-system-enable-durable",
       "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> The scan creates its own tables when you turn this on (one small counter table backing the survey uniqueness throttle is created either way, because that throttle runs whether or not the scan does), runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",

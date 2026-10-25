@@ -1957,17 +1957,21 @@ namespace {
             sort($out);
             return array_values(array_unique($out));
         };
+        //
+        // The lookup index's four tables are the same kind of exception: the
+        // live @UVUNIQUE and @UVEXISTS lookups they serve run on every
+        // installation (Scan\LookupIndex).
         $mig->sql = [];
         $mig->redcap_module_save_configuration(null);
-        check('migrate: with the switch off, exactly one table is created',
-            $creates($mig) === 1);
-        check('migrate: and it is the throttle counter, not a scan table',
-            $named($mig) === ['uv_rate_bucket']);
-        check('migrate: the throttle counter is created IF NOT EXISTS, so a re-save is a no-op',
+        check('migrate: with the switch off, exactly five tables are created',
+            $creates($mig) === 5);
+        check('migrate: the throttle counter and the lookup index, not a scan table',
+            $named($mig) === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket']);
+        check('migrate: each is created IF NOT EXISTS, so a re-save is a no-op',
             count(array_filter($mig->sql, function ($q) {
                 return stripos($q, 'CREATE TABLE') !== false
                     && stripos($q, 'IF NOT EXISTS') !== false;
-            })) === 1);
+            })) === 5);
 
         // ON: the administrator ticked the box and pressed Save, which IS the
         // choice, so the schema is installed.

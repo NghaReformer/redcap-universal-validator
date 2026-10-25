@@ -576,14 +576,19 @@ enforcement:
   next id, so the page check compares the value with that record too. Up to
   2.3.0-rc.2 the page check skipped it as "this record" and said *not used
   before*.
-- **What the check reads.** The page check and the save audit read the tagged
-  field's rows (and the `also` fields' rows) from the project's data table, then
-  build only the records that hold the value. A value no other record holds
-  needs no further read. Up to 2.3.0-rc.2 every *not used before* answer and
-  every save exported those fields for every record, about 115 MB at 100,000
-  records. Where the data table cannot be read, the module falls back to that
-  export. On a survey page, a value another record holds is still settled by a
-  filtered read first, which costs nothing from the survey's read budget.
+- **What the check reads.** The page check and the save audit ask the
+  module's value index which records hold the value, confirm those records
+  against their rows of the tagged field (and the `also` fields) in the data
+  table, and build only the records that hold it. A value no other record
+  holds needs no further read, so a check costs about the same at 400,000
+  records as at 1,000 (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
+  Where the index cannot answer, the check reads the field's rows of every
+  record from the data table. Up to 2.3.0-rc.2 every *not used before* answer
+  and every save exported those fields for every record, about 115 MB at
+  100,000 records; where the data table cannot be read, the module still falls
+  back to that export. On a survey page the index answers outside the survey's
+  read budget. Without it, a value another record holds is settled by a
+  filtered read first, which costs nothing from that budget.
 - **What counts as the same value.** Stored values, trimmed, with letter case
   ignored (`SP-1` duplicates `sp-1`) unless the rule sets `"caseSensitive":true`.
   In a field that holds numbers (an integer or number Text field, or a slider)
@@ -802,11 +807,15 @@ the specimen ID on the collection form.
   precision, or neither a date nor a time. Two number fields must use the same
   decimal mark. Dropdown and radio values are compared by code.
   `@UVEXISTS=record` never finds the record being edited.
-- **Reads only the records that hold the value.** The module asks the project's
-  data table which records hold the value searched (in any spelling the rule
-  accepts), then reads those records through REDCap and judges them. A *not
-  found* reads no record. When the data table cannot be read, the lookup reads
-  the searched fields of every record instead, as before.
+- **Reads only the records that hold the value.** The module asks its value
+  index which records hold the value searched (in any spelling the rule
+  accepts), confirms them against the data table, then reads those records
+  through REDCap and judges them. A *not found* reads no record. Where the
+  index cannot answer, the module reads the searched field's rows of every
+  record from the data table; where that cannot be read either, the searched
+  fields of every record through REDCap, as before. A lookup in another
+  project (`pid`) and a survey lookup with `where` do not use the index
+  (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
 - **`in` on this form.** When the searched field is on the tagged field's own
   form, the page sends what that field holds now, and the record being edited
   counts with that value, as it will once saved: a household head who types
@@ -858,7 +867,7 @@ the specimen ID on the collection form.
   throttle. It is refused when any field the lookup touches is an Identifier
   (the field, the `match` fields, the searched field, the `where` fields, or the
   record-ID field for a record-ID lookup), and when the Identifier flags cannot
-  be read. A *not
+  be read. Where the value index cannot answer, a *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
   check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
@@ -1197,6 +1206,55 @@ REDCap settings  ->  UniversalValidator.php  ->  window.INSPIRE_VALIDATOR_CONFIG
                                               ->  js/engine.js (verified engine)
                      redcap_save_record       ->  php/CheckCharacter.php (server guard)
 ```
+
+### Lookups on large projects: the value index
+
+REDCap keeps no index on saved values, so a lookup that reads the data table
+reads one row per record: 3 to 8 seconds at 100,000 records on a test server
+whose database had 128 MB of memory for its tables, and longer at 400,000. The
+module
+therefore keeps its own index of the fields that `@UVUNIQUE` and `@UVEXISTS`
+search, in four tables (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
+`uv_lookup_record`). They are created when the module is enabled or upgraded and
+when its configuration is saved, whether or not the Validation scan is on.
+
+- **Built once per field.** A build reads all the field's rows once and
+  stores one key per value and record: a hash of the value as lookups compare
+  it (trimmed, letter case folded, numbers by value). A field of up to 20,000
+  saved values is built by its first lookup (one field a request). A larger
+  one is built by the module's cron *uv_lookup_index*, which runs every 5
+  minutes: the first lookup marks the field, and until the cron has built it
+  the lookups read the data table, as before. While the cron reads a field,
+  the project's other fields keep answering. Where the cron has not run for
+  15 minutes, a lookup builds a field that has waited as long itself.
+- **Kept current from the log.** Every value REDCap saves writes a row to the
+  project's log. Before it answers, a lookup reads the records the log names
+  since the last lookup and indexes them again. It also counts the log rows of
+  the last hour again, range by range, and reads a range again when its count
+  grew, so a row that becomes visible late (an import that commits after later
+  saves) is still seen.
+- **Confirmed before use.** The records the index names are checked against
+  their current rows in the data table before any is used, so a stale key
+  costs one row read and never a wrong answer.
+- **Rebuilt when it cannot be shown current:** after a change to the data
+  dictionary, a log pruned into the last hour, a move to another log or data
+  table, more than 20,000 changed records in one stretch of the log (or 5,000
+  to index again), and every 7 days. After a burst of changes the rebuild
+  waits 7.5 minutes. While a field is not built, its lookups read the data
+  table. The cron rebuilds each field a day before its 7 days are up, and the
+  field answers throughout: from its old keys and the new ones until the new
+  build is complete.
+- **What it does not see on its own:** a value written to the data table with
+  no log row (another module's direct SQL, for example), and a log row that
+  becomes visible more than an hour after later rows. The 7-day rebuild picks
+  both up. The Validation scan reads the data table and is not affected.
+- **Not used for** a lookup in another project (`@UVEXISTS` with `pid`) and a
+  survey lookup with `where`; those read as before.
+- **Size.** One row of `uv_lookup_key` per saved value of a searched field,
+  about 100 bytes with its indexes. The cron drops the keys of a field no
+  lookup has asked for in 30 days.
+- **Off switch.** The system setting *Live lookups — turn OFF the value index*
+  makes every lookup read the data table again.
 
 ## Verification
 

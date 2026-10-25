@@ -325,19 +325,46 @@ field's form does not re-audit an extended rule. `missing_codes_php.php` checks
 that a code saved in an `also` field matches nothing. The SQL (the `lookup`
 column, discovery and emit) is in `tests/mysql/cases/uniqueness.php`.
 
-The live check and the save audit first ask the data table which records hold
-the value (`Scan\FieldValues`). `unique_scope_php.php` answers that read from
-its `REDCap::$data` and runs every check twice: with the table, and in a second
-process (`--no-table`) without it, where the export answers instead.
-`tests/mysql/cases/field_values.php` runs the reader on a real server over a
-table with REDCap's own indexes and asserts each statement's plan.
+The live check and the save audit first ask the value index which records may
+hold the value (`Scan\LookupIndex`), confirm them against the data table
+(`Scan\FieldValues::recordsAmong`), and read the whole field from the data
+table when the index cannot answer (`Scan\FieldValues::recordsWhere`).
+`unique_scope_php.php` answers those reads from its `REDCap::$data` and runs
+every check three times: with the table, in a second process (`--no-table`)
+without it, where the export answers instead, and in a third (`--index`) with
+the index of `tests/support/fake_lookup_index.php`, which names the records
+holding the value plus one that does not. Every answer must be the same in the
+three runs. `tests/mysql/cases/field_values.php` runs the reader on a real
+server over a table with REDCap's own indexes and asserts each statement's
+plan.
+
+`tests/mysql/cases/lookup_index.php` runs the real index on a real server: the
+first lookup builds a field, one build a request, numbers and letter case,
+edits, new and deleted records and the neighbour project's changes as REDCap
+logs them, a log row that turns up late inside the window, the rebuilds (a
+data dictionary change, a burst of changes with its cooldown and no second
+read of it, a pruned log, another log table with no index on `ts`, a field
+older than 7 days), and no answer while another request holds the project or
+a read fails. It also pins what the index does not see on its own: a row that
+turns up below the window and a write with no log row, both seen after the
+7-day rebuild. A last project has fields too large for a lookup to build
+(`liveBuildRows` set to 50): the lookup marks the field and the cron
+(`maintain()`) builds it; a lookup made from a second connection while the
+cron reads answers, and a change it syncs reaches the field being built; a
+data dictionary change while the cron reads keeps that build from counting;
+the refresh before the 7 days are up answers throughout and replaces a key no
+log row reported; a field wanted for 15 minutes is left to a cron that ran a
+minute ago and built by a lookup when none has run; and the cron stops at its deadline and drops a field no lookup asked
+for in 30 days. `tests/scan_cron_php.php` checks the cron's declaration, its
+off switch and that a database failure comes back as its summary line.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
 asks the table which records hold the value and reads only those through
 getData; its mock answers the table from `REDCap::$data` and can confine
 getData to one Data Access Group, as REDCap does for a user in one. Each
 lookup is asked again with the table unreadable, and the export must give the
-same answer. It also covers a returned value kept out of a form the person who
+same answer. The whole suite runs again in a second process (`--index`) with
+the fake value index, and must pass unchanged. It also covers a returned value kept out of a form the person who
 saved may only read, the `formReadOnly` flag of a read-only or locked form, the
 value the page sends for an `in` field on the tagged field's own form, and the
 scan index built from the table. The browser half of the last two is in

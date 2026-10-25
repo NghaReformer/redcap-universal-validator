@@ -61,6 +61,7 @@ require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
 require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
 require_once __DIR__ . '/php/Scan/FieldValues.php';
+require_once __DIR__ . '/php/Scan/LookupIndex.php';
 require_once __DIR__ . '/php/Scan/SourceFence.php';
 require_once __DIR__ . '/php/Scan/ScanPlanner.php';
 require_once __DIR__ . '/php/Scan/WorkBudget.php';
@@ -1460,9 +1461,13 @@ class UniversalValidator extends AbstractExternalModule
                 // spelling the rule accepts, and is not confined to the
                 // caller's Data Access Group (EXS-1): only those records are
                 // read, and a miss there is a miss. A survey (a read budget)
-                // keeps the reads below.
-                if (empty($opts['foreign']) && !$budgeted) {
-                    $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered);
+                // asks the lookup index alone, which reads only the records
+                // it names, and keeps the reads below when it cannot answer.
+                // With "where" a survey keeps them always: the reads an answer
+                // takes must not tell "saved, but filtered" from "absent".
+                if (empty($opts['foreign']) && (!$budgeted || $spec['where'] === null)) {
+                    $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
+                        $budgeted ? 'index' : 'any');
                     if ($t !== null) return $t;
                 }
                 // REDCap finds a record by its exact name only, so a value that
@@ -1508,9 +1513,11 @@ class UniversalValidator extends AbstractExternalModule
             // then those records only, in place of a read of every record
             // (EXS-4). A survey keeps its narrowed read, whose hit costs no
             // budget, and reads the table in place of the full read below.
+            // A survey asks the lookup index first, outside the budget: it
+            // reads only the records it names.
             $table = empty($opts['foreign']) && !($budgeted && $spec['where'] !== null);
-            if ($table && !$budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+            if ($table) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, $budgeted ? 'index' : 'any');
                 if ($t !== null) return $t;
             }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
@@ -1537,7 +1544,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $unknown + ['why' => 'too many lookups in the last minute'];
             }
             if ($table && $budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
                 if ($t !== null) return $t;
             }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
@@ -1575,11 +1582,11 @@ class UniversalValidator extends AbstractExternalModule
      * there, without its name; with either, the answer is unknown. Under
      * "scope":"dag" such a record is outside the group the rule looks in.
      */
-    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered)
+    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any')
     {
         $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') return null;
-        $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self);
+        $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         $more = array_values(array_filter($cands, function ($r) use ($ids) { return !array_key_exists($r, $ids); }));
@@ -8459,6 +8466,7 @@ class UniversalValidator extends AbstractExternalModule
         // left the module's only unauthenticated endpoint unthrottled by
         // default. See Schema::ensureRateBucket().
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
     }
 
@@ -8530,6 +8538,7 @@ class UniversalValidator extends AbstractExternalModule
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'enable');
@@ -8580,6 +8589,7 @@ class UniversalValidator extends AbstractExternalModule
     public function redcap_module_system_change_version($version = null, $old_version = null)
     {
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'upgrade');
@@ -8726,6 +8736,42 @@ class UniversalValidator extends AbstractExternalModule
             $n = $ret->expireValues();
             return ['values_cleared' => (int) $n];
         });
+    }
+
+    /**
+     * Seconds into a run of the lookup index cron after which it starts no
+     * further field. config.json gives a run 240 s of every 300; a field
+     * started at 60 s has 180 s left, and a field of 400,000 values took 61 s
+     * to build on the test server.
+     */
+    const LOOKUP_CRON_SECONDS = 60;
+
+    /**
+     * Build the value index of the live lookups (Scan\LookupIndex) for the
+     * fields too large to build during a lookup, rebuild each field a day
+     * before its weekly rebuild falls due, and drop the keys of fields no
+     * lookup asked for in 30 days (LookupIndex::maintain()).
+     *
+     * It runs whether or not the Validation scan is on, as the lookups do, and
+     * does nothing when the system setting turns the index off. NEVER THROWS,
+     * for the reason the scan crons give.
+     *
+     * @return string the one-line summary REDCap shows beside the cron
+     */
+    public function uvLookupIndexCron($cronInfo = [])
+    {
+        try {
+            $idx = $this->lookupIndex();
+            if ($idx === null) return 'the lookup index is turned off here; nothing to do';
+            $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
+            // The lookups build a large field themselves only while no cron runs.
+            $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
+            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
+                $r['built'], $r['dropped'], $r['waiting'], $r['left']);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::uvLookupIndexCron');
+            return 'lookup index: this run could not read its tables (' . get_class($e) . '); the lookups read the data table meanwhile';
+        }
     }
 
     /**
@@ -8988,26 +9034,26 @@ class UniversalValidator extends AbstractExternalModule
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
 
-        // The records that hold the value, from the data table (UNQ-7,
-        // PRF-2): getData then builds those records only, and a miss needs no
-        // export at all. [false] when the table cannot be read, and the
-        // export below answers instead.
-        $fromTable = function () use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+        // The records that hold the value, from the lookup index or the data
+        // table (UNQ-7, PRF-2): getData then builds those records only, and a
+        // miss needs no export at all. [false] when neither can be read
+        // ($via says which may be tried), and the export below answers.
+        $fromTable = function ($via) use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
             $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
-                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null);
+                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null, $via);
             if ($cand === null) return [false];
             if (!$cand) return [true, null];
             $data = \REDCap::getData($params + ['records' => $cand]);
             if (!is_array($data)) return [true, false];
             return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
         };
-        // Signed-in callers and the save audit start there. A survey keeps
-        // its order: the narrowed read below settles a hit without spending
-        // the read budget, and the budget pays for the table read of a miss.
-        if ($mayFullRead === null) {
-            $t = $fromTable();
-            if ($t[0]) return $t[1];
-        }
+        // Signed-in callers and the save audit start there. A survey asks the
+        // lookup index first, outside the read budget: it reads the records
+        // it names, not the field. Without it a survey keeps its order: the
+        // narrowed read below settles a hit without spending the budget, and
+        // the budget pays for the table read of a miss.
+        $t = $fromTable($mayFullRead === null ? 'any' : 'index');
+        if ($t[0]) return $t[1];
 
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
@@ -9041,7 +9087,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($mayFullRead !== null) {
             if (!call_user_func($mayFullRead)) return false;
-            $t = $fromTable();
+            $t = $fromTable('table');
             if ($t[0]) return $t[1];
         }
         $shared = $this->sharedCollisionRead($params);
@@ -9056,25 +9102,29 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The records other than $excludeRecord with a row of $fields whose value
-     * has the lookup key of $value under that field's number mark, read from
-     * the data table (Scan\FieldValues); or null when it cannot be read. A
-     * superset of the records collisionIn can match: a context takes its
-     * values from these rows only.
+     * has the lookup key of $value under that field's number mark; or null
+     * when it cannot be read. A superset of the records collisionIn can
+     * match: a context takes its values from these rows only.
+     *
+     * $via: 'any' asks the lookup index (Scan\LookupIndex) and then the whole
+     * field in the data table (Scan\FieldValues); 'index' the index alone;
+     * 'table' the data table alone. Both answer the same records.
      */
-    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId)
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any')
     {
         $keyOf = [];
         foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
-        $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId,
-            function ($f, $v) use ($keyOf, $value, $fold, $marks) {
-                if (!isset($keyOf[$f])) return false;
-                if ($v === $value) return true;
-                $k = $keyOf[$f];
-                // A text key is the trimmed, folded value: a shorter stored
-                // value cannot reach it.
-                if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
-                return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
-            });
+        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+            if (!isset($keyOf[$f])) return false;
+            if ($v === $value) return true;
+            $k = $keyOf[$f];
+            // A text key is the trimmed, folded value: a shorter stored
+            // value cannot reach it.
+            if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
+            return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+        };
+        $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId, $accept);
         if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
         $skip = (string) $excludeRecord;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -9085,22 +9135,24 @@ class UniversalValidator extends AbstractExternalModule
      * @UVEXISTS lookup of $value matches (existsRowMatch: trimmed, letter case
      * ignored when $fold, numbers by value under $mark, a Missing Data Code
      * never), in event $event (null: any), less $skip; read from the data
-     * table (Scan\FieldValues), which REDCap does not confine to the user's
-     * Data Access Group. Null when the table cannot be read.
+     * table (Scan\FieldValues) or the lookup index, neither of which REDCap
+     * confines to the user's Data Access Group. Null when neither can be
+     * read; $via as for collisionCandidates.
      */
-    private function existsCandidates($pid, $field, $value, $fold, $mark, array $codes, $event, $skip = null)
+    private function existsCandidates($pid, $field, $value, $fold, $mark, array $codes, $event, $skip = null, $via = 'any')
     {
         $key = Logic::lookupKey($value, $fold, $mark);
-        $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event,
-            function ($f, $v) use ($value, $key, $fold, $mark, $codes) {
-                if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
-                // A text key is the trimmed, folded value: a shorter stored
-                // value cannot reach it.
-                if ($key[0] === '=' && strlen($v) < strlen($key) - 1) return false;
-                $t = Logic::lookupTrim($v);
-                if ($codes && self::isMissingCode($t, $codes)) return false;
-                return Logic::lookupKey($t, $fold, $mark) === $key;
-            });
+        $accept = function ($f, $v) use ($value, $key, $fold, $mark, $codes) {
+            if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
+            // A text key is the trimmed, folded value: a shorter stored
+            // value cannot reach it.
+            if ($key[0] === '=' && strlen($v) < strlen($key) - 1) return false;
+            $t = Logic::lookupTrim($v);
+            if ($codes && self::isMissingCode($t, $codes)) return false;
+            return Logic::lookupKey($t, $fold, $mark) === $key;
+        };
+        $recs = $via === 'table' ? null : $this->indexedRecords($pid, [$field], [$field => $mark], $value, $event, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event, $accept);
         if ($recs === null || $skip === null || $skip === '') return $recs;
         $skip = (string) $skip;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -9124,12 +9176,12 @@ class UniversalValidator extends AbstractExternalModule
      * answer is unknown. Under "scope":"dag" such a record is in another
      * group than the one the rule looks in, so it is left out.
      */
-    private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts)
+    private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts, $via = 'any')
     {
         $in = $spec['in'];
         $skip = isset($spec['skip']) ? $spec['skip'] : null;
         $cands = $this->existsCandidates($pid, $in, $value, $spec['fold'], isset($spec['marks'][$in]) ? $spec['marks'][$in] : null,
-            $spec['codes'], $spec['event'], $skip);
+            $spec['codes'], $spec['event'], $skip, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         if (!$cands) return $notFound;
@@ -9160,6 +9212,48 @@ class UniversalValidator extends AbstractExternalModule
                         : 'the saved values could not be read just now'];
         }
         return self::existsFilteredMiss($notFound, $filtered);
+    }
+
+    /**
+     * The records the lookup index names for $value in $fields, confirmed
+     * against their rows in the data table with $accept; null when the index
+     * cannot answer (Scan\LookupIndex) or is turned off, and the caller reads
+     * the whole field instead. The confirmed list is the one the whole-field
+     * read gives, restricted to records the index names, and the index names
+     * every record that holds the value.
+     */
+    private function indexedRecords($pid, array $fields, array $marks, $value, $eventId, callable $accept)
+    {
+        $idx = $this->lookupIndex();
+        if ($idx === null) return null;
+        $fm = [];
+        foreach ($fields as $f) $fm[(string) $f] = isset($marks[$f]) ? $marks[$f] : null;
+        $cand = $idx->candidates($pid, $fm, $value);
+        if ($cand === null) return null;
+        return $this->fieldValues()->recordsAmong($pid, $fields, $eventId, $cand, $accept);
+    }
+
+    /** @var Scan\LookupIndex|false|null false when turned off */
+    private $lookupIndexer = null;
+
+    /** System setting, not in config.json: when uvLookupIndexCron() last ran. */
+    const LOOKUP_CRON_AT = 'lookup-index-cron-at';
+
+    /** The lookup index, or null when an administrator turned it off. */
+    private function lookupIndex()
+    {
+        if ($this->lookupIndexer === null) {
+            $off = false;
+            $cronAt = 0;
+            try {
+                $off = (bool) $this->getSystemSetting('lookup-index-system-off');
+                $cronAt = (int) $this->getSystemSetting(self::LOOKUP_CRON_AT);
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::lookupIndex');
+            }
+            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt]);
+        }
+        return $this->lookupIndexer === false ? null : $this->lookupIndexer;
     }
 
     /** @var Scan\FieldValues|null */

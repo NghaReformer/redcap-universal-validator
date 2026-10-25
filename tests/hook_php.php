@@ -3078,9 +3078,12 @@ namespace {
     }));
     check('F6: enabling the module creates the throttle counter with the scan flag OFF',
         count($made) === 1);
+    // The lookup index's four tables are not the scan's either: the live
+    // lookups they serve run on every installation (Scan\LookupIndex).
     check('F6: and creates no scan table, so the scan stays opt-in',
         count(array_filter($inst->rateStatements, function ($q) {
-            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false;
+            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false
+                && !preg_match('/uv_lookup_(key|field|sync|record) /', $q);
         })) === 0);
     check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
         stripos($made[0], 'IF NOT EXISTS') !== false);

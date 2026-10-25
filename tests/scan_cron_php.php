@@ -93,7 +93,7 @@ $byName = [];
 foreach (isset($cfg['crons']) && is_array($cfg['crons']) ? $cfg['crons'] : [] as $c) {
     if (isset($c['cron_name'])) $byName[$c['cron_name']] = $c;
 }
-foreach (['uv_scan_reap_abandoned', 'uv_scan_expire_values'] as $want) {
+foreach (['uv_scan_reap_abandoned', 'uv_scan_expire_values', 'uv_lookup_index'] as $want) {
     check("cron declared: $want", isset($byName[$want]));
 }
 foreach ($byName as $name => $c) {
@@ -201,6 +201,31 @@ check('a database failure comes back as a summary', is_string($out) && $out !== 
 $failLogged = false;
 foreach ($m->logCalls as $L) if ($L[0] === 'scan-cron-failed' || $L[0] === 'scan-cron-skipped') $failLogged = true;
 check('a database failure is recorded in the module log', $failLogged);
+
+// ---- 8) the lookup index cron (Scan\LookupIndex::maintain) -----------------
+// It runs whether or not the scan is on, stops at the off switch, works
+// within the run time config.json gives it, and never throws.
+check('lookup cron: its work fits in the run time config.json gives it',
+    isset($byName['uv_lookup_index']) && UniversalValidator::LOOKUP_CRON_SECONDS < (int) $byName['uv_lookup_index']['cron_max_run_time']);
+$m = new UniversalValidator();
+$m->systemSettings = ['lookup-index-system-off' => '1'];
+$out = $m->uvLookupIndexCron();
+check('lookup cron: the off switch stops it before any statement', stripos($out, 'turned off') !== false && $m->sql === []);
+$m = new UniversalValidator();
+$m->systemSettings = [];                       // scan off, index on
+$out = $m->uvLookupIndexCron();
+$asked = false;
+foreach ($m->sql as $q) if (strpos($q, 'FROM uv_lookup_field') !== false && strpos($q, 'wanted_at > 0') !== false) $asked = true;
+check('lookup cron: with the scan off it still asks which fields need work (got ' . json_encode($out) . ')',
+    $asked && strpos($out, '0 field(s) built') !== false);
+check('lookup cron: and records that it ran, so lookups leave large fields to it',
+    isset($m->systemSettings[UniversalValidator::LOOKUP_CRON_AT]) && abs((int) $m->systemSettings[UniversalValidator::LOOKUP_CRON_AT] - time()) < 5);
+$m = new UniversalValidator();
+$m->queryThrows = true;
+$threw = false;
+try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
+check('lookup cron: a database failure does not escape, and comes back as a summary',
+    !$threw && is_string($out) && stripos($out, 'could not read') !== false);
 
 echo sprintf("scan_cron_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);
