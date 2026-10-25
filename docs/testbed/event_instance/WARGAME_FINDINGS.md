@@ -253,6 +253,10 @@ Tests in `tests/temporal_integration_php.php`.
   previous instance) write a `uvalidate-unconfigurable` row on every save:
   replaying the seed saves once produced 40 distinct such entries, 2 of them
   from the deliberately broken `xn_*` fields.
+  **Fixed 2026-10-23:** the audit writes no notice when every problem is
+  `absent` (an entry that does not exist there). The two `xn_*` fields are
+  configuration errors since C3. The scan still lists the places it could
+  not judge. Tests in `tests/temporal_integration_php.php`.
 - **P7** `AddressResolver.php:225`, `engine.js:1306`: min/max run the exact
   sum first; three 4,096-digit values give `limit`.
   **Fixed 2026-10-23:** minimum and maximum check that each value is a number

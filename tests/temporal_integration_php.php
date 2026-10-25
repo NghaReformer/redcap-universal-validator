@@ -338,6 +338,15 @@ namespace {
         $at($m)===[1,2,3,4,5]&&array_column(array_column(unconf($m),1),'instance')===['6']);
     $m=$many(tag('[a_val]>[a_val][previous-instance]'));$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
     check('P4: a rule that reads other entries of the saved form re-checks them (got '.json_encode($at($m)).')',in_array(4,$at($m),true)&&in_array(3,$at($m),true));
+    // Wargame C8: instance 1 has no previous instance, so the rule does not apply there. That
+    // is the record, not the configuration: the audit writes no notice for it, the scan still
+    // lists where it could not judge.
+    $m=$many(tag('[a_val]>[a_val][previous-instance]'));$m->redcap_save_record(PID,'1','fa',1,null,null,null,1);
+    $why=array_map(function($c){return $c[1]['why'];},unconf($m));
+    check('C8: saving instance 1 writes no notice for the instance before it (got '.json_encode($why).')',!preg_grep('/unavailable/',$why));
+    $res=$m->scanProject(PID);
+    check('C8: ... and the scan still says instance 1 was not judged (got '.json_encode(array_column($res['unconfigurable'],'why')).')',
+        (bool)preg_grep('/instance 1: absent/',array_column($res['unconfigurable'],'why')));
     $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]>={mx}','references'=>['mx'=>['field'=>'a_val','aggregate'=>'maximum','excludeCurrent'=>true]],'blockSave'=>'hard']));
     $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
     check('P4: ... a binding over the saved form too (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&in_array(2,$at($m),true));

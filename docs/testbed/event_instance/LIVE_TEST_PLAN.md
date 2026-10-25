@@ -150,8 +150,9 @@ readable values.
 - [ ] **[auto]** Save XE-2 Baseline xr_specimen instance 3 twice: count
       duplicate rows written per save (finding P4 predicts one row per
       dependent context on every save).
-- [ ] **[auto]** `uvalidate-unconfigurable` rows: note how many appear for
-      designed gaps (first visit, instance 1). Every save writes them.
+- [ ] **[auto]** `uvalidate-unconfigurable` rows: none appear for designed
+      gaps (first visit, instance 1) since the C8 fix; the scan still lists
+      those places as not checked.
 
 ## Phase 4: scans
 

@@ -384,7 +384,13 @@ trait TemporalIntegration
             if($stopped){if(!isset($named[$i.'|'.$form])){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$event,$instance);}continue;}
             if(++$count>$limit || $this->temporalBudget->exhausted()){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;continue;}
             $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
-            if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
+            if($prepared['problems']){
+                // Only "absent": the entry the rule reads does not exist here (no visit before the
+                // first, no instance before instance 1, an entry not saved yet). That is the record,
+                // not the rule's configuration, so no such notice is written for it (wargame C8).
+                if(in_array('absent',$prepared['problems'],true)&&!array_diff($prepared['problems'],['absent','unresolved']))continue;
+                $this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;
+            }
             // One branch group's problem: logged, and the rest of the field is still judged.
             if(!empty($prepared['groupProblems']))$this->logUnconfigurable($i,$fields,'Extended validation unavailable for part of this field: '.implode('; ',$prepared['groupProblems']),$form,$ctx['event_id'],$ctx['instance']);
             // The prepared rule carries only the branches picked here: the rule as written says
