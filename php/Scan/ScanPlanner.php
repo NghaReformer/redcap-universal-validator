@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * Everything a run must decide before it reads its first record — and freeze.
  *
@@ -76,6 +78,8 @@ final class ScanPlanner
     private $store;
     /** @var string the module's protected secret */
     private $key;
+    /** @var bool whether the slice step() is running has committed a page of the walk */
+    private $moved = false;
 
     public function __construct(ScanStore $store, $key)
     {
@@ -131,6 +135,9 @@ final class ScanPlanner
      *   owner:         string  the planning lease's owner; one is made up when absent
      *   attempts:      int     slices in a row that may die on one page (step())
      *   leaseSeconds:  int     how long the planning lease lasts unrenewed
+     *   dimensions:    ?array  ScanDimensions::toSnapshot() rows, stored with the
+     *                  run's generation (M5); absent, the run has no snapshot
+     *                  and its report says its labels are today's
      * }
      * @return array{ok:bool, busy:bool, run:?array, why:?string, stats:array}
      */
@@ -142,6 +149,13 @@ final class ScanPlanner
                 . 'exporting it, so no scan may start');
         }
         $dag = isset($req['dagFilter']) && $req['dagFilter'] !== '' ? $req['dagFilter'] : null;
+        if ($src->isEmpty()) {
+            // A PROJECT WITH NO RECORDS IS REFUSED BEFORE A RUN EXISTS, as it
+            // was when open() refused it. open() hands the empty walk out now
+            // (review R5-7) so that a run whose records are all deleted while
+            // it is listing them can end over it; a start has nothing to list.
+            return self::no(self::emptyWhy($dag));
+        }
         if ($dag !== null && !$src->hasDag()) {
             // Running anyway would build a project-wide manifest for a user
             // entitled to one group. The persisted report is readable later by
@@ -222,6 +236,21 @@ final class ScanPlanner
             $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
             return self::no('this scan could not record which of the project rules it is unable '
                 . 'to evaluate, so it was not started rather than started without them');
+        }
+
+        // THE LABELS OF THE DAY IT WAS PLANNED (M5): the snapshot the report
+        // on this run is labelled with, under the generation startRun() has
+        // just allocated. Same rule as the marks above: a run that could not
+        // keep them is ended, not left - a report labelled from a later read
+        // of the project would rename the findings this run produced.
+        if (isset($req['dimensions']) && is_array($req['dimensions'])) {
+            try {
+                $this->store->writeDimensions($pid, (int) $run['generation_id'], $req['dimensions']);
+            } catch (\Throwable $e) {
+                $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+                return self::no('this scan could not keep the names its report is labelled with, '
+                    . 'so it was not started');
+            }
         }
 
         // THE FIRST SLICE. Its own budget unless the caller brought one: see
@@ -314,11 +343,44 @@ final class ScanPlanner
      *                 false stops the slice after the page in hand
      *   limits:       array    maxFindings and maxBytes, for a stopped run's finish
      * }
+     * AN EXCEPTION THAT LEAVES A SLICE HANDS THE LEASE BACK FIRST (review
+     * R5-6). A page whose append failed at the store - a deadlock, a lock wait,
+     * a lost connection - left the lease held, so for the next five minutes
+     * every request was told another request was listing the project, while
+     * none was. The attempt was counted at the claim, so the release costs the
+     * retry rule nothing. It is best effort: a database that has just failed
+     * may refuse that write too, and the lease then lapses as it always did.
+     *
      * @return array{ok:bool, phase:string, frozen:bool, empty:bool, total:?int,
-     *               listed:int, stop:?string, why:?string, stats:array}
-     *         `listed` is what THIS request listed; `stats` the walk so far.
+     *               listed:int, moved:bool, stop:?string, why:?string, stats:array}
+     *         `listed` is what THIS request listed inside the run's scope (review
+     *         R5-1); `moved` whether it committed a page of the walk at all, in
+     *         scope or not, which is what the page paces itself by; `stats` the
+     *         walk so far, every row read, and never shown.
      */
     public function step($pid, $runId, array $req)
+    {
+        $this->moved = false;
+        try {
+            $out = $this->listSlice($pid, $runId, $req);
+            $out['moved'] = $this->moved;
+            return $out;
+        } catch (\Throwable $e) {
+            $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
+            if ($owner !== '') {
+                try {
+                    $this->store->releasePlan($runId, $owner);
+                } catch (\Throwable $ignored) {
+                    // The failure the caller is about to hear about is the one that matters.
+                    \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanPlanner::step');
+                }
+            }
+            throw $e;
+        }
+    }
+
+    /** The body of step(), which owns the release on the way out. */
+    private function listSlice($pid, $runId, array $req)
     {
         $owner = (isset($req['owner']) && is_string($req['owner'])) ? $req['owner'] : '';
         $epoch = isset($req['epoch']) ? (int) $req['epoch'] : 0;
@@ -368,19 +430,11 @@ final class ScanPlanner
         }
 
         if ($claim['state'] === 'ok') {
-            $cursor = $claim['cursor'];
-            $carry = self::carryIn($claim['carry'], $src === null ? null : $src->via(), $cursor);
-            if ($carry === null) {
-                // A DIFFERENT SOURCE, OR A CARRY THAT CANNOT BE READ: START THE
-                // WALK AGAIN. A cursor is a position in one table's collation,
-                // and the carry is the set of ids that collation calls equal to
-                // it; RecordManifestSource::open() prefers the record index and
-                // falls back to the data table, and which one answers can change
-                // between two requests. Carried across, the cursor can step over
-                // records the other collation sorts differently. Appending is
-                // idempotent, so a second walk costs time and adds nothing twice.
-                $cursor = null;
-                $carry = [];
+            $at = self::resumeOn($claim['carry'], $src, $claim['cursor']);
+            $src = $at['source'];
+            $cursor = $at['cursor'];
+            $carry = $at['carry'];
+            if ($at['restart']) {
                 $stats['listed'] = 0;
                 $stats['outOfScope'] = 0;
             }
@@ -392,6 +446,38 @@ final class ScanPlanner
             while (true) {
                 $mark = $budget === null ? null : $budget->mark('manifest');
                 $pg = $src->page($cursor, $carry, $pageSize);
+                if (!empty($pg['untrusted'])) {
+                    // THE INDEX STOPPED BEING THE CACHE THIS WALK OPENED (review
+                    // R5-3): REDCap reset or rebuilt it after open(). The page
+                    // is not used, nothing is frozen, and the walk moves to the
+                    // data table, which is whole, in this same slice.
+                    //
+                    // Moved rather than ended. A slice that only ended would
+                    // leave the next request to open the index again, and an
+                    // index REDCap keeps rebuilding would end every slice at its
+                    // first page: no page appended, an attempt counted at every
+                    // claim, and the run retired with PLAN_GAVE_UP over a project
+                    // nothing was wrong with.
+                    //
+                    // FROM THE FIRST RECORD. A cursor is a position in one
+                    // table's collation and the data table's need not be the
+                    // index's; the records already appended are offered again
+                    // and land once (the manifest's unique key). It happens once
+                    // per run: the carry now names the data table, and a walk
+                    // that has used the data table stays on it (resumeOn()).
+                    $data = $src->dataWalk();
+                    if ($data === null || $data === $src) {
+                        $this->store->releasePlan($runId, $owner);
+                        return self::slice(false, ScanPhase::PLANNING, 'read',
+                            isset($pg['why']) ? $pg['why'] : self::NO_SOURCE, $listedNow, $stats);
+                    }
+                    $src = $data;
+                    $cursor = null;
+                    $carry = [];
+                    $stats['listed'] = 0;
+                    $stats['outOfScope'] = 0;
+                    continue;
+                }
                 if (empty($pg['ok'])) {
                     // The attempt was counted when the lease was taken. The lease
                     // goes back now, so trying again does not wait it out.
@@ -401,8 +487,10 @@ final class ScanPlanner
                 }
                 $batch = [];
                 foreach ($pg['rows'] as $row) {
+                    // THE WALK'S OWN COUNT, every row read: it is kept on the
+                    // plan row and never shown. $listedNow, which the work
+                    // answer reports, is counted below, inside the scope.
                     $stats['listed']++;
-                    $listedNow++;
                     // BOTH SIDES ARE GROUP IDS. $row['dag'] is
                     // redcap_record_list.dag_id (or the __GROUPID__ value on the
                     // data-table fallback), which REDCap stores as the numeric
@@ -419,6 +507,11 @@ final class ScanPlanner
                         $stats['outOfScope']++;
                         continue;
                     }
+                    // ONLY WHAT THE SCOPE ADMITS IS REPORTED (review R5-1).
+                    // Counted per row read, this told a reader confined to one
+                    // group how many records the other groups hold, a page at
+                    // a time; CatchUp::step() answers its `listed` the same way.
+                    $listedNow++;
                     $batch[] = ['id_bin' => $row['id'],
                                 'hash' => Hmac::raw(Hmac::P_RECORD, $pid, $row['id'], $this->key),
                                 'dag' => $row['dag']];
@@ -456,8 +549,9 @@ final class ScanPlanner
                     // Nothing of this page was written; it is not counted.
                     $stats['listed'] -= count($pg['rows']);
                     $stats['outOfScope'] -= (count($pg['rows']) - count($batch));
-                    return $this->notPlanning($pid, $runId, $req, $listedNow - count($pg['rows']), $stats);
+                    return $this->notPlanning($pid, $runId, $req, $listedNow - count($batch), $stats);
                 }
+                $this->moved = true;
                 $appended += (int) $n;
                 $stats['appended'] = $appended;
                 $stats['pages']++;
@@ -515,12 +609,7 @@ final class ScanPlanner
             // group-scoped user is entitled to. The walk counters travel in
             // `stats`: `listed` and `outOfScope` distinguish a genuinely empty
             // group from a scope value compared on the wrong axis.
-            $why = $dag === null
-                ? 'this project has no records, so there was nothing to scan'
-                : 'no records were found in the Data Access Group this scan was scoped '
-                . 'to, so there was nothing to scan. If you expect records in that '
-                . 'group, ask an administrator to check the scan scope before treating '
-                . 'this as an empty group.';
+            $why = self::emptyWhy($dag);
             $out = self::slice(false, ScanPhase::TERMINAL, 'empty', $why, $listedNow, $stats);
             $out['frozen'] = true;
             $out['empty'] = true;
@@ -557,6 +646,21 @@ final class ScanPlanner
     /** A walk whose run was stopped under it. */
     const PLAN_STOPPED = 'this scan was stopped while it was listing the project\'s records, so no '
         . 'record was examined';
+
+    /** A run, or a start, over a project that holds no records. */
+    const EMPTY_PROJECT = 'this project has no records, so there was nothing to scan';
+
+    /** The same for a group-scoped one. See step() for why it asserts nothing about the group. */
+    const EMPTY_GROUP = 'no records were found in the Data Access Group this scan was scoped '
+        . 'to, so there was nothing to scan. If you expect records in that '
+        . 'group, ask an administrator to check the scan scope before treating '
+        . 'this as an empty group.';
+
+    /** The empty-scope sentence for a run scoped to $dag, or to the whole project when null. */
+    public static function emptyWhy($dag)
+    {
+        return ($dag === null || $dag === '') ? self::EMPTY_PROJECT : self::EMPTY_GROUP;
+    }
 
     /**
      * An append, a claim or the freeze was refused: the run is not planning
@@ -622,27 +726,83 @@ final class ScanPlanner
     }
 
     /**
-     * The carry back, or null when the walk must start again: a carry written
-     * over a different source, or one that cannot be read. A walk that has not
-     * begun (no cursor, no carry) is a walk at the start.
+     * The carry back: the source it was written over and the boundary ids,
+     * `via` null for a walk that has not begun (no cursor, no carry), or null
+     * for a carry that cannot be read.
      *
-     * @return string[]|null
+     * @return ?array{via:?string, ids:string[]}
      */
-    private static function carryIn($raw, $via, $cursor)
+    private static function carryIn($raw, $cursor)
     {
-        if ($raw === null || $raw === '') return $cursor === null ? [] : null;
+        if ($raw === null || $raw === '') return $cursor === null ? ['via' => null, 'ids' => []] : null;
         $c = json_decode((string) $raw, true);
         if (!is_array($c) || !isset($c['v']) || (int) $c['v'] !== 1 || !isset($c['via'])
-                || !isset($c['carry']) || !is_array($c['carry'])) {
+                || !is_string($c['via']) || !isset($c['carry']) || !is_array($c['carry'])) {
             return null;
         }
-        if ($via === null || (string) $c['via'] !== (string) $via) return null;
         $out = [];
         foreach ($c['carry'] as $h) {
             if (!is_string($h) || !ctype_xdigit($h) || strlen($h) % 2 !== 0) return null;
             $out[] = (string) hex2bin($h);
         }
-        return $out;
+        return ['via' => $c['via'], 'ids' => $out];
+    }
+
+    /**
+     * Where this slice takes the walk up, and over which source (review R5-2).
+     *
+     * A cursor is a position in one table's collation, and the carry is the
+     * set of ids that collation calls equal to it. open() prefers the record
+     * index and falls back to the data table, and which one answers changes
+     * between requests while REDCap rebuilds its cache - so the walk used to
+     * start again from the first record at every change, and with the source
+     * alternating it never ended, while each request listed rows and moved
+     * progress_at, so nothing called it stalled or reaped it.
+     *
+     * THE DATA TABLE IS STICKY. A walk whose carry names a data table goes on
+     * over the data table, whatever this request opened: the data table is
+     * whole, and nothing about the index becoming complete again makes the
+     * walk's own position wrong. So the source can change under a walk once,
+     * from the index to the data table (here, or mid-slice in listSlice()),
+     * and that change starts the walk again from the first record. Twice only
+     * if REDCap moves the project to another data table while it is listed.
+     * The rework is bounded by what was listed before the change, and what it
+     * offers again lands once on the manifest's unique key.
+     *
+     * NOT A CURSOR CARRIED ACROSS. redcap_record_list.record and the data
+     * table's record are separate columns whose collations each installation
+     * set when the table was created, and REDCap has created them in different
+     * versions; ordering, case folding and trailing-space padding are all the
+     * collation's. A cursor is only portable where both columns share one, and
+     * no test suite can prove that of an installation it has not seen.
+     *
+     * @return array{source:?RecordManifestSource, cursor:?string, carry:string[], restart:bool}
+     */
+    private static function resumeOn($raw, $src, $cursor)
+    {
+        if (!($src instanceof RecordManifestSource)) {
+            return ['source' => null, 'cursor' => $cursor, 'carry' => [], 'restart' => false];
+        }
+        $c = self::carryIn($raw, $cursor);
+        if ($c === null) {
+            // A carry that cannot be read: nothing this file writes, so start again.
+            return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => true];
+        }
+        if ($c['via'] === null) {
+            return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => false];
+        }
+        if ($c['via'] !== RecordManifestSource::VIA_INDEX && $src->via() === RecordManifestSource::VIA_INDEX) {
+            // The walk has used the data table: it stays there. A data table
+            // that cannot be walked now is a source that cannot be opened.
+            $src = $src->dataWalk();
+            if ($src === null) {
+                return ['source' => null, 'cursor' => $cursor, 'carry' => [], 'restart' => false];
+            }
+        }
+        if ($c['via'] === $src->via()) {
+            return ['source' => $src, 'cursor' => $cursor, 'carry' => $c['ids'], 'restart' => false];
+        }
+        return ['source' => $src, 'cursor' => null, 'carry' => [], 'restart' => true];
     }
 
     private static function no($why)
@@ -889,12 +1049,41 @@ final class ScanPlanner
      */
     const GAP_POLICY_WIRE = 'separate';
 
-    /** Recompute precisely the semantic inputs used when the run was planned. */
+    /**
+     * Recompute precisely the semantic inputs used when the run was planned.
+     *
+     * EACH RULE ENTRY CARRIES WHERE THE RULE APPLIES (review rv10b1-1): its
+     * fields, sorted, and the instruments it is judged on, sorted. revision()
+     * leaves `fields` out so a settings rule keeps its name when a field is
+     * added to it, and the entry was the rule's id, revision and origin and
+     * nothing else - so a field added to a settings rule between two requests
+     * of one run moved no input when the field was already read by another
+     * rule, the records examined before it were never judged on it, and the
+     * run finished complete and clean. The identity is untouched: only the
+     * fingerprint learns the field list. An annotation rule's id is built from
+     * its fields already, so for it the list repeats what the id says.
+     *
+     * The instruments are `hosts[key]`, keyed as `rules` are: the plan's
+     * hostFields, the forms the evaluator walks for the rule. They must stay
+     * the same for every requester, as every input here must; the durable
+     * plan never narrows them by instrument rights. A bag without `hosts`
+     * gives every rule none, on both sides alike.
+     */
     public static function requestFingerprint(array $req)
     {
-        $ids = self::identifyAll($req['rules'] ?? [], $req['settingsCount'] ?? null);
+        $rules = isset($req['rules']) && is_array($req['rules']) ? $req['rules'] : [];
+        $ids = self::identifyAll($rules, $req['settingsCount'] ?? null);
+        $hosts = isset($req['hosts']) && is_array($req['hosts']) ? $req['hosts'] : [];
         $ruleSpec = [];
-        foreach ($ids as $id) $ruleSpec[] = ['id'=>$id['source_id'], 'rev'=>$id['revision'], 'origin'=>$id['origin']];
+        foreach ($ids as $k => $id) {
+            $fields = (isset($rules[$k]['fields']) && is_array($rules[$k]['fields']))
+                    ? array_map('strval', $rules[$k]['fields']) : [];
+            sort($fields, SORT_STRING);
+            $forms = (isset($hosts[$k]) && is_array($hosts[$k])) ? array_map('strval', array_keys($hosts[$k])) : [];
+            sort($forms, SORT_STRING);
+            $ruleSpec[] = ['id'=>$id['source_id'], 'rev'=>$id['revision'], 'origin'=>$id['origin'],
+                           'fields'=>$fields, 'forms'=>$forms];
+        }
         usort($ruleSpec, function ($a,$b) { $c=strcmp($a['id'],$b['id']); return $c!==0?$c:strcmp($a['rev'],$b['rev']); });
         return self::fingerprint([
             'engine'    => isset($req['engine']) ? $req['engine'] : '',
@@ -934,6 +1123,13 @@ final class ScanPlanner
             foreach ($l as $e) $keyed[json_encode($e)] = $e;
             ksort($keyed, SORT_STRING);
             $policy['crossLookups'] = array_values($keyed);
+        }
+        // THE EVALUATOR'S REVISION THE RUN BEGAN UNDER (review rv10b1-6), so a
+        // run ended because the module was upgraded can say so rather than
+        // blame the project. The fingerprint folds it into one hash, from
+        // which nothing can be read back. ScanPromotion::engineOf() reads it.
+        if (isset($req['engine']) && is_string($req['engine']) && $req['engine'] !== '') {
+            $policy['engine'] = $req['engine'];
         }
         return $policy;
     }

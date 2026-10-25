@@ -97,7 +97,8 @@ final class ScanPromotion
      * FORBIDS CLEAN BUT DOES NOT CAP COVERAGE. Passing 1 would put it into
      * blockingAggregates(), which caps coverage at partial - so a project with
      * one misconfigured rule could no longer report that every record was
-     * checked, which it was.
+     * checked, which it was. The one exception is a problem that says a record
+     * was only partly examined (PARTLY_EXAMINED, W7-N6); see marksFor().
      *
      * @param array $problems each {rule:int, fields:array, why:string}
      * @return int how many were recorded
@@ -170,6 +171,16 @@ final class ScanPromotion
      * BLOCKS IS 0, for the reason on noteRuleProblems(): a rule problem forbids
      * clean and does not cap coverage.
      *
+     * EXCEPT WHERE THE PROBLEM IS A RECORD NOT FULLY EXAMINED (W7-N6). When the
+     * extended-evaluation budget runs out, UniversalValidator stops judging
+     * the record's remaining extended rules and reports `temporal-budget`:
+     * "this record was not fully checked". As a rule problem alone it forbade
+     * clean and left coverage whole, so a run could say every record was
+     * examined over a record it had read only in part. Those codes block: the
+     * run's coverage is partial, as it is for a record that could not be read.
+     * The budget is per record and the record's data decides it, so trying the
+     * record again would stop at the same place; its findings so far are kept.
+     *
      * @param array $problems each {rule:int, fields:array, why:string, code?:string}
      * @return array<int, array{kind:string, axis1:string, axis2:string, blocks:int, samples:?string}>
      */
@@ -181,11 +192,43 @@ final class ScanPromotion
             list($a1, $a2) = self::problemKey($p);
             $k = $a1 . "\0" . $a2;
             if (isset($out[$k])) continue;
-            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2, 'blocks' => 0,
+            $partly = isset($p['code']) && is_string($p['code'])
+                      && in_array($p['code'], self::PARTLY_EXAMINED, true);
+            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2,
+                        'blocks' => $partly ? 1 : 0,
                         'samples' => self::sample(isset($p['why']) ? $p['why'] : null)];
         }
         return array_values($out);
     }
+
+    /**
+     * Problem codes that mean a record was only partly examined (W7-N6). Their
+     * marks block coverage. Each must be a code UniversalValidator writes as
+     * the second segment of a problem key, which problemList() hands over.
+     *
+     * `temporal` AND `temporal-group` ARE NOT HERE, and that was decided, not
+     * missed (review rv10b1, design question). They mean an event/instance
+     * rule could not be judged at one event or instance of the record - a
+     * reference that does not resolve there, a branch selector that cannot be
+     * read - and the evaluator says so and goes on to every other rule and
+     * context. Coverage says every record in scope was examined: every rule
+     * was asked of every context. These codes are an answer to that question
+     * ("this rule cannot be judged here"), and the run reports them as rule
+     * problems, so it is never clean and the report names the rule, the event
+     * and the instance. `temporal-budget` is different in kind: the evaluator
+     * stopped asking, and the rules after it were never put to the record.
+     * The record's data decides a temporal code, as it decides the budget,
+     * but a rerun meets the same code at the same context for as long as the
+     * project is designed that way. Blocking it would make such a project
+     * partial forever, and partial would no longer mean "the scan did not get
+     * to part of it".
+     */
+    const PARTLY_EXAMINED = ['temporal-budget'];
+
+    /** The stored reason of a run an upgrade of this module ended (review rv10b1-6). */
+    const ENGINE_UPGRADED = 'this module was upgraded while this scan was running, to a version that judges '
+        . 'some values differently, so the scan was ended rather than finished half under each version; '
+        . 'run it again';
 
     /**
      * What a run's aggregates say was found: active findings, rule problems, gaps.
@@ -213,25 +256,76 @@ final class ScanPromotion
      * holds the justified count and the open one, so the justified count is
      * never above the active one and 'violations' is never negative.
      *
+     * AND WHAT THE DETAIL BUDGET LEFT OUT (H9, W7-N8). Past the budget the
+     * worker keeps evaluating and stops storing, and counts each finding it
+     * left out in ScanStore::DETAIL_UNSTORED. The summary cannot count a row
+     * that was never written, so `violations` adds the open ones of that
+     * `unstored` to the summary's, and a run with any unstored is the
+     * truncated one. A finding left out with its reason given is counted
+     * there under the axis ScanStore::UNSTORED_JUSTIFIED
+     * (`unstoredJustified`), and joins 'justified'. `stored` and `unstored`
+     * count every finding, open or justified.
+     *
      * @param array $aggregates rows of {kind, axis1, cnt, ...} as ScanStore::aggregates() returns them
-     * @return array{violations:int, justified:int, ruleProblems:int, gaps:int}
+     * @return array{violations:int, justified:int, stored:int, unstored:int, unstoredJustified:int,
+     *               ruleProblems:int, gaps:int}
      */
     public static function tally(array $aggregates)
     {
         $byKind = [];
         $justified = 0;
+        $leftJustified = 0;
         foreach ($aggregates as $a) {
             if (!isset($a['kind'])) continue;
             $k = (string) $a['kind'];
             $n = isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0;
             $byKind[$k] = (isset($byKind[$k]) ? $byKind[$k] : 0) + $n;
             if ($k === RollupBuilder::K_STANDING && isset($a['axis1']) && (string) $a['axis1'] === RollupBuilder::STANDING_JUSTIFIED) $justified += $n;
+            if ($k === ScanStore::DETAIL_UNSTORED && isset($a['axis1']) && (string) $a['axis1'] === ScanStore::UNSTORED_JUSTIFIED) $leftJustified += $n;
         }
         $of = function ($kind) use ($byKind) { return isset($byKind[$kind]) ? $byKind[$kind] : 0; };
-        $active = 0;
-        foreach (RollupBuilder::KINDS as $kind) $active = max($active, $of($kind));
-        return ['violations' => $active - $justified, 'justified' => $justified, 'ruleProblems' => $of(self::RULE_KINDS),
-                'gaps' => $of(self::GAP_KINDS)];
+        $stored = 0;
+        foreach (RollupBuilder::KINDS as $kind) $stored = max($stored, $of($kind));
+        $unstored = $of(ScanStore::DETAIL_UNSTORED);
+        return ['violations' => $stored - $justified + $unstored - $leftJustified,
+                'justified' => $justified + $leftJustified,
+                'stored' => $stored, 'unstored' => $unstored, 'unstoredJustified' => $leftJustified,
+                'ruleProblems' => $of(self::RULE_KINDS), 'gaps' => $of(self::GAP_KINDS)];
+    }
+
+    /**
+     * Do findingsOf() and justifiedOf() read this run's aggregates? Once the
+     * run has ended, and while it works only when its detail budget is spent
+     * (budgetUsed()). ScanService::status() asks this to read them once for
+     * both counts, and not at all on a poll that needs neither.
+     */
+    public static function countsRead(array $run)
+    {
+        if (isset($run['terminal']) && $run['terminal'] !== null) return true;
+        return self::budgetUsed($run, isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0);
+    }
+
+    /**
+     * Could a working run have left findings out yet (review rv10b1-3)?
+     *
+     * The worker leaves a finding out only when the run row's detail_rows or
+     * detail_bytes has reached its limit (ScanWorker::batch(), H9), and both
+     * only grow, so a row below the limit has left nothing out. The limit
+     * read here is the one the run froze in policy_json. The worker judges by
+     * the settings as they are now, which can only be the same or higher on
+     * a run still working: a lower one is a tightening, and the worker's
+     * policy-revision guard ends the run on it before any batch is judged
+     * (R5-5). A higher one
+     * answers true early, which costs one read and never a wrong count. A
+     * stored policy that cannot be read, or lacks either limit, answers true.
+     */
+    private static function budgetUsed(array $run, $rows)
+    {
+        $raw = isset($run['policy_json']) ? $run['policy_json'] : null;
+        $p = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($p) || !isset($p['maxFindings'], $p['maxBytes'])) return true;
+        $bytes = isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0;
+        return ScanPolicy::budgetSpent($p, $rows, $bytes);
     }
 
     /**
@@ -241,6 +335,8 @@ final class ScanPromotion
      * stored rows that carry the flag (detail_justified). A run that ended
      * without a verdict answers with the larger of that counter and whatever
      * summary it built. A run that reached one answers from its summary.
+     * Each adds the ones the detail budget left out with a reason (H9), and
+     * a working run reads them only past its budget, as findingsOf() does.
      *
      * @param array|null $aggregates the run's aggregates when the caller has
      *                               already read them for findingsOf()
@@ -250,10 +346,16 @@ final class ScanPromotion
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0;
-        if ($terminal === null) return $rows;
-        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];
-        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $summary);
-        return $summary;
+        if ($terminal === null) {
+            $all = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
+            if (!self::budgetUsed($run, $all)) return $rows;
+            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
+            return $rows + $t['unstoredJustified'];
+        }
+        $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
+        $left = $t['unstoredJustified'];
+        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $t['justified'] - $left) + $left;
+        return $t['justified'];
     }
 
     /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
@@ -298,23 +400,45 @@ final class ScanPromotion
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
      *
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
+     * found and not stored, so the summary cannot count them and the floor is
+     * taken over what was stored, with them added. A run still working adds
+     * them to its counter too (review rv10b1-3): the counter stops growing
+     * at the budget, so "N findings so far" froze there while the worker kept
+     * finding, and jumped when the run ended. The run's aggregates are one
+     * read on uq_aggregate's leading column, and while a run works they are
+     * its marks, that count and, in its last phase, the summary being built:
+     * rows per rule, form, reason and group, never per record. Only the open
+     * ones are added here; justifiedOf() adds the ones left out with a reason.
+     *
+     * AND ONLY PAST THE BUDGET. That read is asked only when the run row says
+     * the budget the run froze in policy_json is spent (budgetUsed()). Below
+     * it nothing has been left out, and a status poll reads no aggregates, as
+     * the perf case pins; 79a6cab read them on every poll.
+     *
      * @param array|null $aggregates the run's aggregates when the caller has
-     *                               already read them, so that one read serves
-     *                               this and justifiedOf()
+     *                               already read them (countsRead()), so that
+     *                               one read serves this and justifiedOf()
      * @return int|null null when the run ended before its findings could be counted
      */
     public static function findingsOf(ScanStore $store, array $run, ?array $aggregates = null)
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
+        $all = $rows;
         $rows = max(0, $rows - (isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0));
-        if ($terminal === null) return $rows;
-        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['violations'];
+        if ($terminal === null) {
+            if (!self::budgetUsed($run, $all)) return $rows;
+            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
+            return $rows + $t['unstored'] - $t['unstoredJustified'];
+        }
+        $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
+        $left = $t['unstored'] - $t['unstoredJustified'];
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
-            $floor = max($rows, $summary);
+            $floor = max($rows, $t['violations'] - $left) + $left;
             return $floor > 0 ? $floor : null;
         }
-        return $summary;
+        return $t['violations'];
     }
 
     /**
@@ -339,9 +463,13 @@ final class ScanPromotion
      *   uniqueBlocking:     int
      *   rollupDone:         bool
      *   fingerprintNow:     ?string
+     *   engineNow:          ?string  the evaluator's revision now; with it, a
+     *                                fingerprint moved by an upgrade says so
      *   policyRevisionNow:  ?int
      *   maxFindings:        ?int
      *   maxBytes:           ?int
+     *   unstored:           ?int  findings the detail budget left out (tally()); with
+     *                             it, `truncated` is whether there were any (H9)
      *   crossRecordLookups: bool  a rule's verdict depends on OTHER records (@UVEXISTS)
      *   windowChanges:      int   records the change log listed inside the window
      * }
@@ -381,6 +509,14 @@ final class ScanPromotion
         $polNow = $g('policyRevisionNow');
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
+        // WHICH MOVED IT (review rv10b1-6). The evaluator's revision is one of
+        // the fingerprint's inputs, so an upgrade to a build that judges
+        // differently ends every run in flight - and the stored sentence then
+        // said the PROJECT's rules or design had changed, on a project nobody
+        // touched. The run keeps the revision it began under, so an upgrade is
+        // told apart and named.
+        $engNow = $g('engineNow');
+        $engineMoved = $fpBad && is_string($engNow) && $engNow !== '' && self::engineOf($run) !== $engNow;
 
         // NO RECORD IS LEFT DONE: none is `done`, none is still waiting, and
         // nothing is blocked. That is the question `emptyScope` answers, and it
@@ -424,8 +560,19 @@ final class ScanPromotion
         $bytes = isset($run['detail_bytes']) ? (int) $run['detail_bytes'] : 0;
         $maxR  = $g('maxFindings');
         $maxB  = $g('maxBytes');
-        $truncated = (($maxR !== null && $maxR > 0 && $rows >= (int) $maxR)
-                   || ($maxB !== null && $maxB > 0 && $bytes >= (int) $maxB));
+        // TRUNCATED MEANS A FINDING WAS LEFT OUT (H9, W7-N8). The worker stops
+        // storing once the budget is spent and counts what it leaves out, so a
+        // run that counted any is truncated and one that counted none is not -
+        // whatever the counters say. Read off the counters, a run that stored
+        // exactly its budget and dropped nothing was called truncated, and one
+        // that two workers took past it was too, beside a `violations` that
+        // matched what was stored. A caller that does not pass the count keeps
+        // the counter reading, which can only say truncated more often.
+        $unstored = $g('unstored');
+        $unstored = ($unstored === null) ? null : max(0, (int) $unstored);
+        $truncated = ($unstored !== null) ? ($unstored > 0)
+                   : (($maxR !== null && $maxR > 0 && $rows >= (int) $maxR)
+                      || ($maxB !== null && $maxB > 0 && $bytes >= (int) $maxB));
 
         $lookupsMoved = (bool) $g('crossRecordLookups', false) && (int) $g('windowChanges', 0) > 0;
 
@@ -457,10 +604,12 @@ final class ScanPromotion
             // count, or with a summary that never finished (a cancelled or failed
             // run ends whatever is outstanding), the stored-row counter is the
             // floor: a partial summary undercounts, and an undercount is the
-            // direction that certifies.
+            // direction that certifies. The findings the detail budget left out
+            // are added to the floor, never compared with it: the counter does
+            // not hold them either (H9).
             'violations' => ($g('violations') !== null && $g('rollupDone', false))
                 ? max(0, (int) $g('violations'))
-                : max($rows, (int) $g('violations', 0)),
+                : max($rows, (int) $g('violations', 0) - (int) $unstored) + (int) $unstored,
             'ruleProblems' => (int) $g('ruleProblems', 0),
             'gaps' => (int) $g('gapCount', 0),
             // FROM THE CALLER, because no run row carries it: this read
@@ -497,7 +646,24 @@ final class ScanPromotion
         return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
                 'notExamined' => $unread,
                 // Which configuration moved, for the stored reason (conclude()).
-                'configChanged' => $fpBad ? 'rules' : ($polBad ? 'privacy' : null)];
+                'configChanged' => $fpBad ? ($engineMoved ? 'engine' : 'rules') : ($polBad ? 'privacy' : null)];
+    }
+
+    /**
+     * The evaluator revision a run began under, as its stored policy records
+     * it (review rv10b1-6), or null when the policy does not say.
+     *
+     * NULL MEANS AN OLDER EVALUATOR. ScanPlanner::storedPolicy() has written
+     * it since engine-5, so a run without one was begun by a build whose
+     * evaluator was engine-4 or older, and differs from any build that reads
+     * this.
+     */
+    public static function engineOf(array $run)
+    {
+        $raw = isset($run['policy_json']) && is_string($run['policy_json']) ? $run['policy_json'] : null;
+        $p = $raw === null ? null : json_decode($raw, true);
+        return (is_array($p) && isset($p['engine']) && is_string($p['engine']) && $p['engine'] !== '')
+            ? $p['engine'] : null;
     }
 
     /**
@@ -617,7 +783,8 @@ final class ScanPromotion
         $aggregates = $store->aggregates($runId);
         $t = self::tally($aggregates);
         $f = self::facts($run, $states, array_merge($in, [
-            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
+            'violations' => $t['violations'], 'unstored' => $t['unstored'],
+            'ruleProblems' => $t['ruleProblems'],
             'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
             'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
         if ($cancel) $f['facts']['cancelled'] = true;
@@ -631,8 +798,9 @@ final class ScanPromotion
             $outcome['why'] = $f['configChanged'] === 'rules'
                 ? 'the project\'s validation rules or design changed while this scan was running, so its '
                   . 'results would describe two different configurations; run it again'
+                : ($f['configChanged'] === 'engine' ? self::ENGINE_UPGRADED
                 : 'the project\'s privacy settings were tightened while this scan was running, so it was '
-                  . 'ended rather than finished under the settings it started with; run it again';
+                  . 'ended rather than finished under the settings it started with; run it again');
         }
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
         // What finish() persists beside the terminal. `gaps` is already there.

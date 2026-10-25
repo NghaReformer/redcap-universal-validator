@@ -176,7 +176,7 @@ $PID = 980;
     check('store: stored as 1 for the reason given, 0 for a 0 and 0 for no flag (got ' . json_encode($raw) . ')',
         $raw === ['no_flag' => '0', 'with_reason' => '1', 'zero' => '0']);
 
-    $page = $s->findings($PID, $o['gen'], [], 0, 100);
+    $page = $s->findings($PID, $o['gen'], ['dag' => null], [], 0, 100);
     $read = [];
     $mapped = [];
     $m = $mapper($PID);
@@ -198,7 +198,7 @@ $PID = 980;
     $cm = $byId($mem->claim($om['run'], 'w', $om['epoch'], 2));
     $okm = $mem->commitBatch($om['run'], 'w', $om['epoch'], $batch($om['gen'], $cm));
     $readm = [];
-    foreach ($mem->findings($PID, $om['gen'], [], 0, 100) as $row) {
+    foreach ($mem->findings($PID, $om['gen'], ['dag' => null], [], 0, 100) as $row) {
         $readm[(string) $row['field']] = (string) $row['justified'];
     }
     ksort($readm);
@@ -222,7 +222,7 @@ $PID = 980;
     // THE READ THAT NOW SELECTS justified, on the key it was built for.
     // Asserted on the statement sent.
     $rec = new UvRecordingDb($dbA);
-    (new SqlScanStore($rec))->findings($PID, $o['gen'], [], 0, 100);
+    (new SqlScanStore($rec))->findings($PID, $o['gen'], ['dag' => null], [], 0, 100);
     $q = $rec->matching('select', ['FROM ' . $F]);
     $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
     check('store: the findings page that selects justified is read through ix_page_v2',
@@ -278,7 +278,7 @@ $REEX = 982;
         count($v) === 2
         && $v[0][0] === null && (int) $v[0][1] === $seq && (int) $v[0][2] === 0
         && (int) $v[1][0] === 1 && $v[1][1] === null && (int) $v[1][2] === 1);
-    $page = $s->findings($REEX, $o['gen'], [], 0, 100);
+    $page = $s->findings($REEX, $o['gen'], ['dag' => null], [], 0, 100);
     check('re-examined: the report holds one finding for it, and that one justified',
         count($page) === 1 && (string) $page[0]['justified'] === '1');
 
@@ -539,7 +539,7 @@ $ROLL = 984;
 
     $m = $mapper(990);
     $open5 = true;
-    $page = $s5->findings(990, $o['gen'], [], 0, 100);
+    $page = $s5->findings(990, $o['gen'], ['dag' => null], [], 0, 100);
     foreach ($page as $p) $open5 = $open5 && (string) $p['justified'] === '0' && $m->toFinding($p)['justified'] === false;
     check('v6 to v7: the store reads the two active rows from version 6 back as open',
         count($page) === 2 && $open5);

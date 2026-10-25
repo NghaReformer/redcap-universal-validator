@@ -524,9 +524,82 @@ trait ScanRuns
         return [
             'structure' => array_merge($this->temporalScanStructure($pid, $plan['live']), [
                 'fields' => $fields, 'longitudinal' => $longitudinal,
-                'events' => $events, 'repeating' => $repeating]),
+                'events' => $events, 'repeating' => $repeating],
+                $this->scanVerdictSettings($pid, $plan['live'])),
             'choices' => ['fields' => $codes, 'missing' => self::sortedNames($missing)],
         ];
+    }
+
+    /**
+     * The settings that decide a verdict and are written on no rule (review
+     * rv10b1-7), for the fingerprint: a run whose verdicts one of them moves
+     * between two requests ends instead of finishing judged both ways.
+     *
+     * EVERY SETTING WAS CHECKED; TWO WERE MISSING. "window-week-start" is
+     * already an input: annotateWindowField() writes it on the rule
+     * (windowWeekStart), so the rule's revision moves with it. So are
+     * "enable-event-instance-refs" (it changes how every operand parses, and
+     * the temporal digest names it), the @UVEXISTS aliases and
+     * "exists-system-cross-project" (both decided while the rule compiles,
+     * into existsPid or a configuration error) and "scan-value-storage"
+     * (valueMode). The two below are read only while a record is judged:
+     *
+     *   clockZone   "window-timezone", which sets the day a @UVWINDOW rule
+     *               compares with (notFuture, notPast, today) and the zone the
+     *               log's save times are read in, beside the server's own
+     *               zone. Only when a live rule needs the clock.
+     *   references  each growth reference a live @UVRANGE rule names, as the
+     *               catalog resolves it under "reference-data-dir": a folder
+     *               named, changed or emptied there replaces the table a
+     *               z-score is read from. The entry carries the table's pinned
+     *               sha256, so an edited table is one too. Its labels and its
+     *               folder's path are left out: two folders holding the same
+     *               tables judge alike. Only when a live rule names one.
+     *
+     * NOT INPUTS, because they decide no verdict: the rate limits on lookups
+     * into other projects (an answer they refuse is reported, never judged),
+     * "qualified-audit-max-contexts" (the save-time audit only), "log-values",
+     * "debug-log" and the return-on-save switches.
+     *
+     * @return array  [] when no live rule reads either
+     */
+    private function scanVerdictSettings($pid, array $live)
+    {
+        $out = [];
+        if (ModeRegistry::rulesNeed($live, 'clock')) {
+            $zone = $this->clockZone($pid);
+            $server = date_default_timezone_get();
+            $out['clockZone'] = ['compare' => $zone === null ? $server : $zone->getName(), 'server' => $server];
+        }
+        $ids = [];
+        foreach ($live as $r) {
+            if (!is_array($r)) continue;
+            $branched = isset($r['branches']) && is_array($r['branches']);
+            foreach ($branched ? $r['branches'] : [$r] as $n) {
+                if (is_array($n) && isset($n['rangeReference']) && is_string($n['rangeReference'])) {
+                    $ids[$n['rangeReference']] = true;
+                }
+            }
+        }
+        if ($ids) {
+            $dir = $this->referenceDir();
+            $refs = [];
+            foreach (array_keys($ids) as $id) {
+                $e = GrowthReference::entry((string) $id, $dir);
+                if ($e === null) {
+                    $why = GrowthReference::unavailableWhy((string) $id, $dir);
+                    $refs[(string) $id] = 'unavailable: ' . ($why === null ? 'unknown' : $why);
+                    continue;
+                }
+                unset($e['title'], $e['sourceTitle']);
+                $e['dir'] = (isset($e['dir']) && $e['dir'] === GrowthReference::bundledDir()) ? 'bundled' : 'extra';
+                ksort($e, SORT_STRING);
+                $refs[(string) $id] = $e;
+            }
+            ksort($refs, SORT_STRING);
+            $out['references'] = $refs;
+        }
+        return $out;
     }
 
     /** Scalar names as distinct strings in byte order, so a list's order is no part of a comparison. */
@@ -588,10 +661,15 @@ trait ScanRuns
         $bytes = 0;
         foreach ($found as $v) {
             $id = $rule($v['rule']);
+            // THE REASON IS SPLIT ONCE (W7-R1). The row stores a pooled field's
+            // problems as the code `pooled` and a mask, so the summary groups
+            // them under one code; the identity is computed from the code it
+            // has always been computed from, so no finding is renamed.
+            $reason = Scan\ReasonCode::split($v['reason'], isset($v['type']) ? (string) $v['type'] : null);
             $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
                     'instance' => $v['instance'], 'host_form' => $v['instrument'],
                     'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason']),
+                    'reason_code' => $reason['identity'],
                     // The within-location discriminator. See Hmac::findingIdentity.
                     'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
             $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
@@ -630,7 +708,10 @@ trait ScanRuns
                 'rule_revision' => $id['revision'],
                 'rule_ord' => (int) $v['rule'],
                 'check_type' => (string) $v['type'],
-                'reason_code' => Scan\ReasonCode::code($v['reason']),
+                'reason_code' => $reason['code'],
+                // And the branch that judged it (R3G-2), so the report speaks
+                // with that branch's message and limits. See ReasonCode::bits().
+                'reason_bits' => Scan\ReasonCode::bits($reason, isset($v['branch']) ? $v['branch'] : null),
                 'dag_key' => isset($v['dag']) ? $v['dag'] : null,
                 'value_bin' => $blob,
                 'value_len' => ($val === null) ? null : strlen((string) $val),
@@ -814,7 +895,7 @@ trait ScanRuns
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                'hashRecordIds' => $this->hashesRecordIds($pid),
                 // So reportValue() can withhold a finding's value on the field
                 // whose value IS the record id the column above hashes.
                 'recordIdField' => $this->recordIdFieldOf($pid)];
@@ -2184,7 +2265,7 @@ trait ScanRuns
      *
      * Thin on purpose. Everything that decides anything - the feature flags,
      * the schema health, the rights, the scope, the run's own state - lives in
-     * ScanService, so this method reads a run id, calls one of four things, and
+     * ScanService, so this method reads a run id, calls one of five things, and
      * hands back what it said. A handler that made decisions would be a second
      * place those decisions live.
      *
@@ -2247,6 +2328,14 @@ trait ScanRuns
             }
             if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
             if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
+            if ($action === 'scan-findings') {
+                // One keyset page of a finished run's findings (B5). The cursor,
+                // the page size and the filter are handed over as sent; the
+                // service bounds and checks every one of them.
+                $r = $svc->findings($project_id, $runId, is_array($payload) ? $payload : []);
+                $answered = true;
+                return $r;
+            }
             $answered = true;
             return ['ok' => false, 'why' => 'unknown action'];
         } catch (\Throwable $e) {

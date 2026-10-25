@@ -267,15 +267,27 @@ class FaultyStore implements ScanStore
     public function cancel($pid, $runId, $actor)
     { $this->gate('cancel'); return $this->inner->cancel($pid, $runId, $actor); }
 
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    { $this->gate('expireAbandoned'); return $this->inner->expireAbandoned($pid, $staleHours, $actor, $now); }
+
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
-        // FIVE ARGUMENTS, NOT FOUR. This delegate dropped $projectId and shifted
-        // every other one along, so the generation arrived as the project. It
-        // has never been caught because nothing calls findings() yet - which is
-        // exactly what tests/scan_wiring_php.php says about it.
+        // EVERY ARGUMENT, IN ORDER. This delegate once dropped $projectId and
+        // shifted every other one along, so the generation arrived as the
+        // project; it now carries the scope and hands the cursor back.
         $this->gate('findings');
-        return $this->inner->findings($projectId, $generationId, $filter, $afterId, $limit);
+        return $this->inner->findings($projectId, $generationId, $scope, $filter, $afterId, $limit, $through);
     }
+
+    public function writeDimensions($projectId, $generationId, array $rows)
+    { $this->gate('writeDimensions'); return $this->inner->writeDimensions($projectId, $generationId, $rows); }
+
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    { $this->gate('dimensions'); return $this->inner->dimensions($projectId, $generationId, $after, $limit); }
+
+    public function dimension($projectId, $generationId, $kind, $key)
+    { $this->gate('dimension'); return $this->inner->dimension($projectId, $generationId, $kind, $key); }
 
     public function aggregates($runId)
     { $this->gate('aggregates'); return $this->inner->aggregates($runId); }
@@ -295,6 +307,12 @@ class FaultyStore implements ScanStore
     public function tombstone($runId, $epoch, array $recordIds)
     { $this->gate('tombstone'); return $this->inner->tombstone($runId, $epoch, $recordIds); }
 
+    public function depart($runId, $epoch, array $hashes)
+    { $this->gate('depart'); return $this->inner->depart($runId, $epoch, $hashes); }
+
+    public function departedOf($runId, array $hashes)
+    { $this->gate('departedOf'); return $this->inner->departedOf($runId, $hashes); }
+
     public function recordStates($runId)
     { $this->gate('recordStates'); return $this->inner->recordStates($runId); }
 
@@ -309,6 +327,9 @@ class FaultyStore implements ScanStore
 
     public function holdRollupCursor($runId, $epoch)
     { $this->gate('holdRollupCursor'); return $this->inner->holdRollupCursor($runId, $epoch); }
+
+    public function holdRun($runId, $epoch, $phase)
+    { $this->gate('holdRun'); return $this->inner->holdRun($runId, $epoch, $phase); }
 
     public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
     { $this->gate('markAggregate'); return $this->inner->markAggregate($runId, $kind, $axis1, $axis2, $blocks, $samples); }

@@ -39,6 +39,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *   SETTLED  changed within the window but before we scanned it, so the reading
  *            already includes it -> nothing to do. This is the case that makes
  *            the second round cheap and is why the pass converges.
+ *   DEPARTED on the manifest of a group-scoped run, and now in another group or
+ *            in none -> taken out of the run, its findings closed (review
+ *            rv5b-1). Whatever its version: a record read after it moved is
+ *            SETTLED by the version rule, and it is the other group's data.
+ *            Only on an explicit "not in the group"; a group that cannot be
+ *            told sends a record with a reading back to the worker, which asks
+ *            again before it reads.
  *
  * WHY ROUNDS AT ALL. The reconciler and the worker take turns: a round requeues
  * records, the worker scans them, and a second round over the SAME window
@@ -72,6 +79,8 @@ final class CatchUp
     const K_ADDED   = 'reconciled-added';
     const K_EDITED  = 'reconciled-edited';
     const K_GONE    = 'reconciled-deleted';
+    /** Records that left a group-scoped run's group (review rv5b-1). */
+    const K_DEPARTED = 'reconciled-departed';
     const K_NOFENCE = 'fence-unprovable';
     const K_CHURN   = 'reconcile-unsettled';
     /**
@@ -91,7 +100,9 @@ final class CatchUp
      * @param array $deps {
      *   fence:  ?ChangeLog     the change log. Null means no window can be walked.
      *   exists: ?callable(string[] $ids): array<string,bool>  does the project still hold it
-     *   scope:  ?callable(string[] $ids): array<string,bool>  is it inside this run's scope
+     *   scope:  ?callable(string[] $ids): array<string,?bool> is it inside this run's scope:
+     *           true, false, or null for cannot tell. An id the answer leaves
+     *           out is null. No resolver at all is an unscoped run: all true.
      *   hash:   callable(string $id): string                  the manifest's record hash
      *   dag:    ?callable(string[] $ids): array<string,?string>
      * }
@@ -112,14 +123,21 @@ final class CatchUp
      * activity, and `scanned` reported to the page told one group's reader
      * how busy the others had been.
      *
+     * `moved` says whether the step wrote progress: the target fence, the
+     * cursor, a new round, or the reason the run has no window (review
+     * rv5b-3). For a group-scoped run `listed` can be 0 on a page that held
+     * only other groups' changes, and the cursor moved all the same; the page
+     * paces itself by `moved`, and a yes or no counts nothing.
+     *
      * @return array{done:bool, fenced:bool, added:int, requeued:int, gone:int,
-     *               scanned:int, listed:int, why:?string}
+     *               departed:int, scanned:int, listed:int, moved:bool, why:?string}
      */
     public function step($pid, $runId, $epoch, $limit = 500)
     {
         $limit = max(1, min(5000, (int) $limit));
         $out = ['done' => false, 'fenced' => false, 'added' => 0, 'requeued' => 0,
-                'gone' => 0, 'scanned' => 0, 'listed' => 0, 'why' => null];
+                'gone' => 0, 'departed' => 0, 'scanned' => 0, 'listed' => 0, 'moved' => false,
+                'why' => null];
 
         $st = $this->store->progressState($runId);
         if ($st === null) {
@@ -165,6 +183,7 @@ final class CatchUp
             $st['catchupCursor'] = null;
             $st['catchupRound'] = 1;
             $st['catchupDirty'] = 0;
+            $out['moved'] = true;
         }
         $out['fenced'] = true;
 
@@ -194,17 +213,24 @@ final class CatchUp
         // the attempt limit turns a record that really cannot be read into a
         // reported exclusion.
         $exists = $this->ask('exists', $ids, true, true);
-        $scope  = $this->ask('scope', $ids, true);
+        // With a resolver, an id it leaves out is "cannot tell" (review
+        // rv5b-1): the answer now takes records out of a run as well as
+        // letting them in, and neither may happen on an omission.
+        $scoped = isset($this->deps['scope']) && is_callable($this->deps['scope']);
+        $scope  = $this->ask('scope', $ids, $scoped ? null : true);
         $dags   = $this->ask('dag', $ids, null);
 
         $add = [];
         $requeue = [];
         $gone = [];
+        $depart = [];
         $listed = 0;
         foreach ($ids as $id) {
             $onManifest = isset($known[$id]);
-            // In scope: on the run's own list, or a record the scope admits.
-            if ($onManifest || !empty($scope[$id])) $listed++;
+            $in = $scope[$id] === true ? true : ($scope[$id] === false ? false : null);
+            // In scope: on the run's own list and not known to have left the
+            // group, or a record the scope admits.
+            if ($onManifest ? $in !== false : $in === true) $listed++;
             // GONE ONLY ON AN EXPLICIT false FOR THIS ID - the rule
             // ScanWorker::confirmedGone() already applies (W7-N4). This was
             // empty(), so a resolver answering null, 0, '' or '0' for a record
@@ -218,7 +244,7 @@ final class CatchUp
                 // Scope is asked rather than assumed: a DAG-scoped run that
                 // widened itself here would put another group's records into a
                 // report its reader is not entitled to.
-                if ($stillThere && !empty($scope[$id])) {
+                if ($stillThere && $in === true) {
                     $add[] = ['id_bin' => $id,
                               'hash' => call_user_func($this->deps['hash'], $id),
                               'dag' => isset($dags[$id]) ? $dags[$id] : null];
@@ -227,6 +253,25 @@ final class CatchUp
             }
             if (!$stillThere) {
                 if ($known[$id]['state'] !== ScanStore::REC_TOMBSTONE) $gone[] = $id;
+                continue;
+            }
+            $state = (int) $known[$id]['state'];
+            if ($in === false) {
+                // LEFT THE GROUP (review rv5b-1). Out of the run whatever the
+                // version rule below would say: a record the worker read
+                // after it moved is "settled" by that rule, and what it read
+                // was the other group's data.
+                if ($state !== ScanStore::REC_DEPARTED) {
+                    $depart[] = call_user_func($this->deps['hash'], $id);
+                }
+                continue;
+            }
+            if ($state === ScanStore::REC_DEPARTED || ($in === null && $state === ScanStore::REC_DONE)) {
+                // Back in the group, or a reading whose group cannot be told
+                // now. Examined again rather than vouched for: the worker asks
+                // the record's group before it reads it, and sets it aside
+                // while that cannot be answered.
+                $requeue[] = $id;
                 continue;
             }
             // Edited AFTER we read it. A change that landed before the record's
@@ -243,6 +288,7 @@ final class CatchUp
         if ($add)     $out['added']    = $this->store->reconcileAdd($runId, $epoch, $add);
         if ($requeue) $out['requeued'] = $this->store->requeue($runId, $epoch, $requeue);
         if ($gone)    $out['gone']     = $this->store->tombstone($runId, $epoch, $gone);
+        if ($depart)  $out['departed'] = $this->store->depart($runId, $epoch, $depart);
 
         // Counted, and visible in the report. A run that silently absorbed
         // twenty new records would look identical to one that scanned a project
@@ -250,13 +296,18 @@ final class CatchUp
         if ($out['added'])    $this->store->addAggregate($runId, self::K_ADDED, null, null, $out['added']);
         if ($out['requeued']) $this->store->addAggregate($runId, self::K_EDITED, null, null, $out['requeued']);
         if ($out['gone'])     $this->store->addAggregate($runId, self::K_GONE, null, null, $out['gone']);
+        if ($out['departed']) {
+            $this->store->addAggregate($runId, self::K_DEPARTED, null, null, $out['departed']);
+        }
 
-        $dirty = ($out['added'] || $out['requeued'] || $out['gone']) ? 1 : (int) $st['catchupDirty'];
+        $dirty = ($out['added'] || $out['requeued'] || $out['gone'] || $out['departed'])
+               ? 1 : (int) $st['catchupDirty'];
         $last = $page[count($page) - 1]['id'];
         $this->store->setProgressState($runId, $epoch,
             ['catchupCursor' => $last, 'catchupDirty' => $dirty]);
         $out['scanned'] = count($page);
         $out['listed'] = $listed;
+        $out['moved'] = true;
         return $out;
     }
 
@@ -282,12 +333,14 @@ final class CatchUp
             // partial beats one that never ends.
             $this->store->addAggregate($runId, self::K_CHURN, null, null, 1, 1);
             $out['done'] = true;
+            $out['moved'] = true;
             $out['why'] = 'records kept changing faster than they could be re-examined, so this '
                         . 'scan reports partial coverage';
             return $out;
         }
         $this->store->setProgressState($runId, $epoch,
             ['catchupCursor' => null, 'catchupRound' => $round, 'catchupDirty' => 0]);
+        $out['moved'] = true;
         return $out;
     }
 
@@ -304,6 +357,7 @@ final class CatchUp
             ScanPromotion::sample((string) $why));
         $out['done'] = true;
         $out['fenced'] = false;
+        $out['moved'] = true;
         $out['why'] = $why;
         return $out;
     }

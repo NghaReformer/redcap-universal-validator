@@ -1064,6 +1064,52 @@ namespace {
         }));
     check('R3U-1 plan: nothing is refused when nothing failed', $planOf('nurse')['crossRefused'] === []);
 
+    // rv10b1-2: A READER 300 REFUSES MAY NOT CONTINUE A RUN, and the plan is
+    // what says so. One rule: x_spec must be found in 300's specimen_id, and
+    // record 1's SP-404 is not there. The reader's context skips the rule and
+    // keeps it in the list, so the fingerprint guard cannot tell the two
+    // readers apart; ScanService's refusal reads crossRefused.
+    global $DATA_A;
+    $keepA2 = $DICT_A; $keepData = $DATA_A;
+    $DICT_A = ['record_id' => f('enrol'), 'site' => f('enrol'),
+               'x_spec' => f('result', ux('{"in":"[specimen_id]","project":300}'))];
+    $DATA_A = ['1' => [351 => ['record_id' => '1', 'site' => 'A', 'x_spec' => 'SP-404']]];
+    $refusal = new \ReflectionMethod(\INSPIRE\UniversalValidator\Scan\ScanService::class, 'planCrossRefusal');
+    $refusal->setAccessible(true);
+    $ctxOf = function ($user, $tweak = null) use ($refusal) {
+        $m = mod($user);
+        if ($tweak !== null) $tweak($m);
+        $ctx = $m->durableScanContext(149, ['valueCeiling' => 'locations', 'generation' => 7, 'runSeq' => 7]);
+        \REDCap::$rightsThrowFor = [];
+        $fp = \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint(['rules' => $ctx['rules'],
+            'ownership' => $ctx['ownership'], 'structure' => $ctx['structure'], 'choices' => $ctx['choices'],
+            'policy' => [], 'engine' => 'x']);
+        $ev = $ctx['evaluate'];
+        return ['fp' => $fp, 'found' => count($ev('1', $GLOBALS['DATA_A']['1'])['findings']),
+                'work' => $refusal->invoke(null, $ctx, 'work'), 'start' => $refusal->invoke(null, $ctx, 'start')];
+    };
+    $nurse = $ctxOf('nurse');
+    $outsider = $ctxOf('outsider');
+    $lapsed = $ctxOf('lapsed');
+    check('rv10b1-2: the readers\' fingerprints match, so the guard cannot refuse the one whose plan skips the rule',
+        \INSPIRE\UniversalValidator\Scan\ScanPlanner::fingerprintMatches($nurse['fp'], $outsider['fp'])
+        && \INSPIRE\UniversalValidator\Scan\ScanPlanner::fingerprintMatches($nurse['fp'], $lapsed['fp']));
+    check('rv10b1-2: the reader 300 answers finds the value missing, and the plan refuses them nothing',
+        $nurse['found'] === 1 && $nurse['work'] === null && $nurse['start'] === null);
+    check('rv10b1-2: a reader with no rights in 300 would pass the record; their plan refuses them the work, for good',
+        $outsider['found'] === 0 && $outsider['work']['ok'] === false && $outsider['work']['final'] === true
+        && $outsider['work']['why'] === 'this scan looks values up in project 300, which does not answer your '
+                                       . 'lookups, so you cannot continue this scan');
+    check('rv10b1-2: and the start', $outsider['start']['ok'] === false
+        && strpos($outsider['start']['why'], 'so you cannot start this scan') !== false);
+    check('rv10b1-2: so is the starter whose rights in 300 expired today',
+        $lapsed['found'] === 0 && $lapsed['work']['ok'] === false && $lapsed['work']['final'] === true);
+    $blip = $ctxOf('nurse', function ($m) { \REDCap::$rightsThrowFor[300] = true; });
+    check('rv10b1-2: a failed rights read there refuses the work too, not for good',
+        $blip['work']['ok'] === false && $blip['work']['final'] === false
+        && strpos($blip['work']['why'], 'could not be read just now, so you cannot continue this scan yet') !== false);
+    $DICT_A = $keepA2; $DATA_A = $keepData;
+
     // R3U-N1, R4-1: crossLookups is what a started run keeps. It is the
     // rules' list, not the reader's: the same for a reader 300 answers and
     // one it refuses, because whoever presses Continue evaluates with their

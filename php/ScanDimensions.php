@@ -31,11 +31,11 @@ require_once __DIR__ . '/TemporalLogic.php';
  * THE STATE IS PUBLIC AND build() IS ONLY ONE WAY TO FILL IT. build() reads the
  * project as it is NOW. A report on a stored run has to be labelled as the
  * project was WHEN THE RUN WAS PLANNED - a rule renamed since must not rename
- * the findings it produced - and that comes from the uv_scan_dim snapshot,
- * which has no producer and no reader yet. Wave 11 writes both and fills these
- * properties from the snapshot; there is deliberately no fromSnapshot() here
- * until there is a snapshot to read, because a reader written against an
- * imagined format is a second format.
+ * the findings it produced - and that comes from the uv_scan_dim snapshot:
+ * Scan\ScanService::start() builds this object, toSnapshot() turns it into
+ * rows, Scan\ScanPlanner::plan() stores them with the run's generation, and
+ * fromSnapshot() fills a report's object from them (M5, W7-R11). One format,
+ * written and read here.
  */
 final class ScanDimensions
 {
@@ -65,6 +65,50 @@ final class ScanDimensions
     public $identifiers = null;
     /** What REDCap's dictionary may hold in `identifier` for a flagged field. */
     const IDENTIFIER_FLAGS = ['y', 'yes', '1', 'true'];
+
+    /**
+     * The snapshot's format revision, in its state row. fromSnapshot() reads
+     * this revision only: a row set it does not know is no snapshot, never a
+     * guess at one.
+     */
+    const SNAPSHOT_VERSION = 1;
+
+    /**
+     * The kinds of row a snapshot holds. `state` is one row (key `snapshot`)
+     * whose meta carries the flags and the degraded sources; every other kind
+     * is one row per thing named.
+     */
+    const SNAPSHOT_KINDS = ['state', 'event', 'form', 'field', 'rule', 'source'];
+
+    /** uv_scan_dim.dim_key is VARBINARY(191). A longer key cannot be stored. */
+    const SNAPSHOT_KEY_BYTES = 191;
+
+    /** uv_scan_dim.label is TEXT. A longer label is cut on a character boundary. */
+    const SNAPSHOT_LABEL_BYTES = 65535;
+
+    /**
+     * Field name => true for every field the dictionary flags as an Identifier,
+     * or null when there is no dictionary: "could not tell" is not "none" (W7-R9).
+     *
+     * THE ONE PARSER. UniversalValidator::projectIdentifierFields() decides
+     * with it what a scan redacts when it stores, and build() reads the same
+     * flags for the report. They were two loops over one rule, and two
+     * readings of one flag that disagree would have a report show a value
+     * the scan was careful to redact, or withhold one it kept.
+     *
+     * @return array|null
+     */
+    public static function identifierFlags(array $dd)
+    {
+        if (!$dd) return null;
+        $out = [];
+        foreach ($dd as $name => $meta) {
+            $flag = (is_array($meta) && isset($meta['identifier']))
+                ? strtolower(trim((string) $meta['identifier'])) : '';
+            if (in_array($flag, self::IDENTIFIER_FLAGS, true)) $out[$name] = true;
+        }
+        return $out;
+    }
     /** @var bool whether this project uses Data Access Groups at all */
     public $hasDags = false;
     /** @var bool whether a reason (@UVJUSTIFY) can stand for any rule's findings: the "Saved with a reason" column */
@@ -89,20 +133,14 @@ final class ScanDimensions
     {
         $d = new self();
 
-        // Identifier flags come from the same dictionary read, by the SAME RULE
-        // UniversalValidator::projectIdentifierFields() applies when the scan
-        // decides what to store: the same accepted words, and null only when
-        // there is no dictionary. Two readings of one flag that disagree would
-        // have the report show a value the scan was careful to redact, or
-        // withhold one it kept. tests/scan_report_php.php holds them together.
-        $flags = [];
+        // Identifier flags come from the same dictionary read, through the one
+        // parser UniversalValidator::projectIdentifierFields() also uses when
+        // the scan decides what to store (identifierFlags(), W7-R9).
         foreach ($dd as $name => $meta) {
             if (isset($meta['field_label'])) $d->fieldLabels[$name] = (string) $meta['field_label'];
             if (!empty($meta['form_name']))  $d->fieldForms[$name]  = (string) $meta['form_name'];
-            $flag = isset($meta['identifier']) ? strtolower(trim((string) $meta['identifier'])) : '';
-            if (in_array($flag, self::IDENTIFIER_FLAGS, true)) $flags[$name] = true;
         }
-        $d->identifiers = $dd ? $flags : null;
+        $d->identifiers = self::identifierFlags($dd);
 
         // Events. The whole map in ONE call, not one call per finding. Unique
         // names embed the arm (event_1_arm_2), which matters because two arms
@@ -266,6 +304,158 @@ final class ScanDimensions
             'assert'   => isset($r['assert']) ? (string) $r['assert'] : '',
             'detail'   => $detail,
         ];
+    }
+
+    /**
+     * This object as uv_scan_dim rows (M5, W7-R11): what a report on a stored
+     * run is labelled with, as the project was when the run was planned.
+     *
+     * One `state` row (key `snapshot`) carries the revision, the three shape
+     * flags, whether the identifier flags could be read, and the degraded
+     * sources. Then one row per event, form and field (label, plus the form
+     * and the identifier flag in a field's meta), one per rule keyed by its
+     * ordinal (the rule() shape in meta, branches included), and one per rule
+     * source id (its ordinal in meta). The rows are this object's public
+     * state and nothing else, so fromSnapshot() gives back an object that
+     * renders every finding as this one does.
+     *
+     * NOTHING IS DROPPED SILENTLY. A key longer than the column is left out
+     * and the state row says how many were (degraded `snapshot`), so the
+     * report says some labels are raw; a label longer than the column is cut
+     * on a character boundary. Text is scrubbed to valid UTF-8 first: the
+     * column is utf8mb4 and a strict server refuses anything else. Meta is
+     * JSON with its non-ASCII escaped.
+     *
+     * @return array<int, array{kind:string, key:string, label:?string, meta:?string}>
+     */
+    public function toSnapshot()
+    {
+        $rows = [];
+        $skipped = 0;
+        $put = function ($kind, $key, $label, $meta) use (&$rows, &$skipped) {
+            $key = (string) $key;
+            $json = ($meta === null) ? null : self::snapshotJson($meta);
+            if ($key === '' || strlen($key) > self::SNAPSHOT_KEY_BYTES || ($meta !== null && $json === null)) {
+                $skipped++;
+                return;
+            }
+            $rows[] = ['kind' => $kind, 'key' => $key,
+                       'label' => ($label === null) ? null : self::snapshotText($label), 'meta' => $json];
+        };
+        foreach ($this->events as $id => $name) $put('event', $id, $name, null);
+        foreach ($this->forms as $form => $label) $put('form', $form, $label, null);
+        $flags = is_array($this->identifiers) ? $this->identifiers : [];
+        foreach (array_keys($this->fieldLabels + $this->fieldForms + $flags) as $name) {
+            $meta = [];
+            if (isset($this->fieldForms[$name])) $meta['form'] = (string) $this->fieldForms[$name];
+            if (!empty($flags[$name])) $meta['identifier'] = true;
+            $put('field', $name, isset($this->fieldLabels[$name]) ? $this->fieldLabels[$name] : null,
+                 $meta ? $meta : null);
+        }
+        foreach ($this->rules as $ord => $rule) {
+            $put('rule', (int) $ord, isset($rule['label']) ? $rule['label'] : '', $rule);
+        }
+        foreach ($this->rulesBySource as $sid => $ord) {
+            $put('source', $sid, null, ['ordinal' => (int) $ord]);
+        }
+
+        $degraded = $this->degraded;
+        if ($skipped > 0) {
+            $degraded['snapshot'] = $skipped . ' name(s) could not be kept with this scan, '
+                . 'so raw identifiers are shown for them';
+        }
+        array_unshift($rows, ['kind' => 'state', 'key' => 'snapshot', 'label' => null,
+            'meta' => self::snapshotJson([
+                'v'                 => self::SNAPSHOT_VERSION,
+                'hasDags'           => (bool) $this->hasDags,
+                'longitudinal'      => (bool) $this->longitudinal,
+                'singleEventProved' => (bool) $this->singleEventProved,
+                'identifiersRead'   => is_array($this->identifiers),
+                'degraded'          => (object) array_map('strval', $degraded),
+            ])]);
+        return $rows;
+    }
+
+    /**
+     * The object toSnapshot() wrote, from its rows; null when they hold no
+     * snapshot this revision can read (no state row, or another revision).
+     *
+     * Null is the caller's cue to label the report from the project as it is
+     * now and to say so: a run planned before snapshots existed has none. A
+     * row of a kind this revision does not know is not skipped quietly: the
+     * object is marked degraded.
+     *
+     * @param array $rows ScanStore::dimensions() rows, in any order
+     * @return self|null
+     */
+    public static function fromSnapshot(array $rows)
+    {
+        $state = null;
+        foreach ($rows as $r) {
+            if (is_array($r) && isset($r['kind'], $r['key']) && $r['kind'] === 'state'
+                    && (string) $r['key'] === 'snapshot') {
+                $state = isset($r['meta']) ? json_decode((string) $r['meta'], true) : null;
+                break;
+            }
+        }
+        if (!is_array($state) || !isset($state['v']) || (int) $state['v'] !== self::SNAPSHOT_VERSION) {
+            return null;
+        }
+        $d = new self();
+        $d->hasDags = !empty($state['hasDags']);
+        $d->longitudinal = !empty($state['longitudinal']);
+        $d->singleEventProved = !empty($state['singleEventProved']);
+        $d->degraded = (isset($state['degraded']) && is_array($state['degraded']))
+            ? array_map('strval', $state['degraded']) : [];
+        $ids = !empty($state['identifiersRead']) ? [] : null;
+        $unread = false;
+        foreach ($rows as $r) {
+            if (!is_array($r) || !isset($r['kind'], $r['key'])) { $unread = true; continue; }
+            $kind = (string) $r['kind'];
+            $key = (string) $r['key'];
+            $label = isset($r['label']) ? (string) $r['label'] : null;
+            $meta = isset($r['meta']) ? json_decode((string) $r['meta'], true) : null;
+            if ($kind === 'state') continue;
+            if ($kind === 'event') {
+                $d->events[$key] = (string) $label;
+            } elseif ($kind === 'form') {
+                $d->forms[$key] = (string) $label;
+            } elseif ($kind === 'field') {
+                if ($label !== null) $d->fieldLabels[$key] = $label;
+                if (is_array($meta) && isset($meta['form'])) $d->fieldForms[$key] = (string) $meta['form'];
+                if ($ids !== null && is_array($meta) && !empty($meta['identifier'])) $ids[$key] = true;
+            } elseif ($kind === 'rule' && is_array($meta) && ctype_digit($key) && (int) $key > 0) {
+                $d->rules[(int) $key] = $meta;
+            } elseif ($kind === 'source' && is_array($meta) && isset($meta['ordinal'])) {
+                $d->rulesBySource[$key] = (int) $meta['ordinal'];
+            } else {
+                $unread = true;
+            }
+        }
+        if ($unread) {
+            $d->degraded['snapshot'] = 'part of the labels stored with this scan could not be read, '
+                . 'so raw identifiers are shown for it';
+        }
+        ksort($d->rules);
+        $d->identifiers = $ids;
+        return $d;
+    }
+
+    /** Valid UTF-8, cut to the label column on a character boundary. */
+    private static function snapshotText($s)
+    {
+        $s = mb_scrub((string) $s, 'UTF-8');
+        return strlen($s) <= self::SNAPSHOT_LABEL_BYTES ? $s : mb_strcut($s, 0, self::SNAPSHOT_LABEL_BYTES, 'UTF-8');
+    }
+
+    /**
+     * JSON for a meta cell, invalid bytes replaced; null when it cannot be
+     * encoded or would not fit uv_scan_dim.meta, a MEDIUMTEXT.
+     */
+    private static function snapshotJson($v)
+    {
+        $j = json_encode($v, JSON_INVALID_UTF8_SUBSTITUTE);
+        return (is_string($j) && strlen($j) <= 16777215) ? $j : null;
     }
 
     /**

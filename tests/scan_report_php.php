@@ -150,21 +150,24 @@ namespace {
      * The row Scan\UniqueFinalizer writes for one duplicate candidate.
      *
      * Built from the finalizer's INSERT, not from what a duplicate ought to
-     * carry: rule ordinal 0, reason `duplicate`, no group, and NO VALUE. The
-     * INSERT names no value column, so value_bin and value_len are NULL and the
-     * rest take their column defaults. Section 1 holds this helper to that
-     * INSERT. The fixture it replaces gave the duplicate value_bin 'ID-7',
-     * which the finalizer has never written (RP-1).
+     * carry: the rule's ordinal and the record's group as the finalizer is
+     * given them (W7-R4; 0 and none when it is given neither), the reason
+     * `duplicate-value`, and NO VALUE. The INSERT names no value column, so
+     * value_bin and value_len are NULL and the rest take their column
+     * defaults. Section 1 holds this helper to that INSERT. The fixture it
+     * replaces gave the duplicate value_bin 'ID-7', which the finalizer has
+     * never written (RP-1).
      */
-    function finalized(array $cand, $id) {
+    function finalized(array $cand, $id, $ord = 0, $dag = null) {
         $ev = $cand['event_id'];
         return [
             'finding_id' => $id, 'project_id' => $cand['project_id'], 'record_id_bin' => $cand['record_id_bin'],
             // UniqueFinalizer::eventOrNull(): the candidate's 0 sentinel is undone.
             'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
             'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
-            'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => 0, 'check_type' => 'unique',
-            'reason_code' => 'duplicate', 'reason_bits' => 0, 'dag_key' => null,
+            'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => (int) $ord, 'check_type' => 'unique',
+            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON, 'reason_bits' => 0,
+            'dag_key' => $dag,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
             'as_of' => null, 'z_score' => null, 'growth_reference' => null, 'justified' => 0,
         ];
@@ -275,8 +278,11 @@ namespace {
         $is = [];
         foreach ($found as $i => $f) $is[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $d);
         $isDup = [];
+        // The ordinal the production finalizer is given for each rule (W7-R4).
+        $ordOf = \INSPIRE\UniversalValidator\Scan\ScanService::ruleOrdinals($ctx['plan']);
         foreach ($cands as $i => $c) {
-            $isDup[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i)), $d);
+            $o = isset($ordOf[$c['rule_source_id']]) ? $ordOf[$c['rule_source_id']] : 0;
+            $isDup[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i, $o)), $d);
         }
         ksort($wasDup); ksort($isDup);
 
@@ -284,6 +290,33 @@ namespace {
             count($was) >= 4 && count($was) === count($is));
         check('differential: the stored report renders the legacy report, cell for cell',
             $byField($was) === $byField($is));
+
+        // M5: THE SAME LABELS FROM THE SNAPSHOT. What planning stores and a
+        // stored run's report reads back must render every finding, the
+        // finalizer's duplicates included, as the object it was made from.
+        $snapRows = $d->toSnapshot();
+        $fromSnap = ScanDimensions::fromSnapshot(array_reverse($snapRows));
+        $isSnap = [];
+        foreach ($found as $i => $f) $isSnap[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $fromSnap);
+        $dupSnap = [];
+        foreach ($cands as $i => $c) {
+            $o = isset($ordOf[$c['rule_source_id']]) ? $ordOf[$c['rule_source_id']] : 0;
+            $dupSnap[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i, $o)), $fromSnap);
+        }
+        ksort($dupSnap);
+        check('snapshot: read back in any order, it renders the stored report cell for cell',
+            $fromSnap !== null && $byField($isSnap) === $byField($is) && $dupSnap === $isDup);
+        // Maps compare as maps: the store hands rows back in key order.
+        $sorted = function ($a) { if (is_array($a)) ksort($a); return $a; };
+        $same = function ($p) use ($fromSnap, $d, $sorted) { return $sorted($fromSnap->$p) === $sorted($d->$p); };
+        check('snapshot: and it is the object it was made from, property for property',
+            $fromSnap !== null && $fromSnap->rules === $d->rules && $same('rulesBySource')
+            && $same('fieldLabels') && $same('fieldForms') && $same('forms') && $same('events')
+            && $same('identifiers') && $same('degraded')
+            && $fromSnap->hasDags === $d->hasDags && $fromSnap->longitudinal === $d->longitudinal
+            && $fromSnap->singleEventProved === $d->singleEventProved);
+        check('snapshot: every row is one the store takes',
+            count(\INSPIRE\UniversalValidator\Scan\FindingRowMapper::dimensionRows($snapRows)) === count($snapRows));
 
         $cells = $byField($is);
         $kinds = [];
@@ -327,12 +360,23 @@ namespace {
             foreach (array_keys(array_diff_assoc($cellsWas, $isDup[$rid])) as $k) $differ[$k] = true;
         }
         ksort($differ);
-        // value: not stored (RP-1). reason and problem: the finalizer writes
-        // `duplicate`, the legacy path `duplicate-value` (W7-R4). Every location
-        // cell, the rule and the issue agree.
-        check('differential: a stored duplicate differs from the legacy one only where W7-R4 and RP-1 say (got '
+        // value: not stored (RP-1). Reason and problem used to differ too: the
+        // finalizer wrote `duplicate`, the legacy path `duplicate-value`. Since
+        // W7-R4 they agree, with every location cell, the rule and the issue.
+        check('differential: a stored duplicate differs from the legacy one only where RP-1 says (got '
             . implode(',', array_keys($differ)) . ')',
-            array_keys($differ) === ['problem', 'reason', 'value']);
+            array_keys($differ) === ['value']);
+        // The finalizer's ordinal map gives every rule the number the
+        // evaluator writes on that rule's own findings.
+        $sameOrd = count($found) > 0;
+        foreach ($found as $f) {
+            if (!isset($ordOf[$f['rule_source_id']]) || $ordOf[$f['rule_source_id']] !== (int) $f['rule_ord']) {
+                $sameOrd = false;
+            }
+        }
+        check('differential: the ordinal a duplicate is given is the one its rule\'s findings carry',
+            $sameOrd && isset($cands[0]) && isset($ordOf[$cands[0]['rule_source_id']])
+            && $ordOf[$cands[0]['rule_source_id']] >= 1);
 
         // The helper is the finalizer's INSERT, read from the finalizer. If a
         // later wave gives the duplicate its value, this fails and says which
@@ -350,12 +394,36 @@ namespace {
             $insMarks = array_map('trim', explode(',', end($mm[1])));
         }
         $written = (count($insCols) === count($insMarks) && $insCols) ? array_combine($insCols, $insMarks) : [];
-        check('differential: the duplicate fixture is the row the finalizer writes - no value column, ordinal 0',
+        // Since W7-R4 the ordinal and the group are bound per row and the
+        // reason is UniqueFinalizer::REASON, which finalized() writes.
+        check('differential: the duplicate fixture is the row the finalizer writes - no value column',
             $written !== []
-            && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at', 'dag_key'],
+            && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at'],
                                array_keys($written)) === []
-            && $written['rule_ord'] === '0' && $written['reason_bits'] === '0'
-            && strpos($fin, "'unique', 'duplicate', \$g['group_hmac']") !== false);
+            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '0'
+            && strpos($fin, "\$ord, 'unique', self::REASON, \$dag, \$g['group_hmac']") !== false
+            && \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON === 'duplicate-value');
+
+        // The group a duplicate is given is read off the record node by
+        // ScanService::dagOfNode(), every other finding's by the module's own
+        // dagOfRecordNode(). Two copies of one rule, held equal here (W7-R4).
+        $dagRule = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'dagOfRecordNode');
+        $dagRule->setAccessible(true);
+        $nodes = [
+            ['1' => ['record_id' => 'R-1', 'redcap_data_access_group' => 'site_a']],
+            ['1' => ['record_id' => 'R-1', 'redcap_data_access_group' => ''], '2' => ['redcap_data_access_group' => 'site_b']],
+            ['1' => ['record_id' => 'R-1'], 'repeat_instances' => ['1' => ['fa' => ['2' => ['redcap_data_access_group' => 'site_c']]]]],
+            ['repeat_instances' => ['1' => ['' => ['1' => ['redcap_data_access_group' => 'site_d']]]], '1' => ['redcap_data_access_group' => 'site_e']],
+            ['1' => ['record_id' => 'R-1']],
+            ['1' => ['redcap_data_access_group' => ['nested']], '2' => ['redcap_data_access_group' => 'site_f']],
+            [],
+        ];
+        $agree = true;
+        foreach ($nodes as $node) {
+            if ($dagRule->invoke(null, $node) !== \INSPIRE\UniversalValidator\Scan\ScanService::dagOfNode($node)) $agree = false;
+        }
+        check('differential: a duplicate\'s group is read off the record as every other finding\'s is',
+            $agree && \INSPIRE\UniversalValidator\Scan\ScanService::dagOfNode($nodes[3]) === 'site_d');
 
         // The identifier flags are read twice, by two classes. Held together.
         $flagDict = dict(['record_id' => [], 'p' => ['', 'y'], 'q' => ['', 'Yes'], 'r' => ['', '1'],
@@ -416,10 +484,11 @@ namespace {
 
         $f = $map->toFinding(row());
         // asOf, z and reference are the sink's optional note keys (a
-        // @UVWINDOW day, a growth z-score and its reference), and justified
-        // its mark of a finding a reason stands for (@UVJUSTIFY).
+        // @UVWINDOW day, a growth z-score and its reference), justified its
+        // mark of a finding a reason stands for (@UVJUSTIFY), and branch the
+        // sink's optional judging branch (R3G-2).
         $sink = ['record', 'dag', 'event_id', 'instrument', 'instance', 'field', 'value', 'valueWithheld', 'type', 'reason', 'rule',
-                 'asOf', 'z', 'reference', 'justified'];
+                 'asOf', 'z', 'reference', 'justified', 'branch'];
         check('contract: the output is the sink shape the renderers already take, plus three',
             array_diff($sink, array_keys($f)) === []
             && array_values(array_diff(array_keys($f), $sink)) === ['valueState', 'ruleSource', 'findingId']);
@@ -646,10 +715,20 @@ namespace {
             $rawRow !== null && $rawRow['value'] === 'PATIENT-0042');
 
         $audit = function ($id) use ($key) { return hash_hmac('sha256', (string) $id, $key . '|' . PID); };
-        $map = mapper(['recordIds' => 'hashed', 'hashRecordId' => $audit]);
+        // W7-R2: THE MODULE'S OWN SEAM, not a closure written here. The test
+        // keeps the legacy report's cell as the expected value.
+        $posture = $m->scanRecordIdPosture(PID);
+        $map = mapper($posture);
         $f = $map->toFinding(row(['record_id_bin' => 'PATIENT-0042']));
         check('record ids: the stored report names the record as the legacy report and the audit log do',
             $f['record'] === $shown);
+        check('record ids: the seam takes the posture from log-values, as the legacy report does',
+            $posture['recordIds'] === FindingRowMapper::IDS_HASHED && $posture['recordIdField'] === 'record_id'
+            && is_callable($posture['hashRecordId']) && call_user_func($posture['hashRecordId'], 'PATIENT-0042') === $audit('PATIENT-0042'));
+        $rawPosture = mkMod($dict, $data, [], ['log-values' => 'hashed'])->scanRecordIdPosture(PID);
+        check('record ids (control): any other log mode names records raw, with no hasher',
+            $rawPosture['recordIds'] === FindingRowMapper::IDS_RAW && $rawPosture['hashRecordId'] === null
+            && mapper($rawPosture)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] === 'PATIENT-0042');
         check('record ids: the raw id is nowhere in the mapped finding',
             strpos(json_encode($f), 'PATIENT-0042') === false);
         $line = (new ScanReport($map, dims(), runRow()))->csvLine(row(['record_id_bin' => 'PATIENT-0042']));
@@ -796,9 +875,9 @@ namespace {
         $RULE_B = ['type' => 'unique', 'label' => 'No duplicate IDs', 'message' => '', 'assert' => '', 'fields' => ['sid']];
         $d = dims([1 => $RULE_A, 2 => $RULE_B], ['src-b' => 2]);
 
-        // What Scan\UniqueFinalizer writes: ordinal 0, no DAG, reason `duplicate`,
-        // and no value at all - see finalized(), which section 1 holds to the
-        // finalizer's INSERT.
+        // What Scan\UniqueFinalizer writes when it is given no ordinal: 0, no
+        // DAG, reason `duplicate-value`, and no value at all - see finalized(),
+        // which section 1 holds to the finalizer's INSERT.
         $dup = mapper()->toFinding(finalized(['project_id' => PID, 'record_id_bin' => 'R-1', 'event_id' => 0,
                                               'instance' => 1, 'host_form' => 'fa', 'field' => 'sid',
                                               'rule_source_id' => 'src-b'], 9));
@@ -806,7 +885,7 @@ namespace {
         check('rules: a duplicate finding is found by its source id',
             $r['rule'] === '2' && $r['rule_label'] === 'No duplicate IDs');
         check('rules: it is a Duplicate value, worded from the catalogue',
-            $r['issue'] === 'Duplicate value' && strpos($r['problem'], 'more than once') !== false
+            $r['issue'] === 'Duplicate value' && strpos($r['problem'], 'already recorded') !== false
             && $r['wording'] !== 'fallback');
         check('rules: its value was not kept, which is not an empty field',
             $dup['valueState'] === 'not-kept' && $r['value'] === ScanColumns::VALUE_WORDS['not-kept']);
@@ -1020,6 +1099,55 @@ namespace {
             ScanColumns::row($f, new ScanDimensions()) !== ScanColumns::row($f, $built));
         check('dimensions: the rule snapshot reached the wording',
             strpos(ScanColumns::row($f, $hand)['problem'], "[a_val]='OK'") !== false);
+    }
+
+    /* =====================================================================
+     * 10. THE SNAPSHOT IS THE DAY THE RUN WAS PLANNED (M5, W7-R9, W7-R11)
+     * ===================================================================== */
+    {
+        $planned = mkMod(dict(['record_id' => [],
+            'a_val' => ['@UVASSERT={"assert":"[a_val]=\'OK\'","message":"Planned wording","blockSave":"hard"}']]), []);
+        $then = $planned->scanDimensions(PID)->toSnapshot();
+        $renamed = mkMod(dict(['record_id' => [],
+            'a_val' => ['@UVASSERT={"assert":"[a_val]=\'OK\'","message":"Wording since","blockSave":"hard"}']]), []);
+        $f = mapper()->toFinding(row());
+        $snapCell = ScanColumns::row($f, ScanDimensions::fromSnapshot($then))['problem'];
+        $liveCell = ScanColumns::row($f, $renamed->scanDimensions(PID))['problem'];
+        check('snapshot: a rule reworded after planning keeps the wording it had when the run was planned',
+            strpos($snapCell, 'Planned wording') !== false && strpos($snapCell, 'Wording since') === false
+            && strpos($liveCell, 'Wording since') !== false);
+
+        $nd = new ScanDimensions();
+        $nd->identifiers = null;
+        $nd->fieldLabels = ['ok' => 'Fine', str_repeat('k', 192) => 'Too long a name'];
+        $nd->forms = ['fa' => "Bad \xC3 bytes " . str_repeat('x', 70000)];
+        $rows = $nd->toSnapshot();
+        $back = ScanDimensions::fromSnapshot($rows);
+        check('snapshot: a key wider than the column is left out, and the snapshot says so',
+            $back !== null && array_keys($back->fieldLabels) === ['ok'] && isset($back->degraded['snapshot']));
+        check('snapshot: a label is kept as valid UTF-8, cut to the column on a character boundary',
+            $back !== null && mb_check_encoding($back->forms['fa'], 'UTF-8')
+            && strlen($back->forms['fa']) <= 65535 && strpos($back->forms['fa'], 'Bad ') === 0);
+        check('snapshot: flags that could not be read stay unread, not "no identifiers"',
+            $back !== null && $back->identifiers === null);
+        $state = null;
+        foreach ($rows as $r) if ($r['kind'] === 'state') $state = $r;
+        check('snapshot: no state row is no snapshot',
+            ScanDimensions::fromSnapshot(array_values(array_filter($rows, function ($r) { return $r['kind'] !== 'state'; }))) === null
+            && ScanDimensions::fromSnapshot([]) === null);
+        $v2 = $state;
+        $v2['meta'] = str_replace('"v":1', '"v":2', $v2['meta']);
+        check('snapshot: nor is a revision this version does not know',
+            $state !== null && ScanDimensions::fromSnapshot([$v2]) === null);
+        $odd = ScanDimensions::fromSnapshot([$state, ['kind' => 'chart', 'key' => 'x', 'label' => null, 'meta' => null]]);
+        check('snapshot: a kind it does not know marks the labels degraded rather than vanishing',
+            $odd !== null && isset($odd->degraded['snapshot']));
+
+        // W7-R9: ONE PARSER. The scan's redaction and the report read it.
+        $flagDict = dict(['record_id' => [], 'p' => ['', 'y'], 'q' => ['', 'Yes'], 't' => ['', 'n']]);
+        check('identifier flags: one parser, the words REDCap writes, and null for no dictionary',
+            array_keys(ScanDimensions::identifierFlags($flagDict)) === ['p', 'q']
+            && ScanDimensions::identifierFlags([]) === null);
     }
 
     echo "scan_report_php: $n checks, $fail failure(s)\n";

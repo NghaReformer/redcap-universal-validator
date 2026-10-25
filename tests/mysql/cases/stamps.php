@@ -117,7 +117,7 @@ check('stamps: as_of, z_score and growth_reference are written, and NULL where t
     $rows === [['v_end', null, null, null], ['w_past', '2026-10-02', null, null], ['x_wt', null, '-3.40', 'who-wfa'],
                ['y_wt', null, '-1.00', 'who-wfa']]);
 // read back by the report's page query, each row keyed by FindingRowMapper::INPUT_KEYS
-$page = $store->findings($PID, $gen, [], 0, 10);
+$page = $store->findings($PID, $gen, ['dag' => null], [], 0, 10);
 $byField = function ($f) use ($page) {
     return array_values(array_filter($page, function ($r) use ($f) { return $r['field'] === $f; }));
 };

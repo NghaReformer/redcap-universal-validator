@@ -35,6 +35,13 @@ final class ScanAuthorization
     const EXPORT_FULL = '1';
 
     /**
+     * What an id that is not a run gets, and so what a run the reader may not
+     * touch gets too (review rv5b-4). ONE COPY: ScanService::NO_RUN is this
+     * constant, so a refusal on scope cannot drift from "no such run".
+     */
+    const NO_RUN = 'no scan with that reference is running for this project';
+
+    /**
      * May this user START a run over $entitlement?
      *
      * The plan's row: design rights, nonzero read access to EVERY form in the
@@ -57,6 +64,36 @@ final class ScanAuthorization
      */
     public static function mayStart($rights, array $entitlement, $unknownOwnership = false)
     {
+        $base = self::readerAlone($rights);
+        if (!$base['ok']) return $base;
+        if ($unknownOwnership) {
+            // NAMED, for the same reason the export-level refusal in
+            // readerAlone() says which level it read. This arm was unreachable
+            // in production until the entitlement moved onto the read set, and
+            // it names a fixable dictionary problem: the field exists, its
+            // form_name does not. Without the names it is a refusal nobody can
+            // act on - the exact objection that put the instrument names in the
+            // branch below.
+            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
+            return self::no('at least one field a rule depends on could not be located on an '
+                . 'instrument, so access to it cannot be checked and the scan was not started'
+                . ($who === '' ? '' : ': ' . $who));
+        }
+        return self::mayStartForms($base, $rights, $entitlement);
+    }
+
+    /**
+     * The questions every entitlement asks of the reader alone, before any run
+     * or rule: rights that can be read, design rights, and Full Data Set
+     * export. A reader refused here is refused every run, so ScanService asks
+     * it BEFORE it reads a run row (L8, W11A-N2): asked after, "needs Full
+     * Data Set" for a run and "no scan with that reference" for an id that is
+     * none told a de-identified designer which run ids exist.
+     *
+     * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
+     */
+    public static function readerAlone($rights)
+    {
         $base = self::readable($rights);
         if (!$base['ok']) return $base;
 
@@ -75,18 +112,12 @@ final class ScanAuthorization
             return self::no('this scan stores record values, so it needs Full Data Set export '
                 . 'rights; ' . self::exportLevelPhrase($rights));
         }
-        if ($unknownOwnership) {
-            // NAMED, for the same reason the export-level refusal above says
-            // which level it read. This arm was unreachable in production until
-            // the entitlement moved onto the read set, and it names a fixable
-            // dictionary problem: the field exists, its form_name does not.
-            // Without the names it is a refusal nobody can act on - the exact
-            // objection that put the instrument names in the branch below.
-            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
-            return self::no('at least one field a rule depends on could not be located on an '
-                . 'instrument, so access to it cannot be checked and the scan was not started'
-                . ($who === '' ? '' : ': ' . $who));
-        }
+        return $base;
+    }
+
+    /** mayStart()'s last question: the instruments, for a reader readerAlone() let through. */
+    private static function mayStartForms(array $base, $rights, array $entitlement)
+    {
         $barred = self::barredForms($rights, $entitlement);
         if ($barred) {
             // TWO DIFFERENT FAILURES, TWO DIFFERENT SENTENCES.
@@ -168,10 +199,9 @@ final class ScanAuthorization
         $unrestricted = $base['unrestricted'];
 
         if ($runScopeDag === null) {
-            if (!$unrestricted) {
-                return self::no('this run covers the whole project, so only a user without a Data '
-                    . 'Access Group restriction may cancel it');
-            }
+            // A group user is told what an id that is not a run gets (review
+            // rv5b-4): this sentence named the run's scope.
+            if (!$unrestricted) return self::no(self::NO_RUN);
             return $base;
         }
         if ($unrestricted) return $base;                       // may cancel any DAG run
@@ -192,27 +222,95 @@ final class ScanAuthorization
 
 
     /**
+     * Has this run proved its scope at the target fence (H10 part 1)?
+     *
+     * A run over the whole project has nothing to prove. A group-scoped one
+     * lists the records its group held when planning read them, and records
+     * move between groups while it runs; only catch-up, walking the change
+     * log up to the target fence, brings the run's list into line with the
+     * group. So the scope is proved once `fence_target` is set AND catch-up
+     * is behind the run: it is in a finalizer phase, or promotion finished it
+     * (`complete` or `partial`, the two terminals only promotion writes after
+     * the finalizers - and the planner's empty-scope finish, which runs before
+     * any fence, leaves `fence_target` empty). A run stopped, failed or
+     * expired, or still cancelling, cannot say whether catch-up finished, so
+     * it has not proved it.
+     */
+    public static function scopeProved(array $run)
+    {
+        if (!isset($run['scope_dag']) || $run['scope_dag'] === null || $run['scope_dag'] === '') return true;
+        if (!isset($run['fence_target']) || $run['fence_target'] === null || $run['fence_target'] === '') {
+            return false;
+        }
+        $phase = isset($run['phase']) ? (string) $run['phase'] : '';
+        if ($phase === ScanPhase::UNIQUE || $phase === ScanPhase::ROLLUP) return true;
+        return $phase === ScanPhase::TERMINAL && isset($run['terminal'])
+            && in_array($run['terminal'], [ScanOutcome::COMPLETE, ScanOutcome::PARTIAL], true);
+    }
+
+    /** What a status of a run that has not proved its scope says in place of its counts. */
+    const WITHHELD = 'This scan covers one Data Access Group, so its counts are shown once it has '
+        . 'confirmed which records belong to that group.';
+
+    /**
+     * The same, for a run that has ENDED without proving it (review rv5b-2):
+     * stopped, failed, expired, finished over a change log that could not
+     * prove the window, or over an empty group. WITHHELD promised the counts
+     * later, and for a finished run there is no later. No apostrophes: the
+     * page prints it through json_encode with JSON_HEX_APOS.
+     */
+    const WITHHELD_ENDED = 'This scan covers one Data Access Group and ended before it confirmed '
+        . 'which records belong to that group, so its counts cannot be shown.';
+
+    /**
      * What `scan-status` may disclose about a DAG-scoped run that has NOT yet
-     * reached its target fence.
+     * proved its scope at the target fence (scopeProved()).
      *
      * Before the fence, a DAG projection is not yet provable, so counts,
      * percentages, rollups, filters and samples would be claims about a scope
-     * that has not been established. Phase, heartbeat and the control flags are
-     * all that survives - enough to render a progress spinner and a cancel
-     * button, and nothing that describes the data.
+     * that has not been established. What survives is the run's identity, its
+     * phase and decision, the control flags and the quiet-run clock - enough
+     * to render a progress spinner, a Stop button and a finished run's verdict,
+     * and nothing that counts the data.
+     *
+     * A KEEP-LIST, NOT A DROP-LIST: a count added to the status later is
+     * withheld here until somebody decides it is not a count. This list used
+     * to name keys no status carried (run_owned, heartbeat_at, may_cancel...),
+     * so wired as written it would have stripped the phase's companions and
+     * the Stop flag; it now names ScanService::status()'s own keys.
      */
     public static function preFenceStatus(array $status)
     {
-        $keep = ['run_owned', 'phase', 'heartbeat_at', 'last_progress_at',
-                 'may_resume', 'may_cancel', 'error_category'];
+        // NOT `detail` (review rv5b-6). Whether the run kept every finding is
+        // a statement about how many it found: a stopped run read "Some
+        // findings were not kept, because the scan reached the limit" while
+        // its counts were withheld.
+        $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
+                 'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for
-        // "the scan found nothing".
-        $out['detail_withheld'] = true;
-        $out['detail_withheld_why'] = 'this run is scoped to a Data Access Group and has not yet '
-            . 'reached a point where that scope can be proved, so no counts are shown yet';
+        // "the scan found nothing". A run that has ended will never prove its
+        // scope, so it is not told it will (review rv5b-2).
+        $out['withheld'] = true;
+        $out['withheldWhy'] = (isset($status['terminal']) && $status['terminal'] !== null
+                               && $status['terminal'] !== '')
+            ? self::WITHHELD_ENDED : self::WITHHELD;
         return $out;
+    }
+
+    /**
+     * The same rule for a `scan-work` answer: the request's counters are what
+     * the run's counts are summed from, so they go too. `moved` says whether
+     * the request moved the run, which is all the page needs to pace itself;
+     * it is a yes or no, and counts nothing.
+     */
+    public static function preFenceWork(array $answer, $moved)
+    {
+        foreach (['worked', 'requeued', 'blocked', 'findings', 'listed'] as $k) unset($answer[$k]);
+        $answer['moved'] = (bool) $moved;
+        $answer['withheld'] = true;
+        return $answer;
     }
 
     /**
@@ -396,15 +494,14 @@ final class ScanAuthorization
     private static function scopeMatches(array $base, $runScopeDag)
     {
         if ($base['unrestricted']) return $base;
-        if ($runScopeDag === null) {
-            return self::no('this scan covers the whole project, which is wider than your Data '
-                . 'Access Group');
-        }
-        if ((string) $runScopeDag !== (string) $base['scope']) {
-            // Deliberately the SAME wording as "no such run": a distinct message
-            // here would confirm that a run exists for another group.
-            return self::no('that scan is not available to you');
-        }
+        // BOTH ARE "NO SUCH RUN", WORD FOR WORD (review rv5b-4). The comment
+        // here said the other group's refusal used the same wording as a
+        // missing run, and it did not: "that scan is not available to you"
+        // and "...covers the whole project, which is wider than your Data
+        // Access Group" each told a group user that the id they tried was a
+        // run, and which kind, where an id that is not a run gets NO_RUN.
+        if ($runScopeDag === null) return self::no(self::NO_RUN);
+        if ((string) $runScopeDag !== (string) $base['scope']) return self::no(self::NO_RUN);
         return $base;
     }
 

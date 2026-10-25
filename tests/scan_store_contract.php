@@ -56,6 +56,17 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         stripos($r2['why'], 'alice') === false && preg_match('/\d/', $r2['why']) === 0);
 
     $C('a different project is unaffected', $s->startRun(701, [])['ok'] === true);
+    // WHAT THE RUN KEEPS IS WHAT THE PLANNER SAID (W11A-N1). The SQL store
+    // writes values_state from the start request; the array store dropped it
+    // and every run it held read 'none', so a stored report built over it
+    // never showed a kept value whatever the policy.
+    $kept = $s->startRun(702, ['created_by' => 'alice', 'values_state' => 'raw']);
+    $C('a run keeps the value mode it was started with',
+        $kept['ok'] === true && $kept['run']['values_state'] === 'raw'
+        && $s->run(702, (int) $kept['run']['run_id'])['values_state'] === 'raw');
+    $plain = $s->startRun(703, []);
+    $C('and a start that names none keeps none',
+        $plain['ok'] === true && $s->run(703, (int) $plain['run']['run_id'])['values_state'] === 'none');
 
     // -- the run id is a locator, never an authorisation -------------------
     $C('a run id does not resolve under another project', $s->run(701, $runId) === null);
@@ -648,7 +659,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('a repeat 599 findings apart is refused like one side by side',
         is_string($no) && strpos($no, 'database refused') !== false);
     $C('and none of the 599 good findings ahead of it was kept',
-        $s8b->findings(751, $gen8b, [], 0, 100) === []
+        $s8b->findings(751, $gen8b, ['dag' => null], [], 0, 100) === []
         && (int) $s8b->run(751, $rid8b)['detail_rows'] === 0);
     $C('nor the record marked examined', $s8b->manifestComplete($rid8b) === false);
     // THE CONTROL. Without it the three lines above pass for a store that
@@ -706,7 +717,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('leaving the record unexamined and nothing stored',
         $s9->manifestComplete($rid9) === false
         && (int) $s9->run(752, $rid9)['detail_rows'] === 0
-        && $s9->findings(752, $gen9, [], 0, 100) === []);
+        && $s9->findings(752, $gen9, ['dag' => null], [], 0, 100) === []);
     // THE CONTROL: the same two findings, whole, commit.
     $C('while the same batch with every value present commits',
         $s9->commitBatch($rid9, 'w1', $ep9, $batch9([$whole9(1), $whole9(2)])) === true
@@ -1046,6 +1057,38 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('and a cancel takes the summary away from the worker that held it',
         $s11->holdRollupCursor($rid11, $ep11) === ScanStore::ROLLUP_TAKEN_OVER);
 
+    // -- A FINISHING PHASE WRITES ONLY FOR A RUN IT STILL HOLDS (rv10a1-1) -----
+    //
+    // UniqueFinalizer asks this as the first statement of each emit and publish
+    // transaction. A request mid-finalize when its run was expired kept
+    // writing duplicates into the expired run; both stores refuse it now, in
+    // the same four sentences and the same order.
+    $s12 = $newStore();
+    $rid12 = (int) $s12->startRun(755, [])['run']['run_id'];
+    $s12->writeManifest($rid12, [$mk5('X')]);
+    $ep12 = (int) $s12->run(755, $rid12)['lease_epoch'];
+    foreach ([ScanPhase::SCANNING, ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $to12) {
+        $s12->advancePhase($rid12, $ep12, $to12);
+    }
+    $C('rv10a1-1: a live run in unique-finalize may be written for, on its own epoch',
+        $s12->holdRun($rid12, $ep12, ScanPhase::UNIQUE) === true);
+    $C('rv10a1-1: the epoch after a cancel or a reap may not write for it',
+        $s12->holdRun($rid12, $ep12 + 1, ScanPhase::UNIQUE) === ScanStore::HOLD_TAKEN_OVER);
+    $C('rv10a1-1: nor may a run that does not exist',
+        $s12->holdRun($rid12 + 999, $ep12, ScanPhase::UNIQUE) === ScanStore::HOLD_NO_RUN);
+    $C('rv10a1-1: nor a write for a phase the run has left',
+        $s12->holdRun($rid12, $ep12, ScanPhase::ROLLUP) === ScanStore::HOLD_MOVED);
+    $s12->finish($rid12, ScanOutcome::derive(['failed' => true]));
+    $C('rv10a1-1: nor a run that has ended, on the epoch it ended with',
+        $s12->holdRun($rid12, $ep12, ScanPhase::UNIQUE) === ScanStore::HOLD_FINISHED);
+    $s13 = $newStore();
+    $rid13 = (int) $s13->startRun(756, [])['run']['run_id'];
+    $s13->writeManifest($rid13, [$mk5('Y')]);
+    $ep13 = (int) $s13->run(756, $rid13)['lease_epoch'];
+    $s13->cancel(756, $rid13, 'admin');
+    $C('rv10a1-1: and a cancel takes the run away from the worker that was writing for it',
+        $s13->holdRun($rid13, $ep13, $s13->run(756, $rid13)['phase']) === ScanStore::HOLD_TAKEN_OVER);
+
     // -- A RUN NOBODY CAN FIND IS NOT COMPLETE (W6-N1) ------------------------
     //
     // The SQL store answered true here - no unfinished row, because no row at
@@ -1111,7 +1154,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         [[]],
     ], null);
     $C('rows: the batch the shape is read from commits', $one['ok'] === true);
-    $all = $sf->findings(790, $one['gen'], [], 0, 100);
+    $all = $sf->findings(790, $one['gen'], ['dag' => null], [], 0, 100);
     $C('rows: every row is keyed by FindingRowMapper::INPUT_KEYS, in that order',
         $all !== [] && array_reduce($all, function ($ok, $row) {
             return $ok && array_keys($row) === FindingRowMapper::INPUT_KEYS;
@@ -1138,10 +1181,10 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && $plain['value_bin'] === null && $plain['value_len'] === null
         && $plain['value_truncated'] === '0' && $plain['value_expires_at'] === null);
 
-    $p1 = $sf->findings(790, $one['gen'], [], 0, 2);
+    $p1 = $sf->findings(790, $one['gen'], ['dag' => null], [], 0, 2);
     $last = (int) $p1[count($p1) - 1]['finding_id'];
-    $p2 = $sf->findings(790, $one['gen'], [], $last, 2);
-    $p3 = $sf->findings(790, $one['gen'], [], (int) $p2[count($p2) - 1]['finding_id'], 2);
+    $p2 = $sf->findings(790, $one['gen'], ['dag' => null], [], $last, 2);
+    $p3 = $sf->findings(790, $one['gen'], ['dag' => null], [], (int) $p2[count($p2) - 1]['finding_id'], 2);
     $seen = [];
     foreach (array_merge($p1, $p2) as $r) $seen[] = (int) $r['finding_id'];
     $C('paging: page two starts after the last row of page one and repeats none of it',
@@ -1149,18 +1192,106 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && min(array_map(function ($r) { return (int) $r['finding_id']; }, $p2)) > $last);
     $C('paging: and the page after the last row is empty', $p3 === []);
     $C('paging: a limit below one is one row, and above a hundred is a hundred',
-        count($sf->findings(790, $one['gen'], [], 0, 0)) === 1
-        && count($sf->findings(790, $one['gen'], [], 0, 1000)) === 4);
-    $north = $sf->findings(790, $one['gen'], ['dag_key' => 'north'], 0, 100);
+        count($sf->findings(790, $one['gen'], ['dag' => null], [], 0, 0)) === 1
+        && count($sf->findings(790, $one['gen'], ['dag' => null], [], 0, 1000)) === 4);
+    $north = $sf->findings(790, $one['gen'], ['dag' => null], ['dag_key' => 'north'], 0, 100);
     $C('filter: by group, in both stores',
         count($north) === 2 && $north[0]['dag_key'] === 'north' && $north[1]['dag_key'] === 'north');
     $C('filter: by instrument',
-        count($sf->findings(790, $one['gen'], ['host_form' => 'visit'], 0, 100)) === 1);
+        count($sf->findings(790, $one['gen'], ['dag' => null], ['host_form' => 'visit'], 0, 100)) === 1);
     $C('filter: an axis it does not know is ignored, not interpolated',
-        count($sf->findings(790, $one['gen'], ['record_hash' => 'x', 'host_form' => ''], 0, 100)) === 4);
+        count($sf->findings(790, $one['gen'], ['dag' => null], ['record_hash' => 'x', 'host_form' => ''], 0, 100)) === 4);
     $C('rows: and the neighbour\'s page answers for the neighbour',
-        count($sf->findings(791, $nbF['gen'], [], 0, 100)) === 1
-        && (int) $sf->findings(791, $nbF['gen'], [], 0, 100)[0]['project_id'] === 791);
+        count($sf->findings(791, $nbF['gen'], ['dag' => null], [], 0, 100)) === 1
+        && (int) $sf->findings(791, $nbF['gen'], ['dag' => null], [], 0, 100)[0]['project_id'] === 791);
+
+    // -- THE SCOPE IS MANDATORY, AND IT CONFINES (B5) ---------------------------
+    //
+    // A read path that can be called without a confinement will be. Both
+    // stores refuse a scope with no dag key, and one naming an empty group,
+    // before any row is read.
+    $throws = function (callable $f) {
+        try { $f(); } catch (\InvalidArgumentException $e) { return true; }
+        return false;
+    };
+    $C('scope: a page with no scope at all is refused',
+        $throws(function () use ($sf, $one) { $sf->findings(790, $one['gen'], [], [], 0, 100); }));
+    $C('scope: and one naming an empty group, which would read as the project',
+        $throws(function () use ($sf, $one) { $sf->findings(790, $one['gen'], ['dag' => ''], [], 0, 100); }));
+    $C('scope: and a filter value that is not text',
+        $throws(function () use ($sf, $one) {
+            $sf->findings(790, $one['gen'], ['dag' => null], ['host_form' => ['visit']], 0, 100);
+        }));
+    $inNorth = $sf->findings(790, $one['gen'], ['dag' => 'north'], [], 0, 100);
+    $C('scope: a group reader is handed the group\'s rows and no other',
+        count($inNorth) === 2 && $inNorth[0]['dag_key'] === 'north' && $inNorth[1]['dag_key'] === 'north');
+    $C('scope: a filter naming another group cannot widen it',
+        $sf->findings(790, $one['gen'], ['dag' => 'north'], ['dag_key' => 'south'], 0, 100) === []);
+    $C('scope: the same group as scope and filter is one axis',
+        count($sf->findings(790, $one['gen'], ['dag' => 'north'], ['dag_key' => 'north'], 0, 100)) === 2);
+    $C('scope: a group with no rows here reads none, and not the rows with no group',
+        $sf->findings(790, $one['gen'], ['dag' => 'west'], [], 0, 100) === []);
+
+    // -- $through: WHERE THE NEXT PAGE STARTS, OR NULL AT THE END --------------
+    $t1 = 'unset';
+    $q1 = $sf->findings(790, $one['gen'], ['dag' => null], [], 0, 3, $t1);
+    $C('through: a full page with more behind it names its last row',
+        count($q1) === 3 && $t1 === (int) $q1[2]['finding_id']);
+    $t2 = 'unset';
+    $q2 = $sf->findings(790, $one['gen'], ['dag' => null], [], $t1, 3, $t2);
+    $C('through: and the page that holds the last row says nothing follows',
+        count($q2) === 1 && $t2 === null);
+    $t3 = 'unset';
+    $sf->findings(790, $one['gen'], ['dag' => null], [], 0, 4, $t3);
+    $C('through: a page exactly as long as the rows left still says nothing follows', $t3 === null);
+    $t4 = 'unset';
+    $sf->findings(790, $one['gen'], ['dag' => 'north'], ['dag_key' => 'south'], 0, 4, $t4);
+    $C('through: a page no row can match ends at once', $t4 === null);
+
+    // -- TWO AXES WALK THE FIRST AXIS'S KEY IN BOUNDED WINDOWS -----------------
+    //
+    // No key holds two axes, so a page that kept one row in 20,000 read all
+    // 20,000 for it. Both stores walk FILTER_WINDOW rows of the first axis at
+    // a time, FILTER_WINDOWS windows a call, and say where they stopped.
+    $sw = $newStore();
+    $W = ScanStore::FILTER_WINDOW;
+    $wide = [];
+    for ($k = 0; $k < $W * ScanStore::FILTER_WINDOWS + 2; $k++) {
+        $wide[] = ['host_form' => 'wide', 'reason_code' => 'r'];
+    }
+    $wide[1]['reason_code'] = 'x';
+    $wide[count($wide) - 1]['reason_code'] = 'x';
+    $big = $scan($sw, 798, [$wide], null);
+    $C('windows: the wide batch commits', $big['ok'] === true);
+    $allIds = [];
+    $ta = 0;
+    do {
+        foreach ($sw->findings(798, $big['gen'], ['dag' => null], ['host_form' => 'wide'], $ta, 100, $ta) as $r) {
+            $allIds[] = (int) $r['finding_id'];
+        }
+    } while ($ta !== null);
+    $C('windows: one axis pages through every row, 100 at a time', count($allIds) === count($wide));
+    $w1 = 'unset';
+    $p1w = $sw->findings(798, $big['gen'], ['dag' => null], ['host_form' => 'wide', 'reason_code' => 'x'],
+                         0, 100, $w1);
+    $C('windows: two axes find the early row and stop after the last window',
+        count($p1w) === 1 && (int) $p1w[0]['finding_id'] === $allIds[1]
+        && $w1 === $allIds[$W * ScanStore::FILTER_WINDOWS - 1]);
+    $w2 = 'unset';
+    $p2w = $sw->findings(798, $big['gen'], ['dag' => null], ['host_form' => 'wide', 'reason_code' => 'x'],
+                         $w1, 100, $w2);
+    $C('windows: the next call carries on from there and finds the late row, and the end',
+        count($p2w) === 1 && (int) $p2w[0]['finding_id'] === $allIds[count($allIds) - 1] && $w2 === null);
+    $w3 = 'unset';
+    $p3w = $sw->findings(798, $big['gen'], ['dag' => null], ['reason_code' => 'x', 'host_form' => 'wide'],
+                         0, 100, $w3);
+    $C('windows: the order a filter is written in does not change the walk',
+        $p3w === $p1w && $w3 === $w1);
+    $w4 = 'unset';
+    $p4w = $sw->findings(798, $big['gen'], ['dag' => null], ['host_form' => 'wide', 'reason_code' => 'r'],
+                         0, 5, $w4);
+    $C('windows: a page filled inside the first window names its last row',
+        count($p4w) === 5 && $w4 === (int) $p4w[4]['finding_id']);
 
     // ONE STAGED ROW PER IDENTITY PER PASS, the second unique key. A staged row
     // and an active row of one identity are two keys and both commit; two
@@ -1170,7 +1301,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $staged = $same + ['stage_epoch' => 4, 'group_hmac' => hash('sha256', 'g', true)];
     $twoKeys = $scan($sk, 792, [[$same, $staged]], null);
     $C('staged: a staged row beside an active row of the same identity commits',
-        $twoKeys['ok'] === true && count($sk->findings(792, $twoKeys['gen'], [], 0, 100)) === 1);
+        $twoKeys['ok'] === true && count($sk->findings(792, $twoKeys['gen'], ['dag' => null], [], 0, 100)) === 1);
     $twice = $scan($sk, 793, [[$staged, $staged]], null);
     $C('staged: two staged rows of one identity in one pass are refused',
         is_string($twice['ok']) && strpos($twice['ok'], 'database refused') !== false);
@@ -1202,6 +1333,85 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $firstStage === true && is_string($againStage)
         && strpos($againStage, 'database refused') !== false);
 
+    // -- THE LABEL SNAPSHOT: ONCE PER GENERATION, IN ORDER, THIS PROJECT'S (M5) --
+    //
+    // 230 small rows and 20 of 60,000 bytes: more statements than one, by
+    // count and by bytes, so the SQL store writes in a transaction.
+    $sd = $newStore();
+    $dr = function ($kind, $key, $label = null, $meta = null) {
+        return ['kind' => $kind, 'key' => $key, 'label' => $label, 'meta' => $meta];
+    };
+    $snap = [];
+    for ($i = 229; $i >= 0; $i--) $snap[] = $dr('field', sprintf('f%03d', $i), "Field $i \u{00e9}", '{"form":"fa"}');
+    for ($i = 0; $i < 20; $i++) $snap[] = $dr('form', 'big' . $i, str_repeat("\u{00e9}", 30000));
+    $snap[] = $dr('state', 'snapshot', null, '{"v":1}');
+    $snap[] = $dr('event', 12, 'Visit 1');
+    $snap[] = $dr('rule', '9', 'R9', '{"type":"x"}');
+    $snap[] = $dr('rule', '10', 'R10', null);
+    $C('dims: a snapshot is written whole', $sd->writeDimensions(810, 3, $snap) === count($snap));
+    $walk = [];
+    $after = null;
+    $pages = 0;
+    while ($pages++ < 20) {
+        $pg = $sd->dimensions(810, 3, $after, 100);
+        if (!$pg) break;
+        foreach ($pg as $r) $walk[] = $r;
+        $last = $pg[count($pg) - 1];
+        $after = [$last['kind'], $last['key']];
+    }
+    $want = $snap;
+    usort($want, function ($a, $b) {
+        $c = strcmp($a['kind'], $b['kind']);
+        return $c !== 0 ? $c : strcmp((string) $a['key'], (string) $b['key']);
+    });
+    foreach ($want as $k => $r) $want[$k]['key'] = (string) $r['key'];
+    $C('dims: pages of 100 walk it in (kind, key) byte order, every row once, as written',
+        $walk === $want && $pages === 4);
+    $C('dims: a page is clamped to 1..DIM_PAGE rows',
+        count($sd->dimensions(810, 3, null, 0)) === 1
+        && count($sd->dimensions(810, 3, null, 100000)) === min(ScanStore::DIM_PAGE, count($snap)));
+    $C('dims: one row by its kind and key, the event id as text',
+        $sd->dimension(810, 3, 'event', 12) === $dr('event', '12', 'Visit 1')
+        && $sd->dimension(810, 3, 'rule', '11') === null);
+    $dThrows = function (callable $f, $class) {
+        try { $f(); } catch (\Throwable $e) { return get_class($e) === $class || is_subclass_of($e, $class); }
+        return false;
+    };
+    $C('dims: a second snapshot of the generation is refused, and the first is kept',
+        $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(810, 3, [$dr('form', 'other', 'X')]); },
+                 'RuntimeException')
+        && $sd->dimension(810, 3, 'form', 'other') === null
+        && count($sd->dimensions(810, 3, null, 500)) === count($snap));
+    $C('dims: another generation and another project read none of it',
+        $sd->dimensions(810, 4) === [] && $sd->dimensions(811, 3) === []
+        && $sd->dimension(811, 3, 'event', '12') === null);
+    $C('dims: another project snapshots the same generation number on its own',
+        $sd->writeDimensions(811, 3, [$dr('event', 12, 'Elsewhere')]) === 1
+        && $sd->dimension(811, 3, 'event', '12')['label'] === 'Elsewhere'
+        && $sd->dimension(810, 3, 'event', '12')['label'] === 'Visit 1');
+    $bad = [
+        'a kind in capitals, which the column would fold into another' => [$dr('Rule', '1')],
+        'an empty key'                                => [$dr('rule', '')],
+        'a key wider than the column'                 => [$dr('field', str_repeat('k', 192))],
+        'the same kind and key twice'                 => [$dr('form', 'fa', 'A'), $dr('form', 'fa', 'B')],
+        'a label that is not text'                    => [$dr('form', 'fa', 7)],
+        'a label wider than TEXT'                     => [$dr('form', 'fa', str_repeat('x', 65536))],
+        'a label that is not UTF-8'                   => [$dr('form', 'fa', "bad \xC3")],
+    ];
+    foreach ($bad as $what => $rows) {
+        $C('dims: refused before anything is written: ' . $what,
+            $dThrows(function () use ($sd, $rows, $dr) {
+                $sd->writeDimensions(812, 1, array_merge([$dr('event', '1', 'ok')], $rows));
+            }, 'InvalidArgumentException') && $sd->dimensions(812, 1) === []);
+    }
+    $C('dims: a snapshot needs its project and its generation',
+        $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(0, 1, [$dr('event', '1')]); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd, $dr) { $sd->writeDimensions(812, 0, [$dr('event', '1')]); }, 'InvalidArgumentException'));
+    $C('dims: a cursor that is not a [kind, key] pair is refused',
+        $dThrows(function () use ($sd) { $sd->dimensions(810, 3, ['rule']); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd) { $sd->dimensions(810, 3, ['RULE', '1']); }, 'InvalidArgumentException')
+        && $dThrows(function () use ($sd) { $sd->dimension(810, 3, 'STATE', 'snapshot'); }, 'InvalidArgumentException'));
+
     // -- THE PREVIOUS GENERATION IS CLOSED WHEN A RUN COMPLETES (W4-D1) --------
     $sp = $newStore();
     $nb = $scan($sp, 796, [[[], []]], 'complete');
@@ -1213,29 +1423,29 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $live = $sp->supersedePrevious(795, $g2['run'], 10);
     $C('supersede: a run still in progress closes nothing, and is NOT done - it may yet complete',
         $live['done'] === false && $live['rows'] === 0 && is_string($live['why'])
-        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 2);
+        && count($sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100)) === 2);
     $sp->finish($g2['run'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
                                                  'violations' => 1]));
     $C('supersede: the fixture run really did complete',
         $sp->run(795, $g2['run'])['terminal'] === ScanOutcome::COMPLETE);
     $C('supersede: another project\'s id does not reach this run',
         $sp->supersedePrevious(796, $g2['run'], 10)['rows'] === 0
-        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 2);
+        && count($sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100)) === 2);
     $a = $sp->supersedePrevious(795, $g2['run'], 1);
     $C('supersede: one page closes at most its limit, and is not done while it was full',
         $a['rows'] === 1 && $a['done'] === false && $a['cursor'] === 0
-        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 1);
+        && count($sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100)) === 1);
     $b = $sp->supersedePrevious(795, $g2['run'], 1);
     $c = $sp->supersedePrevious(795, $g2['run'], 1);
     $C('supersede: the next calls carry on where it stopped, and the one that comes up short is done',
         $b['rows'] === 1 && $b['done'] === false && $c['rows'] === 0 && $c['done'] === true
         && $c['cursor'] === $g2['gen']);
     $C('supersede: the older generation has no active finding left',
-        $sp->findings(795, $g1['gen'], [], 0, 100) === []);
+        $sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100) === []);
     $C('supersede: this run\'s own generation is untouched',
-        count($sp->findings(795, $g2['gen'], [], 0, 100)) === 3);
+        count($sp->findings(795, $g2['gen'], ['dag' => null], [], 0, 100)) === 3);
     $C('supersede: and so is the project next door',
-        count($sp->findings(796, $nb['gen'], [], 0, 100)) === 2);
+        count($sp->findings(796, $nb['gen'], ['dag' => null], [], 0, 100)) === 2);
     $C('supersede: asking again changes nothing',
         $sp->supersedePrevious(795, $g2['run'], 10)
             === ['done' => true, 'rows' => 0, 'cursor' => $g2['gen'], 'why' => null]);
@@ -1247,7 +1457,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $x = $sp->supersedePrevious(795, $gx['run'], 10);
         $C("supersede: a $how run closes nothing, and that is final",
             $x['done'] === true && $x['rows'] === 0 && is_string($x['why'])
-            && count($sp->findings(795, $g2['gen'], [], 0, 100)) === 3);
+            && count($sp->findings(795, $g2['gen'], ['dag' => null], [], 0, 100)) === 3);
     }
     // MORE THAN ONE OLDER GENERATION: four of them now - the first run's,
     // already closed, the second's three rows, and one row each from the
@@ -1268,8 +1478,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('supersede: several older generations are closed oldest first, one per call',
         $y['done'] === true && $calls === 4 && $rising && $y['cursor'] === $gy['gen']);
     $C('supersede: every older row is closed and the newest run alone is current',
-        $rest === 5 && $sp->findings(795, $g2['gen'], [], 0, 100) === []
-        && count($sp->findings(795, $gy['gen'], [], 0, 100)) === 1);
+        $rest === 5 && $sp->findings(795, $g2['gen'], ['dag' => null], [], 0, 100) === []
+        && count($sp->findings(795, $gy['gen'], ['dag' => null], [], 0, 100)) === 1);
     $C('supersede: a run id nobody has is done with nothing to do',
         $sp->supersedePrevious(795, 987654321, 10)['done'] === true);
 
@@ -1291,10 +1501,10 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('scope: a run of one group closes nothing, is done, and says why',
         $g === ['done' => true, 'rows' => 0, 'cursor' => 0, 'why' => ScanStore::SUPERSEDE_SCOPED]);
     $C('scope: so every finding of the whole-project run is still current',
-        count($sd->findings(797, $whole['gen'], [], 0, 100)) === 3);
+        count($sd->findings(797, $whole['gen'], ['dag' => null], [], 0, 100)) === 3);
     $C('scope: and asking again changes nothing',
         $sd->supersedePrevious(797, $group['run'], 100) === $g
-        && count($sd->findings(797, $whole['gen'], [], 0, 100)) === 3);
+        && count($sd->findings(797, $whole['gen'], ['dag' => null], [], 0, 100)) === 3);
     $next = $scan($sd, 797, [[[]]], 'complete');
     $closed = 0;
     $calls = 0;
@@ -1305,9 +1515,9 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     } while (!$z['done'] && $calls < 10);
     $C('scope: the next whole-project run closes both older generations, the group\'s included',
         $z['done'] === true && $z['why'] === null && $closed === 4
-        && $sd->findings(797, $whole['gen'], [], 0, 100) === []
-        && $sd->findings(797, $group['gen'], [], 0, 100) === []
-        && count($sd->findings(797, $next['gen'], [], 0, 100)) === 1);
+        && $sd->findings(797, $whole['gen'], ['dag' => null], [], 0, 100) === []
+        && $sd->findings(797, $group['gen'], ['dag' => null], [], 0, 100) === []
+        && count($sd->findings(797, $next['gen'], ['dag' => null], [], 0, 100)) === 1);
 
     // -- PLANNING ACROSS REQUESTS: ONE LEASE, ONE TRANSACTION, COUNTED (B10) --
     //
@@ -1406,6 +1616,227 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
             is_array($again) && $again['state'] === 'ok' && $again['cursor'] === null
             && $again['carry'] === null && $again['pages'] === 0 && $again['attempts'] === 1);
     }
+
+    // -- FINDINGS COUNTED AND NOT STORED (H9) ------------------------------
+    //
+    // Past the run's detail budget the worker leaves a finding out of the
+    // batch and sends how many as `unstored`, ordinal => count. The store
+    // counts the HELD records' under ScanStore::DETAIL_UNSTORED in the batch's
+    // own commit, and nothing for a record it lost: that record's findings are
+    // its new holder's to count.
+    $sU = $newStore();
+    $rU = (int) $sU->startRun(798, ['created_by' => 'alice'])['run']['run_id'];
+    $sU->writeManifest($rU, [$mk('U1'), $mk('U2'), $mk('U3')]);
+    $epU = (int) $sU->run(798, $rU)['lease_epoch'];
+    $mineU = $sU->claim($rU, 'w1', $epU, 2);
+    // The straggler sweep takes the first of the two back out from under w1.
+    $takenU = $sU->claimPending($rU, 'w2', $epU, 1);
+    $bU = function (array $rows) {
+        $b = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+        foreach ($rows as $c) {
+            $b['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
+            $b['unstored'][(int) $c['ordinal']] = 3;
+        }
+        return $b;
+    };
+    $leftOut = function (ScanStore $st, $rid) {
+        $n = 0;
+        foreach ($st->aggregates($rid) as $a) {
+            if ((string) $a['kind'] === ScanStore::DETAIL_UNSTORED) $n += (int) $a['cnt'];
+        }
+        return $n;
+    };
+    $C('unstored: the fixture has one record of two taken over',
+        count($mineU) === 2 && count($takenU) === 1
+        && (int) $takenU[0]['ordinal'] === (int) $mineU[0]['ordinal']);
+    $C('unstored: a batch carrying counts of findings left out commits',
+        $sU->commitBatch($rU, 'w1', $epU, $bU($mineU)) === true);
+    $C('unstored: the held record\'s count is kept, and the lost record\'s is not',
+        $leftOut($sU, $rU) === 3);
+    $C('unstored: no finding row is written for them, so the detail counter does not move',
+        (int) $sU->run(798, $rU)['detail_rows'] === 0);
+    $C('unstored: and the count is not a blocking fact',
+        $sU->blockingAggregates($rU) === 0);
+    // A refused batch counts nothing, as it stores nothing.
+    $C('unstored: a batch refused at the fence counts nothing',
+        $sU->commitBatch($rU, 'w2', $epU - 1, $bU($takenU)) !== true && $leftOut($sU, $rU) === 3);
+    $C('unstored: the new holder counts its own record\'s',
+        $sU->commitBatch($rU, 'w2', $epU, $bU($takenU)) === true && $leftOut($sU, $rU) === 6);
+    $threw = false;
+    try {
+        $sU->commitBatch($rU, 'w1', $epU, ['bytes' => 0, 'records' => [], 'findings' => [],
+                                           'unstored' => [1 => 'several']]);
+    } catch (\Throwable $e) { $threw = true; }
+    $C('unstored: a count that is not a whole number is refused loudly', $threw === true);
+
+    // WITH A REASON (@UVJUSTIFY). `unstoredJustified` says how many of a
+    // record's left-out findings had their reason given. Those are counted
+    // under the axis UNSTORED_JUSTIFIED and the rest under '', so the kind's
+    // total is still every finding left out.
+    $sJ = $newStore();
+    $rJ = (int) $sJ->startRun(798, ['created_by' => 'alice'])['run']['run_id'];
+    $sJ->writeManifest($rJ, [$mk('J1'), $mk('J2')]);
+    $epJ = (int) $sJ->run(798, $rJ)['lease_epoch'];
+    $mineJ = $sJ->claim($rJ, 'w1', $epJ, 2);
+    $bJ = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => [], 'unstoredJustified' => []];
+    foreach ($mineJ as $i => $c) {
+        $bJ['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                            'state' => ScanStore::REC_DONE, 'version' => '1', 'claim' => $c['claim']];
+        $bJ['unstored'][(int) $c['ordinal']] = 3;
+        if ($i === 0) $bJ['unstoredJustified'][(int) $c['ordinal']] = 2;
+    }
+    $axesJ = function () use ($sJ, $rJ) {
+        $o = [];
+        foreach ($sJ->aggregates($rJ) as $a) {
+            if ((string) $a['kind'] === ScanStore::DETAIL_UNSTORED) $o[(string) $a['axis1']] = (int) $a['cnt'];
+        }
+        ksort($o);
+        return $o;
+    };
+    $C('unstored: a count above its record\'s left-out findings is refused before anything is written',
+        (function () use ($sJ, $rJ, $epJ, $bJ, $axesJ) {
+            $bad = $bJ;
+            $o = array_keys($bad['unstored'])[1];
+            $bad['unstoredJustified'][$o] = 4;
+            try {
+                $sJ->commitBatch($rJ, 'w1', $epJ, $bad);
+            } catch (\Throwable $e) {
+                return $axesJ() === [] && (int) $sJ->run(798, $rJ)['manifest_done'] === 0;
+            }
+            return false;
+        })());
+    $C('unstored: the ones with a reason are counted under their own axis, the open ones under \'\'',
+        $sJ->commitBatch($rJ, 'w1', $epJ, $bJ) === true
+        && $axesJ() === ['' => 4, ScanStore::UNSTORED_JUSTIFIED => 2]);
+
+    // -- THE FINISHING PHASES' PROGRESS CLOCK (W7-N9) ----------------------
+    //
+    // setProgressState() moves progress_at only when told the step moved the
+    // run forward, fenced on the lease like every cursor it writes. A run
+    // that was never planned has a NULL clock, so any write to it shows.
+    $sP = $newStore();
+    $rP = (int) $sP->startRun(789, ['created_by' => 'alice'])['run']['run_id'];
+    $epP = (int) $sP->run(789, $rP)['lease_epoch'];
+    $C('progress: a fresh run has no progress clock', $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a cursor written alone does not move it',
+        $sP->setProgressState($rP, $epP, ['rollupCursor' => 0]) === true
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: a stale lease cannot move it',
+        $sP->setProgressState($rP, $epP + 1, ['progress' => true]) === false
+        && $sP->run(789, $rP)['progress_at'] === null);
+    $C('progress: told the run moved forward, the lease holder moves it, with no cursor beside it',
+        $sP->setProgressState($rP, $epP, ['progress' => true]) === true
+        && $sP->run(789, $rP)['progress_at'] !== null);
+    // -- AN ABANDONED RUN IS EXPIRED BY ONE REAPER, THE SAME WAY IN BOTH (B6a)
+    //
+    // The clock is stepped, not waited for: $now is a day and an hour ahead,
+    // so a run created a moment ago has made no progress for 25 hours.
+    $sa = $newStore();
+    $ra = $sa->startRun(785, ['created_by' => 'alice']);
+    $rida = (int) $ra['run']['run_id'];
+    $sa->writeManifest($rida, [$mk5('AB-1')]);
+    $epA = (int) $sa->run(785, $rida)['lease_epoch'];
+    $heldA = $sa->claim($rida, 'w1', $epA, 1);
+    $nbA = $sa->startRun(786, ['created_by' => 'alice']);
+    $later = time() + 25 * 3600;
+    $C('reap: a run inside the stale window is left alone',
+        $sa->expireAbandoned(785, 24, 'cron', time()) === 0
+        && $sa->run(785, $rida)['phase'] !== ScanPhase::TERMINAL);
+    $C('reap: once it has made no progress for longer than the window, it is expired',
+        $sa->expireAbandoned(785, 24, 'cron', $later) === 1);
+    $ex = $sa->run(785, $rida);
+    $want = ScanOutcome::derive(['expired' => true]);
+    $C('reap: the row is the one finish(derive([expired])) writes, column for column',
+        $ex['phase'] === ScanPhase::TERMINAL && $ex['terminal'] === $want['terminal']
+        && $ex['coverage'] === $want['coverage'] && $ex['detail'] === $want['detail']
+        && $ex['terminal_reason'] === $want['why'] && $ex['clean'] === null
+        && (int) $ex['gap_count'] === 0 && (int) $ex['rule_problem_count'] === 0
+        && (int) $ex['not_examined'] === 0);
+    $C('reap: the lease epoch moved in the same write (Risk 5)',
+        (int) $ex['lease_epoch'] === $epA + 1);
+    $C('reap: so a worker that comes back with the epoch it claimed under commits nothing',
+        is_array($heldA) && count($heldA) === 1
+        && $sa->commitBatch($rida, 'w1', $epA, ['bytes' => 0, 'findings' => [],
+            'records' => [['ordinal' => $heldA[0]['ordinal'], 'record_hash' => $heldA[0]['hash'],
+                           'state' => ScanStore::REC_DONE, 'claim' => $heldA[0]['claim']]]]) !== true
+        && !isset($sa->recordStates($rida)[ScanStore::REC_DONE]));
+    $C('reap: a second call finds nothing to do',
+        $sa->expireAbandoned(785, 24, 'cron', $later) === 0);
+    $C('reap: and the project slot is free for the next scan',
+        $sa->startRun(785, ['created_by' => 'bob'])['ok'] === true);
+    $C('reap: the project next door, as stale, is not touched by this project\'s reap',
+        $sa->run(786, (int) $nbA['run']['run_id'])['phase'] !== ScanPhase::TERMINAL);
+    // A LIVE LEASE IS A WORKER, however old the progress clock: the planner
+    // here holds the walk for thirty hours.
+    $sl = $newStore();
+    $rl = (int) $sl->startRun(787, ['created_by' => 'alice'])['run']['run_id'];
+    $sl->claimPlan($rl, 'p1', (int) $sl->run(787, $rl)['lease_epoch'], 30 * 3600, 3);
+    $C('reap: a run whose lease is still live is not abandoned',
+        $sl->expireAbandoned(787, 24, 'cron', $later) === 0);
+    // -- A RECORD THAT LEFT THE RUN'S GROUP (review rv5b-1) ----------------
+    //
+    // It leaves the run: terminal, unread, and its findings in this run's
+    // generation closed, as a re-examination closes them. By record hash, in
+    // catch-up and at the current epoch only, as the other reconciliation
+    // writes; and a deleted record stays a tombstone.
+    $sd = $newStore();
+    $rd = (int) $sd->startRun(746, [])['run']['run_id'];
+    $sd->writeManifest($rd, [$mk5('L1'), $mk5('L2'), $mk5('L3'), $mk5('L4')]);
+    $rowD = $sd->run(746, $rd);
+    $epD = (int) $rowD['lease_epoch'];
+    $genD = (int) $rowD['generation_id'];
+    $hD = function ($id) { return hash('sha256', $id, true); };
+    $findingD = function ($ord, $id) use ($genD, $rowD, $hD) {
+        return ['ordinal' => $ord, 'project_id' => 746, 'generation_id' => $genD,
+                'host_form' => 'fa', 'field' => 'x', 'check_type' => 'required',
+                'reason_code' => 'required-blank', 'record_id_bin' => $id,
+                'identity' => hash('sha256', 'd' . $id, true),
+                'valid_from_seq' => (int) $rowD['run_seq'], 'record_hash' => $hD($id),
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    };
+    $activeD = function () use ($sd, $genD) {
+        $ids = [];
+        foreach ($sd->findings(746, $genD, ['dag' => null], [], 0, 100) as $f) $ids[] = (string) $f['record_id_bin'];
+        sort($ids);
+        return $ids;
+    };
+    $bD = ['bytes' => 10, 'records' => [], 'findings' => []];
+    foreach ($sd->claim($rd, 'w1', $epD, 4) as $c) {
+        $bD['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                            'state' => ScanStore::REC_DONE, 'version' => '10', 'claim' => $c['claim']];
+        $bD['findings'][] = $findingD($c['ordinal'], $c['id_bin']);
+    }
+    $sd->commitBatch($rd, 'w1', $epD, $bD);
+    $C('depart: refused while the run is still scanning',
+        $sd->depart($rd, $epD, [$hD('L2')]) === 0 && $sd->departedOf($rd, [$hD('L2')]) === []
+        && $activeD() === ['L1', 'L2', 'L3', 'L4']);
+    $sd->advancePhase($rd, $epD, ScanPhase::CATCH_UP);
+    $C('depart: refused at another lease epoch', $sd->depart($rd, $epD + 1, [$hD('L2')]) === 0);
+    $sd->tombstone($rd, $epD, ['L3']);
+    $nD = $sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
+    $stD = $sd->recordStates($rd);
+    $C('depart: a record that left the group departs, and a deleted one stays a tombstone',
+        $nD === 1 && isset($stD[ScanStore::REC_DEPARTED]) && $stD[ScanStore::REC_DEPARTED] === 1
+        && $stD[ScanStore::REC_TOMBSTONE] === 1 && $stD[ScanStore::REC_DONE] === 2);
+    $C('depart: its findings in the run are closed, and no other record\'s',
+        $activeD() === ['L1', 'L3', 'L4']);
+    $C('depart: the run counts it finished, so it holds nothing open',
+        (int) $sd->run(746, $rd)['manifest_done'] === 4 && $sd->manifestComplete($rd) === true);
+    $C('depart: departedOf() names it, and no other',
+        $sd->departedOf($rd, [$hD('L1'), $hD('L2'), $hD('L3')]) === [$hD('L2') => true]);
+    $C('depart: departing it again moves nothing', $sd->depart($rd, $epD, [$hD('L2')]) === 0);
+    // The worker's half: a record it finds in another group is committed
+    // departed, and the commit closes its findings as a re-examination would.
+    $sd->requeue($rd, $epD, ['L4']);
+    $cD4 = $sd->claimPending($rd, 'w2', $epD, 10);
+    $okD4 = is_array($cD4) && count($cD4) === 1 && $sd->commitBatch($rd, 'w2', $epD,
+        ['bytes' => 0, 'records' => [['ordinal' => $cD4[0]['ordinal'], 'record_hash' => $cD4[0]['hash'],
+            'state' => ScanStore::REC_DEPARTED, 'version' => null, 'claim' => $cD4[0]['claim']]],
+         'findings' => []]) === true;
+    $C('depart: a batch that commits a record departed closes its findings with it',
+        $okD4 && $activeD() === ['L1', 'L3']
+        && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

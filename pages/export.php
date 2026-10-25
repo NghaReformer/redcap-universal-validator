@@ -1,39 +1,55 @@
 <?php
 /**
- * export.php — the scan report download, while the scan itself is withdrawn.
+ * export.php — the CSV of one finished scan run, streamed from the stored run.
  *
- * This page built its file by running a COMPLETE scan of its own. It was
- * therefore a second production entry point into the synchronous path, and the
- * one an automated job or a retried download is most likely to hold open — the
- * same whole-project read, started again, with nothing serialising it against
- * the copy the screen had already started.
+ * THIN ON PURPOSE. Who may have the file, which rows it holds, how each cell
+ * reads and what the file says about itself are decided in
+ * Scan\ScanService::exportOpen() and streamFindings(), the same gate and the
+ * same columns as the findings page. This page reads the run id, sends the
+ * headers and hands the stream an echo and a flush.
  *
- * Task 1 of reports/scan-rebuild-plan-2026-08-17.md requires the export-by-rerun
- * control to be disabled with the scan. It refuses before rights are considered,
- * because there is no file for anyone to be entitled to.
+ * A REFUSAL IS NEVER A DOWNLOAD. It is plain text with no attachment header,
+ * 403 when it is the answer and 503 when asking again may help, because a
+ * browser must never save a file whose entire content is why there is no file.
  *
- * The previous body — spool to php://temp, then emit a metadata block, a header
- * row and the findings — is deliberately NOT retained here as unreachable code.
- * Task 7 specifies a different exporter: one authenticated streaming response
- * built from the STORED run, with expected-count metadata and a mandatory
- * `export_complete=1` trailer, so a truncated download is detectable by its own
- * contents. Keeping the old writer around would invite it to be re-enabled
- * instead of replaced. It is in the history at 1.8.8 if it is ever wanted.
+ * The previous exporter ran a complete scan of its own inside this request;
+ * it is in the history at 1.8.8 and is not coming back. This one reads only
+ * what a run already stored, a page at a time.
  */
 
 namespace INSPIRE\UniversalValidator;
 
 /** @var UniversalValidator $module */
 
-// 503, not 403: this is "not available yet", not "not permitted". A monitor
-// retrying on 503 is behaving correctly; one retrying on 403 is misconfigured.
-// Plain text with NO attachment header, because a browser must never save a
-// file whose entire content is an explanation of why there is no file.
-header('Content-Type: text/plain; charset=UTF-8', true, 503);
-header('Cache-Control: no-store');
+$pid = (int) $module->getProjectId();
+$runId = (isset($_GET['run_id']) && is_scalar($_GET['run_id'])) ? (int) $_GET['run_id'] : 0;
 
-echo "# EXPORT UNAVAILABLE\n";
-foreach (explode("\n", wordwrap(ScanPageView::UNAVAILABLE, 92)) as $line) {
-    echo '# ' . $line . "\n";
+$export = ($pid > 0 && $runId > 0)
+    ? (new Scan\ScanService($module))->exportOpen($pid, $runId)
+    : ['ok' => false, 'http' => 403, 'why' => Scan\ScanService::NO_RUN];
+
+if (empty($export['ok'])) {
+    header('Content-Type: text/plain; charset=UTF-8', true, (int) $export['http']);
+    header('Cache-Control: no-store');
+    echo "# EXPORT REFUSED\n";
+    foreach (explode("\n", wordwrap((string) $export['why'], 92)) as $line) {
+        echo '# ' . $line . "\n";
+    }
+    echo "# No file was produced.\n";
+    return;
 }
-echo "# No scan was run and no report was produced.\n";
+
+// Whatever the framework buffered so far would otherwise reach the file ahead
+// of its first line, and would hold every page until the end of the request.
+while (ob_get_level() > 0) {
+    ob_end_clean();
+}
+header('Content-Type: text/csv; charset=UTF-8');
+header('Content-Disposition: attachment; filename="' . $export['filename'] . '"');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+
+$export['stream'](
+    function ($s) { echo $s; },
+    function () { flush(); }
+);

@@ -605,3 +605,517 @@ $NEIGHBOUR = uv_neighbour($PID);
             && $final['phase'] === 'terminal' && $final['terminal'] === 'cancelled');
     }
 }
+
+/*
+ * R5-6: A SLICE WHOSE PAGE THE STORE REFUSED HANDS ITS LEASE BACK.
+ *
+ * The page's write of where the walk stands fails as a lock wait would, on
+ * a connection that stays usable. The transaction rolls back, the planner
+ * hears ScanStoreUnavailable - and the lease it held used to stay with it,
+ * so the next request was told for five minutes that another request was
+ * listing the project.
+ */
+{
+    $LOCKED = 920;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $LOCKED);
+    $vals = array();
+    for ($i = 1; $i <= 30; $i++) $vals[] = '(' . $LOCKED . ", 'K" . sprintf('%03d', $i) . "', NULL)";
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $vals));
+    $lockSrc = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, $LOCKED, array('pk' => 'record_id'));
+    $spentL = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $lockReq = uv_plan_request(array('source' => $lockSrc['source'], 'pageSize' => 10));
+    $lp = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA), 'test-secret-key'))
+        ->plan($LOCKED, array_merge($lockReq, array('budget' => $spentL(), 'owner' => 'req0')));
+    $lockId = (int) $lp['run']['run_id'];
+    $lockEpoch = (int) $lp['run']['lease_epoch'];
+    $waits = new class(new MysqliDb($A), $T('scan_plan')) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $table; public $failed = 0;
+        public function __construct($inner, $table) { $this->inner = $inner; $this->table = $table; }
+        public function select($sql, array $params = []) { return $this->inner->select($sql, $params); }
+        public function exec($sql, array $params = []) { $this->seam($sql); $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->seam($sql); $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+        // The page's write of where the walk stands, refused once.
+        private function seam($sql) {
+            if ($this->failed === 0 && stripos(ltrim($sql), 'UPDATE ' . $this->table) === 0
+                    && strpos($sql, 'plan_cursor') !== false) {
+                $this->failed++;
+                throw new \RuntimeException('Lock wait timeout exceeded; try restarting transaction');
+            }
+        }
+    };
+    $lockThrew = null;
+    try {
+        (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+            new \INSPIRE\UniversalValidator\Scan\SqlScanStore($waits), 'test-secret-key'))
+            ->step($LOCKED, $lockId, array_merge($lockReq, array('budget' => $spentL(),
+                'owner' => 'tabA', 'epoch' => $lockEpoch, 'attempts' => 3, 'leaseSeconds' => 300)));
+    } catch (\Throwable $e) {
+        $lockThrew = $e;
+    }
+    check('R5-6: the page write was refused, and the planner heard it as the storage failing',
+        $waits->failed === 1
+        && $lockThrew instanceof \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable);
+    $after = $dbA->select('SELECT lease_owner FROM ' . $T('scan_run') . ' WHERE run_id = ?', array($lockId));
+    check('R5-6: nothing of the page was kept, and the lease went back with it',
+        array_key_exists(0, $after) && $after[0][0] === null
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . $T('scan_record') . ' WHERE run_id = ?',
+            array($lockId))[0][0] === 10);
+    $next = (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->claimPlan($lockId, 'tabA-continue',
+        $lockEpoch, 300, 3);
+    check('R5-6: so the next request takes the walk on, rather than being told it is held',
+        is_array($next) && $next['state'] === 'ok' && $next['pages'] === 1 && $next['attempts'] === 2);
+    (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($lockId,
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}
+
+/*
+ * R5-3: REDCAP RESETS ITS RECORD-LIST CACHE IN THE MIDDLE OF A SLICE.
+ *
+ * The index was judged complete once, at open(). REDCap empties
+ * redcap_record_list and marks it NOT_STARTED before it rebuilds it, so a page
+ * read after that came back empty, the walk was called done, and the manifest
+ * froze with every record after the cursor missing. The walk now asks the
+ * status after every page and moves to the data table when the index is no
+ * longer the cache it opened.
+ */
+{
+    $CR = 921;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $CR);
+    $A->query('DROP TABLE IF EXISTS redcap_record_counts');
+    uv_redcap_counts_schema($A);
+    $A->query('ALTER TABLE redcap_record_counts ADD COLUMN time_of_list_cache DATETIME NULL');
+    $crIds = array();
+    for ($i = 1; $i <= 2000; $i++) $crIds[] = sprintf('C%05d', $i);
+    $crFill = function () use ($A, $CR, $crIds) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR);
+        foreach (array_chunk($crIds, 1000) as $chunk) {
+            $v = array();
+            foreach ($chunk as $id) $v[] = '(' . $CR . ", '" . $id . "', NULL)";
+            $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $v));
+        }
+        $A->query('DELETE FROM redcap_record_counts WHERE project_id = ' . $CR);
+        $A->query('INSERT INTO redcap_record_counts (project_id, record_list_status, time_of_list_cache)'
+            . ' VALUES (' . $CR . ", 'COMPLETE', '2026-10-21 08:00:00')");
+    };
+    foreach (array_chunk($crIds, 1000) as $chunk) {
+        $v = array();
+        foreach ($chunk as $id) $v[] = '(' . $CR . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+            . implode(',', $v));
+    }
+    // The walk's reads, with something done just before the third page of
+    // the index is read, and optionally something just after it.
+    $crHook = function ($before, $after = null) use ($A) {
+        return new class(new MysqliDb($A), $before, $after) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+            public $inner; public $before; public $after; public $pages = 0; public $dataPages = 0;
+            public function __construct($inner, $b, $a) { $this->inner = $inner; $this->before = $b; $this->after = $a; }
+            public function select($sql, array $params = []) {
+                $page = strpos($sql, 'ORDER BY') !== false && !preg_match('/LIMIT 1\s*$/', $sql);
+                $hit = false;
+                if ($page && strpos($sql, 'FROM redcap_record_list') !== false) {
+                    $this->pages++;
+                    if ($this->pages === 3) { $hit = true; $f = $this->before; $f(); }
+                } elseif ($page && strpos($sql, 'FROM redcap_data') !== false) {
+                    $this->dataPages++;
+                }
+                $rows = $this->inner->select($sql, $params);
+                if ($hit && $this->after) { $f = $this->after; $f(); }
+                return $rows;
+            }
+            public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+            public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+            public function affected() { return $this->inner->affected(); }
+            public function begin() { $this->inner->begin(); }
+            public function commit() { $this->inner->commit(); }
+            public function rollback() { $this->inner->rollback(); }
+        };
+    };
+    $crPlan = function ($hook) use ($CR) {
+        $src = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($hook, $CR, array('pk' => 'record_id'));
+        $hook->pages = 0;
+        $res = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+            new \INSPIRE\UniversalValidator\Scan\SqlScanStore($hook), 'test-secret-key'))
+            ->plan($CR, uv_plan_request(array('source' => $src['source'], 'pageSize' => 250, 'budget' => false)));
+        return array($src, $res);
+    };
+    $crCensus = function ($rid) use ($dbA, $T) {
+        $r = $dbA->select('SELECT COUNT(*), COUNT(DISTINCT record_hash) FROM ' . $T('scan_record')
+            . ' WHERE run_id = ?', array($rid));
+        return array((int) $r[0][0], (int) $r[0][1]);
+    };
+    $crEnd = function ($rid) use ($dbA) {
+        (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($rid,
+            \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    };
+
+    // Emptied and marked NOT_STARTED just before the third page.
+    $crFill();
+    $hook = $crHook(function () use ($A, $CR) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR);
+        $A->query("UPDATE redcap_record_counts SET record_list_status = 'NOT_STARTED', time_of_list_cache = NULL"
+            . ' WHERE project_id = ' . $CR);
+    });
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    $carry = $dbA->select('SELECT plan_carry FROM ' . $T('scan_plan') . ' WHERE run_id = ?', array($rid));
+    check('R5-3: a cache emptied for a rebuild in the middle of a slice leaves no record off the manifest',
+        $res['ok'] === true && $src['source']->via() === 'redcap_record_list'
+        && (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000));
+    check('R5-3: the rest of the walk was read from the data table, which the plan row now names',
+        $hook->dataPages > 0 && strpos((string) $carry[0][0], 'redcap_data') !== false);
+    $crEnd($rid);
+
+    // Torn down and built again between the third page and its check: the
+    // page was read with C00600 missing, and the status reads COMPLETE again
+    // by the time it is asked. Only the time the list was built moved.
+    $crFill();
+    $hook = $crHook(function () use ($A, $CR) {
+        $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $CR . " AND record = 'C00600'");
+        $A->query("UPDATE redcap_record_counts SET time_of_list_cache = '2026-10-21 08:00:09'"
+            . ' WHERE project_id = ' . $CR);
+    }, function () use ($A, $CR) {
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (' . $CR . ", 'C00600', NULL)");
+    });
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    $has = $dbA->select('SELECT COUNT(*) FROM ' . $T('scan_record') . ' WHERE run_id = ? AND record_id_bin = ?',
+        array($rid, 'C00600'));
+    check('R5-3: a list rebuilt between a page and its check is caught by the time it was built',
+        (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000)
+        && (int) $has[0][0] === 1);
+    $crEnd($rid);
+
+    // An index that stays complete is walked as it was, from the index alone.
+    $crFill();
+    $hook = $crHook(function () {});
+    list($src, $res) = $crPlan($hook);
+    $rid = (int) $res['run']['run_id'];
+    check('R5-3: an index that stays complete is walked whole, from the index alone',
+        (int) $res['run']['manifest_total'] === 2000 && $crCensus($rid) === array(2000, 2000)
+        && $hook->dataPages === 0);
+    $crEnd($rid);
+
+    // The question asked after every page is one primary-key read.
+    check('R5-3: the status read after each page is a primary-key lookup',
+        uv_explain_keys($A, 'SELECT record_list_status, time_of_list_cache FROM redcap_record_counts'
+            . ' WHERE project_id = ?', array($CR)) === array('PRIMARY'));
+    $A->query('DROP TABLE redcap_record_counts');
+}
+
+/*
+ * R5-2: THE SOURCE A REQUEST OPENS CHANGES BETWEEN REQUESTS.
+ *
+ * Each request opens the record source afresh, as ScanService::openSource()
+ * does, and REDCap rebuilds its record-list cache on one request in four, so
+ * open() answers with the data table there and the index elsewhere. The walk
+ * started again from the first record at every change and never ended; it
+ * now stays on the data table once it has used it.
+ */
+{
+    $FL = 922;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $FL);
+    $A->query('DROP TABLE IF EXISTS redcap_record_counts');
+    uv_redcap_counts_schema($A);
+    uv_redcap_counts($A, $FL, 'COMPLETE');
+    for ($from = 1; $from <= 3000; $from += 1000) {
+        $l = array();
+        $d = array();
+        for ($i = $from; $i < $from + 1000; $i++) {
+            $id = sprintf('F%05d', $i);
+            $l[] = '(' . $FL . ", '" . $id . "', NULL)";
+            $d[] = '(' . $FL . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        }
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $l));
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+            . implode(',', $d));
+    }
+    $flPages = array('index' => 0, 'data' => 0);
+    $flDb = new class(new MysqliDb($A), $flPages) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $pages;
+        public function __construct($inner, $p) { $this->inner = $inner; $this->pages = $p; }
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'ORDER BY') !== false && !preg_match('/LIMIT 1\s*$/', $sql)) {
+                if (strpos($sql, 'FROM redcap_record_list') !== false) $this->pages['index']++;
+                elseif (strpos($sql, 'FROM redcap_data') !== false) $this->pages['data']++;
+            }
+            return $this->inner->select($sql, $params);
+        }
+        public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+    };
+    $flSpent = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $flOpen = function () use ($flDb, $FL) {
+        $o = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($flDb, $FL, array('pk' => 'record_id'));
+        return empty($o['ok']) ? null : $o['source'];
+    };
+    $flReq = uv_plan_request(array('pageSize' => 250));
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($flDb), 'test-secret-key'))
+        ->plan($FL, array_merge($flReq, array('source' => $flOpen(), 'budget' => $flSpent(), 'owner' => 'req0')));
+    $flId = (int) $first['run']['run_id'];
+    $requests = 0;
+    for ($r = 1; $r <= 40; $r++) {
+        $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($flDb);
+        $run = $store->run($FL, $flId);
+        if ($run['phase'] !== 'planning') break;
+        uv_redcap_counts($A, $FL, ($r % 4 === 0) ? 'PROCESSING' : 'COMPLETE');
+        (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($FL, $flId,
+            array_merge($flReq, array('source' => $flOpen(), 'budget' => $flSpent(), 'owner' => 'req' . $r,
+                'epoch' => (int) $run['lease_epoch'], 'attempts' => 5, 'leaseSeconds' => 300)));
+        $requests++;
+    }
+    $flRun = (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->run($FL, $flId);
+    $flCensus = $dbA->select('SELECT COUNT(*), COUNT(DISTINCT record_hash) FROM ' . $T('scan_record')
+        . ' WHERE run_id = ?', array($flId));
+    check('R5-2: a walk whose source alternates between the index and the data table finishes',
+        $flRun['phase'] === 'scanning' && $requests <= 16);
+    check('R5-2: with every record on the manifest exactly once',
+        (int) $flRun['manifest_total'] === 3000 && (int) $flCensus[0][0] === 3000
+        && (int) $flCensus[0][1] === 3000);
+    check('R5-2: four index pages, then the data table from its first record and never the index again',
+        $flDb->pages === array('index' => 4, 'data' => 12));
+    (new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA))->finish($flId,
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    $A->query('DROP TABLE redcap_record_counts');
+}
+
+/*
+ * R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING.
+ *
+ * open() refused a project whose data table held no record-id row, so each
+ * slice after the deletion counted a failed attempt and the run ended
+ * `failed` with PLAN_GAVE_UP. A data table read and found to hold nothing at
+ * all for the project is an empty walk now, and the listing ends over it.
+ */
+{
+    $EM = 923;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    uv_redcap_project($A, $EM);
+    $l = array();
+    $d = array();
+    for ($i = 1; $i <= 30; $i++) {
+        $id = sprintf('E%03d', $i);
+        $l[] = '(' . $EM . ", '" . $id . "', NULL)";
+        $d[] = '(' . $EM . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        $d[] = '(' . $EM . ", 1, '" . $id . "', 'dob', '2020-01-01')";
+    }
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $l));
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES '
+        . implode(',', $d));
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    $emReq = uv_plan_request(array('pageSize' => 10));
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner(
+        new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA), 'test-secret-key'))
+        ->plan($EM, array_merge($emReq, array('source' => $MS::open($dbA, $EM, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+                array('mode' => 'browser', 'startedAt' => microtime(true) - 3600)))));
+    $emId = (int) $first['run']['run_id'];
+    $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $EM);
+    $A->query('DELETE FROM redcap_data WHERE project_id = ' . $EM);
+    $emOpen = $MS::open($dbA, $EM, array('pk' => 'record_id'));
+    check('R5-7: a project whose every record is gone opens as an empty walk over its data table',
+        $first['run']['phase'] === 'planning' && $emOpen['ok'] === true && $emOpen['empty'] === true
+        && strpos($emOpen['source']->via(), 'redcap_data') === 0);
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $slice = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($EM, $emId,
+        array_merge($emReq, array('source' => $emOpen['source'], 'owner' => 'req1', 'budget' => false,
+            'epoch' => (int) $store->run($EM, $emId)['lease_epoch'], 'attempts' => 3, 'leaseSeconds' => 300)));
+    $emRun = $store->run($EM, $emId);
+    check('R5-7: the next slice ends the listing over it, freezing what was listed, rather than failing',
+        $slice['ok'] === true && !empty($slice['frozen']) && $slice['total'] === 10
+        && $emRun['phase'] === 'scanning' && (int) $emRun['manifest_total'] === 10);
+    check('R5-7: whether the project holds anything is asked on an index that leads with project_id',
+        ($k = uv_explain_keys($A, 'SELECT record FROM redcap_data WHERE project_id = ? LIMIT 1', array($EM))) !== array()
+        && uv_index_columns($A, 'redcap_data', $k[0])[0] === 'project_id');
+    // Rows on another field only: the record-id field may be the wrong one,
+    // so that is not an empty project.
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`) VALUES ('
+        . $EM . ", 1, 'E001', 'dob', '2020-01-01')");
+    $emOpen = $MS::open($dbA, $EM, array('pk' => 'record_id'));
+    check('R5-7: a data table with rows for the project, none of them record-id rows, is not an empty project',
+        $emOpen['ok'] === false && empty($emOpen['empty']));
+    $store->finish($emId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}
+
+/*
+ * R5-1: A GROUP-SCOPED SLICE REPORTS ONLY WHAT ITS SCOPE ADMITS.
+ *
+ * The planner's `listed` counted every row the walk read, so the work answers
+ * of a run confined to one group said how many records the other groups hold,
+ * a page at a time. 300 records, one in ten in group 7 and none of them on
+ * the second page of 100: that slice lists nothing in scope and still moved.
+ */
+{
+    $SC = 924;
+    uv_redcap_project($A, $SC);
+    $v = array();
+    for ($i = 1; $i <= 300; $i++) {
+        $g = ($i % 10 === 0 && ($i <= 100 || $i > 200)) ? '7' : '31';
+        $v[] = '(' . $SC . ", '" . sprintf('S%03d', $i) . "', " . $g . ')';
+    }
+    $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $v));
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    $scReq = uv_plan_request(array('pageSize' => 100, 'dagFilter' => '7'));
+    $scSpent = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->plan($SC,
+        array_merge($scReq, array('source' => $MS::open($dbA, $SC, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => $scSpent())));
+    $scId = (int) $first['run']['run_id'];
+    $each = array();
+    $moved = array();
+    for ($r = 1; $r <= 5 && $store->run($SC, $scId)['phase'] === 'planning'; $r++) {
+        $s = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($SC, $scId,
+            array_merge($scReq, array('source' => $MS::open($dbA, $SC, array('pk' => 'record_id'))['source'],
+                'budget' => $scSpent(), 'owner' => 'req' . $r,
+                'epoch' => (int) $store->run($SC, $scId)['lease_epoch'], 'attempts' => 3, 'leaseSeconds' => 300)));
+        $each[] = $s['listed'];
+        $moved[] = $s['moved'];
+    }
+    $scRun = $store->run($SC, $scId);
+    check('R5-1: a group-scoped slice counts only the records of its own group',
+        $first['ok'] === true && $each === array(0, 10) && $scRun['phase'] === 'scanning'
+        && (int) $scRun['manifest_total'] === 20);
+    check('R5-1: and a slice whose page held none of them still says the walk moved',
+        $moved === array(true, true));
+    $store->finish($scId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}
+
+/*
+ * rv5a-1: THE WALK READS THE DATA TABLE REDCAP NAMES, OR NONE.
+ *
+ * The project lives in redcap_data2 and redcap_data holds another project's
+ * rows. One failed read of redcap_projects named redcap_data, R5-7 took that
+ * table's emptiness for the end of the list, and the manifest froze at what
+ * had been listed. And with no failed read, REDCap moving the project to
+ * redcap_data3 mid-slice sent the walk to the table it had read at open().
+ */
+{
+    $WT = 925;
+    $MV = 926;
+    $T = function ($t) { return \INSPIRE\UniversalValidator\Scan\Schema::table($t); };
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    $A->query('DROP TABLE IF EXISTS redcap_record_counts');
+    uv_redcap_counts_schema($A);
+    $A->query('CREATE TABLE redcap_data2 LIKE redcap_data');
+    $A->query('CREATE TABLE redcap_data3 LIKE redcap_data');
+    foreach (array($WT, $MV) as $p) {
+        uv_redcap_project($A, $p, 'redcap_log_event', 'redcap_data2');
+        $l = array();
+        $d = array();
+        for ($i = 1; $i <= 300; $i++) {
+            $id = sprintf('W%04d', $i);
+            $l[] = '(' . $p . ", '" . $id . "', NULL)";
+            $d[] = '(' . $p . ", 1, '" . $id . "', 'record_id', '" . $id . "')";
+        }
+        $A->query('INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ' . implode(',', $l));
+        $A->query('INSERT INTO redcap_data2 (project_id, event_id, record, field_name, `value`) VALUES '
+            . implode(',', $d));
+    }
+    $wtDb = new class(new MysqliDb($A), $A) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $conn; public $failProjects = 0; public $indexPages = 0; public $moveAt = 0;
+        public $movePid = 0;
+        public function __construct($inner, $conn) { $this->inner = $inner; $this->conn = $conn; }
+        public function select($sql, array $params = []) {
+            if ($this->failProjects > 0 && strpos($sql, 'FROM redcap_projects') !== false) {
+                $this->failProjects--;
+                throw new \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable('the database refused a read');
+            }
+            if (strpos($sql, 'FROM redcap_record_list') !== false && strpos($sql, 'ORDER BY') !== false
+                    && !preg_match('/LIMIT 1\s*$/', $sql)) {
+                $this->indexPages++;
+                if ($this->indexPages === $this->moveAt) {
+                    // REDCap moves the project's rows, names the new table, and resets the cache.
+                    $p = (int) $this->movePid;
+                    $this->conn->query('INSERT INTO redcap_data3 SELECT * FROM redcap_data2 WHERE project_id = ' . $p);
+                    $this->conn->query('DELETE FROM redcap_data2 WHERE project_id = ' . $p);
+                    $this->conn->query("UPDATE redcap_projects SET data_table = 'redcap_data3' WHERE project_id = " . $p);
+                    uv_redcap_counts($this->conn, $p, 'NOT_STARTED');
+                }
+            }
+            return $this->inner->select($sql, $params);
+        }
+        public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+    };
+    $wtSpent = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(
+            array('mode' => 'browser', 'startedAt' => microtime(true) - 3600));
+    };
+    $wtReq = uv_plan_request(array('pageSize' => 50));
+    $census = function ($rid) use ($dbA, $T) {
+        $c = $dbA->select('SELECT COUNT(*), COUNT(DISTINCT record_hash) FROM ' . $T('scan_record')
+            . ' WHERE run_id = ?', array($rid));
+        return array((int) $c[0][0], (int) $c[0][1]);
+    };
+
+    // A walk begun on the data table (the cache was being rebuilt), one
+    // request in which the read of redcap_projects fails.
+    uv_redcap_counts($A, $WT, 'PROCESSING');
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($wtDb);
+    $first = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->plan($WT,
+        array_merge($wtReq, array('source' => $MS::open($wtDb, $WT, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => $wtSpent())));
+    $wtId = (int) $first['run']['run_id'];
+    $failedOpen = null;
+    for ($r = 1; $r <= 20 && $store->run($WT, $wtId)['phase'] === 'planning'; $r++) {
+        if ($r === 3) $wtDb->failProjects = 1;
+        $o = $MS::open($wtDb, $WT, array('pk' => 'record_id'));
+        if ($r === 3) $failedOpen = $o;
+        (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->step($WT, $wtId,
+            array_merge($wtReq, array('source' => empty($o['ok']) ? null : $o['source'], 'budget' => $wtSpent(),
+                'owner' => 'req' . $r, 'epoch' => (int) $store->run($WT, $wtId)['lease_epoch'],
+                'attempts' => 5, 'leaseSeconds' => 300)));
+    }
+    $wtRun = $store->run($WT, $wtId);
+    check('rv5a-1: a request whose redcap_projects read failed opens no source, rather than redcap_data',
+        is_array($failedOpen) && $failedOpen['ok'] === false);
+    check('rv5a-1: and the walk over redcap_data2 still lists every record, once',
+        $wtRun['phase'] === 'scanning' && (int) $wtRun['manifest_total'] === 300 && $census($wtId) === array(300, 300));
+    $store->finish($wtId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+
+    // No failed read: the project moves to redcap_data3 during the third page
+    // of an index slice, and REDCap resets its cache.
+    uv_redcap_counts($A, $MV, 'COMPLETE');
+    $wtDb->moveAt = 3;
+    $wtDb->movePid = $MV;
+    $wtDb->indexPages = 0;
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($wtDb);
+    $mv = (new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key'))->plan($MV,
+        array_merge($wtReq, array('source' => $MS::open($wtDb, $MV, array('pk' => 'record_id'))['source'],
+            'owner' => 'req0', 'budget' => false)));
+    $mvId = (int) $mv['run']['run_id'];
+    $mvRun = $store->run($MV, $mvId);
+    check('rv5a-1: a project moved to another data table mid-slice is listed whole, from the new table',
+        $mv['ok'] === true && $mvRun['phase'] === 'scanning' && (int) $mvRun['manifest_total'] === 300
+        && $census($mvId) === array(300, 300));
+    $store->finish($mvId, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    $A->query('DROP TABLE redcap_data2');
+    $A->query('DROP TABLE redcap_data3');
+    $A->query('DROP TABLE redcap_record_counts');
+}

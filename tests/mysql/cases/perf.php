@@ -373,11 +373,26 @@ $RECORDS = 6;
     // the rollup writes its standing axis beside the other four. It also sent
     // a second read of the summary with every status of a finished run, until
     // status() read it once for both counts.
+    // Wave 10 put one more on the start, B6a's: the indexed read of this
+    // project's active run that asks whether it was abandoned
+    // (ScanStore::expireAbandoned()).
+    // Review rv10b1-4 put one statement on each batch a work request commits
+    // under a detail budget: the run row read by its key, so the budget is
+    // judged on what every worker has stored. The request with records left
+    // commits one batch here.
+    // Wave 11 (M5) put two statements on the start and one on the request
+    // that finishes. The start stores the run's label snapshot: one EXISTS on
+    // uq_dim_v2's leading key, so a second snapshot of a generation is
+    // refused in words, and one INSERT for the rows (this fixture's module
+    // has no labels to give, so its snapshot is the state row; a project's
+    // is one INSERT per 100 rows, in a transaction when it needs more than
+    // one). The finishing request reads that state row by its key for
+    // labelDegraded (W7-N11), on the pass whose summary is done only.
     $bounds = array(
-        'start'                              => array($startCount, 45),
+        'start'                              => array($startCount, 48),
         'a status poll'                      => array($pollCount, 8),
-        'a work request with records left'   => array($workCount, 77),
-        'the work request that finishes'     => array($finishCount, 79),
+        'a work request with records left'   => array($workCount, 78),
+        'the work request that finishes'     => array($finishCount, 80),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

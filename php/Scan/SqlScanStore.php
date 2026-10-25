@@ -1006,6 +1006,7 @@ final class SqlScanStore implements ScanStore
                     . 'axis; refusing to write a fact that cannot be read back');
             }
         }
+        $unstored = self::unstoredOf($batch);
 
         // SHAPE FIRST, AND OUTSIDE THE TRANSACTION. A missing claim token or an
         // unattributable finding is a programming error, not a database
@@ -1163,7 +1164,11 @@ final class SqlScanStore implements ScanStore
                 // gone. A record REQUEUED because it moved commits no new
                 // findings, so closing its rows would blank the report for a
                 // record that still violates.
-                if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+                // A record that LEFT the run's group (review rv5b-1) is closed
+                // too: what the run found in it was found while it was in the
+                // group, and the group's report no longer covers it.
+                if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE
+                        || $st === self::REC_DEPARTED) {
                     $closing[] = $rec['record_hash'];
                 }
             }
@@ -1221,6 +1226,24 @@ final class SqlScanStore implements ScanStore
                                          empty($m['blocks']) ? 0 : 1,
                                          isset($m['samples']) ? $m['samples'] : null);
                 }
+                // WHAT THE DETAIL BUDGET LEFT OUT (H9), counted for the held
+                // records only and in this transaction, so the count rolls back
+                // with the batch and a lost record's findings are not counted
+                // here as well as by the worker that took it over.
+                $dropped = 0;
+                $droppedJustified = 0;
+                foreach ($unstored[0] as $o => $k) {
+                    if (empty($held[$o])) continue;
+                    $dropped += $k;
+                    if (isset($unstored[1][$o])) $droppedJustified += $unstored[1][$o];
+                }
+                if ($dropped > $droppedJustified) {
+                    $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '', $dropped - $droppedJustified);
+                }
+                if ($droppedJustified > 0) {
+                    $this->addAggregate($runId, self::DETAIL_UNSTORED, self::UNSTORED_JUSTIFIED, '',
+                                        $droppedJustified);
+                }
             }
 
             // Counters last, and NOT gated on affected(): a batch that finished
@@ -1241,7 +1264,9 @@ final class SqlScanStore implements ScanStore
             // at any staleHours setting - while the sweep's own terminal_reason
             // says "no progress within the configured window". This column
             // measures progress: records actually finished, and the manifest
-            // freezing. The other place is freezeManifest().
+            // freezing. The other places are freezeManifest(), a manifest page
+            // appended, and setProgressState() when a finishing phase's step
+            // moved the run forward (W7-N9) - each of them progress too.
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
                     detail_bytes = detail_bytes + ?, detail_justified = detail_justified + ?, updated_at = ?';
@@ -1502,6 +1527,40 @@ final class SqlScanStore implements ScanStore
      * field can be 64 KB and a candidate per record would be a second copy of
      * the project. A group that actually collides is re-read from the source.
      */
+    /**
+     * A batch's `unstored` counts (H9) as ordinal => count, and its
+     * `unstoredJustified` counts the same way, or a refusal.
+     *
+     * A count that is not a whole number is a programming error, refused
+     * before anything is written as a malformed mark is: read as 0 it would
+     * undercount what the run found, which is the direction that certifies.
+     * So is a justified count above its record's `unstored`. The same checks
+     * and words as ArrayScanStore's.
+     *
+     * @return array{0:array<int,int>, 1:array<int,int>} positive counts only
+     */
+    private static function unstoredOf(array $batch)
+    {
+        $out = [[], []];
+        foreach (['unstored', 'unstoredJustified'] as $i => $key) {
+            $in = isset($batch[$key]) && is_array($batch[$key]) ? $batch[$key] : [];
+            foreach ($in as $o => $k) {
+                if (!is_int($k) && !(is_string($k) && ctype_digit($k))) {
+                    throw new \RuntimeException('an unstored-findings count reached the store that is '
+                        . 'not a whole number; refusing to record what was found as less than it was');
+                }
+                if ((int) $k > 0) $out[$i][(int) $o] = (int) $k;
+            }
+        }
+        foreach ($out[1] as $o => $k) {
+            if (!isset($out[0][$o]) || $k > $out[0][$o]) {
+                throw new \RuntimeException('a record\'s count of left-out findings with a reason is above '
+                    . 'its count of left-out findings; refusing to record either');
+            }
+        }
+        return $out;
+    }
+
     /**
      * The project a row belongs to, or a refusal.
      *
@@ -1856,6 +1915,53 @@ final class SqlScanStore implements ScanStore
         return $ok;
     }
 
+    /**
+     * See ScanStore::expireAbandoned(): one fenced UPDATE, then the audit row.
+     *
+     * READ, THEN WRITE UNDER THE SAME PREDICATE. The audit has to name the
+     * run, and MySQL hands back no row from an UPDATE, so the run is named by
+     * an indexed read first: uq_project_active is (project_id, active_slot),
+     * so the read is one index entry, and in the common case - nothing stale -
+     * it is the only statement sent. The UPDATE carries the whole predicate
+     * again, so a run that moved between the two is not touched, and its
+     * count decides whether there is anything to audit.
+     *
+     * The row is finish()'s for derive(['expired' => true]), column for column,
+     * with the lease epoch moved in the same statement (Risk 5).
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    {
+        $t = $now === null ? time() : (int) $now;
+        $hours = max(1, (int) $staleHours);
+        $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
+        $at = gmdate('Y-m-d H:i:s', $t);
+        $stale = ' WHERE project_id = ? AND active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
+               . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?)';
+        try {
+            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . $stale,
+                [(int) $pid, $cut, $at]);
+            if (!isset($r[0][0])) return 0;
+            $runId = (int) $r[0][0];
+            $o = ScanOutcome::derive(['expired' => true]);
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+                SET phase = ?, terminal = ?, coverage = ?, detail = ?, active_slot = NULL,
+                    terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = 0,
+                    not_examined = 0, lease_epoch = lease_epoch + 1, updated_at = ?'
+                . $stale . ' AND run_id = ?',
+                [ScanPhase::TERMINAL, $o['terminal'], $o['coverage'], $o['detail'],
+                 substr((string) $o['why'], 0, 255), ScanOutcome::cleanColumn($o), (int) $o['gaps'],
+                 $at, (int) $pid, $cut, $at, $runId]);
+            if ($this->db->affected() !== 1) return 0;
+        } catch (ScanStoreUnavailable $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw $this->unavailable($e);
+        }
+        $this->audit((int) $pid, $runId, self::AUDIT_EXPIRE, (string) $actor,
+            json_encode(['stale_hours' => $hours]));
+        return 1;
+    }
+
     // THE WORKER SLOTS USED TO BE LEASED FROM HERE TOO, and that is why they
     // are not any more. leaseSlot() and releaseSlot() were a second
     // implementation of WorkerSlots over the same uv_scan_worker_slot table,
@@ -1885,56 +1991,233 @@ final class SqlScanStore implements ScanStore
      * measurement back, so a row whose value preview expired, was revoked or
      * was never stored has no z-score either. A reader that may not see
      * value_bin must not be shown z_score.
+     *
+     * EVERY PAGE NAMES ITS KEY. An unfiltered page is pinned to ix_page_v2:
+     * over a small table MySQL 8.0 and MariaDB chose uq_active_identity_v2
+     * and sorted the generation (see ScanRetention::slicePage()). A filtered
+     * page was left to the optimiser, which could walk ix_page_v2 and test
+     * the filter row by row - a page that keeps ten rows out of a generation
+     * of 500,000 then reads all of them. It is pinned to the key of its first
+     * axis (FindingRowMapper::PAGE_AXES order), whose prefix is the page's
+     * equality and whose order is finding_id; tests/mysql/cases/report.php
+     * asserts the plan for each axis.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
+        $through = null;
         $limit = max(1, min(100, (int) $limit));
+        // The scope first, and before any statement: a call with no
+        // confinement throws here rather than reading the project.
+        $page = FindingRowMapper::pageAxes($scope, $filter);
+        if ($page['none']) return [];
+        $axes = $page['axes'];
         $keys = FindingRowMapper::INPUT_KEYS;
+        $cols = [];
+        foreach ($keys as $k) {
+            $cols[] = $k === 'z_score' ? 'CASE WHEN value_bin IS NULL THEN NULL ELSE z_score END AS z_score' : $k;
+        }
         // PROJECT FIRST, in the predicate and in the index. This method had
         // no production caller at all, which is the only reason a read
         // filtered by generation alone - with the generation the literal 1
         // for every project - was stored corruption rather than a live
         // cross-project disclosure. The report is what would have turned it
         // into one.
-        $params = [(int) $projectId, $generationId, (int) $afterId];
-        // Only allowlisted axes reach the statement; an unknown key is dropped
-        // rather than interpolated.
-        $where = '';
-        foreach (['host_form' => 'host_form', 'reason_code' => 'reason_code',
-                  'dag_key' => 'dag_key', 'check_type' => 'check_type'] as $k => $col) {
-            if (isset($filter[$k]) && $filter[$k] !== '') {
-                $where .= ' AND ' . $col . ' = ?';
-                $params[] = $filter[$k];
+        $base = 'project_id = ? AND generation_id = ? AND active_slot = 1';
+        $baseParams = [(int) $projectId, $generationId];
+        $first = $axes ? (string) key($axes) : null;
+        $index = $first === null ? 'ix_page_v2' : self::$axisKeys[$first];
+        $from = Schema::table('finding') . ' FORCE INDEX (' . $index . ')';
+        $lead = '';
+        $leadParams = [];
+        if ($first !== null) {
+            $lead = ' AND ' . $first . ' = ?';
+            $leadParams[] = $axes[$first];
+        }
+        $rest = '';
+        $restParams = [];
+        foreach ($axes as $col => $v) {
+            if ($col === $first) continue;
+            $rest .= ' AND ' . $col . ' = ?';
+            $restParams[] = $v;
+        }
+        $select = function ($after, $upTo, $n) use ($cols, $from, $base, $lead, $rest, $baseParams,
+                                                    $leadParams, $restParams, $keys) {
+            $sql = 'SELECT ' . implode(', ', $cols) . '
+                    FROM ' . $from . '
+                    WHERE ' . $base . $lead . ' AND finding_id > ?'
+                    . ($upTo === null ? '' : ' AND finding_id <= ?') . $rest . '
+                    ORDER BY finding_id LIMIT ' . (int) $n;
+            $params = array_merge($baseParams, $leadParams, [(int) $after],
+                                  $upTo === null ? [] : [(int) $upTo], $restParams);
+            $out = [];
+            foreach ($this->db->select($sql, $params) as $r) {
+                $row = array_values((array) $r);
+                if (count($row) !== count($keys)) {
+                    // As in run(): array_combine() would answer false, and a
+                    // false row reads as "no such key" in every cell.
+                    throw new \LogicException('a finding row has ' . count($row) . ' columns and '
+                        . 'FindingRowMapper::INPUT_KEYS names ' . count($keys));
+                }
+                $out[] = array_combine($keys, $row);
             }
+            return $out;
+        };
+
+        if ($rest === '') {
+            // ONE KEY HOLDS EVERY PREDICATE: one statement, $limit + 1 entries
+            // read, the extra one only to say whether a page follows.
+            $out = $select((int) $afterId, null, $limit + 1);
+            if (count($out) > $limit) {
+                $out = array_slice($out, 0, $limit);
+                $through = (int) $out[$limit - 1]['finding_id'];
+            }
+            return $out;
         }
-        // An unfiltered page is ix_page_v2's prefix in ix_page_v2's order, and
-        // is pinned to it: over a small table MySQL 8.0 and MariaDB chose
-        // uq_active_identity_v2 and sorted the generation (see
-        // ScanRetention::slicePage()). A filtered page is left to the
-        // optimiser, which has an ix_filter_* key for each axis.
-        $hint = $where === '' ? ' FORCE INDEX (ix_page_v2)' : '';
-        $cols = [];
-        foreach ($keys as $k) {
-            $cols[] = $k === 'z_score' ? 'CASE WHEN value_bin IS NULL THEN NULL ELSE z_score END AS z_score' : $k;
-        }
-        $sql = 'SELECT ' . implode(', ', $cols) . '
-                FROM ' . Schema::table('finding') . $hint . '
-                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
-                  AND finding_id > ?' . $where . '
-                ORDER BY finding_id LIMIT ' . $limit;
+
+        // TWO OR MORE AXES: windows of the first axis's key. The window's end
+        // is read from the key alone - finding_id is in it, so nothing else is
+        // touched - and the page then reads only rows inside it.
         $out = [];
-        foreach ($this->db->select($sql, $params) as $r) {
-            $row = array_values((array) $r);
-            if (count($row) !== count($keys)) {
-                // As in run(): array_combine() would answer false, and a false
-                // row reads as "no such key" in every cell of the report.
-                throw new \LogicException('a finding row has ' . count($row) . ' columns and '
-                    . 'FindingRowMapper::INPUT_KEYS names ' . count($keys));
+        $after = (int) $afterId;
+        for ($w = 0; $w < self::FILTER_WINDOWS; $w++) {
+            $ids = $this->db->select('SELECT finding_id FROM ' . $from . '
+                WHERE ' . $base . $lead . ' AND finding_id > ?
+                ORDER BY finding_id LIMIT ' . self::FILTER_WINDOW,
+                array_merge($baseParams, $leadParams, [$after]));
+            if (!$ids) return $out;
+            $end = (int) $ids[count($ids) - 1][0];
+            foreach ($select($after, $end, $limit + 1 - count($out)) as $row) $out[] = $row;
+            if (count($out) > $limit) {
+                $out = array_slice($out, 0, $limit);
+                $through = (int) $out[$limit - 1]['finding_id'];
+                return $out;
             }
-            $out[] = array_combine($keys, $row);
+            // A window shorter than the bound is the end of the axis.
+            if (count($ids) < self::FILTER_WINDOW) return $out;
+            $after = $end;
+        }
+        $through = $after;
+        return $out;
+    }
+
+    /**
+     * See ScanStore::writeDimensions(). The generation is asked first, by its
+     * leading key, so a second snapshot is refused in words rather than by
+     * the unique key, which would read as the database failing.
+     */
+    public function writeDimensions($projectId, $generationId, array $rows)
+    {
+        $pid = (int) $projectId;
+        $gen = (int) $generationId;
+        if ($pid < 1 || $gen < 1) {
+            throw new \InvalidArgumentException('a label snapshot needs its project and its generation');
+        }
+        $rows = FindingRowMapper::dimensionRows($rows);
+        if (!$rows) return 0;
+        $t = Schema::table('scan_dim');
+        $chunks = [];
+        $chunk = [];
+        $bytes = 0;
+        foreach ($rows as $r) {
+            $b = strlen((string) $r['label']) + strlen((string) $r['meta']);
+            if ($chunk && (count($chunk) >= self::DIM_CHUNK || $bytes + $b > self::DIM_CHUNK_BYTES)) {
+                $chunks[] = $chunk;
+                $chunk = [];
+                $bytes = 0;
+            }
+            $chunk[] = $r;
+            $bytes += $b;
+        }
+        $chunks[] = $chunk;
+        // ALL OR NOTHING: a transaction when it takes more than one statement.
+        // A snapshot with half its rules in it labels the other half as raw
+        // ordinals and says nothing about why.
+        $tx = count($chunks) > 1;
+        $kept = false;
+        try {
+            if ($tx) $this->db->begin();
+            $has = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . $t
+                . ' WHERE project_id = ? AND generation_id = ?)', [$pid, $gen]);
+            if (!isset($has[0][0])) {
+                // EXISTS always answers; no answer is a read that did not work.
+                throw new \RuntimeException('could not tell whether this generation has a label snapshot');
+            }
+            if ((int) $has[0][0] !== 0) {
+                $kept = true;
+                if ($tx) $this->db->rollback();
+            } else {
+                foreach ($chunks as $c) {
+                    $p = [];
+                    foreach ($c as $r) array_push($p, $pid, $gen, $r['kind'], $r['key'], $r['label'], $r['meta']);
+                    $this->db->execNoCount('INSERT INTO ' . $t
+                        . ' (project_id, generation_id, kind, dim_key, label, meta) VALUES '
+                        . implode(', ', array_fill(0, count($c), '(?, ?, ?, ?, ?, ?)')), $p);
+                }
+                if ($tx) $this->db->commit();
+            }
+        } catch (\Throwable $e) {
+            throw $tx ? $this->rolledBack($e) : $this->unavailable($e);
+        }
+        if ($kept) throw new \RuntimeException('this generation already has a label snapshot, and keeps it');
+        return count($rows);
+    }
+
+    /**
+     * See ScanStore::dimensions(). One statement over uq_dim_v2, whose
+     * leading (project_id, generation_id) bound it to this generation and
+     * whose (kind, dim_key) is the order and the keyset.
+     */
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    {
+        $limit = max(1, min(self::DIM_PAGE, (int) $limit));
+        $after = FindingRowMapper::dimensionAfter($after);
+        $sql = 'SELECT kind, dim_key, label, meta FROM ' . Schema::table('scan_dim')
+             . ' FORCE INDEX (uq_dim_v2) WHERE project_id = ? AND generation_id = ?';
+        $p = [(int) $projectId, (int) $generationId];
+        if ($after !== null) {
+            $sql .= ' AND (kind > ? OR (kind = ? AND dim_key > ?))';
+            array_push($p, $after[0], $after[0], $after[1]);
+        }
+        $out = [];
+        foreach ($this->db->select($sql . ' ORDER BY kind, dim_key LIMIT ' . $limit, $p) as $r) {
+            $out[] = self::dimRow($r);
         }
         return $out;
     }
+
+    /** See ScanStore::dimension(). A point read on uq_dim_v2. */
+    public function dimension($projectId, $generationId, $kind, $key)
+    {
+        if (!FindingRowMapper::isDimensionKind($kind)) {
+            throw new \InvalidArgumentException('a label snapshot row is named by a kind of the form '
+                . FindingRowMapper::DIM_KIND);
+        }
+        $r = $this->db->select('SELECT kind, dim_key, label, meta FROM ' . Schema::table('scan_dim')
+            . ' WHERE project_id = ? AND generation_id = ? AND kind = ? AND dim_key = ? LIMIT 1',
+            [(int) $projectId, (int) $generationId, $kind, (string) $key]);
+        return isset($r[0]) ? self::dimRow($r[0]) : null;
+    }
+
+    /** One uv_scan_dim row as both stores answer it. */
+    private static function dimRow(array $r)
+    {
+        if (count($r) !== 4) {
+            throw new \LogicException('a label snapshot row came back ' . count($r) . ' columns wide, not 4');
+        }
+        $r = array_values($r);
+        return ['kind' => (string) $r[0], 'key' => (string) $r[1],
+                'label' => $r[2] === null ? null : (string) $r[2],
+                'meta' => $r[3] === null ? null : (string) $r[3]];
+    }
+
+    /** The key each page axis is walked through: its ix_filter_* (Schema::statementsV2()). */
+    private static $axisKeys = [
+        'host_form'   => 'ix_filter_form_v2',
+        'reason_code' => 'ix_filter_reason_v2',
+        'check_type'  => 'ix_filter_type',
+        'dag_key'     => 'ix_filter_dag_v2',
+    ];
 
     /**
      * Keyed rows, not the positional ones the driver returns.
@@ -1984,9 +2267,15 @@ final class SqlScanStore implements ScanStore
      *
      * LOCK ORDER is this run's row, then the older generations' finding rows.
      * commitBatch() takes ITS run's row and then its own generation's rows, so
-     * the two never wait on each other's rows; the one meeting point is the
-     * next-key lock at the end of a closed range, which InnoDB resolves as a
-     * deadlock and this method reports as unavailable, having closed nothing.
+     * the two never wait on each other's rows. The one meeting point is the
+     * gap lock that ends a closed range in ix_page_v2, and it is a wait, not a
+     * deadlock (W8-N5, measured under REPEATABLE READ on MySQL 5.7 and MariaDB
+     * 10.5 in tests/mysql/cases/cron.php): when the completed run's own
+     * generation holds no rows, a batch inserting into the next generation
+     * waits until this page commits, and nothing waits the other way. A wait
+     * past innodb_lock_wait_timeout refuses that batch whole, for its worker
+     * to retry; a deadlock with anything else is reported unavailable, having
+     * closed nothing, and the cron asks again next pass.
      *
      * valid_to_seq IS THIS RUN'S run_seq. A newer run that completes before
      * this one has finished closing will close the rest with its own sequence,
@@ -2196,6 +2485,89 @@ final class SqlScanStore implements ScanStore
         return $this->reState($runId, $epoch, $recordIds, self::REC_TOMBSTONE, false);
     }
 
+    /**
+     * Take records that left the run's group out of the run (review rv5b-1).
+     *
+     * By record hash, so both statements are index-backed: uq_run_record
+     * (run_id, record_hash) for the manifest rows, and ix_record_v2
+     * (project_id, generation_id, record_hash, active_slot) for the
+     * findings, the same close commitBatch() makes. The run row is locked
+     * first, as in reState(), so a concurrent commit of the same records
+     * serialises behind this one.
+     */
+    public function depart($runId, $epoch, array $hashes)
+    {
+        if (!$hashes) return 0;
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch, project_id, generation_id, run_seq FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
+                    || (int) $r[0][1] !== (int) $epoch) {
+                $this->db->rollback();
+                return 0;
+            }
+            $t = Schema::table('scan_record');
+            $marks = implode(',', array_fill(0, count($hashes), '?'));
+            // WHICH ROWS MOVE, decided first and under the row locks, so the
+            // findings closed below are those of the records that departed
+            // here and of no other. A tombstone's findings are left as
+            // catch-up leaves them (ScanPromotion::facts, R2O-1).
+            $left = [];
+            foreach ($this->db->select('SELECT record_hash FROM ' . $t
+                    . ' WHERE run_id = ? AND record_hash IN (' . $marks . ') AND state NOT IN (?, ?)
+                    FOR UPDATE',
+                    array_merge([$runId], array_values($hashes),
+                                [self::REC_DEPARTED, self::REC_TOMBSTONE])) as $row) {
+                $left[] = $row[0];
+            }
+            if (!$left) {
+                $this->db->commit();
+                return 0;
+            }
+            $now = self::now();
+            $lm = implode(',', array_fill(0, count($left), '?'));
+            $this->db->execNoCount('UPDATE ' . $t . '
+                SET state = ?, version_scanned = NULL, claim_owner = NULL, claim_seq = 0,
+                    updated_at = ?
+                WHERE run_id = ? AND record_hash IN (' . $lm . ')',
+                array_merge([self::REC_DEPARTED, $now, $runId], $left));
+            $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
+                SET active_slot = NULL, valid_to_seq = ?
+                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                  AND stage_epoch IS NULL
+                  AND record_hash IN (' . $lm . ')',
+                array_merge([(int) $r[0][4], (int) $r[0][2], (int) $r[0][3]], $left));
+            $d = $this->db->select('SELECT COUNT(*) FROM ' . $t
+                . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
+                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, $now, $runId]);
+            $this->db->commit();
+            return count($left);
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
+
+    public function departedOf($runId, array $hashes)
+    {
+        if (!$hashes) return [];
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
+        $out = [];
+        // The state is compared here rather than in the WHERE clause: with
+        // `state = ?` beside it the optimiser may take ix_run_state, which
+        // reads every departed row of the run, where uq_run_record reads the
+        // hashes asked about and no more.
+        foreach ($this->db->select('SELECT record_hash, state FROM ' . Schema::table('scan_record')
+                . ' WHERE run_id = ? AND record_hash IN (' . $marks . ')',
+                array_merge([$runId], array_values($hashes))) as $row) {
+            if ((int) $row[1] === self::REC_DEPARTED) $out[(string) $row[0]] = true;
+        }
+        return $out;
+    }
+
     private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
     {
         $this->db->begin();
@@ -2278,14 +2650,20 @@ final class SqlScanStore implements ScanStore
         $map = ['catchupCursor' => 'catchup_cursor', 'catchupRound' => 'catchup_round',
                 'catchupDirty' => 'catchup_dirty', 'rollupCursor' => 'rollup_cursor',
                 'fenceTarget' => 'fence_target'];
+        $now = self::now();
         foreach ($map as $k => $col) {
             if (!array_key_exists($k, $st)) continue;
             $sets[] = $col . ' = ?';
             $params[] = $st[$k];
         }
+        // A finishing phase's step that moved the run forward (W7-N9).
+        if (!empty($st['progress'])) {
+            $sets[] = 'progress_at = ?';
+            $params[] = $now;
+        }
         if (!$sets) return false;
         $sets[] = 'updated_at = ?';
-        $params[] = self::now();
+        $params[] = $now;
         $params[] = $runId;
         $params[] = $epoch;
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET ' . implode(', ', $sets)
@@ -2313,6 +2691,21 @@ final class SqlScanStore implements ScanStore
         if ((int) $r[0][0] !== (int) $epoch) return self::ROLLUP_TAKEN_OVER;
         if ($r[0][1] !== null) return self::ROLLUP_FINISHED;
         return (int) $r[0][2];
+    }
+
+    /**
+     * A locking read on the primary key and nothing else, in the caller's
+     * transaction, for the reason holdRollupCursor() gives.
+     */
+    public function holdRun($runId, $epoch, $phase)
+    {
+        $r = $this->db->select('SELECT lease_epoch, terminal, phase FROM '
+            . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+        if (!isset($r[0])) return self::HOLD_NO_RUN;
+        if ((int) $r[0][0] !== (int) $epoch) return self::HOLD_TAKEN_OVER;
+        if ($r[0][1] !== null) return self::HOLD_FINISHED;
+        if ((string) $r[0][2] !== (string) $phase) return self::HOLD_MOVED;
+        return true;
     }
 
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)

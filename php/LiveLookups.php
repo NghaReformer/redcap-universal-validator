@@ -40,14 +40,14 @@ trait LiveLookups
     /** The body of redcap_module_ajax(); see there. */
     private function answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
-        // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
+        // THE DURABLE SCAN'S FIVE VERBS. Declared in auth-ajax-actions ONLY - a
         // scan reads and stores record values, so there is no version of it an
         // unauthenticated caller may reach. $user_id is the only value here that
         // means REDCap authenticated this caller; the framework's own action
         // list is a first gate, and this is the second, because
         // redcap_module_ajax() guards the action NAME and hands the identity
         // straight through without checking it.
-        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel'], true)) {
+        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel', 'scan-findings'], true)) {
             if ($user_id === null || $user_id === '') {
                 return ['ok' => false, 'why' => 'you are not signed in'];
             }

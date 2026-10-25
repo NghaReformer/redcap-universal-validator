@@ -55,7 +55,8 @@ WORKER_T = 'tests/scan_worker_php.php'
 REPORT_T = 'tests/scan_report_php.php'
 PAGE_T = 'tests/scan_page_php.php'
 SCANCLIENT_T = 'tests/scan_client_js.cjs'
-# The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php, cases "justified" and "perf").
+# The SQL itself: run only when UV_DB_HOST names a server (tests/mysql/run.php, cases "justified", "perf"
+# and "store", which runs the store contract).
 MYSQL = 'tests/mysql/run.php'
 
 # QRID_reasonGiven's trim, told apart from QRID_isMissingCode's, which reads the same
@@ -298,11 +299,38 @@ MUTATIONS = [
      " FORCE INDEX (ix_page_v2)",
      '', MYSQL),
     ("a finished run's summary read twice on each poll", SERVICE,
-     "'findings'  => ScanPromotion::findingsOf($store, $run, $aggregates),",
-     "'findings'  => ScanPromotion::findingsOf($store, $run),", MYSQL),
+     "'findings'  => $proved ? ScanPromotion::findingsOf($store, $run, $aggregates) : null,",
+     "'findings'  => $proved ? ScanPromotion::findingsOf($store, $run) : null,", MYSQL),
     ('justified findings counted as violations in the tally', PROMOTION,
-     "        return ['violations' => $active - $justified, 'justified' => $justified,",
-     "        return ['violations' => $active, 'justified' => $justified,", WORKER_T),
+     "        return ['violations' => $stored - $justified + $unstored - $leftJustified,",
+     "        return ['violations' => $stored + $unstored - $leftJustified,", WORKER_T),
+    ('findings left out with a reason counted as violations in the tally', PROMOTION,
+     "        return ['violations' => $stored - $justified + $unstored - $leftJustified,",
+     "        return ['violations' => $stored - $justified + $unstored,", WORKER_T),
+    ('findings left out with a reason not counted as justified in the tally', PROMOTION,
+     "                'justified' => $justified + $leftJustified,",
+     "                'justified' => $justified,", WORKER_T),
+    ('a left-out finding read as one with a reason under any axis', PROMOTION,
+     "            if ($k === ScanStore::DETAIL_UNSTORED && isset($a['axis1']) && (string) $a['axis1'] === ScanStore::UNSTORED_JUSTIFIED) $leftJustified += $n;",
+     "            if ($k === ScanStore::DETAIL_UNSTORED) $leftJustified += $n;", WORKER_T),
+    ('a working run past its budget counts the left-out findings with a reason as findings', PROMOTION,
+     "            return $rows + $t['unstored'] - $t['unstoredJustified'];",
+     "            return $rows + $t['unstored'];", WORKER_T),
+    ('the worker counts no left-out finding as one with a reason', 'php/Scan/ScanWorker.php',
+     "                    if (!empty($f['justified'])) $leftJustified++;\n",
+     '', WORKER_T),
+    ('the array store files the left-out findings with a reason as open', ARRAYSTORE,
+     "                $this->addAggregate($runId, self::DETAIL_UNSTORED, self::UNSTORED_JUSTIFIED, '',",
+     "                $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '',", STORE_T),
+    ("the array store takes a count with a reason above its record's", ARRAYSTORE,
+     "            if (!isset($unstored[0][$o]) || $k > $unstored[0][$o]) {",
+     '            if (false) {', STORE_T),
+    ('the SQL store files the left-out findings with a reason as open', SQLSTORE,
+     "                    $this->addAggregate($runId, self::DETAIL_UNSTORED, self::UNSTORED_JUSTIFIED, '',",
+     "                    $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '',", MYSQL),
+    ("the SQL store takes a count with a reason above its record's", SQLSTORE,
+     "            if (!isset($out[0][$o]) || $k > $out[0][$o]) {",
+     '            if (false) {', MYSQL),
     ('the "Saved with a reason" column always blank', COLUMNS,
      "                'render' => function (array $f) { return empty($f['justified']) ? '' : 'Yes'; },",
      "                'render' => function (array $f) { return ''; },", MODULE),
@@ -338,14 +366,14 @@ MUTATIONS = [
      "        $rows = max(0, $rows - (isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0));\n",
      '', SERVICE_T),
     ('a working run says nothing of its rows saved with a reason', PROMOTION,
-     "        if ($terminal === null) return $rows;\n        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];",
-     "        if ($terminal === null) return 0;\n        $summary = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']))['justified'];", SERVICE_T),
+     "            if (!self::budgetUsed($run, $all)) return $rows;\n            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));\n            return $rows + $t['unstoredJustified'];",
+     "            if (!self::budgetUsed($run, $all)) return 0;\n            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));\n            return $t['unstoredJustified'];", SERVICE_T),
     ('a run that ended without a verdict drops the rows its counter holds', PROMOTION,
-     '        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $summary);',
-     '        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return $summary;', SERVICE_T),
+     "        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $t['justified'] - $left) + $left;",
+     "        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return $t['justified'];", SERVICE_T),
     ('the largest axis taken without the standing one', PROMOTION,
-     '        foreach (RollupBuilder::KINDS as $kind) $active = max($active, $of($kind));',
-     '        foreach (array_diff(RollupBuilder::KINDS, [RollupBuilder::K_STANDING]) as $kind) $active = max($active, $of($kind));', WORKER_T),
+     '        foreach (RollupBuilder::KINDS as $kind) $stored = max($stored, $of($kind));',
+     '        foreach (array_diff(RollupBuilder::KINDS, [RollupBuilder::K_STANDING]) as $kind) $stored = max($stored, $of($kind));', WORKER_T),
     ('the audit reads no reason field it was not already reading', 'php/TemporalRules.php',
      '        $out=array_merge($out,ModeRegistry::justifyFields($rule));\n',
      '', MODULE),
@@ -443,7 +471,7 @@ def run(suite, cwd):
         if not os.environ.get('UV_DB_HOST'):
             return None
         cmd = [PHP, '-d', 'extension=mysqli', suite]
-        env = dict(os.environ, UV_CASES='justified,perf')
+        env = dict(os.environ, UV_CASES='justified,perf,store')
     else:
         cmd = [NODE, suite] if suite.endswith('.cjs') else [PHP, suite]
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)

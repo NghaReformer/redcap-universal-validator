@@ -107,6 +107,22 @@ interface ScanStore
     const REC_UNSTORED   = 104;
 
     /**
+     * Left the run's Data Access Group while the run was open (review rv5b-1).
+     *
+     * A group-scoped run lists the group as planning read it, and a record can
+     * be moved to another group afterwards. It is then another group's
+     * record: reading it again would put that group's data into this run's
+     * report, so it leaves the run instead. Terminal, never examined again,
+     * and its findings in this run are closed with it.
+     *
+     * NOT IN NOT_EXAMINED and not blocking: it was not skipped, it stopped
+     * being in scope, as a deleted record stops existing. Not a tombstone
+     * either: the record is still in the project, and the run's figures say
+     * nothing about it at all - the total a reader is shown leaves it out.
+     */
+    const REC_DEPARTED   = 105;
+
+    /**
      * Terminal WITHOUT having been examined. One list, because two places ask:
      * promotion, where any of these caps coverage at partial, and the progress
      * figure, which must not call them done. A tombstone is not here - a record
@@ -510,10 +526,36 @@ interface ScanStore
      * set it to the list of ordinals the commit held, and to [] whenever
      * nothing was written.
      *
+     * FINDINGS COUNTED AND NOT STORED (H9). `$batch['unstored']` is ordinal =>
+     * how many findings that record produced which the worker left out because
+     * the run's detail budget was spent. The store keeps no detail for them,
+     * and adds the count of the HELD records' to the DETAIL_UNSTORED aggregate
+     * in the same transaction, behind the same fences: a record lost to
+     * another worker is that worker's to count. Absent is none.
+     * `$batch['unstoredJustified']` is ordinal => how many of that record's
+     * left-out findings had a reason given (@UVJUSTIFY), never more than its
+     * `unstored`; those are added under the axis UNSTORED_JUSTIFIED and the
+     * rest under ''.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */
     public function commitBatch($runId, $owner, $epoch, array $batch);
+
+    /**
+     * The aggregate kind that counts findings a run found and did not store,
+     * because its detail budget was spent (H9). ScanPromotion::tally() adds it
+     * to what the summary counts, so `violations` is every finding; a run with
+     * any is `truncated`, and one with none is not.
+     */
+    const DETAIL_UNSTORED = 'detail-unstored';
+
+    /**
+     * The axis of DETAIL_UNSTORED that counts the findings left out with a
+     * reason given (@UVJUSTIFY); the open ones are counted under ''. The same
+     * word as RollupBuilder::STANDING_JUSTIFIED.
+     */
+    const UNSTORED_JUSTIFIED = 'justified';
 
     /**
      * Hand claimed records back so another worker can take them immediately.
@@ -622,6 +664,56 @@ interface ScanStore
     /** Request cancellation: sets the flag, the phase, and bumps the lease epoch. */
     public function cancel($pid, $runId, $actor);
 
+    /**
+     * End this project's active run if it has stopped making progress (B6a).
+     *
+     * A run whose lease has lapsed and whose PROGRESS clock - progress_at, or
+     * created_at before its first page - is older than $staleHours holds the
+     * project's one active slot for nobody: its tab closed, its worker died or
+     * its request was killed. It becomes terminally `expired` and the slot is
+     * free.
+     *
+     * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
+     * in it on purpose:
+     *
+     *   THE LEASE EPOCH MOVES (Risk 5). A browser worker that returns after the
+     *   reap still holds the epoch it claimed under; without the bump its next
+     *   commit passes the fence and writes findings into a run already
+     *   reported expired.
+     *
+     *   THE ROW IS finish(ScanOutcome::derive(['expired' => true]))'s ROW:
+     *   terminal, coverage, detail, the derived sentence, clean NULL and the
+     *   three counts at 0, exactly as reapUnworkableScopes() and every other
+     *   writer of an expired run leaves it. A reader cannot tell which request
+     *   ended it, and must not be able to.
+     *
+     *   THE PREDICATE IS REPEATED IN THE WRITE, so a run that made progress or
+     *   renewed its lease between the read that named it and the write is
+     *   left alone.
+     *
+     * AND IT IS AUDITED. A scan that vanished from "running" with no event is
+     * indistinguishable from one that was never started; the audit row names
+     * the run, the event `expire`, who reaped it and the window.
+     *
+     * ONE PROJECT. The cron finds the projects that have a stale run and calls
+     * this for each; Start calls it for its own project. The read and the
+     * write go through uq_project_active, so a project with nothing stale
+     * costs one indexed read.
+     *
+     * @param int      $pid
+     * @param int      $staleHours the window, in hours, at least 1
+     * @param string   $actor      who the audit names: 'cron', or the user
+     *                             whose Start found the run
+     * @param int|null $now        unix seconds the window is measured back
+     *                             from; null is now (a test steps it forward)
+     * @return int runs expired: 0 or 1
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null);
+
+    /** The audit event an expired run is recorded under. */
+    const AUDIT_EXPIRE = 'expire';
+
     // THE INSTALLATION-WIDE WORKER SEMAPHORE IS NOT PART OF THIS CONTRACT, and
     // leaseSlot()/releaseSlot() were removed from it rather than repaired.
     // WorkerSlots is the semaphore, wired at ScanService and ScanWorker; the
@@ -641,12 +733,82 @@ interface ScanStore
      * run() zips RUN_COLUMNS, and a row of the wrong width throws.
      *
      * KEYSET ON finding_id: rows come back with finding_id > $afterId, in
-     * finding_id order, so the last row's finding_id is the next page's
-     * $afterId and no row is ever returned on two pages. $limit is clamped to
-     * 1..100. $filter takes host_form, reason_code, dag_key and check_type;
-     * any other key is ignored rather than interpolated.
+     * finding_id order, and no row is ever returned on two pages. $limit is
+     * clamped to 1..100.
+     *
+     * $scope IS MANDATORY (B5): ['dag' => ?string], the reader's group as a
+     * finding stores it (its unique name), or null for a reader confined to
+     * none. An absent dag key throws; see FindingRowMapper::pageAxes(), which
+     * both stores ask, for that and for $filter, whose keys are
+     * FindingRowMapper::PAGE_AXES (host_form, reason_code, check_type,
+     * dag_key). Any other filter key is ignored rather than interpolated.
+     *
+     * $through IS THE NEXT PAGE'S $afterId, or null when nothing follows.
+     * It is the last row's finding_id when a further row exists; when the
+     * page is short it says where the walk stopped. One axis, or none, is one
+     * statement over the key built for it (ix_page_v2, or the axis's
+     * ix_filter_*), reading at most $limit + 1 entries. Two or more axes have
+     * no key that holds them all, so the page walks the first axis's key in
+     * windows of FILTER_WINDOW entries, at most FILTER_WINDOWS of them, and
+     * may come back short with $through at the last window's end: a short
+     * page is not the end of the report unless $through is null. A walk that
+     * filtered rows one by one through a whole axis would read every row of
+     * it for a page that keeps none.
+     *
+     * Only ACTIVE rows of this project and generation: a closed row - departed,
+     * tombstoned, re-examined or superseded - is history, and a staged
+     * duplicate is not yet a finding.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit);
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null);
+
+    /** Index entries one window of a filtered page may walk. See findings(). */
+    const FILTER_WINDOW = 5000;
+
+    /** Windows one filtered page may walk before it answers short. See findings(). */
+    const FILTER_WINDOWS = 4;
+
+    /**
+     * Store a generation's label snapshot (M5): the rows
+     * ScanDimensions::toSnapshot() builds, written to uv_scan_dim once, at
+     * planning, with the project id.
+     *
+     * Each row is ['kind' => string of 1..32 bytes, 'key' => string of
+     * 1..191 bytes, 'label' => ?string, 'meta' => ?string]; (kind, key) is
+     * unique within the call. A row that is not that shape throws
+     * InvalidArgumentException before anything is written.
+     *
+     * ONCE PER GENERATION, ALL OR NOTHING. A generation that already has a
+     * snapshot is refused with a RuntimeException and keeps the one it has:
+     * the labels of a stored run are the ones of the day it was planned, and a
+     * second writer of the same generation (an incremental run, which nothing
+     * starts yet) would relabel findings it never produced. The rows go in
+     * DIM_CHUNK at a time, at most DIM_CHUNK_BYTES of text per statement, and
+     * in one transaction when they need more than one statement.
+     *
+     * @return int rows written
+     */
+    public function writeDimensions($projectId, $generationId, array $rows);
+
+    /**
+     * One keyset page of a generation's label snapshot, in (kind, key) byte
+     * order: rows after $after ([kind, key], or null for the first page),
+     * each ['kind', 'key', 'label', 'meta']. $limit is clamped to 1..DIM_PAGE.
+     * [] when the generation has no snapshot, or nothing follows $after.
+     */
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE);
+
+    /** One snapshot row by its kind and key, or null. See dimensions(). */
+    public function dimension($projectId, $generationId, $kind, $key);
+
+    /** Rows one snapshot INSERT carries. See writeDimensions(). */
+    const DIM_CHUNK = 100;
+
+    /** Label and meta bytes one snapshot INSERT carries, at most (after its first row). */
+    const DIM_CHUNK_BYTES = 1048576;
+
+    /** The largest page dimensions() returns. */
+    const DIM_PAGE = 500;
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);
@@ -775,6 +937,38 @@ interface ScanStore
      */
     public function tombstone($runId, $epoch, array $recordIds);
 
+    /**
+     * Take records that left the run's group out of the run (review rv5b-1).
+     *
+     * By RECORD HASH, which is what uq_run_record (run_id, record_hash)
+     * serves. In one transaction: each row not already departed or
+     * tombstoned becomes REC_DEPARTED with no scanned version and no claim,
+     * and the record's active findings in this run's generation are closed
+     * at the run's sequence, as a re-examination closes them. A deleted
+     * record stays a tombstone: gone is the stronger fact. Duplicate-value
+     * findings (staged) are the finalizer's and are not touched.
+     *
+     * Catch-up phase and current lease epoch only, like the other
+     * reconciliation writes. A record departing while the worker reads it
+     * goes through commitBatch() with REC_DEPARTED instead.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return int rows that departed
+     */
+    public function depart($runId, $epoch, array $hashes);
+
+    /**
+     * Which of these record hashes left this run's group, as a set.
+     *
+     * The duplicate finalizer asks it of each page of candidates: a departed
+     * record's candidate was written while it was in the group, and
+     * verifying it would re-read another group's record.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return array<string,true> raw hash => true, for the departed ones only
+     */
+    public function departedOf($runId, array $hashes);
+
     /** How many manifest rows are in each state. The input to the coverage predicate. */
     public function recordStates($runId);
 
@@ -784,7 +978,18 @@ interface ScanStore
     /** Where reconciliation and rollup had reached. Survives the request. */
     public function progressState($runId);
 
-    /** Move those cursors, fenced on the lease epoch. */
+    /**
+     * Move those cursors, fenced on the lease epoch.
+     *
+     * `progress` => true also moves progress_at (W7-N9). The finishing phases
+     * finish no records, so commitBatch() never moved it for them, and a long
+     * unique-finalize or rollup read as stalled to the page and as abandoned to
+     * the reaper while it worked. A caller passes it only for a step that moved
+     * the run forward - a page summarised, groups found or decided, findings
+     * written - never for a step that retried, or the reaper could no longer
+     * tell a wedged run from a working one (see commitBatch()). Alone it is a
+     * write: true when this lease still holds the run, false when it does not.
+     */
     public function setProgressState($runId, $epoch, array $state);
 
     /**
@@ -819,6 +1024,45 @@ interface ScanStore
      * its stored verdict was read from the summary as it stood.
      */
     public function holdRollupCursor($runId, $epoch);
+
+    /**
+     * Why a finishing phase may not write for a run. One copy, both stores.
+     *
+     * Each reaches the worker as the reason it stopped, so each says what
+     * happened to the work and names nothing about the run.
+     */
+    const HOLD_NO_RUN     = 'this run could not be read, so nothing more was written for it';
+    const HOLD_TAKEN_OVER = 'this scan was stopped or taken over while this request was '
+        . 'finishing it, so what this request found was not written';
+    const HOLD_FINISHED   = 'this scan has already ended, so what this request found was not '
+        . 'added to a result that has already been reported';
+    const HOLD_MOVED      = 'this scan has moved past the step this request was working on, so '
+        . 'what this request found was not written';
+
+    /**
+     * Hold the run row while a finishing phase writes for it (review rv10a1-1).
+     *
+     * CALLED INSIDE THE CALLER'S TRANSACTION, as its first statement, and the
+     * hold lasts until that transaction ends. The answer is true when the run
+     * exists, still has lease epoch $epoch, has not ended and is in phase
+     * $phase; otherwise one of the HOLD_* sentences above, in this order: no
+     * such run, a different epoch, ended, a different phase. The caller then
+     * rolls back and writes nothing.
+     *
+     * WHY A HOLD AND NOT A CHECK. A cancel, the reaper and another user's
+     * Start all end a run by writing its row. A plain read before a write
+     * leaves a window in which the run ends and the write lands anyway: a
+     * request that was mid-finalize when the cron expired its run went on
+     * emitting and publishing duplicates into the run already reported
+     * expired. Under the hold the row cannot change until the caller commits,
+     * and a writer that ended the run first is seen by the read.
+     *
+     * @param int    $runId
+     * @param int    $epoch the lease epoch the caller's work started on
+     * @param string $phase one of ScanPhase's working phases
+     * @return true|string
+     */
+    public function holdRun($runId, $epoch, $phase);
 
     /**
      * Add to a counted aggregate.

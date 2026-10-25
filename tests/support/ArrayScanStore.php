@@ -118,8 +118,8 @@ final class ArrayScanStore implements ScanStore
             // here, and only one of them is safe to read.
             'fence_open' => null, 'fence_target' => null, 'catchup_cursor' => null,
             'catchup_round' => 0, 'catchup_dirty' => 0, 'rollup_cursor' => 0,
-            // Written in exactly two places, both real progress - see
-            // SqlScanStore::commitBatch. NULL until one of them happens.
+            // Written only for real progress - see SqlScanStore::commitBatch.
+            // NULL until some happens.
             'progress_at' => null,
             // The rest of ScanStore::RUN_COLUMNS, with the defaults the schema
             // gives them. `clean` is NULL, not 0: nothing has been decided.
@@ -129,7 +129,7 @@ final class ArrayScanStore implements ScanStore
             'policy_json' => '{}',
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
-             'fence_open', 'policy_json'])));
+             'fence_open', 'policy_json', 'values_state'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }
@@ -470,6 +470,23 @@ final class ArrayScanStore implements ScanStore
                     . 'axis; refusing to write a fact that cannot be read back');
             }
         }
+        // The detail budget's counts (H9), refused in the SQL store's words.
+        $unstored = [[], []];
+        foreach (['unstored', 'unstoredJustified'] as $i => $key) {
+            foreach ((isset($batch[$key]) && is_array($batch[$key]) ? $batch[$key] : []) as $o => $k) {
+                if (!is_int($k) && !(is_string($k) && ctype_digit($k))) {
+                    throw new \RuntimeException('an unstored-findings count reached the store that is '
+                        . 'not a whole number; refusing to record what was found as less than it was');
+                }
+                if ((int) $k > 0) $unstored[$i][(int) $o] = (int) $k;
+            }
+        }
+        foreach ($unstored[1] as $o => $k) {
+            if (!isset($unstored[0][$o]) || $k > $unstored[0][$o]) {
+                throw new \RuntimeException('a record\'s count of left-out findings with a reason is above '
+                    . 'its count of left-out findings; refusing to record either');
+            }
+        }
 
         // Shape first, and with the same words the SQL store uses: a missing
         // claim token is a programming error, and a store that quietly accepted
@@ -559,7 +576,7 @@ final class ArrayScanStore implements ScanStore
             if (!isset($rec['record_hash'])) continue;
             if (empty($held[(int) $rec['ordinal']])) continue;
             $st = (int) $rec['state'];
-            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE || $st === self::REC_DEPARTED) {
                 $closing[$rec['record_hash']] = true;
             }
         }
@@ -685,6 +702,22 @@ final class ArrayScanStore implements ScanStore
                 $this->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
                                      empty($m['blocks']) ? 0 : 1,
                                          isset($m['samples']) ? $m['samples'] : null);
+            }
+            // The detail budget's count, for held records only (H9), the ones
+            // left out with a reason under their own axis.
+            $dropped = 0;
+            $droppedJustified = 0;
+            foreach ($unstored[0] as $o => $k) {
+                if (empty($held[$o])) continue;
+                $dropped += $k;
+                if (isset($unstored[1][$o])) $droppedJustified += $unstored[1][$o];
+            }
+            if ($dropped > $droppedJustified) {
+                $this->addAggregate($runId, self::DETAIL_UNSTORED, '', '', $dropped - $droppedJustified);
+            }
+            if ($droppedJustified > 0) {
+                $this->addAggregate($runId, self::DETAIL_UNSTORED, self::UNSTORED_JUSTIFIED, '',
+                                    $droppedJustified);
             }
         }
         $this->runs[$runId]['manifest_done'] += $applied;
@@ -947,6 +980,33 @@ final class ArrayScanStore implements ScanStore
         return true;
     }
 
+    /**
+     * The SQL store's reap, over the array: the same predicate, the same row,
+     * the same epoch bump and the same audit. See ScanStore::expireAbandoned().
+     */
+    public function expireAbandoned($pid, $staleHours, $actor, $now = null)
+    {
+        $t = $now === null ? time() : (int) $now;
+        $hours = max(1, (int) $staleHours);
+        $cut = gmdate('Y-m-d H:i:s', $t - $hours * 3600);
+        $at = gmdate('Y-m-d H:i:s', $t);
+        foreach ($this->runs as $id => $r) {
+            if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] !== 1) continue;
+            $clock = $r['progress_at'] !== null ? (string) $r['progress_at'] : (string) $r['created_at'];
+            if (strcmp($clock, $cut) >= 0) return 0;
+            if ($r['lease_expires_at'] !== null && strcmp((string) $r['lease_expires_at'], $at) >= 0) return 0;
+            // finish() writes the derived row; the epoch moves beside it, as in
+            // the one statement the SQL store sends.
+            $this->finish($id, ScanOutcome::derive(['expired' => true]));
+            $this->runs[$id]['lease_epoch']++;
+            $this->runs[$id]['updated_at'] = $at;
+            $this->audit((int) $pid, $id, self::AUDIT_EXPIRE, (string) $actor,
+                json_encode(['stale_hours' => $hours]));
+            return 1;
+        }
+        return 0;
+    }
+
     // THE WORKER SLOTS ARE NOT MODELLED HERE ANY MORE. This class used to carry
     // an in-memory copy of them because the contract declared leaseSlot() and
     // releaseSlot(); the contract does not, because WorkerSlots is the one
@@ -960,13 +1020,33 @@ final class ArrayScanStore implements ScanStore
      * finding_id order, each row keyed by FindingRowMapper::INPUT_KEYS in that
      * order (B5-N1). This returned the whole internal row, positioned by a
      * count of rows walked, and ignored a dag_key filter the SQL store applies.
+     *
+     * THE SAME WALK AS THE SQL STORE, window for window: the first axis is
+     * the key, and a page of two or more axes reads FILTER_WINDOW rows of
+     * that axis at a time, so $through means the same thing from both
+     * stores. The list is in finding_id order, so the first row after
+     * $afterId is found by halving rather than by walking the rows before it.
      */
-    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
+                             &$through = null)
     {
+        $through = null;
         $limit = max(1, min(100, (int) $limit));
+        $page = FindingRowMapper::pageAxes($scope, $filter);
+        if ($page['none']) return [];
+        $axes = $page['axes'];
+        $first = $axes ? (string) key($axes) : null;
+        $windowed = count($axes) > 1;
+        $in = function (array $f, $col, $v) {
+            return $f[$col] !== null && (string) $f[$col] === $v;
+        };
         $out = [];
-        foreach ($this->findings as $f) {
-            if ((int) $f['finding_id'] <= (int) $afterId) continue;
+        $walked = 0;      // rows of the first axis read in this window
+        $windows = 0;
+        $last = (int) $afterId;
+        $n = count($this->findings);
+        for ($i = $this->firstAfter((int) $afterId); $i < $n; $i++) {
+            $f = $this->findings[$i];
             if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
             // Closed rows belong to an earlier reading of a record and are
@@ -974,9 +1054,26 @@ final class ArrayScanStore implements ScanStore
             // shows the ACTIVE ones; the real store says the same with
             // active_slot = 1 in its WHERE.
             if ($f['active_slot'] === null || (int) $f['active_slot'] !== 1) continue;
-            foreach (['host_form', 'reason_code', 'dag_key', 'check_type'] as $k) {
-                if (isset($filter[$k]) && $filter[$k] !== ''
-                    && ($f[$k] === null || (string) $f[$k] !== (string) $filter[$k])) continue 2;
+            if ($first !== null && !$in($f, $first, $axes[$first])) continue;
+            if ($windowed) {
+                if ($walked === self::FILTER_WINDOW) {
+                    // The window is spent; the next starts after its end.
+                    $walked = 0;
+                    if (++$windows === self::FILTER_WINDOWS) {
+                        $through = $last;
+                        return $out;
+                    }
+                }
+                $walked++;
+                $last = (int) $f['finding_id'];
+            }
+            foreach ($axes as $col => $v) {
+                if ($col !== $first && !$in($f, $col, $v)) continue 2;
+            }
+            if (count($out) === $limit) {
+                // A row beyond the page: there is a next page, after the last row kept.
+                $through = (int) $out[$limit - 1]['finding_id'];
+                return $out;
             }
             $row = [];
             foreach (FindingRowMapper::INPUT_KEYS as $k) {
@@ -986,9 +1083,80 @@ final class ArrayScanStore implements ScanStore
             // growth z-score gives the measurement back.
             if ($row['value_bin'] === null) $row['z_score'] = null;
             $out[] = $row;
-            if (count($out) >= $limit) break;
+        }
+        // The last window filled exactly as the rows ran out: the SQL store
+        // cannot tell that from more rows waiting, and says where it stopped.
+        if ($windowed && $walked === self::FILTER_WINDOW && $windows === self::FILTER_WINDOWS - 1) {
+            $through = $last;
         }
         return $out;
+    }
+
+    /** The index of the first stored finding whose finding_id is above $afterId. */
+    private function firstAfter($afterId)
+    {
+        $lo = 0;
+        $hi = count($this->findings);
+        while ($lo < $hi) {
+            $mid = ($lo + $hi) >> 1;
+            if ((int) $this->findings[$mid]['finding_id'] <= $afterId) $lo = $mid + 1;
+            else $hi = $mid;
+        }
+        return $lo;
+    }
+
+    /** "<project>:<generation>" => that generation's label snapshot, in (kind, key) byte order. */
+    private $dims = [];
+
+    public function writeDimensions($projectId, $generationId, array $rows)
+    {
+        $pid = (int) $projectId;
+        $gen = (int) $generationId;
+        if ($pid < 1 || $gen < 1) {
+            throw new \InvalidArgumentException('a label snapshot needs its project and its generation');
+        }
+        $rows = FindingRowMapper::dimensionRows($rows);
+        if (!$rows) return 0;
+        $at = $pid . ':' . $gen;
+        if (!empty($this->dims[$at])) {
+            throw new \RuntimeException('this generation already has a label snapshot, and keeps it');
+        }
+        usort($rows, function ($a, $b) {
+            $c = strcmp($a['kind'], $b['kind']);
+            return $c !== 0 ? $c : strcmp($a['key'], $b['key']);
+        });
+        $this->dims[$at] = $rows;
+        return count($rows);
+    }
+
+    public function dimensions($projectId, $generationId, ?array $after = null, $limit = self::DIM_PAGE)
+    {
+        $limit = max(1, min(self::DIM_PAGE, (int) $limit));
+        $after = FindingRowMapper::dimensionAfter($after);
+        $at = (int) $projectId . ':' . (int) $generationId;
+        $out = [];
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($after !== null) {
+                $c = strcmp($r['kind'], $after[0]);
+                if ($c < 0 || ($c === 0 && strcmp($r['key'], $after[1]) <= 0)) continue;
+            }
+            $out[] = $r;
+            if (count($out) === $limit) break;
+        }
+        return $out;
+    }
+
+    public function dimension($projectId, $generationId, $kind, $key)
+    {
+        if (!FindingRowMapper::isDimensionKind($kind)) {
+            throw new \InvalidArgumentException('a label snapshot row is named by a kind of the form '
+                . FindingRowMapper::DIM_KIND);
+        }
+        $at = (int) $projectId . ':' . (int) $generationId;
+        foreach (isset($this->dims[$at]) ? $this->dims[$at] : [] as $r) {
+            if ($r['kind'] === $kind && $r['key'] === (string) $key) return $r;
+        }
+        return null;
     }
 
     public function aggregates($runId)
@@ -1109,6 +1277,57 @@ final class ArrayScanStore implements ScanStore
         return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_TOMBSTONE, false);
     }
 
+    public function depart($runId, $epoch, array $hashes)
+    {
+        if (!$hashes || !isset($this->runs[$runId])) return 0;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::CATCH_UP || (int) $r['lease_epoch'] !== (int) $epoch) {
+            return 0;
+        }
+        $want = array_fill_keys(array_map('strval', $hashes), true);
+        $left = [];
+        foreach ($this->records[$runId] as $o => $row) {
+            if (!isset($want[(string) $row['hash']])) continue;
+            $st = (int) $row['state'];
+            if ($st === ScanStore::REC_DEPARTED || $st === ScanStore::REC_TOMBSTONE) continue;
+            $this->records[$runId][$o]['state'] = ScanStore::REC_DEPARTED;
+            $this->records[$runId][$o]['version'] = null;
+            $this->records[$runId][$o]['claimed_at'] = null;
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
+            $left[(string) $row['hash']] = true;
+        }
+        if (!$left) return 0;
+        // The SQL store's statement, by record hash in the run's generation.
+        foreach ($this->findings as $i => $f) {
+            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
+            if (isset($f['stage_epoch']) && $f['stage_epoch'] !== null) continue;
+            if ((int) $f['project_id'] !== (int) $r['project_id']) continue;
+            if ((int) $f['generation_id'] !== (int) $r['generation_id']) continue;
+            if (!isset($f['record_hash']) || !isset($left[(string) $f['record_hash']])) continue;
+            $this->findings[$i]['active_slot'] = null;
+            $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
+        }
+        $done = 0;
+        foreach ($this->records[$runId] as $row) {
+            if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
+        }
+        $this->runs[$runId]['manifest_done'] = $done;
+        return count($left);
+    }
+
+    public function departedOf($runId, array $hashes)
+    {
+        $out = [];
+        if (!$hashes || !isset($this->records[$runId])) return $out;
+        $want = array_fill_keys(array_map('strval', $hashes), true);
+        foreach ($this->records[$runId] as $row) {
+            if ((int) $row['state'] !== ScanStore::REC_DEPARTED) continue;
+            if (isset($want[(string) $row['hash']])) $out[(string) $row['hash']] = true;
+        }
+        return $out;
+    }
+
     private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
     {
         if (!isset($this->runs[$runId])) return 0;
@@ -1195,6 +1414,13 @@ final class ArrayScanStore implements ScanStore
             if (!isset($map[$k])) continue;
             $this->runs[$runId][$map[$k]] = $v;
         }
+        // A finishing phase's step that moved the run forward (W7-N9), with
+        // updated_at beside it as the SQL store writes them.
+        if (!empty($st['progress'])) {
+            $now = gmdate('Y-m-d H:i:s');
+            $this->runs[$runId]['progress_at'] = $now;
+            $this->runs[$runId]['updated_at'] = $now;
+        }
         return true;
     }
 
@@ -1207,6 +1433,17 @@ final class ArrayScanStore implements ScanStore
         if ((int) $r['lease_epoch'] !== (int) $epoch) return self::ROLLUP_TAKEN_OVER;
         if (isset($r['terminal']) && $r['terminal'] !== null) return self::ROLLUP_FINISHED;
         return (int) (array_key_exists('rollup_cursor', $r) ? $r['rollup_cursor'] : 0);
+    }
+
+    public function holdRun($runId, $epoch, $phase)
+    {
+        // Same four refusals, in the same order, as the SQL store.
+        if (!isset($this->runs[$runId])) return self::HOLD_NO_RUN;
+        $r = $this->runs[$runId];
+        if ((int) $r['lease_epoch'] !== (int) $epoch) return self::HOLD_TAKEN_OVER;
+        if (isset($r['terminal']) && $r['terminal'] !== null) return self::HOLD_FINISHED;
+        if ((string) $r['phase'] !== (string) $phase) return self::HOLD_MOVED;
+        return true;
     }
 
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)

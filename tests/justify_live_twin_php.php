@@ -641,7 +641,8 @@ namespace {
         'XE-1 uj_wt range 1'], $flags);
     check('H1: the durable rows of XE-3, never opened: none', !array_filter($du['rows'], function ($r) { return strpos($r, 'XE-3 ') === 0; }));
     check('H1: the durable tally: 1 finding, 17 saved with a reason, 7 rule problems (the refused tags of A1)',
-        $du['tally'] === ['violations' => 1, 'justified' => 17, 'ruleProblems' => 7, 'gaps' => 0], $du['tally']);
+        $du['tally'] === ['violations' => 1, 'justified' => 17, 'stored' => 18, 'unstored' => 0,
+            'unstoredJustified' => 0, 'ruleProblems' => 7, 'gaps' => 0], $du['tally']);
     check('H1: the panel line', $du['found'] === '1 finding so far, and 17 saved with a reason', $du['found']);
     check('H1: not certified, for the rule problems', $du['outcome']['clean'] === false
         && $du['verdict'] === '7 rules could not be evaluated, so this result does not certify the project.', [$du['outcome'], $du['verdict']]);
@@ -669,7 +670,8 @@ namespace {
     $DICT = $SD;
     $du = $durable($SDATA);
     check('H3: the durable scan is clean, with the one finding saved with its reason', $du['outcome']['clean'] === true && $du['verdict'] === null
-        && $du['tally'] === ['violations' => 0, 'justified' => 1, 'ruleProblems' => 0, 'gaps' => 0], [$du['outcome'], $du['tally']]);
+        && $du['tally'] === ['violations' => 0, 'justified' => 1, 'stored' => 1, 'unstored' => 0,
+            'unstoredJustified' => 0, 'ruleProblems' => 0, 'gaps' => 0], [$du['outcome'], $du['tally']]);
     check('H3: the panel says so', $du['found'] === 'Nothing found yet, and 1 saved with a reason'
         && $du['coverage'] === 'Every record was checked, including changes made while it ran.', [$du['found'], $du['coverage']]);
     $SDATA['1'][900]['uj_wt_why'] = '';

@@ -163,6 +163,8 @@ $cases = array(
     'promotion',    // ScanPromotion: which terminal state a run has earned
     'justified',    // uv_finding.justified (@UVJUSTIFY): schema 7, the store, the summary, the verdict
     'perf',         // ScanService: how many statements one request sends
+    'cron',         // the scheduled maintenance, and the reaper Start runs
+    'report',       // the findings read: its plans, and no project or group reading another's
 );
 
 $only = getenv('UV_CASES');

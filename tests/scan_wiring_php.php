@@ -85,28 +85,19 @@ namespace {
         //    lands, which is why they are last and not first.
         //    expireAbandoned and expireValues graduated when this line of work
         //    was merged with 1.11.0, whose uvScanReapCron and
-        //    uvScanExpireValuesCron call them. Wave 8 paged expireValues into
-        //    primary-key windows (expireValuesPage); the cron still runs the
-        //    whole sweep in one request until wave 10 gives it a cursor.
-        'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
-        'ScanStore::supersedePrevious'      => 'wave 10 (W4-D1) wires the cron: until then a finished run leaves the previous generation\'s rows active',
-        'SqlScanStore::supersedePrevious'   => 'wave 10 (W4-D1), with the contract',
-        'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
+        //    uvScanExpireValuesCron call them. Wave 10 (B6) graduated
+        //    purgeRuns, revokePreviews and supersedePrevious: the two crons run
+        //    them through ScanMaintenance, a bounded page at a time.
+        'ScanRetention::expireValues'    => 'no production caller since wave 10: the retention cron pages expireValuesPage() from a stored window; its callers are tests that want the whole sweep in one call, which can move to the page and let this go (wave 12)',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
-        'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
-        'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
+        // ScanAuthorization::preFenceStatus stood here until ScanService::
+        // statusOf() called it (H10 part 1, with review R5-1).
 
         // -- wave 11, the report. It could not have been built earlier:
         //    findings() filters on generation_id alone and generation_id was
         //    the literal 1 for every run of every project until wave 4.
-        'ScanStore::findings'                    => 'wave 11 (B5): there is no way to read a finding, and a read path built before wave 4 is a cross-project leak',
-        'SqlScanStore::findings'                 => 'wave 11 (B5), with the contract',
+
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
-        'ScanReport::present'                    => 'wave 11 (B5): the findings table; the stores have no findings read until wave 8',
-        'ScanReport::csvHeaderLine'              => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
-        'ScanReport::runFacts'                   => 'wave 11 (B5): the heading of the findings page and of the export',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's
@@ -393,6 +384,41 @@ namespace {
             if (!is_string($why) || strlen($why) < 20) $unexplained[] = $key;
         }
         check('W-03: every allow-list line explains itself', $unexplained === []);
+    }
+
+    /* =====================================================================
+     * W-05  every scan verb the framework will route is one the module answers
+     *
+     * Three lists name the scan's AJAX verbs: config.json's auth-ajax-actions
+     * (the framework's gate), the in_array() behind redcap_module_ajax() (the
+     * module's second gate) and the `$action === '...'` branches of
+     * scanAction(). A verb added to two of them reads as "unknown action" or
+     * is refused by the framework before the module sees it. The module's
+     * source is the class and the traits that hold those two (QUA-2).
+     * ===================================================================== */
+    {
+        $cfg = json_decode((string) file_get_contents(dirname(__DIR__) . '/config.json'), true);
+        $src = '';
+        foreach (['UniversalValidator.php', 'php/LiveLookups.php', 'php/ScanRuns.php'] as $f) {
+            $src .= (string) file_get_contents(dirname(__DIR__) . '/' . $f);
+        }
+        $auth = is_array($cfg) && isset($cfg['auth-ajax-actions']) ? $cfg['auth-ajax-actions'] : [];
+        $open = is_array($cfg) && isset($cfg['no-auth-ajax-actions']) ? $cfg['no-auth-ajax-actions'] : [];
+        $declared = array_values(array_filter($auth, function ($a) { return strpos($a, 'scan-') === 0; }));
+        $gate = [];
+        if (preg_match("~if \\(in_array\\(\\\$action, \\[([^\\]]*'scan-[^\\]]*)\\], true\\)\\)~", $src, $m)) {
+            preg_match_all("~'([a-z-]+)'~", $m[1], $g);
+            $gate = $g[1];
+        }
+        preg_match_all("~\\\$action === '(scan-[a-z-]+)'~", $src, $b);
+        $branches = array_values(array_unique($b[1]));
+        sort($declared); sort($gate); sort($branches);
+        check('W-05: the scan verbs config.json routes are the ones redcap_module_ajax() lets through',
+            $declared !== [] && $declared === $gate);
+        check('W-05: and scanAction() answers each of them', $branches === $declared);
+        check('W-05: the report read is one of them', in_array('scan-findings', $declared, true));
+        check('W-05: no scan verb is open to a caller REDCap has not signed in',
+            !preg_grep('~^scan-~', $open));
     }
 
     /* =====================================================================

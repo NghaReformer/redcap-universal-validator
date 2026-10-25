@@ -25,6 +25,10 @@ namespace {
     require_once __DIR__ . '/../php/Logic.php';
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/ScanCapabilities.php';
+    require_once __DIR__ . '/../php/ScanDimensions.php';
+    require_once __DIR__ . '/../php/MessageCatalog.php';
+    require_once __DIR__ . '/../php/ScanColumns.php';
+    require_once __DIR__ . '/../php/Scan/ScanReport.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';

@@ -70,6 +70,152 @@ final class FindingRowMapper
     const POOLED_CODE = 'pooled';
 
     /**
+     * The axes a findings page may be narrowed by, column => the column's
+     * width in bytes, in the order a page picks its key: the first axis a
+     * page names is the key it walks (ScanStore::findings()). The group comes
+     * last because a group reader's scope names it on every page, and inside
+     * a group's run nearly every row is the group's, so it narrows least.
+     */
+    const PAGE_AXES = ['host_form' => 128, 'reason_code' => 64, 'check_type' => 32, 'dag_key' => 255];
+
+    /**
+     * What one findings page is confined to: the scope, then the filter, as
+     * column => value. ONE ANSWER FOR BOTH STORES, so a scope one store
+     * refuses is refused by the other in the same words.
+     *
+     * THE SCOPE IS MANDATORY (B5). A read path that can be called without a
+     * confinement is one that will eventually be called without one, so an
+     * absent `dag` key throws rather than defaulting to the whole project.
+     * `dag` is the reader's Data Access Group as a finding stores it - the
+     * group's UNIQUE NAME, the dag_key axis - or null for a reader confined to
+     * no group. An empty or non-string name is refused too: '' is what "the
+     * group could not be named" looks like, and reading it as "no group"
+     * would widen the page to the project.
+     *
+     * The filter takes the PAGE_AXES keys; any other key is ignored rather
+     * than interpolated, and an empty value is no filter. A value that is not
+     * a scalar throws. A filter on the group that differs from the scope's
+     * group cannot match a row, so it answers `none` and no statement is sent.
+     *
+     * @return array{axes: array<string,string>, none: bool}
+     * @throws \InvalidArgumentException when the scope has no dag key, or a value is not text
+     */
+    public static function pageAxes(array $scope, array $filter)
+    {
+        if (!array_key_exists('dag', $scope)) {
+            throw new \InvalidArgumentException('a findings page needs the reader\'s scope; '
+                . 'the scope has no dag key, and the whole project is not a default');
+        }
+        $dag = $scope['dag'];
+        if ($dag !== null && (!is_string($dag) || $dag === '')) {
+            throw new \InvalidArgumentException('a findings page scoped to a group needs the group\'s '
+                . 'unique name; an empty or non-text group would read as the whole project');
+        }
+        $axes = [];
+        foreach (self::PAGE_AXES as $col => $width) {
+            if (!array_key_exists($col, $filter) || $filter[$col] === null || $filter[$col] === '') continue;
+            if (!is_scalar($filter[$col])) {
+                throw new \InvalidArgumentException('a findings filter on ' . $col . ' must be text');
+            }
+            $axes[$col] = (string) $filter[$col];
+        }
+        if ($dag !== null) {
+            if (isset($axes['dag_key']) && $axes['dag_key'] !== $dag) return ['axes' => $axes, 'none' => true];
+            $axes['dag_key'] = $dag;
+        }
+        // In PAGE_AXES order whatever order the caller wrote them in, so the
+        // key a page walks never depends on how a request spelled its filter.
+        $ordered = [];
+        foreach (self::PAGE_AXES as $col => $width) {
+            if (isset($axes[$col])) $ordered[$col] = $axes[$col];
+        }
+        return ['axes' => $ordered, 'none' => false];
+    }
+
+    /**
+     * What a snapshot row's kind may be: lower-case ASCII, at most 32 bytes
+     * (uv_scan_dim.kind is VARCHAR(32)). The column compares under the
+     * table's case-blind collation and the in-memory store by byte, so a kind
+     * that differs only in case would be one kind in one store and two in the
+     * other; lower case only, and the two agree.
+     */
+    const DIM_KIND = '/^[a-z][a-z0-9_-]{0,31}$/';
+
+    /** uv_scan_dim.dim_key is VARBINARY(191), compared by byte in both stores. */
+    const DIM_KEY_BYTES = 191;
+
+    /** uv_scan_dim.label is TEXT and meta MEDIUMTEXT. */
+    const DIM_LABEL_BYTES = 65535;
+    const DIM_META_BYTES = 16777215;
+
+    /** Whether $kind may name a snapshot row. See DIM_KIND. */
+    public static function isDimensionKind($kind)
+    {
+        return is_string($kind) && preg_match(self::DIM_KIND, $kind) === 1;
+    }
+
+    /**
+     * A dimensions() cursor, checked: null, or [kind, key] as a page's last
+     * row gives them. Anything else throws, as a malformed scope does.
+     *
+     * @return array{0:string, 1:string}|null
+     */
+    public static function dimensionAfter($after)
+    {
+        if ($after === null) return null;
+        if (!is_array($after) || count($after) !== 2 || !isset($after[0], $after[1])
+                || !self::isDimensionKind($after[0]) || !is_scalar($after[1])) {
+            throw new \InvalidArgumentException('a label snapshot page starts after a [kind, key] pair, or at the start');
+        }
+        return [(string) $after[0], (string) $after[1]];
+    }
+
+    /**
+     * A label snapshot's rows, checked for ScanStore::writeDimensions(): ONE
+     * ANSWER FOR BOTH STORES, as pageAxes() is for a page. Each row comes back
+     * as ['kind', 'key', 'label', 'meta'] with the key as a string.
+     *
+     * @throws \InvalidArgumentException naming the first row that is not a
+     *         snapshot row: a kind not of the form DIM_KIND, a key that is
+     *         empty, not text or wider than its column, a label or meta that
+     *         is not null and not UTF-8 text that fits its column, or a
+     *         (kind, key) the call already named
+     */
+    public static function dimensionRows(array $rows)
+    {
+        $out = [];
+        $seen = [];
+        foreach (array_values($rows) as $i => $r) {
+            $bad = function ($why) use ($i) {
+                return new \InvalidArgumentException('label snapshot row ' . $i . ' ' . $why);
+            };
+            if (!is_array($r)) throw $bad('is not a row');
+            $kind = isset($r['kind']) ? $r['kind'] : null;
+            $key = isset($r['key']) ? $r['key'] : null;
+            if (!self::isDimensionKind($kind)) throw $bad('has no kind of the form ' . self::DIM_KIND);
+            if (is_int($key)) $key = (string) $key;
+            if (!is_string($key) || $key === '' || strlen($key) > self::DIM_KEY_BYTES) {
+                throw $bad('has no key of 1 to ' . self::DIM_KEY_BYTES . ' bytes');
+            }
+            // What the columns hold, checked here so the in-memory store refuses
+            // what a strict server refuses: TEXT and MEDIUMTEXT, utf8mb4.
+            foreach (['label' => self::DIM_LABEL_BYTES, 'meta' => self::DIM_META_BYTES] as $c => $max) {
+                if (!isset($r[$c])) continue;
+                if (!is_string($r[$c]) || strlen($r[$c]) > $max || !mb_check_encoding($r[$c], 'UTF-8')) {
+                    throw $bad('has a ' . $c . ' that is not UTF-8 text of at most ' . $max . ' bytes');
+                }
+            }
+            $id = $kind . "\0" . $key;
+            if (isset($seen[$id])) throw $bad('names ' . $kind . ' ' . $key . ' a second time');
+            $seen[$id] = true;
+            $out[] = ['kind' => $kind, 'key' => $key,
+                      'label' => isset($r['label']) ? $r['label'] : null,
+                      'meta' => isset($r['meta']) ? $r['meta'] : null];
+        }
+        return $out;
+    }
+
+    /**
      * The check types whose finding IS an empty field. Every other kind is
      * inert on a blank (UniversalValidator::ruleFindings() skips it), so for
      * them a stored row with no value is a value nobody stored, not an empty
@@ -214,8 +360,8 @@ final class FindingRowMapper
 
     /**
      * @param array $stored one row, keyed by INPUT_KEYS
-     * @return array the finding ScanColumns renders, plus valueState, ruleSource
-     *               and findingId
+     * @return array the finding ScanColumns renders, plus valueState, ruleSource,
+     *               branch and findingId
      * @throws \InvalidArgumentException when a key is missing
      * @throws \RuntimeException         when the row belongs to another project
      */
@@ -254,6 +400,10 @@ final class FindingRowMapper
             'reason'        => self::reasonOf($stored),
             'rule'          => (int) $stored['rule_ord'],
             'ruleSource'    => (string) $stored['rule_source_id'],
+            // The branch that judged it, which ScanDimensions::ruleOf() speaks
+            // for (R3G-2); null on a rule without branches and on every row
+            // stored before the branch was kept.
+            'branch'        => ReasonCode::branchOf($stored['reason_code'], $stored['reason_bits']),
             'findingId'     => $stored['finding_id'],
             // The sink's own names for MessageCatalog's notes. A z-score gives
             // the measurement back, so it goes wherever the value cell may not
@@ -397,20 +547,21 @@ final class FindingRowMapper
     /**
      * The reason in the form the wording layer takes: the engine's own.
      *
-     * A pooled reason stored as a mask comes back as its `;`-joined names, which
-     * is what MessageCatalog::detail() gives a sentence each. BITS = 0 MEANS
-     * "NOT RECORDED", never "no problems": nothing writes the mask yet, and the
-     * joined names are in reason_code itself.
+     * A pooled reason stored as a mask comes back as its `;`-joined names, in
+     * the order the engine emits them, which is what the legacy report and
+     * MessageCatalog::detail() read, a sentence each. A MASK OF 0 MEANS "NOT
+     * RECORDED", never "no problems": a row stored before the mask had a
+     * producer (W7-R1) holds the joined names in reason_code itself.
      */
     private static function reasonOf(array $stored)
     {
         $code = (string) $stored['reason_code'];
-        $bits = (int) $stored['reason_bits'];
+        $mask = ReasonCode::maskOf($code, $stored['reason_bits']);
         // The engine gave no reason, and the column cannot hold nothing.
         if ($code === ReasonCode::UNSPECIFIED) return '';
-        if ($code === self::POOLED_CODE && $bits > 0) {
-            $names = ReasonCode::pooledNames($bits);
-            if ($names) return implode(';', $names);
+        if ($code === self::POOLED_CODE && $mask > 0) {
+            $joined = ReasonCode::pooledReason($mask);
+            if ($joined !== '') return $joined;
         }
         return $code;
     }

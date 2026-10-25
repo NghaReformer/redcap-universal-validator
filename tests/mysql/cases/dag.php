@@ -91,7 +91,8 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
     /* -----------------------------------------------------------------------
      * CASE 2  planning and catch-up admit the same records, on both sources
      *
-     * inScope() is what catch-up asks about a record created DURING a run.
+     * scopeOf() is what catch-up asks about a record created DURING a run,
+     * and about a listed one that may have left the group (review rv5b-1).
      * stream() is what planning asked about the same record a moment earlier.
      * A run whose two halves disagree admits nothing at catch-up and still
      * promotes on a proved fence, so this is the property, stated twice
@@ -101,15 +102,20 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
                    'data-table fallback' => $viaData['source']) as $shape => $src) {
         $manifest = array('R1');            // group 7
         $excluded = array('R2', 'R3');      // another group, and no group at all
-        check('dag: every record the planner admitted, inScope() also admits (' . $shape . ')',
-            $src->inScope($manifest, '7') === array_fill_keys($manifest, true));
-        check('dag: and every record it excluded, inScope() also excludes (' . $shape . ')',
-            $src->inScope($excluded, '7') === array_fill_keys($excluded, false));
-        // THE CONTROL. Without it, an inScope() that returned false for
+        check('dag: every record the planner admitted, scopeOf() also admits (' . $shape . ')',
+            $src->scopeOf($manifest, '7') === array_fill_keys($manifest, true));
+        check('dag: and every record it excluded, scopeOf() calls out of the group (' . $shape . ')',
+            $src->scopeOf($excluded, '7') === array_fill_keys($excluded, false));
+        // A record the project does not hold is not "out of the group": that
+        // answer takes a listed record out of a run, and only exist() may say
+        // a record is gone.
+        check('dag: a record nobody holds is cannot-tell, never out of the group (' . $shape . ')',
+            $src->scopeOf(array('NOPE'), '7') === array('NOPE' => null));
+        // THE CONTROL. Without it, a scopeOf() that returned false for
         // everything would pass the second check and fail only the first, and
         // an unscoped run is the case that must still admit the lot.
         check('dag: an unscoped run still admits everything (' . $shape . ')',
-            $src->inScope(array_merge($manifest, $excluded), null)
+            $src->scopeOf(array_merge($manifest, $excluded), null)
             === array_fill_keys(array_merge($manifest, $excluded), true));
     }
 

@@ -217,7 +217,9 @@ namespace {
         \REDCap::$lastGetDataParams = null;
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
-        $m->projectSettings = ['log-values' => ''];
+        $m->projectSettings = ['log-values' => '']
+            + (isset($opts['settings']) ? $opts['settings'] : []);
+        $m->systemSettings = isset($opts['system']) ? $opts['system'] : [];
         $m->subSettings = isset($opts['subs']) ? $opts['subs'] : [];
         $ctx = $m->durableScanContext(149, ['generation' => 1, 'runSeq' => 1], null);
         $asked = [];
@@ -797,6 +799,94 @@ namespace {
         \INSPIRE\UniversalValidator\TemporalMetadata::load(149, $dict, $tmUnread);
         \Project::$design = null;
         check('R5-4: and event metadata read in full does not', $tmUnread === false);
+    }
+
+    /* =====================================================================
+     * rv10b1-7  every setting that decides a verdict is a fingerprint input
+     *
+     * Each pair below is the same project with one setting changed between
+     * the request that started a run and one that works it: the fingerprint
+     * the run is held to must move, and must not move for a setting that
+     * decides nothing the rules read.
+     * ===================================================================== */
+    {
+        $fpWith = function (array $dict, array $settings = [], array $system = []) {
+            $p = planOf($dict, ['settings' => $settings, 'system' => $system]);
+            $ctx = $p['ctx'];
+            return ['ok' => $ctx['ok'], 'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],
+                    'fp' => \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint([
+                        'rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
+                        'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],
+                        'choices' => isset($ctx['choices']) ? $ctx['choices'] : [],
+                        'policy' => [], 'engine' => 'e'])];
+        };
+        $dateFld = function ($form, $ann) {
+            return array_merge(fld($form, $ann), ['text_validation_type_or_show_slider_number' => 'date_ymd']);
+        };
+
+        // window-timezone: the day "notFuture" compares with.
+        $win = ['record_id' => fld('fa'), 'seen' => $dateFld('fa', '@UVWINDOW={"notFuture":true}')];
+        $utc = $fpWith($win, ['window-timezone' => 'UTC']);
+        $tok = $fpWith($win, ['window-timezone' => 'Asia/Tokyo']);
+        check('rv10b1-7: a project with a @UVWINDOW rule plans', $utc['ok'] === true && $tok['ok'] === true);
+        check('rv10b1-7: its clock zone is in the structure',
+            isset($utc['structure']['clockZone']['compare']) && $utc['structure']['clockZone']['compare'] === 'UTC'
+            && $tok['structure']['clockZone']['compare'] === 'Asia/Tokyo');
+        check('rv10b1-7: "window-timezone" changed mid-run moves the fingerprint', $utc['fp'] !== $tok['fp']);
+        check('rv10b1-7: and the same zone twice does not', $utc['fp'] === $fpWith($win, ['window-timezone' => 'UTC'])['fp']);
+        $plain = ['record_id' => fld('fa'), 'a_val' => fld('fa', '@UVREQUIRED')];
+        check('rv10b1-7: a project no rule of which reads the clock may change the zone freely',
+            $fpWith($plain, ['window-timezone' => 'UTC'])['fp'] === $fpWith($plain, ['window-timezone' => 'Asia/Tokyo'])['fp']
+            && !isset($fpWith($plain)['structure']['clockZone']));
+
+        // window-week-start: written on the rule, so its revision moves.
+        $week = ['record_id' => fld('fa'), 'seen' => $dateFld('fa', '@UVWINDOW={"period":"week"}')];
+        $mon = $fpWith($week, ['window-week-start' => 'monday']);
+        $sun = $fpWith($week, ['window-week-start' => 'sunday']);
+        check('rv10b1-7: "window-week-start" changed mid-run moves the fingerprint',
+            $mon['ok'] === true && $mon['fp'] !== $sun['fp']);
+
+        // reference-data-dir: the table a z-score is read from.
+        $refDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'uv_fpref_' . bin2hex(random_bytes(6));
+        mkdir($refDir);
+        $rows = array_fill(0, 1827, [1, 6.6, 0.1]);
+        $table = json_encode(['format' => 'uv-lms-1', 'scale' => 1, 'first' => 0, 'male' => $rows, 'female' => $rows]);
+        file_put_contents($refDir . DIRECTORY_SEPARATOR . 'flat.json', $table);
+        file_put_contents($refDir . DIRECTORY_SEPARATOR . 'index.json', json_encode(['format' => 'uv-references-1',
+            'references' => ['who-wfa' => ['title' => 'A flat test table', 'file' => 'flat.json',
+                'sha256' => hash('sha256', $table), 'measure' => 'weight', 'unit' => 'kg', 'axis' => 'age',
+                'axisUnit' => 'days', 'lookup' => 'round', 'valid' => ['min' => '0', 'below' => '1826.25'],
+                'adjust' => 'none']]]));
+        $SEX = array_merge(fld('fa', '', 'radio'), ['select_choices_or_calculations' => '1, Male | 2, Female']);
+        $rng = ['record_id' => fld('fa'), 'sex' => $SEX,
+                'age_days' => array_merge(fld('fa'), ['text_validation_type_or_show_slider_number' => 'integer']),
+                'weight' => array_merge(fld('fa', '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1",'
+                    . '"female":"2","age":{"days":"[age_days]"},"soft":[-2,2],"hard":[-5,5]}'),
+                    ['text_validation_type_or_show_slider_number' => 'number_1dp'])];
+        $bundled = $fpWith($rng);
+        $extra = $fpWith($rng, [], ['reference-data-dir' => $refDir]);
+        check('rv10b1-7: a project with a @UVRANGE rule plans under either folder',
+            $bundled['ok'] === true && $extra['ok'] === true);
+        check('rv10b1-7: the reference it reads is in the structure, without its folder\'s path',
+            isset($bundled['structure']['references']['who-wfa']['sha256'])
+            && $bundled['structure']['references']['who-wfa']['dir'] === 'bundled'
+            && $extra['structure']['references']['who-wfa']['dir'] === 'extra'
+            && strpos(json_encode($extra['structure']), basename($refDir)) === false);
+        check('rv10b1-7: "reference-data-dir" changed mid-run, replacing the table, moves the fingerprint',
+            $bundled['fp'] !== $extra['fp']);
+        check('rv10b1-7: the same folder twice does not',
+            $extra['fp'] === $fpWith($rng, [], ['reference-data-dir' => $refDir])['fp']);
+        $twin = $refDir . '_twin';
+        mkdir($twin);
+        foreach (['flat.json', 'index.json'] as $f) copy($refDir . DIRECTORY_SEPARATOR . $f, $twin . DIRECTORY_SEPARATOR . $f);
+        check('rv10b1-7: nor does a second folder holding the same tables',
+            $extra['fp'] === $fpWith($rng, [], ['reference-data-dir' => $twin])['fp']);
+        check('rv10b1-7: and a project no rule of which names a reference may move the folder freely',
+            $fpWith($plain)['fp'] === $fpWith($plain, [], ['reference-data-dir' => $refDir])['fp']);
+        foreach ([$refDir, $twin] as $d) {
+            foreach (['flat.json', 'index.json'] as $f) @unlink($d . DIRECTORY_SEPARATOR . $f);
+            @rmdir($d);
+        }
     }
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";

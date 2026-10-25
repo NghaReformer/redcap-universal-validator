@@ -46,6 +46,11 @@ namespace {
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
+    // R5: the planning walk under a changing record-list cache, budgeted.
+    require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+    require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
+    require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
+    require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/scan_fault_support.php';
     require_once __DIR__ . '/scan_run_row.php';
 
@@ -1026,7 +1031,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $wide = [];
     foreach (FindingRowMapper::INPUT_KEYS as $i => $k) $wide[] = 'v' . $i;
     $fdb->rows = ['FROM ' . Schema::table('finding') => [$wide, $wide]];
-    $page = (new SqlScanStore($fdb))->findings(700, 5, ['dag_key' => 'n', 'nope' => 'x'], 0, 50);
+    $page = (new SqlScanStore($fdb))->findings(700, 5, ['dag' => null], ['dag_key' => 'n', 'nope' => 'x'], 0, 50);
     check('rows: findings() keys every row by FindingRowMapper::INPUT_KEYS, in order',
         count($page) === 2 && array_keys($page[0]) === FindingRowMapper::INPUT_KEYS
         && $page[0]['finding_id'] === 'v0' && $page[1]['value_expires_at'] === 'v16');
@@ -1039,10 +1044,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         count($sel) === 1 && strpos($sel[0][0], 'SELECT ' . implode(', ', $selectList) . "\n") === 0);
     check('rows: a known axis is bound, an unknown one never reaches the statement',
         count($sel) === 1 && strpos($sel[0][0], 'dag_key = ?') !== false
-        && strpos($sel[0][0], 'nope') === false && $sel[0][1] === [700, 5, 0, 'n']);
+        && strpos($sel[0][0], 'nope') === false && $sel[0][1] === [700, 5, 'n', 0]);
     $fdb->rows = ['FROM ' . Schema::table('finding') => [array_slice($wide, 0, 12)]];
     $r = outcomeOf(function () use ($fdb) {
-        return (new SqlScanStore($fdb))->findings(700, 5, [], 0, 50);
+        return (new SqlScanStore($fdb))->findings(700, 5, ['dag' => null], [], 0, 50);
     });
     check('rows: a row of the old twelve columns is a LogicException, never a false row',
         $r['kind'] === 'other' && $r['class'] === 'LogicException');
@@ -1288,6 +1293,595 @@ namespace INSPIRE\UniversalValidator\Scan {
     $r = outcomeOf(function () use ($vdb) { return (new ScanRetention($vdb))->revokePreviews(70, 5); });
     check('revoke: a page bound that could not be read clears nothing and says so',
         $r['kind'] === 'other' && $vdb->with(['UPDATE ' . $T('finding')]) === []);
+
+    // =====================================================================
+    // R5 - THE PLANNING WALK WHILE REDCAP CHANGES ITS RECORD-LIST CACHE
+    // =====================================================================
+    //
+    // The walk spans requests and REDCap rebuilds redcap_record_list in the
+    // background, so the source can stop being the cache it was opened as in
+    // the middle of a slice, or open as a different table on the next
+    // request. Whatever it does, every record must be listed exactly once.
+
+    /**
+     * REDCap's tables for one project, as the walk reads them, with a hook
+     * before each page. $index is the cache, $data the record-id rows of the
+     * data table, $extra ids holding rows on other fields only. The status
+     * row carries time_of_list_cache when $stampColumn is set.
+     */
+    $churnDb = function (array $ids) {
+        return new class($ids) implements ScanDb {
+            public $index; public $data; public $extra = [];
+            /** @var array record id => the group id the index gives it (none: no group) */
+            public $dags = [];
+            public $status = 'COMPLETE'; public $stamp = '2026-10-21 08:00:00';
+            public $statusColumn = true; public $stampColumn = true; public $statusFails = false;
+            public $dataTable = 'redcap_data'; public $hasData = true; public $dataFails = false;
+            /** @var bool the data table's any-field read fails (and only that one) */
+            public $anyFails = false;
+            /** @var ?string the one data table that holds the project's rows; null: every one does */
+            public $home = null;
+            /** @var int how many of the next reads of redcap_projects fail (rv5a-1) */
+            public $projectsFail = 0;
+            /** @var int how many of the next reads of the data table's __GROUPID__ rows fail (rv5a-2) */
+            public $groupsFail = 0;
+            public $pages = ['index' => 0, 'data' => 0]; public $statusReads = 0;
+            /** @var ?callable(object $db, string $which, int $n): void, before a page is answered */
+            public $onPage = null;
+            public function __construct(array $ids) { $this->index = $ids; $this->data = $ids; }
+            public function select($sql, array $params = [])
+            {
+                // No index is listed, so the walk names none (PRF-8), and the
+                // catalogue read is not counted as a page of the data table.
+                if (strpos($sql, 'information_schema.statistics') !== false) return [];
+                if (strpos($sql, 'information_schema.columns') !== false) {
+                    $t = $params[0];
+                    if ($t === 'redcap_record_list') return [['project_id'], ['record'], ['dag_id']];
+                    if ($t === $this->dataTable || $t === 'redcap_data') {
+                        return $this->hasData ? [['project_id'], ['record'], ['field_name']] : [];
+                    }
+                    if ($t === 'redcap_record_counts') {
+                        if (!$this->statusColumn) return [['project_id'], ['record_count']];
+                        $c = [['project_id'], ['record_list_status']];
+                        if ($this->stampColumn) $c[] = ['time_of_list_cache'];
+                        return $c;
+                    }
+                    if ($t === 'redcap_projects') return [['project_id'], ['data_table']];
+                    if ($this->home !== null && preg_match('/^redcap_data[0-9]*$/', $t)) {
+                        return [['project_id'], ['record'], ['field_name']];
+                    }
+                    return [];
+                }
+                if (strpos($sql, 'FROM redcap_record_counts') !== false) {
+                    $this->statusReads++;
+                    if ($this->statusFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    if ($this->status === null) return [];
+                    return [strpos($sql, 'time_of_list_cache') !== false
+                        ? [$this->status, $this->stamp] : [$this->status]];
+                }
+                if (strpos($sql, 'FROM redcap_projects') !== false) {
+                    if ($this->projectsFail > 0) {
+                        $this->projectsFail--;
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
+                    return $this->hasData ? [[$this->dataTable]] : [];
+                }
+                if (in_array('__GROUPID__', $params, true)) {
+                    // The data table's group rows: $dags, the same groups the index gives.
+                    if ($this->groupsFail > 0) {
+                        $this->groupsFail--;
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
+                    $o = [];
+                    foreach (array_slice($params, 2) as $w) {
+                        if (isset($this->dags[(string) $w])) $o[] = [(string) $w, $this->dags[(string) $w]];
+                    }
+                    return $o;
+                }
+                preg_match('/LIMIT (\d+)/', $sql, $m);
+                $lim = isset($m[1]) ? (int) $m[1] : PHP_INT_MAX;
+                $isIndex = strpos($sql, 'FROM redcap_record_list') !== false;
+                if (strpos($sql, 'ORDER BY') !== false && $lim > 1 && strpos($sql, ' IN (') === false
+                        && strpos($sql, 'record = ?') === false) {
+                    $w = $isIndex ? 'index' : 'data';
+                    $this->pages[$w]++;
+                    // Before the page is answered: the hook may change what it reads.
+                    if (is_callable($this->onPage)) call_user_func($this->onPage, $this, $w, $this->pages[$w]);
+                }
+                $p = $params;
+                array_shift($p);                                          // the project id
+                if ($isIndex) {
+                    $ids = $this->index;
+                } else {
+                    if ($this->dataFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    // Another data table than the one holding the project holds none of its rows.
+                    $away = $this->home !== null && preg_match('/FROM (redcap_data[0-9]*)\b/', $sql, $tm)
+                         && $tm[1] !== $this->home;
+                    if (strpos($sql, 'field_name = ?') !== false) {
+                        array_shift($p);
+                        $ids = $away ? [] : $this->data;
+                    } else {
+                        if ($this->anyFails && strpos($sql, ' IN (') === false) {
+                            throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                        }
+                        $ids = $away ? [] : array_values(array_unique(array_merge($this->data, $this->extra)));
+                    }
+                }
+                sort($ids, SORT_STRING);
+                if (strpos($sql, ' IN (') !== false) {
+                    $ids = array_values(array_intersect($ids, array_map('strval', $p)));
+                } elseif (strpos($sql, 'record = ?') !== false) {
+                    $ids = in_array((string) $p[0], $ids, true) ? [(string) $p[0]] : [];
+                } else {
+                    if (strpos($sql, '>= ?') !== false) {
+                        $at = (string) $p[0];
+                        $ids = array_values(array_filter($ids, function ($r) use ($at) {
+                            return strcmp($r, $at) >= 0;
+                        }));
+                    }
+                }
+                $ids = array_slice($ids, 0, $lim);
+                $dag = strpos($sql, 'dag_id') !== false;
+                $dags = $this->dags;
+                return array_map(function ($r) use ($dag, $dags) {
+                    return $dag ? [$r, isset($dags[$r]) ? $dags[$r] : null] : [$r];
+                }, $ids);
+            }
+            public function exec($sql, array $params = []) {}
+            public function execNoCount($sql, array $params = []) {}
+            public function affected() { return 0; }
+            public function begin() {}
+            public function commit() {}
+            public function rollback() {}
+        };
+    };
+    $thousand = [];
+    for ($i = 1; $i <= 1000; $i++) $thousand[] = sprintf('R%04d', $i);
+    $walkKey = str_repeat('k', 32);
+    $walkReq = ['rules' => [['type' => 'required', 'fields' => ['a']]], 'ownership' => ['a' => 'fa'],
+                'policy' => [], 'createdBy' => 'u', 'engine' => '1', 'pageSize' => 100];
+    /** Plan a project whole in one call, over $db as it is now. */
+    $planWhole = function ($db) use ($walkKey, $walkReq) {
+        $store = new ArrayScanStore();
+        $open = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $res = (new ScanPlanner($store, $walkKey))->plan(88, array_merge($walkReq,
+            ['source' => $open['source'], 'budget' => false]));
+        return [$store, $res, $open];
+    };
+    /** The record ids on a run's manifest, in ordinal order, repeats included. */
+    $manifestIds = function (ArrayScanStore $store, $runId) {
+        $p = new \ReflectionProperty(ArrayScanStore::class, 'records');
+        $p->setAccessible(true);
+        $all = $p->getValue($store);
+        $out = [];
+        foreach (isset($all[$runId]) ? $all[$runId] : [] as $rec) $out[] = (string) $rec['id_bin'];
+        return $out;
+    };
+    $whole = function ($store, $res) use ($manifestIds, $thousand) {
+        if (empty($res['ok']) || !isset($res['run']['run_id'])) return false;
+        $got = $manifestIds($store, (int) $res['run']['run_id']);
+        $sorted = $got;
+        sort($sorted, SORT_STRING);
+        return $sorted === $thousand && (int) $store->run(88, (int) $res['run']['run_id'])['manifest_total'] === 1000;
+    };
+
+    // R5-3: REDCAP RESETS THE CACHE ON PAGE 4 OF THE SAME SLICE. The index
+    // was judged complete once, at open(); page 4 came back empty, the walk
+    // was called done and the manifest froze at 300 of 1000.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 4) { $d->index = []; $d->status = 'NOT_STARTED'; $d->stamp = null; }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a cache REDCap resets in the middle of a slice leaves no record off the manifest',
+        $whole($s3, $r3));
+    check('R5-3: the walk went on from the data table, in the same slice',
+        $db->pages['data'] > 0 && $r3['run']['phase'] === ScanPhase::SCANNING);
+
+    // Half built rather than empty: PROCESSING, and only every other record.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 4) {
+            $d->index = array_values(array_filter($d->index, function ($id) {
+                return ((int) substr($id, 1)) % 2 === 0;
+            }));
+            $d->status = 'PROCESSING';
+        }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a cache found half rebuilt in the middle of a walk leaves no hole in the manifest',
+        $whole($s3, $r3));
+
+    // Torn down and built again between the page and the question: the
+    // status reads COMPLETE both times, and only the build time moved. The
+    // page was read from the list mid-build and lacked R0350.
+    $db = $churnDb($thousand);
+    $full = $thousand;
+    $db->onPage = function ($d, $which, $n) use ($full) {
+        if ($which !== 'index') return;
+        if ($n === 4) {
+            $d->index = array_values(array_diff($full, ['R0350']));
+            $d->stamp = '2026-10-21 08:00:07';
+        } elseif ($n === 5) {
+            $d->index = $full;
+        }
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a list rebuilt between a page and its check is caught by the time it was built',
+        $whole($s3, $r3) && in_array('R0350', $manifestIds($s3, (int) $r3['run']['run_id']), true));
+
+    // A status that can no longer be read is not a complete one.
+    $db = $churnDb($thousand);
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 3) $d->statusFails = true;
+    };
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a status that cannot be read after a page moves the walk to the data table',
+        $whole($s3, $r3) && $db->pages['data'] > 0);
+
+    // THE COST. A status-kept index is asked once per page and once at open;
+    // an index REDCap keeps no status for is never asked, as before.
+    $db = $churnDb($thousand);
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: a trusted index is walked whole, with one status read per page and one at open',
+        $whole($s3, $r3) && $db->pages['data'] === 0 && $db->statusReads === $db->pages['index'] + 1);
+    $db = $churnDb($thousand);
+    $db->statusColumn = false;
+    list($s3, $r3) = $planWhole($db);
+    check('R5-3: an index with no status kept is walked as it was, asking nothing per page',
+        $whole($s3, $r3) && $db->pages['data'] === 0 && $db->statusReads === 0);
+
+    // NOWHERE TO GO. The index stops being trustworthy and the data table
+    // cannot be walked: the slice ends, nothing is frozen, and the lease goes
+    // back so the next request can try.
+    $db = $churnDb($thousand);
+    $db->hasData = false;
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 2) { $d->index = []; $d->status = 'NOT_STARTED'; }
+    };
+    $s3 = new ArrayScanStore();
+    $o3 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $p3 = (new ScanPlanner($s3, $walkKey))->plan(88, array_merge($walkReq,
+        ['source' => $o3['source'], 'budget' => new WorkBudget(['startedAt' => microtime(true) - 3600])]));
+    $rid3 = (int) $p3['run']['run_id'];
+    $sl = (new ScanPlanner($s3, $walkKey))->step(88, $rid3, array_merge($walkReq, ['source' => $o3['source'],
+        'budget' => false, 'owner' => 'tab', 'epoch' => (int) $s3->run(88, $rid3)['lease_epoch']]));
+    check('R5-3: with no data table to move to, the slice ends without freezing anything',
+        $sl['ok'] === false && $sl['phase'] === ScanPhase::PLANNING && $sl['stop'] === 'read'
+        && $sl['why'] === RecordManifestSource::UNTRUSTED
+        && $s3->run(88, $rid3)['phase'] === ScanPhase::PLANNING && count($manifestIds($s3, $rid3)) === 100);
+    check('R5-3: and hands the lease back',
+        $s3->claimPlan($rid3, 'next', (int) $s3->run(88, $rid3)['lease_epoch'], 300, 5)['state'] === 'ok');
+
+    // R5-2: THE SOURCE A REQUEST OPENS CHANGES BETWEEN REQUESTS. Each request
+    // opens the source afresh, as ScanService::openSource() does, and lists
+    // one page (its budget is spent before it starts). The walk used to start
+    // again at every change of source; with REDCap rebuilding its cache on
+    // one request in four it never ended.
+    $spentBudget = function () { return new WorkBudget(['startedAt' => microtime(true) - 3600]); };
+    /** Start, then drive one request at a time; $before($db, $n) runs before request $n opens. */
+    $drive = function ($db, callable $before, $cap = 60) use ($walkKey, $walkReq, $spentBudget) {
+        $store = new ArrayScanStore();
+        $before($db, 0);
+        $open = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $first = (new ScanPlanner($store, $walkKey))->plan(88, array_merge($walkReq,
+            ['source' => $open['source'], 'budget' => $spentBudget()]));
+        $rid = (int) $first['run']['run_id'];
+        $n = 0;
+        $listedEach = [];
+        while ($store->run(88, $rid)['phase'] === ScanPhase::PLANNING && $n < $cap) {
+            $n++;
+            $before($db, $n);
+            $o = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+            $s = (new ScanPlanner($store, $walkKey))->step(88, $rid, array_merge($walkReq, [
+                'source' => empty($o['ok']) ? null : $o['source'], 'budget' => $spentBudget(),
+                'owner' => 'req' . $n, 'epoch' => (int) $store->run(88, $rid)['lease_epoch']]));
+            $listedEach[] = $s['listed'];
+        }
+        return [$store, ['ok' => true, 'run' => ['run_id' => $rid]], $n, $listedEach];
+    };
+
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2) = $drive($db, function ($d, $n) {
+        $d->status = ($n > 0 && $n % 4 === 0) ? 'PROCESSING' : 'COMPLETE';
+    });
+    check('R5-2: a walk whose source alternates between the index and the data table finishes',
+        $s2->run(88, (int) $r2['run']['run_id'])['phase'] === ScanPhase::SCANNING && $n2 <= 15);
+    check('R5-2: with every record on the manifest exactly once', $whole($s2, $r2)
+        && count($manifestIds($s2, (int) $r2['run']['run_id'])) === 1000);
+    check('R5-2: and once on the data table it stays there: four index pages, then the data table from its start',
+        $db->pages['index'] === 4 && $db->pages['data'] === 10);
+
+    // Started on the data table, because the cache was being rebuilt at the
+    // start; complete again for every request after. The walk keeps its
+    // place on the data table rather than starting again on the index.
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2, $each) = $drive($db, function ($d, $n) {
+        $d->status = $n === 0 ? 'PROCESSING' : 'COMPLETE';
+    });
+    check('R5-2: a walk begun on the data table is not sent back to the index when the cache completes',
+        $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 10 && $n2 === 9
+        && min($each) === 100);
+
+    // REDCap moves the project to another data table while it is listed: the
+    // walk starts again once, over the table that holds the project now.
+    $db = $churnDb($thousand);
+    list($s2, $r2, $n2) = $drive($db, function ($d, $n) {
+        $d->status = 'NOT_STARTED';
+        if ($n === 4) $d->dataTable = 'redcap_data4';
+    });
+    check('R5-2: a walk whose data table moved starts again once, over the new one, and finishes whole',
+        $whole($s2, $r2) && $db->pages['index'] === 0 && $db->pages['data'] === 14);
+
+    // rv5a-1: THE WRONG DATA TABLE. The project lives in redcap_data2;
+    // redcap_data exists and holds none of its rows. One failed read of
+    // redcap_projects named redcap_data, R5-7 read that table's emptiness as
+    // the end of the list, and the manifest froze at what had been listed.
+    $homed = function () use ($churnDb, $thousand) {
+        $db = $churnDb($thousand);
+        $db->dataTable = 'redcap_data2';
+        $db->home = 'redcap_data2';
+        return $db;
+    };
+    // Begun on the data table (the cache was being rebuilt); request 4 opens
+    // with the cache still rebuilding, and its one redcap_projects read fails.
+    $db = $homed();
+    list($sA, $rA, $nA) = $drive($db, function ($d, $n) {
+        $d->status = 'PROCESSING';
+        if ($n === 4) $d->projectsFail = 1;
+    });
+    check('rv5a-1: a redcap_projects read that failed does not send the walk to redcap_data',
+        $whole($sA, $rA));
+    // The cache complete again by request 4: that request opens the index,
+    // whose data-table name failed to read, and the walk that has used the
+    // data table carries on over the one REDCap names.
+    $db = $homed();
+    list($sA, $rA) = $drive($db, function ($d, $n) {
+        $d->status = $n < 4 ? 'PROCESSING' : 'COMPLETE';
+        if ($n === 4) $d->projectsFail = 1;
+    });
+    check('rv5a-1: nor does one read when the index opened, for a walk carried on over the data table',
+        $whole($sA, $rA));
+    // No failed read at all: REDCap moves the project to redcap_data3 and
+    // resets the cache during page 5 of a slice over the index. The walk moved
+    // to the table it had read at open(), which no longer held the project.
+    $db = $homed();
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'index' && $n === 5) {
+            $d->dataTable = 'redcap_data3';
+            $d->home = 'redcap_data3';
+            $d->status = 'NOT_STARTED';
+        }
+    };
+    list($sC, $rC) = $planWhole($db);
+    check('rv5a-1: a project moved to another data table mid-slice is listed whole from the table it moved to',
+        $whole($sC, $rC));
+    // Moved while the walk was reading the data table itself: the old table
+    // reads short, and only an end of list can freeze a manifest.
+    $db = $homed();
+    $db->status = 'PROCESSING';
+    $db->onPage = function ($d, $which, $n) {
+        if ($which === 'data' && $n === 4) { $d->dataTable = 'redcap_data3'; $d->home = 'redcap_data3'; }
+    };
+    list($sD, $rD) = $planWhole($db);
+    check('rv5a-1: a data-table walk whose project moved under it starts again on the new table and is whole',
+        $whole($sD, $rD));
+    // A source opened over redcap_data2 is asked about a record after the move.
+    $db = $homed();
+    $db->status = 'PROCESSING';
+    $oE = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $db->dataTable = 'redcap_data3';
+    $db->home = 'redcap_data3';
+    check('rv5a-1: a source left on the old table cannot call a live record deleted',
+        $oE['ok'] === true && $oE['source']->exist(['R0500']) === ['R0500' => true]);
+    $db->home = null;
+    $db->data = array_values(array_diff($db->data, ['R0500']));
+    $db->dataTable = 'redcap_data2';
+    check('rv5a-1 control: the table it reads, still the project\'s, does say a deleted record is gone',
+        $oE['source']->exist(['R0500']) === ['R0500' => false]);
+
+    // rv5a-2: A PAGE WHOSE GROUPS COULD NOT BE READ. Every record is group 7's
+    // and the walk is on the data table, so each page's groups come from its
+    // __GROUPID__ rows. One of those reads failed; the page's rows went on
+    // ungrouped, the group-7 slice counted all of them out of scope and moved
+    // past them, and 100 of the group's records never reached the manifest.
+    $db = $churnDb($thousand);
+    $db->status = 'PROCESSING';
+    foreach ($thousand as $id) $db->dags[$id] = '7';
+    $sG = new ArrayScanStore();
+    $pG = (new ScanPlanner($sG, $walkKey))->plan(88, array_merge($walkReq, ['dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $ridG = (int) $pG['run']['run_id'];
+    $failedG = null;
+    for ($i = 1; $i <= 20 && $sG->run(88, $ridG)['phase'] === ScanPhase::PLANNING; $i++) {
+        if ($i === 3) $db->groupsFail = 1;
+        $stG = (new ScanPlanner($sG, $walkKey))->step(88, $ridG, array_merge($walkReq, ['dagFilter' => '7',
+            'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+            'budget' => $spentBudget(), 'owner' => 'req' . $i,
+            'epoch' => (int) $sG->run(88, $ridG)['lease_epoch']]));
+        if ($i === 3) $failedG = $stG;
+    }
+    check('rv5a-2: a page whose groups could not be read is a failed read, and lists nothing',
+        is_array($failedG) && $failedG['ok'] === false && $failedG['stop'] === 'read' && $failedG['listed'] === 0);
+    check('rv5a-2: so every record of the group is on the manifest, once',
+        $whole($sG, ['ok' => true, 'run' => ['run_id' => $ridG]])
+        && count($manifestIds($sG, $ridG)) === 1000);
+
+    // R5-7: EVERY RECORD DELETED WHILE THE RUN IS STILL LISTING. Each later
+    // slice could not open the source, because its probe found no rows,
+    // counted a failed attempt, and at the cap the run ended `failed` with
+    // PLAN_GAVE_UP: "listing this project's records failed on the same page
+    // in every attempt". Nothing had failed; the project was empty.
+    $five = ['E001', 'E002', 'E003', 'E004', 'E005'];
+    $noDupes = new class implements DuplicateFinalizer {
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+        }
+    };
+    /** One work request as ScanService::workerDeps() wires it: the source opened afresh. */
+    $emptiedWork = function (ArrayScanStore $store, $db, $rid, $n, $dag = null) use ($walkKey, $walkReq, $noDupes) {
+        $open = function () use ($db) {
+            $o = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+            return empty($o['ok']) ? null : $o['source'];
+        };
+        $planner = function ($runId, array $slice) use ($store, $open, $walkKey, $walkReq, $dag) {
+            return (new ScanPlanner($store, $walkKey))->step(88, $runId, array_merge($walkReq, $slice,
+                ['source' => $open(), 'dagFilter' => $dag, 'pageSize' => 1]));
+        };
+        return (new ScanWorker($store, ['planner' => $planner, 'owner' => 'w' . $n, 'attempts' => 3,
+            'budget' => new WorkBudget(['startedAt' => microtime(true) + 3600]), 'finalizer' => $noDupes,
+            'exists' => function (array $ids) use ($open) {
+                $s = $open();
+                return $s === null ? array_fill_keys($ids, true) : $s->exist($ids);
+            },
+            'read' => function ($ids) use ($db) {
+                $d = [];
+                foreach ($ids as $id) if (in_array((string) $id, $db->data, true)) $d[(string) $id] = ['1' => ['a' => 'x']];
+                return ['ok' => true, 'data' => $d, 'why' => null];
+            },
+            'evaluate' => function ($id, $n) { return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null]; }]))
+            ->work(88, $rid);
+    };
+    $db = $churnDb($five);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq, ['pageSize' => 1,
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid7 = (int) $p7['run']['run_id'];
+    $db->index = [];
+    $db->data = [];
+    $db->status = 'NOT_STARTED';
+    $o7 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: a project whose every record is gone opens as an empty walk, said to be one',
+        $o7['ok'] === true && $o7['empty'] === true && $o7['source']->isEmpty()
+        && $o7['why'] === RecordManifestSource::NO_RECORDS);
+    $answers = [];
+    for ($i = 1; $i <= 4 && $s7->run(88, $rid7)['phase'] !== ScanPhase::TERMINAL; $i++) {
+        $answers[] = $emptiedWork($s7, $db, $rid7, $i);
+        $row7 = $s7->run(88, $rid7);
+        if ($row7['phase'] === ScanPhase::ROLLUP) {
+            ScanPromotion::promote($s7, 88, $rid7, ['uniqueDone' => true, 'uniqueBlocking' => 0,
+                'rollupDone' => true, 'maxFindings' => 0, 'maxBytes' => 0,
+                'fingerprintNow' => $row7['fingerprint'], 'policyRevisionNow' => $row7['policy_revision']]);
+        }
+    }
+    $row7 = $s7->run(88, $rid7);
+    check('R5-7: the listing ends at once over the emptied project; no request failed',
+        $answers[0]['ok'] === true && $answers[0]['stop'] !== 'read'
+        && (int) $row7['manifest_total'] === 1);
+    check('R5-7: the record it had listed is a deletion, not a record it could not read',
+        $s7->recordState($rid7, 1) === ScanStore::REC_TOMBSTONE);
+    check('R5-7: and the run ends saying no record is left, not that listing failed',
+        $row7['terminal'] === ScanOutcome::PARTIAL && $row7['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && strpos((string) $row7['terminal_reason'], 'listing') === false);
+
+    // Emptied before a record in the run's scope was listed: the freeze finds
+    // nothing, and the request answers with the empty-scope sentence.
+    $db = $churnDb($five);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq, ['pageSize' => 1, 'dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid7 = (int) $p7['run']['run_id'];
+    $db->index = [];
+    $db->data = [];
+    $a7 = $emptiedWork($s7, $db, $rid7, 1, '7');
+    $row7 = $s7->run(88, $rid7);
+    check('R5-7: a run emptied before anything in its scope was listed ends as an empty scope, and says so',
+        $a7['stop'] === 'empty' && $a7['why'] === ScanPlanner::EMPTY_GROUP
+        && $row7['terminal'] === ScanOutcome::PARTIAL && $row7['coverage'] === ScanOutcome::EMPTY_SCOPE);
+
+    // FAIL CLOSED. Rows for the project on other fields only: the record-id
+    // field may be resolved wrongly, so that is not an empty project. And a
+    // data table that cannot be asked is never one either.
+    $db = $churnDb([]);
+    $db->extra = ['E001'];
+    $oe = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: a data table holding rows for the project, none of them record-id rows, is not an empty project',
+        $oe['ok'] === false && $oe['source'] === null && empty($oe['empty']));
+    $db = $churnDb([]);
+    $db->anyFails = true;
+    $oe = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    check('R5-7: nor is one whose rows could not be counted',
+        $oe['ok'] === false && $oe['source'] === null && empty($oe['empty']));
+    $db = $churnDb($five);
+    $o7 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+    $db->index = [];
+    $db->data = [];
+    $db->dataFails = true;
+    $db->status = 'NOT_STARTED';
+    check('R5-7: and a walk that could not read the data table is a failed read, not an empty one',
+        RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['ok'] === false);
+
+    // A START over a project with no records is refused before a run exists.
+    $db = $churnDb([]);
+    $s7 = new ArrayScanStore();
+    $p7 = (new ScanPlanner($s7, $walkKey))->plan(88, array_merge($walkReq,
+        ['source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'], 'budget' => false]));
+    check('R5-7: a start over a project with no records is refused, and no run is created',
+        $p7['ok'] === false && $p7['why'] === ScanPlanner::EMPTY_PROJECT && $s7->run(88, 1) === null);
+
+    // R5-1: A GROUP-SCOPED SLICE REPORTS ONLY WHAT ITS SCOPE ADMITS. `listed`
+    // counted every row the walk read, so a reader confined to group 7 learnt,
+    // a page at a time, how many records the other groups hold. One record in
+    // ten is group 7's, and none on the second page: that slice lists nothing
+    // the reader may count, and still says the walk moved.
+    $db = $churnDb($thousand);
+    foreach ($thousand as $k => $id) {
+        if ($k % 10 === 9 && ($k < 100 || $k >= 200)) $db->dags[$id] = '7';
+        else $db->dags[$id] = '31';
+    }
+    $s1 = new ArrayScanStore();
+    $p1 = (new ScanPlanner($s1, $walkKey))->plan(88, array_merge($walkReq, ['dagFilter' => '7',
+        'source' => RecordManifestSource::open($db, 88, ['pk' => 'record_id'])['source'],
+        'budget' => $spentBudget()]));
+    $rid1 = (int) $p1['run']['run_id'];
+    $each1 = [];
+    $moved1 = [];
+    for ($i = 1; $i <= 12 && $s1->run(88, $rid1)['phase'] === ScanPhase::PLANNING; $i++) {
+        $o1 = RecordManifestSource::open($db, 88, ['pk' => 'record_id']);
+        $st1 = (new ScanPlanner($s1, $walkKey))->step(88, $rid1, array_merge($walkReq, ['dagFilter' => '7',
+            'source' => $o1['source'], 'budget' => $spentBudget(),
+            'owner' => 'req' . $i, 'epoch' => (int) $s1->run(88, $rid1)['lease_epoch']]));
+        $each1[] = $st1['listed'];
+        $moved1[] = $st1['moved'];
+    }
+    check('R5-1: a group-scoped slice counts only the records of its own group',
+        $each1 === [0, 10, 10, 10, 10, 10, 10, 10, 10]
+        && (int) $s1->run(88, $rid1)['manifest_total'] === 90);
+    check('R5-1: and a slice whose page held none of them still says the walk moved',
+        $moved1 === array_fill(0, 9, true));
+
+    // -- A LABEL SNAPSHOT IS ALL OR NOTHING (M5) -------------------------------
+    //
+    // 250 rows are three INSERTs. The second refused: the transaction is
+    // rolled back, nothing is committed, and the store says the storage
+    // failed rather than that the generation already had a snapshot.
+    $dimRows = [];
+    for ($i = 0; $i < 250; $i++) $dimRows[] = ['kind' => 'field', 'key' => 'f' . $i, 'label' => 'L', 'meta' => null];
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[0]];
+    $db->failAt('INSERT INTO', 2);
+    $r = outcomeOf(function () use ($db, $dimRows) { return (new SqlScanStore($db))->writeDimensions(700, 4, $dimRows); });
+    check('M5 fault: a snapshot refused half way is a storage failure',
+        $r['kind'] === 'unavailable');
+    check('M5 fault: and its transaction is rolled back, never committed',
+        $db->rollbacks === 1 && in_array('BEGIN', $db->log, true) && !in_array('COMMIT', $db->log, true));
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[1]];
+    $r = outcomeOf(function () use ($db, $dimRows) { return (new SqlScanStore($db))->writeDimensions(700, 4, $dimRows); });
+    $inserts = 0;
+    foreach ($db->log as $q) if (strpos($q, 'INSERT INTO') !== false) $inserts++;
+    check('M5 fault: a generation that has a snapshot is refused in words, and nothing is sent after the read',
+        $r['kind'] === 'other' && $r['class'] === 'RuntimeException' && $inserts === 0 && $db->rollbacks === 1);
+    $db = new ScriptedDb();
+    $db->rows['SELECT EXISTS'] = [[0]];
+    $one = (new SqlScanStore($db))->writeDimensions(700, 4, array_slice($dimRows, 0, 100));
+    check('M5 fault: a snapshot of one statement takes no transaction',
+        $one === 100 && !in_array('BEGIN', $db->log, true));
 }
 
 namespace {

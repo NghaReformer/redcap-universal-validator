@@ -599,9 +599,12 @@ namespace {
             $namedDefault === 0);
 
         // F2  CONTROL: no data_table column at all, which is the older build.
-        //     Both sides fall back to redcap_data, and must still agree.
+        //     Both sides fall back to redcap_data, and must still agree. The
+        //     catalogue lists redcap_projects without the column: that, and
+        //     only that, is what the walk takes for an older build (rv5a-1).
         $plain = new \GateDb();
-        $plain->tables = ['redcap_data' => ['project_id', 'record', 'field_name']];
+        $plain->tables = ['redcap_data' => ['project_id', 'record', 'field_name'],
+                          'redcap_projects' => ['project_id', 'log_event_table']];
         $plain->rows   = ['redcap_data' => 1];
         $g2 = $C::recordEnumeration($plain, PID);
         $g2Sql = $plain->sql;
@@ -641,6 +644,37 @@ namespace {
         $emptyProject->rows   = ['redcap_data' => 0];
         check('C-10: an array-shaped empty result is a working query, not a broken one',
             $C::recordEnumeration($emptyProject, PID)['state'] === $OK);
+
+        // F5  rv5a-1: ONLY AN OLDER BUILD FALLS BACK. A failed read of a
+        //     data_table column that exists is not "no such column", and a
+        //     name the allowlist refuses is not redcap_data: both left the
+        //     walk reading a table that held none of the project's rows.
+        $mdb = function (\GateDb $g) { return new \INSPIRE\UniversalValidator\Scan\ModuleDb($g); };
+        $blip = new \GateDb();
+        $blip->tables = ['redcap_data' => ['project_id', 'record', 'field_name'],
+                         'redcap_data2' => ['project_id', 'record', 'field_name'],
+                         'redcap_projects' => ['project_id', 'data_table']];
+        $blip->rows = ['redcap_data' => 1];
+        check('rv5a-1: a data_table read that failed, on a build that has the column, names no table',
+            $MS::dataTable($mdb($blip), PID) === null);
+        check('rv5a-1: and the walk refuses rather than reading redcap_data',
+            $MS::open($mdb($blip), PID, ['pk' => 'record_id'])['ok'] === false
+            && tableWalked($blip->sql) === null);
+        $unlisted = new \GateDb();
+        $unlisted->tables = ['redcap_data' => ['project_id', 'record', 'field_name']];
+        $unlisted->rows = ['redcap_data' => 1];
+        check('rv5a-1: nor does one the catalogue cannot place',
+            $MS::dataTable($mdb($unlisted), PID) === null);
+        $odd = new \GateDb();
+        $odd->dataTable = 'redcap_data; DROP TABLE x';
+        $odd->tables = ['redcap_data' => ['project_id', 'record', 'field_name'],
+                        'redcap_projects' => ['project_id', 'data_table']];
+        check('rv5a-1: a name that is not a data table\'s is refused, not read as the default',
+            $MS::dataTable($mdb($odd), PID) === null);
+        $named = new \GateDb();
+        $named->dataTable = 'redcap_data2';
+        $named->tables = $blip->tables;
+        check('rv5a-1 control: a name REDCap gives is used', $MS::dataTable($mdb($named), PID) === 'redcap_data2');
     }
 
     // COMPAT-1: the extensions the module calls without a guard.

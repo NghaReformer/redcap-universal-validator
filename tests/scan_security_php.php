@@ -285,6 +285,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('read: the cross-scope refusal does not confirm the run exists',
             strpos($other['why'], '31') === false && strpos($other['why'], 'exist') === false
             && strpos($other['why'], 'another') === false);
+        // WORD FOR WORD (review rv5b-4): the comment above was the intent, and
+        // three different sentences were the code.
+        foreach (['read' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayRead($dagUser, $ENT, $scope);
+                  },
+                  'work' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayWork($dagUser, $ENT, $scope);
+                  },
+                  'cancel' => function ($scope) use ($dagUser, $ENT) {
+                      return ScanAuthorization::mayCancel($dagUser, $ENT, $scope);
+                  }] as $verb => $ask) {
+            check("rv5b-4 $verb: another group's run is refused in the words a missing run gets",
+                $ask('31')['ok'] === false && $ask('31')['why'] === ScanAuthorization::NO_RUN);
+            check("rv5b-4 $verb: and so is a whole-project run",
+                $ask(null)['ok'] === false && $ask(null)['why'] === ScanAuthorization::NO_RUN);
+            check("rv5b-4 $verb control: the reader's own group's run is not refused",
+                $ask('7')['ok'] === true);
+        }
+        check('rv5b-4: the scope pre-check refuses the same way',
+            ScanAuthorization::mayTouchScope($dagUser, '31')['why'] === ScanAuthorization::NO_RUN
+            && ScanAuthorization::mayTouchScope($dagUser, null)['why'] === ScanAuthorization::NO_RUN
+            && ScanAuthorization::mayTouchScope($dagUser, '7')['ok'] === true
+            && ScanAuthorization::mayTouchScope(rights(), null)['ok'] === true);
 
         // Rights revoked mid-run stop reads; the run id does not restore them.
         check('read: revoked design rights stop reading an existing run',
@@ -370,21 +393,52 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         // Before the target fence a DAG projection is not yet provable, so
         // counts would be claims about a scope that has not been established.
-        $full = ['run_owned' => true, 'phase' => 'scanning', 'heartbeat_at' => 't',
-                 'last_progress_at' => 't', 'may_resume' => true, 'may_cancel' => true,
-                 'error_category' => null,
-                 'records_done' => 500, 'records_total' => 4000, 'violations' => 91,
-                 'percent' => 12.5, 'rollups' => ['a' => 1], 'samples' => ['x'], 'eta' => '3m'];
+        // The shape is ScanService::status()'s own (H10 part 1): this list
+        // named keys no status carried until it was wired.
+        $full = ['ok' => true, 'run_id' => 9, 'phase' => 'scanning', 'terminal' => null,
+                 'coverage' => null, 'detail' => null, 'values' => 'none', 'scope' => 'group',
+                 'active' => true, 'mayCancel' => true, 'stalled' => false, 'paused' => false,
+                 'stopping' => false, 'idleSeconds' => 4, 'clean' => null, 'why' => null,
+                 'total' => 4000, 'done' => 500, 'excluded' => 2, 'removed' => 1, 'settled' => 503,
+                 'findings' => 91, 'detailRows' => 91, 'detailBytes' => 9100, 'ruleProblems' => 1,
+                 'notExamined' => 3, 'percent' => 12.5, 'samples' => ['x']];
         $safe = ScanAuthorization::preFenceStatus($full);
-        foreach (['records_done', 'records_total', 'violations', 'percent', 'rollups',
-                  'samples', 'eta'] as $k) {
+        foreach (['total', 'done', 'excluded', 'removed', 'settled', 'findings', 'detailRows',
+                  'detailBytes', 'ruleProblems', 'notExamined', 'percent', 'samples'] as $k) {
             check("pre-fence: withholds $k", !array_key_exists($k, $safe));
         }
-        foreach (['phase', 'may_cancel', 'may_resume', 'heartbeat_at'] as $k) {
-            check("pre-fence: keeps $k, so progress can still render", array_key_exists($k, $safe));
+        foreach (['ok', 'run_id', 'phase', 'terminal', 'coverage', 'active', 'mayCancel', 'stalled',
+                  'paused', 'stopping', 'idleSeconds', 'clean'] as $k) {
+            check("pre-fence: keeps $k, so progress and Stop can still render", array_key_exists($k, $safe));
         }
-        check('pre-fence: says the detail is withheld, so absence is not read as zero',
-            !empty($safe['detail_withheld']) && strpos($safe['detail_withheld_why'], 'proved') !== false);
+        check('pre-fence: says the counts are withheld, so absence is not read as zero',
+            $safe['withheld'] === true && $safe['withheldWhy'] === ScanAuthorization::WITHHELD);
+        $work = ScanAuthorization::preFenceWork(['ok' => true, 'worked' => 3, 'requeued' => 1,
+            'blocked' => 1, 'findings' => 2, 'listed' => 900, 'phase' => 'scanning', 'done' => false,
+            'stop' => 'time', 'why' => 'x'], true);
+        check('pre-fence: a work answer keeps no counter, and says only that the run moved',
+            !array_intersect(['worked', 'requeued', 'blocked', 'findings', 'listed'], array_keys($work))
+            && $work['moved'] === true && $work['withheld'] === true && $work['phase'] === 'scanning'
+            && $work['stop'] === 'time');
+
+        // WHEN THE SCOPE IS PROVED: a fence target, and catch-up behind the run.
+        $r = ['scope_dag' => '7', 'fence_target' => '500', 'phase' => 'unique-finalize', 'terminal' => null];
+        check('proved: a run over the whole project has nothing to prove',
+            ScanAuthorization::scopeProved(['scope_dag' => null, 'phase' => 'planning']) === true);
+        check('proved: a group run with no target fence has not proved it, in any phase',
+            ScanAuthorization::scopeProved(array_merge($r, ['fence_target' => null])) === false
+            && ScanAuthorization::scopeProved(array_merge($r, ['fence_target' => '', 'phase' => 'terminal',
+                'terminal' => ScanOutcome::PARTIAL])) === false);
+        foreach (['planning' => false, 'scanning' => false, 'catch-up' => false, 'cancelling' => false,
+                  'unique-finalize' => true, 'rollup-finalize' => true] as $ph => $want) {
+            check('proved: a group run with a target fence, in ' . $ph . ', ' . ($want ? 'has' : 'has not'),
+                ScanAuthorization::scopeProved(array_merge($r, ['phase' => $ph])) === $want);
+        }
+        foreach ([ScanOutcome::COMPLETE => true, ScanOutcome::PARTIAL => true, ScanOutcome::CANCELLED => false,
+                  ScanOutcome::FAILED => false, ScanOutcome::EXPIRED => false] as $t => $want) {
+            check('proved: a group run finished ' . $t . ' with a target fence ' . ($want ? 'has' : 'has not'),
+                ScanAuthorization::scopeProved(array_merge($r, ['phase' => 'terminal', 'terminal' => $t])) === $want);
+        }
 
         // A DAG run may only START where membership changes are provable.
         check('dag-start: refused when the server cannot prove DAG changes',
