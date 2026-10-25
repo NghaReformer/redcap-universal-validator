@@ -130,6 +130,39 @@
     "survey": "This value is not allowed here.",
     "zScore": "Its z-score is {z} on the growth reference {reference}."
   },
+  "delta/up": {
+    "staff":  "The value rose more than allowed from the value it is compared with.",
+    "survey": "This value is much higher than before. Please check it.",
+    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+  },
+  "delta/down": {
+    "staff":  "The value fell more than allowed from the value it is compared with.",
+    "survey": "This value is much lower than before. Please check it.",
+    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+  },
+  "delta/*": {
+    "staff":  "The value changed more than allowed from the value it is compared with.",
+    "survey": "This value changed more than expected. Please check it."
+  },
+  "writeonce/changed": {
+    "staff":  "The value was changed after its first save locked it.",
+    "survey": "This answer was changed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
+  "writeonce/cleared": {
+    "staff":  "The value was cleared after its first save locked it.",
+    "survey": "This answer was removed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
+  "writeonce/*": {
+    "staff":  "The value was changed after its first save locked it.",
+    "survey": "This answer was changed after it was first saved.",
+    "asOf":   "It was locked on {asOf}."
+  },
+  "justify/*": {
+    "staff":  "A reason given in another field stands for this field's broken rules.",
+    "survey": "A reason was given for this answer."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."
@@ -178,6 +211,7 @@
 
   "*/*": {
     "staff":  "Rule {rule} reported \"{reason}\" for this value. No wording is configured for this kind of finding.",
-    "survey": "This entry is not valid."
+    "survey": "This entry is not valid.",
+    "justified": "It was saved with a reason, given in [{reasonField}]."
   }
 }

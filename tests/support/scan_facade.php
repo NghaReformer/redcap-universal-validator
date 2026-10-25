@@ -159,7 +159,8 @@ function scan_project(UniversalValidator $m, $pid, $dagFilter = null, $chunkSize
         // only ever set at the very end of the full path.
         $result = ['violations' => [], 'unconfigurable' => [], 'incomplete' => [],
                    'status' => 'failed',
-                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0]];
+                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0, 'justified' => 0]];
+        $this->scanJustified = 0;
 
         // Violations are the only channel that grows with the DATA, so they are
         // the only thing handed out as they are found. Without a sink the
@@ -495,7 +496,10 @@ function scan_project(UniversalValidator $m, $pid, $dagFilter = null, $chunkSize
         // in bold, with the truth in a bullet inside a warning box, and the same
         // 400 on the export's metadata line.
         $result['stats']['records'] = $reached;
-        $result['stats']['violations'] = $sink->count();
+        // Open findings only: the ones a reason stands for (@UVJUSTIFY) are
+        // counted apart, and the sink still holds every row.
+        $result['stats']['justified'] = $this->scanJustified;
+        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);
         // COVERAGE is a separate axis from STATUS. Status says whether the sweep
         // finished; coverage says what finishing is worth on this installation.
         // A run that read every record on its opening list, on a server where no

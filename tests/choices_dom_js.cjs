@@ -724,6 +724,19 @@ function r17chk(field, code) {
   check('autocomplete keeps the permitted same-label option by its code', ui.content.length === 1 && ui.content[0].code === '1GH');
 }
 
+// A value with a long run of spaces is read in linear time (the trim used to
+// retry its end-anchored pattern from every space).
+{
+  const method = makeEl('select'); method.name = 'method';
+  ['', '1', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  method.value = '9' + ' '.repeat(50000) + '9';
+  const t0 = Date.now();
+  const env = boot([method], { singleFields: [], pooledFields: [], rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'], choicesAll: ['1', '2', '9'] }] });
+  env.NS.validators.method.test();
+  const ms = Date.now() - t0;
+  check('50,000 spaces in a choice value: checked in under 250 ms (took ' + ms + ' ms)', ms < 250);
+}
+
 // ---- enhanced survey choices (CHO-ENH) and display kept (CHO-4) -------------
 // REDCap's survey option "Enhanced radio buttons and checkboxes" draws each
 // choice again as <div class="enhancedchoice"><label comps="field,code,1"

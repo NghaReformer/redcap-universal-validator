@@ -639,6 +639,11 @@ final class ScanService
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
         $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        // ONE READ OF THE SUMMARY for both counts below, and only once the run
+        // has ended: a working run is counted from its row. justifiedOf() read
+        // it a second time on every poll of a finished run, which the bounds
+        // in tests/mysql/cases/perf.php caught.
+        $aggregates = isset($run['terminal']) ? $store->aggregates((int) $run['run_id']) : null;
 
         return [
             'ok'        => true,
@@ -662,7 +667,9 @@ final class ScanService
             'paused'    => $progress['paused'],
             'stopping'  => $progress['stopping'],
             'idleSeconds' => $progress['idleSeconds'],
-            'findings'  => ScanPromotion::findingsOf($store, $run),
+            'findings'  => ScanPromotion::findingsOf($store, $run, $aggregates),
+            // apart from 'findings': the ones a reason (@UVJUSTIFY) stands for, counted the same way
+            'justified' => ScanPromotion::justifiedOf($store, $run, $aggregates),
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
@@ -1630,8 +1637,12 @@ final class ScanService
      *   engine-4  the started-form gate and its round-3 corrections (built as
      *             engine-2 on the scan branch, renumbered when it joined main,
      *             where engine-2 and engine-3 had already shipped)
+     *   engine-5  @UVDELTA (a rule type added)
+     *   engine-6  @UVWRITEONCE (a rule type added)
+     *   engine-7  @UVJUSTIFY (a rule type added; a finding with its reason
+     *             given is justified, apart from the open ones)
      */
-    const ENGINE_REVISION = 'engine-4';
+    const ENGINE_REVISION = 'engine-7';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;

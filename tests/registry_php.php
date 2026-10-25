@@ -51,10 +51,14 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVWINDOW'   => 'window',      // 2.2.0
     '@UVEXISTS'   => 'exists',      // 2.3.0
     '@UVRANGE'    => 'range',       // 2.5.0
+    '@UVDELTA'    => 'delta',
+    '@UVWRITEONCE' => 'writeonce',
+    '@UVJUSTIFY'  => 'justify',
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
           'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
-          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range'] as $const => $mode) {
+          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range', 'TAG_DELTA' => 'delta',
+          'TAG_WRITEONCE' => 'writeonce', 'TAG_JUSTIFY' => 'justify'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -103,6 +107,16 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangeReturn', 'rangeReturnLimits', 'rangeDecimals', 'rangePercentileDecimals', 'rangeReturnComma',
     // @UVRANGE "show": the growth chart and the page table
     'rangeShow',
+    // @UVDELTA: what it compares with (as written, its shorthand, its name,
+    // that field's decimal comma), the limits, their words, the branch group
+    'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
+    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
+    // what the page hook adds: the roles could not be read, a dropdown's saved code,
+    // the saved values could not be read
+    'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
+    // @UVJUSTIFY: the field that holds the reason
+    'justifyReason',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -113,7 +127,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'assert', 'assertAst', 'caseSensitive',
     // @UVASSERT "exact" (AST-2 of the 2026-10-21 review)
     'exact',
-    'message', 'deferred', 'deferredWhy', 'snapshotFields',
+    'message', 'deferred', 'deferredWhy',
+    // a deferral only this viewer meets: the save checks the rule
+    'deferredChecked', 'snapshotFields',
     // a rule message's other languages (modes.json textKeys)
     'i18n',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',
@@ -154,7 +170,29 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // chart draws, the page table's rows, why the chart is left off, and the
     // reference's source line
     'rangeShow', 'growthCurveKey', 'growthTableKey', 'growthChartWhy', 'growthChartSource',
+    // @UVDELTA (the earlier value travels folded, as deltaVsOp)
+    'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
+    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code,
+    // the saved values could not be read
+    'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
+    // @UVJUSTIFY: the field that holds the reason
+    'justifyReason',
 ]);
+// Which modes a reason (@UVJUSTIFY) stands for (php/modes.json "justify"). A
+// duplicate is about two records, a lock does not give a role, and a reason
+// does not stand for itself.
+$covers = [];
+foreach (ModeRegistry::all() as $m) $covers[$m['mode']] = ModeRegistry::justifies($m['mode']);
+check('a reason stands for the ID checks, assert, required, choices, window, exists, range and delta, not for unique, writeonce or justify (got ' . json_encode($covers) . ')',
+    $covers === ['check' => true, 'constraint' => true, 'required' => true, 'unique' => false, 'choices' => true, 'window' => true,
+        'exists' => true, 'range' => true, 'delta' => true, 'writeonce' => false, 'justify' => false]);
+// justifyBy, the server's map of field => reason field, never reaches the page.
+check('justifyBy is a server key', in_array('justifyBy', ModeRegistry::serverKeys(), true)
+    && !in_array('justifyBy', ModeRegistry::clientKeys(), true));
+check('the reason fields of a rule are fields it reads, except for the lock (refFields kinds)',
+    ModeRegistry::refFields(['type' => 'range', 'fields' => ['w'], 'justifyBy' => ['w' => 'w_why']]) === ['w_why']
+    && ModeRegistry::refFields(['type' => 'range', 'fields' => ['w'], 'justifyBy' => ['w' => 'w_why']], ['cond', 'operand', 'fieldList']) === []);
 
 // Branching::modeOfType.
 foreach (['constraint' => 'constraint', 'required' => 'required', 'unique' => 'unique',
@@ -329,7 +367,8 @@ check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], 
          ['rangeSex', 'rangeSexOp', 'rangeSexValue'], ['rangeAgeDob', 'rangeAgeDobOp', 'rangeAgeDobValue'],
          ['rangeAgeAt', 'rangeAgeAtOp', 'rangeAgeAtValue'], ['rangeAgeDays', 'rangeAgeDaysOp', 'rangeAgeDaysValue'],
          ['rangeAgeMonths', 'rangeAgeMonthsOp', 'rangeAgeMonthsValue'], ['rangeBy', 'rangeByOp', 'rangeByValue'],
-         ['rangeMeasured', 'rangeMeasuredOp', 'rangeMeasuredValue']]);
+         ['rangeMeasured', 'rangeMeasuredOp', 'rangeMeasuredValue'],
+         ['deltaVs', 'deltaVsOp', 'deltaVsValue']]);
 check('an operand is not a condition key', !in_array('windowFrom', ModeRegistry::condKeys(), true));
 foreach ([
     '[visit_date]' => ['ref', 'visit_date', null],
@@ -386,11 +425,43 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
-check('survey pages lose the window diagnostics and "whereMessage"',
-    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage']);
+check('kept off survey pages: the window diagnostics, the @UVEXISTS "whereMessage", and what @UVDELTA compares with',
+    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage', 'deltaVs', 'deltaVsLabel']);
 check('survey shape: reasons dropped, snapshot and chart reasons kept as present',
     ModeRegistry::surveyShape()['drop'] === ['deferredWhy'] && ModeRegistry::surveyShape()['presence'] === ['snapshotFields', 'growthChartWhy']
     && ModeRegistry::surveyShape()['conditionText'] === '(condition)');
+// Every mode that may defer a rule says when the save still checks it, and
+// every mode with branch groups carries the server's "selector blocked" mark.
+foreach (ModeRegistry::all() as $m) {
+    if (in_array('deferred', $m['clientKeys'], true)) {
+        check($m['mode'] . ': a deferred rule carries deferredChecked', in_array('deferredChecked', $m['clientKeys'], true));
+    }
+    if (isset($m['branchGroup'])) {
+        check($m['mode'] . ': a branch group carries selectorBlocked', in_array('selectorBlocked', $m['clientKeys'], true));
+    }
+}
+// On a survey a delta group is g1, g2, ...: the page source does not name the "vs" field.
+$sv = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs' => '[enrol_arm_1][w0]', 'deltaVsLabel' => '[enrol_arm_1][w0]',
+    'branches' => [['deltaGroup' => '[enrol_arm_1][w0] both', 'when' => null], ['deltaGroup' => '[visit_arm_1][w] up', 'when' => null],
+                   ['deltaGroup' => '[enrol_arm_1][w0] both', 'when' => '[x]=1']]], true);
+check('survey: delta groups are opaque, in order, the same group the same id', !isset($sv['deltaVs']) && !isset($sv['deltaVsLabel'])
+    && array_column($sv['branches'], 'deltaGroup') === ['g1', 'g2', 'g1'] && strpos(json_encode($sv), 'enrol_arm_1') === false);
+$se = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'configError' => '"vs" field "zz_src" is not a number field.'], true);
+check('survey: a @UVDELTA configuration error is told in general words, naming no field (round 2)',
+    strpos($se['configError'], 'zz_src') === false && strpos($se['configError'], 'not set up correctly') !== false);
+$sr = ModeRegistry::clientShape(['type' => 'single', 'fields' => ['w'], 'configError' => '@UVDELTA on "w": "vs" names "[zz_missing]".'], true);
+check('survey: a refused @UVDELTA tag (type single) too', strpos($sr['configError'], 'zz_missing') === false);
+$sd = ModeRegistry::clientShape(['type' => 'constraint', 'fields' => ['w'], 'deferred' => true,
+    'deferredWhy' => ['references "[w_enrol]", which is not collected in this event'],
+    'branches' => [['deferred' => true, 'deferredWhy' => ['references "[w_enrol]"'], 'when' => null]]], true);
+check('survey: no deferral text, on the rule or a branch, in any mode (a survey page never shows one)',
+    !isset($sd['deferredWhy']) && !isset($sd['branches'][0]['deferredWhy']) && $sd['deferred'] === true && strpos(json_encode($sd), 'w_enrol') === false);
+$sk = ModeRegistry::clientShape(['type' => 'constraint', 'fields' => ['w'], 'deferred' => true, 'deferredWhy' => ['x']], false);
+check('staff: the deferral text stays', $sk['deferredWhy'] === ['x']);
+$st = ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVs' => '[w0]', 'deltaGroup' => '[w0] both'], false);
+check('staff: the group and the "vs" travel as written', $st['deltaGroup'] === '[w0] both' && $st['deltaVs'] === '[w0]');
+$rg = ModeRegistry::clientShape(['type' => 'range', 'fields' => ['w'], 'branches' => [['rangeReference' => 'who-weight', 'when' => null]]], true);
+check('survey: a range reference keeps its name (the page reads its table by it)', $rg['branches'][0]['rangeReference'] === 'who-weight');
 check('exists explains a filtered finding with "whereMessage"', ModeRegistry::reasonMessageKeys('exists') === ['filtered' => 'whereMessage']
     && ModeRegistry::reasonMessageKeys('range') === []);
 check('exists issue labels', ModeRegistry::issueLabel('exists', 'filtered') === 'Saved, but not where its conditions hold'
@@ -435,7 +506,7 @@ foreach (ModeRegistry::all() as $mode) {
         (bool) preg_match('/private function ' . preg_quote($mode['evaluator'], '/') . '\(/', $uvSource));
     foreach ($mode['hooks'] as $phase => $hook) {
         check($name . ' ' . $phase . ' hook ' . $hook . ' exists in UniversalValidator',
-            in_array($phase, ['field', 'dictionary'], true)
+            in_array($phase, ['field', 'dictionary', 'page'], true)
             && (bool) preg_match('/private function ' . preg_quote($hook, '/') . '\(/', $uvSource));
     }
     foreach ($mode['types'] as $type) {
@@ -509,6 +580,30 @@ $cases = [
         return json_encode($g); })($good),
     'reasonMessages as a list' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'exists') $g['modes'][$i]['scan']['reasonMessages'] = ['whereMessage'];
+        return json_encode($g); })($good),
+    'a "when" that is not false' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['when'] = true;
+        return json_encode($g); })($good),
+    'a lock whose text names no {by}' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['lock'] = ['returnWhy' => 'cannot lock "[{field}]"'];
+        return json_encode($g); })($good),
+    'a finding key mapped to a log key the module writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['log' => 'value'];
+        return json_encode($g); })($good),
+    'a finding key mapped to a scan key the module writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['scan' => 'rule'];
+        return json_encode($g); })($good),
+    'a finding key mapped to the scan key a reason writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['scan' => 'justifiedBy'];
+        return json_encode($g); })($good),
+    'a finding key mapped to the log key a reason writes' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['log' => 'justified_by'];
+        return json_encode($g); })($good),
+    'a mode with no "justify"' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') unset($g['modes'][$i]['justify']);
+        return json_encode($g); })($good),
+    'a "justify" that is not true or false' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') $g['modes'][$i]['justify'] = 'yes';
         return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {

@@ -1,0 +1,104 @@
+<p>Some values break a rule and are still right: a weight above the range the protocol
+expected for a patient who really weighs that much, or a visit date outside its window
+because the clinic was closed. A rule that holds the save then forces the
+person to enter a wrong value or leave the form. <code>@UVJUSTIFY</code> names a second
+field where the reason is written. Once that field holds a reason, the broken rule no
+longer holds the save, and the audit and the scan report the finding as "saved with a
+reason", apart from the open ones.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>reason</code></td><td>The field that holds the reason, written as one field
+    reference such as <code>"[weight_reason]"</code>. It must be on the same form as the
+    field, and be a Text or Notes field, or a dropdown, radio or SQL field whose choices
+    are the reasons you allow. It cannot be the field itself. The person must fill it
+    in, so the module refuses the record ID field, a field REDCap fills in itself
+    (<code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@DEFAULT</code>,
+    <code>@SETVALUE</code>, <code>@PREFILL</code>, <code>@NOW</code>,
+    <code>@TODAY</code> and their <code>-SERVER</code> and <code>-UTC</code> forms,
+    <code>@USERNAME</code>, <code>@APPUSERNAME-APP</code>, <code>@LATITUDE</code>,
+    <code>@LONGITUDE</code>, <code>@DOWNLOAD-COUNT</code>,
+    <code>@LANGUAGE-CURRENT-FORM</code>, <code>@LANGUAGE-CURRENT-SURVEY</code>), a field
+    with any form of <code>@READONLY</code>, a field with bare <code>@HIDDEN</code>
+    (<code>@HIDDEN-FORM</code>, <code>@HIDDEN-SURVEY</code>, <code>@HIDDEN-APP</code> and
+    <code>@HIDDEN-PDF</code> are allowed), a field that carries <code>@UVJUSTIFY</code>
+    itself, a field with <code>@UVWRITEONCE</code>, whose reason could never be cleared,
+    and a field another rule's <code>"return"</code> writes into. A tag name inside
+    another tag's value, such as a message or a placeholder, refuses nothing</td></tr>
+<tr><td><code>message</code></td><td>The note under the field that asks for the reason.
+    It may be a map of language ids to texts, as for the other tags. Without it the note
+    reads "Fix this value, or say why it is right in" the reason field's label</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The tag takes no <code>when</code>, no <code>caseSensitive</code>, no
+<code>blockSave</code> and no event or instance references. A reason stands for the
+field's other rules whenever they apply, and each of those rules keeps its own
+<code>when</code> and <code>blockSave</code>.</p>
+
+<h2>Which rules a reason stands for</h2>
+
+<p><code>@UVALIDATE</code>, <code>@UVASSERT</code>, <code>@UVREQUIRED</code>,
+<code>@UVCHOICES</code>, <code>@UVWINDOW</code>, <code>@UVEXISTS</code>,
+<code>@UVRANGE</code> and <code>@UVDELTA</code> on the same field. Never
+<code>@UVUNIQUE</code>: a reason does not make a duplicate identifier safe. Never
+<code>@UVWRITEONCE</code>: a locked field stays locked, and only the roles the tag names
+can change it. A <code>@UVJUSTIFY</code> on a field that none of these rules checks
+shows a configuration error under that field.</p>
+
+<h2>What counts as a reason</h2>
+
+<ul>
+<li>Any value that is not blank by the test <code>@UVREQUIRED</code> uses. Spaces,
+    tabs, line breaks, no-break and other Unicode spaces, zero-width characters and
+    byte-order marks alone give no reason.</li>
+<li>A <strong>missing data code</strong> gives no reason. A reason field marked "unknown"
+    still asks for one.</li>
+<li>On the form, a reason field the person cannot see gives no reason: its row hidden
+    by branching logic, or, for a reason field embedded in another field's label, the
+    row it sits in. The reason has to be visible where the value is entered.</li>
+<li>A reason stands until someone clears it. A later, different broken value of the
+    field saves under the same reason, so clear the reason field when the value changes
+    for another reason.</li>
+<li>The reason itself is never written to the log or the scan. Only the name of the
+    reason field is.</li>
+</ul>
+
+<h2>On the form</h2>
+
+<ul>
+<li>While a rule a reason stands for holds the save and the reason field gives no
+    reason, a note under the field asks for one, and the save message adds "or give a
+    reason in" with the reason field's label.</li>
+<li>Once the reason is given, the field no longer holds the save for those rules. Their
+    own notes stay, so the person still sees what the rule found.</li>
+<li>A reason never lets anything else through. A rule with <code>blockSave</code>
+    <code>"off"</code> still only warns. A lookup still being checked
+    (<code>@UVUNIQUE</code>, <code>@UVEXISTS</code>) still holds the save until its answer
+    comes. A field locked by <code>@UVWRITEONCE</code> stays locked.</li>
+<li>On a rule that only warns (<code>blockSave</code> <code>"off"</code>, or an
+    <code>@UVDELTA</code> that compares with another event or instance, which the page
+    shows only as advice) a reason never shows a note on the page. It only labels the
+    finding in the audit and the scan.</li>
+<li>On a survey whose reason field is on another page, the tag does nothing on the
+    page of the field. The audit after the save still reads the reason.</li>
+</ul>
+
+<h2>Audit and scan</h2>
+
+<p>The post-save audit logs a broken rule whose reason is given as
+<code>uvalidate-justified</code> instead of <code>invalid-id-saved</code>, with
+<code>justified_by</code> naming the reason field. The reason is read from the same
+record, event and instance as the value. The Validation scan counts these findings apart:
+the summary reads "and N saved with a reason", the findings table gets a "Saved with a
+reason" column, and a scan whose findings all have a reason counts no open
+violations. A reason field the audit could not read leaves the finding open.</p>

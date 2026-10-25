@@ -49,14 +49,14 @@ MUTATIONS = [
     ('a filtered miss loses its mark', UV,
      "if ($filtered && $miss['state'] === 'not-found') $miss['filtered'] = true;",
      'if (false) $miss[\'filtered\'] = true;', WHERE),
-    ('a survey told the value is filtered', UV,
+    ('a survey told the value is filtered', 'php/LiveLookups.php',
      "&& $isAuthenticated && !$isSurvey) $resp['filtered'] = true;",
      ") $resp['filtered'] = true;", WHERE),
     ('record IDs in another letter case not judged', UV,
      '$hit = self::recordWhereHit($spec, $more, $rows, $filtered);',
      '$hit = null;', WHERE),
     ('no kind check of "where" comparisons', UV,
-     "$why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true);",
+     "$why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true, $pidThere ? $this->missingDataCodes($pidThere) : []);",
      '$why = null;', WHERE),
     ('no placement check of "where" fields', UV,
      "'Test', 'test',\n                $f !== $pkThere);\n            if ($why !== null) return $hide($why);",
@@ -80,10 +80,10 @@ MUTATIONS = [
      "if ($bare === 'condition') {",
      'if (true) {', 'tests/annotation_php.php'),
     ('branch conditions compared as plain text', 'php/Branching.php',
-     "$keys[] = 'x' . Logic::canonicalKey($w);\n"
-     "                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);",
-     "$keys[] = 'x' . trim($w);\n"
-     "                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . strtolower(trim($w));",
+     "$keys = ['x' . Logic::canonicalKey($w)];\n"
+     "        if (empty($rule['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);",
+     "$keys = ['x' . trim($w)];\n"
+     "        if (empty($rule['caseSensitive'])) $keys[] = 'f' . strtolower(trim($w));",
      'tests/branching_php.php'),
     ('the docs harness tests nothing', 'php/AnnotationRules.php',
      "return Logic::evaluate($ast, $values, Logic::BLANK_INERT",

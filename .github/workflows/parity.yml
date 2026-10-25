@@ -77,6 +77,20 @@ jobs:
         run: |
           node tests/range_js.cjs
           node tests/range_dom_js.cjs
+      - name: JS delta (@UVDELTA) verdict vs fixture, its DOM contract (live vs blocks, saved vs and calc never block, two comparisons, typing, scripted values), and the live run sheet's notes replayed through the engine
+        run: |
+          node tests/delta_js.cjs
+          node tests/delta_dom_js.cjs
+          node tests/delta_live_twin_js.cjs
+      - name: JS write-once (@UVWRITEONCE) page lock (read-only, disabled, a change undone, other modes never hold the save), and the live run sheet's clicks replayed through the engine
+        run: |
+          node tests/writeonce_dom_js.cjs
+          node tests/writeonce_live_twin_js.cjs
+      - name: JS reason (@UVJUSTIFY) given vs fixture, its DOM contract (a reason releases the modes it stands for, the alert and dialog name the reason field, the note, no note under a field that cannot hold the save, write-once and unique not released), and the live run sheet's clicks replayed through the engine
+        run: |
+          node tests/justify_js.cjs
+          node tests/justify_dom_js.cjs
+          node tests/justify_live_twin_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
       - name: JS under Multi-Language Management (hidden choices translated, dialog labels read live, survey labels)
@@ -137,7 +151,8 @@ jobs:
       - uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # 2.35.5
         with:
           php-version: '${{ matrix.php }}'
-          extensions: mbstring, ctype
+          # intl: Logic::roleKey puts role names in composed form only where it is loaded
+          extensions: mbstring, ctype, intl
       - name: Qualified resolution, matching, exact aggregates and typed dates
         run: |
           php tests/qualified_php.php
@@ -253,6 +268,24 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
+      - name: PHP @UVDELTA verdict vs fixture, budget, grammar, hooks, page, audit (events, instances), scan, the live run sheet's answers, and 265 mutations the suites must kill
+        run: |
+          php tests/delta_php.php
+          php tests/delta_module_php.php
+          php tests/delta_live_twin_php.php
+          python3 tests/delta_mutations.py
+      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 255 mutations the suites must kill (the 12 of the SQL run where UV_DB_HOST names a server; the 2 of the composed form of role names run here, with intl)
+        run: |
+          php tests/writeonce_php.php
+          php tests/writeonce_module_php.php
+          php tests/writeonce_live_twin_php.php
+          python3 tests/writeonce_mutations.py
+      - name: PHP @UVJUSTIFY reason given vs fixture, grammar, pairing with the rules it stands for, hooks, audit, legacy and durable scan, the live run sheet's answers, and 91 mutations the suites must kill (the 7 of the SQL run where UV_DB_HOST names a server)
+        run: |
+          php tests/justify_php.php
+          php tests/justify_module_php.php
+          php tests/justify_live_twin_php.php
+          python3 tests/justify_mutations.py
       - name: PHP growth references (z-scores vs fixture, WHO golden, R pnorm/qnorm, parity hashes, output catalog, extra folder, grammar, hooks, page, audit, scan, returned values, chart curves and their error bound, "show" grammar, payload and cap, converter)
         run: |
           php tests/growth_php.php

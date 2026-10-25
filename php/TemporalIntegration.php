@@ -335,7 +335,7 @@ trait TemporalIntegration
                     // Every folded key the browser could act on: condition trees, record tuples, operands.
                     $folded=['whenAst','uniqueRecordAsts','references'];foreach(ModeRegistry::refKeys('cond','test') as $rk)$folded[]=$rk['ast'];foreach(ModeRegistry::operandKeys() as $rk)$folded[]=$rk['op'];
                     foreach($folded as $k)unset($out[$i][$k]);
-                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;foreach($folded as $k)unset($b[$k]);}unset($b);
+                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;if(!empty($out[$i]['deferredChecked']))$b['deferredChecked']=true;foreach($folded as $k)unset($b[$k]);}unset($b);
                 }
             }
         }catch(\Throwable $e){foreach($extended as $i=>$r){$out[$i]=['type'=>$r['type'],'fields'=>$r['fields'],'deferred'=>true,'deferredWhy'=>['Extended source data unavailable.'],'blockSave'=>'off'];}}

@@ -358,8 +358,19 @@ check('checkFragment: exact on a constraint is fine',
 // is covered here the day it is added.
 $modeSamples = json_decode(file_get_contents(__DIR__ . '/mode_samples.json'), true)['modes'];
 $tagForms = [];
-foreach (ModeRegistry::all() as $m) $tagForms[$m['tag']] = $modeSamples[$m['mode']]['tagForm'];
-check('every mode has a tagForm sample', count($tagForms) === count(ModeRegistry::all()));
+$noWhen = [];   // modes that take no condition (php/modes.json "when": false)
+foreach (ModeRegistry::all() as $m) {
+    if (ModeRegistry::takesWhen($m['mode'])) $tagForms[$m['tag']] = $modeSamples[$m['mode']]['tagForm'];
+    else $noWhen[$m['tag']] = $modeSamples[$m['mode']]['tagForm'];
+}
+check('every mode has a tagForm sample', count($tagForms) + count($noWhen) === count(ModeRegistry::all()));
+// A tag that takes no condition refuses "when" and "caseSensitive" by name.
+foreach ($noWhen as $tag => $form) {
+    $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":true'));
+    check($tag . ' takes no condition: caseSensitive refused', isset($f[0]['error']) && strpos($f[0]['error'], 'caseSensitive') !== false);
+    $f = AnnotationRules::parseAllTags(sprintf($form, "\"when\":\"[a]='x'\""));
+    check($tag . ' takes no condition: when refused', isset($f[0]['error']) && strpos($f[0]['error'], 'when') !== false);
+}
 foreach ($tagForms as $tag => $form) {
     $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":true'));
     check($tag . ' caseSensitive:true carried', !isset($f[0]['error']) && $f[0]['caseSensitive'] === true);
@@ -379,6 +390,12 @@ foreach ($tagForms as $tag => $form) {
     check($tag . ' refuses && in "when", naming "and"', isset($f[0]['error']) && strpos($f[0]['error'], 'write "and" instead') !== false);
 }
 foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) {
+    if (!ModeRegistry::takesWhen($m['mode'])) {
+        $frag = array_merge(['type' => $t, 'caseSensitive' => true], $modeSamples[$m['mode']]['fragment']);
+        check('checkFragment (' . $t . ', settings channel) refuses caseSensitive on a mode with no condition',
+            (bool) array_filter(AnnotationRules::checkFragment($frag), function ($e) { return strpos($e, 'caseSensitive') !== false; }));
+        continue;
+    }
     $frag = array_merge(['type' => $t, 'caseSensitive' => 'yes'], $modeSamples[$m['mode']]['fragment']);
     $errs = AnnotationRules::checkFragment($frag);
     check('checkFragment (' . $t . ', settings channel) refuses a non-boolean caseSensitive',

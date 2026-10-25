@@ -408,7 +408,12 @@ class ScanPageView
         $f = (is_array($status) && array_key_exists('findings', $status)) ? $status['findings'] : null;
         if (!is_int($f) && !(is_string($f) && ctype_digit($f))) return self::FOUND_UNKNOWN;
         $f = (int) $f;
-        return $f === 0 ? 'Nothing found yet' : ($f . ' finding' . ($f === 1 ? '' : 's') . ' so far');
+        $text = $f === 0 ? 'Nothing found yet' : ($f . ' finding' . ($f === 1 ? '' : 's') . ' so far');
+        // findings saved with a reason (@UVJUSTIFY), said apart from the open ones
+        $j = (is_array($status) && array_key_exists('justified', $status)) ? $status['justified'] : null;
+        if (is_string($j) && ctype_digit($j)) $j = (int) $j;
+        if (is_int($j) && $j > 0) $text .= ', and ' . $j . ' saved with a reason';
+        return $text;
     }
 
     /**

@@ -369,11 +369,15 @@ $RECORDS = 6;
     // on each request that walks records: the read of the record index's
     // indexes (RecordManifestSource::walkIndexOf), so the walk can name the one
     // that leads with (project_id, record) instead of sorting the project.
+    // Engine-7 (@UVJUSTIFY) put one statement on the request that finishes:
+    // the rollup writes its standing axis beside the other four. It also sent
+    // a second read of the summary with every status of a finished run, until
+    // status() read it once for both counts.
     $bounds = array(
         'start'                              => array($startCount, 45),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 77),
-        'the work request that finishes'     => array($finishCount, 78),
+        'the work request that finishes'     => array($finishCount, 79),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

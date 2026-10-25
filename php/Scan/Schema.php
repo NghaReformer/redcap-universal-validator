@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 6;
+    const VERSION = 7;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -144,6 +144,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 7) return self::statementsV7();
         if ((int) $version === 6) return self::statementsV6();
         if ((int) $version === 5) return self::statementsV5();
         if ((int) $version === 4) return self::statementsV4();
@@ -784,6 +785,32 @@ final class Schema
     }
 
     /**
+     * Version 7: whether a reason (@UVJUSTIFY) stands for the finding, 1 or
+     * 0. The rollup counts the two apart and a scan whose findings all have a
+     * reason is clean (ScanPromotion::tally). 0 for every existing row, which
+     * is what every finding stored before the tag existed was. And the run's
+     * count of the stored rows that carry it, beside detail_rows, so a run
+     * still working says its open findings and those saved with a reason
+     * apart (ScanPromotion::findingsOf, justifiedOf). 0 for every existing
+     * run. Two ALTERs, each skipped when its column is there.
+     *
+     * VERSION 7 STAYS OPEN until the release that ships it, then freezes as
+     * 1 and 2 did. 2.3.0-rc.3 ships version 6 (the lookup index), so these
+     * columns, which this branch first wrote as version 6, are version 7. A
+     * test database made on this branch before then says version 6 and has
+     * no lookup tables: drop it and create it again.
+     */
+    private static function statementsV7()
+    {
+        $f = self::table('finding');
+        $r = self::table('scan_run');
+        return [['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $f, 'justified']],
+                ['sql' => 'ALTER TABLE ' . $r . ' ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $r, 'detail_justified']]];
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -1013,6 +1040,14 @@ final class Schema
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                             'why' => 'schema version 5 did not verify after it was applied: the finding table '
                                    . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
+                }
+            }
+            if ($v === 7) {
+                foreach ([['finding', 'the finding table', 'justified'], ['scan_run', 'the run table', 'detail_justified']] as $c) {
+                    if (self::alreadyApplied($module, ['column', self::table($c[0]), $c[2]])) continue;
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 7 did not verify after it was applied: ' . $c[1]
+                                   . ' has no ' . $c[2] . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
             try {

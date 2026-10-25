@@ -1977,6 +1977,14 @@ namespace {
         check('PREFILL: a counted zero is still nothing found, and a count is still a count',
             $V::panelPrefill(array_merge($ended, ['findings' => 0]))['found'] === 'Nothing found yet'
             && $V::panelPrefill(array_merge($ended, ['findings' => 2]))['found'] === '2 findings so far');
+        // @UVJUSTIFY: the findings saved with a reason, said apart once the run is totalled
+        check('PREFILL: findings saved with a reason are said apart',
+            $V::panelPrefill(array_merge($ended, ['findings' => 3, 'justified' => 2]))['found'] === '3 findings so far, and 2 saved with a reason'
+            && $V::panelPrefill(array_merge($ended, ['findings' => 3, 'justified' => '1']))['found'] === '3 findings so far, and 1 saved with a reason');
+        check('PREFILL: ... and nothing is said of none, or of a count that is not a whole number',
+            $V::panelPrefill(array_merge($ended, ['findings' => 3, 'justified' => 0]))['found'] === '3 findings so far'
+            && $V::panelPrefill(array_merge($ended, ['findings' => 3, 'justified' => null]))['found'] === '3 findings so far'
+            && $V::panelPrefill(array_merge($ended, ['findings' => 3, 'justified' => '1.5']))['found'] === '3 findings so far');
 
         // P10: WHAT THE RUN HAS STORED. tests/scan_client_js.cjs asks the
         // client the same table and expects the same strings, digit for digit.

@@ -1,0 +1,154 @@
+<p>Some answers should be entered once and then left alone: a consent date, a
+randomisation arm, a baseline weight. REDCap can make a field read-only for everyone
+with <code>@READONLY</code>, but then nobody can enter it in the first place.
+<code>@UVWRITEONCE</code> leaves the field open until its first save of a value and locks
+it from then on. Named user roles can still change it.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVWRITEONCE
+
+@UVWRITEONCE={"roles":["Data manager"]}
+
+@UVWRITEONCE={"roles":["Data manager","PI"],"since":"2026-11-01","message":"Ask the data manager to correct this date."}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>roles</code></td><td>The user roles whose members may still change or clear
+    the value, by the name the User Rights page shows or by the unique role name. Letter
+    case does not matter ("STRASSE" matches "Stra&szlig;e", and "&#304;DARE" matches
+    "idare"), though the dotless "&#305;" stays a letter of its own. Invisible format
+    characters such as a zero-width space are ignored, and a run of spaces counts
+    as one. With PHP's intl extension a name typed with combining accents matches one typed
+    with composed letters; without intl they differ. Up to 20 roles</td></tr>
+<tr><td><code>since</code></td><td>A date written <code>YYYY-MM-DD</code>, which starts
+    at 00:00 in the project's time zone. Saves before then do not lock anything; the value
+    the field held at that moment is locked from then on. Use it when the tag is added to
+    a project that already holds data</td></tr>
+<tr><td><code>message</code></td><td>The text shown under a locked field and in the
+    scan. It may be a map of language ids to texts, as for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The tag takes no <code>when</code>, no <code>caseSensitive</code> and no
+<code>blockSave</code>. A value locked by its first save stays locked whatever else the
+form holds.</p>
+
+<h2>Field types</h2>
+
+<p>Text and Notes fields (dates included), <strong>dropdown</strong>,
+<strong>radio</strong>, <strong>yes/no</strong>, <strong>true/false</strong>,
+<strong>slider</strong> and <strong>SQL</strong> fields. Not a calc or a checkbox field,
+nor a field with <code>@CALCTEXT</code>, <code>@CALCDATE</code>, <code>@SETVALUE</code>,
+<code>@PREFILL</code> or <code>@DOWNLOAD-COUNT</code>, whose value REDCap writes again by itself, nor a field with
+<code>@RICHTEXT</code> or an ontology search (BioPortal, FHIR or any other service),
+whose widget keeps its own copy of the text and saves it over the field. A field that another
+rule returns a value to (<code>@UVEXISTS</code> or <code>@UVRANGE</code>
+<code>"return"</code>) cannot be locked either, because that value is written again on
+every save.</p>
+
+<h2>What is locked, and where</h2>
+
+<ul>
+<li>The first save of a value locks the field, whoever makes it. A
+    <strong>blank</strong> and a <strong>missing data code</strong> lock nothing, so a
+    field marked "unknown" can still be filled in later.</li>
+<li>A member of a named role may change the value. The lock then moves to the new
+    value. A member who clears it releases the lock, and the next value saved locks it
+    again. Roles are read when the audit or the scan runs, not as they were at the
+    save, because REDCap's log names who saved but not the role they held. A change
+    counts as the role's while its maker holds the role. Rights that have expired and a
+    suspended account hold no role, and an administrator who is not a user of the project
+    is locked out like everyone else outside the roles.</li>
+<li>REDCap logs a field only when its value changes. A member of a named role who wants
+    to keep a value that someone outside the roles saved saves the field twice: another
+    value, then that one.</li>
+<li>On a form or a survey the locked field is read-only for everyone outside the roles,
+    with a short note under it. A text box is made read-only, the radio buttons are
+    disabled and their "reset" link hidden, the enhanced radio buttons take no clicks,
+    the slider is disabled, and the date picker is kept from opening, with its button and
+    REDCap's Today and Now buttons hidden. Nothing the form posts is disabled, since
+    REDCap would then save the field blank: a dropdown takes no clicks instead, and a
+    change made with the keyboard or a script is undone and the note says so. A dropdown
+    or SQL field whose saved code is no longer one of its choices gets that code back as
+    an option. The lock touches only the field's own controls: a field embedded in its
+    row keeps its own buttons.</li>
+<li>When the user roles cannot be read, the field is locked for everyone, and the note
+    says the role could not be checked. When the saved value cannot be read, the field
+    is not locked; staff see a note saying so, and the audit still checks a change.</li>
+<li>A person's own first answer is locked as soon as it is saved. After Save &amp; Stay,
+    or Next on a multi-page survey, going back finds it locked.</li>
+<li>Another rule on a locked field still shows its note. It holds the save only when it
+    also reads a field of this form that the person can change, and only once that field
+    has changed on the page, a checkbox option by option. A calc, or a field with
+    <code>@CALCTEXT</code> or <code>@CALCDATE</code>, stands for the fields it is worked out
+    from on this event and instance, through other calcs too. The value each field opened
+    with is read after REDCap's own start-up on the page, once its calcs, branching and
+    action tags have filled their fields. So a field REDCap fills as the page starts
+    (<code>@NOW</code>, <code>@TODAY</code>, <code>@DEFAULT</code>, <code>@SETVALUE</code>)
+    counts only once the person changes it, and so does a field with
+    <code>@READONLY</code> or <code>@HIDDEN</code>. A field with <code>@LATITUDE</code> or
+    <code>@LONGITUDE</code> never counts, since REDCap fills it later, once the browser
+    gives its position; the tag name inside another tag's quoted text is not read as the
+    tag. A violation already saved when the page opened, or one between two locked fields,
+    never holds it, on Save or on Enter.</li>
+<li>The lock lives in the browser only. A change made through the API, the Data Import
+    Tool or a script that bypasses the form is found afterwards, from REDCap's log, by
+    the audit of the next save of the form that holds the field and by the scan.</li>
+</ul>
+
+<h2>Audit</h2>
+
+<p>The post-save audit reads the field's saves from REDCap's log and logs a value
+changed or cleared after the lock as <code>type: writeonce</code> with reason
+<code>changed</code> or <code>cleared</code>, plus <code>locked_at</code> (when the lock
+was set) and <code>changed_at</code> (when the current value was saved). The Validation
+scan reports it with the day it was locked. Each record and event is read on its own,
+back to the row REDCap writes when it makes the record. That row counts only when its
+record id line comes before every other Text or Notes value in it, since a Notes value
+could hold a typed copy of that line. A deletion of the whole record
+starts a new history, and so does an erase of all the project's records (Erase all data,
+or deleting every record when the project moves to production). A deletion of one form or
+one event at another event changes nothing.</p>
+
+<p>These are reported as rule problems, never as a pass:</p>
+
+<ul>
+<li>a log that holds more rows of the record and event than the audit reads (5,000);</li>
+<li>a deletion of this event's data or of one arm, a deletion at another event the log
+    does not describe as one form or one event, and in a project of several arms every
+    deletion of the record, since the check cannot tell what it removed;</li>
+<li>a record whose log does not show it being made: one renamed while its saves stay
+    logged under the old name, or one that came with a copied project. Renaming the
+    record id field after records exist does this to every record;</li>
+<li>a record whose creating row has its record id line after a Text or Notes value;</li>
+<li>a save the log names no event for;</li>
+<li>a save the log does not spell out. The log lists a save's fields in the data
+    dictionary's order, and a line out of that order is how a Notes value typed to look
+    like another field's line shows, so the save reads as not spelled out from the first
+    Text or Notes value before that line. A save written before a field was moved breaks
+    the order too: moving any field of a form after records exist, locked or not, can
+    leave the Text and Notes values of the saves made before the move not checked, the
+    save that made the record included. In such a save, every value from its first Text
+    or Notes value on is not checked; a field of another type written before every Text
+    and Notes value is still read, and the record id field does not count as a Text
+    value here;</li>
+<li>a value the log never shows saved;</li>
+<li>user roles that cannot be read when a change needs them.</li>
+</ul>
+
+<p>A forged line that keeps the data dictionary's order reads as a save of its field.
+After the lock, a save by a person with no role moves nothing, so such a line gives at
+worst a false finding or a rule problem. Before the lock, or before <code>since</code>, it
+can stand for a first value that was never saved; the next real save of another value is
+then reported as a change. Anyone could have saved that value first, so the line gives no
+one a value they could not have saved, and the forged row stays in the log.</p>
+
+<p>Renaming a locked field after it holds data restarts its history when REDCap's
+log keeps the earlier saves under the old name. The page lock still holds the saved value,
+and the audit reports the field as a rule problem until a save is logged under the new
+name. An import or API change made after the rename, before any save of the field is
+logged under the new name, is read as the field's first save and is not caught.</p>

@@ -8,7 +8,8 @@
  * js/engine.js, booted the way the server injects it: a single-ID rule must
  * accept or refuse the value exactly as the server did, a pooled rule must
  * split it into the same members and junk, with the same alternate credited,
- * and a @UVRANGE rule must reach the same tier and reason. A growth rule
+ * a @UVRANGE rule must reach the same tier and reason, and a @UVDELTA rule
+ * the same verdict, reason and exact change. A growth rule
  * replays the server's sex and axis position against the shipped tables:
  * the same measurement (with "measureScale"), z-score and verdict, or the
  * same "plausible" verdict when the server found no z-score.
@@ -85,15 +86,17 @@ function canon(segs) {
     : ['junk', s.text]));
 }
 
-// The @UVRANGE verdict, from an engine booted with no rules.
-function rangeLogic() {
+// The engine's public namespace, booted with no rules.
+function bareEngine() {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   global.window = {};
   global.document = { addEventListener() {}, getElementsByName() { return []; }, readyState: 'complete', body: { addEventListener() {} } };
   require(enginePath);
-  return global.window.INSPIREUniversalValidator.rangeLogic;
+  return global.window.INSPIREUniversalValidator;
 }
+// The @UVRANGE verdict.
+function rangeLogic() { return bareEngine().rangeLogic; }
 
 // The growth references the docs use, as the page receives them (entry +
 // table): the shipped ones, then the made-up examples of a folder of extra
@@ -114,6 +117,7 @@ function bundledRefs() {
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'docs_expect_fixture.json'), 'utf8'));
 let fail = 0;
 let range = null;
+let delta = null;
 let growth = null;
 let refs = null;
 for (const c of fx.cases) {
@@ -134,6 +138,15 @@ for (const c of fx.cases) {
     if (got !== c.outcome) {
       fail++;
       console.error(`MISMATCH ${c.where} ${JSON.stringify(c.input)}: server ${c.outcome}, browser ${got}`);
+    }
+    continue;
+  }
+  if (c.kind === 'delta') {
+    delta = delta || bareEngine().deltaLogic;
+    const r = delta.verdict(c.spec, c.input, c.earlier);
+    if (r.verdict !== c.verdict || r.reason !== c.reason || r.change !== c.change) {
+      fail++;
+      console.error(`MISMATCH ${c.where} ${JSON.stringify(c.input)} from ${JSON.stringify(c.earlier)}: server ${c.verdict}/${c.reason}/${c.change}, browser ${r.verdict}/${r.reason}/${r.change}`);
     }
     continue;
   }

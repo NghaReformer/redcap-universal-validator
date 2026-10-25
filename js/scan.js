@@ -174,7 +174,11 @@
             return L.foundUnknown
                 || 'Findings not counted, because the scan ended before it could total them';
         }
-        return f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
+        var text = f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
+        /* findings saved with a reason (@UVJUSTIFY), said apart from the open ones */
+        var j = st.justified;
+        if (typeof j === 'number' && j > 0 && j === Math.floor(j)) text += ', and ' + j + ' saved with a reason';
+        return text;
     }
 
     /** "12345" as "12,345", as PHP's number_format() writes it. */

@@ -23,6 +23,13 @@ require_once __DIR__ . '/Logic.php';
 
 final class ModeRegistry
 {
+    /** Keys every audit log entry already has (UniversalValidator::logInvalid, auditRule). */
+    const RESERVED_LOG_KEYS = ['field', 'type', 'algorithm', 'reason', 'instrument', 'event_id', 'instance', 'record',
+        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs', 'justified_by'];
+    /** Keys every scan violation already has (UniversalValidator::scanRecord, FindingRowMapper). */
+    const RESERVED_SCAN_KEYS = ['record', 'event_id', 'instance', 'field', 'type', 'reason', 'rule', 'value', 'valueWithheld',
+        'valueState', 'locus', 'instrument', 'dag', 'branch', 'z', 'reference', 'ruleSource', 'findingId',
+        'justified', 'justifiedBy'];
     /** @var array|null the decoded, checked file */
     private static $data = null;
     /** @var array derived maps, built once per request */
@@ -67,6 +74,9 @@ final class ModeRegistry
             }
             if (!isset($m['missingCodes']) || !in_array($m['missingCodes'], ['skip', 'answer'], true)) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no "missingCodes" of skip or answer');
+            }
+            if (!array_key_exists('justify', $m) || !is_bool($m['justify'])) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has no "justify" of true or false');
             }
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
@@ -130,8 +140,42 @@ final class ModeRegistry
             if (isset($m['branchGroup'])) {
                 $g = $m['branchGroup'];
                 if (!is_array($g) || !isset($g['key'], $g['name']) || !is_string($g['name']) || $g['name'] === ''
-                    || !in_array($g['key'], $m['branchKeys'], true)) {
-                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name}');
+                    || !in_array($g['key'], $m['branchKeys'], true)
+                    || (isset($g['surveyOpaque']) && !is_bool($g['surveyOpaque']))
+                    || array_diff(array_keys($g), ['key', 'name', 'surveyOpaque'])) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name, surveyOpaque?: bool}');
+                }
+            }
+            if (isset($m['findingKeys'])) {
+                // finding key => where it goes: "log" (the audit log entry's key)
+                // and/or "scan" (the scan violation's key)
+                $fk = $m['findingKeys'];
+                if (!is_array($fk) || !$fk || array_values($fk) === $fk) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a findingKeys that is not a finding key => {log, scan} map');
+                }
+                foreach ($fk as $k => $to) {
+                    if (!is_string($k) || $k === '' || !is_array($to) || !$to || array_diff(array_keys($to), ['log', 'scan'])
+                            || array_filter($to, function ($v) { return !is_string($v) || !preg_match('/^[a-z][a-zA-Z_]*$/D', $v); })) {
+                        throw new \RuntimeException('mode "' . $m['mode'] . '" has a findingKeys entry that is not {log?: key, scan?: key}');
+                    }
+                    // a key the entry already gives would be overwritten, or would
+                    // carry a raw value past the log-values setting ("value")
+                    foreach (['log' => self::RESERVED_LOG_KEYS, 'scan' => self::RESERVED_SCAN_KEYS] as $where => $taken) {
+                        if (isset($to[$where]) && in_array($to[$where], $taken, true)) {
+                            throw new \RuntimeException('mode "' . $m['mode'] . '" maps a finding key to the ' . $where . ' key "' . $to[$where] . '", which the module already writes');
+                        }
+                    }
+                }
+            }
+            if (array_key_exists('when', $m) && $m['when'] !== false) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a "when" that is not false (leave it out for a mode that takes a condition)');
+            }
+            if (isset($m['lock'])) {
+                // the page keeps the field's value; returnWhy refuses a lock on a returned field
+                $lk = $m['lock'];
+                if (!is_array($lk) || array_keys($lk) !== ['returnWhy'] || !is_string($lk['returnWhy'])
+                        || strpos($lk['returnWhy'], '{field}') === false || strpos($lk['returnWhy'], '{by}') === false) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a lock that is not {returnWhy: a text naming {field} and {by}}');
                 }
             }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
@@ -292,6 +336,13 @@ final class ModeRegistry
         return isset($m['branchGroup']['key']) ? $m['branchGroup']['key'] : null;
     }
 
+    /** Whether the mode's rules take a condition ("when", "caseSensitive"); php/modes.json "when": false says no. */
+    public static function takesWhen($mode)
+    {
+        $m = self::mode($mode);
+        return !(is_array($m) && array_key_exists('when', $m) && $m['when'] === false);
+    }
+
     /** The option name a branch-group refusal shows ("reference"), or null. */
     public static function branchGroupName($mode)
     {
@@ -377,7 +428,9 @@ final class ModeRegistry
      *     settled ["const", true] states a saved value of another form; a rule
      *     deferred as a whole, whose conditions are never read
      *     (QRID_activeVariants), sends the placeholder with ["const", true]
-     *     in place of its AST, a constant no saved value chose.
+     *     in place of its AST, a constant no saved value chose;
+     *   - a branch group named after what the rule reads (branchGroup
+     *     surveyOpaque: @UVDELTA's "vs" and direction) travels as g1, g2, ...
      */
     public static function clientShape(array $r, $survey = false)
     {
@@ -424,9 +477,56 @@ final class ModeRegistry
                 if (is_array($b)) $r['branches'][$i] = $strip($b);
             }
         }
+        // A branch group named after what the rule reads (@UVDELTA: the "vs"
+        // reference and the direction) only groups the page's variants. On a
+        // survey it travels as g1, g2, ... in order of first appearance, so the
+        // page source does not name the field or event an answer is compared
+        // with (branchGroup surveyOpaque).
+        $key = $survey ? self::surveyOpaqueGroup(isset($r['type']) ? $r['type'] : '') : null;
+        if ($key !== null) {
+            $ids = [];
+            $hide = function (array $x) use ($key, &$ids) {
+                if (isset($x[$key]) && is_string($x[$key])) {
+                    if (!isset($ids[$x[$key]])) $ids[$x[$key]] = 'g' . (count($ids) + 1);
+                    $x[$key] = $ids[$x[$key]];
+                }
+                return $x;
+            };
+            $r = $hide($r);
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                foreach ($r['branches'] as $i => $b) if (is_array($b)) $r['branches'][$i] = $hide($b);
+            }
+        }
         return $r;
     }
 
+    /**
+     * $r without surveyShape's "drop" keys, on the rule and on each branch:
+     * why a rule is not checked on the page, which a survey page never shows,
+     * for a step that runs after clientShape.
+     */
+    public static function withoutSurveyTexts(array $r)
+    {
+        $drop = self::surveyShape()['drop'];
+        foreach ($drop as $k) unset($r[$k]);
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $i => $b) {
+                if (is_array($b)) foreach ($drop as $k) unset($r['branches'][$i][$k]);
+            }
+        }
+        return $r;
+    }
+
+    /** The branch-group key of $type's mode when its values are hidden on a survey, or null. */
+    private static function surveyOpaqueGroup($type)
+    {
+        $mode = self::modeOfType($type);
+        foreach (self::all() as $m) {
+            if ($m['mode'] !== $mode) continue;
+            return !empty($m['branchGroup']['surveyOpaque']) ? $m['branchGroup']['key'] : null;
+        }
+        return null;
+    }
 
     /** Field-type eligibility of a mode: fieldTypes plus the refusal wording. */
     public static function eligibility($mode)
@@ -444,6 +544,67 @@ final class ModeRegistry
         if (in_array($fieldType, $e['fieldTypes'], true)) return null;
         if (isset($e['annotationWhyFor'][$fieldType])) return $e['annotationWhyFor'][$fieldType];
         return strtr($e['annotationWhy'], ['{type}' => (string) $fieldType]);
+    }
+
+    /**
+     * What each mode's findings carry besides the common keys, for the audit
+     * log and the scan: finding key => ['log' => log entry key, 'scan' => scan
+     * violation key], either optional (php/modes.json findingKeys). A union
+     * over the modes; a key two modes name goes where the first one says.
+     */
+    public static function findingKeys()
+    {
+        return self::memo('findingKeys', function () {
+            $out = [];
+            foreach (self::all() as $m) {
+                if (!isset($m['findingKeys'])) continue;
+                foreach ($m['findingKeys'] as $k => $to) if (!isset($out[$k])) $out[$k] = $to;
+            }
+            return $out;
+        });
+    }
+
+    /**
+     * The refusal of a rule of a locking mode (php/modes.json "lock") on a
+     * field another rule returns a value to, with {field} and {by} still to
+     * fill; null for a mode that locks nothing.
+     */
+    public static function lockReturnWhy($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['lock']['returnWhy']) ? $m['lock']['returnWhy'] : null;
+    }
+
+    /** Whether the mode locks its fields' values (php/modes.json "lock"). */
+    public static function locks($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['lock']);
+    }
+
+    /**
+     * Whether a reason given under @UVJUSTIFY stands for a broken rule of
+     * this mode (php/modes.json "justify").
+     */
+    public static function justifies($mode)
+    {
+        return self::mode($mode)['justify'] === true;
+    }
+
+    /**
+     * The reason fields a rule reads for its fields: the values of the
+     * "justifyBy" map (field => reason field) that UniversalValidator::applyJustify
+     * writes on a rule of a mode a reason stands for.
+     *
+     * @return string[]
+     */
+    public static function justifyFields(array $r)
+    {
+        $out = [];
+        if (isset($r['justifyBy']) && is_array($r['justifyBy'])) {
+            foreach ($r['justifyBy'] as $f => $reason) if (is_string($reason) && $reason !== '') $out[$reason] = true;
+        }
+        return array_keys($out);
     }
 
     /** A per-mode method name from the "hooks" block, or null. */
@@ -798,14 +959,16 @@ final class ModeRegistry
 
     /**
      * Every field a rule's own configuration reads besides its validated
-     * fields: the operands of all its conditions, its operand keys and its
-     * field lists. Strings that do not parse contribute nothing (they are
-     * config errors already). $kinds narrows the sources: the save hook's
-     * reverse dependencies follow conditions and operands only.
+     * fields: the operands of all its conditions, its operand keys, its
+     * field lists and the reason fields that stand for its findings
+     * ("reason", justifyFields). Strings that do not parse contribute nothing
+     * (they are config errors already). $kinds narrows the sources: the save
+     * hook's reverse dependencies follow conditions and operands only, and a
+     * reason field is no field a rule judges by (markLockReads).
      *
      * @return string[] field names, de-duplicated, in discovery order
      */
-    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList'], array $skipRoles = [])
+    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList', 'reason'], array $skipRoles = [])
     {
         $out = [];
         if (in_array('cond', $kinds, true)) {
@@ -823,6 +986,9 @@ final class ModeRegistry
         }
         if (in_array('fieldList', $kinds, true)) {
             foreach (self::fieldListRefs($r, $skipRoles) as $w) $out[(string) $w] = true;
+        }
+        if (in_array('reason', $kinds, true)) {
+            foreach (self::justifyFields($r) as $w) $out[$w] = true;
         }
         return array_keys($out);
     }

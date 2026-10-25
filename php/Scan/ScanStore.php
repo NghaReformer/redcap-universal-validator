@@ -149,6 +149,9 @@ interface ScanStore
         // other projects the run looked values up in from it (review R3U-N1):
         // the reader's plan can no longer say once the rule is gone.
         'policy_json',
+        // Of detail_rows, the ones a reason (@UVJUSTIFY) stands for (schema 6),
+        // so a run still working counts them apart from its open findings.
+        'detail_justified',
     ];
 
     /**

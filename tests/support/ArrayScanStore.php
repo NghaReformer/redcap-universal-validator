@@ -110,7 +110,7 @@ final class ArrayScanStore implements ScanStore
             // store's columns are not.
             'lease_owner' => null, 'lease_expires_at' => null,
             'supersede_cursor' => 0, 'created_by' => '',
-            'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
+            'detail_rows' => 0, 'detail_bytes' => 0, 'detail_justified' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
             // Reconciliation state. Present from the start so progressState()
             // reads the same shape on a run that has not reached catch-up as on
@@ -689,6 +689,8 @@ final class ArrayScanStore implements ScanStore
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);
+        // the kept rows a reason (@UVJUSTIFY) stands for - see SqlScanStore::commitBatch()
+        $this->runs[$runId]['detail_justified'] += count(array_filter($keep, function ($f) { return !empty($f['justified']); }));
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
         // One of exactly two places, and only when a record actually finished.
         if ($applied > 0) $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
@@ -761,10 +763,11 @@ final class ArrayScanStore implements ScanStore
             'value_expires_at'  => $or('value_expires_at', null),
             'group_hmac'        => $or('group_hmac', null),
             'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
-            // Schema versions 3 and 5, as SqlScanStore::findingRow().
+            // Schema versions 3, 5 and 6, as SqlScanStore::findingRow().
             'as_of'             => isset($f['as_of']) ? (string) $f['as_of'] : null,
             'z_score'           => isset($f['z_score']) ? (string) $f['z_score'] : null,
             'growth_reference'  => isset($f['growth_reference']) ? (string) $f['growth_reference'] : null,
+            'justified'         => empty($f['justified']) ? 0 : 1,
         ];
     }
 

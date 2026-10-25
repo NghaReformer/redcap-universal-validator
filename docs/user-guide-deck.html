@@ -996,9 +996,10 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
       <div>
         <div class="eyebrow" data-reveal style="--r:0">Server-side</div>
         <h2 data-reveal style="--r:1; margin-top:.5rem">The after-save audit</h2>
-        <p class="muted mt3" data-reveal style="--r:2">After each save, a hook re-checks the value with the <strong>same rules</strong> and logs anything invalid to the module log. Three entry types keep failures visible.</p>
+        <p class="muted mt3" data-reveal style="--r:2">After each save, a hook re-checks the value with the <strong>same rules</strong> and logs anything invalid to the module log. Four entry types keep failures, and values saved with a reason, visible.</p>
         <div class="chip-list mt4" data-reveal style="--r:3">
           <span class="pill bad mono">invalid-id-saved</span>
+          <span class="pill info mono">uvalidate-justified</span>
           <span class="pill junk mono">uvalidate-unconfigurable</span>
           <span class="pill junk mono">uvalidate-audit-error</span>
         </div>

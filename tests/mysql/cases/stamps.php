@@ -74,12 +74,14 @@ $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN as_of');
 $A->query('ALTER TABLE ' . Schema::table('unique_candidate') . ' DROP COLUMN lookup');
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN z_score');
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN growth_reference');
+$A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN justified');
+$A->query('ALTER TABLE ' . Schema::table('scan_run') . ' DROP COLUMN detail_justified');
 $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version > 2');
 $mig = Schema::migrate($ca);
 check('stamps: an installation at version 2 migrates to 3 and on (got ' . json_encode($mig) . ')',
     $mig['ok'] === true && $mig['from'] === 2 && $mig['to'] === Schema::VERSION
     && $mig['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5))
-        + count(Schema::statements(6)));
+        + count(Schema::statements(6)) + count(Schema::statements(7)));
 check('stamps: and health says so', Schema::health($ca)['ok'] === true);
 
 // A durable finding keeps the day it was judged against.

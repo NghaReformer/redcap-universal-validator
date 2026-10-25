@@ -1108,6 +1108,340 @@ slip:
   Nothing shown is saved, and nothing is drawn with `innerHTML` or inline
   styles.
 
+## How far a number may change — the `@UVDELTA` tag
+
+`@UVASSERT` can say that a weight is not below the previous one. It cannot say
+how far the weight may move. `@UVDELTA` compares a number with an earlier value
+and flags a change larger than its limit:
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg","blockSave":"confirm"}
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+@UVDELTA={"vs":"previous-instance","max":0,"direction":"down"}
+```
+
+- **JSON form only.** `vs` names the earlier value: `previous-event`,
+  `previous-instance`, `first-event` or `first-instance` (this field there), or
+  any one field reference such as `[weight_screening]` or
+  `[baseline_arm_1][weight]`. The shorthands and a reference to another event
+  or instance need event and instance references on. `max` limits the change in
+  the field's unit and `maxPct` as a percent of the earlier value; give one or
+  both. `direction` (`both`, `up` or `down`) says which changes the limits
+  apply to. Optional `unit`, `when`, `message`, `blockSave`.
+- **Number fields:** Text fields with no, integer or number validation
+  (including comma decimals), calc fields and sliders. The `vs` field must
+  hold numbers too: a Text field with no, integer or number validation, a calc
+  or a slider, whichever kind the tagged field is.
+- **Exact.** The change is worked out as an exact decimal, and the percent test
+  is `|change| × 100` against `maxPct × |earlier value|`, with no division and
+  no rounding. A number with an exponent is written out in full, so `1e80`
+  against `1e100` is a real change. A value longer than 4,096 digits written
+  out is reported as too long to compare, never judged. A limit is at most 64
+  characters. Long numbers are charged to the record's evaluation budget in
+  the audit and the scan. An earlier value of 0 has no percent, so `maxPct`
+  does not apply to it; `"maxPct": 0` is refused for that reason (use
+  `"max": 0` for "no change").
+- **Nothing to compare with.** A blank value, a blank earlier value and a
+  missing data code on either side check nothing. On the first visit or the
+  first instance there is no earlier value.
+- **Checked at every event.** Each entry resolves its shorthand on its own, so
+  the tag is checked at every event that holds the form, arm by arm. An event
+  shorthand is refused when no arm has two events with the form, or when an
+  event it names holds the form more than once (the form repeats there, or the
+  whole event repeats); the refusal gives the shorthand's own event with an
+  instance, `[previous-event-name][weight][last-instance]` or
+  `[first-event-name][weight][first-instance]`, when one works from every
+  event, and no example otherwise. An instance shorthand is refused unless the form repeats at
+  every event that holds it. A reference that always names this same entry,
+  such as `[event-name][weight]`, is refused. So is one that could not be read
+  on any save of some entry: an event, named or not, that does not hold the
+  `vs` form; an instance of a form that does not repeat where the reference
+  lands (`[weight][1]` on a form held once); a relative instance
+  (`[previous-instance]` and the like) at an event where the field's own form
+  is held once; no instance of a form that repeats where it lands, unless it
+  is the field's own row (its own repeating form, or a form of the same
+  repeating event); and a relative event that finds no event from anywhere
+  the field is entered. The refusal quotes the reference as written. When a
+  reference is found that every event where the field is entered can read,
+  the refusal ends with it; otherwise it lists the events and instances it
+  tried and says none of those works. The search tries the event as
+  written, the previous and first events (with another form, also the last),
+  events named outright, and this event. It never offers the next event, nor,
+  on the field's own form, the last event or a later visit named outright,
+  since each compares with a later entry; this holds for the event as written
+  too. For the field itself the instance must read an earlier entry where the
+  event lands: `[previous-instance]` only at the field's own event,
+  `[last-instance]` and an instance numbered after the first only at another,
+  `[first-instance]` at either (tried last), and never `[next-instance]`, nor
+  `[current-instance]` at another event. It offers nothing with the `vs` and
+  direction of another `@UVDELTA` tag on the field when neither tag has a
+  condition, or when both have one and the two could be true at once. Written
+  back, two such tags without a condition are refused, and so are two whose
+  conditions say the same thing, however written (keyword case, spacing,
+  quote style, parentheses, the order of `and`/`or` members and of a
+  comparison's sides aside, and letter case when neither tag is
+  `caseSensitive`). Two other conditions that are true at once are a runtime
+  conflict, and the field validates nothing while both hold. Two conditions
+  count as never true at once only when each tests one field, written
+  without an event or instance (each checkbox box counts as its own field),
+  for equality with a value, alone or as part of an `and`, and no value
+  equals both as conditions compare values. For example, `[arm]='1'` and
+  `[arm]='2'` qualify, while `[x]=1` and `[x]='01'` (numbers compare by
+  value), `[x]='Yes'` and `[x]='yes'` (unless both tags are
+  `caseSensitive`), `[v1_arm_1][x]='1'` and `[v1_arm_1][x]='2'`,
+  `[cb(1)]='1'` and `[cb(2)]='0'`, and `[x]>0` and `[x]=1` do not. A tag
+  without a condition is the fallback beside tags that have one, so the two
+  may share a `vs`. A refused tag earlier on the field counts with the
+  reference its own refusal suggests. A
+  tag that failed to parse counts with the `vs`, direction and condition its
+  JSON names, read with single or curly quotes as double quotes and without
+  a trailing comma. Nothing is suggested beside it, and the refusal says to
+  fix that tag first, when even that cannot be read, when the JSON names a
+  key the tag does not take (letter case counts, so `When` is one), or when
+  its `vs`, `direction` or `when` is not text or would be refused. A
+  reference to another event or instance counts as read, since turning
+  references on fixes it; a `{binding}` its `references` do not define
+  does not, since the `when` is still refused with references on. So the
+  suggestions for one field can be written back together. When the other
+  tags hold every reference that
+  would work, the refusal says so. An event is named outright only when every
+  event of the field's form is in its arm: an event of another arm holds a
+  value only for a record entered in both arms. Written by hand, such an
+  event is accepted. A `vs` form designated at no event is said to be so.
+- **When it blocks.** A `vs` field on the same page is read as it is typed, and
+  the rule blocks as `blockSave` says (default `off`). The note waits while
+  the person is still typing in a field the rule reads. An earlier value from
+  another form, event or instance is read when the page opens, so that check
+  shows a red note but never blocks. A calc never blocks. A survey gets only a
+  `vs` on its own page, which the page reads by name. Of a `vs` on another
+  form, event or instance, a survey's page source names neither the field nor
+  the event, not even in a configuration error.
+- **Several comparisons.** Tags with different `vs` or different directions on
+  one field all apply (5% from the previous visit and 15% from baseline). Tags
+  with the same `vs` and direction need different `when` conditions.
+- **Audited.** The post-save audit logs `type: delta` with reason `up` or
+  `down` and the `vs` it compared with. Saving an earlier visit re-checks the
+  visits that compare with it. A value or an earlier value that is not a number
+  is a rule problem. The Validation scan counts the findings as "Rose more than
+  allowed" or "Fell more than allowed", with the limits in the detail line.
+  Configure via field annotation only.
+
+## Values entered once — the `@UVWRITEONCE` tag
+
+Some answers are entered once and then left alone, such as a consent date, a
+randomisation arm or a baseline weight. REDCap's `@READONLY` stops everyone,
+including the first entry. `@UVWRITEONCE` leaves the field open until its
+first save of a value and locks it from then on:
+
+```text
+@UVWRITEONCE
+@UVWRITEONCE={"roles":["Data manager"]}
+@UVWRITEONCE={"roles":["Data manager","PI"],"since":"2026-11-01","message":"Ask the data manager to correct this date."}
+```
+
+- **Locked by the first save.** The first save of a value that is not blank and
+  not a missing data code locks the field, whoever makes it. A blank or a code
+  locks nothing, so a field marked "unknown" can still be filled in later.
+- **Roles.** `roles` names the user roles whose members may still change or
+  clear the value, by the name the User Rights page shows or by the unique
+  role name, up to 20. Letter case does not matter ("STRASSE" matches
+  "Straße", "ÉQUIPE" matches "équipe", and "İDARE" matches "idare"), though
+  the dotless "ı" stays a letter of its own, so "dırector" is not "director".
+  Invisible format characters such as a zero-width space
+  are ignored, and a run of spaces counts as one. With PHP's intl extension a
+  name typed with combining accents also matches one typed with composed
+  letters; without intl the two spellings differ. Each must be a role of the
+  project.
+  A member's change moves the lock to the new value, and clearing it releases
+  the lock. A user whose rights in the project have expired, or whose account
+  is suspended, holds no role. An administrator who is not a user of the
+  project holds none either, so the lock stops them as it stops everyone else.
+  Roles are read when the audit or the scan runs, not as they were at the
+  save, because REDCap's log names who saved but not the role they held, and
+  it records a change of role only as free text this check does not read. So
+  a change counts as the role's while its maker holds the role, and as a
+  violation once they leave it. REDCap logs a field only when its value
+  changes, so a member who wants to keep a value that someone outside the
+  roles saved saves the field twice: another value, then that one.
+- **`since`.** A date written YYYY-MM-DD, which starts at 00:00 in the
+  project's time zone. Saves before then lock nothing, the value held at that
+  moment is locked from then on, and the page locks nothing before that day.
+  Use it when the tag is added to a project that already holds data.
+- **Field types.** Text and Notes fields (dates included), dropdown, radio,
+  yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
+  nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or
+  `@DOWNLOAD-COUNT`, whose value REDCap writes again by itself, nor a field with `@RICHTEXT` or an
+  ontology search (BioPortal, FHIR or any other service), whose widget keeps
+  its own copy of the text, nor a field another rule returns a value to.
+- **On the page.** For everyone outside the roles the field keeps the value it
+  opened with, with a short note under it. A text box is read-only, the radio
+  buttons are disabled and their "reset" link hidden, the enhanced radio
+  buttons take no clicks, the slider is disabled, and the date picker is kept
+  from opening, with its button and REDCap's Today and Now buttons hidden.
+  Nothing the form posts is disabled, since REDCap would then save the field
+  blank: a dropdown or SQL field takes no clicks instead, and one whose saved
+  code is no longer one of its choices gets that code back as an option. A
+  change made with the keyboard or a script is undone, and the note says so.
+  The lock touches only the field's own controls: a field embedded in its row
+  keeps its own buttons. A survey respondent holds no role. When the user
+  roles cannot be read the field is locked for everyone, and the note says the
+  role could not be checked. When the saved value cannot be read the field is
+  not locked; staff see a note saying so, and the audit still checks a change.
+  Another rule on a locked field still shows its note. It holds the save only
+  when it also reads a field of this form that the person can change, and
+  only once that field has been changed on the page, a checkbox option by
+  option. A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the
+  fields it is worked out from on this event and instance, through other
+  calcs too. The value each field opened with is read after REDCap's own
+  start-up on the page, once its calcs, branching and action tags have filled
+  their fields. So a field REDCap fills as the page starts (`@NOW`, `@TODAY`,
+  `@DEFAULT`, `@SETVALUE`) counts only once the person changes it, and so does
+  a field with `@READONLY` or `@HIDDEN`. A field with `@LATITUDE` or
+  `@LONGITUDE` never counts, since REDCap fills it later, once the browser
+  gives its position. A tag name inside another tag's quoted text, as in
+  `@PLACEHOLDER="near @LATITUDE"`, is not read as the tag; outside quotes it
+  is. A violation
+  already saved when the page opened, or one between two locked fields, never
+  holds it, whether the person clicks Save or presses Enter. A person's own
+  first answer is locked as soon as it is saved, so after Save & Stay, or Next
+  on a multi-page survey, going back finds it locked. The roles and `since`
+  never reach the page.
+- **The browser only.** The Data Import Tool and the API are not stopped. What
+  they change is found afterwards from REDCap's log, by the audit of the next
+  save of the form that holds the field and by the Validation scan.
+- **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
+  or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
+  as "Changed after it was locked" or "Cleared after it was locked" and names
+  when the value was locked. Each record and event is read on its own, back to
+  the row REDCap writes when it makes the record, which names the record id
+  field. That row is read as REDCap wrote it, and it counts only when its
+  record id line comes before every other Text or Notes value in it, since a
+  Notes value could hold a typed copy of that line. A deletion of the whole record starts a new history, and so does an
+  erase of all the project's records (Erase all data, or deleting every record
+  when the project moves to production): every history starts after the
+  newest one. A deletion of one form or one event at another event changes
+  nothing. The check reports a rule problem, never a pass, for each of the
+  following. A log that holds more rows
+  of the record and event than are read (5,000); a deletion of this event's
+  data or of one arm, a deletion at another event that the log does not
+  describe as one form or one event, and in a project of several arms every
+  deletion of the record, since the check cannot tell what it removed; a
+  record whose log does not show it being made (one renamed while its saves
+  stay logged under the old name, or one that came with a copied project;
+  renaming the record id field after records exist does this to every record,
+  since the rows that made them name the field by its old name); a
+  record whose creating row has its record id line after a Text or Notes
+  value; a save the log names no event for; a save the log
+  does not spell out; a value the log never shows saved; and roles that cannot
+  be read when a change needs them. The log lists a save's fields in the data
+  dictionary's order. A Notes value typed to look like the log line of another
+  field is caught when that field comes earlier in the data dictionary: from
+  the first Text or Notes value before the line out of order, the row's values
+  read as not spelled out. A row written before a field was moved breaks the
+  order in the same way, and so may an import whose columns are in another
+  order, so the fields after that point are rule problems for that save.
+  Moving any field of a form after records exist, locked or not, can leave
+  the Text and Notes values of the saves made before the move "not checked",
+  the save that made the record included: in each save where a line comes out
+  of the new order after a Text or Notes value, the values from the save's
+  first Text or Notes value to its end read as not spelled out. A field of
+  another type written before every Text and Notes value of the save is
+  still read; the record id field does not count as a Text value here. A
+  forged line that keeps the
+  order can read as a save of that field. After the lock, a save by a person
+  with no role moves nothing, so such a line gives at worst a false finding or
+  a rule problem. Before the lock, or before `since`, it can stand for a first
+  value that was never saved: the lock holds that value, and the next real
+  save of another value is reported as a change. A person with no role could
+  reach the same lock by saving that value first, so the line gives no one a
+  value they could not have saved; the finding falls on whoever saved next,
+  and the forged row stays in the log. Renaming a locked field after it holds
+  data restarts its history when REDCap's log keeps the earlier saves under
+  the old name. The page lock still holds the saved value, and the audit
+  reports the field as a rule problem until a save is logged under the new
+  name. An import or API change made after the rename, before any save of the
+  field is logged under the new name, is read as the field's first save and
+  is not caught. The tag takes no `when`,
+  `caseSensitive` or `blockSave`. Configure via field annotation only.
+
+## Values saved with a reason — the `@UVJUSTIFY` tag
+
+Some values break a rule and are still right, such as a weight above the range
+the protocol expected for a patient who really weighs that much, or a visit
+outside its window because the clinic was closed. A rule that holds the save then leaves the person two choices, a wrong value
+or an unsaved form. `@UVJUSTIFY` names a second field where the reason is
+written. Once that field holds a reason, the field's broken rules no longer
+hold the save, and the audit and the scan report those findings apart from
+the open ones:
+
+```text
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+```
+
+- **`reason`** (required) names one field of the same form: a Text or Notes
+  field, or a dropdown, radio or SQL field whose choices are the reasons you
+  allow. Not the field itself, and no event or instance. The person must
+  fill it in, so the module refuses the record ID field, a field REDCap fills
+  in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
+  `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
+  `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
+  `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any
+  form of `@READONLY`, a field with bare `@HIDDEN` (`@HIDDEN-FORM`,
+  `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are allowed), a field
+  that carries `@UVJUSTIFY` itself, which would let two fields stand for each
+  other, a field with `@UVWRITEONCE`, whose reason could never be cleared,
+  and a field another rule's `"return"` writes into. A tag name inside
+  another tag's value, such as a message or a placeholder, refuses nothing.
+- **`message`** is the note under the field that asks for the reason (a map of
+  language ids to texts is accepted, as for the other tags). Without it the
+  note reads "Fix this value, or say why it is right in" the reason field's
+  label.
+- **Which rules.** A reason stands for every rule of `@UVALIDATE`,
+  `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`,
+  `@UVDELTA` and `@UVEXISTS` on the field, from annotations and from the
+  Configure dialog alike (`php/modes.json` `"justify"`). Each keeps its own
+  `when` and `blockSave`. Never `@UVUNIQUE`, since a reason does not make a
+  duplicate identifier safe, and never `@UVWRITEONCE`, since a reason gives
+  no role. A `@UVJUSTIFY` on a field none of those rules checks, a bare
+  `@UVJUSTIFY` and a second one on the field are configuration errors.
+- **What counts as a reason.** Any value that is not blank by the test
+  `@UVREQUIRED` uses: spaces, tabs, line breaks, no-break and other Unicode
+  spaces, zero-width characters and byte-order marks alone give none. A
+  missing data code gives none either, so a reason field marked "unknown"
+  still asks for one. On the form, a
+  reason field the person cannot see gives no reason: its row hidden by
+  branching logic, or, for a reason field embedded in another field's label,
+  the row it sits in. A reason stands until someone clears it, so a later,
+  different broken value of the field saves under the same reason. Clear the
+  reason field when the value changes for another reason.
+- **On the page.** While a covered rule holds the save, or asks "Save
+  anyway?", and no reason is given, a note under the field asks for one, and
+  the field's line in the save message reads "Weight (or give a reason in
+  “Reason for change”)". Once the reason is given the field no longer holds
+  the save for those rules; their own notes stay. A reason never lets
+  anything else through: a rule with `blockSave` `"off"` still only warns, a
+  lookup still being checked still holds the save, and a field locked by
+  `@UVWRITEONCE` stays locked. On a survey page that does not carry the
+  reason field, the tag does nothing; the audit after the save still reads
+  the reason. On a rule that only warns (`blockSave` `"off"`, or an
+  `@UVDELTA` that compares with another event or instance, which the page
+  shows only as advice) a reason never shows a note on the page; it only
+  labels the finding in the audit and the scan.
+- **Audited.** The post-save audit logs a broken rule whose reason is given,
+  in the same record, event and instance, as `uvalidate-justified` with
+  `justified_by` naming the reason field; open findings stay
+  `invalid-id-saved`. The reason itself is never logged. A reason field that
+  cannot be read, or missing data codes that cannot be read, leave the
+  finding open. The Validation scan counts these findings apart: the summary
+  adds "and N saved with a reason" while the scan runs and once it ends, the
+  findings table has a "Saved with a reason" column, the durable scan stores
+  `uv_finding.justified` and counts a run's stored rows with a reason in
+  `uv_scan_run.detail_justified` (schema version 7), and a scan whose findings
+  all have a reason counts no open violations. Configure via field annotation
+  only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -1344,6 +1678,17 @@ check-character primitive, but the full runtime path the module actually uses:
   field to be left, each level's block, calc and read-only fields never block)
   and `tests/range_module_php.php` the server side: eligible fields, the audit,
   the scan and its per-branch detail line.
+- `tests/delta_js.cjs` / `tests/delta_php.php` — the `@UVDELTA` verdict (exact
+  changes past 2^53, percents without division, an earlier 0, direction, comma
+  decimals, values too long to compare) in both runtimes from one fixture,
+  `tests/delta_fixture.json`, plus the grammar. `tests/delta_dom_js.cjs` drives
+  the browser rule (a live `vs` blocks, a saved one and a calc never do, two
+  comparisons on one field) and `tests/delta_module_php.php` the server side:
+  the hooks, the page fold, the audit on a classic project, across events and
+  across instances, and the scan. `tests/delta_live_twin_php.php` and
+  `tests/delta_live_twin_js.cjs` check every answer of the live run sheet
+  (`docs/testbed/DELTA_LIVE_ACCEPTANCE.md`), and `tests/delta_mutations.py`
+  fails when a suite lets a broken copy of the code through.
 - `tests/growth_js.cjs` / `tests/growth_php.php` — growth references: the
   z-score in both runtimes from one fixture (`tests/growth_fixture.json`),
   2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
@@ -1433,6 +1778,26 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
+php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
+node tests/delta_dom_js.cjs      # @UVDELTA DOM contract (live vs blocks, saved vs and calc never block)
+php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
+php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
+node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
+python3 tests/delta_mutations.py   # @UVDELTA: every mutation must make a named suite fail
+php  tests/writeonce_php.php      # @UVWRITEONCE verdict and the log reader vs writeonce_fixture.json
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
+php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, page, audit, scan
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer but I4, from the module
+node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
+python3 tests/writeonce_mutations.py   # @UVWRITEONCE: every mutation must make a named suite fail
+php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.json, grammar, registry flags
+node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
+node tests/justify_dom_js.cjs     # @UVJUSTIFY page: a reason releases the modes it stands for
+php  tests/justify_module_php.php # @UVJUSTIFY hooks, page config, audit, legacy and durable scan
+php  tests/justify_live_twin_php.php # @UVJUSTIFY live run sheet: every answer, from the module
+node tests/justify_live_twin_js.cjs  # @UVJUSTIFY live run sheet: every note, hold and dialog line, from the engine
+python3 tests/justify_mutations.py   # @UVJUSTIFY: every mutation must make a named suite fail
 node tests/growth_js.cjs         # growth references: z-scores and outputs vs growth_fixture.json, WHO golden, R pnorm/qnorm, mpmath outputs, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar, engine copy, bad file

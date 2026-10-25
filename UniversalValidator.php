@@ -33,6 +33,8 @@ require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ScanRuns.php';
 require_once __DIR__ . '/php/LiveLookups.php';
 require_once __DIR__ . '/php/ValueStamps.php';
+require_once __DIR__ . '/php/ValueHistory.php';
+require_once __DIR__ . '/php/RoleBook.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
@@ -95,6 +97,9 @@ class UniversalValidator extends AbstractExternalModule
 
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
+
+    /** How many findings of the running legacy scan a reason stands for (scanRecord, scanProject). */
+    private $scanJustified = 0;
 
     /** The engine's default settings; each rule may override any of them. */
     private function defaults()
@@ -209,6 +214,10 @@ class UniversalValidator extends AbstractExternalModule
         // of this request shows this record as it was before this save.
         $this->existsLookupMemo = [];
         $this->refreshExistsReads($project_id, $record);
+        // One evaluation budget per record: findingsDelta starts one when the
+        // event/instance audit did not, and the next record of an import must
+        // not inherit what this one spent.
+        $this->temporalBudget = null;
         try {
             // $project_id comes straight from the hook and is reliable in every
             // save context (form, survey, API, import, cron); $this->getProjectId()
@@ -588,8 +597,18 @@ class UniversalValidator extends AbstractExternalModule
             // must not keep the z-score either.
             if (isset($v['z']) && $logMode === 'raw') $extra['z'] = (string) $v['z'];
             if (isset($v['reference'])) $extra['reference'] = (string) $v['reference'];
+            // A @UVDELTA finding: the reference it compared with (rule text, never a value).
+            if (isset($v['vs'])) $extra['vs'] = (string) $v['vs'];
+            // What a mode's findings carry for the log (php/modes.json findingKeys).
+            foreach (ModeRegistry::findingKeys() as $fk => $to) {
+                if (isset($to['log'], $v[$fk]) && is_scalar($v[$fk])) $extra[$to['log']] = (string) $v[$fk];
+            }
+            // A broken rule saved with a reason (@UVJUSTIFY): logged apart from the
+            // open ones, naming the reason field. The reason itself is never logged.
+            $justified = !empty($v['justified']) && isset($v['justifiedBy']);
+            if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
-                $extra);
+                $extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');
         }
         foreach ((isset($f['unevaluated']) ? $f['unevaluated'] : []) as $u) {
             $this->logNotEvaluated($logMode, $project_id, $record, $ruleIndex, $u, $instrument, $event_id, $repeat_instance);
@@ -758,7 +777,8 @@ class UniversalValidator extends AbstractExternalModule
                 $returns = array_merge(self::ownedReturns($rule, $meta, $held), $returns);
                 if ($returns) $out['returns'] = $returns;
             }
-            return $out;
+            // judged by the branch it picked, justified by the field's reason (justifyBy is the rule's, never a branch's)
+            return $this->markJustified($out, $rule, $values, $project_id);
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -841,8 +861,46 @@ class UniversalValidator extends AbstractExternalModule
         // takes the same ten arguments; $meta carries the Missing Data Codes
         // and what the rule returns, which only some of them read (REQ-13).
         $evaluator = ModeRegistry::evaluator($mode);
-        return $this->withReturned(
-            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret, $rule, $meta);
+        return $this->withReturned($this->markJustified(
+            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta),
+            $rule, $values, $project_id), $ret, $rule, $meta);
+    }
+
+    /**
+     * Marks each finding in $out justified, with justifiedBy, whose field
+     * has its reason given in the same record, event and instance ($values):
+     * the reason field named in the rule's justifyBy (applyJustify) holds a
+     * reason (Logic::reasonGiven). A reason field that was not read leaves
+     * the finding open, and so do Missing Data Codes that could not be read:
+     * a code is no reason, and without the list no value can be told apart
+     * from one.
+     *
+     * The reason field's resolution needs no test of its own. readValues
+     * returns a value only for a field it resolved. A scan or host context
+     * judges only the fields of its own form ($onForm), and the reason field
+     * sits on that same form (annotateJustifyDictionary; @UVJUSTIFY is an
+     * annotation tag only), so resolveOne finds it wherever it finds the
+     * field. Drop the same-form refusal and this needs the test again.
+     */
+    private function markJustified(array $out, array $rule, array $values, $project_id)
+    {
+        if (empty($out['invalid']) || !isset($rule['justifyBy']) || !is_array($rule['justifyBy'])) return $out;
+        $codes = null;
+        foreach ($out['invalid'] as $k => $v) {
+            $f = isset($v['field']) ? (string) $v['field'] : '';
+            $reason = isset($rule['justifyBy'][$f]) && is_string($rule['justifyBy'][$f]) ? $rule['justifyBy'][$f] : '';
+            if ($reason === '' || !array_key_exists($reason, $values)) continue;
+            if ($codes === null) {
+                $codes = $this->missingDataCodes($project_id);
+                // the codes come from the project object: either read failing leaves them unknown
+                $unread = isset($this->configUnread[(int) $project_id]) ? $this->configUnread[(int) $project_id] : [];
+                if (isset($unread['the missing data codes']) || isset($unread['the project\'s design'])) return $out;
+            }
+            if (!Logic::reasonGiven($values[$reason], $codes)) continue;
+            $out['invalid'][$k]['justified'] = true;
+            $out['invalid'][$k]['justifiedBy'] = $reason;
+        }
+        return $out;
     }
 
     /**
@@ -3822,6 +3880,504 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Delta mode (@UVDELTA): each saved number may move from the earlier value
+     * its "vs" names by at most "max" (in its unit) and "maxPct" (a percent of
+     * the earlier value), in the rule's direction. The verdict is
+     * Logic::deltaVerdict, the twin of the browser's; a finding's reason is
+     * the way the value moved, "up" or "down".
+     *
+     * A blank value or a blank earlier value checks nothing: on a first visit
+     * or instance there is no earlier one (the extended path resolves an
+     * absent row to blank). A "vs" this context could not resolve is
+     * reported, never read as blank, as the assert above is (M-01); so is a
+     * saved value, or an earlier one, that is not a number this rule can
+     * read. A "vs" that resolved to the field itself in this same entry (the
+     * extended path's deltaVsValueSelf: [baseline_arm_1][weight] saved on the
+     * baseline visit) has nothing to compare with there.
+     */
+    private function findingsDelta(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $vs = isset($rule['deltaVs']) && is_string($rule['deltaVs']) ? $rule['deltaVs'] : '';
+        if (array_key_exists('deltaVsValue', $rule)) {
+            // Compiled on the extended (event/instance) path, which resolved it.
+            $earlier = $rule['deltaVsValue'];
+            if (!is_string($earlier)) {
+                $why = 'the "vs" value ' . $vs . ' could not be resolved';
+                if (isset($rule['deltaVsValueWhy']) && is_string($rule['deltaVsValueWhy'])) {
+                    $why .= ' (' . rtrim($rule['deltaVsValueWhy'], '.') . ')';
+                }
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $why . ' — field skipped'];
+                return $out;
+            }
+        } else {
+            $op = ModeRegistry::operandRef($vs);
+            $state = $op === null ? null : (isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok');
+            if ($op === null) {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "vs" value cannot be evaluated — field skipped'];
+                return $out;
+            }
+            if ($state !== 'ok') {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "vs" value ' . self::resolutionProblem($state, $op[1])];
+                return $out;
+            }
+            $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
+            $earlier = is_array($v) ? '' : (string) $v;
+        }
+        // An earlier value marked with a Missing Data Code was not entered.
+        if (self::isMissingCode($earlier, $this->missingDataCodes($project_id))) $earlier = '';
+        $self = isset($rule['deltaVsValueSelf']) ? $rule['deltaVsValueSelf'] : null;
+        // Long numbers pay the record's evaluation budget (Logic::deltaVerdict).
+        // The extended audit and the scan start one per record; a save with no
+        // event or instance rule has not, and starts it here.
+        if ($this->temporalBudget === null) $this->temporalBegin($project_id);
+        $budget = $this->temporalBudget;
+        $charge = function ($units) use ($budget) { return $budget->take($units); };
+        $spec = [
+            'max' => isset($rule['deltaMax']) ? $rule['deltaMax'] : null,
+            'maxPct' => isset($rule['deltaMaxPct']) ? $rule['deltaMaxPct'] : null,
+            'direction' => isset($rule['deltaDirection']) ? $rule['deltaDirection'] : 'both',
+            'decimalComma' => !empty($rule['decimalComma']),
+            'earlierComma' => !empty($rule['deltaVsComma']),
+        ];
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value)) continue;
+            if ($self === $field) continue;
+            $r = Logic::deltaVerdict($spec, (string) $value, $earlier, $charge);
+            if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
+            if ($r['verdict'] === 'unknown') {
+                $why = $r['reason'] === 'not-a-number' ? 'the saved value is not a number this rule can read'
+                     : ($r['reason'] === 'earlier-not-a-number' ? 'the "vs" value ' . $vs . ' is not a number this rule can read'
+                     : ($r['reason'] === 'limit' ? 'the evaluation budget for this record is spent, so the change was not worked out'
+                     : 'the value and its "vs" value are too long to compare'));
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $why . ' — field skipped'];
+                continue;
+            }
+            // vs: what the value was compared with, so two tags on one field
+            // (the previous visit, baseline) log findings that can be told apart.
+            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict'],
+                'vs' => $vs];
+        }
+        return $out;
+    }
+
+    /**
+     * Write-once mode (@UVWRITEONCE): the saved value must be the value the
+     * field is locked to (Logic::writeOnceVerdict), worked out from every save
+     * of the field on this record, event and instance in REDCap's log
+     * (ValueHistory). The log is the only source, so a value written by the
+     * API or an import is judged like one typed on a form, once the audit or
+     * the scan reads it. The module never writes the locked value back. A log
+     * that cannot be read in full, a save it does not say plainly, a value it
+     * never shows saved, or user roles that cannot be read when a change needs
+     * them, is a rule problem ("not checked"), never a pass.
+     */
+    private function findingsWriteonce(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $instance = isset($meta['instance']) ? max(1, (int) $meta['instance']) : 1;
+        $codes = isset($meta['missingCodes']) && is_array($meta['missingCodes']) ? $meta['missingCodes'] : $this->missingDataCodes($project_id);
+        $isMissing = function ($v) use ($codes) { return self::isMissingCode($v, $codes); };
+        $roles = isset($rule['writeonceRoles']) && is_array($rule['writeonceRoles']) ? $rule['writeonceRoles'] : [];
+        $holds = function ($user) use ($roles, $project_id) { return $this->userHoldsRole($project_id, $user, $roles); };
+        $history = null;
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $state = isset($resolution[$field]) ? $resolution[$field] : 'ok';
+            if ($state !== 'ok') {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved value ' . self::resolutionProblem($state, $field)];
+                continue;
+            }
+            $value = isset($values[$field]) ? $values[$field] : '';
+            if (is_array($value)) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved value is not one value — field not checked'];
+                continue;
+            }
+            if ($history === null) $history = $this->valueHistory($project_id);
+            if ($history === false) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the project log could not be read — field not checked'];
+                continue;
+            }
+            $h = $history->saves($record, $event_id, $instance, $field);
+            if ($h['state'] === 'capped' || $h['state'] === 'unknown') {
+                $unknown = ['delete' => 'the project log holds a deletion this check cannot place (part of the record, or one arm of it)',
+                            'noevent' => 'the project log holds a save of this field that names no event',
+                            'start' => 'the project log does not show the record being made (it was renamed, came with a copied project, or the record id field was renamed), so its first saves are not read',
+                            'startrow' => 'the row of the project log that made the record could not be read plainly (its record id line comes after a Text or Notes value), so its first saves are not read',
+                            'unnamed' => 'the log reader was not told to keep this field',
+                            'read' => 'the project log could not be read'];
+                $why = isset($h['why'], $unknown[$h['why']]) ? $unknown[$h['why']] : $unknown['read'];
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => ($h['state'] === 'capped'
+                    ? 'the project log holds more saves of this record and event than are read, so its first save of this value is not known'
+                    : $why) . ' — field not checked'];
+                continue;
+            }
+            $since = isset($rule['writeonceSince']) && is_string($rule['writeonceSince']) ? $rule['writeonceSince'] : null;
+            $sinceTs = $since === null ? null : $history->logTimeOf($since);
+            if ($since !== null && $sinceTs === null) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => '"since" is not a date this rule can read — field not checked'];
+                continue;
+            }
+            $r = Logic::writeOnceVerdict($h['saves'], (string) $value, $holds, $isMissing, $sinceTs, $since);
+            if ($r['verdict'] === 'ok') continue;
+            if ($r['verdict'] === 'unknown') {
+                $why = ['ambiguous' => 'the project log does not say plainly what one save of it wrote',
+                        'gap' => 'the project log does not show the save of the value it holds',
+                        'roles' => 'the user roles could not be read to tell whether a change was made by a role that may make it'];
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => (isset($why[$r['why']]) ? $why[$r['why']] : $why['gap']) . ' — field not checked'];
+                continue;
+            }
+            $finding = ['field' => $field, 'value' => $value, 'algo' => 'writeonce', 'type' => 'writeonce', 'reason' => $r['verdict']];
+            // when the value was locked (minutes are enough to find the save in REDCap's log) and when it was changed
+            if (is_string($r['lockedAt'])) $finding['lockedAt'] = substr($r['lockedAt'], 0, 16);
+            if (is_string($r['changedAt'])) $finding['changedAt'] = substr($r['changedAt'], 0, 16);
+            $out['invalid'][] = $finding;
+        }
+        return $out;
+    }
+
+    /**
+     * @UVWRITEONCE "page" hook: a field is locked on the page when its saved
+     * value is a value (not blank, not a Missing Data Code) and the person
+     * looking holds none of the rule's roles. A survey respondent holds no
+     * role. Every other field is left off the page, and so is a rule with no
+     * field left, or one whose "since" is a day still to come in the
+     * project's clock (the audit locks nothing before it either). The roles
+     * and "since" never reach the page (serverKeys). Roles that cannot be
+     * read lock the field for everyone, with writeonceRolesUnread set so the
+     * note says the role could not be checked: a lock left open would let
+     * anyone change the value. Saved values that cannot be read lock nothing
+     * (a blank field may still be filled in), and writeonceValuesUnread makes
+     * the note say the lock could not be checked here.
+     */
+    private function pageWriteonce(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
+    {
+        $out = [];
+        $codes = null;
+        $user = null;
+        $today = null;
+        // every locked field's saved value in one read, not one per rule
+        $all = [];
+        foreach ($rules as $r) {
+            if (is_array($r) && (isset($r['type']) ? $r['type'] : '') === 'writeonce' && empty($r['configError'])) {
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $all[(string) $f] = true;
+            }
+        }
+        $values = null;
+        $resolution = [];
+        foreach ($rules as $r) {
+            if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce' || !empty($r['configError'])) {
+                $out[] = $r;
+                continue;
+            }
+            if ($record === null || $record === '' || $pid === null) continue;   // a new record: nothing saved to lock
+            if (isset($r['writeonceSince']) && is_string($r['writeonceSince'])) {
+                if ($today === null) $today = (string) $this->serverClock($pid)['today'];
+                if (strcmp($today, $r['writeonceSince']) < 0) continue;   // the lock starts later
+            }
+            $roles = isset($r['writeonceRoles']) && is_array($r['writeonceRoles']) ? $r['writeonceRoles'] : [];
+            if ($roles && $context !== 'survey') {
+                if ($user === null) $user = (string) $this->currentUsername();
+                $holds = $this->userHoldsRole($pid, $user, $roles);
+                if ($holds === true) continue;
+                // roles that cannot be read lock the field, and the note says why
+                if ($holds === null) $r['writeonceRolesUnread'] = true;
+            }
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            if ($values === null) {
+                try {
+                    $values = $this->readValues($pid, $record, array_keys($all), $event_id, $instrument, $repeat_instance, true, $resolution);
+                } catch (\Throwable $e) {
+                    $values = false;
+                }
+            }
+            if ($values === false) {
+                // nothing is known to lock: the field stays open, and the note says why
+                $r['writeonceValuesUnread'] = true;
+                $out[] = $r;
+                continue;
+            }
+            if ($codes === null) $codes = $this->missingDataCodes($pid);
+            $locked = [];
+            foreach ($fields as $f) {
+                if ((isset($resolution[$f]) ? $resolution[$f] : 'ok') !== 'ok') continue;
+                $v = isset($values[$f]) ? $values[$f] : '';
+                if (is_array($v) || trim((string) $v, " \t\r\n") === '' || self::isMissingCode($v, $codes)) continue;
+                $locked[] = $f;
+            }
+            if (!$locked) continue;
+            $r['fields'] = $locked;
+            // A dropdown or SQL field whose saved code is no longer a choice
+            // shows blank: the page gets the code to put back as an option
+            // (QRIDWriteOnceInit). Only for a choice list: a text box shows the
+            // value in its own format (a date as d-m-Y), not as saved.
+            $dd = $this->dataDictionary($pid) ?: [];
+            foreach ($locked as $f) {
+                $ft = isset($dd[$f]['field_type']) ? $dd[$f]['field_type'] : '';
+                if ($ft === 'dropdown' || $ft === 'sql') $r['writeonceSaved'][$f] = (string) $values[$f];
+            }
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    /**
+     * @UVWRITEONCE "field" hook: a field whose value REDCap computes
+     * (@CALCTEXT, @CALCDATE) changes whenever its inputs do, and one with
+     * @SETVALUE (or its alias @PREFILL) is written again each time its form or
+     * survey page opens, and one with @DOWNLOAD-COUNT each time its file is
+     * downloaded, so none of them can be locked. Nor can a field whose
+     * widget keeps its own copy of the text: the rich text editor (@RICHTEXT)
+     * writes its copy into the field when the form is saved, after the save
+     * guard has run, and an ontology search box (BioPortal, FHIR) does the
+     * same with its pick.
+     */
+    private function annotateWriteonceField(array $frag, $name, array $meta, $pid)
+    {
+        $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+        if (preg_match('/@(CALCTEXT|CALCDATE)\b/i', $ann, $m)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
+                . ' — REDCap works its value out again whenever the fields it reads change.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@(SETVALUE|PREFILL)\b/i', $ann, $m)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @' . strtoupper($m[1])
+                . ' — REDCap writes its value again each time the form or survey page opens.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@RICHTEXT\b/i', $ann)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @RICHTEXT'
+                . ' — the rich text editor keeps its own copy of the text and saves it over the field.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        if (preg_match('/@DOWNLOAD-COUNT\b/i', $ann)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field with @DOWNLOAD-COUNT'
+                . ' — REDCap adds one to it each time someone downloads the file it counts.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        // A Text field's choices hold "SERVICE:CATEGORY" when it searches an
+        // ontology (BIOPORTAL:, FHIR: and any other service REDCap adds).
+        $enum = isset($meta['select_choices_or_calculations']) ? ltrim((string) $meta['select_choices_or_calculations']) : '';
+        if (isset($meta['field_type']) && $meta['field_type'] === 'text' && preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $enum)) {
+            return ['error' => AnnotationRules::TAG_WRITEONCE . ' cannot lock a field that searches an ontology'
+                . ' — its search box keeps its own text and saves it over the field.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+        }
+        return $frag;
+    }
+
+    /**
+     * @UVWRITEONCE "dictionary" hook: every role it names must be a role of
+     * this project, by the name the User Rights page shows or by its unique
+     * role name (compared as Logic::roleKey: any letter case, spaces folded),
+     * so a misspelt role does not lock out the people it names.
+     * Roles that cannot be read are not refused here (the page then locks
+     * the field for everyone and the audit says when it needed them).
+     */
+    private function annotateWriteonceDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $roles = isset($frag['writeonceRoles']) && is_array($frag['writeonceRoles']) ? $frag['writeonceRoles'] : [];
+        if (!$roles || $pid === null) return $frag;
+        $book = $this->roleBook($pid);
+        if ($book === null) return $frag;
+        $unknown = [];
+        foreach ($roles as $role) if (!isset($book['roles'][Logic::roleKey($role)])) $unknown[] = (string) $role;
+        if (!$unknown) return $frag;
+        return ['error' => (count($unknown) === 1
+            ? '"' . $unknown[0] . '" is not a role of this project'
+            : '"' . implode('", "', $unknown) . '" are not roles of this project')
+            . ' — use the role name the User Rights page shows, or its unique role name.', '_tag' => AnnotationRules::TAG_WRITEONCE];
+    }
+
+    /**
+     * @UVJUSTIFY "field" hook: the reason cannot be the field itself.
+     */
+    private function annotateJustifyField(array $frag, $name, array $meta, $pid)
+    {
+        if (isset($frag['justifyReason']) && $frag['justifyReason'] === $name) {
+            return ['error' => '"reason" names this field itself — name the field where the reason is written, e.g. "[' . $name . '_reason]".',
+                '_tag' => AnnotationRules::TAG_JUSTIFY];
+        }
+        return $frag;
+    }
+
+    /**
+     * @UVJUSTIFY "dictionary" hook: the reason field must exist, sit on the
+     * same form as the field, so the reason is given where the value is, and
+     * take a reason: a Text or Notes field, a dropdown, radio or SQL field.
+     * It must also be a field only the person fills in, since any value in it
+     * stands for every broken value of the field: not the record ID field,
+     * not one REDCap fills in itself (JUSTIFY_FILLED_TAGS), not a read-only
+     * one, not one bare @HIDDEN hides on every page (@HIDDEN-FORM, -SURVEY,
+     * -APP and -PDF hide it in one place, and a hidden row gives no reason on
+     * the page), not one with a @UVJUSTIFY of its own, which would let two
+     * fields stand for each other, and not a write-once one, since a reason
+     * must be cleared when the value changes for another reason. A tag name
+     * inside another tag's value is text (AnnotationRules::maskValues). A
+     * field another rule returns a value to is refused in applyJustify, which
+     * sees every rule.
+     */
+    private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $reason = isset($frag['justifyReason']) ? (string) $frag['justifyReason'] : '';
+        $dd = $this->dataDictionary($pid) ?: [];
+        if ($reason === '' || !$dd) return $frag;
+        $err = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_JUSTIFY]; };
+        if (!isset($dd[$reason])) return $err('"reason" names "[' . $reason . ']", which is not a field of this project.');
+        $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
+        $there = isset($dd[$reason]['form_name']) ? (string) $dd[$reason]['form_name'] : '';
+        if ($form !== $there) {
+            return $err('"reason" names "[' . $reason . ']", which is on the form "' . $there . '", not on "' . $form
+                . '" with this field — the reason is given on the form where the value is entered.');
+        }
+        $type = isset($dd[$reason]['field_type']) ? (string) $dd[$reason]['field_type'] : '';
+        if (!in_array($type, self::JUSTIFY_REASON_TYPES, true)) {
+            return $err('"reason" names "[' . $reason . ']", a "' . $type . '" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field.');
+        }
+        if ($reason === $this->recordIdFieldOf($pid)) {
+            return $err('"reason" names "[' . $reason . ']", the record ID field — it is never blank, so it would release every broken value; name a field the person fills in.');
+        }
+        $ann = AnnotationRules::maskValues(isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '');
+        $filled = implode('|', array_map(function ($t) { return preg_quote($t, '/'); }, self::JUSTIFY_FILLED_TAGS));
+        if (preg_match('/@(' . $filled . ')(?![\w-])/i', $ann, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+                . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.');
+        }
+        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $ann, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+                . ' — the person cannot write a reason there; name a field the person fills in.');
+        }
+        if (preg_match('/@HIDDEN(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN'
+                . ' — the field is hidden on every page, so the person cannot write a reason there; name a field the person fills in.');
+        }
+        if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_JUSTIFY
+                . ' itself — the two fields could stand for each other; name a field that only holds the reason.');
+        }
+        if (preg_match('/' . preg_quote(AnnotationRules::TAG_WRITEONCE, '/') . '(?![\w-])/i', $ann)) {
+            return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_WRITEONCE
+                . ' — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.');
+        }
+        return $frag;
+    }
+
+    /** The field types a @UVJUSTIFY reason may be (annotateJustifyDictionary). */
+    const JUSTIFY_REASON_TYPES = ['text', 'notes', 'dropdown', 'radio', 'sql'];
+
+    /**
+     * The action tags with which REDCap fills a field in itself, so it never
+     * holds a reason (annotateJustifyDictionary). Add a tag here to refuse it.
+     * @UVWRITEONCE's lockReadsLate keeps a shorter list on purpose: the page
+     * takes the values lockReads compares after REDCap's start-up, so it
+     * leaves out only the tags REDCap fills later (@LATITUDE, @LONGITUDE).
+     */
+    const JUSTIFY_FILLED_TAGS = ['CALCTEXT', 'CALCDATE', 'DEFAULT', 'SETVALUE', 'PREFILL',
+        'NOW-SERVER', 'NOW-UTC', 'NOW', 'TODAY-SERVER', 'TODAY-UTC', 'TODAY',
+        'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT',
+        'LANGUAGE-CURRENT-FORM', 'LANGUAGE-CURRENT-SURVEY'];
+
+    /**
+     * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the
+     * findings of the field's other rules (markJustified).
+     */
+    private function findingsJustify(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
+    {
+        return ['invalid' => [], 'unconfigurable' => []];
+    }
+
+    /**
+     * Whether $user holds one of $roles in project $pid: true, false (also for
+     * a user with no rights row in the project, such as a survey respondent or
+     * an administrator who was never added), or null when the roles cannot be
+     * read. Role names compare as Logic::roleKey; usernames without letter case.
+     */
+    private function userHoldsRole($pid, $user, array $roles)
+    {
+        if (!$roles) return false;
+        $book = $this->roleBook($pid);
+        if ($book === null) return null;
+        $u = strtolower(trim((string) $user));
+        if ($u === '' || !isset($book['users'][$u])) return false;
+        foreach ($roles as $role) {
+            if (in_array(Logic::roleKey($role), $book['users'][$u], true)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The project's user roles, once per request (RoleBook::read): null when
+     * they cannot be read. Rights that expire are compared with today on
+     * PHP's clock, as REDCap compares them.
+     */
+    private function roleBook($pid)
+    {
+        if ($this->roleBookOverride !== null) return $this->roleBookOverride === false ? null : $this->roleBookOverride;
+        $key = (string) (int) $pid;
+        if (array_key_exists($key, $this->roleBookMemo)) return $this->roleBookMemo[$key];
+        $today = (new \DateTimeImmutable('now'))->format('Y-m-d');
+        return $this->roleBookMemo[$key] = RoleBook::read(new Scan\ModuleDb($this), $pid, $today);
+    }
+
+    /**
+     * The project's log reader for @UVWRITEONCE (ValueHistory), once per
+     * request, keeping the fields the project's write-once rules lock; false
+     * when the log cannot be resolved.
+     */
+    private function valueHistory($pid)
+    {
+        if ($this->valueHistoryOverride !== null) return $this->valueHistoryOverride;
+        $key = (string) (int) $pid;
+        if (!array_key_exists($key, $this->valueHistoryMemo)) {
+            $fields = [];
+            foreach ($this->getRules($pid) as $r) {
+                if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce') continue;
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $fields[] = (string) $f;
+            }
+            $server = new \DateTimeZone(date_default_timezone_get());
+            $zone = $this->clockZone($pid);
+            $h = ValueHistory::forProject(new Scan\ModuleDb($this), $pid, $fields, $server, $zone === null ? $server : $zone,
+                $this->valueHistoryOptions($pid));
+            $this->valueHistoryMemo[$key] = $h === null ? false : $h;
+        }
+        return $this->valueHistoryMemo[$key];
+    }
+
+    /**
+     * What ValueHistory needs to know of the project: the data dictionary's
+     * order, in which the log writes a save's fields, and its Text and Notes
+     * fields, whose typed value may look like more lines
+     * (ValueHistory::parseRow); the record id field, whose line in an INSERT
+     * is the record's start; and whether a DELETE may cover one arm only: a project of
+     * several arms, or one whose arms cannot be read.
+     */
+    private function valueHistoryOptions($pid)
+    {
+        $dd = $this->dataDictionary($pid) ?: [];
+        $arms = [];
+        $events = $this->temporalShape($pid, $dd)->events();
+        foreach ($events as $e) $arms[isset($e['arm']) ? (string) $e['arm'] : '?'] = true;
+        $free = [];
+        foreach ($dd as $f => $m) {
+            $t = isset($m['field_type']) ? (string) $m['field_type'] : '';
+            if ($t === 'text' || $t === 'notes') $free[(string) $f] = true;
+        }
+        $id = $this->recordIdFieldOf($pid);
+        return ['order' => array_flip(array_map('strval', array_keys($dd))), 'freeText' => $free,
+                'recordIdField' => $id === '' ? null : $id,
+                'multiArm' => !$events || count($arms) !== 1 || isset($arms['?'])];
+    }
+
+    /** What a finding carries for the scan (php/modes.json findingKeys "scan"), as violation key => text. */
+    private static function scanFindingKeys(array $v)
+    {
+        $out = [];
+        foreach (ModeRegistry::findingKeys() as $fk => $to) {
+            if (isset($to['scan'], $v[$fk]) && is_scalar($v[$fk]) && !isset($out[$to['scan']])) $out[$to['scan']] = (string) $v[$fk];
+        }
+        return $out;
+    }
+
+    /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x',
      * 'yAdd' (added to the measurement before it is scored)], or
@@ -3888,6 +4444,14 @@ class UniversalValidator extends AbstractExternalModule
     private $clockOverride = null;
     /** Tests set a log reader here (ValueStamps or an object with savedAt()). */
     private $valueStampsOverride = null;
+    /** Tests set the @UVWRITEONCE log reader here (ValueHistory, an object with saves() and logTimeOf(), or false). */
+    private $valueHistoryOverride = null;
+    /** pid => ValueHistory|false */
+    private $valueHistoryMemo = [];
+    /** Tests set the user roles here (roleBook's shape, or false for "cannot be read"). */
+    private $roleBookOverride = null;
+    /** pid => roleBook()|null */
+    private $roleBookMemo = [];
     /** pid => ValueStamps|null */
     private $valueStampsMemo = [];
     /** @var array zone name ('' = the server's own) => that clock, read once per request */
@@ -4201,7 +4765,7 @@ class UniversalValidator extends AbstractExternalModule
      * violation was logged on every save: one save of a 500-tag form wrote
      * 249 rows, and the next save of the same values 249 more.
      */
-    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [])
+    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [], $message = 'invalid-id-saved')
     {
         if ($mode === 'off') return; // detection logging disabled entirely
         $entry = [
@@ -4232,15 +4796,15 @@ class UniversalValidator extends AbstractExternalModule
             else $entry['hmac_unavailable'] = '1';
         }
         list($where, $scope) = self::logScope($mode, $entry);
-        $parts = ['invalid-id-saved', $record, $field, $event_id, $entry['instance'], $type, $algo, $reason,
+        $parts = [$message, $record, $field, $event_id, $entry['instance'], $type, $algo, $reason,
                   $mode === 'none' ? '' : (string) $value];
         ksort($extra);
         foreach ($extra as $k => $v) { $parts[] = (string) $k; $parts[] = (string) $v; }
         $fp = $this->logFingerprint($pid, $parts);
-        if ($this->loggedAlready('invalid-id-saved', $where, $scope, $fp)) return;
+        if ($this->loggedAlready($message, $where, $scope, $fp)) return;
         if ($fp !== null) $entry['fingerprint'] = $fp;
-        $this->log('invalid-id-saved', $entry);
-        $this->noteLogged('invalid-id-saved', $where, $scope, $fp);
+        $this->log($message, $entry);
+        $this->noteLogged($message, $where, $scope, $fp);
     }
 
     /**
@@ -4484,7 +5048,7 @@ class UniversalValidator extends AbstractExternalModule
             // valid UTF-8 (legacy imports) made json_encode fail and the early
             // return below then removed EVERY rule from the page in silence.
             // Only the rule that cannot be encoded is given up, and visibly.
-            $config['rules'] = self::encodableRules($config['rules'], $flags);
+            $config['rules'] = self::encodableRules($config['rules'], $flags, $context === 'survey');
             $json = json_encode($config, $flags);
         }
         if ($json === false) return; // never inject malformed config
@@ -4529,13 +5093,14 @@ class UniversalValidator extends AbstractExternalModule
      * Replace each rule json_encode() refuses with the deferred stub the engine
      * already renders for an unreadable source, leaving every other rule live.
      * The stub keeps only the rule's type and field names, which are designer
-     * configuration and ASCII by validation.
+     * configuration and ASCII by validation. It runs after buildClientConfig,
+     * so on a survey it says nothing of why (ModeRegistry::withoutSurveyTexts).
      */
-    private static function encodableRules(array $rules, $flags)
+    private static function encodableRules(array $rules, $flags, $survey = false)
     {
         foreach ($rules as $i => $rule) {
             if (!is_array($rule) || json_encode($rule, $flags) !== false) continue;
-            $rules[$i] = [
+            $stub = [
                 'type' => isset($rule['type']) && is_string($rule['type']) ? $rule['type'] : 'single',
                 'fields' => array_values(array_filter(
                     isset($rule['fields']) && is_array($rule['fields']) ? $rule['fields'] : [],
@@ -4545,6 +5110,7 @@ class UniversalValidator extends AbstractExternalModule
                 'deferredWhy' => ['A saved value this rule reads is not valid UTF-8 text, so the rule cannot run in the browser.'],
                 'blockSave' => 'off',
             ];
+            $rules[$i] = $survey ? ModeRegistry::withoutSurveyTexts($stub) : $stub;
         }
         return $rules;
     }
@@ -4572,6 +5138,14 @@ class UniversalValidator extends AbstractExternalModule
         ]);
 
         $config['rules'] = $this->foldTemporalRules($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
+        // A mode whose rules depend on the saved entry and on who is looking
+        // (php/modes.json hooks.page) keeps, drops or narrows them here.
+        foreach (ModeRegistry::all() as $m) {
+            $hook = ModeRegistry::hook($m['mode'], 'page');
+            if ($hook !== null) $config['rules'] = $this->$hook($config['rules'], $pid, $context, $record, $instrument, $event_id, $repeat_instance);
+        }
+        $config['rules'] = self::markLockReads($config['rules'], $this->fieldsOnInstrument($pid, $instrument), $this->dataDictionary($pid) ?: [],
+            ($pid !== null && $event_id !== null) ? $this->temporalShape($pid) : null, $event_id, $repeat_instance);
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -4654,6 +5228,15 @@ class UniversalValidator extends AbstractExternalModule
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
+        }
+        // A survey page never shows why a rule is not checked on it, and a
+        // step after clientShape (the growth table cap) may have said why:
+        // this pass takes every such text off (surveyShape's "drop" keys).
+        // The one step after it, encodableRules, leaves it off on a survey.
+        if ($context === 'survey') {
+            foreach ($config['rules'] as $i => $r) {
+                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);
+            }
         }
         return $config;
     }
@@ -5821,7 +6404,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         unset($candidate);
-        $resolved = self::markReturnClashes(Branching::resolve($out));
+        $resolved = self::applyJustify(self::markReturnClashes(Branching::resolve($out)));
         if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
         return $resolved;
     }
@@ -5839,6 +6422,14 @@ class UniversalValidator extends AbstractExternalModule
      * values saved before any is written, so a chain would write a value read
      * one save late, and the page would follow it only a few steps. The rule
      * that reads is refused, naming the rule that writes.
+     *
+     * A rule of a locking mode (@UVWRITEONCE) may not lock a field another
+     * rule returns to: the save writes a returned value again every time, so
+     * the lock would either undo the rule or be broken by it. The lock is
+     * refused on that field alone, naming the rule that writes: tags that are
+     * written alike on several fields are one rule (AnnotationRules::groupMulti),
+     * so the field is split off into a rule of its own and the others keep
+     * their lock.
      */
     private static function markReturnClashes(array $rules)
     {
@@ -5908,7 +6499,336 @@ class UniversalValidator extends AbstractExternalModule
             $rules[$i]['configError'] = ModeRegistry::tagOfType(isset($rules[$i]['type']) ? $rules[$i]['type'] : '')
                 . ' "return": ' . implode(' ', array_values(array_unique($list)));
         }
+        $split = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            $lockWhy = ModeRegistry::lockReturnWhy(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''));
+            if ($lockWhy === null) continue;
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $keep = [];
+            $mine = [];     // this rule's refusals, in field order
+            foreach ($fields as $f) {
+                // a returning rule that is itself refused returns nothing
+                if (!isset($owner[$f]) || $owner[$f] === $i || !empty($rules[$owner[$f]]['configError'])) { $keep[] = $f; continue; }
+                $by = isset($rules[$owner[$f]]['fields'][0]) ? (string) $rules[$owner[$f]]['fields'][0] : '?';
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => strtr($lockWhy, ['{field}' => (string) $f, '{by}' => $by])]);
+            }
+            if (count($keep) === count($fields)) continue;
+            if ($keep) {
+                $rules[$i]['fields'] = $keep;
+            } else {
+                // every field refused: the rule's place holds its own first refusal
+                $rules[$i] = array_shift($mine);
+            }
+            foreach ($mine as $x) $split[] = $x;
+        }
+        foreach ($split as $r) $rules[] = $r;
         return $rules;
+    }
+
+    /**
+     * A rule on a field that a lock (php/modes.json "lock") holds on this page
+     * names in lockReads, for each such field, the other fields it reads that
+     * the person may change here: fields of this form ($onPage, field =>
+     * true; null when the form's fields are not known) that no lock holds and
+     * that REDCap does not fill after the page has started (lockReadsLate).
+     * The page takes the value each one opened with after REDCap's own
+     * start-up, so a field REDCap fills as the page starts (@NOW, @TODAY,
+     * @DEFAULT, @SETVALUE) or one the person cannot change (@READONLY,
+     * @HIDDEN) is named: it does not change after that unless the person
+     * changes it. The guard item keeps holding the save only once one of
+     * them has changed on the page (UV_LOCK_READS in js/engine.js): a
+     * violation saved before the page opened does not trap the form, and two
+     * locked fields that read each other hold nothing. A rule that reads no
+     * such field is not marked. A checkbox is named once per option, as
+     * "field(code)", the way the page reads it. A calc, @CALCTEXT or
+     * @CALCDATE field is never named, since REDCap works it out again as the
+     * page starts: in its place come the fields it is worked out from on
+     * this entry that the person may change here, through other calcs too
+     * (lockReadsCalc, on the page's event $eventId of $shape and its
+     * instance $instance), a checkbox option by option. Those of every calc
+     * are worked out together, as the least fixpoint over what each calc
+     * reads, so a cycle of calcs gives the same answer whatever the order of
+     * the rules. $dd is the data dictionary (field => metadata).
+     */
+    private static function markLockReads(array $rules, $onPage = null, array $dd = [], ?ProjectShape $shape = null, $eventId = null, $instance = 1)
+    {
+        $locked = [];
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError']) || !ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $locked[(string) $f] = true;
+        }
+        if (!$locked) return $rules;
+        $meta = function ($x) use ($dd) { return isset($dd[$x]) && is_array($dd[$x]) ? $dd[$x] : []; };
+        $here = function ($x) use ($locked, $onPage) { return !isset($locked[$x]) && !(is_array($onPage) && !isset($onPage[$x])); };
+        // a field that is no calc, as the entries the page compares: field => entry => true
+        $plain = function ($x, $code) use ($here, $meta) {
+            $m = $meta($x);
+            if (!$here($x) || self::lockReadsLate($m)) return [];
+            if ((isset($m['field_type']) ? $m['field_type'] : '') !== 'checkbox') return [$x => true];
+            $codes = $code !== null ? [$code] : Logic::parseChoiceCodes(isset($m['select_choices_or_calculations']) ? $m['select_choices_or_calculations'] : '');
+            $out = [];
+            foreach ($codes as $c) $out[$x . '(' . $c . ')'] = true;
+            return $out;
+        };
+        // whether "[token][field]" names this page's event: [event-name], or a name or smart
+        // event name that resolves to it for the field's form (ProjectShape::eventId)
+        $thisEvent = function ($token, $x) use ($shape, $eventId, $meta) {
+            if ($token === 'event-name') return true;
+            if ($shape === null || $eventId === null) return false;
+            $m = $meta($x);
+            $e = $shape->eventId($token, $eventId, isset($m['form_name']) ? (string) $m['form_name'] : '');
+            return $e['state'] === 'ok' && (string) $e['event'] === (string) $eventId;
+        };
+        // every calc the rules read, however far round: calc => [field, code] it reads
+        $calcs = [];
+        $todo = [];
+        foreach ($rules as $r) {
+            if (is_array($r) && empty($r['configError'])) foreach (ModeRegistry::refFields($r) as $x) $todo[] = (string) $x;
+        }
+        while ($todo) {
+            $x = array_pop($todo);
+            if (isset($calcs[$x])) continue;
+            $from = self::lockReadsCalc($meta($x), $thisEvent, $instance);
+            if ($from === null) continue;
+            $calcs[$x] = $from;
+            foreach ($from as $ref) $todo[] = $ref[0];
+        }
+        // what each calc on this page is worked out from, grown until nothing changes
+        $inputs = array_fill_keys(array_keys($calcs), []);
+        do {
+            $grew = false;
+            foreach ($calcs as $c => $from) {
+                if (!$here($c)) continue;
+                foreach ($from as $ref) {
+                    foreach (isset($calcs[$ref[0]]) ? $inputs[$ref[0]] : $plain($ref[0], $ref[1]) as $e => $_) {
+                        if (!isset($inputs[$c][$e])) { $inputs[$c][$e] = true; $grew = true; }
+                    }
+                }
+            }
+        } while ($grew);
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::locks(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            // a reason field (@UVJUSTIFY) only lets the rule's finding save: it is
+            // no field the rule judges by, so it never makes a locked field hold the save
+            $others = [];
+            foreach (array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList'])) as $x) {
+                foreach (isset($calcs[$x]) ? $inputs[$x] : $plain($x, null) as $e => $_) $others[$e] = true;
+            }
+            $marks = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (isset($locked[(string) $f]) && $others) $marks[(string) $f] = array_keys($others);
+            }
+            if ($marks) $rules[$i]['lockReads'] = $marks;
+        }
+        return $rules;
+    }
+
+    /**
+     * @UVJUSTIFY: a reason field stands for the broken rules of the modes a
+     * reason covers (php/modes.json "justify") on the field it is written on.
+     * Each live rule of such a mode on a field with a live justify rule gets
+     * justifyBy (field => reason field), which the audit and the scan read
+     * (ruleFindings, ModeRegistry::refFields); the page pairs a field with
+     * its reason from the justify rule itself (QRIDJustifyInit). A justify
+     * rule on a field that no rule of such a mode checks is a configuration
+     * error on that field alone: a tag written alike on several fields is one
+     * rule (AnnotationRules::groupMulti), so the field is split off into a
+     * rule of its own, as markReturnClashes splits a lock.
+     *
+     * A justify rule whose reason field another live rule returns a value to
+     * (ModeRegistry::returnFields, read as markReturnClashes reads it for a
+     * lock) is refused on each of its fields: the save writes that field, so
+     * it would hold a reason nobody wrote. A returning rule that is refused
+     * itself writes nothing.
+     */
+    private static function applyJustify(array $rules)
+    {
+        $writer = [];       // field => the first field of the live rule that returns a value to it
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            foreach (ModeRegistry::returnFields($r) as $f) {
+                if (!isset($writer[$f])) $writer[$f] = isset($r['fields'][0]) ? (string) $r['fields'][0] : '?';
+            }
+        }
+        $refused = [];
+        foreach ($rules as $i => $r) {
+            if (!$writer) break;
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            $reason = isset($r['justifyReason']) && is_string($r['justifyReason']) ? $r['justifyReason'] : '';
+            if (!isset($writer[$reason])) continue;
+            $why = '"reason" names "[' . $reason . ']", which the rule on "' . $writer[$reason] . '" returns a value to'
+                . ' — the save writes it, so it would hold a reason nobody wrote; name a field the person fills in.';
+            $mine = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => AnnotationRules::TAG_JUSTIFY . ' on "' . $f . '": ' . $why]);
+            }
+            $rules[$i] = $mine ? array_shift($mine) : array_merge($r, ['configError' => AnnotationRules::TAG_JUSTIFY . ': ' . $why]);
+            foreach ($mine as $x) $refused[] = $x;
+        }
+        foreach ($refused as $r) $rules[] = $r;
+        $reasonOf = [];     // field => reason field
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            if (!isset($r['justifyReason']) || !is_string($r['justifyReason'])) continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $reasonOf[(string) $f] = $r['justifyReason'];
+        }
+        if (!$reasonOf) return $rules;
+        // A field with a rule a reason covers. A rule refused for its own
+        // configuration counts: its error already says what to fix.
+        $covered = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !ModeRegistry::justifies(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''))) continue;
+            $by = [];
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                if (!isset($reasonOf[(string) $f])) continue;
+                $covered[(string) $f] = true;
+                $by[(string) $f] = $reasonOf[(string) $f];
+            }
+            if ($by && empty($r['configError'])) $rules[$i]['justifyBy'] = $by;
+        }
+        $tags = [];
+        $not = [];
+        foreach (ModeRegistry::all() as $m) {
+            if ($m['mode'] === 'justify') continue;
+            if ($m['justify'] === true) $tags[] = $m['tag']; else $not[] = $m['tag'];
+        }
+        $words = function (array $list) {
+            $last = array_pop($list);
+            return $list ? implode(', ', $list) . ' or ' . $last : (string) $last;
+        };
+        $why = 'no rule a reason can stand for checks this field — give it a rule of ' . $words($tags)
+            . ($not ? ' (a reason does not stand for ' . $words($not) . ')' : '') . '.';
+        $split = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $keep = [];
+            $mine = [];
+            foreach ($fields as $f) {
+                if (isset($covered[(string) $f])) { $keep[] = $f; continue; }
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => AnnotationRules::TAG_JUSTIFY . ' on "' . $f . '": ' . $why]);
+            }
+            if (count($keep) === count($fields)) continue;
+            if ($keep) {
+                $rules[$i]['fields'] = $keep;
+            } else {
+                $rules[$i] = array_shift($mine);
+            }
+            foreach ($mine as $x) $split[] = $x;
+        }
+        foreach ($split as $r) $rules[] = $r;
+        return $rules;
+    }
+
+    /**
+     * Whether REDCap fills a field by itself after the page has started, by
+     * its action tags: @LATITUDE and @LONGITUDE, which wait for the
+     * browser's position, so the value they write would read as a change by
+     * the person. Each is read where annotationTags reads a tag: the name
+     * inside another tag's quoted value is text.
+     */
+    private static function lockReadsLate(array $meta)
+    {
+        $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+        return strpos($ann, '@') !== false && self::annotationTags($ann, ['LATITUDE', 'LONGITUDE']) !== [];
+    }
+
+    /**
+     * The action tags of an annotation that $names lists (upper case, without
+     * "@"), in order, each as [name, the text inside its parentheses or null].
+     * A tag counts where it starts the annotation or follows a space, "(" or
+     * ",", as inside @IF(...), and its name ends before anything but a letter,
+     * a digit, "_" or "-"; letter case does not matter. Text in quotes is
+     * passed over, so a tag named inside another tag's quoted value
+     * (@PLACEHOLDER="near @LATITUDE") is not read, and a quote mark that is
+     * never closed makes the rest of the annotation text. The text inside a
+     * tag's parentheses runs to the parenthesis that closes the first, quotes
+     * respected, or to the end of the annotation when none does.
+     */
+    private static function annotationTags($ann, array $names)
+    {
+        $ann = (string) $ann;
+        $n = strlen($ann);
+        $find = '/\G@(' . implode('|', array_map(function ($x) { return preg_quote((string) $x, '/'); }, $names)) . ')(?![\w-])[ \t]*/i';
+        $out = [];
+        $i = 0;
+        while ($i < $n) {
+            $c = $ann[$i];
+            if ($c === '"' || $c === "'") {
+                $end = strpos($ann, $c, $i + 1);
+                if ($end === false) break;
+                $i = $end + 1;
+                continue;
+            }
+            if ($c !== '@' || ($i > 0 && strpos(" \t\r\n(,", $ann[$i - 1]) === false) || !preg_match($find, $ann, $m, 0, $i)) {
+                $i++;
+                continue;
+            }
+            $i += strlen($m[0]);
+            $args = null;
+            if ($i < $n && $ann[$i] === '(') {
+                $depth = 0;
+                for ($j = $i; $j < $n; $j++) {
+                    $d = $ann[$j];
+                    if ($d === '"' || $d === "'") {
+                        $end = strpos($ann, $d, $j + 1);
+                        if ($end === false) { $j = $n; break; }
+                        $j = $end;
+                    } elseif ($d === '(') {
+                        $depth++;
+                    } elseif ($d === ')' && --$depth === 0) {
+                        break;
+                    }
+                }
+                $args = (string) substr($ann, $i + 1, $j - $i - 1);
+                $i = $j + 1;
+            }
+            $out[] = [strtoupper($m[1]), $args];
+        }
+        return $out;
+    }
+
+    /**
+     * What a calc, @CALCTEXT or @CALCDATE field's value is worked out from on
+     * this entry, as [field, checkbox code or null], or null for a field of
+     * any other kind. Of the annotation only the text inside the parentheses
+     * of @CALCTEXT(...) and @CALCDATE(...) is read (annotationTags), so a
+     * field named in another tag's value is no input. A reference that names
+     * an event ("[event][field]") reads that event's value: it is kept when
+     * $thisEvent(event, field) says the event is this page's, and left out
+     * otherwise, since no one changes that value on this page. A reference
+     * followed by an instance reads that instance: "[current-instance]" and
+     * the page's own instance number $instance keep it; "[previous-instance]",
+     * "[next-instance]", "[first-instance]", "[last-instance]" and any other
+     * number name another entry, and it is left out. The name of an
+     * "[event][field]" pair's event is no field.
+     */
+    private static function lockReadsCalc(array $meta, callable $thisEvent, $instance = 1)
+    {
+        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
+        $tags = self::annotationTags(isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '', ['CALCTEXT', 'CALCDATE']);
+        if ($type !== 'calc' && !$tags) return null;
+        $text = $type === 'calc' && isset($meta['select_choices_or_calculations']) ? (string) $meta['select_choices_or_calculations'] : '';
+        foreach ($tags as $tag) $text .= ' ' . (string) $tag[1];
+        preg_match_all('/\[([^\[\]]*)\]/', $text, $m, PREG_OFFSET_CAPTURE);
+        $tokens = [];   // [inside the brackets, where it starts, where it ends, field, code]
+        foreach ($m[0] as $k => $t) {
+            $f = preg_match('/^([a-z][a-z0-9_]*)(?:\(([^()]*)\))?$/D', $m[1][$k][0], $p) ? $p : null;
+            $tokens[] = [$m[1][$k][0], $t[1], $t[1] + strlen($t[0]), $f ? $f[1] : null, $f && isset($f[2]) ? $f[2] : null];
+        }
+        $out = [];
+        foreach ($tokens as $k => $t) {
+            if ($t[3] === null) continue;
+            $next = isset($tokens[$k + 1]) && $tokens[$k + 1][1] === $t[2] ? $tokens[$k + 1] : null;
+            if ($next !== null && $next[3] !== null) continue;   // the event of a pair
+            if ($next !== null && (in_array($next[0], ['previous-instance', 'next-instance', 'first-instance', 'last-instance'], true)
+                    || (ctype_digit($next[0]) && (int) $next[0] !== (int) $instance))) continue;   // another instance
+            $prev = $k > 0 && $tokens[$k - 1][2] === $t[1] ? $tokens[$k - 1] : null;
+            if ($prev !== null && !$thisEvent($prev[0], $t[3])) continue;   // another event
+            $out[$t[3] . "\x1F" . $t[4]] = [$t[3], $t[4]];
+        }
+        return array_values($out);
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
@@ -6514,6 +7434,10 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function getAnnotationRules($pid = null, ?array $scope = null)
     {
+        // the @UVDELTA hooks remember answers for one build of the rules, read
+        // with one set of options (deltaRemembered, deltaTagsAsWritten)
+        $this->deltaHeldMemo = [];
+        $this->deltaTagsMemo = [];
         $dd = $this->dataDictionary($pid);
         if (!$dd) return [];
         $perField = [];
@@ -6544,7 +7468,9 @@ class UniversalValidator extends AbstractExternalModule
                     continue;
                 }
                 $hook = ModeRegistry::hook($mode, 'field');
-                if ($hook !== null) $frags[$k] = $this->$hook($frag, $name, $meta, $pid);
+                // $k, the tag's place in $frags, lets a hook tell the tags
+                // before it apart (@UVDELTA, review R9-7); the others ignore it
+                if ($hook !== null) $frags[$k] = $this->$hook($frag, $name, $meta, $pid, $k);
             }
             $perField[$name] = $frags;
         }
@@ -6588,7 +7514,7 @@ class UniversalValidator extends AbstractExternalModule
                     $types = $this->projectFieldTypes($pid);
                     $choices = $this->projectFieldChoices($pid);
                 }
-                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices, $pid);
+                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices, $pid, $k);
             }
         }
         return AnnotationRules::groupMulti($perField);
@@ -7891,7 +8817,7 @@ class UniversalValidator extends AbstractExternalModule
                 . '" with ' . $what . ' — a value is written into the page being edited, so the field must be on that form.';
         }
         $note = isset($m['field_annotation']) ? (string) $m['field_annotation'] : '';
-        if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE)\b/i', $note, $tag)) {
+        if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE|PREFILL)\b/i', $note, $tag)) {
             return $label . ' is filled by REDCap\'s @' . strtoupper($tag[1]) . ', which would overwrite the returned value '
                 . '(and the other way round) — remove @' . strtoupper($tag[1]) . ', or write to another field.';
         }
@@ -7907,6 +8833,812 @@ class UniversalValidator extends AbstractExternalModule
             return $label . ' searches an ontology (BioPortal), whose search box keeps its own text — write to a field without one.';
         }
         return null;
+    }
+
+    /**
+     * @UVDELTA "field" hook. The field must hold numbers, as @UVRANGE's must
+     * (modes.json eligibility.textValidations); a *_comma_decimal field is
+     * marked so both runtimes read 17,5 as 17.5, and a calc so the browser
+     * never blocks a value nobody typed. A "vs" shorthand is written out as
+     * the reference it stands for (AnnotationRules::DELTA_SHORTHANDS), and the
+     * rule's branch group follows it. A "vs" that names the field itself on
+     * this entry is refused: it would compare the value with itself. The
+     * limits travel as words (deltaText) and "vs" as a name (deltaVsLabel),
+     * for the message and the scan report. $at is the tag's place in the
+     * field's parseAllTags list, so the advice can tell the tags before it
+     * apart (deltaGroupsTaken), and the answer is worked out once for the
+     * tag (deltaRemembered).
+     */
+    private function annotateDeltaField(array $frag, $name, array $meta, $pid, $at = null)
+    {
+        return $this->deltaRemembered('field', $name, $at, function () use ($frag, $name, $meta, $pid, $at) {
+            return $this->deltaFieldHook($frag, $name, $meta, $pid, $at);
+        });
+    }
+
+    /** annotateDeltaField's answer, worked out. */
+    private function deltaFieldHook(array $frag, $name, array $meta, $pid, $at)
+    {
+        $tag = AnnotationRules::TAG_DELTA;
+        $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+        if ($ftype === 'text') {
+            $validation = self::validationOf($meta);
+            $re = ModeRegistry::eligibility('delta')['textValidations'] ?? null;
+            if (!is_string($re) || !preg_match('~' . $re . '~', $validation)) {
+                return ['error' => $tag . ' needs a number field — give this Text field integer or number validation, '
+                    . 'or none (it has "' . $validation . '").', '_tag' => $tag];
+            }
+            if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['decimalComma'] = true;
+        } elseif ($ftype === 'calc') {
+            $frag['deltaComputed'] = true;
+        }
+        $short = isset($frag['deltaVsName']) && isset(AnnotationRules::DELTA_SHORTHANDS[$frag['deltaVsName']])
+            ? $frag['deltaVsName'] : null;
+        if ($short !== null) {
+            $frag['deltaVs'] = sprintf(AnnotationRules::DELTA_SHORTHANDS[$short], $name);
+        } else {
+            $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
+            if ($op !== null && $op[0] === 'ref' && $op[1] === $name) {
+                $advice = $this->deltaSelfAdvice($op, $name, $meta, $pid, $frag, $at);
+                return ['error' => '"vs" names this field itself — compare it with another entry'
+                    . ($advice !== null ? $advice['text'] : '') . '.', '_tag' => $tag]
+                    + self::deltaAdvisedGroup($advice !== null ? $advice['vs'] : null, $name, $frag);
+            }
+        }
+        $frag['deltaGroup'] = AnnotationRules::deltaGroup($frag['deltaVs'], isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both');
+        $frag['deltaText'] = self::deltaText($frag, !empty($frag['decimalComma']));
+        $labels = ['previous-event' => 'the previous event', 'previous-instance' => 'the previous instance',
+                   'first-event' => 'the first event', 'first-instance' => 'the first instance'];
+        $frag['deltaVsLabel'] = $short !== null ? $labels[$short] : (string) $frag['deltaVs'];
+        return $frag;
+    }
+
+    /**
+     * What to write instead of a plain "vs" that names the field itself, as
+     * ['vs' => the shorthand or reference, 'text' => ", as ..." to append],
+     * or null. A shorthand comes first, the first that the field's events
+     * accept (deltaShorthandProblem, on a layout it could read), then a
+     * written reference (deltaSuggestion), each checked as the dictionary
+     * hook will check it, and none that repeats the branch group of another
+     * @UVDELTA tag on the field (deltaGroupsTaken, with the tag's place $at);
+     * either needs event and instance references on. When there is none
+     * because of those groups, 'vs' is null and 'text' says why
+     * (deltaHeldNote).
+     */
+    private function deltaSelfAdvice(array $op, $name, array $meta, $pid, array $frag, $at = null)
+    {
+        $form = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
+        if ($form === '' || $pid === null) return null;
+        $shape = $this->temporalShape($pid);
+        $needs = empty($this->temporalOptions($pid)['qualified']) ? self::DELTA_NEEDS_REFS : '';
+        $direction = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
+        $taken = $this->deltaGroupsTaken($frag, $name, isset($meta['field_annotation']) ? $meta['field_annotation'] : '', $pid, $at);
+        foreach (array_keys(AnnotationRules::DELTA_SHORTHANDS) as $short) {
+            $readable = true;
+            if (self::deltaShorthandProblem($shape, $short, $form, $name, [], $direction, false, $readable) !== null || !$readable) continue;
+            if (self::deltaHeld($taken, AnnotationRules::deltaGroup(sprintf(AnnotationRules::DELTA_SHORTHANDS[$short], $name), $direction))) continue;
+            return ['vs' => $short, 'text' => ', as "vs":"' . $short . '"' . $needs];
+        }
+        $c = self::deltaSuggestion($shape, $op, $name, $form, $form, $name, false, $taken, $direction);
+        if ($c !== null) return ['vs' => $c['ref'], 'text' => ', as "vs":"' . $c['ref'] . '"' . ($c['qualified'] ? $needs : '')];
+        $note = self::deltaHeldNote($taken);
+        return $note !== '' ? ['vs' => null, 'text' => $note] : null;
+    }
+
+    /**
+     * The key a refused tag ($frag) of field $name carries for
+     * deltaHeldGroup: the branch group of $vs, the shorthand or reference
+     * its refusal suggests, with the tag's direction; nothing when it
+     * suggests none. Error fragments keep only "error" and "_tag" in the
+     * rules (AnnotationRules::groupMulti), so the key goes no further.
+     */
+    private static function deltaAdvisedGroup($vs, $name, array $frag)
+    {
+        if ($vs === null) return [];
+        $ref = isset(AnnotationRules::DELTA_SHORTHANDS[$vs]) ? sprintf(AnnotationRules::DELTA_SHORTHANDS[$vs], $name) : $vs;
+        return ['_deltaAdvised' => AnnotationRules::deltaGroup($ref, isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both')];
+    }
+
+    /**
+     * The branch groups (AnnotationRules::deltaGroup) that the field's other
+     * @UVDELTA tags will hold where $frag's would meet them. A suggestion in
+     * one of them would be refused once written back, or would validate
+     * nothing at times: Branching allows one rule without a "when" per
+     * group, refuses two whose conditions are the same (Branching::whenKeys:
+     * keyword case, spacing, quote style, parentheses, the order of and/or
+     * members and of a comparison's sides aside, and letter case unless
+     * caseSensitive; reviews R8-4, R9-1), and at run time validates nothing
+     * while two conditions of one group are true. So an unconditional
+     * $frag, which becomes the else branch, meets only tags without a
+     * "when"; a conditional one meets every tag with a "when", unless the
+     * two conditions can never be true at once (Branching::whenExclusive,
+     * review R10-1).
+     *
+     * A tag before $frag's own ($at, its place in the field's parseAllTags
+     * list) that is refused with a suggestion holds the group of that
+     * suggestion, which is what will be written in its place
+     * (deltaHeldGroup); every other tag holds its own. A tag that failed to
+     * parse holds the group its JSON names, read leniently
+     * (deltaTagsAsWritten), since fixing the key it failed on brings it back
+     * (review R9-7); one that cannot be read even so (an unknown key, or a
+     * "vs", "direction" or "when" the parser would refuse) could hold any,
+     * so the answer is every group (DELTA_ANY_GROUP, reviews R10-2, R11-1,
+     * R12-2).
+     * $frag's own tag is among them; its "vs" is never suggested back.
+     *
+     * Each hook asks this only once a suggestion is searched for, so an
+     * accepted tag never pays for it (review R9-8).
+     */
+    private function deltaGroupsTaken(array $frag, $name, $annotation, $pid, $at = null)
+    {
+        $own = Branching::whenKeys($frag);
+        $taken = [];
+        foreach ($this->deltaTagsAsWritten((string) $annotation, $pid) as $i => $t) {
+            if ($t === null) return [self::DELTA_ANY_GROUP => true];
+            $keys = $t['keys'];
+            if ($own === [] ? $keys !== [] : ($keys === [] || (!array_intersect($own, $keys) && Branching::whenExclusive($frag, $t['frag'])))) continue;
+            $f = $t['frag'];
+            $group = !$t['failed'] && $at !== null && $i < $at ? $this->deltaHeldGroup($f, $i, $name, $pid) : null;
+            if ($group === null) {
+                $vs = isset($f['deltaVsName'], AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']])
+                    ? sprintf(AnnotationRules::DELTA_SHORTHANDS[$f['deltaVsName']], $name) : $f['deltaVs'];
+                $group = AnnotationRules::deltaGroup($vs, isset($f['deltaDirection']) ? $f['deltaDirection'] : 'both');
+            }
+            $taken[$group] = true;
+        }
+        return $taken;
+    }
+
+    /** A key of deltaGroupsTaken's answer: every group is held (review R10-2). */
+    const DELTA_ANY_GROUP = '*';
+    /** The key deltaHeld adds to $taken once a candidate is passed over for a held group. */
+    const DELTA_PASSED = '#';
+    /** Said where nothing is suggested because another tag cannot be read (review R10-2). */
+    const DELTA_UNREAD = ' (nothing is suggested while another @UVDELTA tag on this field cannot be read; fix that tag first)';
+    /**
+     * Said where nothing is suggested and an entry was passed over for
+     * another tag's group (review R10-1), with the rule deltaGroupsTaken
+     * applies in the docs' words (Branching::whenExclusive, reviews R11-2,
+     * R12-1): Logic::requiredValues counts only a field written without an
+     * event or instance, and keys a checkbox by its box.
+     */
+    const DELTA_HELD = ' (an entry another @UVDELTA tag on this field compares with in the same direction is not suggested, '
+        . 'unless just one of the two tags has a "when", or each "when" tests one field, written without an event or instance '
+        . '(each checkbox box counts as its own field), for equality with a value, alone or as part of an "and", '
+        . 'and no value equals both as conditions compare values)';
+
+    /** deltaTagsAsWritten's answers, by annotation, for one build of the rules. */
+    private $deltaTagsMemo = [];
+
+    /**
+     * The @UVDELTA tags of an annotation as written, by their place in its
+     * parseAllTags list, read once for each build of the rules (review
+     * R10-3): each as ['frag' => its fragment, 'failed' => whether it failed
+     * to parse, 'keys' => Branching::whenKeys], where a tag that failed to
+     * parse gives the keys its JSON names (AnnotationRules::deltaBranchAsWritten);
+     * null for one that cannot be read even so. parseAllTags reads
+     * each tag's values in order, so its n-th @UVDELTA entry is the n-th
+     * value extractTagsDetailed reads.
+     */
+    private function deltaTagsAsWritten($annotation, $pid)
+    {
+        if (isset($this->deltaTagsMemo[$annotation])) return $this->deltaTagsMemo[$annotation];
+        $frags = AnnotationRules::parseAllTags($annotation, $this->temporalOptions($pid));
+        $reads = AnnotationRules::extractTagsDetailed($annotation, AnnotationRules::TAG_DELTA, ModeRegistry::bareValue('delta'));
+        $out = [];
+        $n = 0;
+        foreach (is_array($frags) ? $frags : [] as $i => $f) {
+            if (!is_array($f)) continue;
+            $failed = isset($f['error']);
+            if ($failed ? (!isset($f['_tag']) || $f['_tag'] !== AnnotationRules::TAG_DELTA) : (!isset($f['type']) || $f['type'] !== 'delta')) continue;
+            $read = isset($reads[$n]) ? $reads[$n] : null;
+            $n++;
+            if ($failed) $f = $read !== null && $read['error'] === null ? AnnotationRules::deltaBranchAsWritten($read['value']) : null;
+            if ($f === null) { $out[$i] = null; continue; }
+            if (!isset($f['deltaVs']) || !is_string($f['deltaVs'])) continue;
+            $out[$i] = ['frag' => $f, 'failed' => $failed, 'keys' => Branching::whenKeys($f)];
+        }
+        return $this->deltaTagsMemo[$annotation] = $out;
+    }
+
+    /**
+     * The branch group tag $f (at place $i of field $name's parseAllTags
+     * list) will hold: that of the reference its refusal suggests when the
+     * field or the dictionary hook refuses it with one (the "_deltaAdvised"
+     * key, deltaAdvisedGroup), else its own; null for a tag refused with no
+     * suggestion, for which deltaGroupsTaken counts the group as written.
+     * The hooks run as getAnnotationRules runs them, without the check of
+     * the fields a "when" names (Logic::checkRefs): the "vs" holds its group
+     * once that is fixed. Each refused tag asks this of every tag before it;
+     * the hooks remember their answers (deltaRemembered), so the hook pass
+     * and these questions search once for each tag.
+     */
+    private function deltaHeldGroup(array $f, $i, $name, $pid)
+    {
+        $dd = $this->dataDictionary($pid);
+        $meta = is_array($dd) && isset($dd[$name]) && is_array($dd[$name]) ? $dd[$name] : [];
+        $r = $this->annotateDeltaField($f, $name, $meta, $pid, $i);
+        if (!isset($r['error'])) $r = $this->annotateDeltaDictionary($r, $name, null, null, $pid, $i);
+        return isset($r['error']) ? (isset($r['_deltaAdvised']) ? $r['_deltaAdvised'] : null)
+            : (isset($r['deltaGroup']) ? $r['deltaGroup'] : null);
+    }
+
+    /** The @UVDELTA hooks' answers, by hook, field and place, for one build of the rules. */
+    private $deltaHeldMemo = [];
+
+    /**
+     * Hook $hook's answer for the tag at place $at of field $name, worked
+     * out by $work the first time it is asked in a build of the rules
+     * (getAnnotationRules starts each with none). The hook pass and
+     * deltaHeldGroup ask the same hook of the same tag, given the same
+     * fragment, so each refused tag's suggestion is searched once (review
+     * R10-3). A call without a place is not remembered.
+     */
+    private function deltaRemembered($hook, $name, $at, \Closure $work)
+    {
+        if ($at === null) return $work();
+        $key = $hook . '|' . $name . '|' . $at;
+        if (!array_key_exists($key, $this->deltaHeldMemo)) $this->deltaHeldMemo[$key] = $work();
+        return $this->deltaHeldMemo[$key];
+    }
+
+    /**
+     * Whether branch group $group is held: in $taken (deltaGroupsTaken), or
+     * $taken holds every group. $taken may be a function that returns the
+     * groups: it is called the first time, and its answer replaces it
+     * (review R9-8). A held group is noted in $taken (DELTA_PASSED), so a
+     * refusal that suggests nothing can say why (deltaHeldNote).
+     */
+    private static function deltaHeld(&$taken, $group)
+    {
+        if ($taken instanceof \Closure) $taken = $taken();
+        if (!isset($taken[self::DELTA_ANY_GROUP]) && !isset($taken[$group])) return false;
+        $taken[self::DELTA_PASSED] = true;
+        return true;
+    }
+
+    /**
+     * What a refusal that suggests nothing adds when deltaHeld passed an
+     * entry over: that another tag on the field cannot be read
+     * (DELTA_UNREAD), or that another tag holds the group (DELTA_HELD). ''
+     * when no entry got that far.
+     */
+    private static function deltaHeldNote($taken)
+    {
+        if (!is_array($taken) || !isset($taken[self::DELTA_PASSED])) return '';
+        return isset($taken[self::DELTA_ANY_GROUP]) ? self::DELTA_UNREAD : self::DELTA_HELD;
+    }
+
+    /**
+     * @UVDELTA "dictionary" hook. The "vs" field must exist and hold numbers
+     * (a Text field with number validation or none, a calc or a slider); its
+     * decimal comma travels as deltaVsComma. A reference that could not be
+     * read on any save of some entry, or never finds an entry at all, is
+     * refused (deltaDeadReference). So is one that always names
+     * this same entry, since the change would always be 0: [event-name][weight],
+     * [weight][current-instance], and the one event the form is on, by its
+     * name or as [first-event-name] or [last-event-name] (deltaNamesItself).
+     * A shorthand must name something in every entry it can:
+     * deltaShorthandProblem. A refusal that suggests a reference carries its
+     * branch group for the tags after this one (deltaAdvisedGroup); $at is
+     * the tag's place in the field's parseAllTags list, and with it the
+     * answer is worked out once for the tag (deltaRemembered).
+     */
+    private function annotateDeltaDictionary(array $frag, $name, $types, $choices, $pid = null, $at = null)
+    {
+        return $this->deltaRemembered('dictionary', $name, $at, function () use ($frag, $name, $pid, $at) {
+            return $this->deltaDictionaryHook($frag, $name, $pid, $at);
+        });
+    }
+
+    /** annotateDeltaDictionary's answer, worked out. */
+    private function deltaDictionaryHook(array $frag, $name, $pid, $at)
+    {
+        $tag = AnnotationRules::TAG_DELTA;
+        $refuse = function ($why, $advised = null) use ($tag, $name, $frag) {
+            return ['error' => $why, '_tag' => $tag] + self::deltaAdvisedGroup($advised, $name, $frag);
+        };
+        if (!isset($frag['deltaVs']) || !is_string($frag['deltaVs'])) return $frag;
+        $op = ModeRegistry::operandRef($frag['deltaVs'], $this->temporalOptions($pid));
+        if ($op === null) return $frag;   // refused already by AnnotationRules::checkDelta
+        $f = (string) $op[1];
+        $dd = $this->dataDictionary($pid);
+        if (!$dd || !isset($dd[$f])) return $refuse('"vs" names "[' . $f . ']", which is not a field in this project.');
+        $meta = $dd[$f];
+        $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+        $validation = $ftype === 'text' ? self::validationOf($meta) : '';
+        $re = ModeRegistry::eligibility('delta')['textValidations'] ?? null;
+        if (!in_array($ftype, ['calc', 'slider'], true) && !($ftype === 'text' && is_string($re) && preg_match('~' . $re . '~', $validation))) {
+            return $refuse('"vs" field "' . $f . '" is not a number field — it needs integer or number validation, or none, '
+                . 'or to be a calc or a slider.');
+        }
+        if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['deltaVsComma'] = true;
+        $short = isset($frag['deltaVsName']) ? $frag['deltaVsName'] : null;
+        $form = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : '';
+        $shape = $this->temporalShape($pid, $dd);
+        $direction = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
+        $annotation = isset($dd[$name]['field_annotation']) ? $dd[$name]['field_annotation'] : '';
+        // worked out only once a suggestion is searched for (review R9-8)
+        $taken = function () use ($frag, $name, $annotation, $pid, $at) { return $this->deltaGroupsTaken($frag, $name, $annotation, $pid, $at); };
+        $advised = null;
+        if ($short === null) {
+            $vsForm = isset($meta['form_name']) ? (string) $meta['form_name'] : '';
+            $refsOn = !empty($this->temporalOptions($pid)['qualified']);
+            $dead = self::deltaDeadReference($shape, $op, $f, $form, $vsForm, $refsOn, $name, $taken, $direction, $advised);
+            if ($dead !== null) return $refuse($dead, $advised);
+            if ($op[0] === 'qref' && $f === $name && self::deltaNamesItself($shape, $op, $form)) {
+                $c = self::deltaSuggestion($shape, $op, $f, $form, $vsForm, $name, false, $taken, $direction);
+                return $refuse('"vs" names this field in this same entry, so the change would always be 0 — compare it with another entry'
+                    . ($c !== null ? ', as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') : self::deltaHeldNote($taken)) . '.',
+                    $c !== null ? $c['ref'] : null);
+            }
+            return $frag;
+        }
+        $readable = null;
+        $why = self::deltaShorthandProblem($shape, $short, $form, $name, $taken, $direction, true, $readable, $advised);
+        return $why === null ? $frag : $refuse($why, $advised);
+    }
+
+    /**
+     * Whether a written-out "vs" reference to the field itself ($op, a qref)
+     * names the entry being judged in every entry of $form. At each event
+     * that holds the form, its event token must resolve to that same event
+     * (none, [event-name], [first-event-name] where no earlier event of the
+     * arm holds the form, or the one event's name), and its instance must be
+     * this one: none or [current-instance]. (Any instance of a form that does
+     * not repeat is refused before this, by deltaDeadReference.) A layout that
+     * cannot be read answers false; the resolver reports it on each save.
+     */
+    private static function deltaNamesItself(ProjectShape $shape, array $op, $form)
+    {
+        $event = isset($op[3]) ? $op[3] : null;
+        $instance = isset($op[4]) ? $op[4] : null;
+        if ($instance !== null && $instance !== 'current-instance') return false;
+        $hosts = [];
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms'])) return false;
+            if (in_array($form, $e['forms'], true)) $hosts[] = $id;
+        }
+        if (!$hosts) return false;
+        foreach ($hosts as $h) {
+            $r = $shape->eventId($event, $h, $form);
+            if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $h) return false;
+        }
+        return true;
+    }
+
+    /**
+     * What keeps a "vs" reference ($op, written plain or out) on a field of
+     * $form from being read on some save, or null. Each event that holds
+     * $form is asked what AddressResolver::resolve (or, with references off,
+     * the plain read of this event) would answer there, in its order:
+     *  - the reference lands on an event that does not hold the "vs" form
+     *    ($vsForm): kind "missing", or "nowhere" when no event holds it;
+     *  - it names an instance of a form held once there: "flat";
+     *  - it names a relative instance ([current-instance], [previous-instance],
+     *    [next-instance]) where this field's own form is held once: "own",
+     *    since a relative instance counts from this field's instance;
+     *  - it names no instance of a form that repeats there, and the row is not
+     *    this field's own (its own repeating form, or a form of the same
+     *    repeating event): "ambiguous";
+     *  - and a relative event token finds no event from any of them, so the
+     *    rule would never compare anything: "absent".
+     * An event the token finds nothing from (the first visit has no previous
+     * one) is not a problem by itself. A layout that cannot be read answers
+     * null; the resolver reports it on each save. The answer is
+     * ['kind' => ..., 'events' => the event ids concerned].
+     */
+    private static function deltaReferenceProblem(ProjectShape $shape, array $op, $form, $vsForm)
+    {
+        $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
+        $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
+        $relative = in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true);
+        $named = $token !== null && $token !== 'event-name' && !$relative;
+        $add = function (array &$list, $id) { if (!in_array($id, $list, true)) $list[] = $id; };
+        $missing = $flat = $own = $amb = [];
+        $hosts = 0;
+        $absent = 0;
+        $held = false;
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms'])) return null;
+            if (in_array($vsForm, $e['forms'], true)) $held = true;
+            if (!in_array($form, $e['forms'], true)) continue;
+            $hosts++;
+            $r = $shape->eventId($token, $id, $vsForm);
+            if (isset($r['state']) && $r['state'] === 'absent') { $absent++; continue; }
+            if (!isset($r['state']) || $r['state'] !== 'ok') continue;
+            $b = $shape->bucket($r['event'], $vsForm);
+            if (isset($b['state']) && $b['state'] === 'missing') { $add($missing, $named ? $r['event'] : $id); continue; }
+            if (!isset($b['state']) || $b['state'] !== 'ok' || !array_key_exists('bucket', $b)) continue;
+            $src = $shape->bucket($id, $form);
+            if (!isset($src['state']) || $src['state'] !== 'ok' || !array_key_exists('bucket', $src)) return null;
+            if ($sel === null) {
+                $ownRow = (string) $r['event'] === (string) $id && $src['bucket'] === $b['bucket'];
+                if ($b['bucket'] !== null && !$ownRow) $add($amb, $r['event']);
+            } elseif ($b['bucket'] === null) {
+                $add($flat, $r['event']);
+            } elseif (in_array($sel, ['current-instance', 'previous-instance', 'next-instance'], true) && $src['bucket'] === null) {
+                $add($own, $id);
+            }
+        }
+        if ($hosts === 0) return null;
+        if (!$held) return ['kind' => 'nowhere', 'events' => []];
+        if ($missing) return ['kind' => 'missing', 'events' => $missing];
+        if ($flat) return ['kind' => 'flat', 'events' => $flat];
+        if ($own) return ['kind' => 'own', 'events' => $own];
+        if ($amb) return ['kind' => 'ambiguous', 'events' => $amb];
+        if ($relative && $absent === $hosts) return ['kind' => 'absent', 'events' => []];
+        return null;
+    }
+
+    /**
+     * Why a "vs" reference ($op) on field $name of $form could not be read on
+     * some save of some entry (deltaReferenceProblem), as a refusal, or null.
+     * The refusal quotes the reference as it was written and ends with one
+     * that works (deltaSuggestion, outside the branch groups in $taken), or
+     * says what the search tried, and why it passed one over
+     * (deltaHeldNote); $advised is set to the reference it suggests.
+     * $refsOn says whether that reference can be used as the settings
+     * stand.
+     */
+    private static function deltaDeadReference(ProjectShape $shape, array $op, $f, $form, $vsForm, $refsOn, $name, $taken = [], $direction = 'both', &$advised = null)
+    {
+        $advised = null;
+        $p = self::deltaReferenceProblem($shape, $op, $form, $vsForm);
+        if ($p === null) return null;
+        $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
+        $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
+        $written = ($token !== null ? '[' . $token . ']' : '') . '[' . $f . ']' . ($sel !== null ? '[' . $sel . ']' : '');
+        $many = count($shape->events()) > 1;
+        $names = [];
+        foreach ($p['events'] as $id) {
+            $e = $shape->event($id);
+            $names[] = isset($e['name']) && $e['name'] !== '' ? (string) $e['name'] : (string) $id;
+        }
+        $at = $many && $names ? ' at "' . implode('", "', $names) . '"' : '';
+        $plain = $token === null || $token === 'event-name';
+        switch ($p['kind']) {
+            case 'nowhere':
+                return '"vs" names "' . $written . '", but "' . $f . '" is on the form "' . $vsForm . '", which is not designated at any event.';
+            case 'missing':
+                $why = '"vs" names "' . $written . '", but "' . $f . '" is on the form "' . $vsForm . '", which is not designated' . $at
+                    . ($plain ? ' where this field is entered' : '');
+                break;
+            case 'flat':
+                $why = '"vs" names "' . $written . '", but its form "' . $vsForm . '" does not repeat' . $at
+                    . ', and an instance can be named only where the form repeats';
+                break;
+            case 'own':
+                $why = '"vs" names "' . $written . '", but this field\'s form "' . $form . '" does not repeat' . $at
+                    . ', and [current-instance], [previous-instance] and [next-instance] count from this field\'s own instance';
+                break;
+            case 'ambiguous':
+                $why = '"vs" names "' . $written . '" with no instance, but its form "' . $vsForm . '" repeats' . $at
+                    . ', so which instance it means is not said';
+                break;
+            default:
+                $why = '"vs" names "' . $written . '", but from no event where this field is entered does "[' . $token
+                    . ']" find an event holding "' . $vsForm . '", so nothing would ever be compared';
+        }
+        $tried = '';
+        $c = self::deltaSuggestion($shape, $op, $f, $form, $vsForm, $name, in_array($p['kind'], ['flat', 'own', 'ambiguous'], true), $taken, $direction, $tried);
+        if ($c !== null) {
+            $advised = $c['ref'];
+            return $why . ' — write it as "' . $c['ref'] . '"' . ($c['qualified'] && !$refsOn ? self::DELTA_NEEDS_REFS : '') . '.';
+        }
+        $note = self::deltaHeldNote($taken);
+        if ($note === self::DELTA_UNREAD) return $why . $note . '.';
+        return $why . ' — and none of the references to "[' . $f . ']" this check tried (' . $tried . ') works'
+            . ($many ? ' from every event where this field is entered' : '') . $note . '.';
+    }
+
+    /** Appended to a suggested reference that needs a setting turned on. */
+    const DELTA_NEEDS_REFS = ' (this needs event and instance references, a project setting)';
+
+    /**
+     * A reference to $f that deltaReferenceProblem accepts at every event of
+     * $form, as ['ref' => text, 'qualified' => whether it names an event or
+     * an instance], or null; then $tried says, in words, what was tried. The
+     * events, in turn:
+     *  - the event as written ($keepEvent), when only the instance is wrong;
+     *  - on a field compared with its own form, the previous and first
+     *    events, then the first event that holds the form, named outright;
+     *    with another form, up to five events named outright first, then the
+     *    first, previous and last events;
+     *  - then this event (a plain reference).
+     * The next event is never offered, nor, on the field's own form, the last
+     * event or a later one named outright, and the event as written goes by
+     * the same rule (review R9-4): each is a later visit from every event but
+     * one, blank at first entry, where "direction" would read backwards
+     * against "an earlier value" (review R8-7). Each event goes with the
+     * instance as written, then none, then [last-instance] and
+     * [previous-instance], and for a reference to $name itself
+     * [first-instance] last (review R9-6). Each candidate is checked by
+     * deltaCandidate, which also keeps a reference to $name itself off this
+     * same entry and off an instance that does not fit where its event
+     * lands. A token that lands on the event it is read from, from every
+     * event of $form, means this event and is left to the plain reference
+     * (deltaLandsOwn); the event as written is tried even so.
+     *
+     * An event is named outright, the one as written included, only when
+     * every event of $form is in its arm: from another arm it holds a value
+     * only for a record entered in that arm too, and for every other record
+     * the check would stop without saying so. One event means no event to
+     * name: only this event is tried, with each instance. A $form designated
+     * at no event gets nothing, since no event could check what is offered.
+     * No candidate whose branch group is held is offered (deltaHeld, review
+     * R8-4); $taken comes back as deltaHeld leaves it.
+     *
+     * Each candidate asks every event of $form, and a relative event token
+     * walks the arm from each, so the search costs about the square of the
+     * number of events: half a second at 600 events. Rules are built once per
+     * request, so this runs for each refused reference on every data entry
+     * page, survey page and save that reads the rules.
+     */
+    private static function deltaSuggestion(ProjectShape $shape, array $op, $f, $form, $vsForm, $name, $keepEvent, &$taken = [], $direction = 'both', &$tried = null)
+    {
+        $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
+        $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
+        $tried = '';
+        $arms = [];
+        $holders = [];
+        $armOf = [];    // event name => arm
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms'])) return null;
+            $arm = isset($e['arm']) ? (string) $e['arm'] : '';
+            if (isset($e['name']) && $e['name'] !== '') $armOf[(string) $e['name']] = $arm;
+            if (in_array($form, $e['forms'], true)) $arms[$arm] = true;
+            if (in_array($vsForm, $e['forms'], true) && isset($e['name']) && $e['name'] !== '') $holders[] = [$arm, (string) $e['name']];
+        }
+        if (!$arms) return null;    // $form at no event: no event can check a candidate
+        $inArm = $token === null || $token === 'event-name' || in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true)
+            || (count($arms) === 1 && isset($armOf[$token]) && isset($arms[$armOf[$token]]));
+        // on its own form a later event is a later visit: of the events named outright only
+        // the arm's first holder is offered, and the event as written goes by the same rule
+        $first = null;
+        foreach ($holders as $h) if ($first === null && isset($arms[$h[0]])) $first = $h[1];
+        $later = $token === 'next-event-name'
+            || ($vsForm === $form && !in_array($token, [null, 'event-name', 'previous-event-name', 'first-event-name', $first], true));
+        $kept = $keepEvent && $inArm && !$later;
+        $tokens = $kept ? [$token] : [];
+        $named = [];
+        $many = count($shape->events()) > 1;
+        $relatives = $vsForm === $form ? ['previous-event-name', 'first-event-name'] : ['first-event-name', 'previous-event-name', 'last-event-name'];
+        if ($many) {
+            if (count($arms) === 1) foreach ($holders as $h) if (isset($arms[$h[0]]) && count($named) < ($vsForm === $form ? 1 : 5)) $named[] = $h[1];
+            $tokens = array_merge($tokens, $vsForm === $form ? array_merge($relatives, $named) : array_merge($named, $relatives), [null]);
+        } else {
+            $tokens[] = null;
+        }
+        // for the field itself [first-instance] comes last: it fits where neither [last-instance]
+        // nor [previous-instance] does, as at a first visit that alone repeats (review R9-6)
+        $try = [null, 'last-instance', 'previous-instance'];
+        if ($f === $name) $try[] = 'first-instance';
+        $seen = [serialize([$token, $sel]) => true];
+        $instances = [];
+        foreach ($tokens as $t) {
+            // a token that lands on the event it is read from, from every event of $form,
+            // means this event: the plain reference, tried last, says so in fewer words
+            if ($t !== null && !($kept && $t === $token) && self::deltaLandsOwn($shape, $t, $form, $vsForm)) continue;
+            $sels = [$sel];
+            foreach ($try as $s) if (!in_array($s, $sels, true)) $sels[] = $s;
+            foreach ($sels as $s) {
+                $instances[$s === null ? '' : $s] = true;
+                $key = serialize([$t, $s]);
+                if (isset($seen[$key])) continue;
+                $seen[$key] = true;
+                $ref = self::deltaCandidate($shape, $t, $f, $s, $form, $vsForm, $name, $taken, $direction);
+                if ($ref !== null) return ['ref' => $ref, 'qualified' => $t !== null || $s !== null];
+            }
+        }
+        $tried = self::deltaTriedText($many, $kept ? $token : false, $relatives, $named, $sel, $instances);
+        return null;
+    }
+
+    /**
+     * Event token $t (or none), field $f and instance $s (or none) written
+     * as a reference, when it can be suggested to field $name of $form, else
+     * null. deltaReferenceProblem must accept it at every event of $form. A
+     * reference to $name itself must not be the plain one or name this same
+     * entry (deltaNamesItself), and its instance must fit where the event
+     * lands (deltaSelfInstanceFits). Its branch group, with $direction, must
+     * not be held (deltaHeld), which is asked only of a candidate that gets
+     * that far (review R9-8).
+     */
+    private static function deltaCandidate(ProjectShape $shape, $t, $f, $s, $form, $vsForm, $name, &$taken, $direction)
+    {
+        $cop = $t === null && $s === null ? ['ref', $f, null] : ['qref', $f, null, $t, $s];
+        if (self::deltaReferenceProblem($shape, $cop, $form, $vsForm) !== null) return null;
+        if ($f === $name && ($cop[0] === 'ref' || self::deltaNamesItself($shape, $cop, $form)
+                || !self::deltaSelfInstanceFits($shape, $t, $s, $form))) return null;
+        $ref = ($t !== null ? '[' . $t . ']' : '') . '[' . $f . ']' . ($s !== null ? '[' . $s . ']' : '');
+        return self::deltaHeld($taken, AnnotationRules::deltaGroup($ref, $direction)) ? null : $ref;
+    }
+
+    /**
+     * Whether event token $t, read for $vsForm, lands from every event of
+     * $form on that same event, and so says what the plain reference says:
+     * no token and [event-name] always do. A token that finds no event from
+     * one of them does not: there it reads nothing, where the plain
+     * reference reads this event (review R9-2).
+     */
+    private static function deltaLandsOwn(ProjectShape $shape, $t, $form, $vsForm)
+    {
+        if ($t === null || $t === 'event-name') return true;
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms']) || !in_array($form, $e['forms'], true)) continue;
+            $r = $shape->eventId($t, $id, $vsForm);
+            if (!isset($r['state']) || $r['state'] !== 'ok' || (string) $r['event'] !== (string) $id) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Whether instance $s of a reference to the field itself fits each event
+     * that token $t lands on from an event of $form, where the form repeats
+     * there. [next-instance] fits nowhere: at this entry's own event it is a
+     * later entry of the same visit, and at another event it counts from this
+     * entry's instance number (review R9-5). At this entry's own event
+     * [last-instance] is the newest entry, perhaps this one or a later one
+     * (review R8-2), and so is a numbered instance after the first. At
+     * another event [previous-instance] and [current-instance] count from this
+     * entry's instance number (review R8-1, R9-5). [first-instance] and
+     * instance 1 fit anywhere: at this entry's own event they are an earlier
+     * entry, or this one at instance 1. Where the form does not repeat,
+     * deltaReferenceProblem decides; a layout it cannot read is left to the
+     * resolver.
+     */
+    private static function deltaSelfInstanceFits(ProjectShape $shape, $t, $s, $form)
+    {
+        if ($s === 'next-instance') return false;
+        $numbered = is_string($s) && ctype_digit($s) && (int) $s > 1;
+        if (!$numbered && !in_array($s, ['last-instance', 'previous-instance', 'current-instance'], true)) return true;
+        foreach ($shape->events() as $id => $e) {
+            if (!isset($e['forms']) || !is_array($e['forms']) || !in_array($form, $e['forms'], true)) continue;
+            $r = $shape->eventId($t, $id, $form);
+            if (!isset($r['state']) || $r['state'] !== 'ok') continue;
+            $b = $shape->bucket($r['event'], $form);
+            if (!isset($b['state']) || $b['state'] !== 'ok' || $b['bucket'] === null) continue;
+            $own = (string) $r['event'] === (string) $id;
+            if (($s === 'last-instance' || $numbered) ? $own : !$own) return false;
+        }
+        return true;
+    }
+
+    /**
+     * What deltaSuggestion tried, in words, for the refusal that says none of
+     * it works: the events (when the project has more than one) and the
+     * instances. $kept is the event token kept as written, false when none
+     * was; $relatives the relative event tokens tried; $instances the
+     * instance selectors met ('' for none).
+     */
+    private static function deltaTriedText($many, $kept, array $relatives, array $named, $sel, array $instances)
+    {
+        $join = function (array $parts, $last) {
+            $tail = array_pop($parts);
+            return $parts ? implode(', ', $parts) . $last . $tail : $tail;
+        };
+        $events = [];
+        if ($many) {
+            if ($kept !== false) $events[] = $kept === null || $kept === 'event-name' ? 'this event' : 'the event as written';
+            $rel = array_map(function ($t) { return substr($t, 0, strpos($t, '-')); }, $relatives);
+            $events[] = 'the ' . $join(in_array('previous', $rel, true) ? array_merge(['previous'], array_values(array_diff($rel, ['previous']))) : $rel, ' or ') . ' event';
+            if ($named) $events[] = (count($named) === 1 ? 'the event ' : 'the events ') . $join(array_map(function ($n) { return '"' . $n . '"'; }, $named), ' and ');
+            if (!in_array('this event', $events, true)) $events[] = 'this event';
+        }
+        $words = [];
+        if ($sel !== null) $words[] = 'the instance as written';
+        if (isset($instances[''])) $words[] = $words ? 'none' : 'no instance';
+        if (isset($instances['last-instance']) && $sel !== 'last-instance') $words[] = 'the last';
+        if (isset($instances['previous-instance']) && $sel !== 'previous-instance') $words[] = 'the previous';
+        if (isset($instances['first-instance']) && $sel !== 'first-instance') $words[] = 'the first';
+        $last = end($words);
+        if ($last === 'the last' || $last === 'the previous' || $last === 'the first') $words[count($words) - 1] .= ' one';
+        return ($events ? $join($events, ', or ') . ', ' : '') . 'with ' . $join($words, ' or ');
+    }
+
+    /**
+     * Why a "vs" shorthand on a field of $form cannot name an entry to compare
+     * with, or null. Each entry resolves its own shorthand (ProjectShape at
+     * run time), so this asks of every event that holds the form, arm by arm:
+     *  - an event shorthand needs, for at least one event, an earlier event of
+     *    the same arm that holds the form, and no event it names may hold the
+     *    form more than once (the form repeats there, or the whole event
+     *    does): which instance it means would not be said;
+     *  - an instance shorthand needs the form to repeat at every event that
+     *    holds it, on its own or with the whole event: where it does not,
+     *    there is no other instance.
+     * A layout that cannot be read answers null, and sets $readable false;
+     * the resolver then reports what it cannot resolve, on each save. The
+     * refusal of a shorthand that names a repeating event ends with a
+     * written reference that works there ($example), and sets $advised to
+     * it: the shorthand's own event token with [last-instance], else with
+     * [first-instance], each checked by deltaCandidate outside the branch
+     * groups in $taken. Any other event, named outright or relative, would
+     * mean another entry than the shorthand did in some project (review
+     * R8-5, R9-3), so when neither instance works there is no example, and
+     * the refusal says why when one was passed over (deltaHeldNote).
+     */
+    private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
+    {
+        $readable = false;
+        $advised = null;
+        $hosts = [];
+        foreach ($shape->events() as $id => $event) {
+            if (!isset($event['forms']) || !is_array($event['forms'])) return null;
+            if (in_array($form, $event['forms'], true)) $hosts[] = $id;
+        }
+        if (!$hosts) return null;
+        $label = function ($id) use ($shape) {
+            $e = $shape->event($id);
+            return isset($e['name']) && $e['name'] !== '' ? (string) $e['name'] : (string) $id;
+        };
+        $list = function (array $names) {
+            $last = array_pop($names);
+            return ($names ? '"' . implode('", "', $names) . '" and ' : '') . '"' . $last . '"';
+        };
+        if ($short === 'previous-instance' || $short === 'first-instance') {
+            $flat = [];
+            foreach ($hosts as $id) {
+                $b = $shape->bucket($id, $form);
+                if ($b['state'] !== 'ok') return null;
+                if ($b['bucket'] === null) $flat[] = $label($id);
+            }
+            $readable = true;
+            if (!$flat) return null;
+            return '"vs": "' . $short . '" needs a form that repeats — "' . $form . '" does not repeat '
+                . (count($hosts) === 1 ? 'in this project' : 'at ' . $list($flat)) . '.';
+        }
+        $token = $short === 'previous-event' ? 'previous-event-name' : 'first-event-name';
+        $pairs = 0;
+        $repeating = [];
+        foreach ($hosts as $id) {
+            $t = $shape->eventId($token, $id, $form);
+            if ($t['state'] === 'absent') continue;
+            if ($t['state'] !== 'ok') return null;
+            if ((string) $t['event'] === (string) $id) continue;   // the first event itself: nothing earlier
+            $pairs++;
+            $b = $shape->bucket($t['event'], $form);
+            if ($b['state'] !== 'ok') return null;
+            if ($b['bucket'] !== null) $repeating[(string) $t['event']] = $label($t['event']);
+        }
+        $readable = true;
+        if ($pairs === 0) {
+            return '"vs": "' . $short . '" needs the form on two or more events of one arm — "' . $form . '" is on '
+                . (count($hosts) === 1 ? 'one event' : 'no two events of the same arm') . ' in this project.';
+        }
+        if ($repeating) {
+            $c = null;
+            if ($example) foreach (['last-instance', 'first-instance'] as $s) {
+                $c = self::deltaCandidate($shape, $token, $name, $s, $form, $form, $name, $taken, $direction);
+                if ($c !== null) break;
+            }
+            $advised = $c;
+            return '"vs": "' . $short . '" names ' . $list(array_values($repeating)) . ', where "' . $form . '" repeats, and does not say which '
+                . 'instance to compare with — name the event and the instance' . ($c !== null ? ', as "vs":"' . $c . '"' : self::deltaHeldNote($taken)) . '.';
+        }
+        return null;
+    }
+
+    /**
+     * An @UVDELTA rule's limits in words, for the message and the scan
+     * report: "a change of at most 5 kg and 10%", "a rise of at most 10%",
+     * "no fall". A comma field shows 2,5.
+     */
+    private static function deltaText(array $frag, $comma)
+    {
+        $f = function ($n) use ($comma) { return $comma ? str_replace('.', ',', (string) $n) : (string) $n; };
+        $dir = isset($frag['deltaDirection']) ? $frag['deltaDirection'] : 'both';
+        $word = $dir === 'up' ? 'rise' : ($dir === 'down' ? 'fall' : 'change');
+        $max = isset($frag['deltaMax']) && is_string($frag['deltaMax']) ? $frag['deltaMax'] : null;
+        $pct = isset($frag['deltaMaxPct']) && is_string($frag['deltaMaxPct']) ? $frag['deltaMaxPct'] : null;
+        // "max": 0 allows no move at all: a percent says nothing more
+        // ("maxPct": 0 is refused, AnnotationRules::checkDelta)
+        if ($max !== null && Logic::numCompare($max, '0') === 0) return 'no ' . $word;
+        $parts = [];
+        if ($max !== null) $parts[] = $f($max) . (isset($frag['deltaUnit']) && $frag['deltaUnit'] !== '' ? ' ' . $frag['deltaUnit'] : '');
+        if ($pct !== null) $parts[] = $f($pct) . '%';
+        return 'a ' . $word . ' of at most ' . implode(' and ', $parts);
     }
 
     /**

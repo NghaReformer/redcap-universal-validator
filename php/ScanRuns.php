@@ -654,6 +654,8 @@ trait ScanRuns
                 // no one reference, so the finding carries its own.
                 'z_score' => isset($v['z']) ? (string) $v['z'] : null,
                 'growth_reference' => isset($v['reference']) ? substr((string) $v['reference'], 0, 64) : null,
+                // A reason (@UVJUSTIFY) stands for it: counted apart, and no bar to clean.
+                'justified' => empty($v['justified']) ? 0 : 1,
             ];
         }
 
@@ -1640,6 +1642,8 @@ trait ScanRuns
                         ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
                           // the day a today-relative @UVWINDOW part was judged against
                           + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
+                          // what a mode's findings carry for the scan (php/modes.json findingKeys)
+                          + self::scanFindingKeys($v)
                           // A growth finding's reference, and its z-score only
                           // when the scan shows values raw, as the audit log
                           // does. The z-score gives the measurement back, and
@@ -1648,7 +1652,11 @@ trait ScanRuns
                           // withholds as well.
                           + (isset($v['z']) && is_string($rv) && isset($plan['valueMode']) && $plan['valueMode'] === 'raw'
                               ? ['z' => (string) $v['z']] : [])
-                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : []));
+                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : [])
+                          // a broken rule saved with a reason (@UVJUSTIFY), counted apart from the open ones
+                          + (!empty($v['justified']) && isset($v['justifiedBy'])
+                              ? ['justified' => true, 'justifiedBy' => (string) $v['justifiedBy']] : []));
+                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;
                     }
                     foreach ($f['unconfigurable'] as $u) {
                         $key = $i . '|' . $u['why'];

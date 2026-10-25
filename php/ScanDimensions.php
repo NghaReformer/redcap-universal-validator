@@ -67,6 +67,8 @@ final class ScanDimensions
     const IDENTIFIER_FLAGS = ['y', 'yes', '1', 'true'];
     /** @var bool whether this project uses Data Access Groups at all */
     public $hasDags = false;
+    /** @var bool whether a reason (@UVJUSTIFY) can stand for any rule's findings: the "Saved with a reason" column */
+    public $justifies = false;
     /** @var bool whether this project is longitudinal (more than one event) */
     public $longitudinal = false;
 
@@ -213,7 +215,10 @@ final class ScanDimensions
                 'assert'   => $t['assert'],
                 'fields'  => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
                 'detail'  => $t['detail'],
+                // field => the field whose reason stands for its findings (@UVJUSTIFY)
+                'justifyBy' => self::justifyBy($r),
             ];
+            if ($d->rules[$i + 1]['justifyBy']) $d->justifies = true;
             // A branched rule carries its wording and limits per branch; a
             // finding names the branch that judged it (rule()).
             if (isset($r['branches']) && is_array($r['branches'])) {
@@ -223,6 +228,16 @@ final class ScanDimensions
             }
         }
         return $d;
+    }
+
+    /** A rule's justifyBy (UniversalValidator::applyJustify) as field => reason field, text only. */
+    private static function justifyBy(array $r)
+    {
+        $out = [];
+        if (isset($r['justifyBy']) && is_array($r['justifyBy'])) {
+            foreach ($r['justifyBy'] as $f => $reason) if (is_string($reason) && $reason !== '') $out[(string) $f] = $reason;
+        }
+        return $out;
     }
 
     /**
@@ -327,7 +342,7 @@ final class ScanDimensions
     public function rule($ordinal, $branch = null)
     {
         if (!isset($this->rules[$ordinal])) {
-            return ['type' => '', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '', 'fields' => [], 'detail' => []];
+            return ['type' => '', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '', 'fields' => [], 'detail' => [], 'justifyBy' => []];
         }
         $r = $this->rules[$ordinal];
         // The branch that judged a finding speaks for it: its message and its

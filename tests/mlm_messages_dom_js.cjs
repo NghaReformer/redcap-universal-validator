@@ -15,7 +15,8 @@
  *     not brought back,
  *   - MLM that appears only after the page loads is still picked up,
  *   - every mode with a message (@UVASSERT, @UVREQUIRED, @UVUNIQUE,
- *     @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE) shows the translated text,
+ *     @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE, @UVDELTA) shows the
+ *     translated text,
  *   - translated text is escaped, and a stale or malformed map falls back to
  *     the default.
  *
@@ -312,6 +313,36 @@ function frAndBack(label, env, field, en, fr, mlm) {
   const env = boot([input('sbp', '300')], { rules: [{ type: 'range', fields: ['sbp'], rangeHardLo: '40', rangeHardHi: '250',
     rangeHardBlock: 'confirm', message: 'Check the blood pressure', i18n: { message: { fr: 'Vérifiez la tension' } } }] }, { mlm });
   frAndBack('range', env, 'sbp', 'Check the blood pressure', 'Vérifiez la tension', mlm);
+}
+{
+  const mlm = makeMlm('fr');
+  const env = boot([input('w0', '70'), input('weight', '90')], { rules: [{ type: 'delta', fields: ['weight'],
+    deltaVs: '[w0]', deltaVsOp: ['ref', 'w0', null], deltaMax: '5', blockSave: 'hard',
+    message: 'Re-weigh the patient', i18n: { message: { fr: 'Repesez le patient' } } }] }, { mlm });
+  frAndBack('delta', env, 'weight', 'Re-weigh the patient', 'Repesez le patient', mlm);
+}
+{
+  const mlm = makeMlm('fr');
+  const env = boot([input('consent_date', '2026-03-01')], { rules: [{ type: 'writeonce', fields: ['consent_date'],
+    message: 'Ask the data manager to correct it', i18n: { message: { fr: 'Demandez au gestionnaire de le corriger' } } }] }, { mlm });
+  frAndBack('writeonce', env, 'consent_date', 'Ask the data manager to correct it', 'Demandez au gestionnaire de le corriger', mlm);
+}
+{
+  // @UVJUSTIFY: the note under the field that asks for the reason (region "-j"), a tick after each change
+  const mlm = makeMlm('fr');
+  const env = boot([input('wt', '30'), input('wt_why', '')], { rules: [
+    { type: 'constraint', fields: ['wt'], assert: '[wt]>40', blockSave: 'hard' },
+    { type: 'justify', fields: ['wt'], justifyReason: 'wt_why', message: 'Say why this weight is right',
+      i18n: { message: { fr: 'Dites pourquoi ce poids est juste' } } }] }, { mlm });
+  const tick = () => { for (let k = 0; k < 5 && timers.length; k++) { const due = timers; timers = []; due.forEach((t) => t.fn()); } };
+  tick();
+  const note = env.allEls.find((e) => e.id && /^uvalidate-msg-.*wt-j$/.test(e.id)) || null;
+  check('justify: French shown', shown(note) && textOf(note).indexOf('Dites pourquoi ce poids est juste') >= 0
+    && textOf(note).indexOf('Say why') < 0, textOf(note));
+  mlm.switchTo('en');
+  tick();
+  check('justify: default after switching to en', textOf(note).indexOf('Say why this weight is right') >= 0
+    && textOf(note).indexOf('Dites') < 0, textOf(note));
 }
 {
   const mlm = makeMlm('fr');

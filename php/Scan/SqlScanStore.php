@@ -56,7 +56,7 @@ final class SqlScanStore implements ScanStore
     const MANIFEST_CHUNK = 500;
 
     /**
-     * Findings per INSERT. 29 placeholders a row, so 14,500 a statement; about
+     * Findings per INSERT. 33 placeholders a row, so 16,500 a statement; about
      * 1.3 KB a row at worst, so a chunk stays well under the 4 MB default
      * max_allowed_packet of the oldest server in the matrix.
      */
@@ -1191,6 +1191,13 @@ final class SqlScanStore implements ScanStore
             // insertFindings() as it walks them rather than by building a second
             // list here - see the memory note there.
             $stored = $this->insertFindings($findings, $held, $runSeq);
+            // Of those, the ones a reason (@UVJUSTIFY) stands for: every held
+            // finding was stored (insertFindingChunk refuses a short write), so
+            // the flags it was sent with are the flags it holds.
+            $justified = 0;
+            foreach ($findings as $f) {
+                if (!empty($held[(int) $f['ordinal']]) && !empty($f['justified'])) $justified++;
+            }
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
             // scan that depends on records other than the one being examined, so
@@ -1237,9 +1244,9 @@ final class SqlScanStore implements ScanStore
             // freezing. The other place is freezeManifest().
             $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
-                    detail_bytes = detail_bytes + ?, updated_at = ?';
+                    detail_bytes = detail_bytes + ?, detail_justified = detail_justified + ?, updated_at = ?';
             $args = [$applied, $stored, isset($batch['bytes']) ? (int) $batch['bytes'] : 0,
-                     self::now()];
+                     $justified, self::now()];
             if ($applied > 0) {
                 $sql .= ', progress_at = ?';
                 $args[] = self::now();
@@ -1614,10 +1621,11 @@ final class SqlScanStore implements ScanStore
             'value_expires_at'  => isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
             'group_hmac'        => isset($f['group_hmac']) ? $f['group_hmac'] : null,
             'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
-            // Schema versions 3 (as_of) and 5 (z_score, growth_reference).
+            // Schema versions 3 (as_of), 5 (z_score, growth_reference) and 6 (justified).
             'as_of'             => isset($f['as_of']) ? (string) $f['as_of'] : null,
             'z_score'           => isset($f['z_score']) ? (string) $f['z_score'] : null,
             'growth_reference'  => isset($f['growth_reference']) ? (string) $f['growth_reference'] : null,
+            'justified'         => empty($f['justified']) ? 0 : 1,
         ];
     }
 

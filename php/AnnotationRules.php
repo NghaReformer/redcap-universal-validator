@@ -46,12 +46,33 @@ class AnnotationRules
     const TAG_WINDOW = '@UVWINDOW';
     const TAG_EXISTS = '@UVEXISTS';
     const TAG_RANGE = '@UVRANGE';
+    const TAG_DELTA = '@UVDELTA';
+    const TAG_WRITEONCE = '@UVWRITEONCE';
+    const TAG_JUSTIFY = '@UVJUSTIFY';
+
+    /**
+     * @UVDELTA "vs" shorthands: this same field in another entry of the
+     * record, as the reference each one stands for (%s is the field's name).
+     * UniversalValidator::annotateDeltaField writes them out.
+     */
+    const DELTA_SHORTHANDS = [
+        'previous-event' => '[previous-event-name][%s]',
+        'previous-instance' => '[%s][previous-instance]',
+        'first-event' => '[first-event-name][%s]',
+        'first-instance' => '[%s][first-instance]',
+    ];
+
+    /** The keys a @UVDELTA tag's JSON may name, in this letter case. */
+    const DELTA_KEYS = ['vs', 'max', 'maxPct', 'direction', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
 
     /** Most languages one text key (a "message" map) may name, "default" included. */
     const MAX_TEXT_LANGUAGES = 50;
 
     /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
     const MAX_RANGE_UNIT = 20;
+    /** Most roles one @UVWRITEONCE may name, and the longest name of one (REDCap's role_name column). */
+    const MAX_WRITEONCE_ROLES = 20;
+    const MAX_ROLE_NAME = 150;
     /** Longest @UVRANGE limit, in characters once any exponent is written out. */
     const MAX_RANGE_BOUND = 64;
     /** With a growth "reference", the limits are z-scores no further than this from 0. */
@@ -346,7 +367,8 @@ class AnnotationRules
      * next quote of its kind; a JSON value is brace-balanced, with strings
      * skipped). REDCap's own tags count too: @DEFAULT='...', @CALCTEXT(...).
      * @IF(...) is left to ifSpans, which refuses a module tag inside it. A
-     * value that never closes has no span, so it hides no tag after it.
+     * value that never closes has no span, so it hides no tag after it. Each
+     * span carries a third offset, where the value itself starts (maskValues).
      */
     private static function valueSpans($ann)
     {
@@ -369,10 +391,33 @@ class AnnotationRules
             }
             $end = $k < $len ? self::valueEnd($ann, $k) : null;
             if ($end === null) { $i = $j; continue; }
-            $spans[] = [$p, $end];
+            $spans[] = [$p, $end, $k];
             $i = $end;
         }
         return $spans;
+    }
+
+    /**
+     * The annotation with every action tag's quoted, {JSON} or (...) value
+     * (valueSpans) turned to spaces, so a tag name written inside another
+     * tag's value no longer reads as a tag, while each tag's own name and
+     * every byte offset stay where they were. For a check that looks for a
+     * tag anywhere in an annotation, such as the reason-field refusals of
+     * @UVJUSTIFY (UniversalValidator::annotateJustifyDictionary), as
+     * extractTagsDetailed skips those values (VAL-7, AST-9).
+     */
+    public static function maskValues($annotation)
+    {
+        $ann = (string) $annotation;
+        if (strpos($ann, '@') === false) return $ann;
+        // the spans come in order and never overlap
+        $out = '';
+        $at = 0;
+        foreach (self::valueSpans($ann) as $sp) {
+            $out .= substr($ann, $at, $sp[2] - $at) . str_repeat(' ', $sp[1] - $sp[2]);
+            $at = $sp[1];
+        }
+        return $out . substr($ann, $at);
     }
 
     /** Where the quoted, {JSON} or (...) value at $k ends (exclusive), or null when it is none of those or never closes. */
@@ -1279,6 +1324,327 @@ class AnnotationRules
         self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVDELTA value into a delta fragment: how far a number may
+     * move from an earlier value. JSON form only:
+     *   @UVDELTA={"vs":"previous-event","maxPct":10}
+     *   @UVDELTA={"vs":"previous-instance","max":5,"unit":"kg","direction":"up"}
+     *   @UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15}
+     * "vs" is a shorthand (DELTA_SHORTHANDS: this field in the previous or
+     * first event or instance), kept as deltaVsName, or one field reference.
+     * Either way deltaVs is the operand the rule reads; the field hook writes
+     * a shorthand out once the field's name is known
+     * (UniversalValidator::annotateDeltaField). "max" limits the size of the
+     * change in the field's unit and "maxPct" as a percent of the earlier
+     * value; with both, a change must keep both. "direction" (both, up,
+     * down) names the changes the limits apply to. Limits are exact decimal
+     * strings, as @UVRANGE's are. deltaGroup (what the rule compares with,
+     * and which way) lets tags that compare with different values, or limit
+     * different ways, sit on one field (php/modes.json branchGroup). The
+     * verdict is Logic::deltaVerdict.
+     */
+    private static function parseDeltaValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_DELTA . ' needs its settings as JSON, e.g. '
+                . self::TAG_DELTA . '={"vs":"previous-event","maxPct":10}.'];
+        }
+        $cfg = json_decode($val, true, 512, JSON_BIGINT_AS_STRING);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_DELTA . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        // every number as the text it was typed as, so a limit keeps its digits
+        $exact = json_decode(self::quoteJsonNumbers($val), true);
+        $allowed = self::DELTA_KEYS;
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_DELTA . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'delta'];
+        if (array_key_exists('vs', $cfg)) {
+            if (!is_string($cfg['vs']) || trim($cfg['vs']) === '') {
+                return ['error' => '"vs" must be ' . self::deltaShorthandText()
+                    . ' or one field reference, such as "[baseline_arm_1][weight]".'];
+            }
+            $vs = trim($cfg['vs']);
+            $kw = strtolower($vs);
+            if (isset(self::DELTA_SHORTHANDS[$kw])) {
+                $out['deltaVsName'] = $kw;
+                $vs = $kw;
+            }
+            $out['deltaVs'] = $vs;
+        }
+        foreach (['max' => 'deltaMax', 'maxPct' => 'deltaMaxPct'] as $k => $key) {
+            if (!array_key_exists($k, $cfg)) continue;
+            $typed = isset($exact[$k]) && is_string($exact[$k]) ? $exact[$k] : null;
+            $b = self::rangeBound($cfg[$k], $typed);
+            if ($b === null) {
+                return ['error' => '"' . $k . '" must be a number such as ' . ($k === 'max' ? '5' : '10') . ' — got '
+                    . ((is_int($cfg[$k]) || is_float($cfg[$k])) && $typed !== null ? $typed : json_encode($cfg[$k])) . '.'];
+            }
+            if ($b === false || strlen($b) > self::MAX_RANGE_BOUND) {
+                return ['error' => '"' . $k . '" is longer than ' . self::MAX_RANGE_BOUND . ' characters written out.'];
+            }
+            $out[$key] = $b;
+        }
+        if (array_key_exists('direction', $cfg)) {
+            if (!is_string($cfg['direction'])) return ['error' => '"direction" must be both, up or down.'];
+            $d = strtolower(trim($cfg['direction']));
+            // "both" is the default, dropped so two spellings of one rule group as one
+            if ($d !== 'both') $out['deltaDirection'] = $d;
+        }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+        foreach (['unit' => 'deltaUnit', 'when' => 'when', 'message' => 'message', 'blockSave' => 'blockSave'] as $k => $key) {
+            if (!isset($cfg[$k])) continue;
+            if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+            $out[$key] = $k === 'unit' ? trim($cfg[$k]) : $cfg[$k];
+        }
+        self::takeCaseSensitive($cfg, $out);
+        if (isset($out['deltaVs'])) $out['deltaGroup'] = self::deltaGroup($out['deltaVs'], isset($out['deltaDirection']) ? $out['deltaDirection'] : 'both');
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * The keys a @UVDELTA value ($val) that failed to parse would give its
+     * branch, read from its JSON as parseDeltaValue reads them: deltaVs
+     * (and deltaVsName for a shorthand), deltaDirection, "when" and
+     * "caseSensitive" (only when true: any other value may be fixed to
+     * false). The JSON is read leniently (jsonLenient), as it will read
+     * once fixed. Null when even so it does not decode, names a key
+     * outside DELTA_KEYS (a key in other letter case among them), or has
+     * a "vs", "direction" or "when" that is not a text or that
+     * parseDeltaValue would refuse: fixed, such a key could give the
+     * branch any group or condition. A reference to another event or
+     * instance is read as written, since turning event and instance
+     * references on fixes it. A "when" that TemporalRules::validate
+     * refuses beside the tag's own "references" (a {binding} they do not
+     * define, a collection binding compared with another collection) is
+     * refused with references on too, so it makes the value unreadable;
+     * the errors of the "references" alone do not, as for any key the tag
+     * failed on (review R12-2). Fixing the key the tag failed on brings
+     * the branch back, so the @UVDELTA suggestions leave its group alone,
+     * and all groups alone while it cannot be read
+     * (UniversalValidator::deltaGroupsTaken, reviews R9-7, R10-2, R11-1).
+     */
+    public static function deltaBranchAsWritten($val)
+    {
+        $cfg = self::jsonLenient(trim((string) $val));
+        if (!is_array($cfg) || array_diff(array_keys($cfg), self::DELTA_KEYS)) return null;
+        if (!isset($cfg['vs']) || !is_string($cfg['vs'])) return null;
+        $out = ['deltaVs' => trim($cfg['vs'])];
+        $kw = strtolower($out['deltaVs']);
+        if (isset(self::DELTA_SHORTHANDS[$kw])) $out = ['deltaVs' => $kw, 'deltaVsName' => $kw];
+        elseif (ModeRegistry::operandRef($out['deltaVs'], ['qualified' => true]) === null) return null;
+        if (array_key_exists('direction', $cfg)) {
+            $d = is_string($cfg['direction']) ? strtolower(trim($cfg['direction'])) : null;
+            if (!in_array($d, ['both', 'up', 'down'], true)) return null;
+            if ($d !== 'both') $out['deltaDirection'] = $d;
+        }
+        if (isset($cfg['when'])) {
+            if (!is_string($cfg['when']) || empty(Logic::parse($cfg['when'], ['qualified' => true])['ok'])) return null;
+            require_once __DIR__ . '/TemporalRules.php';
+            $refs = array_key_exists('references', $cfg) ? ['references' => $cfg['references']] : [];
+            if (array_diff(TemporalRules::validate($refs + ['when' => $cfg['when']]), TemporalRules::validate($refs))) return null;
+            $out['when'] = $cfg['when'];
+        }
+        if (isset($cfg['caseSensitive']) && $cfg['caseSensitive'] === true) $out['caseSensitive'] = true;
+        return $out;
+    }
+
+    /**
+     * $text decoded as a JSON object, or, when it does not decode, decoded
+     * once single quotes and curly quotes are read as double quotes and a
+     * comma before a closing } or ] is dropped: the slips a designer makes
+     * and the tag's refusal names. A string ends only at the kind of quote
+     * that opened it, so an apostrophe in a double-quoted message stays
+     * text. Null when neither decodes. A scan from the start, so a long or
+     * broken value costs its length.
+     */
+    private static function jsonLenient($text)
+    {
+        $cfg = json_decode($text, true, 512, JSON_BIGINT_AS_STRING);
+        if (is_array($cfg)) return $cfg;
+        $curly = ["\u{201C}" => '"', "\u{201D}" => '"', "\u{2018}" => "'", "\u{2019}" => "'"];
+        $out = '';
+        $open = null;       // the quote that opened the string being read, null outside one
+        $n = strlen($text);
+        for ($i = 0; $i < $n; $i++) {
+            $c = $text[$i];
+            $q = $c === '"' || $c === "'" ? $c : null;
+            if ($q === null && $c === "\xE2" && isset($curly[substr($text, $i, 3)])) {
+                $q = $curly[substr($text, $i, 3)];
+                $c = substr($text, $i, 3);
+            }
+            if ($open === null) {
+                if ($q !== null) { $open = [$q, $c]; $out .= '"'; $i += strlen($c) - 1; continue; }
+                if ($c === ',') {
+                    $j = $i + 1;
+                    while ($j < $n && strpos(" \t\r\n", $text[$j]) !== false) $j++;
+                    if ($j < $n && ($text[$j] === '}' || $text[$j] === ']')) continue;
+                }
+                $out .= $c;
+                continue;
+            }
+            // a straight quote is ended by itself, a curly one by either curly quote of its kind
+            if ($q === $open[0] && ($c === $open[1] || strlen($c) === strlen($open[1]))) {
+                $open = null; $out .= '"'; $i += strlen($c) - 1; continue;
+            }
+            if ($c === '\\' && $i + 1 < $n) { $out .= $c . $text[++$i]; continue; }
+            $out .= $c === '"' ? '\\"' : $c;
+            $i += strlen($c) - 1;
+        }
+        $cfg = json_decode($out, true, 512, JSON_BIGINT_AS_STRING);
+        return is_array($cfg) ? $cfg : null;
+    }
+
+    /**
+     * The branch group of a delta rule (php/modes.json branchGroup): the value
+     * it compares with, without spaces and letter case, and the way it limits.
+     * Two tags on one field that differ in either both apply.
+     */
+    public static function deltaGroup($vs, $direction)
+    {
+        return strtolower(preg_replace('/\s+/', '', (string) $vs)) . ' ' . $direction;
+    }
+
+    /**
+     * Parse one @UVWRITEONCE value into a writeonce fragment:
+     *   @UVWRITEONCE
+     *   @UVWRITEONCE={"roles":["Data manager"],"since":"2026-11-01","message":"..."}
+     * The field is locked at its first save of a value: blank and a Missing
+     * Data Code lock nothing. "roles" names the user roles (by the name the
+     * User Rights page shows, or by the unique role name) whose members may
+     * still change it; a change by one of them moves the lock. "since" starts
+     * the lock on that date for a field that already has a history: saves
+     * before it only say which value the field held then. The verdict is
+     * Logic::writeOnceVerdict, read from REDCap's log (ValueHistory); whether
+     * each role exists is checked with the project in hand
+     * (UniversalValidator::annotateWriteonceDictionary).
+     */
+    private static function parseWriteonceValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        $out = ['type' => 'writeonce'];
+        if ($val !== '') {
+            if ($val[0] !== '{') {
+                return ['error' => self::TAG_WRITEONCE . ' takes no value, or its settings as JSON, e.g. '
+                    . self::TAG_WRITEONCE . '={"roles":["Data manager"]}.'];
+            }
+            $cfg = json_decode($val, true);
+            if (!is_array($cfg)) {
+                return ['error' => self::TAG_WRITEONCE . ' JSON does not parse ('
+                    . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+            }
+            $allowed = ['roles', 'since', 'message'];
+            $unknown = array_diff(array_keys($cfg), $allowed);
+            if ($unknown) {
+                return ['error' => 'unknown ' . self::TAG_WRITEONCE . ' option(s): ' . implode(', ', $unknown)
+                    . ' — valid: ' . implode(', ', $allowed) . '.'];
+            }
+            if (array_key_exists('roles', $cfg)) {
+                if (!is_array($cfg['roles']) || array_values($cfg['roles']) !== $cfg['roles']) {
+                    return ['error' => '"roles" must be a list of role names, e.g. ["Data manager"].'];
+                }
+                $roles = [];
+                foreach ($cfg['roles'] as $r) {
+                    if (!is_string($r)) return ['error' => '"roles" must be a list of role names, e.g. ["Data manager"].'];
+                    $r = trim($r);
+                    // one entry per role, whatever the spacing or letter case
+                    if (!in_array(Logic::roleKey($r), array_map([Logic::class, 'roleKey'], $roles), true)) $roles[] = $r;
+                }
+                $out['writeonceRoles'] = $roles;
+            }
+            if (array_key_exists('since', $cfg)) {
+                if (!is_string($cfg['since'])) return ['error' => '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01".'];
+                $out['writeonceSince'] = trim($cfg['since']);
+            }
+            if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+            if (isset($cfg['message'])) {
+                if (!is_string($cfg['message'])) return ['error' => '"message" must be a string.'];
+                $out['message'] = $cfg['message'];
+            }
+        }
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVJUSTIFY value into a justify fragment:
+     *   @UVJUSTIFY={"reason":"[weight_reason]","message":"Say why this weight is right."}
+     * A broken rule of another tag on the field (a mode whose php/modes.json
+     * "justify" is true) may then be saved once the reason field holds a
+     * reason: the save guard lets the field through, and the audit and the
+     * scan report the finding as justified. "reason" is one plain field
+     * reference; whether that field exists, sits on the same form and takes
+     * text or a choice is checked with the dictionary in hand
+     * (UniversalValidator::annotateJustifyDictionary), and whether the field
+     * has a rule a reason can stand for once every rule is known
+     * (UniversalValidator::applyJustify).
+     */
+    private static function parseJustifyValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        $eg = self::TAG_JUSTIFY . '={"reason":"[weight_reason]"}';
+        if ($val === '') {
+            return ['error' => self::TAG_JUSTIFY . ' needs the field that holds the reason, e.g. ' . $eg . '.'];
+        }
+        if ($val[0] !== '{') {
+            return ['error' => self::TAG_JUSTIFY . ' takes its settings as JSON, e.g. ' . $eg . '.'];
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_JUSTIFY . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"', 'references' => '"references"'] as $k => $label) {
+            if (array_key_exists($k, $cfg)) return ['error' => self::justifyTakesNo($label)];
+        }
+        $allowed = ['reason', 'message'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_JUSTIFY . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'justify'];
+        if (array_key_exists('reason', $cfg)) {
+            if (!is_string($cfg['reason'])) return ['error' => self::JUSTIFY_REASON_SHAPE];
+            $ref = trim($cfg['reason']);
+            if (preg_match('/^\[([a-z][a-z0-9_]*)\]$/D', $ref, $m)) {
+                $out['justifyReason'] = $m[1];
+            } elseif (preg_match('/^\[[^\[\]]+\](\[[^\[\]]+\])+$/D', $ref)) {
+                return ['error' => '"reason" names one field on this form, with no event or instance — e.g. "[weight_reason]".'];
+            } else {
+                return ['error' => self::JUSTIFY_REASON_SHAPE];
+            }
+        }
+        if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
+        if (isset($cfg['message'])) {
+            if (!is_string($cfg['message'])) return ['error' => '"message" must be a string.'];
+            $out['message'] = $cfg['message'];
+        }
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    const JUSTIFY_REASON_SHAPE = '"reason" must be one field reference, e.g. "[weight_reason]".';
+
+    /** The refusal of a key @UVJUSTIFY does not take. */
+    private static function justifyTakesNo($label)
+    {
+        return self::TAG_JUSTIFY . ' takes no ' . $label . ': a reason stands for the other rules on the field whenever they apply.';
+    }
+
+    /** The "vs" shorthands as a list in words: "previous-event, ... or first-instance". */
+    private static function deltaShorthandText()
+    {
+        $names = array_keys(self::DELTA_SHORTHANDS);
+        return implode(', ', array_slice($names, 0, -1)) . ' or ' . end($names);
     }
 
     /**
@@ -3091,6 +3457,122 @@ class AnnotationRules
             }
         }
         return array_merge($errors, self::checkGrowth($frag, $zLimits, $opts), self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a delta (@UVDELTA) fragment: a "vs" that is a
+     * shorthand (which reads another event or instance, so it needs event and
+     * instance references) or exactly one field reference; at least one of
+     * "max" and "maxPct", each a number of 0 or more; a known direction and a
+     * short unit label. Whether the field and its "vs" field hold numbers is
+     * checked in the channel glue, where the data dictionary is in hand
+     * (UniversalValidator::annotateDeltaField and annotateDeltaDictionary).
+     */
+    public static function checkDelta(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (!isset($frag['deltaVs'])) {
+            $errors[] = self::TAG_DELTA . ' needs "vs", the value to compare with — e.g. "vs":"previous-event".';
+        } elseif (!is_string($frag['deltaVs'])) {
+            $errors[] = '"vs" must be ' . self::deltaShorthandText() . ' or one field reference.';
+        } elseif (isset(self::DELTA_SHORTHANDS[$frag['deltaVs']])) {
+            // not written out yet: it names this field in another entry
+            if (empty($opts['qualified'])) {
+                $errors[] = '"vs": "' . $frag['deltaVs'] . '" reads another event or instance, which needs event and '
+                    . 'instance references — enable them in project settings first.';
+            }
+        } elseif (ModeRegistry::operandRef($frag['deltaVs'], $opts) === null) {
+            $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($frag['deltaVs'], ['qualified' => true]) !== null)
+                ? 'a "vs" value in another event or instance needs event and instance references — enable them in project settings first.'
+                : '"vs" must be ' . self::deltaShorthandText() . ' or exactly one field reference, e.g. "[weight_screening]" '
+                  . 'or "[baseline_arm_1][weight]" (not a checkbox code, a {binding} or a list of instances).';
+        }
+        if (!array_key_exists('deltaMax', $frag) && !array_key_exists('deltaMaxPct', $frag)) {
+            $errors[] = self::TAG_DELTA . ' needs a limit: "max" (the most the value may change, in its own unit) or '
+                . '"maxPct" (the most it may change as a percent of the earlier value), e.g. "maxPct":10.';
+        }
+        foreach (['deltaMax' => 'max', 'deltaMaxPct' => 'maxPct'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            $v = $frag[$k];
+            if (!is_string($v) || !preg_match(Logic::NUM_RE, $v)) {
+                $errors[] = '"' . $label . '" must be a number — got ' . json_encode($v) . '.';
+            } elseif (Logic::numCompare($v, '0') < 0) {
+                $errors[] = '"' . $label . '" must be 0 or more — it is the size of a change; "direction" says which way.';
+            } elseif ($k === 'deltaMaxPct' && Logic::numCompare($v, '0') === 0) {
+                // An earlier 0 has no percent, so "maxPct": 0 would let any change
+                // away from 0 through while it reads as "no change at all".
+                $errors[] = '"maxPct": 0 does not stop a change from an earlier 0, which has no percent — use "max": 0 for "no change".';
+            }
+        }
+        if (isset($frag['deltaDirection']) && !in_array($frag['deltaDirection'], ['up', 'down'], true)) {
+            $errors[] = '"direction" must be both, up or down.';
+        }
+        if (array_key_exists('deltaUnit', $frag)) {
+            $u = $frag['deltaUnit'];
+            if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
+                    || (function_exists('mb_strlen') ? mb_strlen($u, 'UTF-8') : strlen($u)) > self::MAX_RANGE_UNIT) {
+                $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "kg".';
+            }
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Validate a writeonce fragment: each role a name of 1 to MAX_ROLE_NAME
+     * characters with no control character, at most MAX_WRITEONCE_ROLES of
+     * them, and "since" a real date. The lock is the rule, so the tag takes no
+     * "when" and no "blockSave": the page always keeps a locked value.
+     */
+    public static function checkWriteonce(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (array_key_exists('writeonceRoles', $frag)) {
+            $roles = $frag['writeonceRoles'];
+            if (!is_array($roles) || !$roles) {
+                $errors[] = '"roles" must name at least one role — leave it out to lock the field for everyone.';
+            } elseif (count($roles) > self::MAX_WRITEONCE_ROLES) {
+                $errors[] = '"roles" names ' . count($roles) . ' roles — at most ' . self::MAX_WRITEONCE_ROLES . '.';
+            } else {
+                foreach ($roles as $r) {
+                    $len = is_string($r) ? (function_exists('mb_strlen') ? mb_strlen($r, 'UTF-8') : strlen($r)) : 0;
+                    if (!is_string($r) || $r === '' || preg_match('/[\x00-\x1F\x7F]/', $r) || $len > self::MAX_ROLE_NAME) {
+                        $errors[] = '"roles" must hold role names of 1 to ' . self::MAX_ROLE_NAME . ' characters — got ' . json_encode($r) . '.';
+                        break;
+                    }
+                }
+            }
+        }
+        if (array_key_exists('writeonceSince', $frag)) {
+            $d = $frag['writeonceSince'];
+            $ok = is_string($d) && preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $d, $m) && checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+            if (!$ok) $errors[] = '"since" must be a date written YYYY-MM-DD, e.g. "2026-11-01" — got ' . json_encode($d, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . '.';
+        }
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"'] as $k => $label) {
+            if (array_key_exists($k, $frag)) {
+                $errors[] = self::TAG_WRITEONCE . ' takes no ' . $label . ': a value locked after its first save stays locked.';
+            }
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a justify (@UVJUSTIFY) fragment: "reason" is
+     * one field name; no "when", "caseSensitive" or "blockSave". The rest
+     * needs the data dictionary (UniversalValidator::annotateJustifyDictionary)
+     * or every rule of the project (UniversalValidator::applyJustify).
+     */
+    public static function checkJustify(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (!isset($frag['justifyReason'])) {
+            $errors[] = self::TAG_JUSTIFY . ' needs "reason", the field that holds the reason — e.g. "reason":"[weight_reason]".';
+        } elseif (!is_string($frag['justifyReason']) || !preg_match('/^[a-z][a-z0-9_]*$/D', $frag['justifyReason'])) {
+            $errors[] = self::JUSTIFY_REASON_SHAPE;
+        }
+        foreach (['when' => '"when"', 'caseSensitive' => '"caseSensitive"', 'blockSave' => '"blockSave"'] as $k => $label) {
+            if (array_key_exists($k, $frag)) $errors[] = self::justifyTakesNo($label);
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**

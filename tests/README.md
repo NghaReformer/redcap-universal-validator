@@ -42,6 +42,23 @@ node tests/mlm_dom_js.cjs        # Multi-Language Management: hidden dropdown ch
 node tests/mlm_messages_dom_js.cjs  # rule messages in the MLM language on screen; string messages unchanged, a switch asks nothing
 php  tests/message_i18n_php.php  # "message" as a language map: grammar, refusals, string messages unchanged, branches, page shape
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/delta_js.cjs          # @UVDELTA verdict vs delta_fixture.json
+php  tests/delta_php.php          # @UVDELTA verdict and grammar, PHP twin, same fixture
+node tests/delta_dom_js.cjs      # @UVDELTA browser rule (live vs blocks, saved vs and calc never block)
+php  tests/delta_module_php.php   # @UVDELTA hooks, page fold, audit across events and instances, scan
+php  tests/delta_live_twin_php.php # @UVDELTA live run sheet: every answer, from the module
+node tests/delta_live_twin_js.cjs  # @UVDELTA live run sheet: every note, from the engine
+php  tests/writeonce_php.php      # @UVWRITEONCE verdict vs writeonce_fixture.json, and the log reader
+node tests/writeonce_dom_js.cjs   # @UVWRITEONCE page lock (read-only, nothing posted disabled, a change undone)
+php  tests/writeonce_module_php.php # @UVWRITEONCE hooks, roles, grammar, page, audit, scan
+php  tests/writeonce_live_twin_php.php # @UVWRITEONCE live run sheet: every answer but I4, from the module
+node tests/writeonce_live_twin_js.cjs  # @UVWRITEONCE live run sheet: every lock and note, from the engine
+php  tests/justify_php.php        # @UVJUSTIFY reason given vs justify_fixture.json, grammar, registry flags
+node tests/justify_js.cjs         # @UVJUSTIFY reason given, browser twin, same fixture
+node tests/justify_dom_js.cjs     # @UVJUSTIFY page (a reason releases the modes it stands for, the alert names the reason field, the note)
+php  tests/justify_module_php.php # @UVJUSTIFY hooks, applyJustify, page config, audit, legacy and durable scan
+php  tests/justify_live_twin_php.php  # @UVJUSTIFY live run sheet: every answer, from the module
+node tests/justify_live_twin_js.cjs   # @UVJUSTIFY live run sheet: every note, hold and dialog line, from the engine
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, R pnorm/qnorm, 720 mpmath output points, two parity hashes
 php  tests/growth_php.php         # growth references, PHP twin: same cases and goldens, table SHA-256, extra folder, limits, port constants
 php  tests/growth_outputs_php.php # @UVRANGE "return" catalog: outputs, key grammar and wording, engine copy, bad file
@@ -496,6 +513,406 @@ read a second time with every number quoted), exponents written out, the
   page's baked-in branch choice, and the branch on a branched `@UVUNIQUE`
   duplicate.
 
+## `delta_*` — how far a number may change
+
+`delta_fixture.json` holds cases that `delta_php.php` runs through
+`Logic::deltaVerdict` and `delta_js.cjs` through `QRID_deltaVerdict`; both must
+give the same verdict (ok, up, down, inert, unknown), reason and change, the
+change written as an exact decimal. Cases cover changes on and next to each
+limit, a percent of a negative earlier value, an earlier 0 (no percent),
+direction, comma decimals on either side, exponents written out in full (1e80
+against 1e100), numbers past 2^53 and long fractions where a double would say
+"equal", spaces other than space, tab, CR and LF (not a number), and values
+too long to compare (past `ExactDecimal::MAX_DIGITS` written out, or a product
+too long for the percent). A long value is written `{prefix, repeat, times,
+suffix}`. `delta_php.php` also covers the evaluation budget (long numbers pay
+before the work, a refused payment is unknown, reason `limit`) and the grammar:
+the shorthands, limits kept exactly as typed, the branch group, and every
+refusal, `"maxPct": 0` among them. `delta_js.cjs` times a value with 100,000
+inner spaces.
+
+- `delta_dom_js.cjs` boots the browser rule on a stub page: a `vs` on the page
+  is read as typed and blocks per `blockSave`, changing it re-checks; a
+  snapshot, an event/instance rule (`extendedAdvisory`), a calc, a read-only
+  field and a deferred rule never block; a Missing Data Code on either side,
+  a numeric one such as `-99` included, checks nothing, in `check()` and in
+  `test()`; a withheld earlier value and one that
+  is not a number are amber notes for staff and nothing on a survey; the note's
+  wording (percent, "more than" the limit it broke, "under 0.1%", the earlier
+  value with its own decimals, comma, survey without the label, escaping); two
+  tags on one field say one line each; a deferral only this viewer meets says
+  the save checks it; the public registry composes @UVRANGE and @UVDELTA on
+  one field, and an ID check (alone, branched, beside another mode, on a
+  blank field, part-typed, with a configuration error) answers there as the
+  page judges it, while a pooled list or @UVUNIQUE leaves it open; a value
+  written by a script is judged without any event; typing
+  in the `vs` field or a field the `when` reads is judged once the field is
+  left.
+- `delta_module_php.php` covers the server side with a `\Project` stub for
+  events and repeats: the field and dictionary hooks and their refusals, the
+  shorthand written out per field, the page fold (live, snapshot, withheld),
+  the audit on a classic project (Missing Data Codes, `when`, two tags logged
+  apart by `vs`), across events (previous, first and named event; the first
+  visit and an event with nothing saved compare with nothing; saving an earlier
+  visit re-checks the later one) and across instances, and the scan with its
+  labels and detail lines. A `vs` that cannot be read (unresolved on the
+  event/instance path) is a rule problem, and so is a spent evaluation budget.
+  The shorthand layout is judged at every event that holds the form, arm by
+  arm (a form that repeats at some visits only, a whole repeating event, one
+  event in each of two arms). A reference is refused, with the events named,
+  when it names the same entry, an event
+  that does not hold its form (plain, with references on or off, or named),
+  an instance of a form that does not repeat where it lands, a relative
+  instance where the field's own form is held once (each such event named,
+  and not where the event token finds nothing), no instance of a form that
+  repeats (a named or relative event included, but not a form of the same
+  whole repeating event), or a relative event that finds nothing from any
+  event. A refusal ends with a reference to write instead only when that
+  reference passes the same check; the suite writes each one back in place of
+  the reference and expects it accepted, including across two arms (a
+  relative event, never one arm's event, even when the reference named one),
+  on a project of one event, and where nothing works (no suggestion, and the
+  list of what was tried, this event included). For the field itself it
+  suggests `[last-instance]` at another event and `[previous-instance]` only
+  at its own, and the first visit's `[first-instance]` where only that visit
+  repeats; a relative event as written is kept, an event of another arm as
+  written is not (but is accepted written by hand), another form's field
+  gets its last instance first, a token that lands on its own event from
+  every event where the field is entered is left to the plain reference, and
+  no suggestion repeats another tag's `vs` and direction under the same
+  condition (review R8). For review R9 it checks that the same condition in
+  other words (spacing, a leading space, quote style, parentheses, letter
+  case, keyword case) holds a group, and letter case does not for a
+  `caseSensitive` tag; that a token finding no event from an event of
+  another arm is offered; that the shorthand refusal's example keeps its own
+  event, with `[first-instance]` for `first-event`, or gives none; that the
+  next event, the last event and a later visit as written are not kept; that
+  for the field itself `[next-instance]`, `[current-instance]` at another
+  event and an instance after the first at its own event are not offered;
+  that two refused tags, in either order, and a tag next to one that failed
+  to parse get suggestions accepted when written back together; that every
+  path that suggests a reference passes over the groups other tags hold, in
+  the tag's direction; and that another form's field gets the second event
+  that holds it, named outright, when the first lands on the field's own
+  event. For review R10 it checks that a conditional tag is not offered the
+  group of another whose condition could be true at the same time (`>` beside
+  `=`, `1` beside `'01'` or `1.0`, a space inside the quotes, `'Yes'` beside
+  `'yes'` unless both tags are `caseSensitive`, `<>`, an `or`, a field at
+  another event, one condition never true said twice), and is offered it
+  beside one that can never be true with it (two values of one field, either
+  way round, inside an `and`, a number beside a text), each written back and
+  accepted, and that at run time each value picks one branch with no
+  conflict; that a tag without a condition is the fallback beside a
+  conditional one; that a tag that failed to parse is read with single or
+  curly quotes (around the whole value or one value) and a trailing comma,
+  an apostrophe or double quotes inside a message kept as text, keeping its
+  `when`, direction, `caseSensitive` (only when true) and a shorthand in
+  capitals, from its own value; that beside a tag with bare words, no value
+  or no `vs` nothing is offered and each kind of refusal says to fix it
+  first, and that each says when the other tags hold every reference that
+  would work, but not when the held entry would not fit anyway; that two
+  tags written the same are told apart, each field reads its own tags, and
+  the rules built again with references on are worked out again; and that a
+  refused reference and a refused shorthand hand their suggestions on. For
+  review R11 it checks that beside a tag that failed to parse with a `when`
+  or `direction` that is not text, does not parse or is refused, a key in
+  other letter case (`When`, `Direction`), a misspelt shorthand, a blank
+  `vs` or one missing a bracket, nothing is offered, and once that tag is
+  fixed the first event is offered and accepted; that a `when` naming
+  another event is read as written; that the held note is the rule the
+  search applies, word for word; what `Branching::whenExclusive` reads (two
+  boxes of one checkbox, a field compared with a field, an `and` inside an
+  `and`, one field tested twice, a condition that does not parse); that the
+  lenient read keeps escapes, drops a trailing comma before `]` and one
+  before a space and `}`, and reads single curly quotes and a curly quote
+  inside a string; that
+  a failed tag of another mode shifts nothing; and that the tags are read
+  again once references are on. For review R12 it checks the held note with
+  a field at another event, a field with an instance and two boxes of one
+  checkbox; that beside a tag that failed to parse with a `{binding}` its
+  `references` do not define, or a collection binding compared with another
+  collection, nothing is offered, while a binding they define and
+  references refused for themselves leave the tag read; that `"direction":null`,
+  a misspelt key (`wehn`), a `when` of only spaces beside a conditional tag,
+  an extra key (`label`) and a `vs` that is a list or a number leave nothing
+  offered, with no error thrown; that `"when":null`, a direction of `both` or
+  `down` and a `vs` with spaces around it are read as the parser reads them
+  once fixed, each suggestion accepted; and that a tag that failed to parse
+  and names the field itself holds its own `vs`, not its suggestion. The refusal of a plain `vs` naming the field
+  itself suggests `previous-instance` on a classic project whose form
+  repeats, `previous-event` across visits, `previous-instance` where the
+  form repeats at the visits, a written reference when no shorthand fits
+  (saying when it needs references on), and nothing where no other entry of
+  the field exists or the form is designated at no event. A `vs` form designated at no event is refused as such. A plain
+  `vs` a save cannot read (the field is not collected in this event, or the
+  read failed) is a rule problem in the evaluator. One `vs` with two directions judges both ways (the heart-rate
+  recipe), and a deferral only this viewer meets is marked and still checked
+  on save.
+- `delta_live_twin_php.php` runs the module over the live fixture on a copy of
+  pid 149's events and checks every answer of
+  `docs/testbed/DELTA_LIVE_ACCEPTANCE.md`: the configuration errors word for
+  word, every log entry of each save in the sheet's order, over one module
+  log whose `queryLogs` stub answers from the entries already written, so a
+  finding or rule problem is logged once (PRF-9), and the scan with its
+  detail lines. It keeps the page configs in `delta_live_pages.json`
+  (`--write` after a change) for `delta_live_twin_js.cjs`, which replays the
+  sheet's typing through the engine and checks each note, each save and the
+  label the save dialog names. The pages B, C2 and D1 open with the values
+  the sheet saved before them (`sheet_b1`, `sheet_c2`, `sheet_d1` and their
+  `_values`), so the "save anyway?" dialogs of B2 and C3 are checked word for
+  word, and section F checks each configuration error under its own field.
+- `delta_mutations.py` applies 265 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. The copy
+  holds every folder and file the named suites read (`site/` and `README.md`
+  among them), and every suite must pass in it before the first mutation, so
+  a suite that cannot run in the copy stops the run. Besides
+  @UVDELTA's own code it breaks the page code @UVDELTA shares with other modes
+  (the trim of @UVREQUIRED and @UVCHOICES, the wait for a blur, the deferral
+  notes, the registry entry of a field with two modes), so those suites are
+  named too.
+
+## `writeonce_*` — values entered once
+
+- `writeonce_php.php` holds `Logic::writeOnceVerdict` to
+  `writeonce_fixture.json`: the lock set by the first save of a value (not a
+  blank, not a Missing Data Code), a change or a clearing after it, a role that
+  moves or releases the lock, "since", a quote the log escaped, a save the log
+  does not spell out, a value it never shows saved, and roles that cannot be
+  read, and the lock compared with the last save rather than the value now. It
+  also drives `ValueHistory` over a mock of REDCap's log
+  (`writeonce_fake_log.php`): one history per record and event (the mock
+  applies the event filter and refuses SQL without it; with `$looseEvent` it
+  returns every event's rows and the reader must pass over the others); rows
+  newest first in pages; a whole-record `DELETE` ending the history in a
+  project of one arm, while a `DELETE` of this event's data or of an arm, and
+  any whole-record `DELETE` with several arms, make it unknown, and one of
+  one form or one event of another event's data is passed over while another
+  description there makes it unknown; an erase of the project's records
+  starting every history after it (asked once per reader, a failed read making
+  the history unknown, the project id compared as bytes, part of a record
+  named like the project no erase, an erase placed after the record was made
+  leaving its history unknown); the record's start (an INSERT with a trusted
+  record id line, read at any event, even one naming another record id; a
+  history without one unknown; an UPDATE that writes the record id, and a
+  record id line typed into a notes value, change nothing; "recordXid" and
+  "prev_record_id" lines not read), read from the row as written with the
+  module's own options, the record id field counted as a Text field: a field
+  moved since (a field that is not Text or Notes, written before any other
+  Text value, still judged), a Notes value with a line ending in a quote and
+  a comma, a locked field at another event, and lines of fields no one
+  types, checkbox lines and an instance line before the record id line leave
+  the start trusted, while a record id line after a Text, Notes or stray line, one that
+  runs on, or one with no value is "startrow", and a newer untrusted row does
+  not outrank an older start; a save with no event that names a kept
+  field, on any instance; another record of the same name in a loose
+  collation, also past the cap; the cap counted per event over that event's
+  rows, deletes and rows with no event (each counted, another event's rows
+  not), with a history of exactly the cap read in full and `MAX_ROWS_READ`
+  rows of any kind; a whole-record `DELETE` in any letter case; log and erase
+  ids that are not digits read as unknown; a
+  failed read; save times turned into the project's clock; and `parseRow` (a
+  notes value over several lines, 130,000 lines in under a second, checkbox
+  lines, a field written twice, a stray line, an instance line that is not the
+  first, and a row out of the data dictionary's order, read up to the first
+  Text or Notes value before the break, the record id line counted as no such
+  value). `RoleBook::read` runs
+  over a mock database: both names of each role, users by lowercase name, the
+  project and today bound as parameters, and a REDCap with no unique role
+  names, usernames stored with spaces trimmed, and role names kept as
+  `Logic::roleKey` (letter case folded in full, so "STRASSE" matches "Straße";
+  spaces folded; a no-break space at either end trimmed; a zero-width space,
+  a byte order mark and a word joiner dropped, one between two spaces leaving
+  one space; "İ", composed or as "I" and a combining dot, read as "i", while
+  the dotless "ı" stays apart; a name with combining accents matching its
+  composed form, a format character between a letter and its accent removed
+  first, where PHP's intl extension is loaded, checks the suite skips with a
+  note otherwise; CI loads intl). The SQL of both runs
+  on a real server in `tests/mysql/cases/history.php`, with two erases, rows
+  that are no erase (a record "730 " or "７３０", one form of a record "730",
+  another object type, one that names an event), the record's start through
+  both LIKE patterns, a `DELETE` of one event and one that names an arm.
+- `writeonce_dom_js.cjs` boots the page lock on a stub page: a text box is
+  read-only with the note under it, in the rule's own words when it has a
+  message; radio buttons are disabled and the "reset" link hidden, and the
+  enhanced radio buttons take no clicks; REDCap's Today and Now buttons are
+  hidden; a dropdown is not disabled but takes no clicks, its autocomplete box
+  is read-only even when it is built after the lock, and a saved code that is
+  no longer a choice comes back as an option; the slider is disabled through
+  jQuery UI, and the date picker is kept from opening with its button hidden
+  while the date box stays enabled; a change made anyway (an event, a jQuery
+  change, a script with no event) is undone and the note says so; a value that
+  cannot be put back holds the save; another mode's item on a locked field
+  never holds the save unless its rule reads another field (`lockReads`) and
+  that field has changed since the page opened, in either order of binding
+  and for every mode, while a field REDCap made read-only (`@READONLY`) or
+  disabled still never holds it; a violation saved before the page opened and
+  two locked fields that read each other never hold it, also with the engine
+  loaded before the form, as REDCap prints it; the opening values taken after
+  REDCap's start-up, on a stub with timers and a jQuery whose ready callbacks
+  run in a timer after the DOMContentLoaded listeners, as jQuery 3 runs them:
+  a value REDCap writes in a ready callback, in a timer started there, or in a
+  DOMContentLoaded listener added before the engine is no change, while a
+  later change still holds the save, and nothing is compared before the
+  values are taken; a `@TODAY` date REDCap writes as the page starts, read by
+  a rule on a locked field, holds nothing until the person changes it; a
+  checkbox read option by
+  option; a read field the page does not carry is never compared; the lock
+  leaves an
+  embedded field's enhanced choices, reset link and Today button alone; the
+  date picker is set once; roles that could not be read lock the field and the
+  note says so; saved values that could not be read lock nothing and staff see
+  a note; a configuration error locks nothing; and every guard item names a
+  mode the registry knows.
+- `writeonce_module_php.php` covers the server side: calc and checkbox fields
+  and `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` (in any letter case),
+  `@DOWNLOAD-COUNT`, `@RICHTEXT` and ontology fields of any service refused; a field given the
+  tag twice refused; each role checked against the project, by name or unique
+  role name, in any letter case, and refused once by name; a lock on a field another rule
+  returns to refused, split off its group with each refusal in field order,
+  while a returning rule refused for another reason leaves the lock alone; the
+  grammar; the page (only fields holding a value, never for a member of a
+  role, the user name compared without letter case, a survey respondent holds
+  none, roles that cannot be read lock every rule that names roles and say so,
+  never on a new record, not before "since", roles and "since" kept off the
+  page, `lockReads` naming only fields of the form that are not locked, a
+  checkbox once per option, a calc, `@CALCTEXT` or `@CALCDATE` field replaced
+  by the fields it is worked out from that may be changed there, through
+  other calcs too (a checkbox option a calc reads named alone, a calc of
+  another form naming nothing, a cycle of calcs giving the same answer in
+  either rule order), `[event-name][f]`, the page's own event name and
+  `[first-event-name]` or `[last-event-name]` that resolve to it read as this
+  event while another event's field is left out, a field at another instance
+  left out while `[current-instance]` and the page's instance number keep it,
+  only the text inside `@CALCTEXT(...)` and `@CALCDATE(...)` read, a field
+  with `@LATITUDE` or `@LONGITUDE` never named (in any letter case and inside
+  `@IF`, not inside another tag's quoted text), and one with `@READONLY`,
+  `@HIDDEN`, `@NOW`, `@TODAY`, `@SETVALUE` or `@DEFAULT` named, saved
+  values that cannot be read flagged, the saved code sent for dropdown and SQL
+  fields); what the log reader is told of the project (the data dictionary's
+  order, its Text and Notes fields, the record id field, one arm or several);
+  the audit (`changed`, `cleared`, a role moving or releasing the lock, a code
+  saved over a locked value, "since", the lock times kept whatever the log
+  mode, and each rule problem, with the reason a history could not be read,
+  a creating row out of order included, judged when its line out of order
+  follows only the record id line, and the reason for a record with no start
+  word for word);
+  and the scan with its labels and detail line.
+- `writeonce_live_twin_php.php` runs the module over the live fixture on a copy
+  of pid 149's events with a copy of REDCap's log that gains the row of each
+  save the sheet makes, and checks every answer of
+  `docs/testbed/WRITEONCE_LIVE_ACCEPTANCE.md`: the configuration errors word
+  for word (and the survey's general wording), which fields each page locks,
+  each log entry of each save in order over one module log that holds each
+  entry once (PRF-9), the Data Import Tool change found by
+  the scan and the next save, and the roles read as they are when the audit
+  or scan runs. For section I, whose steps read what REDCap itself logs, it
+  checks the module's answer for the log each step expects and for the other
+  log the step tells the tester to record (I0 with a field moved, I0b, I1,
+  I1b and I1c with the record id line first or last, I2, I3, I3b, I5, I5b,
+  I6, I7, and the three wordings of H4). It does not cover I4, since the
+  fixture holds no SQL field, nor what REDCap actually writes: that is what
+  the live run checks. It writes the page configs to
+  `writeonce_live_pages.json`.
+- `writeonce_live_twin_js.cjs` boots `js/engine.js` with those configs on a
+  page shaped as REDCap renders the fixture's field types (a date box with its
+  picker, radio buttons with their mirror and "reset" link, a dropdown with its
+  autocomplete box, a notes box, a slider), and checks each lock, each note,
+  each undone change and each save. A refused tag on a dropdown shows its
+  error under the field. B7, and a second run of B6, load the engine above
+  the form while the page is still loading, as REDCap prints it, with
+  jQuery's ready callbacks run in a timer.
+- `writeonce_mutations.py` applies 255 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Twelve mutate
+  the SQL (three the role book's, six the erase search, three the search for
+  the record's start) and are killed only by
+  `tests/mysql/run.php`; they run when `UV_DB_HOST` and the other `UV_DB_*`
+  variables name a server, and are reported as skipped otherwise. The two
+  that need the composed form of role names run only where PHP loads the
+  intl extension (the script passes `-d extension=intl` when PHP has it but
+  has not loaded it; CI loads it), and are reported as skipped otherwise.
+
+## `justify_*` — values saved with a reason
+
+`justify_fixture.json` holds the cases of whether a reason field's value gives
+a reason: blank, and blank as `@UVREQUIRED` reads it (a no-break space, a
+zero-width space, a byte-order mark, an ideographic space or a form feed
+alone, REQ-8), text after such a character, Missing Data Codes with and
+without PHP's `trim()` set round them, numbers, a checkbox map, null and
+booleans. `justify_php.php` runs them through
+`Logic::reasonGiven` and `justify_js.cjs` through `QRID_reasonGiven`, so the
+two runtimes cannot disagree. `justify_php.php` also pins the grammar (every
+refusal word for word), the registry's `"justify"` flags (the ID checks,
+`@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`,
+`@UVDELTA` and `@UVEXISTS`; never `@UVUNIQUE`, `@UVWRITEONCE` or itself), the
+reason fields `ModeRegistry::refFields` reads, and the sentence a report adds
+to a finding saved with a reason.
+
+- `justify_dom_js.cjs` drives `QRIDJustifyInit` beside the factories of the
+  rules a reason stands for: the save message adds "or give a reason in" with
+  the reason field's label and a note asks for one; a reason releases the
+  field for "hard" and "confirm" in either boot order, and clearing it brings
+  the hold back; a Missing Data Code, a hidden reason row, a reason field
+  embedded in a hidden row and a reason field not on the page give no
+  reason, and one embedded in a row that shows does; a radio or dropdown
+  reason counts, even
+  changed with no event; a rule with blockSave "off", a lookup still in
+  flight, a duplicate and a write-once lock are never lifted; configuration
+  errors release nothing. A field made read-only after the engine bound it,
+  or whose row branching hides, gets no note, and the note follows each
+  branching redraw. On a checkbox a hidden code ticked holds the save with
+  the reason offered, and a reason releases it; the note sits beside the
+  options, and after an autocomplete dropdown's text box. A reason field
+  label holding `$&` or `$$` reads as written in the note and the alert.
+  Invisible characters alone give no reason. On a survey, Previous Page and
+  Save & Return Later skip a blank `@UVREQUIRED` field but still hold a
+  broken value until its own reason is given.
+- `justify_module_php.php` covers the server side: the field and dictionary
+  hooks, `applyJustify` (a field no covered rule checks is an error of its
+  own, split from a rule written alike on several fields; two tags on one
+  field refused; a reason field that is the record ID field, that REDCap
+  fills in, that is read-only, that bare `@HIDDEN` hides, that carries
+  `@UVJUSTIFY` itself or `@UVWRITEONCE`, or that another rule's `"return"`
+  writes into refused word for word, in any letter case, and none of them
+  releases a finding in the audit; `@HIDDEN-FORM`, `-SURVEY`, `-APP`, `-PDF`
+  and a tag name inside another tag's value refuse nothing), the page config (no `justifyBy` reaches the page; a reason
+  field never makes a locked field hold the save), the post-save audit
+  (`uvalidate-justified` with `justified_by`, never the reason; a blank,
+  spaces, invisible characters or a code leaves `invalid-id-saved`; the reason read at the same
+  event and instance only, also for an `@UVDELTA` that compares with the
+  previous event), and the legacy and durable scans (rows, counts, a second
+  legacy scan on the same module counting afresh, the "Saved with a reason"
+  column and sentence, the stored flag). Its `getData` stub
+  returns only the fields a read asks for, so a reason field the audit
+  forgot to ask for reads as blank.
+- `missing_codes_php.php` adds a reason field holding a code (no reason) and
+  `mlm_messages_dom_js.cjs` the note in the person's language.
+- `justify_live_twin_php.php` runs the module over the live fixture on a copy
+  of pid 149's events, with REDCap's data and log kept as each save, survey
+  page and import of `docs/testbed/JUSTIFY_LIVE_ACCEPTANCE.md` leaves them. It
+  checks every server answer of the sheet: the configuration errors word for
+  word, the justify rules each page carries, every `uvalidate-justified` and
+  `invalid-id-saved` entry (never the reason text) over one module log that
+  holds each entry once (PRF-9), the lookup and duplicate
+  answers, and both scans on pid 149 and a scratch project. It writes the page
+  configs to `tests/justify_live_pages.json` with `--write`, and fails when
+  that file differs from what the module builds now.
+- `justify_live_twin_js.cjs` boots `js/engine.js` with those configs on a page
+  shaped as REDCap renders the fixture's field types: text and notes boxes,
+  radio buttons with their mirror and "reset" link, dropdowns and an SQL
+  field, a checkbox, rows hidden by branching logic, a reason field embedded
+  in another field's label (its own row hidden, its box in the row of that
+  label), and one survey page per section. It checks each note, each hold, each line of the save alert and the
+  "Save anyway?" dialog, each release once the reason is given, and each case
+  that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
+  read-only field, and a reason on another survey page. A reason typed in
+  the embedded box releases the field (C8).
+- `justify_mutations.py` applies 114 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Seven mutate
+  the stores, the rollup and the status poll of the durable scan and are
+  killed only by `tests/mysql/run.php` (cases `justified` and `perf`); they run
+  when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are
+  reported as skipped otherwise.
+
 ## `growth_*` — growth references (z-scores)
 
 `growth_fixture.json` holds cases for each step of a z-score: where a value
@@ -688,7 +1105,8 @@ a `@UVWINDOW` "from" date and an `@UVEXISTS` `match` field holding a code.
 `missing_codes_php.php` checks REDCap's "CODE, Label" lines, the registry, the
 post-save audit with and without codes configured, the scan (two records
 marked `UNK` are not duplicates), the `unique-check` and `exists-check`
-endpoints, and the page config (codes, never their labels).
+endpoints, the page config (codes, never their labels), and a code in a
+`@UVJUSTIFY` reason field, which gives no reason.
 
 ## `support/` — code only the suites run
 
@@ -738,6 +1156,19 @@ and `dialectSplits`. The rows cover edge whitespace (VAL-3), characters outside
 printable ASCII (VAL-1), the regex constructs that JavaScript and PCRE read
 differently (`.`, `\s`, `\S`, negated classes, astral characters) and the
 512-unit length cap (VAL-12).
+
+## `tests/mysql/` — the real-database suite
+
+`tests/mysql/cases/justified.php` checks `uv_finding.justified` (@UVJUSTIFY,
+schema version 7) on a real server. It covers the column on a fresh install
+and after migrating a version-6 installation that holds findings (run again,
+and run with the column added but the version row lost); the 1 and 0 the
+store writes and `FindingRowMapper` reads back, in both stores; the keys
+that leave the flag out of a finding's identity, so a finding saved again
+with its reason given becomes a new version and the same identity twice in
+one batch is refused; the rollup's open and justified counts, every page
+read through `ix_page_v2`; and a run whose only findings are justified,
+promoted clean.
 
 ## CI
 

@@ -37,8 +37,11 @@ const defaultKeys = [];
 const modeOfType = {};
 const factoryOfType = {};
 const branchGroupOfType = {};
+const justifyOfMode = {};
 const types = [];
 for (const m of reg.modes) {
+  if (typeof m.justify !== 'boolean') fail('mode "' + m.mode + '" has no "justify" of true or false');
+  justifyOfMode[m.mode] = m.justify;
   for (const k of m.clientKeys || []) if (!defaultKeys.includes(k)) defaultKeys.push(k);
   for (const t of m.types || []) {
     if (Object.prototype.hasOwnProperty.call(modeOfType, t)) fail('type "' + t + '" belongs to two modes');
@@ -77,6 +80,7 @@ const block = [
   obj('MODE_OF_TYPE', modeOfType),
   obj('FACTORY_OF_TYPE', factoryOfType),
   obj('BRANCH_GROUP_OF_TYPE', branchGroupOfType),
+  obj('JUSTIFY_OF_MODE', justifyOfMode),
   '  var KNOWN_TYPES_TEXT = ' + q(list(types)) + ';',
   '  ' + END,
 ].join('\n');

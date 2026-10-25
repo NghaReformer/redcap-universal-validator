@@ -33,7 +33,7 @@ if (!function_exists('uv_run_row')) {
             'fingerprint' => str_repeat('0', 64), 'manifest_total' => '0',
             'manifest_done' => '0', 'cursor_ordinal' => '0', 'lease_epoch' => '0',
             'generation_id' => '1', 'run_seq' => '1', 'created_by' => 'tester',
-            'detail_rows' => '0', 'detail_bytes' => '0', 'fence_open' => null,
+            'detail_rows' => '0', 'detail_bytes' => '0', 'detail_justified' => '0', 'fence_open' => null,
             'fence_target' => null, 'cancel_requested_at' => null,
             'terminal_reason' => null, 'created_at' => $now, 'updated_at' => $now,
             'progress_at' => null, 'clean' => null, 'gap_count' => '0',

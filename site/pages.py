@@ -51,7 +51,7 @@ class Page:
 # Ordered as they appear in the nav.
 
 TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists",
-             "uvrange")
+             "uvrange", "uvdelta", "uvwriteonce", "uvjustify")
 
 PAGES = [
     Page(
@@ -178,6 +178,45 @@ PAGES = [
         keywords=("@UVRANGE", "REDCap action tag", "range check", "plausibility check",
                   "lab values", "vital signs", "soft and hard limits"),
         related=("uvassert", "uvrequired", "index"),
+    ),
+    Page(
+        slug="uvdelta",
+        title="@UVDELTA — limit how far a value may change between REDCap visits",
+        heading="@UVDELTA",
+        description=(
+            "@UVDELTA is a REDCap action tag that limits how far a number may move from an earlier "
+            "value, such as a weight that may change by at most 10% since the previous visit."
+        ),
+        nav_label="@UVDELTA",
+        keywords=("@UVDELTA", "REDCap action tag", "change check", "delta check",
+                  "longitudinal data", "previous visit", "repeating instruments"),
+        related=("uvrange", "uvassert", "index"),
+    ),
+    Page(
+        slug="uvwriteonce",
+        title="@UVWRITEONCE — lock a REDCap field after its first save",
+        heading="@UVWRITEONCE",
+        description=(
+            "@UVWRITEONCE is a REDCap action tag that locks a field once a value is saved, such as a "
+            "consent date or a randomisation arm, while named user roles can still correct it."
+        ),
+        nav_label="@UVWRITEONCE",
+        keywords=("@UVWRITEONCE", "REDCap action tag", "write once", "lock field",
+                  "read-only after save", "user roles", "audit trail"),
+        related=("uvrequired", "uvassert", "index"),
+    ),
+    Page(
+        slug="uvjustify",
+        title="@UVJUSTIFY — save a REDCap form with a reason for a broken rule",
+        heading="@UVJUSTIFY",
+        description=(
+            "@UVJUSTIFY is a REDCap action tag that lets a form save when another rule on a field is "
+            "broken, once a reason is written in a field you name, and reports those findings apart."
+        ),
+        nav_label="@UVJUSTIFY",
+        keywords=("@UVJUSTIFY", "REDCap action tag", "justification", "reason for change",
+                  "override validation", "data quality", "audit trail"),
+        related=("uvrange", "uvdelta", "index"),
     ),
     Page(
         slug="install",

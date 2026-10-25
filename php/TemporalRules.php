@@ -43,6 +43,8 @@ final class TemporalRules
             if(isset($b['elapsedFrom'])&&is_string($b['elapsedFrom'])){$p=Logic::parse($b['elapsedFrom']."=''",['qualified'=>true]);if(!empty($p['ok'])){foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];}}
         }
         foreach($rule['branches']??[] as $b)$out=array_merge($out,self::fields($b,$lookups));
+        // the reason fields that stand for the rule's findings (@UVJUSTIFY)
+        $out=array_merge($out,ModeRegistry::justifyFields($rule));
         return array_values(array_unique($out));
     }
     /**
@@ -426,6 +428,8 @@ final class TemporalRules
             if($live)$problems=['unauthorized'];
             else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),self::textMode($rule,$key),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
+        // Withheld from this viewer alone: the audit, which reads every form, does check it.
+        if($browser&&$problems&&array_values(array_unique($problems))===['unauthorized'])$compiled['deferredChecked']=true;
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         // Whether this rule reads anything that is not live on this page: a saved value, a set, a

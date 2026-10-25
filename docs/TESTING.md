@@ -261,6 +261,11 @@ text, it follows the language on screen
 - [ ] Repeating instrument: save an invalid ID in instance 2 while instance 1 is
       valid → exactly one log entry, `instance = 2`.
 - [ ] Repeating event: same check with a repeating event instead of instrument.
+- [ ] `@UVDELTA={"vs":"previous-event","maxPct":10}` on a weight (event and
+      instance references on): a 15% rise at visit 2 shows a red note
+      that says the check does not block saving, the save goes through, and the module
+      log has `type: delta`, `reason: up` for visit 2's event. Saving visit 1
+      again logs the same finding for visit 2.
 
 ## Server-side safety net (API / import / JS-off)
 

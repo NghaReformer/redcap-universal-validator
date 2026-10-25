@@ -93,9 +93,10 @@ class Branching
     }
 
     /**
-     * Illegal sharing per field: field => ['kind' => 'two-unconditional' |
+     * Illegal sharing per field: field => ['kind' => 'twice' | 'two-unconditional' |
      * 'identical-when' | 'mixed-type' | 'differing-key', 'rules' => [ruleIndex, ...],
-     * 'detail' => count|whenString|[typeA, typeB]|[tag, option name]]. Fields whose sharing is
+     * 'detail' => tag|count|whenString|[typeA, typeB]|[tag, option name]]; "twice" is
+     * two rules of a mode that takes no "when" (and names its type). Fields whose sharing is
      * legal (or not shared at all) are absent. Rule indexes refer to the
      * INPUT list, so callers can name "Rule 2 and Rule 5" in messages.
      */
@@ -143,7 +144,8 @@ class Branching
             $conflict = self::conflictOf($rules, $field, $idxs);
             if ($conflict !== null) {
                 $extra[] = [
-                    'type'        => 'single',
+                    // the refused mode's own type where the refusal is about that mode alone
+                    'type'        => isset($conflict['type']) ? $conflict['type'] : 'single',
                     'fields'      => [$field],
                     'configError' => self::message($field, $conflict),
                     // A synthesized rule inherits the origin of the first rule
@@ -255,6 +257,9 @@ class Branching
             case 'mixed-type':
                 return 'field "' . $field . '" is covered by both a single-value rule and a pooled rule '
                     . '— all rules sharing a field must have the same field type.';
+            case 'twice':
+                return 'field "' . $field . '" is given ' . $conflict['detail'] . ' ' . count($conflict['rules'])
+                    . ' times — this tag takes no "when" condition, so keep one.';
             case 'differing-key':
                 return 'field "' . $field . '" is covered by ' . $conflict['detail'][0] . ' rules that give "'
                     . $conflict['detail'][1] . '" different values — every rule on one field must give "'
@@ -311,15 +316,66 @@ class Branching
     }
 
     /**
+     * The keys under which a rule's "when" counts as one condition, [] for a
+     * rule without one. Two conditions that say the same thing in other
+     * words (keyword case, spacing, quote style, parentheses, member order:
+     * Logic::canonicalKey) could never be told apart, so they share the 'x'
+     * key; nor could 'Yes' and 'yes' when both rules ignore case, so a rule
+     * that does has the 'f' key too, with the values' letter case folded.
+     * Two rules of one group whose keys meet conflict. Public so the
+     * @UVDELTA suggestions compare conditions as this does
+     * (UniversalValidator::deltaGroupsTaken, review R9-1).
+     */
+    public static function whenKeys(array $rule)
+    {
+        $w = self::whenOf($rule);
+        if ($w === null) return [];
+        $keys = ['x' . Logic::canonicalKey($w)];
+        if (empty($rule['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
+        return $keys;
+    }
+
+    /**
+     * Whether two rules' "when" conditions can never be true at once, so the
+     * two can share a branch group with no runtime conflict; false when
+     * either has none. Only what shows without doubt counts: both need one
+     * plain field to equal a value (Logic::requiredValues), and no value
+     * equals both (Logic::neverBothEqual: numbers by value, so 1, 01 and 1.0
+     * are one; text trimmed, and with its letter case folded unless both
+     * rules are caseSensitive, since a value meets each rule's own way of
+     * comparing). Any other two conditions may overlap. Public so the
+     * @UVDELTA suggestions leave a group alone where a suggestion would
+     * conflict (UniversalValidator::deltaGroupsTaken, review R10-1).
+     */
+    public static function whenExclusive(array $a, array $b)
+    {
+        $wa = self::whenOf($a);
+        $wb = self::whenOf($b);
+        if ($wa === null || $wb === null) return false;
+        $pa = Logic::parse($wa, ['qualified' => true]);
+        $pb = Logic::parse($wb, ['qualified' => true]);
+        if (empty($pa['ok']) || empty($pb['ok'])) return false;
+        $fold = empty($a['caseSensitive']) || empty($b['caseSensitive']);
+        $need = Logic::requiredValues($pb['ast']);
+        foreach (Logic::requiredValues($pa['ast']) as $key => $values) {
+            if (!isset($need[$key])) continue;
+            foreach ($values as $x) foreach ($need[$key] as $y) if (Logic::neverBothEqual($x, $y, $fold)) return true;
+        }
+        return false;
+    }
+
+    /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
-     * fixed priority order: two-unconditional, identical-when, mixed-type,
-     * differing-key.
+     * fixed priority order: twice (a mode with no "when" never branches),
+     * two-unconditional, identical-when, mixed-type, differing-key.
      */
     private static function conflictOf(array $rules, $field, array $idxs)
     {
         $t = (isset($rules[$idxs[0]]['type']) && $rules[$idxs[0]]['type'] !== '') ? $rules[$idxs[0]]['type'] : 'single';
         $mode = self::modeOfType($t);
+        // a mode that takes no condition cannot branch: one rule per field
+        if (!ModeRegistry::takesWhen($mode)) return ['kind' => 'twice', 'rules' => $idxs, 'detail' => ModeRegistry::tag($mode), 'type' => $t];
         $groupKey = ModeRegistry::branchGroup($mode);
         $unconditional = [];   // group => [ruleIndex, ...]
         $whens = [];           // group => [when => ruleIndex]
@@ -328,14 +384,7 @@ class Branching
         foreach ($idxs as $i) {
             $g = self::groupOf($rules[$i], $groupKey);
             $w = self::whenOf($rules[$i]);
-            // two conditions that say the same thing in other words (keyword
-            // case, parentheses, member order) could never be told apart
-            // either; nor could 'Yes' and 'yes' when both rules ignore case
-            $keys = [];
-            if ($w !== null) {
-                $keys[] = 'x' . Logic::canonicalKey($w);
-                if (empty($rules[$i]['caseSensitive'])) $keys[] = 'f' . Logic::canonicalKey($w, true);
-            }
+            $keys = self::whenKeys($rules[$i]);
             $seen = null;
             foreach ($keys as $k) if ($seen === null && isset($whens[$g][$k])) $seen = $whens[$g][$k];
             if ($w === null) {

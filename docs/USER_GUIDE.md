@@ -804,9 +804,12 @@ writes any invalid value to the **module log**. It is a detection/audit trail,
 not a second gate: it fires *after* the write, so the browser *Compulsory* block
 remains the primary control for human entry.
 
-Three log entry types make sure nothing passes silently:
+Four log entry types make sure nothing passes silently:
 
 - `invalid-id-saved` — an invalid value was written.
+- `uvalidate-justified` — a value that breaks a rule was written with a reason
+  in the field its `@UVJUSTIFY` names. The entry names the reason field, not
+  the reason.
 - `uvalidate-unconfigurable` — a rule the server could not evaluate, or a value
   it could not judge the way the browser does (a character outside printable
   ASCII that the format pattern's regex reads differently in the two engines).
@@ -984,7 +987,24 @@ Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
 validation (including comma decimals), calc fields and sliders; for a growth
 reference, the sex field may be a radio, dropdown, yes/no, true/false, Text,
 calc or SQL field, the dates date or datetime fields, and an age, length or
-height a Text field with integer or number validation, or a calc.
+height a Text field with integer or number validation, or a calc. Change
+limits (`@UVDELTA`): Text fields with no, integer or number validation
+(including comma decimals), calc fields and sliders, compared with a field of
+any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
+dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
+with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@RICHTEXT`, nor a field with an ontology search of any service (BioPortal,
+FHIR or another). A reason (`@UVJUSTIFY`) may stand for the rules of
+any field another tag checks, and the reason field itself is a Text, Notes,
+dropdown, radio or SQL field on the same form that the person fills in: not
+the record ID field, a field with any form of `@READONLY`, a field with bare
+`@HIDDEN` (`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF`
+are allowed), a field that carries `@UVJUSTIFY` itself, a field with
+`@UVWRITEONCE`, a field another rule's `"return"` writes into, or a field
+REDCap fills in (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`,
+`@PREFILL`, `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms,
+`@USERNAME`, `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`,
+`@DOWNLOAD-COUNT`, `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`).
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -1168,6 +1188,98 @@ value", "Implausible value" or "Not a number". Annotation-only; see the README
 section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
+**Can a weight be flagged when it changed too much since the last visit?**
+Yes. The `@UVDELTA` tag limits how far a number may move from an earlier value.
+`@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}` flags a weight more
+than 10% above or below the same field at the previous event, and
+`@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}` one more than 5 kg
+from the screening weight. `previous-instance`, `first-event` and
+`first-instance` work the same way, and `"direction":"up"` or `"down"` limits
+one way only (`"max":0,"direction":"down"`: a height may not fall). The
+shorthands and a reference to another event or instance need event and
+instance references on. The change is exact, with no rounding. A blank value,
+a blank earlier value and a missing data code check nothing, and so does the
+first visit. A `vs` field on the same page blocks as `blockSave` says; an
+earlier value read from another form, event or instance shows a red note but
+never blocks, since it was read when the page opened. The post-save audit logs `type: delta` with
+reason `up` or `down`, and the scan labels them "Rose more than allowed" or
+"Fell more than allowed". Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvdelta--how-far-a-number-may-change).
+
+**Can a value be locked once it has been entered?**
+Yes. `@UVWRITEONCE` leaves a field open until its first save of a value, then
+locks it on forms and surveys. `@UVWRITEONCE={"roles":["Data manager"]}` lets
+members of that role still change or clear it, and the lock moves to the new
+value. `"since":"2026-11-01"` locks the value held at 00:00 that day in the
+project's time zone, for a project that already holds data. A blank and a
+missing data code lock nothing. The lock is the browser's only: a change made
+through the Data Import Tool or the API is found afterwards, from REDCap's log,
+by the audit of the next save of the form that holds the field
+(`type: writeonce`, reason `changed` or `cleared`) and by the scan. Roles are read when the audit or the scan runs, so
+a change counts as the role's only while its maker holds the role; expired
+rights and a suspended account hold no role, and an administrator who is not a
+user of the project is locked out too. When the roles cannot be read, the page
+locks the field for everyone and says so; when the saved value cannot be
+read, it locks nothing and tells staff so. Another rule on a locked field holds
+the save only once a field it reads, other than the locked one, has changed on
+the page since REDCap finished filling the form. A calc counts through the
+fields it is worked out from on this event and instance. A field REDCap fills
+as the page starts (`@NOW`, `@TODAY`, `@DEFAULT`, `@SETVALUE`), or one with
+`@READONLY` or `@HIDDEN`, counts once the person changes it; a field with
+`@LATITUDE` or `@LONGITUDE`, which REDCap fills later, never counts.
+Letter case in role names does not matter ("İDARE" matches "idare", though
+the dotless "ı" stays a letter of its own), and invisible
+characters such as a zero-width space are ignored. An erase of all the project's records starts
+every history again. A record whose log runs past 5,000 rows for the event,
+holds a deletion of this event's data or of an arm (in a project of several
+arms, any deletion of the record), or does not show the record being made (a
+record renamed while its saves stay under the old name, or one that came with
+a copied project, or one whose creating row has its record id after a Text or
+Notes value), is reported as not checked rather than passed. Renaming the
+record id field after records exist does this to every record. Moving any
+field of a form after records exist, locked or not, can leave the Text and
+Notes values of the saves made before the move not checked, the save that
+made the record included: in a save where a line comes out of the new order
+after a Text or Notes value, every value from the save's first Text or Notes
+value on is not checked. Renaming a locked field that holds data restarts its history when REDCap's
+log keeps its earlier saves under the old name. The page
+still locks the saved value, and the audit reports it as not checked until a
+save is logged under the new name, but an import or API change made before
+then is taken as its first save and is not caught. A Notes value typed to look like a save of the field, before
+its first real save, can set the lock; the next real save is then reported as
+a change.
+Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvwriteonce--values-entered-once).
+
+**Can a value that breaks a rule be saved when it is right?**
+Yes. Add `@UVJUSTIFY={"reason":"[weight_reason]"}` beside the rule, naming a
+field on the same form where the reason is written (Text, Notes, dropdown,
+radio or SQL). While the rule holds the save and the reason field is empty, a
+note under the field asks for a reason and the save message adds "or give a
+reason in" with the reason field's label. Once the reason is written, the
+field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
+`@UVRANGE`, `@UVDELTA` and `@UVEXISTS` rules no longer hold the save. A reason
+never releases `@UVUNIQUE` or `@UVWRITEONCE`, and never turns a warning into a
+block. On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
+compares with another event or instance) a reason shows no note on the page;
+it only labels the finding in the audit and the scan. A blank reason (blank
+as `@UVREQUIRED` reads it, so a no-break space or a zero-width space alone is
+blank too), a missing data code and a reason field the person cannot see (its
+row hidden by branching logic, or the row it is embedded in hidden) count as
+no reason. The module refuses a reason field the person does not fill in: the
+record ID field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`,
+`@NOW` and the like), a field with `@READONLY` or bare `@HIDDEN`, a field with
+its own `@UVJUSTIFY`, a field with `@UVWRITEONCE`, and a field another rule's
+`"return"` writes into. A
+reason stands until someone clears it, so a later, different broken value of
+the field saves under the same reason; clear the reason field when the value
+changes for another reason. The audit
+logs such a finding as `uvalidate-justified`, naming the reason field but not
+the reason, and the Validation scan counts it apart from the open findings, so
+a scan whose findings all have a reason counts no open violations.
+Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md#uvjustify--values-saved-with-a-reason).
+
 **Can a child's weight or height be checked against the WHO growth standards?**
 Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
 child's sex and age:
@@ -1315,10 +1427,14 @@ for the word of the unit it counts in. Earlier visits are not shown yet.
 A field marked with one of the project's missing data codes (REDCap's "M"
 button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not
 validate it, and the module treats it as blank: no check-character, format,
-`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW` or `@UVRANGE` verdict, on the
-page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
+`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW`, `@UVRANGE` or `@UVDELTA`
+verdict, on the page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
 an answer, so a field marked "unknown" is not reported as missing. A code in an
-`@UVEXISTS` `match` field or a `@UVWINDOW` "from" date also counts as blank.
+`@UVEXISTS` `match` field, a `@UVWINDOW` "from" date or the value a `@UVDELTA`
+compares with also counts as blank. `@UVWRITEONCE` locks no code, so a field
+marked "unknown" can be filled in later, and reports a code saved over a
+locked value as a clearing. A code in a `@UVJUSTIFY` reason field gives no
+reason.
 In a `when` condition, an `@UVASSERT` expression or an `@UVEXISTS` `where`,
 `=` and `<>` read the code as written, the way REDCap's branching logic reads
 it: `[visit_date]<>'UNK'` in `when` leaves such records out. On a date field a

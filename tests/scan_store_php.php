@@ -70,10 +70,49 @@ namespace {
         check('array-store: a finding sent with no valid_from_seq opens at the run\'s own sequence',
             $row['valid_from_seq'] === (int) $s->run(760, $rid)['run_seq'] && $row['valid_from_seq'] > 0);
         check('array-store: and the stored row has every column the schema has, defaults filled',
-            count($row) === 34 && $row['valid_to_seq'] === null && $row['active_slot'] === 1
+            count($row) === 35 && $row['valid_to_seq'] === null && $row['active_slot'] === 1
             && $row['arm_id'] === null && $row['severity'] === 0 && $row['status_key'] === null
             && $row['value_binary'] === 0 && $row['stage_epoch'] === null
-            && $row['as_of'] === null && $row['z_score'] === null && $row['growth_reference'] === null);
+            && $row['as_of'] === null && $row['z_score'] === null && $row['growth_reference'] === null
+            && $row['justified'] === 0);
+    }
+
+    // THE RUN COUNTS ITS STORED ROWS WITH A REASON (@UVJUSTIFY) apart, beside
+    // detail_rows, so a working run can say them apart from its open findings
+    // (ScanPromotion::findingsOf, justifiedOf). Only rows it stored count: a
+    // finding of a record the batch does not hold adds nothing.
+    // tests/mysql/cases/justified.php asks the SQL store the same.
+    {
+        $s = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $r = $s->startRun(761, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $s->writeManifest($rid, [['id_bin' => 'J1', 'hash' => hash('sha256', 'J1', true), 'dag' => null],
+                                 ['id_bin' => 'J2', 'hash' => hash('sha256', 'J2', true), 'dag' => null]]);
+        $ep = (int) $s->run(761, $rid)['lease_epoch'];
+        check('array-store: a new run has stored no row with a reason', (int) $s->run(761, $rid)['detail_justified'] === 0);
+        $c = $s->claim($rid, 'w1', $ep, 2);
+        $f = function (array $c, $field, array $over = []) use ($r) {
+            return $over + ['ordinal' => $c['ordinal'], 'project_id' => 761, 'generation_id' => (int) $r['run']['generation_id'],
+                'identity' => hash('sha256', 'j-' . $c['ordinal'] . '-' . $field, true), 'record_hash' => $c['hash'],
+                'record_id_bin' => 'J', 'host_form' => 'fa', 'field' => $field, 'rule_source_id' => 'r1',
+                'rule_revision' => str_repeat('c', 64), 'check_type' => 'range', 'reason_code' => 'hard-high'];
+        };
+        $rec = function (array $c) {
+            return ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE,
+                    'claim' => $c['claim'], 'version' => '1'];
+        };
+        $s->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'records' => [$rec($c[0])],
+            'findings' => [$f($c[0], 'a', ['justified' => 1]), $f($c[0], 'b'), $f($c[0], 'c', ['justified' => 0]),
+                           $f($c[1], 'd', ['justified' => 1])]]);
+        $run = $s->run(761, $rid);
+        check('array-store: a batch counts its stored rows and, apart, the ones with a reason (got '
+            . $run['detail_rows'] . ', ' . $run['detail_justified'] . ')',
+            (int) $run['detail_rows'] === 3 && (int) $run['detail_justified'] === 1);
+        $s->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'records' => [$rec($c[1])],
+            'findings' => [$f($c[1], 'd', ['justified' => 1]), $f($c[1], 'e', ['justified' => 1])]]);
+        $run = $s->run(761, $rid);
+        check('array-store: and the next batch adds to both (got ' . $run['detail_rows'] . ', ' . $run['detail_justified'] . ')',
+            (int) $run['detail_rows'] === 5 && (int) $run['detail_justified'] === 3);
     }
 
     // A growth finding's z-score, in this store's own row shape: stored with

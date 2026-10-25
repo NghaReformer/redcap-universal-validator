@@ -205,6 +205,14 @@ final class ScanColumns
                 },
             ],
             [
+                // A finding a reason (@UVJUSTIFY) stands for: saved on purpose,
+                // counted apart from the open ones. Only on a project where a
+                // reason can stand for some rule.
+                'key' => 'justified', 'label' => 'Saved with a reason', 'group' => 'problem',
+                'visible' => function (ScanDimensions $d) { return $d->justifies; },
+                'render' => function (array $f) { return empty($f['justified']) ? '' : 'Yes'; },
+            ],
+            [
                 'key' => 'wording', 'label' => 'Wording from', 'group' => 'problem',
                 'visible' => function () { return true; },
                 // Which tier answered. A designer scanning this column sees at a

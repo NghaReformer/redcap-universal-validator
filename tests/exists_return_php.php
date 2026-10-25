@@ -274,6 +274,7 @@ namespace {
         'b_self'   => ['{"code_id":"[b_self]"}', 'is this field itself'],
         'b_pk'     => ['{"code_id":"[record_id]"}', 'is the record ID'],
         'b_calc'   => ['{"code_id":"[t_calc]"}', 'filled by REDCap\'s @CALCTEXT'],
+        'b_prefill'=> ['{"code_id":"[t_prefill]"}', 'filled by REDCap\'s @PREFILL'],
         'b_kind'   => ['{"code_id":"[t_drop]"}', 'a choice field takes the code of a choice field'],
         'b_codes'  => ['{"lab_site":"[t_drop1]"}', 'has no choice "2"'],
         'b_date'   => ['{"coll_dt":"[t_date]"}', 'holds dates and "coll_dt" holds dates with a time to the minute'],
@@ -293,6 +294,7 @@ namespace {
     $DICT += [
         't_any'    => f('result'),
         't_calc'   => f('result', '@CALCTEXT(concat([home],"x"))'),
+        't_prefill'=> f('result', '@prefill="x"'),
         't_drop'   => f('result', '', '', 'dropdown', '', SITES),
         't_drop1'  => f('result', '', '', 'dropdown', '', '1, North'),
         't_date'   => f('result', '', 'date_dmy'),

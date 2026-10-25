@@ -29,7 +29,11 @@
  *   - a lookup still in flight holds an Enter save,
  *   - on a page still loading, a dataEntrySubmit defined after the engine is
  *     wrapped on DOMContentLoaded or load; a loaded page adds no listener,
- *   - a page without dataEntrySubmit or window.addEventListener boots as before.
+ *   - a page without dataEntrySubmit or window.addEventListener boots as before,
+ *   - a @UVWRITEONCE lock arms the wrapper on its own; Enter puts back a value
+ *     changed with no event and saves; a rule on the locked field that reads
+ *     another field holds Enter only once that field changed since the page
+ *     opened (QRID_guardSpeaks), as it holds a click.
  *
  * Run:  node tests/save_guard_enter_dom_js.cjs
  */
@@ -375,6 +379,52 @@ const pending = [];
   env.doc.fire('click', ev);
   check('8 without partialSave in the config, the same button name holds as before', ev._prevented === true);
 }
+// ---- 9) @UVWRITEONCE: the lock and a rule that reads another field ---------
+function textField(name, value) { const el = makeEl('input'); el.name = name; el.type = 'text'; el.value = value; return el; }
+const WO = (fields) => ({ type: 'writeonce', fields });
+const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[height]', blockSave: 'hard',
+  message: 'Heavier than tall', lockReads: { weight: ['height'] } };
+{
+  const locked = textField('consent_date', '2026-03-01');
+  const env = boot([locked], { rules: [WO(['consent_date'])] });
+  check('9 a write-once lock alone wraps dataEntrySubmit', env.bootError === null
+    && env.win.dataEntrySubmit.__qridGuarded === true);
+  check('9 the locked box is read-only', locked.readOnly === true);
+  locked.value = '2026-04-01';                 // a script, no event
+  const r = pressEnter(env, locked, saveButton('submit-btn-saverecord'));
+  check('9 Enter puts the saved value back and saves', r === 'redcap-result' && env.calls.length === 1
+    && locked.value === '2026-03-01');
+  check('9 no alert for a value put back', env.win._alerts.length === 0);
+}
+// The values the other fields opened with are taken in a timer, after REDCap's start-up (review W4-2),
+// so each page is booted, left to start, and checked before the next one is booted, once the timers
+// of the checks above have run (an alert goes to the window of the page booted last).
+const earlier = pending.slice();
+pending.push((async () => {
+await Promise.all(earlier);
+for (const order of ['lock first', 'lock last']) {
+  const weight = textField('weight', '70'), height = textField('height', '50');
+  const env = boot([weight, height], { rules: order === 'lock first' ? [WO(['weight']), HEAVIER] : [HEAVIER, WO(['weight'])] });
+  const btn = saveButton('submit-btn-saverecord');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  global.document = env.doc; global.window = env.win;
+  {
+    check('9 ' + order + ': a violation saved before the page opened does not hold Enter',
+      pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 1);
+    height.value = '40';
+    height.fire('change');
+    const r = pressEnter(env, height, btn);
+    check('9 ' + order + ': Enter is held once the other field changed and still breaks the rule',
+      r === false && env.calls.length === 1);
+    check('9 ' + order + ': the alert names the locked field',
+      env.win._alerts.length === 1 && /weight/.test(env.win._alerts[0]));
+    height.value = '50';
+    height.fire('change');
+    check('9 ' + order + ': the other field put back as it was lets Enter through again',
+      pressEnter(env, height, btn) === 'redcap-result' && env.calls.length === 2);
+  }
+}
+})());
 
 Promise.all(pending).then(() => {
   console.log((fail ? 'FAIL' : 'OK') + ': save guard in front of dataEntrySubmit (' + (n - fail) + '/' + n + ' checks)');

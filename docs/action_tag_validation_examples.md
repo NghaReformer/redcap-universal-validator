@@ -8,7 +8,7 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS` and `@UVRANGE`. The tags and
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE`, `@UVDELTA` and `@UVWRITEONCE`. The tags and
 the dialog are the same rules through different doors, and they mix freely.
 
 ---
@@ -25,6 +25,9 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
 - [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
 - [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
+- [`@UVDELTA` — how far a number may change](#uvdelta--how-far-a-number-may-change)
+- [`@UVWRITEONCE` — values entered once](#uvwriteonce--values-entered-once)
+- [`@UVJUSTIFY` — values saved with a reason](#uvjustify--values-saved-with-a-reason)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -38,6 +41,7 @@ the dialog are the same rules through different doors, and they mix freely.
   - [`@UVWINDOW` recipes](#uvwindow-recipes)
   - [`@UVEXISTS` recipes](#uvexists-recipes)
   - [`@UVRANGE` recipes](#uvrange-recipes)
+  - [`@UVDELTA` recipes](#uvdelta-recipes)
   - [Combination recipes](#combination-recipes)
 - [Messages in several languages](#messages-in-several-languages)
 - [Tags the module refuses](#tags-the-module-refuses)
@@ -59,6 +63,9 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVWINDOW`   | A date falls within a window around another date, or is not after today                                                 | Text with date, datetime or datetime-with-seconds validation   |
 | `@UVEXISTS`   | The value is already saved in the project: a record ID, or a value of another field                                     | Text, dropdown, radio, SQL                                     |
 | `@UVRANGE`    | A number lies within usual and plausible limits (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
+| `@UVDELTA`    | A number has not changed more than a limit since an earlier value (the previous visit, baseline, another field)         | Text with no, integer or number validation, calc, slider       |
+| `@UVWRITEONCE` | A value, once saved, is not changed or cleared except by named user roles                                              | Text, Notes, dropdown, radio, yes/no, true/false, slider, SQL  |
+| `@UVJUSTIFY`  | Not a check: a filled-in reason field lets the field's broken rules save, and the audit and scan report them apart     | Any field another tag checks                                   |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -4249,6 +4256,598 @@ day, a `male` or `female` code that is not among the sex field's choices or
 matches two of them once letter case is ignored, and a limit the reference
 cannot reach (see "Limits the reference can reach" above).
 
+## `@UVDELTA` — how far a number may change
+
+`@UVRANGE` judges one value on its own, and `@UVASSERT` can say that a weight
+is not below the previous one. Neither can say "this weight may not change by
+more than 10% since the last visit". `@UVDELTA` compares a number with an
+**earlier value** and flags a change larger than its limit: a number of units
+(`max`), a percent of the earlier value (`maxPct`), or both. JSON form only.
+
+### Level 1 — a limit on the change from another field
+
+```text
+# on: weight — at most 5 kg either way from the screening weight
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}
+```
+
+```text expect
+74 from 70     => ok
+75 from 70     => ok
+75.01 from 70  => up
+64.9 from 70   => down
+abc from 70    => not-a-number
+70 from n/a    => earlier-not-a-number
+```
+
+`vs` names the earlier value, and `max` the largest change allowed, in the
+field's own unit. Both ends are included, so a change of exactly 5 passes. The note
+under the field names the change, its percent, the earlier value and the limit:
+
+> ✗ This value rose by 5.01 kg (7.2%) from 70 kg ([weight_screening]). Allowed: a change of at most 5 kg.
+
+The note appears when the user leaves the field. A blank value, a blank earlier
+value and a missing data code on either side check nothing.
+
+### Level 2 — a percent, a direction, or both limits
+
+```text
+# on: weight — a rise of at most 10%; a fall is not limited by this tag
+@UVDELTA={"vs":"[weight_prev]","maxPct":10,"direction":"up"}
+```
+
+```text expect
+110 from 100       => ok
+110.0001 from 100  => up
+50 from 100        => ok
+5 from 0           => blank
+```
+
+```text
+# on: hb — at most 2 g/dL and at most 15%
+@UVDELTA={"vs":"[hb_prev]","max":2,"maxPct":15,"unit":"g/dL"}
+```
+
+```text expect
+13 from 12     => ok
+14.5 from 12   => up
+3.5 from 3     => up
+2.9 from 3     => ok
+```
+
+```text
+# on: height_cm — a height may not fall; any rise passes
+@UVDELTA={"vs":"[height_prev]","max":0,"direction":"down","unit":"cm"}
+```
+
+```text expect
+149.9 from 150  => down
+152 from 150    => ok
+```
+
+- `maxPct` is a percent of the earlier value. With both `max` and `maxPct`, a
+  change must keep both: 3.5 after 3 is 0.5 g/dL but 16.7%.
+- `direction` is `both` (the default), `up` or `down`. The limits apply to
+  changes that way; a change the other way always passes.
+- An earlier value of 0 has no percent, so `maxPct` does not apply to it.
+  `max` still does. For the same reason `"maxPct": 0` is refused; `"max": 0`
+  says "no change", from 0 too.
+- Values and limits are compared as exact decimals. The percent test is
+  `|change| × 100` against `maxPct × |earlier value|`, with no division and no
+  rounding, so a change of exactly 10% is 10%. A number with an exponent is
+  written out in full; one longer than 4,096 digits written out is too long to
+  compare and is reported, not judged.
+- The note gives the percent to one decimal. A percent that rounds to the
+  limit it broke reads "more than 10%", one that rounds to 0 reads "under
+  0.1%", and the earlier value is written in one form (`070` and `+70` are 70).
+
+### Level 3 — the previous or first event or instance
+
+These need **Enable event and instance references** in the project settings.
+Without it the tag shows a configuration error that says so.
+
+```text
+# on: weight, on a form at every visit
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+
+# on: cd4, on a repeating form — a fall of at most 50% since the last result
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"down"}
+
+# on: weight — at most 15% below baseline
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+```
+
+| `vs`                | Means                                         | Written out for a field `weight`  |
+| ------------------- | --------------------------------------------- | --------------------------------- |
+| `previous-event`    | This field at the event before this one, among those with the form | `[previous-event-name][weight]`   |
+| `first-event`       | This field at the first event of the arm with the form             | `[first-event-name][weight]`      |
+| `previous-instance` | This field in the instance before this one    | `[weight][previous-instance]`     |
+| `first-instance`    | This field in the first instance              | `[weight][first-instance]`        |
+
+Any one field reference works too, in this entry, another event or another
+instance:
+
+```text
+@UVDELTA={"vs":"[baseline_arm_1][weight]","maxPct":15,"direction":"down"}
+# where the form repeats at every visit: the last instance of the visit before
+@UVDELTA={"vs":"[previous-event-name][weight][last-instance]","max":2,"unit":"kg"}
+```
+
+- `previous-event` is the event before this one, in the same arm, that has
+  this form, whether or not anything was saved there. On the first such event
+  and the first instance there is no earlier value, so nothing is checked.
+- Each entry resolves its shorthand on its own, so the tag is checked at every
+  event that holds the form, arm by arm:
+  - An event shorthand needs, in some arm, two or more events with the form.
+  - An event shorthand is refused when an event it names holds the form more
+    than once (the form repeats there, or the whole event repeats): it does not
+    say which instance to compare with. The refusal gives the shorthand's own
+    event with an instance that works from every event,
+    `[previous-event-name][weight][last-instance]` or
+    `[first-event-name][weight][first-instance]`, when there is one, and no
+    example otherwise, since another event would compare with another entry.
+    A form that repeats only at the
+    last visit is fine, because no shorthand names that visit.
+  - An instance shorthand needs the form to repeat at every event that holds
+    it, on its own or in a repeating event.
+- A reference that always names this same entry is refused, since the change
+  would always be 0: `[event-name][weight]`, `[weight][current-instance]` on a
+  form that repeats, and the one event the form is on by name or as
+  `[first-event-name]` or `[last-event-name]`.
+- A reference that names an instance (`[weight][1]`, `[weight][first-instance]`)
+  is refused where the form does not repeat at an event it lands on: there is
+  only one entry there, and on a project with events the refusal names them.
+- `[current-instance]`, `[previous-instance]` and `[next-instance]` count from
+  the instance of the field that carries the tag, so they are refused where
+  that field's own form is held once at an event the reference is read from
+  (`[w_rep][previous-instance]` on an enrolment form). Name the instance
+  instead, as `[w_rep][last-instance]`.
+- A reference with no instance is refused where its form repeats, unless the
+  row is the tagged field's own (its own repeating form, or a form of the same
+  repeating event). `[w_rep]` read from a form held once does not say which
+  instance it means, and neither does `[enrol_arm_1][w_rep]`; the refusal
+  suggests `[enrol_arm_1][w_rep][last-instance]`.
+- A refusal ends with a reference to write instead only when that reference
+  passes the same check from every event where the field is entered. Where
+  the field's form is entered in two arms it suggests a relative event such
+  as `[first-event-name][w_enrol]`, never an event of one arm, which holds a
+  value from the other arm only for a record entered in both, even when the
+  reference as written named that event (written by hand, such an event is
+  accepted). It never suggests the next event, nor, on the field's own form,
+  the last event or a later visit named outright, which compare with a later
+  entry, even when the reference as written named one. Nor does it suggest a
+  reference with the `vs` and direction of another `@UVDELTA` tag on the
+  field when neither tag has a condition, or when both have one and the two
+  could be true at once. Written back, two such tags without a condition are
+  refused, and so are two whose conditions say the same thing, however
+  written (keyword case, spacing, quote style, parentheses, the order of
+  `and`/`or` members and of a comparison's sides aside, and letter case when
+  neither tag is `caseSensitive`). Two other conditions that are true at
+  once are a runtime conflict, and the field validates nothing while both
+  hold. Two conditions count as never true at once only when each tests one
+  field, written without an event or instance (each checkbox box counts as
+  its own field), for equality with a value, alone or as part of an `and`,
+  and no value equals both as conditions compare values. For example,
+  `[arm]='1'` and `[arm]='2'` qualify, while `[x]=1` and `[x]='01'`
+  (numbers compare by value), `[x]='Yes'` and `[x]='yes'` (unless both tags
+  are `caseSensitive`), `[v1_arm_1][x]='1'` and `[v1_arm_1][x]='2'`,
+  `[cb(1)]='1'` and `[cb(2)]='0'`, and `[x]>0` and `[x]=1` do not. A tag
+  without a condition is the fallback beside tags that have one, so the two
+  may share a `vs`. A refused tag earlier on the field counts with the reference its
+  own refusal suggests. A tag that failed to parse counts with the `vs`,
+  direction and condition its JSON names, read with single or curly quotes
+  as double quotes and without a trailing comma. Nothing is suggested
+  beside it, and the refusal says to fix that tag first, when even that
+  cannot be read, when the JSON names a key the tag does not take (letter
+  case counts, so `When` is one), or when its `vs`, `direction` or `when`
+  is not text or would be refused. A reference to another event or
+  instance counts as read, since turning references on fixes it; a
+  `{binding}` its `references` do not define does not, since the `when` is
+  still refused with references on. So the suggestions for one field can be
+  written back together. For the field
+  itself the instance must read an earlier entry where the event lands:
+  `[previous-instance]` only at the field's own event, `[last-instance]` and
+  an instance numbered after the first only at another, `[first-instance]`
+  at either, and never `[next-instance]`, nor `[current-instance]` at another
+  event. Where only the first visit repeats, that gives
+  `[first-event-name][weight][first-instance]`. When nothing works it lists
+  the events and instances it tried and says none of them works.
+- The event a reference lands on must hold the `vs` form. `[visit1_arm_1][w_rep]`
+  is refused when `w_rep`'s form is not designated at visit 1, and a plain
+  `[w_enrol]` is refused on a visit form when only enrolment collects it; the
+  refusal suggests `[enrol_arm_1][w_enrol]`.
+- A relative event that finds no event from anywhere the field is entered is
+  refused, since it would compare nothing: `[next-event-name][w_enrol]` on a
+  visit form when only enrolment holds `w_enrol`. One that finds nothing from
+  some events only (the first visit has no previous one) is fine.
+- An earlier value from another event or instance is read when the page opens.
+  That check shows a red note but never blocks, and its note says it is
+  re-checked after the save.
+- Saving an earlier visit re-checks the visits that compare with it, in the
+  post-save audit.
+
+### Level 4 — several comparisons on one field
+
+```text
+# on: weight — at most 5% from the previous visit and 15% from baseline
+@UVDELTA={"vs":"previous-event","maxPct":5}
+@UVDELTA={"vs":"first-event","maxPct":15}
+
+# on: heart_rate — a rise of at most 20% and a fall of at most 10%
+@UVDELTA={"vs":"[hr_prev]","maxPct":20,"direction":"up"}
+@UVDELTA={"vs":"[hr_prev]","maxPct":10,"direction":"down"}
+```
+
+Tags that compare with different values, or limit different directions, all
+apply, and each one that fails says its own line. Two tags with the same `vs`
+and direction branch like other tags, so each needs its own `when`:
+
+```text
+@UVDELTA={"vs":"previous-event","maxPct":10,"when":"[age_years]>=18"}
+@UVDELTA={"vs":"previous-event","maxPct":20,"when":"[age_years]<18"}
+```
+
+### Level 5 — enforcement and your own message
+
+```text
+# on: weight — ask before saving a change of more than 5 kg since screening
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg","blockSave":"confirm","message":"Weight changed by more than 5 kg since screening. Re-weigh before saving."}
+```
+
+By default `blockSave` is `off`, so the note shows and the save goes ahead. Only
+a `vs` field on the same page can block. A `vs` on another form, event or
+instance is a saved value read when the page opened, so that check never
+blocks, and a calc field never blocks.
+
+### Semantics worth knowing
+
+- **Field types.** Text fields with integer or number validation (any number of
+  decimals, comma decimals included) or with no validation, calc fields and
+  sliders. A `vs` field must hold numbers too. On a comma-decimal field `72,5`
+  reads as 72.5, and the note writes numbers with a comma.
+- **Not a number.** A value that is not a number is left to REDCap's own
+  validation on the page. A saved one, or an earlier value that is not a
+  number, is a rule problem in the audit and the scan, never a pass.
+- **Surveys.** A survey is never sent a value of another form, event or
+  instance. On a survey the rule checks only a `vs` field on the same page, and
+  the note does not name what it compares with. The audit and the scan check
+  the rest.
+- **Rights.** A `vs` on a form the user may not view is not sent to the page.
+  Staff see that the change is checked when the record is saved.
+- **Typing.** A note waits while the person is still typing in a field the
+  rule reads (the field itself, its `vs` or a field of its `when`), and comes
+  when they leave it. The save judges every field first either way.
+- **Audit and scan.** The post-save audit logs a change past a limit as
+  `type: delta` with reason `up` or `down`, and names the `vs` it compared
+  with, so two tags on one field log findings that can be told apart. The
+  Validation scan counts them as "Rose more than allowed" or "Fell more than
+  allowed", with the limits and the value compared with in the detail line.
+  Configure via field annotation only.
+
+These are refused, with a configuration error under the field:
+
+```text invalid
+# refused: needs its settings as JSON
+@UVDELTA=previous-event
+# refused: needs "vs"
+@UVDELTA={"max":5}
+# refused: needs a limit
+@UVDELTA={"vs":"previous-event"}
+# refused: "vs" must be previous-event, previous-instance, first-event or first-instance
+@UVDELTA={"vs":"previous-visit","max":5}
+# refused: exactly one field reference
+@UVDELTA={"vs":"[a] or [b]","max":5}
+# refused: "max" must be 0 or more
+@UVDELTA={"vs":"previous-event","max":-1}
+# refused: "maxPct": 0 does not stop a change from an earlier 0
+@UVDELTA={"vs":"previous-event","maxPct":0}
+# refused: "direction" must be both, up or down
+@UVDELTA={"vs":"previous-event","max":5,"direction":"left"}
+# refused: unknown @UVDELTA option(s): min
+@UVDELTA={"vs":"previous-event","max":5,"min":1}
+```
+
+Once the data dictionary is read, the module also refuses a field that does not
+hold numbers, a `vs` that is not a field, does not hold numbers, always names
+this same entry, or could not be read on any save of some entry (an event that
+does not hold the form, an instance of a form that does not repeat, a relative
+instance where the field's own form does not repeat, no instance of a form
+that repeats, a relative event that never finds one), and a shorthand that
+cannot name an earlier entry at every event that holds the form (see Level 3).
+
+---
+
+## `@UVWRITEONCE` — values entered once
+
+A consent date, a randomisation arm or a baseline weight is entered once and
+then left alone. `@UVWRITEONCE` leaves the field open until its first save of
+a value and locks it from then on. Named user roles can still change it.
+
+### Level 1 — lock for everyone
+
+```text
+@UVWRITEONCE
+```
+
+The first save of a value locks the field, whoever makes it. A blank and a
+missing data code lock nothing, so a field marked "unknown" can still be
+filled in later. On a form or a survey the locked field keeps the value it
+opened with, and a note under it reads "This value was saved once and is
+locked. It cannot be changed here."
+
+### Level 2 — roles that may still change it
+
+```text
+@UVWRITEONCE={"roles":["Data manager"]}
+@UVWRITEONCE={"roles":["Data manager","PI"],"message":"Ask the data manager to correct this date."}
+```
+
+- `roles` names user roles by the name the User Rights page shows or by the
+  unique role name, up to 20. Letter case does not matter ("STRASSE" matches
+  "Straße", and "İDARE" matches "idare"), though the dotless "ı" stays a
+  letter of its own, so "dırector" is not "director". Invisible format
+  characters such as a zero-width space are ignored, and a run of spaces
+  counts as one. With PHP's
+  intl extension a name typed with combining accents matches one typed with
+  composed letters; without intl they differ. Each must be a role of the
+  project, or the field shows a configuration error.
+- A member of a role sees the field open. A change by a member moves the lock
+  to the new value; a member who clears it releases the lock, and the next
+  value saved locks it again.
+- A survey respondent holds no role, so a survey locks the field for everyone.
+- Roles are read when the audit or the scan runs, not as they were at the
+  save, because REDCap's log names who saved but not the role they held. A
+  change counts as the role's while its maker holds the role.
+- Rights that have expired and a suspended account hold no role. An
+  administrator who is not a user of the project holds none either, and is
+  locked out.
+- When the user roles cannot be read, the page locks the field for everyone
+  and the note adds "Your user role could not be checked, so the field is
+  locked for now."
+- REDCap logs a field only when its value changes. A member who wants to keep
+  a value that someone outside the roles saved saves the field twice: another
+  value, then that one.
+- `message` replaces the note under the field and the scan's detail line. It
+  may be a map of language ids to texts.
+
+### Level 3 — a project that already holds data
+
+```text
+@UVWRITEONCE={"since":"2026-11-01"}
+```
+
+Saves before `since` lock nothing. The day starts at 00:00 in the project's
+time zone: the value the field held at that moment is locked from then on, and
+the page locks nothing before that day. The date is written YYYY-MM-DD.
+
+### Semantics worth knowing
+
+- The lock is the browser's only. A change made with the Data Import Tool or
+  the API is not stopped. It is found afterwards, from REDCap's log, by the
+  audit of the next save of the form that holds the field and by the
+  Validation scan.
+- A text box is made read-only, the radio buttons are disabled and their
+  "reset" link hidden, the enhanced radio buttons take no clicks, the slider is
+  disabled, and the date picker is kept from opening, with its button and
+  REDCap's Today and Now buttons hidden. Nothing the form posts is disabled,
+  since REDCap would save the field blank: a dropdown takes no clicks instead,
+  and a change made with the keyboard or a script is undone, and the note says
+  so. A dropdown or SQL field whose saved code is no longer one of its
+  choices gets that code back as an option. The lock touches only the field's
+  own controls: a field embedded in its row keeps its own buttons.
+- When the saved value cannot be read, the field is not locked. Staff see a
+  note saying so, and the audit still checks a change.
+- A person's own first answer is locked as soon as it is saved: after Save &
+  Stay, or Next on a multi-page survey, going back finds it locked.
+- Another tag on a locked field still shows its note. It holds the save only
+  when it also reads a field of this form that the person can change, and
+  only once that field has changed on the page, a checkbox option by option.
+  A calc, or a field with `@CALCTEXT` or `@CALCDATE`, stands for the fields it
+  is worked out from on this event and instance, through other calcs too. The
+  value each field opened with is read after REDCap's own start-up on the
+  page, once its calcs, branching and action tags have filled their fields.
+  So a field REDCap fills as the page starts (`@NOW`, `@TODAY`, `@DEFAULT`,
+  `@SETVALUE`) counts only once the person changes it, and so does a field
+  with `@READONLY` or `@HIDDEN`. A field with `@LATITUDE` or `@LONGITUDE`
+  never counts, since REDCap fills it later, once the browser gives its
+  position; the tag name inside another tag's quoted text
+  (`@PLACEHOLDER="near @LATITUDE"`) is not read as the tag, while one outside
+  quotes is. A tag that reads
+  the locked field alone, a violation already saved
+  when the page opened, and one between two locked fields never hold it, on
+  Save or on Enter.
+- The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
+- Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
+  `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
+  (`@UVEXISTS` or `@UVRANGE` "return"): each of those is written again by
+  itself. Not on a field with `@RICHTEXT` or an ontology search (BioPortal,
+  FHIR or any other service) either, whose widget keeps its own copy of the
+  text.
+- A field given `@UVWRITEONCE` twice is refused: the tag takes no `when`, so
+  there is nothing to choose between them.
+- The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
+  `locked_at` and `changed_at`. Each record and event is read on its own,
+  back to the row REDCap writes when it makes the record. That row counts only
+  when its record id line comes before every other Text or Notes value in it,
+  since a Notes value could hold a typed copy of that line. A deletion of the
+  whole record starts a new history, and so does an erase of all the
+  project's records; a deletion of one form or one event at another event
+  changes nothing. A log that holds more rows of the record and event than
+  are read (5,000), a deletion of this event's data or of one arm, a deletion
+  at another event the log does not describe as one form or one event (and in
+  a project of several arms, every deletion of the record), a record whose log
+  does not show it being made (renamed while its saves stay under the old
+  name, or brought in with a copied project), a record whose creating row has
+  its record id line after a Text or Notes value, a save the log names no event
+  for, a save the log does not spell out, a value the log never shows saved,
+  and roles that cannot be read when a change needs them are rule problems,
+  never a pass.
+- The log lists a save's fields in the data dictionary's order, and a line out
+  of that order is how a Notes value typed to look like another field's line
+  shows. From the first Text or Notes value before such a line, the save reads
+  as not spelled out. A save written before a field was moved breaks the order
+  too, so its later fields are rule problems for that save.
+- Moving any field of a form after records exist, locked or not, can leave
+  the Text and Notes values of the saves made before the move "not checked",
+  the save that made the record included: in a save where a line comes out of
+  the new order after a Text or Notes value, every value from the save's first
+  Text or Notes value on reads as not spelled out. A field of another type
+  written before every Text and Notes value of the save is still read; the
+  record id field does not count as a Text value here.
+- Renaming the record id field after records exist makes every locked field
+  of every record a rule problem: the rows that made the records name the
+  field by its old name, so no record shows being made.
+- A forged line that keeps the order reads as a save of its field. After the
+  lock, a save by a person with no role moves nothing, so the line gives at
+  worst a false finding or a rule problem. Before the lock, or before
+  `since`, it can stand for a first value that was never saved; the next real
+  save of another value is then reported as a change. Anyone could have saved
+  that value first, so the line gives no one a value they could not have
+  saved, and the forged row stays in the log.
+- Renaming a locked field after it holds data restarts its history when
+  REDCap's log keeps the earlier saves under the old name. The page lock still
+  holds the saved value, and the audit reports the field as a rule problem
+  until a save is logged under the new name. An import or API change made
+  after the rename, before any save of the field is logged under the new name,
+  is read as the field's first save and is not caught.
+
+```text invalid
+# refused: takes no value
+@UVWRITEONCE=yes
+# refused: unknown @UVWRITEONCE option(s): when
+@UVWRITEONCE={"when":"[consent]='1'"}
+# refused: unknown @UVWRITEONCE option(s): blockSave
+@UVWRITEONCE={"blockSave":"hard"}
+# refused: must name at least one role
+@UVWRITEONCE={"roles":[]}
+# refused: must be a list of role names
+@UVWRITEONCE={"roles":"Data manager"}
+# refused: "since" must be a date written YYYY-MM-DD
+@UVWRITEONCE={"since":"01/11/2026"}
+```
+
+Once the data dictionary and the user roles are read, the module also refuses a
+role the project does not have, a calc or checkbox field, a field with
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@RICHTEXT`, a field that searches an ontology of any service, a field given the tag twice, and a field another
+rule returns a value to.
+
+---
+
+## `@UVJUSTIFY` — values saved with a reason
+
+Some values break a rule and are still right, such as a weight above the range
+the protocol expected for a patient who really weighs that much, or a visit
+outside its window because the clinic was closed. `@UVJUSTIFY` names a second field where the reason is written. Once that field
+holds a reason, the field's broken rules no longer hold the save, and the
+audit and the scan report those findings apart from the open ones.
+
+### Level 1 — a reason field
+
+```text
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+```
+
+`reason` names one field of the same form: a Text or Notes field, or a
+dropdown, radio or SQL field whose choices are the reasons you allow. While the
+weight is outside 30 to 250, which holds the save, and `weight_reason` is
+empty, a note under the weight reads "Fix this value, or say why it is right in “Reason for
+change”." (the reason field's label), and the save message names the field as
+"Weight (or give a reason in “Reason for change”)". Once a reason is written,
+the save goes through.
+
+### Level 2 — your own note
+
+```text
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"hard"} @UVJUSTIFY={"reason":"[visit_late_why]","message":"Say why the visit was outside its window."}
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[sbp_why]","message":{"en":"Say why this reading is right.","fr":"Dites pourquoi cette mesure est juste."}}
+```
+
+`message` replaces the note under the field. It may be a map of language ids
+to texts.
+
+### Semantics worth knowing
+
+- A reason stands for every rule of `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`,
+  `@UVCHOICES`, `@UVWINDOW`, `@UVRANGE`, `@UVDELTA` and `@UVEXISTS` on the
+  field, from annotations and from the Configure dialog alike. Each keeps its
+  own `when` and `blockSave`.
+- Never for `@UVUNIQUE`: a reason does not make a duplicate identifier safe.
+  Never for `@UVWRITEONCE`: a locked field stays locked, and only the roles
+  that tag names can change it.
+- A reason is any value that is not blank by the test `@UVREQUIRED` uses:
+  spaces, tabs, line breaks, no-break and other Unicode spaces, zero-width
+  characters and byte-order marks alone give none. A missing data code gives
+  none, so a reason field marked "unknown" still asks for one. On the form, a
+  reason field the person cannot see gives none either: its row hidden by
+  branching logic, or, for a reason field embedded in another field's label,
+  the row it sits in.
+- A reason stands until someone clears it. A later, different broken value of
+  the field saves under the same reason, so clear the reason field when the
+  value changes for another reason.
+- The note shows while a covered rule holds the save or asks "Save anyway?"
+  and no reason is given. The rules' own notes stay once the reason is given.
+- A reason never lets anything else through. A rule with `blockSave` `"off"`
+  still only warns, and a lookup still being checked still holds the save.
+- On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
+  compares with another event or instance, which the page shows only as
+  advice) a reason never shows a note on the page; it only labels the finding
+  in the audit and the scan.
+- On a survey page that does not carry the reason field, the tag does nothing
+  on that page. The audit after the save still reads the reason.
+- The audit logs a finding whose reason is given, in the same record, event
+  and instance, as `uvalidate-justified` with `justified_by` naming the reason
+  field; open findings stay `invalid-id-saved`. The reason itself is never
+  logged. A reason field that cannot be read, or missing data codes that cannot
+  be read, leave the finding open.
+- The Validation scan counts these findings apart: the summary adds "and N
+  saved with a reason", the findings table has a "Saved with a reason" column,
+  and a scan whose findings all have a reason counts no open violations.
+- The tag takes no `when`, `caseSensitive`, `blockSave` or `references`.
+
+```text invalid
+# refused: needs the field that holds the reason
+@UVJUSTIFY
+# refused: takes its settings as JSON
+@UVJUSTIFY=[weight_reason]
+# refused: needs "reason"
+@UVJUSTIFY={"message":"Say why."}
+# refused: "reason" must be one field reference
+@UVJUSTIFY={"reason":"weight_reason"}
+# refused: with no event or instance
+@UVJUSTIFY={"reason":"[visit_1_arm_1][weight_reason]"}
+# refused: @UVJUSTIFY takes no "when"
+@UVJUSTIFY={"reason":"[weight_reason]","when":"[visit]='2'"}
+# refused: @UVJUSTIFY takes no "blockSave"
+@UVJUSTIFY={"reason":"[weight_reason]","blockSave":"off"}
+```
+
+Once the data dictionary is read, the module also refuses a reason field that
+is not a field of the project, one on another form, one of another type (a
+calc, checkbox, yes/no, true/false, slider or file field), the field itself, a
+field given the tag twice, and a field that no rule a reason stands for checks.
+It refuses a reason field the person does not fill in, since any value there
+would stand for every broken value: the record ID field, a field REDCap fills
+in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
+`@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
+`@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
+`@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any form
+of `@READONLY`, a field with bare `@HIDDEN`, which hides it on every page
+(`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are
+allowed), and a field that carries `@UVJUSTIFY` itself. It refuses a field
+with `@UVWRITEONCE`, since a reason must be cleared when the value changes
+for another reason, and a field another rule's `"return"` writes into, such
+as an `@UVRANGE` that returns its growth range there, since the save would
+fill it with a reason nobody wrote. A tag name inside another tag's value,
+as in `@PLACEHOLDER='not @DEFAULT'`, refuses nothing. These refusals read the
+reason field's own annotation, or the other rules of the project, so the
+blocks above cannot show them. With `weight_reason` given `@DEFAULT="n/a"`,
+the form shows under the weight:
+
+```text
+⚠ Validator configuration error: @UVJUSTIFY on "weight": "reason" names "[weight_reason]", which has @DEFAULT — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.
+```
+
 ---
 
 ## Combining tags on one field
@@ -4533,6 +5132,9 @@ Current-page values can stay live; other events/instances are snapshots. A missi
 ambiguous match is unresolved, not a saved blank. An unresolved branch does not
 activate its fallback. Save/reload to refresh snapshots, and run a scan to reconcile
 imports, deleted instances or writes that do not invoke a save hook.
+
+To limit how far a value may change since an earlier event or instance, rather
+than compare it, use [`@UVDELTA`](#uvdelta--how-far-a-number-may-change).
 
 ### Named events and relative events
 
@@ -5428,6 +6030,58 @@ counts as the same value), `scope` narrows the **search** (which records are com
 The limits -6 and 5 for weight-for-age, and ±6 for length/height-for-age, are
 the ones WHO's software uses to flag a z-score as implausible.
 
+### `@UVDELTA` recipes
+
+The shorthands and any `vs` in another event or instance need event and instance
+references on.
+
+#### Weight and growth across visits
+
+```text
+# on: weight_kg — at most 10% either way since the previous visit
+@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}
+
+# on: weight_kg — at most 5% since the previous visit and 15% below baseline
+@UVDELTA={"vs":"previous-event","maxPct":5}
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+
+# on: height_cm — a child's height may not fall (0.5 cm allowed for measurement error)
+@UVDELTA={"vs":"previous-event","max":0.5,"direction":"down","unit":"cm"}
+```
+
+#### Laboratory trends
+
+```text
+# on: creatinine (µmol/L), a repeating lab form — ask before saving a rise of more than 50%
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"up","blockSave":"confirm"}
+
+# on: hb (g/dL) — at most 2 g/dL from the screening result on another form
+@UVDELTA={"vs":"[hb_screening]","max":2,"unit":"g/dL"}
+```
+
+#### Vital signs and repeated measurements on one form
+
+```text
+# on: sbp_2 — the second reading within 20 mmHg of the first, held until fixed
+@UVDELTA={"vs":"[sbp_1]","max":20,"unit":"mmHg","blockSave":"hard","message":"The two readings differ by more than 20 mmHg. Take a third."}
+
+# on: weight_2 — a second weighing within 0.2 kg of the first
+@UVDELTA={"vs":"[weight_1]","max":0.2,"unit":"kg","blockSave":"confirm"}
+```
+
+### `@UVWRITEONCE` recipes
+
+```text
+# on: consent_date — entered once, never changed on a form
+@UVWRITEONCE
+
+# on: rand_arm — only the data manager may correct the arm
+@UVWRITEONCE={"roles":["Data manager"],"message":"Ask the data manager to correct the arm."}
+
+# on: baseline_weight, added to a running study — lock what was held on 1 November
+@UVWRITEONCE={"since":"2026-11-01"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -5825,6 +6479,39 @@ target the same field: different kinds compose, and the same kind branches by `w
 A limit is a JSON number, or a decimal in quotes for more digits than a JSON
 number keeps. `blockSave` is refused.
 
+### `@UVDELTA`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `vs`            | string          | *(none)*     | Required. `previous-event`, `previous-instance`, `first-event`, `first-instance` (this field there), or one field reference such as `[weight_screening]` or `[baseline_arm_1][weight]`. The shorthands and another event or instance need event and instance references |
+| `max`           | number          | *(none)*     | The largest change allowed, in the field's unit, 0 or more             |
+| `maxPct`        | number          | *(none)*     | The largest change allowed as a percent of the earlier value, more than 0; not applied to an earlier 0. At least one of `max` and `maxPct` |
+| `direction`     | string          | `both`       | `both`, `up`, `down`: the changes the limits apply to                  |
+| `unit`          | string          | *(none)*     | Label shown after the numbers in the note, up to 20 characters         |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string or map   | generic line   | Replaces the line that names the change and the limit                  |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `vs` saved elsewhere and a calc never block |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
+### `@UVWRITEONCE`
+
+| Key       | Type          | Default         | Notes                                                                              |
+| --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `roles`   | list          | *(none)*        | User roles that may still change or clear the value; by name or unique role name, any letter case, spaces folded, 1 to 20 |
+| `since`   | string        | *(none)*        | YYYY-MM-DD, from 00:00 project time: saves before it lock nothing; the value held then is locked |
+| `message` | string or map | generic line    | The note under a locked field and the scan's detail line                            |
+
+No `when`, `caseSensitive`, `blockSave` or `references`.
+
+### `@UVJUSTIFY`
+
+| Key       | Type          | Default         | Notes                                                                              |
+| --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
+| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in and can clear (not the record ID field, a field REDCap fills in, a read-only field, one with bare `@HIDDEN`, `@UVJUSTIFY` or `@UVWRITEONCE`, or one another rule's `"return"` writes into) |
+| `message` | string or map | generic line    | The note under the field that asks for the reason                                  |
+
+No `when`, `caseSensitive`, `blockSave` or `references`.
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -5832,6 +6519,8 @@ number keeps. `blockSave` is refused.
 | `references` | object | Named bindings used as `{alias}` in `when`/`assert`; at most 20; feature must be enabled |
 | `alternates` | list   | `@UVALIDATE` only: `label`, `pattern`, `algorithm`, `source`, `strip`, `lengths` per entry |
 | `message`    | string or map | Every tag except `@UVALIDATE`: one string, or a map of language id to text ([Messages in several languages](#messages-in-several-languages)) |
+
+`@UVWRITEONCE` and `@UVJUSTIFY` take no `references`.
 
 ### `references` binding keys
 
@@ -6003,6 +6692,22 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
                                                                   ... and write the z-score into a field
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"show":{"chart":true,"table":true}}
                                                                   ... and draw a growth chart and a table under it
+
+# ── @UVDELTA — how far a number may change ──────────────────────────────────
+@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}           at most 5 kg either way
+@UVDELTA={"vs":"previous-event","maxPct":10}                       at most 10% since the previous visit
+@UVDELTA={"vs":"previous-instance","maxPct":50,"direction":"up"}   a rise of at most 50%
+@UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}       at most 15% below baseline
+@UVDELTA={"vs":"previous-event","max":0,"direction":"down"}        may not fall
+
+# ── @UVWRITEONCE — values entered once ───────────────────────────────────────
+@UVWRITEONCE                                                       locked by its first save
+@UVWRITEONCE={"roles":["Data manager"]}                            the data manager may still change it
+@UVWRITEONCE={"since":"2026-11-01"}                                locks what was held on that day
+
+# ── @UVJUSTIFY — values saved with a reason ──────────────────────────────────
+@UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
+                                                                  a weight outside 30 to 250 saves once a reason is written
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

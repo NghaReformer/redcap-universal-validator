@@ -48,6 +48,8 @@ final class FindingRowMapper
         // Schema versions 3 and 5: the day a value was judged against, and a
         // growth finding's z-score and reference (MessageCatalog's notes).
         'as_of', 'z_score', 'growth_reference',
+        // Schema version 6: a reason (@UVJUSTIFY) stands for the finding.
+        'justified',
     ];
 
     /** How record ids leave this class. */
@@ -259,6 +261,8 @@ final class FindingRowMapper
             'asOf'          => $stored['as_of'],
             'z'             => $value['withheld'] ? null : $stored['z_score'],
             'reference'     => $stored['growth_reference'],
+            // the reason field is the rule's (ScanDimensions keeps justifyBy), never stored per row
+            'justified'     => (string) $stored['justified'] === '1',
         ];
     }
 

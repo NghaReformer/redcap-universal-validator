@@ -421,6 +421,16 @@ namespace {
         && implode(' ', $r5['deferredWhy'] ?? []) === 'this form already carries the rows of 4 growth reference tables, and this one '
             . 'would take it past the most one page may carry (4), so this check runs when the record is saved.');
     check('page: the cap deferral is marked as checked on save', $r5 && ($r5['deferredOnSave'] ?? null) === true);
+    // A survey is never told why (round-3 review F3): the cap step runs after the page shaping.
+    // (The date of birth is not sent to a survey, so weight-for-age needs no rows there: two more tables fill it.)
+    $SIX = $LIVESEX + ['lh' => f('anthro_form', tag('who-lhfa', '"age":{"days":"[age_days]"}'), 'number_1dp'),
+                       'bf' => f('anthro_form', tag('who-bfa', '"age":{"days":"[age_days]"}'), 'number_1dp')];
+    $s5 = page(mod($SIX, $DATA, $FULL, 'nurse'), 'survey', '2', 'anthro_form');
+    $sr5 = null;
+    foreach (['muac', 'lh', 'bf'] as $gf) if (!empty(ruleFor($s5, $gf)['deferred'])) $sr5 = ruleFor($s5, $gf);
+    check('survey: the cap deferral is marked, without its reason (got ' . json_encode($sr5['deferredWhy'] ?? null) . ')',
+        $sr5 && !empty($sr5['deferred']) && ($sr5['deferredOnSave'] ?? null) === true && !isset($sr5['deferredWhy'])
+        && strpos($s5['html'], 'growth reference table') === false);
     $wt = ruleFor($p5, 'weight');
     check('page: a rule that fits is not marked', $wt && !isset($wt['deferredOnSave']));
     check('page: a whole table of both sexes is named by hash too', ($p5['cfg']['growth']['who-wfa']['rowsFrom'] ?? null) === $wfaEntry['sha256']

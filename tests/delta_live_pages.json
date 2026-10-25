@@ -1,0 +1,3001 @@
+{
+    "visit1_off": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "72"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_wt"
+                ],
+                "configError": "@UVDELTA on \"ud_wt\": \"vs\": \"previous-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_height"
+                ],
+                "configError": "@UVDELTA on \"ud_height\": \"vs\": \"first-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bl"
+                ],
+                "configError": "@UVDELTA on \"ud_bl\": a \"vs\" value in another event or instance needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "configError": "@UVDELTA on \"ud_twoev\": \"vs\": \"previous-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "configError": "@UVDELTA on \"ud_twoev\": \"vs\": \"first-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\" (this needs event and instance references, a project setting)."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_rep"
+                ],
+                "configError": "@UVDELTA on \"ud_rep\": \"vs\": \"previous-instance\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "visit1_on": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "72"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-event",
+                "deltaVs": "[previous-event-name][ud_wt]",
+                "deltaMaxPct": "10",
+                "deltaUnit": "kg",
+                "blockSave": "off",
+                "deltaGroup": "[previous-event-name][ud_wt] both",
+                "deltaText": "a change of at most 10%",
+                "deltaVsLabel": "the previous event",
+                "fields": [
+                    "ud_wt"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    ""
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "first-event",
+                "deltaVs": "[first-event-name][ud_height]",
+                "deltaMax": "0.5",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "deltaGroup": "[first-event-name][ud_height] down",
+                "deltaText": "a fall of at most 0.5 cm",
+                "deltaVsLabel": "the first event",
+                "fields": [
+                    "ud_height"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    ""
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[baseline_arm_1][xv_weight]",
+                "deltaMaxPct": "20",
+                "deltaGroup": "[baseline_arm_1][xv_weight] both",
+                "deltaText": "a change of at most 20%",
+                "deltaVsLabel": "[baseline_arm_1][xv_weight]",
+                "fields": [
+                    "ud_bl"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "branches": [
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[previous-event-name][ud_twoev]",
+                        "deltaVsName": "previous-event",
+                        "deltaVsLabel": "the previous event",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[previous-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            ""
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    },
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[first-event-name][ud_twoev]",
+                        "deltaVsName": "first-event",
+                        "deltaVsLabel": "the first event",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[first-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            ""
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    }
+                ],
+                "blockSave": "off"
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "baseline_on": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-event",
+                "deltaVs": "[previous-event-name][ud_wt]",
+                "deltaMaxPct": "10",
+                "deltaUnit": "kg",
+                "blockSave": "off",
+                "deltaGroup": "[previous-event-name][ud_wt] both",
+                "deltaText": "a change of at most 10%",
+                "deltaVsLabel": "the previous event",
+                "fields": [
+                    "ud_wt"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    ""
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "first-event",
+                "deltaVs": "[first-event-name][ud_height]",
+                "deltaMax": "0.5",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "deltaGroup": "[first-event-name][ud_height] down",
+                "deltaText": "a fall of at most 0.5 cm",
+                "deltaVsLabel": "the first event",
+                "fields": [
+                    "ud_height"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_height",
+                    null
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[baseline_arm_1][xv_weight]",
+                "deltaMaxPct": "20",
+                "deltaGroup": "[baseline_arm_1][xv_weight] both",
+                "deltaText": "a change of at most 20%",
+                "deltaVsLabel": "[baseline_arm_1][xv_weight]",
+                "fields": [
+                    "ud_bl"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "branches": [
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[previous-event-name][ud_twoev]",
+                        "deltaVsName": "previous-event",
+                        "deltaVsLabel": "the previous event",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[previous-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            ""
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    },
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[first-event-name][ud_twoev]",
+                        "deltaVsName": "first-event",
+                        "deltaVsLabel": "the first event",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[first-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_twoev",
+                            null
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    }
+                ],
+                "blockSave": "off"
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "visit2_on": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "74"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-event",
+                "deltaVs": "[previous-event-name][ud_wt]",
+                "deltaMaxPct": "10",
+                "deltaUnit": "kg",
+                "blockSave": "off",
+                "deltaGroup": "[previous-event-name][ud_wt] both",
+                "deltaText": "a change of at most 10%",
+                "deltaVsLabel": "the previous event",
+                "fields": [
+                    "ud_wt"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "78"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "first-event",
+                "deltaVs": "[first-event-name][ud_height]",
+                "deltaMax": "0.5",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "deltaGroup": "[first-event-name][ud_height] down",
+                "deltaText": "a fall of at most 0.5 cm",
+                "deltaVsLabel": "the first event",
+                "fields": [
+                    "ud_height"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "170.0"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[baseline_arm_1][xv_weight]",
+                "deltaMaxPct": "20",
+                "deltaGroup": "[baseline_arm_1][xv_weight] both",
+                "deltaText": "a change of at most 20%",
+                "deltaVsLabel": "[baseline_arm_1][xv_weight]",
+                "fields": [
+                    "ud_bl"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "branches": [
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[previous-event-name][ud_twoev]",
+                        "deltaVsName": "previous-event",
+                        "deltaVsLabel": "the previous event",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[previous-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            "74"
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    },
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[first-event-name][ud_twoev]",
+                        "deltaVsName": "first-event",
+                        "deltaVsLabel": "the first event",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[first-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            "70"
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    }
+                ],
+                "blockSave": "off"
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "specimen2_on": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-instance",
+                "deltaVs": "[ud_rep][previous-instance]",
+                "deltaMaxPct": "20",
+                "deltaDirection": "down",
+                "deltaGroup": "[ud_rep][previous-instance] down",
+                "deltaText": "a fall of at most 20%",
+                "deltaVsLabel": "the previous instance",
+                "fields": [
+                    "ud_rep"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "10.0"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            }
+        ],
+        "numberMarks": {
+            "xs_hb": "point",
+            "ud_rep": "point"
+        },
+        "configShape": 1
+    },
+    "visit1_survey_on": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "survey",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 0.2 kg",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 20 mmHg",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaText": "no fall",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 2 and 15%",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 3",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "1",
+                "when": "(condition)",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 1",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 1 kg",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "withheld"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-event",
+                "deltaMaxPct": "10",
+                "deltaUnit": "kg",
+                "blockSave": "off",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 10%",
+                "fields": [
+                    "ud_wt"
+                ],
+                "deltaVsOp": [
+                    "withheld"
+                ],
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "first-event",
+                "deltaMax": "0.5",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "deltaGroup": "g1",
+                "deltaText": "a fall of at most 0.5 cm",
+                "fields": [
+                    "ud_height"
+                ],
+                "deltaVsOp": [
+                    "withheld"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaMaxPct": "20",
+                "deltaGroup": "g1",
+                "deltaText": "a change of at most 20%",
+                "fields": [
+                    "ud_bl"
+                ],
+                "deltaVsOp": [
+                    "withheld"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "g1",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "g2",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "branches": [
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVsName": "previous-event",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "g1",
+                        "when": null,
+                        "deltaVsOp": [
+                            "withheld"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    },
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVsName": "first-event",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "g2",
+                        "when": null,
+                        "deltaVsOp": [
+                            "withheld"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    }
+                ],
+                "blockSave": "off"
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "sheet_b1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "72"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_wt"
+                ],
+                "configError": "@UVDELTA on \"ud_wt\": \"vs\": \"previous-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_height"
+                ],
+                "configError": "@UVDELTA on \"ud_height\": \"vs\": \"first-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bl"
+                ],
+                "configError": "@UVDELTA on \"ud_bl\": a \"vs\" value in another event or instance needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "configError": "@UVDELTA on \"ud_twoev\": \"vs\": \"previous-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "configError": "@UVDELTA on \"ud_twoev\": \"vs\": \"first-event\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\" (this needs event and instance references, a project setting)."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_rep"
+                ],
+                "configError": "@UVDELTA on \"ud_rep\": \"vs\": \"previous-instance\" reads another event or instance, which needs event and instance references — enable them in project settings first."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "sheet_b1_values": {
+        "ud_c": "72,5",
+        "ud_c0": "70,0",
+        "ud_grp": "2",
+        "ud_ht": "152.0",
+        "ud_ht0": "150.0",
+        "ud_htcalc": "152",
+        "ud_pain": "4",
+        "ud_pain0": "2",
+        "ud_pct0": "0",
+        "ud_sbp1": "120",
+        "ud_sbp2": "145",
+        "ud_w1": "70.5",
+        "ud_w2": "70.3",
+        "ud_when": "80"
+    },
+    "sheet_c2": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "0.2",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 0.2 kg",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_w2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_sbp1]",
+                "deltaMax": "20",
+                "deltaUnit": "mmHg",
+                "message": "The two readings differ by more than 20 mmHg. Take a third.",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_sbp1] both",
+                "deltaText": "a change of at most 20 mmHg",
+                "deltaVsLabel": "[ud_sbp1]",
+                "fields": [
+                    "ud_sbp2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_sbp1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] down",
+                "deltaText": "no fall",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_ht"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_ht0]",
+                "deltaMax": "0.5",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_ht0] both",
+                "deltaComputed": true,
+                "deltaText": "a change of at most 0.5",
+                "deltaVsLabel": "[ud_ht0]",
+                "fields": [
+                    "ud_htcalc"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_ht0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pct0]",
+                "deltaMax": "2",
+                "deltaMaxPct": "15",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_pct0] both",
+                "deltaText": "a change of at most 2 and 15%",
+                "deltaVsLabel": "[ud_pct0]",
+                "fields": [
+                    "ud_pct"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pct0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_c0]",
+                "deltaMax": "2.5",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_c0] both",
+                "decimalComma": true,
+                "deltaText": "a change of at most 2,5 kg",
+                "deltaVsLabel": "[ud_c0]",
+                "deltaVsComma": true,
+                "fields": [
+                    "ud_c"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_c0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_pain0]",
+                "deltaMax": "3",
+                "blockSave": "confirm",
+                "deltaGroup": "[ud_pain0] both",
+                "deltaText": "a change of at most 3",
+                "deltaVsLabel": "[ud_pain0]",
+                "fields": [
+                    "ud_pain"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_pain0",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[ud_w1]",
+                "deltaMax": "1",
+                "when": "[ud_grp]='1'",
+                "blockSave": "hard",
+                "deltaGroup": "[ud_w1] both",
+                "deltaText": "a change of at most 1",
+                "deltaVsLabel": "[ud_w1]",
+                "fields": [
+                    "ud_when"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "ud_grp",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "1"
+                    ]
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "ud_w1",
+                    null
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[xv_weight]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[xv_weight] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[xv_weight]",
+                "fields": [
+                    "ud_snap"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "72"
+                ],
+                "snapshotFields": [
+                    "xv_weight"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-event",
+                "deltaVs": "[previous-event-name][ud_wt]",
+                "deltaMaxPct": "10",
+                "deltaUnit": "kg",
+                "blockSave": "off",
+                "deltaGroup": "[previous-event-name][ud_wt] both",
+                "deltaText": "a change of at most 10%",
+                "deltaVsLabel": "the previous event",
+                "fields": [
+                    "ud_wt"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "first-event",
+                "deltaVs": "[first-event-name][ud_height]",
+                "deltaMax": "0.5",
+                "deltaDirection": "down",
+                "deltaUnit": "cm",
+                "deltaGroup": "[first-event-name][ud_height] down",
+                "deltaText": "a fall of at most 0.5 cm",
+                "deltaVsLabel": "the first event",
+                "fields": [
+                    "ud_height"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "170.0"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[baseline_arm_1][xv_weight]",
+                "deltaMaxPct": "20",
+                "deltaGroup": "[baseline_arm_1][xv_weight] both",
+                "deltaText": "a change of at most 20%",
+                "deltaVsLabel": "[baseline_arm_1][xv_weight]",
+                "fields": [
+                    "ud_bl"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    "70"
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_two"
+                ],
+                "branches": [
+                    {
+                        "blockSave": "confirm",
+                        "deltaVs": "[ud_w1]",
+                        "deltaVsLabel": "[ud_w1]",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[ud_w1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_w1",
+                            null
+                        ]
+                    },
+                    {
+                        "blockSave": "hard",
+                        "deltaVs": "[ud_sbp1]",
+                        "deltaVsLabel": "[ud_sbp1]",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[ud_sbp1] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "ref",
+                            "ud_sbp1",
+                            null
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "delta",
+                "fields": [
+                    "ud_twoev"
+                ],
+                "branches": [
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[previous-event-name][ud_twoev]",
+                        "deltaVsName": "previous-event",
+                        "deltaVsLabel": "the previous event",
+                        "deltaMaxPct": "5",
+                        "deltaText": "a change of at most 5%",
+                        "deltaGroup": "[previous-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            "70"
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    },
+                    {
+                        "type": "delta",
+                        "fields": [
+                            "ud_twoev"
+                        ],
+                        "_origin": "annotation",
+                        "deltaVs": "[first-event-name][ud_twoev]",
+                        "deltaVsName": "first-event",
+                        "deltaVsLabel": "the first event",
+                        "deltaMaxPct": "15",
+                        "deltaText": "a change of at most 15%",
+                        "deltaGroup": "[first-event-name][ud_twoev] both",
+                        "when": null,
+                        "deltaVsOp": [
+                            "lit",
+                            "70"
+                        ],
+                        "snapshotFields": [
+                            "saved event/instance values"
+                        ],
+                        "blockSave": "off",
+                        "extendedAdvisory": true
+                    }
+                ],
+                "blockSave": "off"
+            }
+        ],
+        "numberMarks": {
+            "ud_w1": "point",
+            "ud_w2": "point",
+            "ud_sbp1": "point",
+            "ud_sbp2": "point",
+            "ud_ht0": "point",
+            "ud_ht": "point",
+            "ud_htcalc": "point",
+            "ud_pct0": "point",
+            "ud_pct": "point",
+            "ud_c0": "comma",
+            "ud_c": "comma",
+            "ud_pain0": "point",
+            "ud_pain": "point",
+            "ud_two": "point",
+            "ud_when": "point",
+            "ud_snap": "point",
+            "ud_wt": "point",
+            "ud_height": "point",
+            "ud_bl": "point",
+            "ud_twoev": "point",
+            "ud_bad_self": "point",
+            "ud_bad_vs": "point",
+            "ud_bad_nofield": "point",
+            "ud_bad_inst": "point",
+            "ud_bad_nolimit": "point"
+        },
+        "configShape": 1
+    },
+    "sheet_c2_values": {
+        "ud_c": "72,5",
+        "ud_c0": "70,0",
+        "ud_grp": "2",
+        "ud_ht": "152.0",
+        "ud_ht0": "150.0",
+        "ud_htcalc": "152",
+        "ud_pain": "4",
+        "ud_pain0": "2",
+        "ud_pct0": "0",
+        "ud_sbp1": "120",
+        "ud_sbp2": "145",
+        "ud_snap": "74",
+        "ud_w1": "70.5",
+        "ud_w2": "70.3",
+        "ud_when": "80"
+    },
+    "sheet_d1": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_email"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_email\": @UVDELTA needs a number field — give this Text field integer or number validation, or none (it has \"email\")."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_self"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_self\": \"vs\" names this field itself — compare it with another entry, as \"vs\":\"previous-event\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_vs"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_vs\": \"vs\" field \"xv_date\" is not a number field — it needs integer or number validation, or none, or to be a calc or a slider."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nofield"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nofield\": \"vs\" names \"[ud_nope]\", which is not a field in this project."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_inst"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_inst\": \"vs\": \"previous-instance\" needs a form that repeats — \"uv_delta_test\" does not repeat at \"baseline_arm_1\", \"visit_1_arm_1\" and \"visit_2_arm_1\"."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "ud_bad_nolimit"
+                ],
+                "configError": "@UVDELTA on \"ud_bad_nolimit\": @UVDELTA needs a limit: \"max\" (the most the value may change, in its own unit) or \"maxPct\" (the most it may change as a percent of the earlier value), e.g. \"maxPct\":10."
+            },
+            {
+                "type": "delta",
+                "deltaVsName": "previous-instance",
+                "deltaVs": "[ud_rep][previous-instance]",
+                "deltaMaxPct": "20",
+                "deltaDirection": "down",
+                "deltaGroup": "[ud_rep][previous-instance] down",
+                "deltaText": "a fall of at most 20%",
+                "deltaVsLabel": "the previous instance",
+                "fields": [
+                    "ud_rep"
+                ],
+                "deltaVsOp": [
+                    "lit",
+                    ""
+                ],
+                "snapshotFields": [
+                    "saved event/instance values"
+                ],
+                "blockSave": "off",
+                "extendedAdvisory": true
+            }
+        ],
+        "numberMarks": {
+            "xs_hb": "point",
+            "ud_rep": "point"
+        },
+        "configShape": 1
+    },
+    "sheet_d1_values": {},
+    "labels": {
+        "ud_w1": "First weighing (kg)",
+        "ud_w2": "Second weighing (kg)",
+        "ud_sbp1": "Systolic pressure, first reading",
+        "ud_sbp2": "Systolic pressure, second reading",
+        "ud_ht0": "Height before (cm)",
+        "ud_ht": "Height now (cm)",
+        "ud_htcalc": "Height now, as a calc",
+        "ud_pct0": "Count before",
+        "ud_pct": "Count now",
+        "ud_c0": "Weight before, comma decimals (kg)",
+        "ud_c": "Weight now, comma decimals (kg)",
+        "ud_pain0": "Pain before",
+        "ud_pain": "Pain now",
+        "ud_two": "Two comparisons",
+        "ud_grp": "Check the next field?",
+        "ud_when": "Checked only while the answer above is Check",
+        "ud_snap": "Weight against xv_weight on xe_visit (kg)",
+        "ud_wt": "Weight, against the previous event (kg)",
+        "ud_height": "Height, against the first event (cm)",
+        "ud_bl": "Weight, against xv_weight at baseline (kg)",
+        "ud_twoev": "Weight, against the previous and the first event (kg)",
+        "ud_bad_email": "Bad: email field",
+        "ud_bad_self": "Bad: compares with itself",
+        "ud_bad_vs": "Bad: vs is a date",
+        "ud_bad_nofield": "Bad: vs is not a field",
+        "ud_bad_inst": "Bad: previous-instance on a form that does not repeat",
+        "ud_bad_nolimit": "Bad: no limit",
+        "ud_rep": "Specimen value, against the previous instance"
+    }
+}

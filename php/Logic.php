@@ -102,6 +102,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ExactDecimal.php';
+
 class Logic
 {
     const MAX_EXPR_LEN = 500; // characters, after whitespace normalization + trim
@@ -220,6 +222,47 @@ class Logic
             }
         }
         return $n;
+    }
+
+    /**
+     * The values a parsed condition ($ast) needs plain fields to equal before
+     * it can be true, as [field key => [value, ...]]: from the condition
+     * itself when it is a [field] = value or [field(code)] = value
+     * comparison (either way round), else from each such member of its top
+     * "and", nested ones included. A field with an event or an instance, a
+     * <> or an ordered comparison, and anything under "or" or "not" add
+     * nothing. Two conditions that need one field to equal values no value
+     * can equal both can never be true at once (Branching::whenExclusive).
+     */
+    public static function requiredValues(array $ast)
+    {
+        $out = [];
+        if ($ast[0] === 'and') {
+            foreach ($ast[1] as $c) foreach (self::requiredValues($c) as $k => $vs) foreach ($vs as $v) $out[$k][] = $v;
+            return $out;
+        }
+        if ($ast[0] !== 'cmp' || $ast[1] !== '=') return $out;
+        foreach ([[$ast[2], $ast[3]], [$ast[3], $ast[2]]] as $p) {
+            if ($p[0][0] === 'ref' && $p[1][0] === 'lit') $out[$p[0][1] . '(' . (string) $p[0][2] . ')'][] = $p[1][1];
+        }
+        return $out;
+    }
+
+    /**
+     * Whether no value can equal both $a and $b as compare() reads "=" with
+     * case folded ($fold) or not: once trimmed, two numbers (NUM_RE) that
+     * differ in value, a number and a text, or two texts that differ, with
+     * A-Z folded when $fold. So 1, 01, 1.0 and ' 1' are one value. The
+     * browser compares as compare() does (QRID_whenCompare).
+     */
+    public static function neverBothEqual($a, $b, $fold)
+    {
+        $a = trim((string) $a, " \t\r\n");
+        $b = trim((string) $b, " \t\r\n");
+        $number = (bool) preg_match(self::NUM_RE, $a);
+        if ($number !== (bool) preg_match(self::NUM_RE, $b)) return true;
+        if ($number) return self::decCmp($a, $b) !== 0;
+        return $fold ? self::foldAscii($a) !== self::foldAscii($b) : $a !== $b;
     }
 
     /**
@@ -1009,6 +1052,25 @@ class Logic
         return self::partsText($p);
     }
 
+    /**
+     * A typed or saved number for @UVDELTA, written out in full: '' for blank,
+     * null when it is not a number, false when written out it would be longer
+     * than MAX_PLAIN characters. normalizeNumber judges a number past 70
+     * places as 10^70, which is right against one limit of at most 64
+     * characters; a change is the difference of two values, so 1e80 and 1e100
+     * must keep every digit. Twin of QRID_deltaNumber.
+     */
+    public static function deltaNumber($value, $decimalComma = false)
+    {
+        $v = trim((string) $value, " \t\r\n");
+        if ($v === '') return '';
+        if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
+        if (preg_match(self::NUM_RE, $v)) return strlen($v) > self::MAX_PLAIN ? false : $v;
+        if (self::exponentParts($v) === null) return null;
+        $plain = self::plainDecimal($v);
+        return $plain === null ? false : $plain;
+    }
+
     /** The longest number plainDecimal writes out. */
     const MAX_PLAIN = 4096;
 
@@ -1201,6 +1263,217 @@ class Logic
         if ($b('softLo') !== null && self::decCmp($n, $b('softLo')) < 0) return ['tier' => 'soft', 'reason' => 'soft-low'];
         if ($b('softHi') !== null && self::decCmp($n, $b('softHi')) > 0) return ['tier' => 'soft', 'reason' => 'soft-high'];
         return ['tier' => 'ok', 'reason' => null];
+    }
+
+    /**
+     * The @UVDELTA verdict for one value against the earlier one it is
+     * compared with: ['verdict' => ok|inert|up|down|unknown, 'reason' =>
+     * null|max|maxPct|not-a-number|earlier-not-a-number|too-long, 'change' =>
+     * value - earlier as an exact decimal string, or null].
+     *
+     * $spec holds 'max' and 'maxPct' (NUM_RE strings at least 0; null or
+     * absent = no such limit), 'direction' (both, up or down: the changes the
+     * limits apply to), 'decimalComma' (the value's field reads one comma as
+     * the decimal mark) and 'earlierComma' (the same for the earlier value's
+     * field).
+     *
+     * A blank value or a blank earlier value is inert: nothing to compare. A
+     * value that is not a number is unknown, as is a number or a change too
+     * long to work out (deltaNumber, ExactDecimal::MAX_DIGITS). A change
+     * against "direction" is ok.
+     * "max" holds when |change| <= max; "maxPct" when |change| * 100 <=
+     * maxPct * |earlier|, so no division and no rounding. An earlier value of
+     * 0 has no percent: "maxPct" is not applied, and a rule with no other
+     * limit is inert there. "up" and "down" name the way a value moved past a
+     * limit, reason the limit it broke ("max" first). Each limit is at most
+     * AnnotationRules::MAX_RANGE_BOUND characters, so the work is linear in
+     * the value's length. The twin is QRID_deltaVerdict; tests/delta_fixture.json
+     * pins both.
+     *
+     * $charge, when given, is the record's evaluation budget: the sum and the
+     * products are paid for before they are worked out (ExactDecimal::sumCost,
+     * multiplyCost; values under 64 characters are free), and a refused
+     * payment is unknown with reason "limit". The extended audit judges one
+     * field in every entry of a record, and long numbers re-judged per entry
+     * must spend what they cost (wargame P1). The browser judges one value
+     * and has no budget.
+     */
+    public static function deltaVerdict(array $spec, $value, $earlier, ?callable $charge = null)
+    {
+        $v = self::deltaNumber($value, !empty($spec['decimalComma']));
+        $e = self::deltaNumber($earlier, !empty($spec['earlierComma']));
+        if ($v === '' || $e === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
+        if ($v === null) return ['verdict' => 'unknown', 'reason' => 'not-a-number', 'change' => null];
+        if ($e === null) return ['verdict' => 'unknown', 'reason' => 'earlier-not-a-number', 'change' => null];
+        if ($v === false || $e === false) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
+        $minus = $e[0] === '-' ? substr($e, 1) : '-' . ltrim($e, '+');
+        if (!self::spendOn($charge, ExactDecimal::sumCost([$v, $minus]))) return ['verdict' => 'unknown', 'reason' => 'limit', 'change' => null];
+        $d = ExactDecimal::sum([$v, $minus]);
+        if ($d['state'] !== 'ok') return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
+        $change = $d['value'];
+        $limit = function ($k) use ($spec) {
+            return (isset($spec[$k]) && is_string($spec[$k]) && $spec[$k] !== '') ? $spec[$k] : null;
+        };
+        $max = $limit('max');
+        $pct = $limit('maxPct');
+        $base = ltrim($e, '+-');
+        // a percent of nothing: only "max" can judge
+        if ($pct !== null && self::decCmp($base, '0') === 0) {
+            $pct = null;
+            if ($max === null) return ['verdict' => 'inert', 'reason' => null, 'change' => $change];
+        }
+        $sign = self::decCmp($change, '0');
+        $dir = isset($spec['direction']) ? $spec['direction'] : 'both';
+        if ($sign === 0 || ($sign > 0 && $dir === 'down') || ($sign < 0 && $dir === 'up')) {
+            return ['verdict' => 'ok', 'reason' => null, 'change' => $change];
+        }
+        $way = $sign > 0 ? 'up' : 'down';
+        $size = ltrim($change, '-');
+        if ($max !== null && self::decCmp($size, $max) > 0) return ['verdict' => $way, 'reason' => 'max', 'change' => $change];
+        if ($pct !== null) {
+            if (!self::spendOn($charge, ExactDecimal::multiplyCost($size, '100') + ExactDecimal::multiplyCost($pct, $base))) {
+                return ['verdict' => 'unknown', 'reason' => 'limit', 'change' => $change];
+            }
+            $lhs = ExactDecimal::multiply($size, '100');
+            $rhs = ExactDecimal::multiply($pct, $base);
+            if ($lhs === null || $rhs === null) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => $change];
+            if (self::decCmp($lhs, $rhs) > 0) return ['verdict' => $way, 'reason' => 'maxPct', 'change' => $change];
+        }
+        return ['verdict' => 'ok', 'reason' => null, 'change' => $change];
+    }
+
+    /** Pay $units to $charge: true when free (under one unit or no budget) or paid. */
+    private static function spendOn(?callable $charge, $units)
+    {
+        return $units < 1 || $charge === null || $charge($units);
+    }
+
+    /**
+     * Whether a reason field's value gives a reason (@UVJUSTIFY): it is not
+     * blank by the test @UVREQUIRED asks (isBlank, so a no-break space, a
+     * zero-width space or a form feed alone gives none), and it is not one of
+     * the project's Missing Data Codes ($codes: code => true, as
+     * UniversalValidator::missingDataCodes gives them), compared once PHP's
+     * trim() set is taken from both ends, as isMissingCode compares. A
+     * checkbox map, a null or a boolean gives none. The browser's twin is
+     * QRID_reasonGiven in js/engine.js; both read tests/justify_fixture.json.
+     */
+    public static function reasonGiven($value, array $codes = [])
+    {
+        if (!is_string($value) && !is_int($value) && !is_float($value)) return false;
+        if (self::isBlank($value)) return false;
+        return !isset($codes[trim((string) $value)]);
+    }
+
+    /**
+     * A user role name as @UVWRITEONCE compares it: its format characters (a
+     * zero-width space, a byte-order mark) removed, the capital I with a dot
+     * above ("İ", or "I" and a combining dot above) read as "i", then put in
+     * Unicode's composed form (NFC, when PHP's intl extension is loaded),
+     * every run of spaces (a no-break space or an ideographic space too)
+     * folded to one, then trimmed, and case-folded in full ("Équipe  Médicale"
+     * and "équipe médicale" are one role, and so are "STRASSE" and "Straße",
+     * "İDARE" and "idare", and "Data manager" with a no-break space or a
+     * zero-width space pasted after it). The dotless "ı" stays a letter of
+     * its own. Without intl, an accent typed as a letter of its own ("E" and
+     * a combining acute) does not match the accented letter. Without
+     * mbstring, only A to Z are lowercased. Text that is not UTF-8 has its
+     * ASCII spaces folded and is lowercased byte by byte.
+     */
+    public static function roleKey($name)
+    {
+        $s = (string) $name;
+        if (preg_match('//u', $s) !== 1) return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+        $s = str_replace(["\u{130}", "I\u{307}"], 'i', preg_replace('/\p{Cf}+/u', '', $s));
+        if (class_exists('Normalizer', false)) {
+            $nfc = \Normalizer::normalize($s, \Normalizer::FORM_C);
+            if (is_string($nfc)) $s = $nfc;
+        }
+        $folded = trim(preg_replace('/\s+/u', ' ', $s));
+        return function_exists('mb_convert_case') ? mb_convert_case($folded, MB_CASE_FOLD, 'UTF-8') : strtolower($folded);
+    }
+
+    /**
+     * @UVWRITEONCE: whether $current is the value the field is locked to.
+     *
+     * $saves is every save of the field on one record, event and instance,
+     * oldest first (ValueHistory::saves): ['at' => time or null, 'ts' => log
+     * time, 'user' => who saved, 'value' => what was saved, null when the log
+     * does not say plainly]. A blank value or a Missing Data Code
+     * ($isMissing) holds no lock. The first save of any other value locks it,
+     * whoever made it. A later save of another value by a user who holds a
+     * named role ($holdsRole answers true) moves the lock to that value, and a
+     * blank or a code saved by such a user releases it; a save by anyone else
+     * leaves the lock where it was.
+     *
+     * $sinceTs (a log time, or null): saves before it only say which value
+     * the field held then, and a value held then is locked from $sinceLabel.
+     *
+     * @return array verdict "ok"; "changed" or "cleared" (the current value is
+     *   another value, or blank / a code) with lockedAt (when the lock was set)
+     *   and changedAt (when the current value was saved); or "unknown" with
+     *   why: "ambiguous" (a save the log does not say plainly), "gap" (the log's
+     *   last save is not the current value, or it shows no save of a value the
+     *   field holds), "roles" ($holdsRole could not answer, null, for a save
+     *   that departs from the lock).
+     */
+    public static function writeOnceVerdict(array $saves, $current, callable $holdsRole, callable $isMissing, $sinceTs = null, $sinceLabel = null)
+    {
+        $norm = function ($v) { return trim((string) $v, " \t\r\n"); };
+        $empty = function ($v) use ($norm, $isMissing) { $v = $norm($v); return $v === '' || $isMissing($v); };
+        // A logged value is the saved one when it reads the same, or the same
+        // once a quote or a backslash the log may have escaped is unescaped.
+        $same = function ($logged, $value) use ($norm) {
+            $l = $norm($logged);
+            $v = $norm($value);
+            return $l === $v || strtr($l, ["\\'" => "'", '\\\\' => '\\']) === $v;
+        };
+        $lock = null;
+        $lockedAt = null;
+        $last = null;
+        $lastAt = null;
+        $i = 0;
+        $n = count($saves);
+        if ($sinceTs !== null) {
+            for (; $i < $n && strcmp((string) $saves[$i]['ts'], (string) $sinceTs) < 0; $i++) {
+                $last = $saves[$i]['value'];
+                $lastAt = $saves[$i]['at'];
+            }
+            if ($i > 0) {
+                if ($last === null) return ['verdict' => 'unknown', 'why' => 'ambiguous'];
+                if (!$empty($last)) {
+                    $lock = $last;
+                    $lockedAt = $sinceLabel;
+                }
+            }
+        }
+        for (; $i < $n; $i++) {
+            $v = $saves[$i]['value'];
+            if ($v === null) return ['verdict' => 'unknown', 'why' => 'ambiguous'];
+            $last = $v;
+            $lastAt = $saves[$i]['at'];
+            if ($lock === null) {
+                if (!$empty($v)) {
+                    $lock = $v;
+                    $lockedAt = $saves[$i]['at'];
+                }
+                continue;
+            }
+            if ($norm($v) === $norm($lock)) continue;   // both as the log writes them
+            $role = $holdsRole((string) $saves[$i]['user']);
+            if ($role === null) return ['verdict' => 'unknown', 'why' => 'roles'];
+            if ($role) {
+                $lock = $empty($v) ? null : $v;
+                $lockedAt = $lock === null ? null : $saves[$i]['at'];
+            }
+        }
+        if ($n === 0) return $empty($current) ? ['verdict' => 'ok'] : ['verdict' => 'unknown', 'why' => 'gap'];
+        if (!$same($last, $current)) return ['verdict' => 'unknown', 'why' => 'gap'];
+        // The lock and the last save are both as the log writes them, so they
+        // are compared as written: unescaping here would read a backslash
+        // removed from "It\'s" as no change.
+        if ($lock === null || $norm($lock) === $norm($last)) return ['verdict' => 'ok'];
+        return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt];
     }
 
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
