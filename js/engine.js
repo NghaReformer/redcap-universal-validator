@@ -1788,10 +1788,30 @@ function QRID_temporalMultiply(a,b){
   var negative=(a.charAt(0)==='-')!==(b.charAt(0)==='-'),scale=0;
   var parts=[a,b].map(function(v){v=v.replace(/^[+-]/,'');var p=v.split('.');scale+=(p[1]||'').length;return v.replace('.','').replace(/^0+/,'');});
   a=parts[0];b=parts[1];if(a.length+b.length>4096)return null;if(!a||!b)return '0';
-  var out=new Array(a.length+b.length).fill(0);
-  for(var i=a.length-1;i>=0;i--)for(var j=b.length-1;j>=0;j--){var n=out[i+j+1]+Number(a[i])*Number(b[j]);out[i+j+1]=n%10;out[i+j]+=Math.floor(n/10);}
-  var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=QRID_trimZerosRight(v).replace(/\.$/,'');}
+  var v=QRID_temporalProduct(a,b);if(scale){if(v.length<scale+1)v='0'.repeat(scale+1-v.length)+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=QRID_trimZerosRight(v).replace(/\.$/,'');}
   return (negative?'-':'')+v;
+}
+/* Base 10^w limbs of a digit string, least significant first. Twin of ExactDecimal::toLimbs.
+   Character codes, not Number(slice): the slices cost twice as much. */
+function QRID_toLimbs(d,w){
+  var out=[];for(var e=d.length;e>0;e-=w){var v=0;for(var i=Math.max(0,e-w);i<e;i++)v=v*10+d.charCodeAt(i)-48;out.push(v);}
+  return out;
+}
+/* Canonical digits of least-significant-first limbs: no leading zeros, '0' for zero. */
+function QRID_fromLimbs(l,w){var pad=Math.pow(10,w),i=l.length-1;while(i>0&&l[i]===0)i--;var s=String(l[i]);for(i--;i>=0;i--)s+=String(pad+l[i]).slice(1);return s;}
+/* |a| * |b| over non-empty digit strings without leading zeros, in 7-digit limbs.
+   The digit-at-a-time loop cost 85-130 ms per keystroke for an average of long
+   values (wargame P6). Each row is carried as it goes, so every step stays below
+   10^14 + 2*10^7 and a double holds it exactly. Twin of ExactDecimal::product. */
+function QRID_temporalProduct(a,b){
+  if(a.length<b.length){var t=a;a=b;b=t;}
+  var x=QRID_toLimbs(a,7),y=QRID_toLimbs(b,7),out=new Array(x.length+y.length).fill(0);
+  for(var j=0;j<y.length;j++){
+    var yj=y[j],carry=0,v;if(!yj)continue;
+    for(var i=0;i<x.length;i++){v=out[i+j]+x[i]*yj+carry;carry=Math.floor(v/1e7);out[i+j]=v-carry*1e7;}
+    for(var k=j+x.length;carry;k++){v=out[k]+carry;carry=Math.floor(v/1e7);out[k]=v-carry*1e7;}
+  }
+  return QRID_fromLimbs(out,7);
 }
 /* x/1 against y/n needs one multiplication, not two. Twin of TemporalLogic::scaled. */
 function QRID_temporalScaled(numerator,denominator){
@@ -1806,24 +1826,45 @@ function QRID_temporalNumbers(values){
   }
   return true;
 }
+/* Exact sum, the same value and the same 4,096-character limit as ExactDecimal::sum.
+   The running total stays in 7-digit limbs with a sign, so each value is read once:
+   adding digit strings rebuilt the total per value, 0.5-8 ms per 4,000-digit member
+   on every keystroke (wargame P6). The limit is checked after each value on the
+   canonical total at the scale reached so far, as the PHP twin checks its string. */
 function QRID_temporalSum(values){
-  function add(a,b){
-    var sa=a[0]==='-'?-1:1,sb=b[0]==='-'?-1:1;a=a.replace(/^-/,'').replace(/^0+/,'')||'0';b=b.replace(/^-/,'').replace(/^0+/,'')||'0';
-    var out='',carry=0,i=a.length-1,j=b.length-1,v;
-    if(sa===sb){while(i>=0||j>=0||carry){v=(i>=0?Number(a[i--]):0)+(j>=0?Number(b[j--]):0)+carry;out=String(v%10)+out;carry=Math.floor(v/10);}return (sa<0&&out!=='0'?'-':'')+out;}
-    var cmp=a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);if(!cmp)return '0';if(cmp<0){v=a;a=b;b=v;sa=sb;}
-    j=b.length-1;for(i=a.length-1;i>=0;i--){v=Number(a[i])-carry-(j>=0?Number(b[j--]):0);carry=v<0?1:0;if(v<0)v+=10;out=String(v)+out;}
-    out=out.replace(/^0+/,'')||'0';return (sa<0&&out!=='0'?'-':'')+out;
+  function trim(l){while(l.length>1&&l[l.length-1]===0)l.pop();return l;}
+  function cmp(a,b){if(a.length!==b.length)return a.length<b.length?-1:1;for(var k=a.length-1;k>=0;k--)if(a[k]!==b[k])return a[k]<b[k]?-1:1;return 0;}
+  function add(a,b){if(a.length<b.length){var t=a;a=b;b=t;}var out=[],carry=0,v;for(var k=0;k<a.length;k++){v=a[k]+(b[k]||0)+carry;carry=v>=1e7?1:0;out.push(v-carry*1e7);}if(carry)out.push(1);return out;}
+  function sub(a,b){var out=[],borrow=0,v;for(var k=0;k<a.length;k++){v=a[k]-(b[k]||0)-borrow;borrow=v<0?1:0;out.push(v+borrow*1e7);}return trim(out);}   /* |a| >= |b| */
+  function shift(a,k){   /* a * 10^k */
+    if(a.length===1&&!a[0])return a;var m=Math.pow(10,k%7),out=[],carry=0,v;
+    for(var i=0;i<Math.floor(k/7);i++)out.push(0);
+    for(i=0;i<a.length;i++){v=a[i]*m+carry;carry=Math.floor(v/1e7);out.push(v-carry*1e7);}
+    if(carry)out.push(carry);return out;
   }
-  var sum='0',scale=0;
+  function limbs(v,start,pad){   /* the digits of v from start, point skipped, then pad zeros */
+    var out=[],limb=0,mul=Math.pow(10,pad%7),i,c;
+    for(i=0;i<Math.floor(pad/7);i++)out.push(0);
+    /* Read v in place: a concatenated copy made every charCodeAt a slow lookup. */
+    for(i=v.length-1;i>=start;i--){c=v.charCodeAt(i);if(c===46)continue;limb+=(c-48)*mul;mul*=10;if(mul===1e7){out.push(limb);limb=0;mul=1;}}
+    if(mul!==1)out.push(limb);   /* v holds a digit, so out is never empty */
+    return trim(out);
+  }
+  var total=[0],negative=false,scale=0;
   for(var i=0;i<values.length;i++){
     /* QRID_whenCompare's trim set (twin of ExactDecimal::sum): the wider PHP default
        summed "9\v" as 9 and then lost every min/max comparison as text. */
     if(typeof values[i]==='object')return null;var v=QRID_whenTrim(values[i]);if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return null;
-    var neg=v[0]==='-';v=v.replace(/^[+-]/,'');var p=v.split('.'),f=p[1]||'',d=(p[0]+f).replace(/^0+/,'')||'0';if(neg&&d!=='0')d='-'+d;
-    var target=Math.max(scale,f.length);sum=add(sum+'0'.repeat(target-scale),d+'0'.repeat(target-f.length));if(sum.length>4096)return null;scale=target;
+    var neg=v[0]==='-',start=neg||v[0]==='+'?1:0,point=v.indexOf('.'),fraction=point<0?0:v.length-point-1,target=Math.max(scale,fraction);
+    if(target>scale)total=shift(total,target-scale);
+    var x=limbs(v,start,target-fraction);scale=target;
+    if(x.length>1||x[0]){
+      if(neg===negative)total=add(total,x);
+      else{var c=cmp(total,x);if(!c){total=[0];negative=false;}else if(c>0)total=sub(total,x);else{total=sub(x,total);negative=neg;}}
+    }
+    var top=total[total.length-1];   /* a zero value still widens the scale, so it is checked too */if((total.length-1)*7+String(top).length+(negative?1:0)>4096)return null;
   }
-  var negative=sum[0]==='-';sum=sum.replace(/^-/,'');if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=QRID_trimZerosRight(sum).replace(/\.$/,'');}
+  var sum=QRID_fromLimbs(total,7);if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=QRID_trimZerosRight(sum).replace(/\.$/,'');}
   sum=sum.replace(/^0+/,'');if(!sum||sum[0]==='.')sum='0'+sum;return (negative&&sum!=='0'?'-':'')+sum;
 }
 function QRID_temporalDate(value,type,format){
@@ -9021,6 +9062,9 @@ window.INSPIREUniversalValidator = {
     periodLabel: QRID_windowPeriodLabel, spanLabel: QRID_windowSpanLabel,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
+  },
+  exactDecimal: {                            /* ExactDecimal twins, locked by tests/exact_decimal_js.cjs */
+    sum: QRID_temporalSum, multiply: QRID_temporalMultiply
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal

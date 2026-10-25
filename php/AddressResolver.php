@@ -10,11 +10,18 @@ require_once __DIR__ . '/CollectionIndex.php';
 /** Pure per-record resolver. No network, log, browser, or authorization side effects. */
 final class AddressResolver
 {
+    /**
+     * How the page config is encoded (UniversalValidator, UV-001): the hex flags
+     * write each of < > & ' " as a six-byte \uXXXX escape.
+     */
+    const PAGE_JSON_FLAGS = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
+
     private $shape;
     private $record;
     private $limit;
     private $budget;
     private $shared = false;
+    private $page = false;
     private $memo = [];
     /** Pooled collections (wargame P3): their full member lists, bindings by key, summaries, indexes. */
     private $poolMembers = [];
@@ -44,6 +51,28 @@ final class AddressResolver
     {
         $this->shared = true;
         return $this;
+    }
+
+    /**
+     * Browser payload: each value read is charged by the bytes it takes in the
+     * page's JSON, not by its raw length. Members of 62 "<" were charged one unit
+     * each and took 373 bytes on the page, so 4 x 9,000 of them made a 13.18 MB
+     * page where as many plain members made 2.54 MB (wargame P6).
+     */
+    public function chargePageBytes()
+    {
+        $this->page = true;
+        return $this;
+    }
+
+    /** Bytes of $value inside the page JSON, its quotes left out. */
+    private static function pageBytes($value)
+    {
+        // Printable ASCII with nothing to escape is its own length, which is nearly every value.
+        if (!preg_match('/[^\x20-\x7E]|[<>&\'"\\\\\/]/', $value)) return strlen($value);
+        $json = json_encode($value, self::PAGE_JSON_FLAGS);
+        // Not UTF-8: the page drops the rule (encodableRules), so the worst case is charged.
+        return $json === false ? 6 * strlen($value) : strlen($json) - 2;
     }
 
     /** context={event,instrument,instance,unsaved?:bool,values?:array}. */
@@ -588,7 +617,8 @@ final class AddressResolver
             if ($value !== '' && !is_array($value)) return self::problem('unreadable');
             $value = is_array($value) && isset($value[$ref[2]]) && (string)$value[$ref[2]] === '1' ? '1' : '0';
         } elseif (is_array($value) || is_object($value)) return self::problem('invalid');
-        if (!$this->budget->take(1 + intdiv(strlen((string)$value),64))) return self::problem('limit');
+        $bytes = $this->page ? self::pageBytes((string)$value) : strlen((string)$value);
+        if (!$this->budget->take(1 + intdiv($bytes,64))) return self::problem('limit');
         return ['state'=>'ok','value'=>(string)$value,'self'=>$live,
             'location'=>['event'=>$event,'instrument'=>$form,'bucket'=>$bucket,'instance'=>$instance,'field'=>$ref[1],'code'=>$ref[2]]];
     }

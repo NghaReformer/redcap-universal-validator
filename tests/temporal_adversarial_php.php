@@ -286,6 +286,25 @@ check('P1: summing long values spends budget beyond the reads', $r->resolveBindi
 $r = new AddressResolver($bigShape, $bigRecord(4, '9999'), 10000, new ReferenceBudget(300));
 check('P1: the same budget sums short values', $r->resolveBinding($avg, $ctx)['state'] === 'ok');
 
+// P6: a page payload is charged by each value's bytes in the page JSON, where the
+// hex flags write < as six bytes. A saved-data evaluation still charges raw bytes.
+$read = function ($value, $page) use ($bigShape, $bigRecord, $ctx) {
+    $r = new AddressResolver($bigShape, $bigRecord(2, $value), 10000, new ReferenceBudget(4));
+    if ($page) $r->chargePageBytes();
+    return $r->resolve(['qref','a_val',null,null,'2'], $ctx)['state'];
+};
+$hex = str_repeat('<', 62) . '1';
+check('P6: a page read of 63 escaped bytes is charged their 373 encoded bytes', $read($hex, true) === 'limit');
+check('P6: the same read on saved data is charged its raw bytes', $read($hex, false) === 'ok');
+check('P6: a page read of 63 plain bytes costs what it did', $read(str_repeat('a', 62) . '1', true) === 'ok');
+$bytes = new ReflectionMethod(AddressResolver::class, 'pageBytes'); $bytes->setAccessible(true);
+$sizes = true;
+foreach (['plain', '<b>&amp;</b>', "it's \"x\"", 'a/b\\c', "tab\tnew\nline\x01", "caf\u{e9} \u{2028} \u{1F600}", str_repeat('<', 4000)] as $s) {
+    if ($bytes->invoke(null, $s) !== strlen(json_encode($s, AddressResolver::PAGE_JSON_FLAGS)) - 2) { $sizes = false; fwrite(STDERR, 'pageBytes ' . json_encode($s) . "\n"); }
+}
+check('P6: the page size of a value is its length in the page JSON', $sizes);
+check('P6: a value that is not UTF-8 is charged six bytes per byte', $bytes->invoke(null, "\xff\xfe") === 12);
+
 // End to end: [a][all-instances] <= average, from every host context of one record.
 $rule = ['assert'=>'[a_val][all-instances]<={x}', 'references'=>['x'=>['field'=>'a_val','aggregate'=>'average']]];
 $run = function ($n, $value) use ($bigShape, $bigRecord, $rule) {

@@ -357,6 +357,22 @@ namespace {
     check('P5: each of three records names its spent budget (got '.json_encode([$spent,$res['incomplete'],$res['status']]).')',
         $spent===['1','2','3']&&count(preg_grep('/^record [123] was not fully checked/',$res['incomplete']))===3&&$res['status']==='incomplete');
     unset(REDCap::$data[2],REDCap::$data[3]);
+    // Wargame P6: the page charges each member by its size in the page JSON, where < is
+    // six bytes. 2,000 members of 640 "<" are 7.7 MB there and spend the budget; the same
+    // members of plain text are 1.3 MB and reach the page.
+    $page=function($v)use($many){
+        $m=$many(tag("[a_val][any-instance]<>'x'"));
+        $rows=[];for($k=1;$k<=2000;$k++)$rows[$k]=['a_val'=>$v.$k,'key_a'=>'A','fa_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;
+        ob_start();$m->redcap_data_entry_form_top(PID,'1','fa',1,null,1);$html=ob_get_clean();
+        // strpos, not render()'s regex: a payload over 1 MB passes PCRE's backtrack limit.
+        $open='id="inspire-validator-config">';$a=strpos($html,$open)+strlen($open);$raw=substr($html,$a,strpos($html,'</script>',$a)-$a);
+        $rule=ruleOf(['cfg'=>json_decode($raw,true)],'a_val');
+        return [!empty($rule['deferred'])&&in_array('Extended validation unavailable: limit.',$rule['deferredWhy']??[],true),strlen($raw)];
+    };
+    [$hex,$hexBytes]=$page(str_repeat('<',640));[$plain,$plainBytes]=$page(str_repeat('a',640));
+    check('P6: members escaped on the page spend the budget there (got '.json_encode([$hex,$hexBytes]).')',$hex&&$hexBytes<100000);
+    check('P6: ... and the same members in plain text are sent (got '.json_encode([$plain,$plainBytes]).')',!$plain&&$plainBytes>1280000);
     $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]>={mx}','references'=>['mx'=>['field'=>'a_val','aggregate'=>'maximum','excludeCurrent'=>true]],'blockSave'=>'hard']));
     $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
     check('P4: ... a binding over the saved form too (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&in_array(2,$at($m),true));

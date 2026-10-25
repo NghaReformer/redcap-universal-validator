@@ -222,6 +222,16 @@ Tests in `tests/temporal_integration_php.php`.
   escapes `<` to 6 bytes: 13.18 MB payload for 4 x 9,000 members.
   `js/engine.js:1234-1263` costs 236-302 ms per keystroke with big decimals.
   Repro: `php tools/temporal_perf_payload.php <dir>` then `node tools/temporal_perf_engine.cjs <dir>`.
+  **Fixed 2026-10-25:** a page payload charges each value by its length in the
+  page JSON, under the flags the page is encoded with
+  (`AddressResolver::PAGE_JSON_FLAGS`); audits and scans still charge raw bytes.
+  The 4 x 9,000 payload is now 3.30 MB: the three references past the
+  budget reach the page as unknown. The engine sums in 7-digit limbs, reading each value once, and
+  multiplies in 7-digit limbs: 22 ms per evaluation for avg_bigdigits_n700
+  (was 85 ms), 36 ms for allinst_avg_same_n350 (was 130 ms). Tests in
+  `tests/exact_decimal_js.cjs`, `tests/temporal_adversarial_php.php` and
+  `tests/temporal_integration_php.php`, and P6 cases in
+  `tests/temporal_fixture.json`.
 - **S2** `js/engine.js:3548,3565`: `cfg.uniqueRecordAsts || {}` read with a
   plain property lookup; field `constructor` resolves to
   `Object.prototype.constructor`, the gate is `1=1`, no AJAX, no block.

@@ -35,6 +35,7 @@ jobs:
         run: |
           node tests/qualified_js.cjs
           node tests/temporal_logic_js.cjs
+          node tests/exact_decimal_js.cjs
           node tests/deferral_dom_js.cjs
       - name: JS "when" condition evaluator vs fixture
         run: node tests/when_js.cjs

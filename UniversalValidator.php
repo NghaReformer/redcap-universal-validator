@@ -4467,8 +4467,9 @@ class UniversalValidator extends AbstractExternalModule
         // flags escape < > & ' " to \uXXXX and the default slash escaping is
         // kept (JSON_UNESCAPED_SLASHES is deliberately NOT used), so no project
         // setting — pattern, strip, keepChars — can close the <script> element
-        // or inject markup. Fixes the stored-XSS breakout (UV-001).
-        $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
+        // or inject markup. Fixes the stored-XSS breakout (UV-001). The resolver
+        // charges page values by their size under these same flags (wargame P6).
+        $flags = AddressResolver::PAGE_JSON_FLAGS;
         $json = json_encode($config, $flags);
         if ($json === false) {
             // The payload carries SAVED VALUES since cross-form literals (1.6.0)

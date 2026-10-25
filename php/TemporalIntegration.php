@@ -274,7 +274,7 @@ trait TemporalIntegration
         $held=$this->temporalResolver;
         if($held===null||$held['shape']!==$shape||$held['budget']!==$this->temporalBudget||$held['browser']!==(bool)$browser||$held['node']!==$node){
             $resolver=new AddressResolver($shape,$node,10000,$this->temporalBudget);
-            if(!$browser)$resolver->shareAcrossContexts();
+            if($browser)$resolver->chargePageBytes();else $resolver->shareAcrossContexts();
             $this->temporalUniqueIndex=[];
             $held=$this->temporalResolver=['shape'=>$shape,'budget'=>$this->temporalBudget,'browser'=>(bool)$browser,'node'=>$node,'resolver'=>$resolver];
         }
