@@ -593,10 +593,7 @@ final class GrowthReference
      */
     public static function pageCopy(array $entry, array $table, ?array $need = null)
     {
-        $out = [];
-        foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];
-        if (isset($entry['chartUnit']) && $entry['chartUnit'] !== 'auto') $out['chartUnit'] = $entry['chartUnit'];
-        if (isset($entry['position'])) $out['position'] = $entry['position'];
+        $out = self::pageFields($entry);
         foreach (['scale', 'first', 'male', 'female'] as $k) $out[$k] = $table[$k];
         if ($need === null) return $out;
         if (isset($need['xs']) && is_array($need['xs'])) {
@@ -620,6 +617,53 @@ final class GrowthReference
         foreach (['male', 'female'] as $s) {
             if (isset($need['sexes']) && empty($need['sexes'][$s])) $out[$s] = [];
         }
+        return $out;
+    }
+
+    /**
+     * The page's copy of a reference whose rows travel as their own file
+     * (PRF-7): the index fields, and in "rowsFrom" the table's SHA-256, under
+     * which the script at rowsPath() files the rows for js/engine.js. The
+     * browser caches that script, so a form that needs the whole table does
+     * not carry it inline on every view.
+     */
+    public static function pageIndex(array $entry)
+    {
+        return self::pageFields($entry) + ['rowsFrom' => $entry['sha256']];
+    }
+
+    /**
+     * The module-relative path of the script that carries $entry's rows, or
+     * null when there is none. Only a bundled table has one, built by
+     * tools/build_growth_rows.php: a folder named in the module settings may
+     * lie outside what the web server serves, and its tables change without a
+     * release. A file that is missing (a package built without it) leaves the
+     * rows inline, as before.
+     */
+    public static function rowsFile(array $entry)
+    {
+        if (!isset($entry['dir'], $entry['sha256']) || !is_string($entry['sha256']) || $entry['dir'] !== self::bundledDir()) return null;
+        $rel = self::rowsPath($entry['sha256']);
+        return is_file(dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel)) ? $rel : null;
+    }
+
+    /**
+     * Where the rows script of a table with this SHA-256 lives, relative to
+     * the module folder: named by the hash, so a changed table gets a new
+     * name and no browser keeps a stale copy.
+     */
+    public static function rowsPath($sha256)
+    {
+        return 'js/growth/' . substr((string) $sha256, 0, 16) . '.js';
+    }
+
+    /** The index fields QRID_growth* reads, without the rows (pageCopy, pageIndex). */
+    private static function pageFields(array $entry)
+    {
+        $out = [];
+        foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];
+        if (isset($entry['chartUnit']) && $entry['chartUnit'] !== 'auto') $out['chartUnit'] = $entry['chartUnit'];
+        if (isset($entry['position'])) $out['position'] = $entry['position'];
         return $out;
     }
 

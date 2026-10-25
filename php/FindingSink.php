@@ -20,7 +20,8 @@ namespace INSPIRE\UniversalValidator;
  * on the returned result where every existing caller and test already reads
  * them.
  *
- * @see UniversalValidator::scanProject()  the façade, which uses ArrayFindingSink
+ * @see tests/support/scan_facade.php  the legacy one-request scan, which uses
+ *      ArrayFindingSink (moved there with it, QUA-3)
  */
 interface FindingSink
 {
@@ -34,62 +35,10 @@ interface FindingSink
      */
     public function violation(array $v);
 
-    /**
-     * How many violations have been handed over.
-     *
-     * On the interface rather than left to each implementation, so a caller can
-     * always report a count even when the rows themselves were not kept — "no
-     * violations" must never be inferred from an array that was never filled.
-     */
-    public function count();
-}
-
-/**
- * Collects violations in memory, reproducing exactly what scanProject returned
- * before the sink existed.
- *
- * This is the default, and it is what every existing test drives. Its continued
- * agreement with a streaming sink is the regression proof that the extraction
- * changed nothing — see the S-01 differential section in tests/hosting_php.php,
- * which runs every scenario through both and compares.
- */
-final class ArrayFindingSink implements FindingSink
-{
-    /** @var array[] */
-    public $violations = [];
-
-    public function violation(array $v)
-    {
-        $this->violations[] = $v;
-    }
-
-    public function count()
-    {
-        return count($this->violations);
-    }
-}
-
-/**
- * Counts violations and keeps none.
- *
- * The cheapest way to answer "how many would this project produce" without
- * paying for the answer — which is what sizing a report, or measuring a project
- * before deciding how to store its findings, actually needs.
- */
-final class CountingFindingSink implements FindingSink
-{
-    /** @var int */
-    private $n = 0;
-
-    public function violation(array $v)
-    {
-        $this->n++;
-    }
-
-    public function count()
-    {
-        return $this->n;
-    }
+    // count() stood here for the legacy one-request scan, which reported how
+    // many violations it had handed over. That scan and the sinks that count
+    // moved to tests/support/scan_facade.php (QUA-3), and nothing in the
+    // module asked a sink for a count.
 }
 
 /**
@@ -102,8 +51,6 @@ final class CallbackFindingSink implements FindingSink
 {
     /** @var callable */
     private $fn;
-    /** @var int */
-    private $n = 0;
 
     public function __construct(callable $fn)
     {
@@ -112,12 +59,6 @@ final class CallbackFindingSink implements FindingSink
 
     public function violation(array $v)
     {
-        $this->n++;
         call_user_func($this->fn, $v);
-    }
-
-    public function count()
-    {
-        return $this->n;
     }
 }

@@ -17,6 +17,6 @@ ugr_notes,uv_growth_return,,notes,Notes,,,,,,,,,,,,,
 ugr_bad_notes,uv_growth_return,,text,Bad: returns to a Notes field,,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-wfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_notes]""}}"
 ugr_bad_clash_a,uv_growth_return,,text,Bad: shares a returned field (first),,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-wfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_clash_z]""}}"
 ugr_bad_clash_b,uv_growth_return,,text,Bad: shares a returned field (second),,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-hcfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_clash_z]""}}"
-ugr_clash_z,uv_growth_return,,text,Returned by both of the two above,,,number_2dp,,,,,,,,,,
+ugr_clash_z,uv_growth_return,,text,Returned by both of the two above,,,number_2dp,,,,,,,,,,@READONLY
 ugr_bad_chain,uv_growth_return,,text,Bad: reads a returned field,,"Its ""when"" reads ugr_z, which the rule on ugr_weight returns to.",number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-hcfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""when"":""[ugr_z]<>''"",""return"":{""z"":""[ugr_chain_z]""}}"
-ugr_chain_z,uv_growth_return,,text,"Returned by the rule above, which is refused",,,number_2dp,,,,,,,,,,
+ugr_chain_z,uv_growth_return,,text,"Returned by the rule above, which is refused",,,number_2dp,,,,,,,,,,@READONLY

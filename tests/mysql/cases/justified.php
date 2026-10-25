@@ -1,12 +1,12 @@
 <?php
 /**
  * tests/mysql/cases/justified.php — uv_finding.justified (@UVJUSTIFY), schema
- * version 6.
+ * version 7.
  *
  * A finding a reason stands for is stored with justified = 1. The rollup counts
  * it on its own axis, apart from the open findings, and it is no bar to clean.
  * Each block here is a claim about what the server does with the column: how it
- * is defined on a fresh install and after the version-6 migration, the values
+ * is defined on a fresh install and after the version-7 migration, the values
  * the store writes and reads back, the run's count of them (scan_run.
  * detail_justified, which a working run's status reads), the keys that leave
  * it out of a finding's identity, and the summary and the verdict built on it.
@@ -17,7 +17,7 @@
  * version adds as well as on the old ones.
  *
  * THE MIGRATION RUNS LAST, because it drops the tables the runner built and
- * rebuilds them at version 5.
+ * rebuilds them at version 6.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
@@ -447,38 +447,38 @@ $ROLL = 984;
         ScanPromotion::findingsOf($s, $run) === 1 && ScanPromotion::justifiedOf($s, $run) === 2);
 }
 
-// -- AN INSTALLATION AT VERSION 5, WITH FINDINGS ----------------------------
+// -- AN INSTALLATION AT VERSION 6, WITH FINDINGS ----------------------------
 //
-// Built from Schema::statements(1) to (5) and their version rows, the shape a
-// 2.x installation holds, with a run and findings stored the way a version-5
-// build wrote them. The migration adds the column, keeps every row at 0 and
-// records version 6. Run again it does nothing. With the column added and the
+// Built from Schema::statements(1) to (6) and their version rows, the shape a
+// 2.3.0-rc.3 installation holds, with a run and findings stored the way a
+// version-6 build wrote them. The migration adds the column, keeps every row
+// at 0 and records version 7. Run again it does nothing. With the column added and the
 // version row lost (the state an interrupted migration leaves) it skips the
 // ALTER and records the version.
 {
     foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
-    for ($v = 1; $v <= 5; $v++) {
+    for ($v = 1; $v <= 6; $v++) {
         foreach (Schema::statements($v) as $item) $A->query(is_array($item) ? $item['sql'] : $item);
         $A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES ('
             . $v . ', NOW())');
     }
-    check('v5: the fixture reports version 5 and has no justified column',
-        Schema::currentVersion($ca) === 5 && $definition() === null);
+    check('v6: the fixture reports version 6 and has no justified column',
+        Schema::currentVersion($ca) === 6 && $definition() === null);
     $h = Schema::health($ca);
-    check('v5: which health() refuses, naming the version it is at', $h['ok'] === false && $h['version'] === 5);
+    check('v6: which health() refuses, naming the version it is at', $h['ok'] === false && $h['version'] === 6);
 
-    // startRun()'s INSERT and writeManifest() name no version-6 column, so a
+    // startRun()'s INSERT and writeManifest() name no version-7 column, so a
     // run can be planted through the store. startRun() then reads the row back
-    // through run(), which names detail_justified (version 6) and so fails at
-    // version 5; the row is written by then, and its id, generation and epoch
-    // are read here. The findings are written as a version-5 build wrote them,
+    // through run(), which names detail_justified (version 7) and so fails at
+    // version 6; the row is written by then, and its id, generation and epoch
+    // are read here. The findings are written as a version-6 build wrote them,
     // with no justified in the column list.
     $s5 = new SqlScanStore($dbA);
     $open5 = function ($pid, array $ids) use ($s5, $dbA) {
         try {
             $s5->startRun($pid, ['created_by' => 'alice', 'fence_open' => '10']);
         } catch (\Throwable $e) {
-            // the read-back of a version-5 row, as above
+            // the read-back of a version-6 row, as above
         }
         $r = $dbA->select('SELECT run_id, generation_id, lease_epoch FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
@@ -508,52 +508,52 @@ $ROLL = 984;
         $r = $dbA->select('SELECT COUNT(*) FROM ' . $F);
         return (int) $r[0][0];
     };
-    check('v5: four findings stored at version 5, over two projects', $count() === 4);
+    check('v6: four findings stored at version 6, over two projects', $count() === 4);
 
     $r = Schema::migrate($ca);
-    check('v5 to v6: the migration runs from 5 and applies version 6',
-        $r['ok'] === true && $r['from'] === 5 && $r['to'] === Schema::VERSION
-        && $r['applied'] === $statementsFrom(6));
+    check('v6 to v7: the migration runs from 6 and applies version 7',
+        $r['ok'] === true && $r['from'] === 6 && $r['to'] === Schema::VERSION
+        && $r['applied'] === $statementsFrom(7));
     if ($r['ok'] !== true) fwrite(STDERR, '  migrate said: ' . (string) $r['why'] . "\n");
     $got = $definition();
-    check('v5 to v6: the column is defined as a fresh install defines it (got ' . json_encode($got) . ')',
+    check('v6 to v7: the column is defined as a fresh install defines it (got ' . json_encode($got) . ')',
         $got === $WANT);
     $zero = $dbA->select('SELECT COUNT(*) FROM ' . $F . ' WHERE justified <> 0');
-    check('v5 to v6: every row stored at version 5 is kept and reads 0',
+    check('v6 to v7: every row stored at version 6 is kept and reads 0',
         $count() === 4 && (int) $zero[0][0] === 0);
     $rc = $A->query("SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.columns
         WHERE table_schema = DATABASE() AND table_name = '" . Schema::table('scan_run') . "' AND column_name = 'detail_justified'")->fetch_row();
-    check('v5 to v6: the run table gains detail_justified, BIGINT UNSIGNED NOT NULL DEFAULT 0 (got ' . json_encode($rc) . ')',
+    check('v6 to v7: the run table gains detail_justified, BIGINT UNSIGNED NOT NULL DEFAULT 0 (got ' . json_encode($rc) . ')',
         is_array($rc) && strtolower((string) $rc[0]) === 'bigint' && stripos((string) $rc[1], 'unsigned') !== false
         && (string) $rc[2] === 'NO' && (string) $rc[3] === '0');
     $runs0 = $dbA->select('SELECT COUNT(*), SUM(detail_justified) FROM ' . Schema::table('scan_run') . ' WHERE run_id IN (?, ?)', [$o['run'], $on['run']]);
-    check('v5 to v6: and the two runs from version 5 read 0 there',
+    check('v6 to v7: and the two runs from version 6 read 0 there',
         (int) $runs0[0][0] === 2 && (int) $runs0[0][1] === 0);
     $vers = [];
     foreach ($dbA->select('SELECT version FROM ' . Schema::table('schema_version') . ' ORDER BY version') as $vr) {
         $vers[] = (int) $vr[0];
     }
-    check('v5 to v6: the version rows end at the build version, 1 to 5 kept (got ' . json_encode($vers) . ')',
+    check('v6 to v7: the version rows end at the build version, 1 to 6 kept (got ' . json_encode($vers) . ')',
         $vers === range(1, Schema::VERSION));
-    check('v5 to v6: and health() is ok', Schema::health($ca)['ok'] === true);
+    check('v6 to v7: and health() is ok', Schema::health($ca)['ok'] === true);
 
     $m = $mapper(990);
     $open5 = true;
     $page = $s5->findings(990, $o['gen'], [], 0, 100);
     foreach ($page as $p) $open5 = $open5 && (string) $p['justified'] === '0' && $m->toFinding($p)['justified'] === false;
-    check('v5 to v6: the store reads the two active rows from version 5 back as open',
+    check('v6 to v7: the store reads the two active rows from version 6 back as open',
         count($page) === 2 && $open5);
 
-    // The migrated table takes the store's version-6 INSERT, and the summary
+    // The migrated table takes the store's version-7 INSERT, and the summary
     // counts the old rows as open beside the new justified one.
     $c = $s5->claim($o['run'], 'w', $o['epoch'], 1);
     $ok = is_array($c) ? $s5->commitBatch($o['run'], 'w', $o['epoch'], ['bytes' => 0,
         'records' => [$done($c[0])],
         'findings' => [$finding(990, $o['gen'], $c[0], 'reason_given', ['justified' => 1])]]) : 'no claim';
     $j = $dbA->select('SELECT justified FROM ' . $F . ' WHERE project_id = ? AND field = ?', [990, 'reason_given']);
-    check('v5 to v6: a justified finding written after the migration is stored as 1',
+    check('v6 to v7: a justified finding written after the migration is stored as 1',
         $ok === true && count($j) === 1 && (string) $j[0][0] === '1');
-    check('v5 to v6: and the run counts it in detail_justified', (int) $s5->run(990, $o['run'])['detail_justified'] === 1);
+    check('v6 to v7: and the run counts it in detail_justified', (int) $s5->run(990, $o['run'])['detail_justified'] === 1);
     $roll = new RollupBuilder($dbA, $s5);
     while ($roll->step(990, $o['run'], $o['epoch'], $o['gen'], 100)['done'] === false) { }
     $standing = [];
@@ -561,22 +561,22 @@ $ROLL = 984;
         if ($a['kind'] === RollupBuilder::K_STANDING) $standing[(string) $a['axis1']] = (int) $a['cnt'];
     }
     ksort($standing);
-    check('v5 to v6: the summary counts the two old rows open and the new one justified (got '
+    check('v6 to v7: the summary counts the two old rows open and the new one justified (got '
         . json_encode($standing) . ')',
         $standing === [RollupBuilder::STANDING_JUSTIFIED => 1, RollupBuilder::STANDING_OPEN => 2]);
 
     $r2 = Schema::migrate($ca);
-    check('v5 to v6: running it again changes nothing',
+    check('v6 to v7: running it again changes nothing',
         $r2['ok'] === true && $r2['from'] === Schema::VERSION && $r2['applied'] === 0
         && $definition() === $WANT && $count() === 5);
 
     // HALF APPLIED: the ALTER took and the version row did not.
-    $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version >= 6');
-    check('half applied: the column is there and the version row says 5',
-        Schema::currentVersion($ca) === 5 && $definition() === $WANT);
+    $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version >= 7');
+    check('half applied: the column is there and the version row says 6',
+        Schema::currentVersion($ca) === 6 && $definition() === $WANT);
     $r3 = Schema::migrate($ca);
     check('half applied: the migration skips the ALTER it would repeat and records the version',
-        $r3['ok'] === true && $r3['from'] === 5 && $r3['applied'] === $statementsFrom(7)
+        $r3['ok'] === true && $r3['from'] === 6 && $r3['applied'] === $statementsFrom(8)
         && Schema::currentVersion($ca) === Schema::VERSION);
     if ($r3['ok'] !== true) fwrite(STDERR, '  migrate said: ' . (string) $r3['why'] . "\n");
     $sum = $dbA->select('SELECT COUNT(*), SUM(justified) FROM ' . $F);

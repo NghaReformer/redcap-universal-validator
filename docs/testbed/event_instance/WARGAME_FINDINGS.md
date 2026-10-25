@@ -95,6 +95,15 @@ Related Low: with an empty collection the survey payload carries the saved
 current-instrument match key as a guard literal.
 Repro: `php tools/temporal_sec_denial_oracle.php`, `php tools/temporal_sec_survey_payload.php`.
 
+**Fixed 2026-10-23.** `TemporalRules::compile()` decides that a read is
+protected from the instrument it targets, before looking at what it found: a
+collection, an aggregate, a match, or a read that failed on an instrument the
+viewer may not read marks the rule denied, and a failed one reads as
+`unresolved`. With a live operand the only reason is `unauthorized`; a
+protected operand that failed is withheld like a readable one. Both repro
+scripts now give one answer per case, and the survey guard literal is gone.
+Tests in `tests/temporal_integration_php.php`.
+
 ### C1. Display-format dates, untyped
 Live values of `date_dmy`/`date_mdy` fields are read in display order; off-page
 snapshots are saved `Y-M-D`. Untyped comparisons mix them:
@@ -105,6 +114,20 @@ snapshots are saved `Y-M-D`. Untyped comparisons mix them:
 Advisory only, but the page contradicts the audit. The examples guide uses the
 failing form without a warning. Live case: `xv_dmy_legacy` on pid 149.
 Repro: `php tools/temporal_sem_display_format.php`.
+
+**Fixed (A before the 2026-10-21 review, B and C checked 2026-10-25).** The page config
+carries `dateFormats`, each D-M-Y or M-D-Y date or datetime field of the form
+with its display order, and the engine turns the value it shows into the saved
+Y-M-D form before any comparison, a uniqueness tuple or a match key
+(`QRID_logicValue`). The three repro cases now agree with the scan. The documented example
+passes on the page, a typed duplicate under `@UVUNIQUE=record` is flagged
+where the scan finds 2, and an unchanged D-M-Y match key is judged where the
+scan reports 1. `tools/temporal_sem_display_format.php` still prints DIVERGE:
+it evaluates the tree without the page's `dateFormats`, and it calls
+`scanProject()`, which QUA-3 moved to `tests/support/scan_facade.php`. Tests:
+`tests/temporal_integration_php.php` (the config the page gets) and
+`tests/deferral_dom_js.cjs` (the engine on those shapes). Not yet re-tested
+live on `xv_dmy_legacy`.
 
 ### C2. Row existence taken from the event row
 `php/AddressResolver.php:175-176, 304-315, 336` never read `<form>_complete`,
@@ -119,6 +142,18 @@ not-yet-started visit form in any event that has other data.
 Repro: `php tools/temporal_sem_row_existence.php`;
 `php tools/temporal_testbed_check.php --trace="XE-2|followup_arm_1|1|xv_ae_note"`.
 
+**Fixed 2026-10-23 (counts and references).** `AddressResolver` takes an event
+row, or an instance of a repeating event, as a form's entry only where the
+form's status or one of its fields holds a value; the record id does not
+count. The extended read and the scan read ask for
+`returnBlankForGrayFormStatus`, so a form nobody opened reads blank there.
+The three repro cases agree. Tests in `tests/binding_php.php`.
+**Host contexts: kept as designed.** Review R3G-1 (2026-10-10, after this
+wargame) decided that a rule whose condition reads another form or event is
+checked in every designated context that holds data, with
+`tests/hosting_php.php` pinning the close-out case. The `xv_ae_note` finding at
+`followup_arm_1` is therefore expected, and `expected_violations.csv` lists it.
+
 ### C4. Fallback branch promoted by a configuration error
 `getRules()` sets `configError` on extended rules before `Branching::resolve`
 (`UniversalValidator.php:1569-1581`), and `Branching` ignores configError
@@ -132,6 +167,11 @@ correct saves. The docs say deferred selectors never activate an else branch;
 configuration errors do.
 Repro: `php tools/temporal_testbed_check.php --off --pages`.
 
+**Fixed 2026-10-23.** A rule with a configuration error now switches off the
+fallback of its mode on each of its fields (`php/Branching.php`); the other
+conditional rules still branch. `xv_clinic` with the feature off has only its
+two configuration errors and no live rule. Tests in `tests/branching_php.php`.
+
 ### P3. Collections still quadratic
 Every host context rebuilds the n-member set (`php/TemporalRules.php:193`)
 and compares against every member (`php/TemporalLogic.php:77`). `all`,
@@ -141,6 +181,18 @@ unresolved. `excludeCurrent` 2.5 s at n=1,000; self-key `match` 2.2 s.
 The docs claim cost grows with the number of entries, not its square.
 Cached aggregates and record uniqueness are linear (5,000 in <0.5 s).
 Repro: `php tools/temporal_perf_allinst.php 500,1500,3000`, `php tools/temporal_perf_curve.php 100,1000,1500,5000`.
+**Fixed 2026-10-23:** saved data pools each collection once per record. A set
+is sorted into a `CollectionIndex` (`php/CollectionIndex.php`) and each host
+context counts its `any`/`all` answer with binary searches; matched and
+`excludeCurrent` bindings are grouped by key once, and each context takes its
+group less its own entry. At n=1,000 the scan went from 4.7 s to 0.24 s
+(`excludeCurrent` average), 5.8 s with the budget spent to 0.16 s resolved
+(self-key `match`), and 10.2 s to 0.24 s (`any-instance`); the audit of
+`all-instances` at n=3,000 from 15.3 s to 0.18 s. Verdicts are unchanged.
+Tests: `tests/collection_index_php.php` (index against the loop on 115,200
+comparisons), the shared/unshared differential in
+`tests/temporal_adversarial_php.php`, which now checks every pool and adds
+self-key and own-event-row bindings, and its P3 section (3,000 host contexts).
 
 ### P4. Audit order and log flood
 `php/TemporalIntegration.php:261-270` re-checks every host context in record
@@ -150,6 +202,14 @@ instance 501. Two saves of instance 3 wrote 1,000 `invalid-id-saved` rows
 (non-extended rule: 2).
 Repro: `php tools/temporal_perf_audit.php 600`.
 
+**Fixed 2026-10-23.** The audit judges every rule's saved entry first, then
+another host context only where the rule reads the saved instrument across
+entries (`TemporalRules::crossFields()`: a qualified reference, a binding, or
+record-scope uniqueness) or where that context's row is the saved one. The
+repro now gives one log row per save and judges instance 600. A save of the
+source that every entry reads still re-checks them all, up to the limit.
+Tests in `tests/temporal_integration_php.php`.
+
 ## Low and Low-Medium
 
 - **C5** `php/TemporalRules.php:167,179,216`: any unresolved member defers the
@@ -157,35 +217,82 @@ Repro: `php tools/temporal_perf_audit.php 600`.
   [result][previous-instance]='1'"` never fires on instance 1. The notice
   says the study team must fix the rule, which is wrong for this case.
   Repro: `php tools/temporal_sem_kleene.php`.
+  **Fixed 2026-10-23:** inside a condition an unresolved member's reason is
+  held back and becomes a problem only when the and/or stays undecided. The
+  page gets the tree with its unknown part and decides it with live values;
+  a tree with nothing live that stays undecided is deferred as before. Tests
+  in `tests/temporal_integration_php.php`.
 - **P5** `UniversalValidator.php:4039,4045`: direct-scan unresolved notes are
   keyed by rule and in-record position, no record id; 3 exhausted records gave
   2 notes, `incomplete=[]`. Durable scan is correct.
   Repro: `php tools/temporal_perf_scan.php`.
+  **Fixed 2026-10-23:** the direct scan is now the test facade
+  (`tests/support/scan_facade.php`, QUA-3), and nothing in the module calls
+  it. The facade keeps per-record notes per record, with a `record` key, and
+  lists each record that spent its budget in `incomplete`. Since P3 that
+  repro no longer spends the budget; the test in
+  `tests/temporal_integration_php.php` uses long values.
 - **P6** `AddressResolver.php:355` charges raw bytes, `UniversalValidator.php:924`
   escapes `<` to 6 bytes: 13.18 MB payload for 4 x 9,000 members.
   `js/engine.js:1234-1263` costs 236-302 ms per keystroke with big decimals.
   Repro: `php tools/temporal_perf_payload.php <dir>` then `node tools/temporal_perf_engine.cjs <dir>`.
+  **Fixed 2026-10-25:** a page payload charges each value by its length in the
+  page JSON, under the flags the page is encoded with
+  (`AddressResolver::PAGE_JSON_FLAGS`); audits and scans still charge raw bytes.
+  The 4 x 9,000 payload is now 3.30 MB: the three references past the
+  budget reach the page as unknown. The engine sums in 7-digit limbs, reading each value once, and
+  multiplies in 7-digit limbs: 22 ms per evaluation for avg_bigdigits_n700
+  (was 85 ms), 36 ms for allinst_avg_same_n350 (was 130 ms). Tests in
+  `tests/exact_decimal_js.cjs`, `tests/temporal_adversarial_php.php` and
+  `tests/temporal_integration_php.php`, and P6 cases in
+  `tests/temporal_fixture.json`.
 - **S2** `js/engine.js:3548,3565`: `cfg.uniqueRecordAsts || {}` read with a
   plain property lookup; field `constructor` resolves to
   `Object.prototype.constructor`, the gate is `1=1`, no AJAX, no block.
   Fix: `Object.create(null)` or `hasOwnProperty`.
   Repro: `node tools/temporal_sec_constructor_field.cjs`.
+  **Fixed 2026-10-23:** the lookup asks the map's own keys.
+  `tests/prototype_names_dom_js.cjs` boots every mode with the tagged field,
+  and with the field its condition reads, named `constructor`; only
+  @UVUNIQUE differed.
 - **C3** `[xe_code][previous-instance]` on a non-repeating page and
   `[baseline_arm_1][xs_id]` without a selector raise no configuration error
   (numeric `[2]` on a non-repeating target does). They defer at run time and
   log `uvalidate-unconfigurable` on every save. pid 149 fields
   `xn_rel_nonrep`, `xn_ambiguous`.
+  **Fixed 2026-10-23:** `TemporalRules::validateProject` refuses a reference
+  that no event collecting the rule's field can resolve: a relative instance
+  where the rule's instrument never repeats or its target never does, and a
+  one-entry reference into a repeating instrument that is never the rule's
+  own entry. A withheld `@UVWINDOW` `from` (with `notFuture`/`notPast`) and a
+  reference of one `@UVRANGE` branch keep their run-time behaviour, as the
+  docs promise. Tests in `tests/temporal_integration_php.php`; its `@UVRANGE`
+  group fixtures now use a saved value that cannot be read.
 - **C6** `AddressResolver.php:219`, `TemporalLogic.php:56`, `engine.js:1305`:
   `"  "` is blank to comparisons but populated to `populated-count`, and makes
   `sum`/`average`/`minimum`/`maximum` unresolved. Repro: `php tools/temporal_sem_whitespace.php`.
+  **Fixed 2026-10-23:** the resolver, `TemporalLogic` and the engine leave a
+  value of spaces out as they leave out a blank. Tests in the shared
+  `tests/temporal_fixture.json` (both evaluators) and `tests/binding_php.php`.
 - **C7** `TemporalRules.php:129-134` checks the binding field's type, not the
   `elapsedFrom` field's. Repro: `php tools/temporal_sem_elapsed_type.php`.
+  **Fixed 2026-10-23:** `validateProject` also checks the `elapsedFrom`
+  field's date type against the binding's `type`. Tests in
+  `tests/temporal_integration_php.php`.
 - **C8** Designed gaps (Baseline has no previous visit, instance 1 has no
   previous instance) write a `uvalidate-unconfigurable` row on every save:
   replaying the seed saves once produced 40 distinct such entries, 2 of them
   from the deliberately broken `xn_*` fields.
+  **Fixed 2026-10-23:** the audit writes no notice when every problem is
+  `absent` (an entry that does not exist there). The two `xn_*` fields are
+  configuration errors since C3. The scan still lists the places it could
+  not judge. Tests in `tests/temporal_integration_php.php`.
 - **P7** `AddressResolver.php:225`, `engine.js:1306`: min/max run the exact
   sum first; three 4,096-digit values give `limit`.
+  **Fixed 2026-10-23:** minimum and maximum check that each value is a number
+  of at most 4,096 characters and no longer sum. `sum` and `average` keep the
+  limit on the total. Tests in `tests/temporal_fixture.json` (both evaluators)
+  and `tests/binding_php.php`.
 
 ## Suspicions, not reproduced
 

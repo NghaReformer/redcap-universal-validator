@@ -220,8 +220,8 @@ check('upgrade: uv_finding now carries z_score and growth_reference, NULL by def
     (int) $ca->query('SELECT COUNT(*) FROM information_schema.columns
         WHERE table_schema = DATABASE() AND table_name = "' . Schema::table('finding') . '"
           AND column_name IN ("z_score", "growth_reference") AND is_nullable = "YES"')[0][0] === 2);
-// Version 6: whether a reason (@UVJUSTIFY) stands for the finding, 0 for every
-// row already there. tests/mysql/cases/justified.php migrates from version 5.
+// Version 7: whether a reason (@UVJUSTIFY) stands for the finding, 0 for every
+// row already there. tests/mysql/cases/justified.php migrates from version 6.
 check('upgrade: uv_finding now carries justified, NOT NULL DEFAULT 0',
     (int) $ca->query('SELECT COUNT(*) FROM information_schema.columns
         WHERE table_schema = DATABASE() AND table_name = "' . Schema::table('finding') . '"

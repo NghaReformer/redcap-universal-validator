@@ -26,6 +26,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;
         public function getSubSettings($k, $pid = null) {
@@ -79,6 +81,7 @@ namespace {
 
 namespace {
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
     require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
     require_once __DIR__ . '/../php/Scan/ScanReport.php';
     require_once __DIR__ . '/scan_run_row.php';
@@ -375,7 +378,7 @@ namespace {
     {
         $map = mapper();
         // 17 names from wave 8, as_of, z_score and growth_reference from
-        // schema versions 3 and 5, and justified from version 6.
+        // schema versions 3 and 5, and justified from version 7.
         check('contract: INPUT_KEYS is the 21 names the stores must return',
             count(FindingRowMapper::INPUT_KEYS) === 21
             && count(array_unique(FindingRowMapper::INPUT_KEYS)) === 21);
@@ -432,7 +435,7 @@ namespace {
             $gone['z'] === null && $gone['reference'] === 'who-wfa');
         $capped = mapper(['readerCeiling' => 'locations'])->toFinding(row($g));
         check('notes: a reader capped at locations is not shown the z-score', $capped['z'] === null);
-        // Schema version 6: a reason (@UVJUSTIFY) stands for the finding. The
+        // Schema version 7: a reason (@UVJUSTIFY) stands for the finding. The
         // drivers return the column as a number or as text.
         check('justified: 1 maps to true, as a number or as text',
             $map->toFinding(row(['justified' => 1]))['justified'] === true && $map->toFinding(row(['justified' => '1']))['justified'] === true);

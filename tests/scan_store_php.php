@@ -20,7 +20,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
     $n = 0; $fail = 0;

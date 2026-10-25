@@ -22,6 +22,8 @@ PHP = os.environ.get('PHP_BIN', 'php')
 NODE = os.environ.get('NODE_BIN', 'node')
 UV = 'UniversalValidator.php'
 SCANRUNS = 'php/ScanRuns.php'
+# the legacy one-request scan, a test facade since QUA-3
+FACADE = 'tests/support/scan_facade.php'
 LOGIC = 'php/Logic.php'
 RULES = 'php/AnnotationRules.php'
 MODEREG = 'php/ModeRegistry.php'
@@ -29,7 +31,7 @@ MODES = 'php/modes.json'
 ENGINE = 'js/engine.js'
 SCANJS = 'js/scan.js'
 SCHEMA = 'php/Scan/Schema.php'
-ARRAYSTORE = 'php/Scan/ArrayScanStore.php'
+ARRAYSTORE = 'tests/support/ArrayScanStore.php'
 SQLSTORE = 'php/Scan/SqlScanStore.php'
 MAPPER = 'php/Scan/FindingRowMapper.php'
 ROLLUP = 'php/Scan/RollupBuilder.php'
@@ -268,13 +270,13 @@ MUTATIONS = [
      '', MODULE),
 
     # ---- the scans ----
-    ('the legacy count of findings saved with a reason never reset between scans (J2-7)', SCANRUNS,
+    ('the legacy count of findings saved with a reason never reset between scans (J2-7)', FACADE,
      '        $this->scanJustified = 0;\n',
      '', MODULE),
     ('the legacy scan counts no finding saved with a reason', SCANRUNS,
      "                        if (!empty($v['justified']) && isset($v['justifiedBy'])) $this->scanJustified++;\n",
      '', MODULE),
-    ('the legacy scan counts justified findings as violations', SCANRUNS,
+    ('the legacy scan counts justified findings as violations', FACADE,
      "        $result['stats']['violations'] = max(0, $sink->count() - $this->scanJustified);",
      "        $result['stats']['violations'] = $sink->count();", MODULE),
     ('the durable row never carries the flag', SCANRUNS,
@@ -313,13 +315,13 @@ MUTATIONS = [
     ('the scan client does not say how many were saved with a reason', SCANJS,
      "        if (typeof j === 'number' && j > 0 && j === Math.floor(j)) text += ', and ' + j + ' saved with a reason';",
      '', SCANCLIENT_T),
-    ('schema 6 stores old findings as justified', SCHEMA,
+    ('schema 7 stores old findings as justified', SCHEMA,
      "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',",
      "' ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 1',", SCHEMA_T),
-    ('schema 6 recorded without the column', SCHEMA,
-     "            if ($v === 6) {\n                foreach ([['finding', 'the finding table', 'justified'],",
+    ('schema 7 recorded without the column', SCHEMA,
+     "            if ($v === 7) {\n                foreach ([['finding', 'the finding table', 'justified'],",
      "            if (false) {\n                foreach ([['finding', 'the finding table', 'justified'],", SCHEMA_T),
-    ('schema 6 adds no run counter of the rows saved with a reason', SCHEMA,
+    ('schema 7 adds no run counter of the rows saved with a reason', SCHEMA,
      ",\n                ['sql' => 'ALTER TABLE ' . $r . ' ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0',\n"
      "                 'skipIf' => ['column', $r, 'detail_justified']]];",
      '];', SCHEMA_T),

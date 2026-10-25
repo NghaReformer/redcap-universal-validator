@@ -36,6 +36,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;
         /** H-05/M-03: rule DISCOVERY is a read like any other and can throw. */
@@ -273,6 +275,7 @@ namespace {
         }
     }
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -1208,11 +1211,12 @@ namespace {
         // Guarded so a tree without the method FAILS these checks rather than
         // dying on a ReflectionException — a fatal here would take every later
         // section with it and hide whether they pass.
+        // The guard moved to tests/support/scan_facade.php with the scan it
+        // guards (QUA-3).
         $UVC = '\INSPIRE\UniversalValidator\UniversalValidator';
-        $halt = function ($deadline, $memCap, $now, $usage) use ($UVC) {
-            if (!method_exists($UVC, 'scanHalt')) return '__no-such-method__';
-            $r = new \ReflectionMethod($UVC, 'scanHalt'); $r->setAccessible(true);
-            return $r->invoke(null, $deadline, $memCap, $now, $usage);
+        $halt = function ($deadline, $memCap, $now, $usage) {
+            if (!function_exists('\INSPIRE\UniversalValidator\scan_halt')) return '__no-such-function__';
+            return \INSPIRE\UniversalValidator\scan_halt($deadline, $memCap, $now, $usage);
         };
         check('H-08: inside both bounds the scan continues',
             $halt(100.0, 1000, 50.0, 500) === null);
@@ -1953,17 +1957,21 @@ namespace {
             sort($out);
             return array_values(array_unique($out));
         };
+        //
+        // The lookup index's four tables are the same kind of exception: the
+        // live @UVUNIQUE and @UVEXISTS lookups they serve run on every
+        // installation (Scan\LookupIndex).
         $mig->sql = [];
         $mig->redcap_module_save_configuration(null);
-        check('migrate: with the switch off, exactly one table is created',
-            $creates($mig) === 1);
-        check('migrate: and it is the throttle counter, not a scan table',
-            $named($mig) === ['uv_rate_bucket']);
-        check('migrate: the throttle counter is created IF NOT EXISTS, so a re-save is a no-op',
+        check('migrate: with the switch off, exactly five tables are created',
+            $creates($mig) === 5);
+        check('migrate: the throttle counter and the lookup index, not a scan table',
+            $named($mig) === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket']);
+        check('migrate: each is created IF NOT EXISTS, so a re-save is a no-op',
             count(array_filter($mig->sql, function ($q) {
                 return stripos($q, 'CREATE TABLE') !== false
                     && stripos($q, 'IF NOT EXISTS') !== false;
-            })) === 1);
+            })) === 5);
 
         // ON: the administrator ticked the box and pressed Save, which IS the
         // choice, so the schema is installed.

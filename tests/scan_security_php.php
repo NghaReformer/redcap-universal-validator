@@ -34,7 +34,7 @@ namespace {
     // axis list is what the summary it reads is keyed by.
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
 
     $n = 0; $fail = 0;

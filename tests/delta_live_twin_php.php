@@ -19,6 +19,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         /** The module log of the project: every entry each request wrote, read back by queryLogs(). */
         public static $stored = [];
         public $logCalls = []; public $projectSettings = [];
@@ -104,6 +106,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     $fail = 0; $n = 0;
     function check($label, $ok, $got = null) {
@@ -309,13 +312,16 @@ namespace {
     $m = firstSave($C, true, 381, 'uv_delta_test');
     check('C4: visit_2: 80 is 2.6% above 78; 82 is 10.8% above 74 and 17.1% above 70', hits($m, 381) === [
         'ud_twoev@381#1:up [first-event-name][ud_twoev]', 'ud_twoev@381#1:up [previous-event-name][ud_twoev]'], hits($m, 381));
-    check('C4: the same save re-checks visit_1, whose findings stand', count(hits($m, 380)) === 4, hits($m, 380));
+    // ud_bl at visit_1 reads its own entry and xv_weight at baseline, which a save of
+    // uv_delta_test at visit_2 cannot change, so that save leaves it alone (P4).
+    check('C4: the same save re-checks the visit_1 findings it can change, which stand', hits($m, 380) === [
+        'ud_height@380#1:down [first-event-name][ud_height]', 'ud_twoev@380#1:up [previous-event-name][ud_twoev]',
+        'ud_wt@380#1:up [previous-event-name][ud_wt]'], hits($m, 380));
     // C5: correcting baseline re-checks the later visits that compare with it.
     $C['XE-1'][379]['ud_wt'] = '76';
     $m = firstSave($C, true, 379, 'uv_delta_test');
-    check('C5: baseline 76 clears the weight of visit_1 (78 is 2.6% above 76); its other findings stand', hits($m, 380) === [
-        'ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
-        'ud_twoev@380#1:up [previous-event-name][ud_twoev]'], hits($m, 380));
+    check('C5: baseline 76 clears the weight of visit_1 (78 is 2.6% above 76); the findings it re-checks stand', hits($m, 380) === [
+        'ud_height@380#1:down [first-event-name][ud_height]', 'ud_twoev@380#1:up [previous-event-name][ud_twoev]'], hits($m, 380));
 
     // ---- Section D: repeating instances ------------------------------------------------------
     $D = $SEED;

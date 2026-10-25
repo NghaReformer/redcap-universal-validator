@@ -31,10 +31,13 @@ jobs:
         run: node tests/pooled_dom_js.cjs
       - name: JS risky-pattern heuristic
         run: node tests/risky_js.cjs
+      - name: Every suite is named by a workflow, and no run step folds its lines into one command
+        run: node tests/ci_workflow_js.cjs
       - name: Qualified reference parser and deferral contracts
         run: |
           node tests/qualified_js.cjs
           node tests/temporal_logic_js.cjs
+          node tests/exact_decimal_js.cjs
           node tests/deferral_dom_js.cjs
       - name: JS "when" condition evaluator vs fixture
         run: node tests/when_js.cjs
@@ -57,10 +60,11 @@ jobs:
         run: node tests/unique_dom_js.cjs
       - name: JS choices (@UVCHOICES) DOM contract (filter, stale-kept, fixture)
         run: node tests/choices_dom_js.cjs
-      - name: JS window (@UVWINDOW) verdict vs fixture, and its DOM contract (server clock, snapshot, midnight)
+      - name: JS window (@UVWINDOW) verdict vs fixture, its DOM contract (server clock, snapshot, midnight), and the page's glue vs the server's
         run: |
           node tests/window_js.cjs
           node tests/window_dom_js.cjs
+          node tests/window_glue_dom_js.cjs
       - name: JS exists (@UVEXISTS) DOM contract (asks on change, could-not-check never blocks, cache)
         run: node tests/exists_dom_js.cjs
       - name: JS @UVEXISTS "return" DOM contract (fills on found, empties on not-found, leaves on unknown, quiet page-open fill)
@@ -100,6 +104,10 @@ jobs:
           node tests/growth_return_dom_js.cjs
           node tests/growth_chart_dom_js.cjs
           node tests/growth_chart_gaps_dom_js.cjs
+      - name: js/engine.min.js is what the pinned terser makes of js/engine.js, and every browser suite passes on it (PRF-7)
+        run: |
+          node tools/build_engine_min.cjs --check
+          node tests/engine_min_js.cjs
       - name: JS Missing Data Codes (a coded field is not judged in any mode; @UVREQUIRED counts it)
         run: node tests/missing_codes_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
@@ -112,6 +120,8 @@ jobs:
         run: node tests/dispatch_notice_js.cjs
       - name: JS field DOM contract (a11y, debounce, survey muting, readonly)
         run: node tests/a11y_dom_js.cjs
+      - name: JS a field named "constructor" behaves like any other, in every mode
+        run: node tests/prototype_names_dom_js.cjs
       - name: JS save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
         run: node tests/save_guard_enter_dom_js.cjs
       - name: JS browser half of the value parity rows (trim, non-ASCII, regex dialect, length)
@@ -151,6 +161,7 @@ jobs:
           php tests/temporal_logic_php.php
           php tests/temporal_integration_php.php
           php tests/temporal_adversarial_php.php
+          php tests/collection_index_php.php
           php tests/docs_examples_php.php
           python3 tests/temporal_mutations.py
       - name: PHP syntax check
@@ -162,6 +173,7 @@ jobs:
           php -l php/ProjectShape.php
           php -l php/AddressResolver.php
           php -l php/ExactDecimal.php
+          php -l php/CollectionIndex.php
           php -l php/TemporalValue.php
           php -l php/TemporalLogic.php
           php -l php/TemporalRules.php
@@ -191,7 +203,7 @@ jobs:
           php -l php/Scan/DbError.php
           php -l php/Scan/ScanStoreUnavailable.php
           php -l php/Scan/SqlScanStore.php
-          php -l php/Scan/ArrayScanStore.php
+          php -l tests/support/ArrayScanStore.php
           php -l php/Scan/WorkerSlots.php
           php -l php/Scan/ScanRetention.php
           php -l php/Scan/ScanPhase.php
@@ -238,6 +250,7 @@ jobs:
         run: |
           php tests/window_php.php
           php tests/window_module_php.php
+          php tests/window_glue_php.php
           php tests/value_stamps_php.php
       - name: PHP @UVEXISTS grammar, hooks, endpoint (rights, throttle, surveys), audit and scan index
         run: php tests/exists_php.php
@@ -283,6 +296,8 @@ jobs:
           php tests/growth_chart_module_php.php
           php tests/growth_chart_gaps_module_php.php
           php tests/convert_php.php
+      - name: Each bundled growth table's rows script (js/growth) matches the table (PRF-7)
+        run: php tools/build_growth_rows.php --check
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
         run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path
@@ -366,7 +381,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/CollectionIndex.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/LookupIndex.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php js/engine.min.js data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           # Every bundled growth table ships, byte for byte as index.json pins it.
@@ -378,6 +393,22 @@ jobs:
               if hashlib.sha256(raw).hexdigest() != e['sha256']:
                   sys.exit('growth table of ' + rid + ' does not match its sha256 in the package')
           print('growth tables OK:', len(idx['references']))
+          # ...and each one's rows script, which a page names by the table's hash (PRF-7)
+          for rid, e in idx['references'].items():
+              js = 'js/growth/' + e['sha256'][:16] + '.js'
+              try:
+                  text = open(js, encoding='utf-8').read()
+              except OSError:
+                  sys.exit('the rows script of ' + rid + ' is missing from the package: ' + js)
+              if '["' + e['sha256'] + '"]' not in text:
+                  sys.exit('the rows script of ' + rid + ' files its rows under another hash: ' + js)
+          print('growth rows scripts OK')
+          # the minified engine names the engine.js shipped beside it (UniversalValidator::servedEngine)
+          import zlib
+          crc = '%08x' % (zlib.crc32(open('js/engine.js', 'rb').read()) & 0xffffffff)
+          if (' crc32b ' + crc + '. ') not in open('js/engine.min.js', encoding='utf-8').readline():
+              sys.exit('js/engine.min.js does not name the js/engine.js in the package')
+          print('js/engine.min.js OK')
           PY
           for d in .github reports tools site CLAUDE.md .graphifyignore; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }

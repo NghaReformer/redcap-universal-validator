@@ -345,6 +345,13 @@ Rules worth knowing:
   both conditions, validates nothing, and NEVER blocks the save; the server
   logs the same conflict to the module log. Mutually exclusive conditions
   (`='2'` vs `<>'2'`) can never conflict.
+- **A rule with a configuration error switches off the else branch** of
+  its tag on that field. The broken rule validates nothing and shows its
+  error; it may be a conditional rule whose condition cannot be read, and
+  the else applies only when no condition is true. The other conditional
+  rules still apply. Up to 2.3.0-rc.2 the else became the field's only rule:
+  with event references switched off, a site cascade's last list applied to
+  every site.
 - `blockSave` and `suggestFix` are **per branch** — e.g. *Compulsory* for
   blood specimens, informational otherwise.
 - The branch semantics are specified normatively in
@@ -519,7 +526,9 @@ enforcement:
   as blank: `SP-9` at site 1 and `SP-9` at site 2 counted as duplicates. A
   `with` value on another form that the module cannot read for one record
   leaves that check as *could not check*; the save audit logs it as a rule
-  problem instead of comparing a blank.
+  problem instead of comparing a blank. A Missing Data Code in a `with` field
+  is compared as a value like any other, so `SP-8` at site `UNK` in two records
+  is a duplicate; a code in the tagged field itself is never one.
 - `also` looks for the value in up to 5 other fields too. With
   `@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`, an ID typed there
   counts as used when another record holds it in `study_id_typed` or in
@@ -543,6 +552,11 @@ enforcement:
   fields. The list of `also` fields is not sent to the page. Each `also` field
   adds entries to the Validation scan's duplicate groups, one per tagged field
   and per `with`/scope/letter-case combination of the tag's branches.
+- **A record is never compared with itself.** Two instances of a repeating
+  form, or two events, of one record do not collide under any scope: `SP-1` in
+  instances 1 and 2 of a specimen form of one participant is not a duplicate.
+  To keep a value unique inside one record, use `@UVUNIQUE=record` (event and
+  instance references must be on).
 - **Under `dag`, records in no group form one group of their own.** They are
   compared against each other, not exempted: "no DAG" is a scope like any other,
   and the alternative reading — that an ungrouped record has nothing to be
@@ -562,14 +576,19 @@ enforcement:
   next id, so the page check compares the value with that record too. Up to
   2.3.0-rc.2 the page check skipped it as "this record" and said *not used
   before*.
-- **What the check reads.** The page check and the save audit read the tagged
-  field's rows (and the `also` fields' rows) from the project's data table, then
-  build only the records that hold the value. A value no other record holds
-  needs no further read. Up to 2.3.0-rc.2 every *not used before* answer and
-  every save exported those fields for every record, about 115 MB at 100,000
-  records. Where the data table cannot be read, the module falls back to that
-  export. On a survey page, a value another record holds is still settled by a
-  filtered read first, which costs nothing from the survey's read budget.
+- **What the check reads.** The page check and the save audit ask the
+  module's value index which records hold the value, confirm those records
+  against their rows of the tagged field (and the `also` fields) in the data
+  table, and build only the records that hold it. A value no other record
+  holds needs no further read, so a check costs about the same at 400,000
+  records as at 1,000 (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
+  Where the index cannot answer, the check reads the field's rows of every
+  record from the data table. Up to 2.3.0-rc.2 every *not used before* answer
+  and every save exported those fields for every record, about 115 MB at
+  100,000 records; where the data table cannot be read, the module still falls
+  back to that export. On a survey page the index answers outside the survey's
+  read budget. Without it, a value another record holds is settled by a
+  filtered read first, which costs nothing from that budget.
 - **What counts as the same value.** Stored values, trimmed, with letter case
   ignored (`SP-1` duplicates `sp-1`) unless the rule sets `"caseSensitive":true`.
   In a field that holds numbers (an integer or number Text field, or a slider)
@@ -642,7 +661,10 @@ field instead of one near-duplicate field per country:
 - **JSON form only.** Exactly one of `show` (whitelist — every other code of
   the field hides) or `hide` (blacklist) per tag, plus optional `when`,
   `message`, `blockSave`. Codes must exist in the field's own choice list — an
-  unknown code is a configuration error naming the real codes. A list holds up
+  unknown code is a configuration error naming the real codes, and so is a
+  `hide` of every code, which would leave nothing to pick (hide the question
+  with branching logic instead). A `when` may read the field itself, such as
+  `[symptoms(0)]='1'` on the `symptoms` checkbox. A list holds up
   to 10,000 codes, so the field's own list is the limit in practice. Up to
   2.3.0-rc.2 the limit was 200, which left a 600-site list whose region holds
   250 sites impossible to write either way.
@@ -656,7 +678,9 @@ field instead of one near-duplicate field per country:
   false. A comparison with a field on the form needs the saved value on the
   page to follow what is typed: a user with REDCap rights to the other
   instrument gets that value, and on a survey or without those rights the page
-  gets the answer as of page load (the rule of 1.6.0).
+  gets the answer as of page load (the rule of 1.6.0). On a survey shown one
+  section per page, a condition over a field of an earlier page reads its saved
+  answer in the same way.
 - **A hidden selection is never cleared.** If the stored/selected choice
   becomes hidden (the user changes the country after picking a site), the
   module keeps it visible — dropdowns keep the option in place, greyed and
@@ -783,11 +807,15 @@ the specimen ID on the collection form.
   precision, or neither a date nor a time. Two number fields must use the same
   decimal mark. Dropdown and radio values are compared by code.
   `@UVEXISTS=record` never finds the record being edited.
-- **Reads only the records that hold the value.** The module asks the project's
-  data table which records hold the value searched (in any spelling the rule
-  accepts), then reads those records through REDCap and judges them. A *not
-  found* reads no record. When the data table cannot be read, the lookup reads
-  the searched fields of every record instead, as before.
+- **Reads only the records that hold the value.** The module asks its value
+  index which records hold the value searched (in any spelling the rule
+  accepts), confirms them against the data table, then reads those records
+  through REDCap and judges them. A *not found* reads no record. Where the
+  index cannot answer, the module reads the searched field's rows of every
+  record from the data table; where that cannot be read either, the searched
+  fields of every record through REDCap, as before. A lookup in another
+  project (`"project"`) and a survey lookup with `where` skip the index
+  (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
 - **`in` on this form.** When the searched field is on the tagged field's own
   form, the page sends what that field holds now, and the record being edited
   counts with that value, as it will once saved: a household head who types
@@ -839,7 +867,7 @@ the specimen ID on the collection form.
   throttle. It is refused when any field the lookup touches is an Identifier
   (the field, the `match` fields, the searched field, the `where` fields, or the
   record-ID field for a record-ID lookup), and when the Identifier flags cannot
-  be read. A *not
+  be read. Where the value index cannot answer, a *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
   check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
@@ -884,7 +912,9 @@ the specimen ID on the collection form.
   fields of the entry the lookup found (`record`: its record ID) into fields of
   this form, up to 10, from the same record, event and instance as the match.
   The rule owns them: found fills, *not found*, a blank value or a false
-  `when` empties, *could not check* leaves them. Several entries with
+  `when` empties, *could not check* leaves them. Each must be `@READONLY` or
+  `@HIDDEN` (or the `-FORM` form) on the data-entry form; a field a person
+  could type into is refused. Several entries with
   different values copy nothing and an amber line says so; a user in a Data
   Access Group gets values only from their own group. The page fills the
   fields for a user who may open every form the lookup reads, and the
@@ -901,7 +931,9 @@ the specimen ID on the collection form.
   `in` or a form that does not repeat (in every event the entry can be found
   in), each field here can hold what the field there holds (choice codes, kind
   of date, decimal mark and places, validation), an Identifier goes only into
-  an Identifier. Refused with `"surveys":true`. Another project must list
+  an Identifier. Refused with `"surveys":true`, and on every field when the
+  same tag is written on several fields, since each would fill the same
+  fields. Another project must list
   the fields it lets others copy, under "Only users who have rights"; its
   probe log then names the fields the rule copies and, when values were
   handed over, the record they came from.
@@ -1031,9 +1063,12 @@ slip:
   the saved inputs give as "Returned value out of date"; open the form and save
   it to write the current values.
   A field with nothing to report (sex blank, age outside the reference) is
-  emptied. The rule owns its fields, so mark them `@READONLY`. Two references
-  on one field each fill their own fields, and a rule that returns values may
-  not read a returned field. The project setting "@UVRANGE returned values"
+  emptied. The rule owns its fields, so each must be `@READONLY` or `@HIDDEN`
+  on the form and on the survey page (the `-FORM` and `-SURVEY` forms count);
+  a field a person could type into is refused. Two references
+  on one field each fill their own fields, the same tag with `return` on two
+  fields is refused on both, and a rule that returns values may not read a
+  returned field. The project setting "@UVRANGE returned values"
   turns the save-time write off, and the scan's comparison with it. The save
   writes only into a form the person who saved may change, and a locked form
   or one the user may only read is not filled on the page.
@@ -1403,7 +1438,7 @@ the open ones:
   adds "and N saved with a reason" while the scan runs and once it ends, the
   findings table has a "Saved with a reason" column, the durable scan stores
   `uv_finding.justified` and counts a run's stored rows with a reason in
-  `uv_scan_run.detail_justified` (schema version 6), and a scan whose findings
+  `uv_scan_run.detail_justified` (schema version 7), and a scan whose findings
   all have a reason counts no open violations. Configure via field annotation
   only.
 
@@ -1493,14 +1528,67 @@ Mod 97,10 for longer numbers.
 
 A REDCap admin installs the module once; each project enables it and adds rules
 on the settings screen. On every form and survey the module reads its settings,
-builds a config object, and injects `js/engine.js` (the verified engine). Nothing
-is hard-coded per project and no third-party module is required.
+builds a config object, and injects `js/engine.min.js`, the minified build of
+`js/engine.js` (the verified engine), or the source itself while the minified
+copy was built from another version of it or the project's debug setting is on.
+A bundled growth table the page may read whole travels as its own script under
+`js/growth/`, which the browser caches. Nothing is hard-coded per project and
+no third-party module is required.
 
 ```
 REDCap settings  ->  UniversalValidator.php  ->  window.INSPIRE_VALIDATOR_CONFIG
                                               ->  js/engine.js (verified engine)
                      redcap_save_record       ->  php/CheckCharacter.php (server guard)
 ```
+
+### Lookups on large projects: the value index
+
+REDCap keeps no index on saved values, so a lookup that reads the data table
+reads one row per record: 3 to 9 seconds at 100,000 records on a test server
+whose database had 128 MB of memory for its tables, and 33 to 39 seconds at
+400,000. The module therefore keeps its own index of the fields that
+`@UVUNIQUE` and `@UVEXISTS` search, in four tables (`uv_lookup_key`,
+`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`). They are created when
+the module is enabled or upgraded and when its system settings are saved,
+whether or not the Validation scan is on.
+
+- **Built once per field.** A build reads all the field's rows once and
+  stores one key per value and record: a hash of the value as lookups compare
+  it (trimmed, letter case folded, numbers by value). A field of up to 20,000
+  saved values is built by its first lookup (one field a request). A larger
+  one is built by the module's cron *uv_lookup_index*, which runs every 5
+  minutes: the first lookup marks the field, and until the cron has built it
+  the lookups read the data table, as before. While the cron reads a field,
+  the project's other fields keep answering. Where the cron has not run for
+  15 minutes, a lookup builds a field that has waited as long itself.
+- **Kept current from the log.** Every value REDCap saves writes a row to the
+  project's log. Before it answers, a lookup reads the records the log names
+  since the last lookup and indexes them again. It also counts the log rows of
+  the last hour again, range by range, and reads a range again when its count
+  grew, so a row that becomes visible late (an import that commits after later
+  saves) is still seen.
+- **Confirmed before use.** The records the index names are checked against
+  their current rows in the data table before any is used, so a stale key
+  costs one row read and never a wrong answer.
+- **Rebuilt when it cannot be shown current:** after a change to the data
+  dictionary, a log pruned into the last hour, a move to another log or data
+  table, more than 20,000 changed records in one stretch of the log (or 5,000
+  to index again), and every 7 days. After a burst of changes the rebuild
+  waits 7.5 minutes. While a field is not built, its lookups read the data
+  table. The cron rebuilds each field a day before its 7 days are up, and the
+  field answers throughout: from its old keys and the new ones until the new
+  build is complete.
+- **What it does not see on its own:** a value written to the data table with
+  no log row (another module's direct SQL, for example), and a log row that
+  becomes visible more than an hour after later rows. The 7-day rebuild picks
+  both up. The Validation scan reads the data table and is not affected.
+- **Not used for** a lookup in another project (`@UVEXISTS` with `"project"`)
+  and a survey lookup with `where`; those read as before.
+- **Size.** One row of `uv_lookup_key` per saved value of a searched field,
+  about 100 bytes with its indexes. The cron drops the keys of a field no
+  lookup has asked for in 30 days.
+- **Off switch.** The system setting *Live lookups — turn OFF the value index*
+  makes every lookup read the data table again.
 
 ## Verification
 
@@ -1665,6 +1753,8 @@ node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded cons
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 php  tests/registry_php.php    # mode registry (php/modes.json): frozen maps, coverage, bad file
 node tests/gen_mode_registry.cjs # rewrite the generated blocks in js/engine.js after editing php/modes.json or php/growth_outputs.json
+node tools/build_engine_min.cjs  # rebuild js/engine.min.js after editing js/engine.js (--check: fail if stale; needs npx)
+node tests/engine_min_js.cjs     # js/engine.min.js names the current source, and every browser suite passes on it
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)

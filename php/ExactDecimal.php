@@ -6,9 +6,14 @@ final class ExactDecimal
 {
     const MAX_DIGITS = 4096;
 
-    public static function sum(array $values)
+    /**
+     * Each value as a trimmed decimal, or the problem that stops sum(). Minimum
+     * and maximum need only this: summing first made three 4,096-digit values
+     * come back as limit (wargame P7). Twin: QRID_temporalNumbers.
+     */
+    public static function check(array $values)
     {
-        $sum='0'; $scale=0;
+        $out=[];
         foreach ($values as $value) {
             if (!is_scalar($value)) return ['state'=>'invalid'];
             // Logic::compare's trim set. PHP's default also strips NUL and VT, so
@@ -16,6 +21,17 @@ final class ExactDecimal
             $value=trim((string)$value," \t\r\n");
             if (!preg_match('/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/D',$value)) return ['state'=>'invalid'];
             if (strlen($value)>self::MAX_DIGITS) return ['state'=>'limit'];
+            $out[]=$value;
+        }
+        return ['state'=>'ok','values'=>$out];
+    }
+
+    public static function sum(array $values)
+    {
+        $checked=self::check($values);
+        if ($checked['state']!=='ok') return $checked;
+        $sum='0'; $scale=0;
+        foreach ($checked['values'] as $value) {
             $negative=$value[0]==='-'; $value=ltrim($value,'+-');
             $parts=explode('.',$value,2); $fraction=$parts[1]??'';
             $nextScale=strlen($fraction); $digits=ltrim($parts[0].$fraction,'0');

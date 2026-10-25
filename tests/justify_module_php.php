@@ -29,6 +29,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $subSettings = [];
         public $projectSettings = [];
@@ -134,7 +136,8 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
 
     use INSPIRE\UniversalValidator\ScanColumns;
     use INSPIRE\UniversalValidator\UniversalValidator;
@@ -451,14 +454,16 @@ namespace {
 
     // ---- 1c) a reason field another rule returns a value to ------------------------------
     // The save writes the weight's growth range into ht_why, so the field would hold
-    // a reason nobody wrote: the justify rule on ht is refused (applyJustify).
+    // a reason nobody wrote: the justify rule on ht is refused (applyJustify). ht_why
+    // is hidden on the form and on a survey, as a field a rule returns to must be
+    // (EXS-13), and a reason field may be.
     $G = '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[vdate]"},'
         . '"soft":[-2,2],"hard":[-5,5],"return":{"range":"[ht_why]"}}';
     $RET = ['record_id' => f('visit_form'), 'sex' => f('visit_form', '', '', 'radio', '1, Male | 2, Female'),
         'dob' => f('visit_form', '', 'date_ymd'), 'vdate' => f('visit_form', '', 'date_ymd'),
         'weight' => f('visit_form', $G, 'number_1dp'),
         'ht' => f('visit_form', '@UVRANGE={"hard":[40,120]} ' . $J('ht_why'), 'integer'),
-        'ht_why' => f('visit_form')];
+        'ht_why' => f('visit_form', '@HIDDEN-FORM @HIDDEN-SURVEY')];
     // ht_why as the save leaves it: holding the range the module wrote
     $rrow = ['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10', 'vdate' => '2026-01-10', 'weight' => '9.6', 'ht' => '300', 'ht_why' => '7.8 to 11.9 kg'];
     $rp = page(mod($RET, ['2' => [351 => $rrow]], $FULL), '2', 'visit_form');

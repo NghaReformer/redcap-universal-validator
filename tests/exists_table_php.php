@@ -62,6 +62,13 @@ namespace ExternalModules {
             if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) {
                 return empty($GLOBALS['__NO_TABLE']) ? [['redcap_data']] : [];
             }
+            // The named records' rows (FieldValues::recordsAmong, after the
+            // lookup index named them in the --index run).
+            if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND record IN (') !== false) {
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                $GLOBALS['__AMONG_READS'][] = [$sql, $params];
+                return \uv_among_rows($sql, $params);
+            }
             if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
                 $GLOBALS['__TABLE_READS'][] = [$sql, $params];
                 return \REDCap::tableRows($sql, $params);
@@ -115,7 +122,7 @@ namespace {
         public static $groupIds = ['north' => 7, 'south' => 8];
         public static $locked = [];          // "pid|record|event|form|instance" of locked forms
         public static $lockedRecords = [];
-        public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; }
+        public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; $GLOBALS['__AMONG_READS'] = []; }
         private static function dagOf(array $node) {
             foreach ($node as $k => $v) {
                 if ($k !== 'repeat_instances' && is_array($v) && isset($v['redcap_data_access_group'])) return $v['redcap_data_access_group'];
@@ -225,13 +232,19 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/return_targets.php';
+    require_once __DIR__ . '/support/fake_lookup_index.php';
 
+    // Run again, in a second process, with a lookup index that names the
+    // records holding the value plus one that does not: every answer must
+    // stay the same (tests/support/fake_lookup_index.php).
+    $INDEX = in_array('--index', isset($argv) ? $argv : [], true);
     $fail = 0;
     $n = 0;
     function check($label, $cond) {
-        global $fail, $n;
+        global $fail, $n, $INDEX;
         $n++;
-        if (!$cond) { $fail++; fwrite(STDERR, "FAIL: $label\n"); }
+        if (!$cond) { $fail++; fwrite(STDERR, 'FAIL' . ($INDEX ? ' (lookup index)' : '') . ": $label\n"); }
     }
     function f($form, $ann = '', $validation = '', $type = 'text') {
         return ['field_name' => '', 'field_type' => $type, 'form_name' => $form, 'field_annotation' => $ann,
@@ -244,13 +257,14 @@ namespace {
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => ['log-values' => 'raw']];
-        \REDCap::$dictionaries = [149 => named($dict)];
+        \REDCap::$dictionaries = [149 => \lock_return_targets(named($dict))];
         \REDCap::$data = [149 => $data];
         \REDCap::$rightsBy = [149 => $rights];
         \REDCap::$confineTo = null;
         \REDCap::$locked = [];
         \REDCap::$lockedRecords = [];
         \REDCap::reset();
+        if ($GLOBALS['INDEX']) uv_use_fake_index($m);
         return $m;
     }
     function ask($m, $field, array $values, $record, $form, $group = null) {
@@ -310,7 +324,9 @@ namespace {
     $r = ask($m, 'r_plain', ['r_plain' => 'SP-77'], '1', 'result');
     check('EXS-4 plain rule found: one read of the records that hold it (got ' . \REDCap::$rowsOut . ')',
         $r['state'] === 'found' && \REDCap::$rowsOut === 2 && count(\REDCap::$calls) === 1);
-    check('...and one statement on the data table', count($GLOBALS['__TABLE_READS']) === 1);
+    check('...and one statement on the data table', $INDEX
+        ? $GLOBALS['__TABLE_READS'] === [] && count($GLOBALS['__AMONG_READS']) === 1
+        : count($GLOBALS['__TABLE_READS']) === 1);
     $m = mod('nurse', $DB, $DATA_B, $FULL);
     $r = ask($m, 'r_plain', ['r_plain' => 'SP-NONE'], '1', 'result');
     check('EXS-4 plain rule not found: no record is read (got ' . count(\REDCap::$calls) . ' reads)',
@@ -525,6 +541,10 @@ namespace {
         check("EXS-5 scan $fld=" . json_encode($val) . ': the table index and the export agree (' . json_encode($a) . ' / ' . json_encode($b) . ')', $a === $b);
     }
 
-    fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)\n");
+    fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
+    if (!$INDEX) {
+        passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --index', $rc);
+        if ($rc !== 0) $fail++;
+    }
     exit($fail ? 1 : 0);
 }

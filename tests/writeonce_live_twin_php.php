@@ -33,6 +33,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         /** The module log of the project: every entry each request wrote, read back by queryLogs(). */
         public static $stored = [];
         public $logCalls = []; public $projectSettings = [];
@@ -118,7 +120,8 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/writeonce_fake_log.php';
 
     use INSPIRE\UniversalValidator\ValueHistory;

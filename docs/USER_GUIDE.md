@@ -1124,7 +1124,9 @@ values come from the entry where the value matched (same record, event and
 repeat instance), so each copied field must be on the form of `in` or on a
 form that does not repeat. With `"in":"record"` in a longitudinal project,
 `event` names the event the values are read from. The rule owns the fields,
-so make them `@READONLY`: a value found fills them, "not found", a blank
+so each must be `@READONLY` or `@HIDDEN` (`@READONLY-FORM` is enough, since
+a rule with `return` never runs on a survey); a field a person could type into
+is refused. A value found fills them, "not found", a blank
 value or a `when` that is false empties them, and "could not check" leaves
 them. When several saved entries hold the value with different values to
 copy, nothing is copied and an amber line says so; add `match` to narrow the
@@ -1140,11 +1142,15 @@ same decimal mark and, when it fixes its decimal places, the same number of
 them; a Text field without validation takes anything. A field flagged Identifier
 there only goes into one flagged Identifier here. From another project, the
 lab project must also list the fields it lets this project copy, under "Only
-users who have rights". The project setting "@UVEXISTS returned values" keeps
+users who have rights". A copied value is then data of this project: anyone
+here with rights to the form it goes into can read it, whatever their rights in
+the lab project. The project setting "@UVEXISTS returned values" keeps
 the page fill and turns off the write on save. The values are a copy: a later
 change to the entry found reaches this record when it is saved again. The save
 writes them only into a form the person who saved may change, and a locked
-form, or one the user may only read, is not filled on the page.
+form, or one the user may only read, is not filled on the page. A tag with
+`return` belongs on one field: copied onto a second field, both would fill
+the same fields, so both show a configuration error.
 
 **Can the lookup accept only entries that meet conditions, such as a consented specimen that is not withdrawn?**
 Yes. Add `where`, a condition on the entry found:
@@ -1348,12 +1354,15 @@ table in kg) the bounds are in grams; add `"unit":"g"` to name the unit in
 them again, for an import or the API as well, writing only what differs. The
 save writes these values before it checks the other rules, so a rule on
 `wfa_z` checks the new value. When there is nothing to report (the sex is
-blank, the age is outside the reference) the fields are emptied, so make them
-`@READONLY`, since a value typed there is replaced. A `range` field takes no
+blank, the age is outside the reference) the fields are emptied. Each must be
+`@READONLY` or `@HIDDEN` on the form and on the survey page (the `-FORM` and
+`-SURVEY` forms count): a field a person could type into is refused, since a
+value typed there is replaced. A `range` field takes no
 validation. `z`, `lower` and `upper` take none, number validation without a
 place count, or exactly the places they are written with (two for `z`), and a
 bound written with no decimals may go into an integer field. Two references on one field each fill their own fields, and
-cannot share one. A rule that returns values cannot read a returned field,
+cannot share one. The same tag with `return` on two fields is refused on
+both, since both would fill the same fields. A rule that returns values cannot read a returned field,
 its own or another rule's. When the date of birth or another input sits in
 another event, saving that event refills the fields in every visit that reads
 it. The project setting "@UVRANGE returned values" keeps the page fill and

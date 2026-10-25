@@ -214,12 +214,7 @@ final class GrowthCurve
         $restricted = $entry['adjust'] === 'who-restricted';
         $keys = range($kLo, $kHi);
         $column = function ($z) use ($keys, $rows, $first, $restricted, $f) {
-            $col = [];
-            foreach ($keys as $k) {
-                $v = GrowthReference::valueAt($z, $rows[$k - $first], $restricted);
-                $col[] = $v === null ? null : $v / $f;
-            }
-            return $col;
+            return self::column($z, $keys, $rows, $first, $restricted, $f);
         };
         $ys = [];
         foreach ($zs as $z) $ys[] = $column($z);
@@ -258,6 +253,42 @@ final class GrowthCurve
                 . 'The check itself is not affected.'];
         }
         return ['d' => $d, 'tolerance' => $tol, 'lines' => $lines, 'extent' => $extent];
+    }
+
+    /**
+     * The curve at z-score $z, at each row key of $keys, in the field's unit
+     * (divided by $f); null where valueAt() has none.
+     *
+     * PRF-7. A chart evaluates its curves at every row of its span, so the
+     * LMS formula is written out here for the common case, with the same
+     * operations in the same order as GrowthReference::valueAt() and sdAt(),
+     * so each value is the same float (tests/growth_curve_php.php compares
+     * every bundled table). WHO's restricted adjustment beyond 3 SD still goes
+     * through valueAt(). This halved the time to build a chart's curves.
+     */
+    private static function column($z, array $keys, array $rows, $first, $restricted, $f)
+    {
+        $col = [];
+        $z = (float) $z;
+        if ($restricted && ($z > 3 || $z < -3)) {
+            foreach ($keys as $k) {
+                $v = GrowthReference::valueAt($z, $rows[$k - $first], $restricted);
+                $col[] = $v === null ? null : $v / $f;
+            }
+            return $col;
+        }
+        $minL = GrowthReference::MIN_L;
+        foreach ($keys as $k) {
+            list($l, $m, $s) = $rows[$k - $first];
+            if (abs($l) < $minL) {
+                $y = $m * exp($s * $z);
+            } else {
+                $b = 1 + $l * $s * $z;
+                $y = $b > 0 ? $m * pow($b, 1 / $l) : NAN;
+            }
+            $col[] = (is_finite($y) && $y > 0) ? $y / $f : null;
+        }
+        return $col;
     }
 
     /**

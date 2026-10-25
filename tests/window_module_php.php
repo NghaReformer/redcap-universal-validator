@@ -25,6 +25,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $subSettings = [];
         public $projectSettings = [];
@@ -81,6 +83,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     /** A mock of REDCap's log for ValueStamps: rows [id, pid, pk, event_id, ts, data_values, object_type, event]. */
     final class WinLog implements \INSPIRE\UniversalValidator\Scan\ScanDb
@@ -109,7 +112,7 @@ namespace {
         public function commit() {}
         public function rollback() {}
     }
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {

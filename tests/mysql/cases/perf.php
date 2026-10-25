@@ -158,7 +158,8 @@ if (!class_exists('UvPerfModule', false)) {
         public function breakdown()
         {
             $kinds = array('version' => 'MAX(version)', 'tables' => 'information_schema.tables',
-                'columns' => 'information_schema.columns', 'grants' => 'SHOW GRANTS',
+                'columns' => 'information_schema.columns', 'indexes' => 'information_schema.statistics',
+                'grants' => 'SHOW GRANTS',
                 'runRow' => 'SELECT run_id, project_id, scope_dag', 'census' => 'SELECT state, COUNT(*)',
                 'aggregates' => Schema::table('scan_aggregate'), 'logTable' => 'SELECT log_event_table',
                 'rowCount' => 'ROW_COUNT()');
@@ -246,6 +247,7 @@ $RECORDS = 6;
     check('perf: start probes the record index for the capability gate once',
         $m->count('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1);
     check('perf: start asks the grants once', $m->count('SHOW GRANTS') === 1);
+    check('perf: start reads the indexes of the record index once (PRF-8)', $m->count('information_schema.statistics') === 1);
     $startCount = $m->counted();
 
     /* -----------------------------------------------------------------------
@@ -300,6 +302,7 @@ $RECORDS = 6;
     check('perf: it probes the record index for the capability gate once, not once per caller',
         $m->count('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1);
     check('perf: it asks the grants once', $m->count('SHOW GRANTS') === 1);
+    check('perf: it reads the indexes of the record index once (PRF-8)', $m->count('information_schema.statistics') === 1);
     check('perf: it opens the change log once for the fence, plus the capability probe',
         $m->count('SELECT log_event_table') === 2);
     check('perf: it reads the census once - the status reuses what promotion read',
@@ -362,16 +365,19 @@ $RECORDS = 6;
     // lease (claimPlan(): begin, the run row and the plan row locked, the plan
     // row written, the lease written, commit), the page's cursor and its
     // heartbeat written in the page's own transaction, and the plan_done gate
-    // the freeze reads. A start sent 35 before them.
+    // the freeze reads. A start sent 35 before them. PRF-8 put one statement
+    // on each request that walks records: the read of the record index's
+    // indexes (RecordManifestSource::walkIndexOf), so the walk can name the one
+    // that leads with (project_id, record) instead of sorting the project.
     // Engine-7 (@UVJUSTIFY) put one statement on the request that finishes:
     // the rollup writes its standing axis beside the other four. It also sent
     // a second read of the summary with every status of a finished run, until
     // status() read it once for both counts.
     $bounds = array(
-        'start'                              => array($startCount, 44),
+        'start'                              => array($startCount, 45),
         'a status poll'                      => array($pollCount, 8),
-        'a work request with records left'   => array($workCount, 76),
-        'the work request that finishes'     => array($finishCount, 78),
+        'a work request with records left'   => array($workCount, 77),
+        'the work request that finishes'     => array($finishCount, 79),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

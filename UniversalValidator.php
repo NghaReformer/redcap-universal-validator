@@ -63,6 +63,7 @@ require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
 require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
 require_once __DIR__ . '/php/Scan/FieldValues.php';
+require_once __DIR__ . '/php/Scan/LookupIndex.php';
 require_once __DIR__ . '/php/Scan/SourceFence.php';
 require_once __DIR__ . '/php/Scan/ScanPlanner.php';
 require_once __DIR__ . '/php/Scan/WorkBudget.php';
@@ -1518,9 +1519,13 @@ class UniversalValidator extends AbstractExternalModule
                 // spelling the rule accepts, and is not confined to the
                 // caller's Data Access Group (EXS-1): only those records are
                 // read, and a miss there is a miss. A survey (a read budget)
-                // keeps the reads below.
-                if (empty($opts['foreign']) && !$budgeted) {
-                    $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered);
+                // asks the lookup index alone, which reads only the records
+                // it names, and keeps the reads below when it cannot answer.
+                // With "where" a survey keeps them always: the reads an answer
+                // takes must not tell "saved, but filtered" from "absent".
+                if (empty($opts['foreign']) && (!$budgeted || $spec['where'] === null)) {
+                    $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
+                        $budgeted ? 'index' : 'any');
                     if ($t !== null) return $t;
                 }
                 // REDCap finds a record by its exact name only, so a value that
@@ -1566,9 +1571,11 @@ class UniversalValidator extends AbstractExternalModule
             // then those records only, in place of a read of every record
             // (EXS-4). A survey keeps its narrowed read, whose hit costs no
             // budget, and reads the table in place of the full read below.
+            // A survey asks the lookup index first, outside the budget: it
+            // reads only the records it names.
             $table = empty($opts['foreign']) && !($budgeted && $spec['where'] !== null);
-            if ($table && !$budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+            if ($table) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, $budgeted ? 'index' : 'any');
                 if ($t !== null) return $t;
             }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
@@ -1595,7 +1602,7 @@ class UniversalValidator extends AbstractExternalModule
                 return $unknown + ['why' => 'too many lookups in the last minute'];
             }
             if ($table && $budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts);
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
                 if ($t !== null) return $t;
             }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
@@ -1633,11 +1640,11 @@ class UniversalValidator extends AbstractExternalModule
      * there, without its name; with either, the answer is unknown. Under
      * "scope":"dag" such a record is outside the group the rule looks in.
      */
-    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered)
+    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any')
     {
         $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') return null;
-        $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self);
+        $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         $more = array_values(array_filter($cands, function ($r) use ($ids) { return !array_key_exists($r, $ids); }));
@@ -4781,7 +4788,9 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($mode === 'raw') {
             $entry['value'] = $value;
-        } elseif ($mode !== 'none') {
+        } elseif ($mode !== 'none' && (string) $value !== '') {
+            // A blank value (a required field left empty) has one hash per
+            // project, which tells nothing, so it is not stored (REQ-15).
             $h = $this->hashedIdentifier($pid, (string) $value);
             if ($h !== null) $entry['value_hmac'] = $h;
             else $entry['hmac_unavailable'] = '1';
@@ -4950,19 +4959,41 @@ class UniversalValidator extends AbstractExternalModule
      * under the same folder kept the URL, and a browser could serve the old
      * engine from its cache.
      */
-    private function engineUrl()
+    private function engineUrl($pid = null)
     {
-        $url = $this->getUrl('js/engine.js');
-        $file = __DIR__ . '/js/engine.js';
+        // The project's debug setting loads the readable source, whose stack
+        // traces name the engine's own functions.
+        $path = $this->debugEnabled($pid) ? 'js/engine.js' : self::servedEngine(__DIR__);
+        $url = $this->getUrl($path);
+        $file = __DIR__ . '/' . $path;
         $stamp = self::CONFIG_SHAPE . '.' . (int) @filemtime($file) . '.' . (int) @filesize($file);
         return $url . (strpos($url, '?') === false ? '?' : '&') . 'v=' . rawurlencode($stamp);
+    }
+
+    /**
+     * The engine a page loads from module folder $dir: js/engine.min.js
+     * (PRF-7: 195 KB in place of 504 KB, 65 KB gzipped in place of 150) while
+     * its first line names the CRC-32 of the js/engine.js beside it, which
+     * tools/build_engine_min.cjs writes there; else js/engine.js. An
+     * engine.js changed without a rebuild is then served as it is, never an
+     * older minified copy. Reading the CRC-32 of 500 KB costs about 0.4 ms.
+     */
+    private static function servedEngine($dir)
+    {
+        $fh = @fopen($dir . '/js/engine.min.js', 'rb');
+        if ($fh === false) return 'js/engine.js';
+        $head = fgets($fh, 1024);
+        fclose($fh);
+        if (!is_string($head) || !preg_match('/ crc32b ([0-9a-f]{8})\. /', $head, $m)) return 'js/engine.js';
+        $crc = @hash_file('crc32b', $dir . '/js/engine.js');
+        return (is_string($crc) && hash_equals($m[1], $crc)) ? 'js/engine.min.js' : 'js/engine.js';
     }
 
     private function injectClient($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
-        $engineUrl = $this->engineUrl();
+        $engineUrl = $this->engineUrl($pid);
         $config['configShape'] = self::CONFIG_SHAPE;
         // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
         // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
@@ -5007,8 +5038,9 @@ class UniversalValidator extends AbstractExternalModule
         // flags escape < > & ' " to \uXXXX and the default slash escaping is
         // kept (JSON_UNESCAPED_SLASHES is deliberately NOT used), so no project
         // setting — pattern, strip, keepChars — can close the <script> element
-        // or inject markup. Fixes the stored-XSS breakout (UV-001).
-        $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
+        // or inject markup. Fixes the stored-XSS breakout (UV-001). The resolver
+        // charges page values by their size under these same flags (wargame P6).
+        $flags = AddressResolver::PAGE_JSON_FLAGS;
         $json = json_encode($config, $flags);
         if ($json === false) {
             // The payload carries SAVED VALUES since cross-form literals (1.6.0)
@@ -5022,6 +5054,14 @@ class UniversalValidator extends AbstractExternalModule
         if ($json === false) return; // never inject malformed config
         echo '<script type="application/json" id="inspire-validator-config">'
             . $json . '</script>' . "\n";
+        // The rows of the growth tables the page names by hash
+        // (attachGrowthTables, PRF-7). Parser-inserted scripts run in order, so
+        // they are in place when engine.js reads the config.
+        $rowScripts = [];
+        foreach ((isset($config['growth']) && is_array($config['growth'])) ? $config['growth'] : [] as $g) {
+            if (is_array($g) && isset($g['rowsFrom']) && is_string($g['rowsFrom'])) $rowScripts[$g['rowsFrom']] = GrowthReference::rowsPath($g['rowsFrom']);
+        }
+        foreach ($rowScripts as $path) echo '<script src="' . htmlspecialchars($this->getUrl($path), ENT_QUOTES) . '"></script>' . "\n";
         echo '<script src="' . htmlspecialchars($engineUrl, ENT_QUOTES) . '"></script>' . "\n";
     }
 
@@ -5380,7 +5420,15 @@ class UniversalValidator extends AbstractExternalModule
         $tables = [];
         foreach ($need as $id => $nn) {
             $full = $nn['xs'] === null && !empty($nn['sexes']['male']) && !empty($nn['sexes']['female']);
-            $tables[$id] = GrowthReference::pageCopy($entries[$id][0], $entries[$id][1], $full ? null : $nn);
+            // PRF-7. A page that may read any row of a bundled table names the
+            // script that carries them, which the browser caches, instead of
+            // inlining 46 to 92 KB on every view (injectClient loads it). A
+            // copy limited to a few ages, or to no sex at all, stays inline:
+            // it is small, and the file would be a whole table.
+            $whole = $nn['xs'] === null && (!empty($nn['sexes']['male']) || !empty($nn['sexes']['female']));
+            $tables[$id] = $whole && GrowthReference::rowsFile($entries[$id][0]) !== null
+                ? GrowthReference::pageIndex($entries[$id][0])
+                : GrowthReference::pageCopy($entries[$id][0], $entries[$id][1], $full ? null : $nn);
         }
         if ($tables) $config['growth'] = $tables;
         return $config;
@@ -6390,7 +6438,17 @@ class UniversalValidator extends AbstractExternalModule
         $why = [];      // rule index => further reasons
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError'])) continue;
-            foreach (ModeRegistry::returnFields($r) as $f) {
+            // One tag written the same way on several fields is one rule with
+            // several fields (AnnotationRules::groupMulti), so it is the only
+            // owner here, while the value of each field would write the same
+            // fields.
+            $targets = ModeRegistry::returnFields($r);
+            $own = isset($r['fields']) && is_array($r['fields']) ? array_values(array_unique($r['fields'])) : [];
+            if ($targets && count($own) > 1) {
+                $why[$i][] = 'it is on ' . count($own) . ' fields ("' . implode('", "', $own) . '"), and each would write "['
+                    . implode(']", "[', $targets) . ']" — a field takes the value of one rule, so give each field a "return" of its own.';
+            }
+            foreach ($targets as $f) {
                 if (isset($owner[$f]) && $owner[$f] !== $i) {
                     $clash[$i][$f] = $owner[$f];
                     $clash[$owner[$f]][$f] = $i;
@@ -7723,6 +7781,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             if (self::numberMarkOf($ddHere[(string) $t]) !== null) $numbers[] = (string) $t;
         }
+        // Asked last, so a field that cannot take the value at all says why.
+        // A rule with "return" never runs on a survey page.
+        foreach ($frag['existsReturn'] as $s => $t) {
+            $why = self::returnTargetTypable((string) $t, '"return" "' . $s . '" field "' . $t . '"', $ddHere, false);
+            if ($why !== null) return $why;
+        }
         $frag['existsReturnNumbers'] = $numbers;
         return null;
     }
@@ -8297,6 +8361,13 @@ class UniversalValidator extends AbstractExternalModule
                 . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
                 '_tag' => AnnotationRules::TAG_CHOICES];
         }
+        // A "hide" of every code leaves nothing to pick, and with @UVREQUIRED
+        // a save that can never pass (CHO-14).
+        if (isset($frag['choicesHide']) && !array_diff($all, $frag['choicesHide'])) {
+            return ['error' => '"hide" lists every choice of this field (' . implode(', ', $all) . '), so it could never be '
+                . 'answered — to take the question away, hide the field with branching logic.',
+                '_tag' => AnnotationRules::TAG_CHOICES];
+        }
         $frag['choicesAll'] = $all;
         return $frag;
     }
@@ -8623,6 +8694,11 @@ class UniversalValidator extends AbstractExternalModule
             $marks = [];
             $why = $this->returnTargetsProblem($frag, $name, is_array($dd) ? $dd : [], $inputFields, $marks);
             if ($why !== null) return $refuse($why);
+            // A growth rule fills its fields on a survey page too.
+            foreach ($frag['rangeReturn'] as $k => $t) {
+                $why = self::returnTargetTypable((string) $t, '"return" "' . $k . '" field "' . $t . '"', is_array($dd) ? $dd : [], true);
+                if ($why !== null) return $refuse($why);
+            }
             $frag['rangeReturnComma'] = $marks;
         }
         return $frag;
@@ -9566,6 +9642,27 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Why a person could type into field $t, which a rule fills, or null
+     * (EXS-13). The next answer replaces or empties what was typed, without a
+     * word, so the field must be @READONLY or @HIDDEN where the rule fills
+     * it: on the data-entry form, and with $surveys on a survey page too. The
+     * -FORM and -SURVEY forms of each tag count for their own page.
+     */
+    private static function returnTargetTypable($t, $label, array $dd, $surveys)
+    {
+        $note = isset($dd[$t]['field_annotation']) ? (string) $dd[$t]['field_annotation'] : '';
+        $locked = function ($page) use ($note) {
+            return preg_match('/@(?:READONLY|HIDDEN)(?:-' . $page . ')?(?![-\w])/i', $note) === 1;
+        };
+        $form = $locked('FORM');
+        $survey = !$surveys || $locked('SURVEY');
+        if ($form && $survey) return null;
+        $where = !$form && !$survey ? '' : (!$form ? ' on the data-entry form' : ' on a survey page');
+        return $label . ' can be typed into' . $where . ', and the rule replaces what is typed there — give it @READONLY'
+            . ($where === '' ? '' : ' (or @READONLY' . (!$form ? '-FORM' : '-SURVEY') . ')') . '.';
+    }
+
+    /**
      * One tier of an @UVRANGE rule in words: "12 to 17.5 g/dL", "at least 12",
      * "at most 17.5"; null for a tier with no limits. A comma field shows 17,5.
      */
@@ -10101,6 +10198,7 @@ class UniversalValidator extends AbstractExternalModule
         // left the module's only unauthenticated endpoint unthrottled by
         // default. See Schema::ensureRateBucket().
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
     }
 
@@ -10172,6 +10270,7 @@ class UniversalValidator extends AbstractExternalModule
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'enable');
@@ -10222,6 +10321,7 @@ class UniversalValidator extends AbstractExternalModule
     public function redcap_module_system_change_version($version = null, $old_version = null)
     {
         Scan\Schema::ensureRateBucket($this);
+        Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'upgrade');
@@ -10368,6 +10468,42 @@ class UniversalValidator extends AbstractExternalModule
             $n = $ret->expireValues();
             return ['values_cleared' => (int) $n];
         });
+    }
+
+    /**
+     * Seconds into a run of the lookup index cron after which it starts no
+     * further field. config.json gives a run 240 s of every 300; a field
+     * started at 60 s has 180 s left, and a field of 400,000 values took 61 s
+     * to build on the test server.
+     */
+    const LOOKUP_CRON_SECONDS = 60;
+
+    /**
+     * Build the value index of the live lookups (Scan\LookupIndex) for the
+     * fields too large to build during a lookup, rebuild each field a day
+     * before its weekly rebuild falls due, and drop the keys of fields no
+     * lookup asked for in 30 days (LookupIndex::maintain()).
+     *
+     * It runs whether or not the Validation scan is on, as the lookups do, and
+     * does nothing when the system setting turns the index off. NEVER THROWS,
+     * for the reason the scan crons give.
+     *
+     * @return string the one-line summary REDCap shows beside the cron
+     */
+    public function uvLookupIndexCron($cronInfo = [])
+    {
+        try {
+            $idx = $this->lookupIndex();
+            if ($idx === null) return 'the lookup index is turned off here; nothing to do';
+            $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
+            // The lookups build a large field themselves only while no cron runs.
+            $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
+            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
+                $r['built'], $r['dropped'], $r['waiting'], $r['left']);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::uvLookupIndexCron');
+            return 'lookup index: this run could not read its tables (' . get_class($e) . '); the lookups read the data table meanwhile';
+        }
     }
 
     /**
@@ -10630,26 +10766,26 @@ class UniversalValidator extends AbstractExternalModule
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
 
-        // The records that hold the value, from the data table (UNQ-7,
-        // PRF-2): getData then builds those records only, and a miss needs no
-        // export at all. [false] when the table cannot be read, and the
-        // export below answers instead.
-        $fromTable = function () use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+        // The records that hold the value, from the lookup index or the data
+        // table (UNQ-7, PRF-2): getData then builds those records only, and a
+        // miss needs no export at all. [false] when neither can be read
+        // ($via says which may be tried), and the export below answers.
+        $fromTable = function ($via) use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
             $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
-                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null);
+                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null, $via);
             if ($cand === null) return [false];
             if (!$cand) return [true, null];
             $data = \REDCap::getData($params + ['records' => $cand]);
             if (!is_array($data)) return [true, false];
             return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
         };
-        // Signed-in callers and the save audit start there. A survey keeps
-        // its order: the narrowed read below settles a hit without spending
-        // the read budget, and the budget pays for the table read of a miss.
-        if ($mayFullRead === null) {
-            $t = $fromTable();
-            if ($t[0]) return $t[1];
-        }
+        // Signed-in callers and the save audit start there. A survey asks the
+        // lookup index first, outside the read budget: it reads the records
+        // it names, not the field. Without it a survey keeps its order: the
+        // narrowed read below settles a hit without spending the budget, and
+        // the budget pays for the table read of a miss.
+        $t = $fromTable($mayFullRead === null ? 'any' : 'index');
+        if ($t[0]) return $t[1];
 
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
@@ -10683,7 +10819,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($mayFullRead !== null) {
             if (!call_user_func($mayFullRead)) return false;
-            $t = $fromTable();
+            $t = $fromTable('table');
             if ($t[0]) return $t[1];
         }
         $shared = $this->sharedCollisionRead($params);
@@ -10698,25 +10834,29 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The records other than $excludeRecord with a row of $fields whose value
-     * has the lookup key of $value under that field's number mark, read from
-     * the data table (Scan\FieldValues); or null when it cannot be read. A
-     * superset of the records collisionIn can match: a context takes its
-     * values from these rows only.
+     * has the lookup key of $value under that field's number mark; or null
+     * when it cannot be read. A superset of the records collisionIn can
+     * match: a context takes its values from these rows only.
+     *
+     * $via: 'any' asks the lookup index (Scan\LookupIndex) and then the whole
+     * field in the data table (Scan\FieldValues); 'index' the index alone;
+     * 'table' the data table alone. Both answer the same records.
      */
-    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId)
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any')
     {
         $keyOf = [];
         foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
-        $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId,
-            function ($f, $v) use ($keyOf, $value, $fold, $marks) {
-                if (!isset($keyOf[$f])) return false;
-                if ($v === $value) return true;
-                $k = $keyOf[$f];
-                // A text key is the trimmed, folded value: a shorter stored
-                // value cannot reach it.
-                if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
-                return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
-            });
+        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+            if (!isset($keyOf[$f])) return false;
+            if ($v === $value) return true;
+            $k = $keyOf[$f];
+            // A text key is the trimmed, folded value: a shorter stored
+            // value cannot reach it.
+            if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
+            return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+        };
+        $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId, $accept);
         if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
         $skip = (string) $excludeRecord;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -10727,22 +10867,24 @@ class UniversalValidator extends AbstractExternalModule
      * @UVEXISTS lookup of $value matches (existsRowMatch: trimmed, letter case
      * ignored when $fold, numbers by value under $mark, a Missing Data Code
      * never), in event $event (null: any), less $skip; read from the data
-     * table (Scan\FieldValues), which REDCap does not confine to the user's
-     * Data Access Group. Null when the table cannot be read.
+     * table (Scan\FieldValues) or the lookup index, neither of which REDCap
+     * confines to the user's Data Access Group. Null when neither can be
+     * read; $via as for collisionCandidates.
      */
-    private function existsCandidates($pid, $field, $value, $fold, $mark, array $codes, $event, $skip = null)
+    private function existsCandidates($pid, $field, $value, $fold, $mark, array $codes, $event, $skip = null, $via = 'any')
     {
         $key = Logic::lookupKey($value, $fold, $mark);
-        $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event,
-            function ($f, $v) use ($value, $key, $fold, $mark, $codes) {
-                if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
-                // A text key is the trimmed, folded value: a shorter stored
-                // value cannot reach it.
-                if ($key[0] === '=' && strlen($v) < strlen($key) - 1) return false;
-                $t = Logic::lookupTrim($v);
-                if ($codes && self::isMissingCode($t, $codes)) return false;
-                return Logic::lookupKey($t, $fold, $mark) === $key;
-            });
+        $accept = function ($f, $v) use ($value, $key, $fold, $mark, $codes) {
+            if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
+            // A text key is the trimmed, folded value: a shorter stored
+            // value cannot reach it.
+            if ($key[0] === '=' && strlen($v) < strlen($key) - 1) return false;
+            $t = Logic::lookupTrim($v);
+            if ($codes && self::isMissingCode($t, $codes)) return false;
+            return Logic::lookupKey($t, $fold, $mark) === $key;
+        };
+        $recs = $via === 'table' ? null : $this->indexedRecords($pid, [$field], [$field => $mark], $value, $event, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event, $accept);
         if ($recs === null || $skip === null || $skip === '') return $recs;
         $skip = (string) $skip;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -10766,12 +10908,12 @@ class UniversalValidator extends AbstractExternalModule
      * answer is unknown. Under "scope":"dag" such a record is in another
      * group than the one the rule looks in, so it is left out.
      */
-    private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts)
+    private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts, $via = 'any')
     {
         $in = $spec['in'];
         $skip = isset($spec['skip']) ? $spec['skip'] : null;
         $cands = $this->existsCandidates($pid, $in, $value, $spec['fold'], isset($spec['marks'][$in]) ? $spec['marks'][$in] : null,
-            $spec['codes'], $spec['event'], $skip);
+            $spec['codes'], $spec['event'], $skip, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         if (!$cands) return $notFound;
@@ -10802,6 +10944,48 @@ class UniversalValidator extends AbstractExternalModule
                         : 'the saved values could not be read just now'];
         }
         return self::existsFilteredMiss($notFound, $filtered);
+    }
+
+    /**
+     * The records the lookup index names for $value in $fields, confirmed
+     * against their rows in the data table with $accept; null when the index
+     * cannot answer (Scan\LookupIndex) or is turned off, and the caller reads
+     * the whole field instead. The confirmed list is the one the whole-field
+     * read gives, restricted to records the index names, and the index names
+     * every record that holds the value.
+     */
+    private function indexedRecords($pid, array $fields, array $marks, $value, $eventId, callable $accept)
+    {
+        $idx = $this->lookupIndex();
+        if ($idx === null) return null;
+        $fm = [];
+        foreach ($fields as $f) $fm[(string) $f] = isset($marks[$f]) ? $marks[$f] : null;
+        $cand = $idx->candidates($pid, $fm, $value);
+        if ($cand === null) return null;
+        return $this->fieldValues()->recordsAmong($pid, $fields, $eventId, $cand, $accept);
+    }
+
+    /** @var Scan\LookupIndex|false|null false when turned off */
+    private $lookupIndexer = null;
+
+    /** System setting, not in config.json: when uvLookupIndexCron() last ran. */
+    const LOOKUP_CRON_AT = 'lookup-index-cron-at';
+
+    /** The lookup index, or null when an administrator turned it off. */
+    private function lookupIndex()
+    {
+        if ($this->lookupIndexer === null) {
+            $off = false;
+            $cronAt = 0;
+            try {
+                $off = (bool) $this->getSystemSetting('lookup-index-system-off');
+                $cronAt = (int) $this->getSystemSetting(self::LOOKUP_CRON_AT);
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::lookupIndex');
+            }
+            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt]);
+        }
+        return $this->lookupIndexer === false ? null : $this->lookupIndexer;
     }
 
     /** @var Scan\FieldValues|null */
@@ -11027,7 +11211,8 @@ class UniversalValidator extends AbstractExternalModule
     // for one of them to drift, and the axis defect this release fixes is
     // precisely that shape one layer up. It is now
     // ScanPageView::dagNameOf(), which the page, this file's live unique-check
-    // endpoint and scanProject() all call.
+    // endpoint and the legacy scan the suites run (tests/support/scan_facade.php)
+    // all call.
 
     // -- server-side value read --------------------------------------------
 

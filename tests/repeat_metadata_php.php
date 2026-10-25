@@ -169,6 +169,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     use INSPIRE\UniversalValidator\ScanCapabilities;
 
@@ -212,6 +213,7 @@ namespace {
         't_home2'     => f('result'),
     ];
     foreach ($DICT as $k => $_) $DICT[$k]['field_name'] = $k;
+    $DICT = \lock_return_targets($DICT);
     $GLOBALS['DICT'] = $DICT;
 
     function mod() {

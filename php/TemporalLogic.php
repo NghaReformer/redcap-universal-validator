@@ -3,6 +3,7 @@ namespace INSPIRE\UniversalValidator;
 require_once __DIR__.'/Logic.php';
 require_once __DIR__.'/ExactDecimal.php';
 require_once __DIR__.'/TemporalValue.php';
+require_once __DIR__.'/CollectionIndex.php';
 
 /** Three-valued expression evaluator shared by saved-data and browser preparation. */
 final class TemporalLogic
@@ -31,7 +32,7 @@ final class TemporalLogic
     {
         if($op[0]==='lit')return $op[1];
         if($op[0]==='unknown')return null;
-        if($op[0]==='value')return $op[1];   // server-only: an aggregate the resolver already settled
+        if($op[0]==='value')return $op[1];   // server-only: an aggregate the resolver settled, or an indexed set
         if($op[0]==='ref')return $read($op[1],$op[2]);
         if($op[0]==='guard'){
             foreach($op[1] as $g)if((string)$read($g[0],null)!==$g[1])return null;
@@ -58,12 +59,15 @@ final class TemporalLogic
             $kind=$op[1];
             if($kind==='count')return (string)count($v);
             if($kind==='exists')return $v?'1':'0';
-            $v=array_values(array_filter($v,function($x){return $x!=='';}));
+            // A value of spaces is blank to every comparison, so it is no value here either (wargame C6).
+            $v=array_values(array_filter($v,function($x){return !self::blank($x);}));
             if($kind==='populated-count')return (string)count($v);
             if($kind==='distinct-count')return (string)count(array_unique($v,SORT_STRING));
             if(!$v)return null;
             if(!self::spend($charge,ExactDecimal::sumCost($v)))return null;
-            $sum=ExactDecimal::sum($v);if($sum['state']!=='ok')return null;
+            // minimum/maximum check each value; the sum of long ones may not fit (wargame P7).
+            if($kind==='minimum'||$kind==='maximum'){if(ExactDecimal::check($v)['state']!=='ok')return null;}
+            else{$sum=ExactDecimal::sum($v);if($sum['state']!=='ok')return null;}
             if($kind==='sum')return $sum['value'];
             if($kind==='average')return ['numerator'=>$sum['value'],'denominator'=>(string)count($v)];
             $best=$v[0];foreach($v as $x)if(Logic::evaluate(['cmp',$kind==='minimum'?'<':'>',['lit',$x],['lit',$best]],[]))$best=$x;
@@ -98,6 +102,20 @@ final class TemporalLogic
         if(is_array($a)&&isset($a['set']) || is_array($b)&&isset($b['set'])){
             if(is_array($a)&&isset($a['set'])&&is_array($b)&&isset($b['set']))return null;
             $left=is_array($a)&&isset($a['set']);$set=$left?$a:$b;
+            if(isset($set['index'])){
+                // A saved collection shared by every host context of the record, less the
+                // asker's own entry at 'skip' (wargame P3). The index counts the members that
+                // hold; a value it does not cover is compared member by member.
+                $index=$set['index'];$skip=$set['skip']??null;$size=$index->size()-($skip===null?0:1);
+                if($size<1)return null;
+                $x=$left?$b:$a;$flip=['<'=>'>','<='=>'>=','>'=>'<','>='=>'<='];
+                $held=$index->count($left?$op:($flip[$op]??$op),$x,$blank,$case);
+                if($held===null)$set['values']=$index->values($skip);
+                else{
+                    if($skip!==null&&self::compare($op,$left?$index->value($skip):$a,$left?$b:$index->value($skip),$blank,$case,$charge))$held--;
+                    return $set['set']==='all'?$held===$size:$held>0;
+                }
+            }
             if(!$set['values'])return null;
             $and=$set['set']==='all';$unknown=false;
             foreach($set['values'] as $v){$r=self::compare($op,$left?$v:$a,$left?$b:$v,$blank,$case,$charge);if($r===null)$unknown=true;elseif($r!==$and)return !$and;}

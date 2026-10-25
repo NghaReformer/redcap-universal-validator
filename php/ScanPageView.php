@@ -649,7 +649,8 @@ class ScanPageView
      *         dag is the numeric Data Access Group ID as a string - the axis
      *         every consumer compares on. dagName is the friendly name and is
      *         for display only; comparing it is the defect this shape exists to
-     *         prevent. The legacy scanProject() facade takes the id too and
+     *         prevent. The legacy one-request scan the suites run
+     *         (tests/support/scan_facade.php) takes the id too and
      *         re-derives the name itself through dagNameOf(). dagName is null on
      *         the ok=false and unconfined returns.
      */
@@ -739,7 +740,8 @@ class ScanPageView
             //
             // 'dagName' is for PROSE ONLY, and nothing reads it yet. That is
             // deliberate rather than an oversight: the one place that needs the
-            // name is the legacy scanProject() facade, whose record groups come
+            // name is the legacy one-request scan (tests/support/scan_facade.php),
+            // whose record groups come
             // from \REDCap::getData() and are therefore unique NAMES, and it
             // re-derives the name from the id through dagNameOf() instead of
             // being handed this. So the id is the only value that crosses a

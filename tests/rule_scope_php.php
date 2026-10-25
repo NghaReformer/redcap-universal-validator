@@ -92,6 +92,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/return_targets.php';
     use ExternalModules\AbstractExternalModule as EMA;
 
     $n = 0; $fail = 0;
@@ -115,7 +116,7 @@ namespace {
         $m->subSettings = $subSettings;
         $m->projectSettings = ['log-values' => 'raw'] + $settings;
         $m->projectIdReturn = PID;
-        \REDCap::$dictionary = $dict;
+        \REDCap::$dictionary = \lock_return_targets($dict);
         \REDCap::$data = ['1' => [1 => ['record_id' => '1']]];
         \REDCap::$rights = ['nurse' => ['forms' => $forms, 'group_id' => null]];
         return $m;

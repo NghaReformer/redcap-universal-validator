@@ -24,6 +24,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;
         public function getSubSettings($k, $pid = null) {
@@ -152,6 +154,8 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\GrowthOutputs;
@@ -195,13 +199,14 @@ namespace {
     function row(array $over = []) {
         return array_merge(['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6'], $over);
     }
-    function mod($dict, $data, array $settings = []) {
+    /** $lock: mark the fields a "return" writes to @READONLY, as the module requires (EXS-13). */
+    function mod($dict, $data, array $settings = [], $lock = true) {
         $GLOBALS['__TEST_USER'] = 'nurse';
         GrowthReference::reset();
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectSettings = array_merge(['log-values' => 'raw'], $settings);
         $m->projectIdReturn = PID;
-        \REDCap::$dictionary = $dict;
+        \REDCap::$dictionary = $lock ? \lock_return_targets($dict) : $dict;
         \REDCap::$data = $data;
         \REDCap::$rights = ['nurse' => ['forms' => ['enrol_form' => '1', 'anthro_form' => '1']]];
         \REDCap::$repeats = [];
@@ -700,23 +705,31 @@ NASK, Not asked";
     // ---- 15) each context is written by a save of its own, the saved one first ------------------------------------------
     $two = ['2' => [1 => $enrol, 2 => $visit, 3 => ['visit_date' => '2026-01-10', 'weight' => '11.0']]];
     $w11 = wantFields(expected(11.0));
+    // A visit's save judges that visit alone, since the other visit's inputs did not
+    // change (wargame P4); a save of the enrolment both visits read refills both.
     $m = evMod(dict([], $evRet), $two);
     save($m, 'anthro_form', 1, '2', 2);
-    check('visit 1 saved: both visits are filled, one save each, visit 1 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
-        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
+    check('visit 1 saved: visit 1 is filled, and visit 2, whose inputs did not change, is not (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 1 && written(0) === ['2' => [2 => $want]]);
     $m = evMod(dict([], $evRet), $two);
+    save($m, 'enrol_form', 1, '2', 1);
+    check('the enrolment saved: both visits are filled, one save each (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
+    // A rule that reads its own form in another event: one visit's save can change the other.
+    $m = evMod(dict([], evTag('"when":"[visit_arm_1][weight]<>\'none\'",' . RET_ALL)), $two);
     save($m, 'anthro_form', 1, '2', 3);
-    check('visit 2 saved: visit 2 is written first', count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]]);
+    check('visit 2 saved, the rule reading visit 1: both are filled, visit 2 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]] && written(1) === ['2' => [2 => $want]]);
     $m = evMod(dict([], $evRet), $two);
     \REDCap::$saveErrorsFor = function ($data) { return isset($data['2'][3]) ? ['2' => 'the form is locked'] : []; };
-    save($m, 'anthro_form', 1, '2', 2);
+    save($m, 'enrol_form', 1, '2', 1);
     $err = logs($m, 'uvalidate-audit-error');
     check('a locked visit 2: visit 1 is written all the same, and the refusal is logged once (got ' . json_encode($err) . ')',
         pick(store('2', 2), TARGETS) === $want && pick(store('2', 3), TARGETS) === [] && count($err) === 1
         && $err[0]['stage'] === 'return values' && count(\REDCap::$saves) === 2);
     $m = evMod(dict([], $evRet), $two);
     \REDCap::$saveErrorsFor = function ($data) { if (isset($data['2'][2])) throw new \RuntimeException('disk full'); return []; };
-    save($m, 'anthro_form', 1, '2', 2);
+    save($m, 'enrol_form', 1, '2', 1);
     check('a write of visit 1 that throws: visit 2 is still written (got ' . json_encode(pick(store('2', 3), TARGETS)) . ')',
         pick(store('2', 2), TARGETS) === [] && pick(store('2', 3), TARGETS) === $w11 && count(logs($m, 'uvalidate-audit-error')) === 1);
 
@@ -774,6 +787,28 @@ NASK, Not asked";
     $m = mod(dict([], tag('"when":"[sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' ' . tag('"when":"[sex]=\'2\'","return":{"z":"[wfa_z]"}')),
         ['2' => [EVT => row()]]);
     check('two branches of one reference may share a field (one is active)', empty(ruleOn($m, 'weight')['configError']));
+    // The same tag on two fields is one rule with two fields (groupMulti), and
+    // each field's value would write the same fields.
+    $m = mod(dict(['weight2' => f('anthro_form', tag(RET_ALL), 'number_1dp')]), ['2' => [EVT => row()]]);
+    check('one "return" tag on two fields is refused on both (got ' . json_encode(ruleOn($m, 'weight')['configError'] ?? null) . ')',
+        strpos((string) (ruleOn($m, 'weight')['configError'] ?? ''), '@UVRANGE "return": it is on 2 fields ("weight", "weight2"), and each would write "[wfa_z]", "[wfa_lo]", "[wfa_hi]", "[wfa_rng]"') !== false
+        && ruleOn($m, 'weight2') === ruleOn($m, 'weight'));
+    $m = mod(dict(['weight2' => f('anthro_form', tag('"return":{"z":"[wfa_z2]"}'), 'number_1dp'), 'wfa_z2' => f('anthro_form')]),
+        ['2' => [EVT => row()]]);
+    check('...a "return" of its own on the second field is taken', empty(ruleOn($m, 'weight')['configError']) && empty(ruleOn($m, 'weight2')['configError']));
+    $m = mod(dict(['weight2' => f('anthro_form', tag(), 'number_1dp')], tag()), ['2' => [EVT => row()]]);
+    check('...the same tag without "return" on two fields is still one sound rule',
+        empty(ruleOn($m, 'weight')['configError']) && ruleOn($m, 'weight2') === ruleOn($m, 'weight'));
+    // A field a person can type into (EXS-13). A growth rule fills its fields
+    // on a survey page too, so both pages count.
+    foreach (['' => 'can be typed into, and', '@READONLY-FORM' => 'can be typed into on a survey page',
+              '@HIDDEN-SURVEY' => 'can be typed into on the data-entry form', '@READONLY' => null, '@HIDDEN' => null,
+              '@READONLY-FORM @HIDDEN-SURVEY' => null] as $tagHere => $want) {
+        $m = mod(dict(['wfa_z' => f('anthro_form', $tagHere)], tag('"return":{"z":"[wfa_z]"}')), ['2' => [EVT => row()]], [], false);
+        $e = (string) (ruleOn($m, 'weight')['configError'] ?? '');
+        check('a target with "' . $tagHere . '" is ' . ($want === null ? 'taken' : 'refused') . ' (got ' . json_encode($e) . ')',
+            $want === null ? $e === '' : strpos($e, '"return" "z" field "wfa_z" ' . $want) !== false);
+    }
 
     // ---- 19) the live fixture: section J of docs/testbed/RANGE_LIVE_ACCEPTANCE.md expects these -------------------------------
     $fx = fopen(__DIR__ . '/../docs/testbed/uvrange_return_test_fields.csv', 'r');
@@ -785,7 +820,7 @@ NASK, Not asked";
     }
     fclose($fx);
     $m = mod($live, ['2' => [EVT => ['record_id' => '2', 'ugr_sex' => '1', 'ugr_dob' => '2025-01-10', 'ugr_visit' => '2026-01-10',
-        'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]]);
+        'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]], [], false);
     // The person who saves the form may change it: the save writes returned
     // values only into such a form (EXS-3).
     \REDCap::$rights['nurse']['forms']['uv_growth_return'] = '1';

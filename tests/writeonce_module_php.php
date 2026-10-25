@@ -29,6 +29,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $subSettings = [];
         public $projectSettings = [];
@@ -107,7 +109,8 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/writeonce_fake_log.php';
 
     use INSPIRE\UniversalValidator\ValueHistory;
@@ -209,7 +212,7 @@ namespace {
         'notes_w'      => f('enrol_form', '@UVWRITEONCE', '', 'notes'),
         'pain'         => f('enrol_form', '@UVWRITEONCE={"roles":["Data manager"],"message":"Pain is locked."}', '', 'slider'),
         'lookup'       => f('enrol_form', '@UVEXISTS={"in":"record","return":{"consent_date":"[ret_lock]"}}'),
-        'ret_lock'     => f('enrol_form', '@UVWRITEONCE'),
+        'ret_lock'     => f('enrol_form', '@UVWRITEONCE @READONLY'),
         'bad_calc'     => f('enrol_form', '@UVWRITEONCE', '', 'calc'),
         'bad_chk'      => f('enrol_form', '@UVWRITEONCE', '', 'checkbox'),
         'bad_calctext' => f('enrol_form', '@UVWRITEONCE @CALCTEXT(if([arm]=1,"a","b"))'),
@@ -750,12 +753,12 @@ namespace {
         'src1'      => f('enrol_form'),
         'src2'      => f('enrol_form'),
         'lk'        => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src1":"[r1]","src2":"[r2]"}}'),
-        'r1'        => f('enrol_form', '@UVWRITEONCE={"message":"R"}'),
-        'r2'        => f('enrol_form', '@UVWRITEONCE={"message":"R"}'),
+        'r1'        => f('enrol_form', '@UVWRITEONCE={"message":"R"} @READONLY'),
+        'r2'        => f('enrol_form', '@UVWRITEONCE={"message":"R"} @READONLY'),
         // two lookups returning to one field are both refused, so neither returns to it: the lock stands
         'lk_a'      => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src1":"[r3]"}}'),
         'lk_b'      => f('enrol_form', '@UVEXISTS={"in":"record","return":{"src2":"[r3]"}}'),
-        'r3'        => f('enrol_form', '@UVWRITEONCE'),
+        'r3'        => f('enrol_form', '@UVWRITEONCE @READONLY'),
         'low'       => f('enrol_form', "@UVWRITEONCE @setvalue='x'"),
         'low2'      => f('enrol_form', '@UVWRITEONCE @prefill="x"'),
         'rich'      => f('enrol_form', '@UVWRITEONCE @richtext', '', 'notes'),

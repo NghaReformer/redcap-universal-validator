@@ -12,6 +12,7 @@ XE-2,baseline_arm_1,1,xv_kit,K-100 twice
 XE-2,visit_1_arm_1,1,xv_kit,K-100 twice
 XE-2,baseline_arm_1,1,xv_ae_note,required: enrol AE=1
 XE-2,visit_1_arm_1,1,xv_ae_note,required: enrol AE=1
+XE-2,followup_arm_1,1,xv_ae_note,required: enrol AE=1 (xe_visit not opened; the event holds xe_close; R3G-1)
 XE-2,baseline_arm_1,1,xs_id,S-100 twice (unique)
 XE-2,baseline_arm_1,2,xs_id,S-100 twice (unique)
 XE-2,baseline_arm_1,1,xs_type,3 distinct types

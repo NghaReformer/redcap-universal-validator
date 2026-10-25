@@ -93,6 +93,65 @@ final class FieldValues
     }
 
     /**
+     * recordsWhere() over the rows of $records only: the ones whose row of
+     * one of $fields $accepts, or null when the table could not be read. The
+     * rows come through the (project_id, record, field_name) index, so the
+     * cost is that of the records named, not of the project. LookupIndex
+     * names the records; this confirms them against what is saved now.
+     *
+     * The record list is matched by the table's collation, so a record whose
+     * id differs only in letter case can come back too. Its rows are tested
+     * like the others: a record that holds the value is never left out.
+     *
+     * @param string[] $records
+     * @return string[]|null
+     */
+    public function recordsAmong($pid, array $fields, $eventId, array $records, callable $accepts)
+    {
+        $fields = array_values(array_unique(array_map('strval', $fields)));
+        $records = array_values(array_unique(array_map('strval', $records)));
+        if (!$records) return [];
+        if (!$fields || !is_object($this->module) || !is_callable([$this->module, 'query'])) return null;
+        $table = $this->tableOf($pid);
+        if ($table === null) return null;
+        $byEvent = $eventId !== null && $eventId !== '';
+        $hit = [];
+        try {
+            foreach (array_chunk($records, 500) as $chunk) {
+                $sql = 'SELECT record, field_name, `value` FROM ' . $table . ' WHERE project_id = ? AND record IN ('
+                    . implode(', ', array_fill(0, count($chunk), '?')) . ') AND field_name IN ('
+                    . implode(', ', array_fill(0, count($fields), '?')) . ')';
+                $params = array_merge([(int) $pid], $chunk, $fields);
+                if ($byEvent) {
+                    $sql .= ' AND event_id = ?';
+                    $params[] = (int) $eventId;
+                }
+                $q = $this->module->query($sql, $params);
+                if (is_array($q)) {
+                    foreach ($q as $row) {
+                        if (!self::take(is_array($row) ? array_values($row) : null, $accepts, $hit)) return null;
+                    }
+                } elseif (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                    while ($row = $q->fetch_row()) {
+                        if (!self::take($row, $accepts, $hit)) return null;
+                    }
+                } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
+                    while ($row = $q->fetch_assoc()) {
+                        if (!self::take(array_values($row), $accepts, $hit)) return null;
+                    }
+                } else {
+                    return null;
+                }
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $out = [];
+        foreach ($hit as $rec => $_) $out[] = (string) $rec;
+        return $out;
+    }
+
+    /**
      * Every row of $field (of event $eventId, or of every event), handed to
      * $each(record, event_id, value) one at a time. True when the whole field
      * was read, false when the table could not be read or a row could not be

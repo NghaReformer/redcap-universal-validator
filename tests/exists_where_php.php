@@ -30,6 +30,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $PREFIX = 'universal_validator';
         public $logCalls = [];
         public $settingsBy = [];
@@ -183,7 +185,9 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
+    require_once __DIR__ . '/support/return_targets.php';
 
     use INSPIRE\UniversalValidator\AnnotationRules;
     use INSPIRE\UniversalValidator\Logic;
@@ -293,7 +297,7 @@ namespace {
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => ['log-values' => 'raw']];
-        \REDCap::$dictionaries = [149 => $DICT];
+        \REDCap::$dictionaries = [149 => \lock_return_targets($DICT)];
         \REDCap::$data = [149 => $DATA];
         \REDCap::$repeats = [149 => [351 => ['rep_form' => null]]];
         \REDCap::$rightsBy = [149 => ['nurse' => $FULL, 'noenrol' => $NOENROL]];

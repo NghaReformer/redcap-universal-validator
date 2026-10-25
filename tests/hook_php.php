@@ -29,6 +29,8 @@ namespace ExternalModules {
     }
 
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $subSettings = [];
         public $projectSettings = [];
@@ -245,6 +247,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     // A module shaped like the REAL External Modules framework, which exposes
     // initializeJavascriptModuleObject()/getJavascriptModuleObjectName()
@@ -607,7 +610,38 @@ namespace {
     $UVC = \INSPIRE\UniversalValidator\UniversalValidator::CONFIG_SHAPE;
     check('QUA-7: the page config states its shape', $cfg && ($cfg['configShape'] ?? null) === $UVC);
     check('QUA-7: the engine URL carries the shape, the file time and size',
-        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+        preg_match('#<script src="/x/js/engine\.min\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $html) === 1);
+    // PRF-7: the minified engine while it names the source's CRC-32, else the
+    // source; the source too with the project's debug setting on.
+    $served = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'servedEngine');
+    $served->setAccessible(true);
+    check('PRF-7: the module serves js/engine.min.js, which names the current js/engine.js',
+        $served->invoke(null, dirname(__DIR__)) === 'js/engine.min.js');
+    $tmpEngine = sys_get_temp_dir() . '/uv_served_engine_' . getmypid();
+    @mkdir($tmpEngine . '/js', 0777, true);
+    file_put_contents($tmpEngine . '/js/engine.js', "var a = 1;\n");
+    $crcOf = hash('crc32b', "var a = 1;\n");
+    $servedWith = function ($minText) use ($served, $tmpEngine) {
+        if ($minText === null) @unlink($tmpEngine . '/js/engine.min.js');
+        else file_put_contents($tmpEngine . '/js/engine.min.js', $minText);
+        return $served->invoke(null, $tmpEngine);
+    };
+    check('PRF-7: a minified copy built from this source is served',
+        $servedWith('/*! engine.min.js: source sha256 x crc32b ' . $crcOf . '. */' . "\nvar a=1;\n") === 'js/engine.min.js');
+    check('PRF-7: one built from another source is not: the source is served',
+        $servedWith('/*! engine.min.js: source sha256 x crc32b 00000000. */' . "\nvar a=1;\n") === 'js/engine.js');
+    check('PRF-7: nor one whose first line names no source, nor a missing one',
+        $servedWith("var a=1;\n") === 'js/engine.js' && $servedWith(null) === 'js/engine.js');
+    @unlink($tmpEngine . '/js/engine.js');
+    @rmdir($tmpEngine . '/js');
+    @rmdir($tmpEngine);
+    $dbg = newModule($csvRule, $dd, [], 149, false, ['log-values' => '', 'debug-log' => true]);
+    $dbg->userReturn = new \ExternalModules\TestDesigner(true);
+    ob_start();
+    $dbg->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $dbgHtml = ob_get_clean();
+    check('PRF-7: with the project\'s debug setting on, the page loads the readable source',
+        preg_match('#<script src="/x/js/engine\.js\?v=' . $UVC . '\.[1-9][0-9]*\.[1-9][0-9]*"></script>#', $dbgHtml) === 1);
     $engineSrc = file_get_contents(__DIR__ . '/../js/engine.js');
     check('QUA-7: js/engine.js reads the shape the server states (UniversalValidator::CONFIG_SHAPE)',
         preg_match('/var QRID_CONFIG_SHAPE = ([0-9]+);/', $engineSrc, $shapeM) === 1 && (int) $shapeM[1] === $UVC);
@@ -1597,6 +1631,9 @@ namespace {
     foreach (invalidLogs($m) as $L) if ($L[1]['field'] === 'phone') $phoneLog = $L[1];
     check('required log typed "required"', $phoneLog && $phoneLog['type'] === 'required');
     check('required reason is required-blank', $phoneLog && $phoneLog['reason'] === 'required-blank');
+    // The hash of "" is one per project and tells nothing (REQ-15).
+    check('hashed mode stores no value_hmac for a blank (got ' . json_encode($phoneLog) . ')',
+        $phoneLog && !isset($phoneLog['value_hmac']) && !isset($phoneLog['value']) && !isset($phoneLog['hmac_unavailable']));
 
     // consent NOT given -> phone requirement off; site still required
     $rData2 = [2 => [351 => ['record_id' => '2', 'consent' => '0']]];
@@ -1712,6 +1749,15 @@ namespace {
     $cDictBad['badref'] = ['field_type' => 'radio', 'form_name' => 'cf',
         'select_choices_or_calculations' => '1, A | 2, B',
         'field_annotation' => '@UVCHOICES={"when":"[no_such_field]=\'1\'","hide":["1"]}'];
+    // a "hide" of every code leaves nothing to pick (CHO-14); a "when" that
+    // reads the field itself is allowed, since a checkbox may make one code
+    // exclusive that way
+    $cDictBad['hideall'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[freetext]=\'1\'","hide":["2","1"]}'];
+    $cDictBad['selfref'] = ['field_type' => 'checkbox', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '0, None | 1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[selfref(0)]=\'1\'","hide":["1","2"]}'];
     $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
         'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
     ob_start();
@@ -1733,6 +1779,9 @@ namespace {
         && strpos($cfgErrs['mx'], 'matrix') !== false);
     check('bad "when" reference on @UVCHOICES -> error names @UVCHOICES',
         isset($cfgErrs['badref']) && strpos($cfgErrs['badref'], '@UVCHOICES on "badref"') === 0);
+    check('a "hide" of every code -> configError (got ' . json_encode($cfgErrs['hideall'] ?? null) . ')', isset($cfgErrs['hideall'])
+        && strpos($cfgErrs['hideall'], '"hide" lists every choice of this field (1, 2)') !== false);
+    check('...a "when" on the field itself is taken (got ' . json_encode($cfgErrs['selfref'] ?? null) . ')', !isset($cfgErrs['selfref']));
     $m->logCalls = [];
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('config-error choices rules produce no detections',
@@ -3029,9 +3078,12 @@ namespace {
     }));
     check('F6: enabling the module creates the throttle counter with the scan flag OFF',
         count($made) === 1);
+    // The lookup index's four tables are not the scan's either: the live
+    // lookups they serve run on every installation (Scan\LookupIndex).
     check('F6: and creates no scan table, so the scan stays opt-in',
         count(array_filter($inst->rateStatements, function ($q) {
-            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false;
+            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false
+                && !preg_match('/uv_lookup_(key|field|sync|record) /', $q);
         })) === 0);
     check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
         stripos($made[0], 'IF NOT EXISTS') !== false);

@@ -28,7 +28,7 @@ php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, e
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
 node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
-php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form
+php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form; runs again through a fake value index
 php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the static method; "return"/"where" on REDCap 17
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
@@ -75,14 +75,17 @@ php  tests/convert_php.php        # data/references/convert.php: WHO and CDC sha
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in js/engine.js (--check: fail if stale)
+node tests/engine_min_js.cjs     # js/engine.min.js names the current js/engine.js, and every browser suite passes on it
+node tests/ci_workflow_js.cjs    # every suite here is named by a CI workflow, and no plain run: step folds its lines into one command
 node tests/config_notice_js.cjs  # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
+node tests/prototype_names_dom_js.cjs  # a field named "constructor", tagged or read by a condition, behaves like any other in every mode (S2)
 node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEntrySubmit (Enter key, scripts)
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
-php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table and through a fake value index
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
 php  tests/rule_scope_php.php          # a live lookup builds only its field's rules, as the full build has them (PRF-3)
@@ -234,6 +237,21 @@ arithmetic, its `spread` cases a window counted from the span of "now", and its
 `labels` cases the name of a period, which the page shows and the scan report
 repeats.
 
+- `window_glue_php.php` and `window_glue_dom_js.cjs` lock what each side
+  feeds that verdict (WIN-9): the anchor for `today`, `now` and a period, the
+  clock margins, and the parts an unchanged value leaves out. The PHP half
+  draws 900 random rules with a fixed seed, each with a value saved at one
+  moment, works out the server's verdict through `findingsWindow()` with
+  REDCap's log showing when the value was saved, and compares the verdicts
+  with `window_glue_fixture.json` (`--write` rewrites it after a meant
+  change). The DOM half boots the page rule on each case and reads
+  `validators.f.verdict()`. A new value gets the server's verdict; on a date
+  and time the page may differ only where its narrower margin around now
+  explains it, which the suite proves by booting the case again with the
+  computer's clock 10 minutes ahead or behind. An unchanged value keeps only
+  verdicts the server also gives. Some draws put the value 100 to 760 seconds
+  from now, and some put the clock just after midnight on 1 January with a
+  period counted from now.
 - `window_dom_js.cjs` boots the browser rule on a stub page: the message names
   the bounds in the field's format, the survey message leaves out the `from`
   field, a snapshot `from` date never blocks, and the save-time recheck of a
@@ -324,19 +342,46 @@ field's form does not re-audit an extended rule. `missing_codes_php.php` checks
 that a code saved in an `also` field matches nothing. The SQL (the `lookup`
 column, discovery and emit) is in `tests/mysql/cases/uniqueness.php`.
 
-The live check and the save audit first ask the data table which records hold
-the value (`Scan\FieldValues`). `unique_scope_php.php` answers that read from
-its `REDCap::$data` and runs every check twice: with the table, and in a second
-process (`--no-table`) without it, where the export answers instead.
-`tests/mysql/cases/field_values.php` runs the reader on a real server over a
-table with REDCap's own indexes and asserts each statement's plan.
+The live check and the save audit first ask the value index which records may
+hold the value (`Scan\LookupIndex`), confirm them against the data table
+(`Scan\FieldValues::recordsAmong`), and read the whole field from the data
+table when the index cannot answer (`Scan\FieldValues::recordsWhere`).
+`unique_scope_php.php` answers those reads from its `REDCap::$data` and runs
+every check three times: with the table, in a second process (`--no-table`)
+without it, where the export answers instead, and in a third (`--index`) with
+the index of `tests/support/fake_lookup_index.php`, which names the records
+holding the value plus one that does not. Every answer must be the same in the
+three runs. `tests/mysql/cases/field_values.php` runs the reader on a real
+server over a table with REDCap's own indexes and asserts each statement's
+plan.
+
+`tests/mysql/cases/lookup_index.php` runs the real index on a real server: the
+first lookup builds a field, one build a request, numbers and letter case,
+edits, new and deleted records and the neighbour project's changes as REDCap
+logs them, a log row that turns up late inside the window, the rebuilds (a
+data dictionary change, a burst of changes with its cooldown and no second
+read of it, a pruned log, another log table with no index on `ts`, a field
+older than 7 days), and no answer while another request holds the project or
+a read fails. It also pins what the index does not see on its own: a row that
+turns up below the window and a write with no log row, both seen after the
+7-day rebuild. A last project has fields too large for a lookup to build
+(`liveBuildRows` set to 50): the lookup marks the field and the cron
+(`maintain()`) builds it; a lookup made from a second connection while the
+cron reads answers, and a change it syncs reaches the field being built; a
+data dictionary change while the cron reads keeps that build from counting;
+the refresh before the 7 days are up answers throughout and replaces a key no
+log row reported; a field wanted for 15 minutes is left to a cron that ran a
+minute ago and built by a lookup when none has run; and the cron stops at its
+deadline and drops a field no lookup asked for in 30 days. `tests/scan_cron_php.php` checks the cron's declaration, its
+off switch and that a database failure comes back as its summary line.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
 asks the table which records hold the value and reads only those through
 getData; its mock answers the table from `REDCap::$data` and can confine
 getData to one Data Access Group, as REDCap does for a user in one. Each
 lookup is asked again with the table unreadable, and the export must give the
-same answer. It also covers a returned value kept out of a form the person who
+same answer. The whole suite runs again in a second process (`--index`) with
+the fake value index, and must pass unchanged. It also covers a returned value kept out of a form the person who
 saved may only read, the `formReadOnly` flag of a read-only or locked form, the
 value the page sends for an `in` field on the tagged field's own form, and the
 scan index built from the table. The browser half of the last two is in
@@ -1063,6 +1108,27 @@ marked `UNK` are not duplicates), the `unique-check` and `exists-check`
 endpoints, the page config (codes, never their labels), and a code in a
 `@UVJUSTIFY` reason field, which gives no reason.
 
+## `support/` — code only the suites run
+
+Two pieces of the scan are test code and live here, not under `php/`
+(QUA-3). `ArrayScanStore.php` is the in-memory scan store: a second,
+independent implementation of `Scan\ScanStore`, so the fast suites run the
+store contract in milliseconds and `tests/mysql/run.php` runs the same contract
+against `SqlScanStore` on real servers. `scan_facade.php` is the legacy
+one-request scan, `scan_project()`, with its time and memory guard and the two
+sinks only it used. Sixteen suites call `$module->scanProject(...)`, which
+their framework stub forwards there. Each record still goes through the
+module's own `scanRecord()` and `ruleFindings()`, which the durable scan and
+the save audit use, so a verdict it finds is the module's verdict. A rule's
+problem is listed once; an extended context that could not be resolved, or a
+spent evaluation budget, is listed per record with a `record` key, and a spent
+budget also adds a line to `incomplete`, as the durable scan keeps them. Batching,
+leases and memory of the durable scan are tested in `scan_service_php.php`,
+`scan_worker_php.php` and the MySQL matrix, not here.
+`return_targets.php` gives every field a `"return"` writes to `@READONLY`,
+which the module requires (EXS-13), so a suite can build its dictionary
+without action tags; a check of that refusal leaves its field as written.
+
 ## `hook_php.php` — the audit-path contract
 
 Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.
@@ -1094,8 +1160,8 @@ differently (`.`, `\s`, `\S`, negated classes, astral characters) and the
 ## `tests/mysql/` — the real-database suite
 
 `tests/mysql/cases/justified.php` checks `uv_finding.justified` (@UVJUSTIFY,
-schema version 6) on a real server. It covers the column on a fresh install
-and after migrating a version-5 installation that holds findings (run again,
+schema version 7) on a real server. It covers the column on a fresh install
+and after migrating a version-6 installation that holds findings (run again,
 and run with the column added but the version row lost); the 1 and 0 the
 store writes and `FindingRowMapper` reads back, in both stores; the keys
 that leave the flag out of a finding's identity, so a finding saved again
@@ -1112,7 +1178,9 @@ stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
 `when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
-matching). Green CI means the module's client and server engines agree with
+matching). `tests/ci_workflow_js.cjs` fails when a suite in `tests/` is named by no
+workflow, or when a plain `run:` has lines under it, which YAML folds into one
+command. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 
@@ -1127,7 +1195,7 @@ end-to-end checks for the server engine and run in CI on every push.
 
 ## Event and instance validation
 
-Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, blank typed dates, Boolean unknowns and live members. `php tests/temporal_adversarial_php.php` is differential: it resolves every reference and binding shape from every host context of 60 seeded random records through both the shared (once-per-record) and the unshared resolver and requires identical results, then checks exact-decimal addition against the digit-string path on 20,000 pairs. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
+Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, blank typed dates, Boolean unknowns and live members. `php tests/temporal_adversarial_php.php` is differential: it resolves every reference and binding shape from every host context of 60 seeded random records through both the shared (once-per-record) and the unshared resolver and requires identical results, then checks exact-decimal addition against the digit-string path on 20,000 pairs. A shared result that names a pool must hold the same values in the pool, less its skipped entry. `php tests/collection_index_php.php` checks `CollectionIndex`, which answers `any` and `all` over a saved collection with binary searches, against the member-by-member loop on 115,200 random comparisons (operators, sides, case modes, blank polarity, a skipped entry). `node tests/exact_decimal_js.cjs` checks the engine's exact sum and product, the twins of `ExactDecimal`, against BigInt on 4,000 sums and 3,020 products, with the 4,096-character limit and the time 700 long values take. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
 
 `php tests/docs_examples_php.php` parses every action tag printed in `docs/action_tag_validation_examples.md`, `docs/EVENT-INSTANCE-REFERENCES.md` and `docs/region-site-choices-example.txt` with the real annotation parser. Tags in a block fenced as `text invalid` must be refused; every other tag must parse without a configuration error. A `# refused: <text>` comment before a refused tag requires its error to contain that text. A block fenced as `text expect` lists `input => result` lines for the last `@UVALIDATE`, `@UVRANGE` or `@UVEXISTS`-with-`where` tag of the block before it; each line must produce the printed result. An `@UVALIDATE` or `@UVRANGE` line runs through the server verdict. An `@UVEXISTS` line gives the entry that holds the value (`SP-1 with consent=1, status=3 => filtered`) and runs only the `where` test the lookup makes on one entry (`AnnotationRules::existsWhereHolds`), with no lookup and no read; it is not written to the fixture. The same lines are written to `tests/docs_expect_fixture.json` (regenerate with `--write`; a stale fixture fails the test), and `node tests/docs_examples_js.cjs` replays them through the browser engine, which must accept or refuse each one-ID value and split each pooled value exactly as the server did.
 

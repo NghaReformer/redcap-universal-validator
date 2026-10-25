@@ -24,7 +24,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
     require_once __DIR__ . '/../php/Scan/SourceFence.php';
@@ -182,19 +182,45 @@ namespace INSPIRE\UniversalValidator\Scan {
     // TOO since B10: it finished outright while the list was walked inside
     // the start request, and a work request now lists a slice of it under a
     // lease - that planner is the worker in flight.
-    check('cancel: a planning run goes through cancelling, because a planner may be mid-slice',
-        ScanPhase::cancelTarget('planning') === 'cancelling');
-    check('cancel: a working run goes through cancelling first',
-        ScanPhase::cancelTarget('scanning') === 'cancelling'
-        && ScanPhase::cancelTarget('catch-up') === 'cancelling'
-        && ScanPhase::cancelTarget('unique-finalize') === 'cancelling'
-        && ScanPhase::cancelTarget('rollup-finalize') === 'cancelling');
-    check('cancel: cancelling twice is refused rather than repeated',
-        ScanPhase::cancelTarget('cancelling') === null);
-    check('cancel: a finished run cannot be cancelled',
-        ScanPhase::cancelTarget('terminal') === null);
-    check('cancel: nor can a run whose phase this build cannot read',
-        ScanPhase::cancelTarget('finalising') === null);
+    //
+    // Asked of the stop itself: the store's cancel(), which
+    // ScanService::stopRun() calls. ScanPhase::cancelTarget() answered for a
+    // phase alone, but nothing in the module called it, and it refused the
+    // second stop the store allows; that one bumps the epoch again, and
+    // stopRun() then finishes a run nobody holds (R2O-5). It was deleted for
+    // QUA-3. Each answer: [cancel() returned, the phase after, epoch bumps].
+    $runsOf = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $runsOf->setAccessible(true);
+    $stopFrom = function ($phase) use ($runsOf) {
+        $store = new ArrayScanStore();
+        $runId = (int) $store->startRun(810, ['created_by' => 'alice'])['run']['run_id'];
+        if ($phase === 'terminal') {
+            $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        } else {
+            $rows = $runsOf->getValue($store);
+            $rows[$runId]['phase'] = $phase;
+            $runsOf->setValue($store, $rows);
+        }
+        $before = $runsOf->getValue($store)[$runId];
+        $ok = $store->cancel(810, $runId, 'alice');
+        $after = $runsOf->getValue($store)[$runId];
+        return [$ok, $after['phase'], $after['lease_epoch'] - $before['lease_epoch']];
+    };
+    check('cancel: a planning run goes through cancelling, because a planner may be mid-slice (got '
+        . json_encode($stopFrom('planning')) . ')', $stopFrom('planning') === [true, 'cancelling', 1]);
+    check('cancel: a working run goes through cancelling first, its epoch bumped',
+        $stopFrom('scanning') === [true, 'cancelling', 1]
+        && $stopFrom('catch-up') === [true, 'cancelling', 1]
+        && $stopFrom('unique-finalize') === [true, 'cancelling', 1]
+        && $stopFrom('rollup-finalize') === [true, 'cancelling', 1]);
+    check('cancel: a run still stopping can be stopped again: the epoch is bumped once more, and it stays cancelling',
+        $stopFrom('cancelling') === [true, 'cancelling', 1]);
+    check('cancel: a finished run cannot be cancelled, and nothing about it changes',
+        $stopFrom('terminal') === [false, 'terminal', 0]);
+    // cancelTarget() refused a phase it could not read; the stop does not,
+    // so a run left in a phase of another build can still be stopped.
+    check('cancel: a run in a phase this build cannot read is stopped all the same',
+        $stopFrom('finalising') === [true, 'cancelling', 1]);
 
     // -- the plan's derivation table, row for row ---------------------------
     //

@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 6;
+    const VERSION = 7;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -93,6 +93,11 @@ final class Schema
         'project_seq',
         'scan_plan',
         'rate_bucket',
+        // Version 6: the value index of the live lookups (LookupIndex).
+        'lookup_key',
+        'lookup_field',
+        'lookup_sync',
+        'lookup_record',
     ];
 
     /**
@@ -139,6 +144,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 7) return self::statementsV7();
         if ((int) $version === 6) return self::statementsV6();
         if ((int) $version === 5) return self::statementsV5();
         if ((int) $version === 4) return self::statementsV4();
@@ -703,7 +709,83 @@ final class Schema
     }
 
     /**
-     * Version 6: whether a reason (@UVJUSTIFY) stands for the finding, 1 or
+     * Version 6: the value index of the live @UVUNIQUE and @UVEXISTS lookups
+     * (LookupIndex). Four CREATE TABLE IF NOT EXISTS, the same statements
+     * ensureLookupIndex() runs on an installation that never turns the scan on.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV6()
+    {
+        $out = [];
+        foreach (self::lookupIndexDdl() as $sql) $out[] = ['sql' => $sql, 'skipIf' => null];
+        return $out;
+    }
+
+    /**
+     * The lookup index's tables.
+     *
+     * uv_lookup_key: one row per (project, field, key, record). The key is the
+     * MD5 of the value's lookup key, so a value of any length fits and two keys
+     * that collide only add a record the caller confirms. Record ids and field
+     * names are VARBINARY: compared as bytes, as the data table's rows are
+     * matched, and a record id of 100 characters can take 400 bytes. `gen` is
+     * the build that wrote the key, so a rebuild can clear the keys it did not
+     * write. uv_lookup_field: how each field's keys were built, whether they
+     * are complete, the build running now, when a lookup asked for a build
+     * the cron must do and when a lookup last asked for the field.
+     * uv_lookup_sync: how far each project's log has been read.
+     * uv_lookup_record: the log position each record was last indexed at.
+     *
+     * @return string[]
+     */
+    private static function lookupIndexDdl()
+    {
+        $opts = ' ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4';
+        return [
+            'CREATE TABLE IF NOT EXISTS ' . self::table('lookup_key') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                field_name VARBINARY(100) NOT NULL,
+                key_hash BINARY(16) NOT NULL,
+                record VARBINARY(400) NOT NULL,
+                gen INT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, field_name, key_hash, record),
+                KEY ix_record (project_id, record, field_name)
+            )' . $opts,
+            'CREATE TABLE IF NOT EXISTS ' . self::table('lookup_field') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                field_name VARBINARY(100) NOT NULL,
+                spec VARCHAR(80) NOT NULL,
+                ready TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                built_at INT UNSIGNED NOT NULL DEFAULT 0,
+                gen INT UNSIGNED NOT NULL DEFAULT 0,
+                building_at INT UNSIGNED NOT NULL DEFAULT 0,
+                wanted_at INT UNSIGNED NOT NULL DEFAULT 0,
+                asked_at INT UNSIGNED NOT NULL DEFAULT 0,
+                wipe TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, field_name)
+            )' . $opts,
+            'CREATE TABLE IF NOT EXISTS ' . self::table('lookup_sync') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                log_table VARCHAR(64) NOT NULL,
+                data_table VARCHAR(64) NOT NULL,
+                synced_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                meta_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                build_after INT UNSIGNED NOT NULL DEFAULT 0,
+                samples VARCHAR(1000) NOT NULL,
+                PRIMARY KEY (project_id)
+            )' . $opts,
+            'CREATE TABLE IF NOT EXISTS ' . self::table('lookup_record') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                record VARBINARY(400) NOT NULL,
+                version BIGINT UNSIGNED NOT NULL,
+                PRIMARY KEY (project_id, record)
+            )' . $opts,
+        ];
+    }
+
+    /**
+     * Version 7: whether a reason (@UVJUSTIFY) stands for the finding, 1 or
      * 0. The rollup counts the two apart and a scan whose findings all have a
      * reason is clean (ScanPromotion::tally). 0 for every existing row, which
      * is what every finding stored before the tag existed was. And the run's
@@ -712,15 +794,13 @@ final class Schema
      * apart (ScanPromotion::findingsOf, justifiedOf). 0 for every existing
      * run. Two ALTERs, each skipped when its column is there.
      *
-     * VERSION 6 STAYS OPEN until the release that ships it, then freezes as
-     * 1 and 2 did. No release holds it yet (2.3.0-rc.2 is at 5), which is why
-     * detail_justified could still join it. A test database created at 6
-     * before detail_justified existed reports version 6 and gets nothing from
-     * migrate(): drop it and create it again.
-     *
-     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     * VERSION 7 STAYS OPEN until the release that ships it, then freezes as
+     * 1 and 2 did. 2.3.0-rc.3 ships version 6 (the lookup index), so these
+     * columns, which this branch first wrote as version 6, are version 7. A
+     * test database made on this branch before then says version 6 and has
+     * no lookup tables: drop it and create it again.
      */
-    private static function statementsV6()
+    private static function statementsV7()
     {
         $f = self::table('finding');
         $r = self::table('scan_run');
@@ -849,6 +929,26 @@ final class Schema
         }
     }
 
+    /**
+     * The lookup index's tables, installed whether or not the scan was asked
+     * for, for the reason ensureRateBucket() gives: the live lookups run on
+     * every installation. No version row; one no-op statement per table once
+     * they exist. False when a statement failed (a database user without
+     * CREATE): the lookups then read the data table, as before.
+     *
+     * @return bool
+     */
+    public static function ensureLookupIndex($module)
+    {
+        if (!is_callable([$module, 'query'])) return false;
+        try {
+            foreach (self::lookupIndexDdl() as $sql) $module->query($sql, []);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     public static function migrate($module)
     {
         $from = self::currentVersion($module);
@@ -942,11 +1042,11 @@ final class Schema
                                    . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
-            if ($v === 6) {
+            if ($v === 7) {
                 foreach ([['finding', 'the finding table', 'justified'], ['scan_run', 'the run table', 'detail_justified']] as $c) {
                     if (self::alreadyApplied($module, ['column', self::table($c[0]), $c[2]])) continue;
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
-                            'why' => 'schema version 6 did not verify after it was applied: ' . $c[1]
+                            'why' => 'schema version 7 did not verify after it was applied: ' . $c[1]
                                    . ' has no ' . $c[2] . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }

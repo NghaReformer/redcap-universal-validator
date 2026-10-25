@@ -67,10 +67,10 @@ read `JSON.parse(document.getElementById('inspire-validator-config').textContent
 
 - [ ] **[auto]** Each `xn_*` field except `xn_xss` shows a configuration error
       whose text matches its field note.
-- [ ] **[auto]** Known gaps from the offline run, confirm live:
-      `xn_rel_nonrep` and `xn_ambiguous` show NO configuration error; they
-      are dropped at run time as "invalid, unresolved" / "ambiguous,
-      unresolved" (finding C3).
+- [ ] **[auto]** `xn_rel_nonrep` and `xn_ambiguous` show a configuration
+      error ("needs a repeating source" / "is ambiguous ... needs an instance
+      selector"). Before the C3 fix they were dropped at run time as
+      "invalid, unresolved" / "ambiguous, unresolved".
 - [ ] **[auto]** `xn_xss`: type `x`; the message shows the literal text
       `<img src=x ...><b>bold?</b>`, no image request, no bold.
 - [ ] **[auto]** `wb_err_event` on wb_test (event 351) was a config error
@@ -101,7 +101,7 @@ save unless the step says so.
 | xv_window | 379 | 2026-06-01 | "Outside the 120-day window" |
 | xv_date_dmy | 379 | 09-01-2026 | "Before consent (D-M-Y)"; 11-01-2026 passes |
 | xv_dt | 379 | 01-10-2026 08:59 | "Before the consent time"; 09:00 passes |
-| xv_dmy_legacy | 380 | (seeded 10-02-2026) | page shows a violation, audit/scan stay silent: finding C1 |
+| xv_dmy_legacy | 380 | (seeded 10-02-2026) | passes on the page, as the audit and scan do (finding C1, fixed); before the fix the page showed a violation |
 | xv_dose | 379 | 40 | "Total dose exceeds the enrolment limit" (40+5+5+5 > 50) |
 | xv_hr | 379 | 71 | "Highest heart rate so far" (others max 70) |
 | xv_kit | 380 | K-001 | duplicate of Baseline kit (record scope) |
@@ -140,21 +140,24 @@ readable values.
 
 - [ ] **[auto]** Save XE-2 event 351 xe_enrol unchanged. Expected: findings for
       every XE-2 context whose rule depends on enrolment values.
-- [ ] **[auto] Finding C2 check**: the audit also logs
-      `xv_ae_note required-blank` for XE-2 at **followup_arm_1**, where
-      xe_visit was never entered (only xe_close is saved there).
+- [ ] **[auto]** The audit also logs `xv_ae_note required-blank` for XE-2
+      at **followup_arm_1**, where xe_visit was never entered (only xe_close
+      is saved there). This is expected, because a rule whose condition reads another
+      event is checked in every designated context that holds data (review
+      R3G-1). Finding C2 was about counts and references only.
 - [ ] **[auto]** Save an unrelated legacy form (wb_test): no extended reads,
       no new log rows.
 - [ ] **[auto]** Save XE-2 Baseline xr_specimen instance 3 twice: count
       duplicate rows written per save (finding P4 predicts one row per
       dependent context on every save).
-- [ ] **[auto]** `uvalidate-unconfigurable` rows: note how many appear for
-      designed gaps (first visit, instance 1). Every save writes them.
+- [ ] **[auto]** `uvalidate-unconfigurable` rows: none appear for designed
+      gaps (first visit, instance 1) since the C8 fix; the scan still lists
+      those places as not checked.
 
 ## Phase 4: scans
 
 - [ ] **[auto]** Direct scan: compare the violation list with
-      `expected_violations.csv` (37 rows, 3 of them marked UNRESOLVED).
+      `expected_violations.csv` (38 rows, 3 of them marked UNRESOLVED).
 - [ ] **[auto]** Durable scan: same list; unresolved rules listed apart.
 - [ ] **[auto]** Change one annotation while a durable scan runs: the old
       run refuses further work.

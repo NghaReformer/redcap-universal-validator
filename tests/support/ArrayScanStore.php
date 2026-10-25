@@ -18,6 +18,9 @@ namespace INSPIRE\UniversalValidator\Scan;
  * server are checked where they can be. Neither substitutes for the other, and
  * a behaviour asserted only here is explicitly NOT proved for production.
  *
+ * WHERE IT LIVES. Under tests/support since QUA-3: no production code builds
+ * it, so it does not ship as part of the module's own code.
+ *
  * WHAT IT CANNOT PROVE, and must not be read as proving: the concurrency
  * invariants. Single-process PHP has no second connection, so "the engine
  * refuses the second active run" is here a matter of this class checking an

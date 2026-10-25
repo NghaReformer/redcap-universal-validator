@@ -38,8 +38,7 @@
  * NEGATIVE — because a wiring test that cries wolf is one that gets deleted:
  *
  *   Name collisions are not resolved. `findings(` anywhere in the shipped tree
- *   counts for ScanStore::findings, SqlScanStore::findings and
- *   ArrayScanStore::findings alike. An interface and its implementations
+ *   counts for ScanStore::findings and SqlScanStore::findings alike. An interface and its implementations
  *   therefore stand or fall together, which is the right granularity anyway:
  *   what matters is whether the CAPABILITY is reachable.
  *
@@ -74,14 +73,6 @@ namespace {
      * ===================================================================== */
     $allowed = [
 
-        // -- test accessors. ArrayScanStore lives under php/Scan/ only because
-        //    production type-hints ScanStore; these four read state that no
-        //    production caller has any business asking for.
-        'ArrayScanStore::candidates'  => 'test accessor on the in-memory store',
-        'ArrayScanStore::allFindings' => 'test accessor on the in-memory store',
-        'ArrayScanStore::allAudits'   => 'test accessor on the in-memory store',
-        'ArrayScanStore::recordState' => 'test accessor on the in-memory store',
-
         // -- scheduled for DELETION, not for wiring.
         // The six leaseSlot/releaseSlot entries that stood here are GONE, not
         // moved: wave 2 deleted the methods. This check is what noticed - an
@@ -100,7 +91,6 @@ namespace {
         'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
         'ScanStore::supersedePrevious'      => 'wave 10 (W4-D1) wires the cron: until then a finished run leaves the previous generation\'s rows active',
         'SqlScanStore::supersedePrevious'   => 'wave 10 (W4-D1), with the contract',
-        'ArrayScanStore::supersedePrevious' => 'wave 10 (W4-D1), with the contract',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
@@ -110,7 +100,6 @@ namespace {
         //    findings() filters on generation_id alone and generation_id was
         //    the literal 1 for every run of every project until wave 4.
         'ScanStore::findings'                    => 'wave 11 (B5): there is no way to read a finding, and a read path built before wave 4 is a cross-project leak',
-        'ArrayScanStore::findings'               => 'wave 11 (B5), with the contract',
         'SqlScanStore::findings'                 => 'wave 11 (B5), with the contract',
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
         'ScanReport::present'                    => 'wave 11 (B5): the findings table; the stores have no findings read until wave 8',
@@ -132,13 +121,15 @@ namespace {
         //    the whole mechanism: the ROTTED check insisted, and the fix was to
         //    delete three lines. Nothing else about the list is different.
 
+        // -- ArrayScanStore moved to tests/support (QUA-3): no production code
+        //    constructs it, so its seven lines (four test accessors and three
+        //    "with the contract") left this list with it.
+
         // -- NOTHING IS SCHEDULED. These are the entries that should be
         //    uncomfortable to read. Each states what is lost by its absence.
         'ScanStore::writeManifest'      => 'no scheduled caller: production streams appendManifest() then freezeManifest(), so this is a test convenience living on the production contract',
-        'ArrayScanStore::writeManifest' => 'no scheduled caller, with the contract',
         'SqlScanStore::writeManifest'   => 'no scheduled caller, with the contract',
         'ScanPhase::consistent'         => 'no scheduled caller: the phase/state agreement it checks is never checked',
-        'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
         'Hmac::hex'                     => 'no scheduled caller: a hex rendering nothing renders',
     ];

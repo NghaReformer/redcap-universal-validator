@@ -6,9 +6,9 @@
  * it builds any record through getData (UNQ-7, PRF-2). That read is the one
  * statement in the lookup a mock cannot vouch for: the table name comes from
  * redcap_projects, the rows come back through the framework's query(), and its
- * cost is decided by which index the server picks. So this case gives it the
- * indexes REDCap creates on redcap_data, not the fixture's own, and asserts the
- * plan of the statement the class actually sent.
+ * cost is decided by which index the server picks. The fixture gives
+ * redcap_data the indexes REDCap creates on it (uv_redcap_schema), and this
+ * case asserts the plan of the statement the class actually sent.
  *
  * TWO PROJECTS. 900 is under test; 901 holds the same values, so a statement
  * that lost its project predicate answers with the neighbour's records.
@@ -23,12 +23,6 @@ $NEIGHBOUR = uv_neighbour($PID);
     uv_redcap_schema($A);
     uv_redcap_project($A, $PID);
     uv_redcap_project($A, $NEIGHBOUR);
-    // The keys REDCap itself puts on redcap_data, in place of the fixture's
-    // (project_id, field_name, record), which a real installation does not have.
-    $A->query('ALTER TABLE redcap_data DROP INDEX project_id,
-        ADD KEY event_id_instance (event_id, instance),
-        ADD KEY proj_record_field (project_id, record, field_name),
-        ADD KEY project_field (project_id, field_name)');
 
     // A table shaped like a real one, where one field of one project is a
     // small part of the rows: 900 and 901 each hold 600 records of twelve

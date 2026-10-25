@@ -2,6 +2,8 @@
 /** End-to-end opt-in event/repeat regression tests with field-filtering reads. */
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;
         public function getSubSettings($k, $pid = null) {
@@ -91,6 +93,7 @@ namespace {
         public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
     }
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -211,6 +214,57 @@ namespace {
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');REDCap::$rights['nurse']['forms']['fb']='0';
     $p=render($m,'fa');check('protected source defers live comparison',!empty(ruleOf($p,'a_val')['deferred']));
     check('protected snapshot removed',strpos($p['raw'],'["lit","11"]')===false);
+    // Wargame S1: what the page gets for a rule over an instrument the viewer may
+    // not read is the same whatever that instrument holds. An empty collection
+    // used to ship live, and a match told "absent" (none), "unauthorized" (one)
+    // and "ambiguous" (two or more) apart.
+    $denied=function($expr,$refs,callable $data,$survey=false){
+        $m=temporal($expr,$refs);REDCap::$rights['nurse']['forms']['fb']='0';$data();
+        if(!$survey)return json_encode(ruleOf(render($m,'fa'),'a_val'));
+        $fold=new ReflectionMethod($m,'foldTemporalRules');$fold->setAccessible(true);
+        return json_encode($fold->invoke($m,[['type'=>'constraint','fields'=>['a_val'],'assert'=>$expr,'references'=>$refs]],PID,'1','fa',1,1,'survey'));
+    };
+    $count=['n'=>['field'=>'b_open','event'=>'baseline_arm_1','aggregate'=>'count']];
+    $full=$denied('[a_val]>{n}',$count,function(){});
+    $empty=$denied('[a_val]>{n}',$count,function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb']);});
+    check('S1: a protected count is refused alike with entries and without (got '.$empty.')',$full===$empty&&strpos($full,'unavailable: unauthorized.')!==false&&strpos($full,'assertAst')===false);
+    $match=['m'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]];
+    $keyed=function($key){return function()use($key){
+        REDCap::$data[1]['repeat_instances'][1]['fb'][6]=['b_open'=>'1','key_b'=>'AA','fb_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fb'][8]=['b_open'=>'2','key_b'=>'AA','fb_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']=$key;};};
+    $shapes=array_map(function($k)use($denied,$match,$keyed){return $denied('[a_val]<{m}',$match,$keyed($k));},['Z','A','AA']);
+    check('S1: no, one and two protected matches give the page the same rule (got '.json_encode($shapes).')',count(array_unique($shapes))===1&&strpos($shapes[0],'unavailable: unauthorized.')!==false);
+    $shapes=array_map(function($k)use($denied,$keyed){return $denied('[a_val]>={c}',['c'=>['field'=>'b_open','event'=>'baseline_arm_1','aggregate'=>'count','match'=>['key_b'=>'[key_a]']]],$keyed($k));},['Z','A']);
+    check('S1: ... and a protected count of matches too',count(array_unique($shapes))===1);
+    // On a survey every other entry is protected, the instrument's own included.
+    $others=['o'=>['field'=>'a_val','aggregate'=>'count','excludeCurrent'=>true,'match'=>['key_a'=>'[key_a]']]];
+    $one=$denied('[a_val]>={o}',$others,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='SECRET-KEY-42';},true);
+    $none=$denied('[a_val]>={o}',$others,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='SECRET-KEY-42';
+        unset(REDCap::$data[1]['repeat_instances'][1]['fa'][3],REDCap::$data[1]['repeat_instances'][2]);},true);
+    check('S1: a survey gets the same rule whether other entries exist or not, and never the saved key (got '.$none.')',
+        $one===$none&&strpos($none,'SECRET-KEY-42')===false);
+    $self=['s'=>['field'=>'a_val','match'=>['key_a'=>'[key_a]']]];
+    $alone=$denied('[a_val]>={s}',$self,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='K';},true);
+    $shared=$denied('[a_val]>={s}',$self,function(){REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='K';REDCap::$data[1]['repeat_instances'][1]['fa'][3]['key_a']='K';},true);
+    check("S1: a survey match that finds only this entry looks like one that finds two (got ".$alone." | ".$shared.")",$alone===$shared);
+    $gone=function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);};
+    $q='[a_val]<[baseline_arm_1][b_open][2]';
+    check('S1: a protected entry that is missing looks like one that is there',$denied($q,null,function(){})===$denied($q,null,$gone));
+    $last=['x'=>['field'=>'b_open','event'=>'baseline_arm_1','instance'=>'last-instance']];
+    $missing=$denied('{x}>5',$last,function(){unset(REDCap::$data[1]['repeat_instances'][1]['fb']);});
+    check('S1: with nothing live, a protected entry that is missing gives no reason of its own (got '.$missing.')',
+        strpos($missing,'unresolved')!==false&&strpos($missing,'absent')===false);
+    $mixed=function(callable $data)use($denied){return $denied('[a_val]>0',null,function()use($data){
+        REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"when":"[baseline_arm_1][b_open][2]>0","assert":"[a_val]>{n}","references":{"n":{"field":"b_open","event":"baseline_arm_1","aggregate":"count"}}}';$data();});};
+    check('S1: an unresolved protected "when" adds nothing to a refused "assert"',$mixed(function(){})===$mixed($gone));
+    $elapsed=function(callable $data)use($denied){return $denied('[a_val]>0',null,function()use($data){
+        foreach(['a_val','b_open'] as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_ymd';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-01-01';REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';
+        REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"assert":"{d}>=0","references":{"d":{"field":"a_val","type":"date","elapsedFrom":"[baseline_arm_1][b_open][2]","unit":"days"}}}';$data();});};
+    $there=$elapsed(function(){});
+    check('S1: an elapsed time from a protected date is refused alike whether the date is there or not (got '.$there.')',
+        $there===$elapsed($gone)&&strpos($there,'unavailable: unauthorized.')!==false);
     $m=temporal('[a_val]<{matched}',['matched'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]]);
     $p=render($m,'fa');$r=ruleOf($p,'a_val');
     check('matched rule not deferred',empty($r['deferred'])&&empty($r['configError']));
@@ -264,6 +318,73 @@ namespace {
     $m->redcap_save_record(PID,'1','fb',1,null);
     check('failed audit read incomplete',saying(array_column(unconf($m),1),'why','incomplete')===1);
     check('failed audit read never violation',!invalid($m));
+    // Wargame P4: the saved entry is judged first, and another entry only where the
+    // save can change its verdict. Eight entries on fa, every one violating.
+    $many=function($ann){
+        $m=temporal('[a_val]>0');REDCap::$dictionary['a_val']['field_annotation']=$ann;
+        $rows=[];for($k=1;$k<=8;$k++)$rows[$k]=['a_val'=>(string)(20-$k),'key_a'=>'A','fa_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;unset(REDCap::$data[1]['repeat_instances'][2]);
+        $m->projectSettings['qualified-audit-max-contexts']=5;
+        return $m;
+    };
+    $at=function($m){$s=[];foreach(invalid($m) as $c)$s[]=(int)$c[1]['instance'];sort($s);return $s;};
+    $own=tag('[a_val]<[baseline_arm_1][b_open][2]');
+    $m=$many($own);$m->redcap_save_record(PID,'1','fa',1,null,null,null,8);
+    check('P4: saving entry 8 of 8 judges entry 8, past a limit of 5, and only it (got '.json_encode([$at($m),count(unconf($m))]).')',$at($m)===[8]&&!unconf($m));
+    $m->logCalls=[];$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: two saves of entry 3 log two rows, as a rule without event references does (got '.json_encode($at($m)).')',$at($m)===[3,3]);
+    $m=$many($own);$m->redcap_save_record(PID,'1','fb',1,null,null,null,2);
+    check('P4: saving the entry they all read re-checks them, up to the limit, and says where it stopped (got '.json_encode([$at($m),array_column(array_column(unconf($m),1),'instance')]).')',
+        $at($m)===[1,2,3,4,5]&&array_column(array_column(unconf($m),1),'instance')===['6']);
+    $m=$many(tag('[a_val]>[a_val][previous-instance]'));$m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: a rule that reads other entries of the saved form re-checks them (got '.json_encode($at($m)).')',in_array(4,$at($m),true)&&in_array(3,$at($m),true));
+    // Wargame C8: instance 1 has no previous instance, so the rule does not apply there. That
+    // is the record, not the configuration: the audit writes no notice for it, the scan still
+    // lists where it could not judge.
+    $m=$many(tag('[a_val]>[a_val][previous-instance]'));$m->redcap_save_record(PID,'1','fa',1,null,null,null,1);
+    $why=array_map(function($c){return $c[1]['why'];},unconf($m));
+    check('C8: saving instance 1 writes no notice for the instance before it (got '.json_encode($why).')',!preg_grep('/unavailable/',$why));
+    $res=$m->scanProject(PID);
+    check('C8: ... and the scan still says instance 1 was not judged (got '.json_encode(array_column($res['unconfigurable'],'why')).')',
+        (bool)preg_grep('/instance 1: absent/',array_column($res['unconfigurable'],'why')));
+    // Wargame P5: three records that each spend the evaluation budget are three unfinished
+    // records, each named, not two notes shared by rule and position.
+    $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]<={x}','references'=>['x'=>['field'=>'a_val','aggregate'=>'average','excludeCurrent'=>true]]]));
+    $rows=[];for($k=1;$k<=60;$k++)$rows[$k]=['a_val'=>str_repeat('7',4000),'key_a'=>'A','fa_complete'=>'2'];
+    REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;REDCap::$data[2]=REDCap::$data[3]=REDCap::$data[1];
+    $res=$m->scanProject(PID);
+    $spent=array_column(array_filter($res['unconfigurable'],function($u){return strpos($u['why'],'budget exhausted')!==false;}),'record');sort($spent);
+    check('P5: each of three records names its spent budget (got '.json_encode([$spent,$res['incomplete'],$res['status']]).')',
+        $spent===['1','2','3']&&count(preg_grep('/^record [123] was not fully checked/',$res['incomplete']))===3&&$res['status']==='incomplete');
+    unset(REDCap::$data[2],REDCap::$data[3]);
+    // Wargame P6: the page charges each member by its size in the page JSON, where < is
+    // six bytes. 2,000 members of 640 "<" are 7.7 MB there and spend the budget; the same
+    // members of plain text are 1.3 MB and reach the page.
+    $page=function($v)use($many){
+        $m=$many(tag("[a_val][any-instance]<>'x'"));
+        $rows=[];for($k=1;$k<=2000;$k++)$rows[$k]=['a_val'=>$v.$k,'key_a'=>'A','fa_complete'=>'2'];
+        REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;
+        ob_start();$m->redcap_data_entry_form_top(PID,'1','fa',1,null,1);$html=ob_get_clean();
+        // strpos, not render()'s regex: a payload over 1 MB passes PCRE's backtrack limit.
+        $open='id="inspire-validator-config">';$a=strpos($html,$open)+strlen($open);$raw=substr($html,$a,strpos($html,'</script>',$a)-$a);
+        $rule=ruleOf(['cfg'=>json_decode($raw,true)],'a_val');
+        return [!empty($rule['deferred'])&&in_array('Extended validation unavailable: limit.',$rule['deferredWhy']??[],true),strlen($raw)];
+    };
+    [$hex,$hexBytes]=$page(str_repeat('<',640));[$plain,$plainBytes]=$page(str_repeat('a',640));
+    check('P6: members escaped on the page spend the budget there (got '.json_encode([$hex,$hexBytes]).')',$hex&&$hexBytes<100000);
+    check('P6: ... and the same members in plain text are sent (got '.json_encode([$plain,$plainBytes]).')',!$plain&&$plainBytes>1280000);
+    $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]>={mx}','references'=>['mx'=>['field'=>'a_val','aggregate'=>'maximum','excludeCurrent'=>true]],'blockSave'=>'hard']));
+    $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: ... a binding over the saved form too (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&in_array(2,$at($m),true));
+    $m=$many('@UVUNIQUE={"scope":"record"}');foreach(REDCap::$data[1]['repeat_instances'][1]['fa'] as &$e)$e['a_val']='7';unset($e);
+    $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
+    check('P4: ... and record uniqueness (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&count($at($m))>1);
+    $m=$many($own);
+    REDCap::$dictionary['key_a']['field_annotation']='@UVASSERT='.json_encode(['assert'=>"[key_a]<>[baseline_arm_1][key_b][2]",'message'=>'key','blockSave'=>'hard']);
+    REDCap::$dictionary['a_val']['field_annotation']=tag('[a_val]>[a_val][previous-instance]');
+    $m->projectSettings['qualified-audit-max-contexts']=2;$m->redcap_save_record(PID,'1','fa',1,null,null,null,5);
+    $fields=[];foreach(invalid($m) as $c)$fields[]=$c[1]['field'].'@'.$c[1]['instance'];sort($fields);
+    check('P4: every rule\'s saved entry comes before any other entry (got '.json_encode($fields).')',$fields===['a_val@5','key_a@5']);
     $m=temporal('[a_val]<{matched}',['matched'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]]);
     REDCap::$data[1]['repeat_instances'][1]['fb'][4]['key_b']='A';
     $res=$m->scanProject(PID);check('ambiguous/absent matches not certified',!$res['violations']&&count($res['unconfigurable'])>=2);
@@ -288,6 +409,38 @@ namespace {
         ['when'=>'[b_open][previous-instance]>0'],['when'=>null]]];
     $pr=$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
     check('missing branch cannot choose fallback',!!$pr['problems']);
+    // Wargame C5: an unresolved operand leaves the condition unknown only where
+    // and/or has not decided it. [b_open][previous-instance] from instance 1 has
+    // no entry; [key_a] is 'A' here.
+    $kleene=function($key,$cond,$browser=false)use($m,$prepared,$shape,$context){
+        $rule=$key==='when'?['type'=>'required','fields'=>['a_val'],'when'=>$cond]:['type'=>'constraint','fields'=>['a_val'],'assert'=>$cond];
+        return $browser?$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context,true,function(){return true;})
+                       :$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
+    };
+    $pr=$kleene('when',"[key_a]='A' or [b_open][previous-instance]>0");
+    check('C5: true or unknown is true (got '.json_encode([$pr['rule']['when']??null,$pr['problems']]).')',($pr['rule']['when']??null)==='1=1'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='B' and [b_open][previous-instance]>0");
+    check('C5: false and unknown is false',($pr['rule']['when']??null)==='1=0'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='B' or [b_open][previous-instance]>0");
+    check('C5: false or unknown stays unknown, with its reason (got '.json_encode($pr['problems']).')',$pr['problems']===['absent','unresolved']);
+    $pr=$kleene('assert',"[key_a]='A' or [b_open][previous-instance]>0");
+    check('C5: an assert decided around the unknown passes',($pr['rule']['assert']??null)==='1=1'&&!$pr['problems']);
+    $pr=$kleene('when',"[key_a]='A' or [b_open][previous-instance]>0",true);
+    $ast=$pr['rule']['whenAst']??null;
+    $page=function($key)use($ast){return \INSPIRE\UniversalValidator\TemporalLogic::evaluate($ast,function($f)use($key){return $f==='key_a'?$key:'';},false);};
+    check('C5: the page gets the condition, live part and all (got '.json_encode([$ast,$pr['problems']]).')',!$pr['problems']&&empty($pr['rule']['deferred'])&&($ast[0]??null)==='temporal');
+    check('C5: ... and decides it where the live value does, unknown elsewhere',$page('A')===true&&$page('B')===null);
+    check('C5: ... marked as reading a snapshot, so it never blocks there',$pr['stale']===true&&($pr['rule']['blockSave']??null)==='off');
+    $pr=$kleene('when',"[baseline_arm_1][b_open][2]>0 or [b_open][previous-instance]>0",true);
+    check('C5: decided from saved values alone, the page gets the answer',($pr['rule']['whenAst']??null)===['const',true]&&!$pr['problems']);
+    $pr=$kleene('when',"[b_open][previous-instance]>0 or [baseline_arm_1][b_open][2]>99",true);
+    check('C5: undecidable with nothing live to read: deferred, with its reason',!empty($pr['rule']['deferred'])&&in_array('absent',$pr['problems'],true));
+    $pr=$kleene('when',"[key_a]='A' or [key_a][999999999999999999999]='A'");
+    check('C5: an invalid reference defers even a decided condition (got '.json_encode($pr['problems']).')',in_array('invalid',$pr['problems'],true));
+    $rule=['type'=>'required','fields'=>['a_val'],'branches'=>[
+        ['when'=>"[key_a]='A' or [b_open][previous-instance]>0"],['when'=>null]]];
+    $pr=$prepared->invoke($m,$rule,$shape,REDCap::$data[1],$context);
+    check('C5: a branch decided around the unknown is chosen (got '.json_encode([$pr['problems'],$pr['branch']??null]).')',!$pr['problems']&&($pr['branch']??null)===0);
     $rule=['type'=>'unique','fields'=>['a_val'],'branches'=>[
         ['type'=>'unique','uniqueScope'=>'record','when'=>'[baseline_arm_1][b_open][2]>0'],
         ['type'=>'unique','uniqueScope'=>'record','when'=>null]]];
@@ -300,7 +453,9 @@ namespace {
     // project's tags (temporalActivationProblems); keeping them on does not.
     $on=['enable-event-instance-refs'=>true,'rules'=>[]];
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
-    check('QUA-4: turning references on with sound tags passes the preflight',$m->validateSettings($on)===null);
+    $warned=[];set_error_handler(function($no,$msg)use(&$warned){$warned[]=$msg;return true;});
+    $pre=$m->validateSettings($on);restore_error_handler();
+    check('QUA-4: turning references on with sound tags passes the preflight, and the untagged fields raise no warning (got '.json_encode([$pre,$warned]).')',$pre===null&&!$warned);
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
     REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT='.json_encode(['assert'=>'[a_val]<[baseline_arm_1][nosuch][2]']);
     $pre=$m->validateSettings($on);
@@ -317,6 +472,24 @@ namespace {
     $m=temporal('[a_val]>0');$m->projectSettings['enable-event-instance-refs']=false;$before=render($m,'fa')['raw'];
     $m->projectSettings['enable-event-instance-refs']=true;$after=render($m,'fa')['raw'];
     check('enabled legacy-only browser payload identical',$before===$after);
+
+    // Wargame C1-B/C: on a D-M-Y field the page gets the saved Y-M-D values and the
+    // field's display format, so it converts what it shows before it compares
+    // (tests/deferral_dom_js.cjs boots the engine on these shapes).
+    $dmy=function($m,array $fields){foreach($fields as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_dmy';return $m;};
+    $m=$dmy(temporal('',null,'UVUNIQUE'),['a_val']);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2024-01-05';REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2024-01-07';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2024-01-09';
+    $p=render($m,'fa','1',1,3);$u=json_encode(ruleOf($p,'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('C1-B: record uniqueness on a D-M-Y field sends the other entries as saved, with the format (got '.json_encode([$p['cfg']['dateFormats']??null,$u]).')',
+        ($p['cfg']['dateFormats']['a_val']??null)===['date','dmy']&&strpos($u,'"2024-01-05"')!==false&&strpos($u,'"2024-01-09"')!==false&&strpos($u,'"2024-01-07"')===false);
+    check('C1-B: ... and the scan finds no duplicate there',!$m->scanProject(PID)['violations']);
+    $m=$dmy(temporal('[a_val]>={t}',['t'=>['field'=>'b_open','match'=>['key_b'=>'[key_a]']]]),['key_a','key_b']);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='2024-01-05';REDCap::$data[1]['repeat_instances'][1]['fb'][2]['key_b']='2024-01-05';
+    $p=render($m,'fa','1',1,1);$a=assertAst($p,'a_val');
+    check('C1-C: a match keyed on a D-M-Y field guards the saved key, with the format (got '.json_encode([$p['cfg']['dateFormats']??null,$a]).')',
+        ($p['cfg']['dateFormats']['key_a']??null)===['date','dmy']&&strpos($a,'["guard",[["key_a","2024-01-05"]],["lit","11"]]')!==false);
+    check('C1-C: ... and the scan reports the same violation',count($m->scanProject(PID)['violations'])===1);
 
     $m=temporal('',null,'UVUNIQUE');
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
@@ -470,6 +643,37 @@ namespace {
     check('an arm that collects nothing is a configuration error',(bool)array_filter($bad,function($e){return strpos($e,'arm 7')!==false;}));
     $res=$m->scanProject(PID);
     check('and never a confident count of zero',!$res['violations']&&count($res['unconfigurable'])>=1);
+    // Wargame C3: a reference no host context can resolve is refused when the rule is
+    // configured, instead of being deferred and logged on every save.
+    $c3=new \INSPIRE\UniversalValidator\ProjectShape([
+        1=>['name'=>'baseline_arm_1','arm'=>1,'order'=>1,'forms'=>['neg','xs','visit'],'repeats'=>['xs'],'eventRepeats'=>false],
+        2=>['name'=>'followup_arm_1','arm'=>1,'order'=>2,'forms'=>['neg','visit'],'repeats'=>['visit'],'eventRepeats'=>false],
+    ],['n1'=>['form'=>'neg'],'xe_code'=>['form'=>'neg'],'xs_id'=>['form'=>'xs'],'xs_host'=>['form'=>'xs'],'v'=>['form'=>'visit']]);
+    $c3Errors=function(array $rule,array $fields)use($c3){return \INSPIRE\UniversalValidator\TemporalRules::validateProject($rule+['fields'=>$fields],$c3);};
+    check('C3: a relative instance on a page that never repeats is refused',
+        $c3Errors(['assert'=>'[n1]=[xe_code][previous-instance]'],['n1'])===['Relative instance selector previous-instance needs a repeating source: the instrument of this rule does not repeat in any event.']);
+    check('C3: ... and one whose target never repeats',
+        $c3Errors(['assert'=>'[xs_host]=[xe_code][previous-instance]'],['xs_host'])===['Relative instance selector previous-instance targets a non-repeating instrument.']);
+    check('C3: a repeating form named without an instance is refused',
+        $c3Errors(['assert'=>'[n1]=[baseline_arm_1][xs_id]'],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
+    check('C3: ... as is a plain binding to it',
+        $c3Errors(['assert'=>'[n1]={x}','references'=>['x'=>['field'=>'xs_id','event'=>'baseline_arm_1']]],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
+    check('C3: the same reference from its own repeating entry is fine',$c3Errors(['assert'=>'[xs_host]=[baseline_arm_1][xs_id]'],['xs_host'])===[]);
+    check('C3: a relative instance from a form that repeats in one event is fine',$c3Errors(['assert'=>'[v]=[v][previous-instance]'],['v'])===[]);
+    check('C3: a count over the repeating form needs no instance',
+        $c3Errors(['assert'=>'{x}>0','references'=>['x'=>['field'=>'xs_id','event'=>'baseline_arm_1','aggregate'=>'count']]],['n1'])===[]);
+    check('C3: a withheld "from" with notFuture is left to the page',
+        $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]','windowNotFuture'=>true],['n1'])===[]);
+    // Wargame C7: the "from" date of an elapsed binding is read with the binding's type.
+    $c7=new \INSPIRE\UniversalValidator\ProjectShape([1=>['name'=>'base_arm_1','arm'=>1,'order'=>0,'forms'=>['visit'],'repeats'=>[],'eventRepeats'=>false]],
+        ['consent_date'=>['form'=>'visit','type'=>'text','validation'=>'date_ymd'],'consent_dt'=>['form'=>'visit','type'=>'text','validation'=>'datetime_dmy'],
+         'result_time'=>['form'=>'visit','type'=>'text','validation'=>'datetime_ymd'],'note'=>['form'=>'visit','type'=>'text','validation'=>'']]);
+    $c7Errors=function($from)use($c7){return \INSPIRE\UniversalValidator\TemporalRules::validateProject(['assert'=>'{h}<=48','references'=>['h'=>['field'=>'result_time','type'=>'datetime','elapsedFrom'=>$from,'unit'=>'hours']]],$c7);};
+    check('C7: a date "from" for a datetime binding is refused',$c7Errors('[consent_date]')===['Binding h elapsedFrom field must have the same date type as the binding (datetime).']);
+    check('C7: ... as is a "from" that is not a date',$c7Errors('[base_arm_1][note]')===['Binding h elapsedFrom field must have the same date type as the binding (datetime).']);
+    check('C7: a datetime "from" in another order is fine',$c7Errors('[consent_dt]')===[]);
+    check('C3: ... and refused without it, when nothing of the rule could be checked',
+        $c3Errors(['windowFrom'=>'[baseline_arm_1][xs_id]'],['n1'])===['Reference to [xs_id] in baseline_arm_1 is ambiguous: its instrument repeats there, so it needs an instance selector.']);
 
     // @UVWINDOW counted from a date in another event (2.2.0): the "from" operand
     // goes through the same resolver, entitlement and snapshot rules as a condition.
@@ -504,6 +708,10 @@ namespace {
            'windowUnit'=>'days','dateType'=>'date','dateFormat'=>'ymd','fromType'=>'date','fromFormat'=>'ymd'];
     $survey=$fold->invoke($m,[$rule],PID,'1','fa',1,1,'survey');
     check('window anchor on a survey: withheld, nothing shipped',($survey[0]['windowFromOp']??null)===['withheld']&&empty($survey[0]['deferred'])&&strpos(json_encode($survey),'2026-01-01')===false);
+    // Wargame S1: a protected anchor that cannot be read is withheld as a readable one is, with no reason.
+    $m=$win();REDCap::$rights['nurse']['forms']['fb']='0';REDCap::$data[1]['repeat_instances'][1]['fb']='not rows';$r=ruleOf(render($m,'fa'),'a_val');
+    check('S1: an unreadable protected anchor is withheld like any other, no reason given (got '.json_encode($r).')',
+        ($r['windowFromOp']??null)===['withheld']&&empty($r['deferred'])&&!isset($r['windowFromOpWhy']));
     $m=$win();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
     $res=$m->scanProject(PID);
     check('window from a blank anchor in another event: inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);
@@ -534,8 +742,11 @@ namespace {
     $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-02-31';$res=$m->scanProject(PID);
     check('...an unreadable value is never called "not in the future"',
         strpos(json_encode($res['unconfigurable']),'and the saved date is not a date this rule can read')!==false);
+    // Without notFuture nothing of the rule could be checked: a "from" that can never
+    // resolve is a configuration error (wargame C3).
     $m=$win(str_replace(',"notFuture":true','',$amb));$r=ruleOf(render($m,'fa'),'a_val');
-    check('unresolved "from" without notFuture: deferred, as before',$r&&!empty($r['deferred']));
+    check('unresolved "from" without notFuture: a configuration error naming the fix (got '.json_encode($r['configError']??null).')',
+        $r&&strpos((string)($r['configError']??''),'Reference to [b_open] in baseline_arm_1 is ambiguous')!==false);
     // A plain "from" on another repeating form: the same, on the page path.
     $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}');$r=ruleOf(render($m,'fa'),'a_val');
     check('plain "from" on another repeating form, with notFuture: withheld with its reason, rule live',
@@ -689,28 +900,36 @@ namespace {
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('two true branches of one reference, extended: a problem, nothing judged (got '.json_encode([$res['violations'],$why]).')',
         !$res['violations']&&count(array_filter($why,function($w){return strpos($w,'multiple active branches')!==false;}))>=1);
-    // One group that cannot be prepared (who-wfh's "by" names a repeating form with no
-    // instance) is named, and the other group is still judged, in the scan and the audit.
+    // One group that cannot be prepared (who-wfh's "by" reads a saved value that cannot be
+    // read: a list where a number belongs) is named, and the other group is still judged,
+    // in the scan and the audit. A reference that can never resolve, such as a repeating
+    // form with no instance, is a configuration error instead (wargame C3).
     $withHt=function($ann)use($growth){
         $m=$growth($ann);
         REDCap::$dictionary['ht']=['field_type'=>'text','form_name'=>'fb','field_annotation'=>'','text_validation_type_or_show_slider_number'=>'number_1dp'];
-        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['ht']='80';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['ht']=['80'];
         return $m;
     };
-    $wfh=' @UVRANGE={"reference":"who-wfh","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B","by":"[baseline_arm_1][ht]","hard":[-5,5]}';
+    $wfh=' @UVRANGE={"reference":"who-wfh","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B","by":"[baseline_arm_1][ht][2]","hard":[-5,5]}';
     $m=$withHt($wfa.'}'.$wfh);$res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'].':'.$v['locus'];sort($hit);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('one group not prepared, extended: the other still judged, that one named (got '.json_encode([$hit,$why]).')',
         $hit===['1/1:soft-low:who-wfa','2/1:hard-low:who-wfa']&&$why
         &&count(array_filter($why,function($w){return strpos($w,'for part of this field: reference "who-wfh": ')!==false;}))===count($why));
+    // Saving one entry can change only that entry's verdict: the rule reads its own
+    // form in its own row, and the other entries' inputs on fb did not change (wargame P4).
     $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fa',1,1);
     $u=array_map(function($c){return $c[1]['why'];},unconf($m));
-    check('... and in the audit, at each of the three entries (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
-        &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0;}))===3);
+    check('... and in the audit of one entry\'s save, at that entry (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===1&&count($u)===1
+        &&strpos($u[0],'Extended validation unavailable for part of this field: reference "who-wfh": invalid')===0);
+    $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fb',1,null,null,null,2);
+    $u=array_map(function($c){return $c[1]['why'];},unconf($m));
+    check('... and in the audit of the entry all three read, at each of the three (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
+        &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": invalid')===0;}))===3);
     // A selector that cannot be resolved sets aside its own group: here who-wfa's
-    // "when" reads [baseline_arm_1][ht] with no instance, and the fixed limits judge.
-    $sel=$wfa.',"when":"[baseline_arm_1][ht]=\'80\'"} @UVRANGE={"hard":[5,40]}';
+    // "when" reads the unreadable [baseline_arm_1][ht][2], and the fixed limits judge.
+    $sel=$wfa.',"when":"[baseline_arm_1][ht][2]=\'80\'"} @UVRANGE={"hard":[5,40]}';
     $m=$withHt($sel);REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='4.0';$res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
@@ -751,7 +970,7 @@ namespace {
     check('... inputs withheld from this viewer: that reference is advisory, the fixed limits are not (got '.json_encode($adv).')',
         $adv===[['who-wfa',true,'off',['withheld']],['',false,null,null]]);
     // Every group with a problem: no part of the field is judged, and the problems are the rule's.
-    $m=$withHt($wfa.',"when":"[baseline_arm_1][ht]=\'80\'"}'.$wfh);$res=$m->scanProject(PID);
+    $m=$withHt($wfa.',"when":"[baseline_arm_1][ht][2]=\'80\'"}'.$wfh);$res=$m->scanProject(PID);
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('every group with a problem, extended: the field as a whole is named (got '.json_encode([$res['violations'],$why]).')',
         !$res['violations']&&$why&&count(array_filter($why,function($w){return strpos($w,'part of this field')===false

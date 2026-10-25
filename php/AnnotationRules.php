@@ -208,17 +208,6 @@ class AnnotationRules
     }
 
     /**
-     * Extract the raw value of the FIRST @UVALIDATE tag (compatibility form).
-     * Returns null when the tag is absent, '' for the bare tag, otherwise the
-     * value text (bare token, 'quoted', "quoted", or a brace-balanced {...}).
-     */
-    public static function extractTag($annotation)
-    {
-        $tags = self::extractTags($annotation);
-        return $tags ? $tags[0] : null;
-    }
-
-    /**
      * Extract EVERY real @UVALIDATE tag value from an annotation, in order —
      * one field may carry several tags since 0.9.0 (branched validation: each
      * tag becomes its own rule, and Branching::resolve() turns the sharing
@@ -3957,10 +3946,16 @@ class AnnotationRules
             foreach ($frags as $frag) {
                 if (isset($frag['error'])) {
                     $tag = isset($frag['_tag']) ? $frag['_tag'] : self::TAG;
-                    $rules[] = [
+                    $rule = [
                         'type' => 'single', 'fields' => [$field],
                         'configError' => $tag . ' on "' . $field . '": ' . $frag['error'],
                     ];
+                    // The mode the broken tag belongs to, for Branching::resolve,
+                    // which switches off the field's fallback in that mode (C4)
+                    // and drops the key.
+                    $modes = ModeRegistry::tagMap();
+                    if (isset($modes[$tag])) $rule['_mode'] = $modes[$tag];
+                    $rules[] = $rule;
                     continue;
                 }
                 $canon = $frag;

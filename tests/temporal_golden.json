@@ -74,6 +74,7 @@
                 "fb_complete",
                 "record_id"
             ],
+            "returnBlankForGrayFormStatus": true,
             "events": [
                 1
             ]
@@ -90,7 +91,8 @@
                 "b_open",
                 "fb_complete",
                 "record_id"
-            ]
+            ],
+            "returnBlankForGrayFormStatus": true
         },
         {
             "project_id": 700,
@@ -113,7 +115,8 @@
                 "fb_complete",
                 "record_id"
             ],
-            "exportDataAccessGroups": true
+            "exportDataAccessGroups": true,
+            "returnBlankForGrayFormStatus": true
         }
     ],
     "identities": [

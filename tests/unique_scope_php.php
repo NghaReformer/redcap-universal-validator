@@ -27,6 +27,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $projectSettings = [];
         public $systemSettings = [];
@@ -50,6 +52,13 @@ namespace ExternalModules {
             // The data table (Scan\FieldValues), unless this run leaves it out.
             if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) {
                 return empty($GLOBALS['__NO_TABLE']) ? [['redcap_data']] : [];
+            }
+            // The named records' rows (FieldValues::recordsAmong, after the
+            // lookup index named them in the --index run).
+            if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND record IN (') !== false) {
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                $GLOBALS['__AMONG_READS'][] = $sql;
+                return \uv_among_rows($sql, $params);
             }
             if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
                 $GLOBALS['__TABLE_READS'][] = $sql;
@@ -195,18 +204,23 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
-    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/support/scan_facade.php';
+    require_once __DIR__ . '/support/fake_lookup_index.php';
+    require_once __DIR__ . '/support/ArrayScanStore.php';
 
     use INSPIRE\UniversalValidator\UniversalValidator;
 
     $n = 0; $fail = 0;
-    // Every check runs twice: with the data table (the lookup's first read)
-    // and, in a second process, without it (the export it falls back to).
+    // Every check runs three times: with the data table (the lookup's first
+    // read), in a second process without it (the export it falls back to),
+    // and in a third with a lookup index that names the records holding the
+    // value plus one that does not (tests/support/fake_lookup_index.php).
     $TABLE = !in_array('--no-table', isset($argv) ? $argv : [], true);
+    $INDEX = in_array('--index', isset($argv) ? $argv : [], true);
     $GLOBALS['__NO_TABLE'] = !$TABLE;
     function check($label, $cond) {
-        global $n, $fail, $TABLE; $n++;
-        if (!$cond) { $fail++; fwrite(STDERR, 'FAIL' . ($TABLE ? '' : ' (no data table)') . ": $label\n"); }
+        global $n, $fail, $TABLE, $INDEX; $n++;
+        if (!$cond) { $fail++; fwrite(STDERR, 'FAIL' . ($TABLE ? ($INDEX ? ' (lookup index)' : '') : ' (no data table)') . ": $label\n"); }
     }
     function uvf($form, $ann = '') {
         return ['field_type' => 'text', 'form_name' => $form, 'field_annotation' => $ann,
@@ -223,7 +237,9 @@ namespace {
         \REDCap::$calls = ['full' => 0, 'filtered' => 0, 'record' => 0];
         \REDCap::$recordReads = [];
         $GLOBALS['__TABLE_READS'] = [];
+        $GLOBALS['__AMONG_READS'] = [];
         $m = new UniversalValidator();
+        if ($GLOBALS['INDEX']) uv_use_fake_index($m);
         $m->projectSettings = ['log-values' => 'raw'];
         $m->projectIdReturn = 149;
         return $m;
@@ -267,7 +283,7 @@ namespace {
     ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
     check('dag live: the group is read on its own, so the lookup narrows (a filtered read, no full one)',
         \REDCap::$calls['full'] === 0
-        && ($TABLE ? \REDCap::$calls['filtered'] === 0 && count($GLOBALS['__TABLE_READS']) === 1 : \REDCap::$calls['filtered'] === 1));
+        && ($TABLE ? \REDCap::$calls['filtered'] === 0 && count($GLOBALS['__TABLE_READS']) === ($INDEX ? 0 : 1) : \REDCap::$calls['filtered'] === 1));
 
     $saved = function ($rec, $group) use ($DAG) {
         $m = mk($DAG);
@@ -485,7 +501,10 @@ namespace {
     $r = ask($m, 'u_ev', ['u_ev' => 'E-2'], '9', 'reg', 351, 'nurse', null);
     check('table: under "scope":"event", a value saved in another event is no duplicate', ($r['used'] ?? null) === false);
     check('table: ...and the table is read for this event only',
-        !$TABLE || (count($GLOBALS['__TABLE_READS']) === 1 && strpos($GLOBALS['__TABLE_READS'][0], 'AND event_id = ?') !== false));
+        !$TABLE || ($INDEX
+            ? $GLOBALS['__TABLE_READS'] === [] && count($GLOBALS['__AMONG_READS']) === 1 && strpos($GLOBALS['__AMONG_READS'][0], 'AND event_id = ?') !== false
+            : count($GLOBALS['__TABLE_READS']) === 1 && strpos($GLOBALS['__TABLE_READS'][0], 'AND event_id = ?') !== false));
+    check('table: ...and with the lookup index the field is never read whole', !$INDEX || $GLOBALS['__TABLE_READS'] === []);
     $r = ask(mk($TB, 'nurse'), 'u_ev', ['u_ev' => 'E-2'], '9', 'reg', 352, 'nurse', null);
     check('table: ...while in its own event it is one', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '3');
     // The save audit takes the same road: no export of the project.
@@ -497,10 +516,12 @@ namespace {
     check('table: ...with no export of the project (got ' . json_encode(\REDCap::$calls) . ')', !$TABLE || \REDCap::$calls['full'] === 0);
     \REDCap::$events = [351 => 'enrolment_arm_1'];
 
-    echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? '' : ' without the data table') . "\n";
-    if ($TABLE) {
-        passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --no-table', $rc);
-        if ($rc !== 0) $fail++;
+    echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? ($INDEX ? ' through the lookup index' : '') : ' without the data table') . "\n";
+    if ($TABLE && !$INDEX) {
+        foreach (['--no-table', '--index'] as $mode) {
+            passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' ' . $mode, $rc);
+            if ($rc !== 0) $fail++;
+        }
     }
     exit($fail ? 1 : 0);
 }

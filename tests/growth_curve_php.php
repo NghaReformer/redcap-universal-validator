@@ -345,5 +345,43 @@ check('a curve point held just under a decimal tie rounds as the decimal (1.005 
     $units->invoke(null, 1.005, 2) === 101 && $units->invoke(null, -1.005, 2) === -101
     && $units->invoke(null, 17.145, 3) === 17145 && $units->invoke(null, 0.0, 3) === 0);
 
+// PRF-7: the curves are worked out with the LMS formula written out for
+// speed (GrowthCurve::column). Each value must be the float valueAt() gives,
+// at every row of every bundled table, both sexes, inside and past 3 SD,
+// with and without a measure scale; an L of 0 takes the exp() form.
+$column = new ReflectionMethod(GC::class, 'column');
+$column->setAccessible(true);
+$seen = 0;
+$diff = null;
+foreach (G::catalog()['references'] as $id => $e) {
+    $t = G::table($e);
+    $restricted = $e['adjust'] === 'who-restricted';
+    foreach (['male', 'female'] as $sex) {
+        $rows = $t[$sex];
+        $keys = range($t['first'], $t['first'] + count($rows) - 1);
+        foreach ([-6, -3.5, -3, -2.5, -1, 0, 0.67, 1.88, 3, 3.01, 4.2, 6] as $z) {
+            foreach ([1.0, 1000.0] as $f) {
+                $got = $column->invoke(null, $z, $keys, $rows, $t['first'], $restricted, $f);
+                foreach ($keys as $i => $k) {
+                    $v = G::valueAt($z, $rows[$k - $t['first']], $restricted);
+                    $want = $v === null ? null : $v / $f;
+                    $seen++;
+                    if ($got[$i] !== $want && $diff === null) $diff = [$id, $sex, $z, $f, $k, $got[$i], $want];
+                }
+            }
+        }
+    }
+}
+check('the curve column is the float valueAt() gives at every row of every bundled table (' . $seen . ' values; first difference '
+    . json_encode($diff) . ')', $diff === null && $seen > 100000);
+$zeroL = [[0.0, 10.0, 0.1], [0.0000001, 10.0, 0.1], [-0.0000005, 12.0, 0.2]];
+$got = $column->invoke(null, 1.5, [0, 1, 2], $zeroL, 0, false, 1.0);
+check('an L of 0, or nearer 0 than MIN_L, takes the exp() form there too',
+    $got === [G::valueAt(1.5, $zeroL[0], false), G::valueAt(1.5, $zeroL[1], false), G::valueAt(1.5, $zeroL[2], false)]
+    && $got[0] === 10.0 * exp(0.1 * 1.5));
+$neg = [[-2.0, 10.0, 0.4]];
+check('a z-score where 1 + L*S*z is at or below 0 has no value, as valueAt() says',
+    $column->invoke(null, 1.25, [0], $neg, 0, false, 1.0) === [null] && G::valueAt(1.25, $neg[0], false) === null);
+
 echo "growth_curve_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

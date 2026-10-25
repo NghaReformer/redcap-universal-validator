@@ -696,6 +696,47 @@
       else QRID_shapeNotice();
     }
   }
+  /* Growth rows sent as their own file (PRF-7). A bundled table the page may
+     read whole is not inlined: config.growth[id] names it by its SHA-256 in
+     "rowsFrom" (GrowthReference::pageIndex), and the script the server loads
+     before this one (js/growth/<first 16 hex digits>.js, which the browser
+     caches) files the rows under that name in window.INSPIRE_UV_GROWTH_ROWS.
+     Rows that did not arrive, or are not shaped as GrowthReference::table()
+     leaves them, leave the reference out: its checks run when the record is
+     saved, and QRID_GROWTH_ROWS_LOST says why. */
+  var QRID_GROWTH_ROWS_LOST = (function(){
+    var lost = Object.create(null), own = Object.prototype.hasOwnProperty;
+    var tables = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growth;
+    if(!tables || typeof tables !== "object") return lost;
+    var store = (typeof window !== "undefined" && window.INSPIRE_UV_GROWTH_ROWS && typeof window.INSPIRE_UV_GROWTH_ROWS === "object")
+      ? window.INSPIRE_UV_GROWTH_ROWS : null;
+    var whole = function(n){ return typeof n === "number" && isFinite(n) && Math.floor(n) === n; };
+    var rowsOk = function(list){
+      if(!Array.isArray(list) || !list.length) return false;
+      for(var i = 0; i < list.length; i++){
+        var r = list[i];
+        if(!Array.isArray(r) || r.length !== 3) return false;
+        for(var j = 0; j < 3; j++) if(typeof r[j] !== "number" || !isFinite(r[j])) return false;
+      }
+      return true;
+    };
+    for(var id in tables){
+      if(!own.call(tables, id)) continue;
+      var t = tables[id];
+      if(!t || typeof t !== "object" || typeof t.rowsFrom !== "string") continue;
+      var rows = (store && own.call(store, t.rowsFrom)) ? store[t.rowsFrom] : null;
+      if(rows && typeof rows === "object" && whole(rows.scale) && rows.scale >= 1 && rows.scale <= 1000 && whole(rows.first)
+          && rowsOk(rows.male) && rowsOk(rows.female)){
+        t.scale = rows.scale; t.first = rows.first; t.male = rows.male; t.female = rows.female;
+      } else {
+        lost[id] = true;
+        delete tables[id];
+        if(typeof console !== "undefined" && console.warn)
+          console.warn('Universal Field Validator: the rows of growth reference "' + id + '" did not load on this page; its checks run when the record is saved.');
+      }
+    }
+    return lost;
+  })();
   /* The project's Missing Data Codes. A field marked with REDCap's "M" button
      holds the code itself; REDCap does not validate it, and neither does a
      check that judges the value (php/modes.json "missingCodes":"skip"). Every
@@ -1870,34 +1911,83 @@ function QRID_temporalMultiply(a,b){
   var negative=(a.charAt(0)==='-')!==(b.charAt(0)==='-'),scale=0;
   var parts=[a,b].map(function(v){v=v.replace(/^[+-]/,'');var p=v.split('.');scale+=(p[1]||'').length;return v.replace('.','').replace(/^0+/,'');});
   a=parts[0];b=parts[1];if(a.length+b.length>4096)return null;if(!a||!b)return '0';
-  var out=new Array(a.length+b.length).fill(0);
-  for(var i=a.length-1;i>=0;i--)for(var j=b.length-1;j>=0;j--){var n=out[i+j+1]+Number(a[i])*Number(b[j]);out[i+j+1]=n%10;out[i+j]+=Math.floor(n/10);}
-  var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=QRID_trimZerosRight(v).replace(/\.$/,'');}
+  var v=QRID_temporalProduct(a,b);if(scale){if(v.length<scale+1)v='0'.repeat(scale+1-v.length)+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=QRID_trimZerosRight(v).replace(/\.$/,'');}
   return (negative?'-':'')+v;
+}
+/* Base 10^w limbs of a digit string, least significant first. Twin of ExactDecimal::toLimbs.
+   Character codes, not Number(slice): the slices cost twice as much. */
+function QRID_toLimbs(d,w){
+  var out=[];for(var e=d.length;e>0;e-=w){var v=0;for(var i=Math.max(0,e-w);i<e;i++)v=v*10+d.charCodeAt(i)-48;out.push(v);}
+  return out;
+}
+/* Canonical digits of least-significant-first limbs: no leading zeros, '0' for zero. */
+function QRID_fromLimbs(l,w){var pad=Math.pow(10,w),i=l.length-1;while(i>0&&l[i]===0)i--;var s=String(l[i]);for(i--;i>=0;i--)s+=String(pad+l[i]).slice(1);return s;}
+/* |a| * |b| over non-empty digit strings without leading zeros, in 7-digit limbs.
+   The digit-at-a-time loop cost 85-130 ms per keystroke for an average of long
+   values (wargame P6). Each row is carried as it goes, so every step stays below
+   10^14 + 2*10^7 and a double holds it exactly. Twin of ExactDecimal::product. */
+function QRID_temporalProduct(a,b){
+  if(a.length<b.length){var t=a;a=b;b=t;}
+  var x=QRID_toLimbs(a,7),y=QRID_toLimbs(b,7),out=new Array(x.length+y.length).fill(0);
+  for(var j=0;j<y.length;j++){
+    var yj=y[j],carry=0,v;if(!yj)continue;
+    for(var i=0;i<x.length;i++){v=out[i+j]+x[i]*yj+carry;carry=Math.floor(v/1e7);out[i+j]=v-carry*1e7;}
+    for(var k=j+x.length;carry;k++){v=out[k]+carry;carry=Math.floor(v/1e7);out[k]=v-carry*1e7;}
+  }
+  return QRID_fromLimbs(out,7);
 }
 /* x/1 against y/n needs one multiplication, not two. Twin of TemporalLogic::scaled. */
 function QRID_temporalScaled(numerator,denominator){
   if(denominator!=='1')return QRID_temporalMultiply(numerator,denominator);
   return typeof numerator==='string'&&QRID_WHEN_NUM_RE.test(numerator)&&numerator.length<=4096?numerator:null;
 }
-function QRID_temporalSum(values){
-  function add(a,b){
-    var sa=a[0]==='-'?-1:1,sb=b[0]==='-'?-1:1;a=a.replace(/^-/,'').replace(/^0+/,'')||'0';b=b.replace(/^-/,'').replace(/^0+/,'')||'0';
-    var out='',carry=0,i=a.length-1,j=b.length-1,v;
-    if(sa===sb){while(i>=0||j>=0||carry){v=(i>=0?Number(a[i--]):0)+(j>=0?Number(b[j--]):0)+carry;out=String(v%10)+out;carry=Math.floor(v/10);}return (sa<0&&out!=='0'?'-':'')+out;}
-    var cmp=a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);if(!cmp)return '0';if(cmp<0){v=a;a=b;b=v;sa=sb;}
-    j=b.length-1;for(i=a.length-1;i>=0;i--){v=Number(a[i])-carry-(j>=0?Number(b[j--]):0);carry=v<0?1:0;if(v<0)v+=10;out=String(v)+out;}
-    out=out.replace(/^0+/,'')||'0';return (sa<0&&out!=='0'?'-':'')+out;
+/* True when every value is a decimal of at most 4096 characters after the comparison
+   trim, which is all minimum and maximum need. Twin of ExactDecimal::check. */
+function QRID_temporalNumbers(values){
+  for(var i=0;i<values.length;i++){
+    if(typeof values[i]==='object')return false;var v=QRID_whenTrim(values[i]);if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return false;
   }
-  var sum='0',scale=0;
+  return true;
+}
+/* Exact sum, the same value and the same 4,096-character limit as ExactDecimal::sum.
+   The running total stays in 7-digit limbs with a sign, so each value is read once:
+   adding digit strings rebuilt the total per value, 0.5-8 ms per 4,000-digit member
+   on every keystroke (wargame P6). The limit is checked after each value on the
+   canonical total at the scale reached so far, as the PHP twin checks its string. */
+function QRID_temporalSum(values){
+  function trim(l){while(l.length>1&&l[l.length-1]===0)l.pop();return l;}
+  function cmp(a,b){if(a.length!==b.length)return a.length<b.length?-1:1;for(var k=a.length-1;k>=0;k--)if(a[k]!==b[k])return a[k]<b[k]?-1:1;return 0;}
+  function add(a,b){if(a.length<b.length){var t=a;a=b;b=t;}var out=[],carry=0,v;for(var k=0;k<a.length;k++){v=a[k]+(b[k]||0)+carry;carry=v>=1e7?1:0;out.push(v-carry*1e7);}if(carry)out.push(1);return out;}
+  function sub(a,b){var out=[],borrow=0,v;for(var k=0;k<a.length;k++){v=a[k]-(b[k]||0)-borrow;borrow=v<0?1:0;out.push(v+borrow*1e7);}return trim(out);}   /* |a| >= |b| */
+  function shift(a,k){   /* a * 10^k */
+    if(a.length===1&&!a[0])return a;var m=Math.pow(10,k%7),out=[],carry=0,v;
+    for(var i=0;i<Math.floor(k/7);i++)out.push(0);
+    for(i=0;i<a.length;i++){v=a[i]*m+carry;carry=Math.floor(v/1e7);out.push(v-carry*1e7);}
+    if(carry)out.push(carry);return out;
+  }
+  function limbs(v,start,pad){   /* the digits of v from start, point skipped, then pad zeros */
+    var out=[],limb=0,mul=Math.pow(10,pad%7),i,c;
+    for(i=0;i<Math.floor(pad/7);i++)out.push(0);
+    /* Read v in place: a concatenated copy made every charCodeAt a slow lookup. */
+    for(i=v.length-1;i>=start;i--){c=v.charCodeAt(i);if(c===46)continue;limb+=(c-48)*mul;mul*=10;if(mul===1e7){out.push(limb);limb=0;mul=1;}}
+    if(mul!==1)out.push(limb);   /* v holds a digit, so out is never empty */
+    return trim(out);
+  }
+  var total=[0],negative=false,scale=0;
   for(var i=0;i<values.length;i++){
     /* QRID_whenCompare's trim set (twin of ExactDecimal::sum): the wider PHP default
        summed "9\v" as 9 and then lost every min/max comparison as text. */
     if(typeof values[i]==='object')return null;var v=QRID_whenTrim(values[i]);if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return null;
-    var neg=v[0]==='-';v=v.replace(/^[+-]/,'');var p=v.split('.'),f=p[1]||'',d=(p[0]+f).replace(/^0+/,'')||'0';if(neg&&d!=='0')d='-'+d;
-    var target=Math.max(scale,f.length);sum=add(sum+'0'.repeat(target-scale),d+'0'.repeat(target-f.length));if(sum.length>4096)return null;scale=target;
+    var neg=v[0]==='-',start=neg||v[0]==='+'?1:0,point=v.indexOf('.'),fraction=point<0?0:v.length-point-1,target=Math.max(scale,fraction);
+    if(target>scale)total=shift(total,target-scale);
+    var x=limbs(v,start,target-fraction);scale=target;
+    if(x.length>1||x[0]){
+      if(neg===negative)total=add(total,x);
+      else{var c=cmp(total,x);if(!c){total=[0];negative=false;}else if(c>0)total=sub(total,x);else{total=sub(x,total);negative=neg;}}
+    }
+    var top=total[total.length-1];   /* a zero value still widens the scale, so it is checked too */if((total.length-1)*7+String(top).length+(negative?1:0)>4096)return null;
   }
-  var negative=sum[0]==='-';sum=sum.replace(/^-/,'');if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=QRID_trimZerosRight(sum).replace(/\.$/,'');}
+  var sum=QRID_fromLimbs(total,7);if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=QRID_trimZerosRight(sum).replace(/\.$/,'');}
   sum=sum.replace(/^0+/,'');if(!sum||sum[0]==='.')sum='0'+sum;return (negative&&sum!=='0'?'-':'')+sum;
 }
 function QRID_temporalDate(value,type,format){
@@ -1944,8 +2034,11 @@ function QRID_temporalValue(op,read,raw){
   if(op[0]==='set'||op[0]==='aggregate'){
     var values=op[2].map(function(x){return QRID_temporalValue(x,read,raw);});if(values.includes(null))return null;
     if(op[0]==='set')return {set:op[1],values:values};var k=op[1];if(k==='count')return String(values.length);if(k==='exists')return values.length?'1':'0';
-    values=values.filter(function(v){return v!=='';});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
-    if(!values.length)return null;var sum=QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
+    /* a value of spaces is blank to every comparison, so it is no value here either (wargame C6) */
+    values=values.filter(function(v){return !QRID_temporalBlank(v);});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
+    if(!values.length)return null;
+    /* minimum/maximum check each value; the sum of long ones may not fit (wargame P7) */
+    var sum=k==='minimum'||k==='maximum'?(QRID_temporalNumbers(values)?'':null):QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
     var best=values[0];values.forEach(function(v){if(QRID_whenCompare(k==='minimum'?'<':'>',v,best,true,false))best=v;});return best;
   }
   return null;
@@ -5632,13 +5725,24 @@ function QRIDWindowInit(QRID_CONFIG){
     return true;
   }
   (QRID_CONFIG.fields || []).forEach(function(f){
+    /* The active variant's verdict on the value now, or null when no single
+       variant applies, it is deferred, or the value is a missing data code. */
+    function judged(){
+      var a = QRID_activeVariants(VS);
+      if(a.length !== 1 || a[0].deferred) return null;
+      if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
+      var r = verdictOf(a[0], f);
+      return { verdict: r.verdict, skipped: !!r.skipped, withheld: !!a[0].windowWithheld };
+    }
     QRID_registerValidator(f, { type: "window", mode: { window: true, configError: configError },
+      /* What the page decided, for tests/window_glue_dom_js.cjs, which holds
+         it against the server's verdict on the same value (WIN-9). */
+      verdict: function(){ return judged(); },
       test: function(){
-        var a = QRID_activeVariants(VS);
-        if(a.length !== 1 || a[0].deferred) return null;
-        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var r = verdictOf(a[0], f), v = r.verdict;
-        if(v === "ok" && (a[0].windowWithheld || r.skipped)) return null;   /* a part was never checked */
+        var r = judged();
+        if(!r) return null;
+        var v = r.verdict;
+        if(v === "ok" && (r.withheld || r.skipped)) return null;   /* a part was never checked */
         return v === "ok" ? true : (v === "future" || v === "past" || v === "window-early" || v === "window-late") ? false : null;
       } });
   });
@@ -6402,17 +6506,23 @@ function QRIDRangeInit(QRID_CONFIG){
     var plausibleLo = opt("rangePlausibleLo"), plausibleHi = opt("rangePlausibleHi"), scale = opt("rangeMeasureScale");
     /* A growth reference: the limits are z-scores, read with the page's copy of
        the table (config.growth) and the inputs the server folded into ops. */
-    var growth = null;
+    var growth = null, ROWS_LOST = null;
     if(typeof cfg.rangeReference === "string" && cfg.rangeReference !== ""){
       var tables = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growth) || null;
       var gref = (tables && Object.prototype.hasOwnProperty.call(tables, cfg.rangeReference)) ? tables[cfg.rangeReference] : null;
+      /* its rows were sent as a file that did not load (QRID_GROWTH_ROWS_LOST):
+         checked when the record is saved, like a table the page could not carry */
+      if(!gref && QRID_GROWTH_ROWS_LOST[cfg.rangeReference] === true && !configError && !cfg.deferred){
+        ROWS_LOST = 'the rows of the growth reference "' + cfg.rangeReference
+          + '" did not load on this page, so this check runs when the record is saved.';
+      }
       var ops = {}, withheld = false, okOp = function(op){ return op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld"); };
       for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
         var op = cfg["range" + QRID_GROWTH_INPUTS[gi] + "Op"];
         if(okOp(op)) ops[QRID_GROWTH_INPUTS[gi]] = op;
         if(okOp(op) && op[0] === "withheld") withheld = true;
       }
-      if(!configError && !cfg.deferred){
+      if(!configError && !cfg.deferred && ROWS_LOST === null){
         /* A withheld input means no z-score on this page, so the server sends
            no table for it (UniversalValidator::attachGrowthTables); nor for a
            rule or branch whose condition it settled false (growthIdle), which
@@ -6431,11 +6541,11 @@ function QRIDRangeInit(QRID_CONFIG){
                  atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
                  comma: cfg.rangeAxisComma === true };
     }
-    var DEFERRED = !configError && !!cfg.deferred;
+    var DEFERRED = !configError && (!!cfg.deferred || ROWS_LOST !== null);
     /* deferred only because the page could not carry the table (or the rule's
        rule-level mark says so): the save checks it, and the measurement itself
        is still checked here */
-    var ON_SAVE = DEFERRED && (cfg.deferredOnSave === true || QRID_CONFIG.deferredOnSave === true);
+    var ON_SAVE = DEFERRED && (cfg.deferredOnSave === true || ROWS_LOST !== null || QRID_CONFIG.deferredOnSave === true);
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     /* An input on this page re-checks the value when it changes. */
@@ -6473,7 +6583,8 @@ function QRIDRangeInit(QRID_CONFIG){
              measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
              deferred: DEFERRED, onSave: ON_SAVE, snapshot: SNAPSHOT, snapshotGate: cfg.snapshotGate === true,
-             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
+             deferredWhy: ROWS_LOST !== null ? [ROWS_LOST]
+                        : (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
                         : (ON_SAVE && QRID_CONFIG.deferredWhy && QRID_CONFIG.deferredWhy.length) ? QRID_CONFIG.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
@@ -8387,7 +8498,13 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "q");
     QRID_followWidget(input, msg, fieldName);
-    var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
+    /* Asked of the map's own keys: a field named "constructor" would
+       otherwise find Object's constructor there, and every rule on it would
+       count as record-local, never asking the server (S2). */
+    var localGates = VS.all.map(function(v){
+      var ast = Object.prototype.hasOwnProperty.call(v.localAsts, fieldName) ? v.localAsts[fieldName] : null;
+      return ast ? QRID_WHEN.gateFor("1=1",ast,QRID_BLANK_PASSES,true) : null;
+    });
     var GITEM = null;
     if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -9949,6 +10066,9 @@ window.INSPIREUniversalValidator = {
     periodLabel: QRID_windowPeriodLabel, spanLabel: QRID_windowSpanLabel,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
+  },
+  exactDecimal: {                            /* ExactDecimal twins, locked by tests/exact_decimal_js.cjs */
+    sum: QRID_temporalSum, multiply: QRID_temporalMultiply
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal

@@ -151,6 +151,7 @@ $cases = array(
     'fault',        // what the store does when the server says no
     'walk',         // RecordManifestSource over REDCap-shaped tables
     'field_values', // FieldValues: the records holding a value, from the data table
+    'lookup_index', // LookupIndex: the live lookups' value index, kept current from the log
     'dag',          // one group axis, and the two halves of a run agreeing about a record
     'fence',        // SourceFence: versions, retention of the log, catch-up paging
     'stamps',       // ValueStamps: the day a value was saved, from the log; a finding's as_of
@@ -160,7 +161,7 @@ $cases = array(
     'uniqueness',   // UniqueFinalizer: duplicates without holding the project
     'rollup',       // RollupBuilder: the summary and the two ways it lies
     'promotion',    // ScanPromotion: which terminal state a run has earned
-    'justified',    // uv_finding.justified (@UVJUSTIFY): schema 6, the store, the summary, the verdict
+    'justified',    // uv_finding.justified (@UVJUSTIFY): schema 7, the store, the summary, the verdict
     'perf',         // ScanService: how many statements one request sends
 );
 

@@ -1616,7 +1616,10 @@ warning.
   taken in the server's time zone unless the project setting **Time zone for
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. The same
   setting decides `notPast` and a `from` of `today` or `now`. A page left open
-  across a daylight-saving change follows it.
+  across a daylight-saving change follows it. The page knows only the next
+  change, so a page left open across two of them (40 days or more in
+  Casablanca, about 200 days elsewhere) runs off by the second; the post-save
+  audit reads the server clock and is not affected.
 - **A date and time gets a small margin.** On the page it may run up to 120
   seconds past the server's "now", plus how far the computer's clock runs ahead
   of or behind the server's, up to 10 minutes, so REDCap's Now button and `@NOW`,
@@ -1883,9 +1886,9 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   applies to empty them. *Could not check* leaves them as they are. A branched
   rule owns the fields of every branch: the branch that applies fills its own
   and empties the others', and when it leaves its own as they are (*could not
-  check*, entries that disagree) it leaves the others' too. Mark the fields
-  `@READONLY`, since a person who types there is overwritten at the next
-  judgement.
+  check*, entries that disagree) it leaves the others' too. The fields must
+  be `@READONLY` or `@HIDDEN` on the form, since a person who types there is
+  overwritten at the next judgement; a field without either is refused.
 - **Several entries.** When more than one saved entry holds the value, the
   values are copied only when every entry holds the same ones. Otherwise
   nothing is copied, the page adds an amber line under the green *Found* ("3
@@ -3319,8 +3322,10 @@ no `soft` or `hard`: none of the four is made from a limit.
   that is not a date, a `when` that is false, a branch that does not apply. A branched rule owns the fields of
   every branch, so the active branch fills its own and empties the others'. A
   field that is blank is left alone, and a field holding the same number
-  spelled another way (`7.80` for `7.8`) is not rewritten. Mark the fields
-  `@READONLY`: a person who types there is overwritten at the next judgement.
+  spelled another way (`7.80` for `7.8`) is not rewritten. The fields must be
+  `@READONLY` or `@HIDDEN` on the form and on the survey page: a person who
+  types there is overwritten at the next judgement, so a field without either
+  is refused.
 - **What is left as it is.** When an input is on a form the page may not show,
   on a survey page that does not carry the field, or past the page's table
   cap, the page does not write and the save does. A reference the page or
@@ -6561,7 +6566,7 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 | Members in one collection | 10,000 |
 | Digits in exact decimal arithmetic | 4,096 |
 | Evaluation budget per record | 100,000 units |
-| Codes in one `show`/`hide` list | 200 |
+| Codes in one `show`/`hide` list | 10,000 |
 | Composite `with` fields | 5 |
 | `@UVUNIQUE` `also` fields | 5 |
 | `keepChars` length | 64 |

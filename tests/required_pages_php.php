@@ -21,6 +21,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
+        public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
         public $logCalls = [];
         public $projectSettings = [];
         public $systemSettings = [];
@@ -99,6 +101,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/support/scan_facade.php';
 
     use INSPIRE\UniversalValidator\UniversalValidator;
 
@@ -124,6 +127,8 @@ namespace {
         'phone'     => f('enrol', '@UVREQUIRED={"when":"[consent]=\'1\'","blockSave":"hard"}', '', 'text', 'Contact'),
         'phone_alt' => f('enrol', '@UVREQUIRED={"when":"[consent]<>\'0\'","blockSave":"hard"}', '', 'text'),
         'mix'       => f('enrol', '@UVREQUIRED={"when":"[consent]=\'1\' and [phone]<>\'\'","blockSave":"hard"}', '', 'text'),
+        // a choice filter on page 2 over page 1's answer (CHO-15)
+        'pick'      => f('enrol', '@UVCHOICES={"when":"[consent]=\'1\'","hide":["9"]}', '', 'radio', '', '1, A | 9, Other'),
         // page 3
         'notes'     => f('enrol', '', '', 'notes', 'Notes'),
         // the visit form: branching logic
@@ -239,6 +244,8 @@ namespace {
     check('survey page 2: the page-1 half is settled, the page-2 half stays live (got ' . json_encode($r['whenAst'] ?? null) . ')',
         json_encode($r['whenAst'] ?? null) === json_encode(['and', [['const', true], ['cmp', '<>', ['ref', 'phone', null], ['lit', '']]]]));
     check('survey page 2: no value of the response is in the page', strpos(json_encode($cfg), '"30"') === false);
+    check('survey page 2: a @UVCHOICES "when" over page 1 is settled the same way (got ' . json_encode(ruleOf($cfg, 'pick')['whenAst'] ?? null) . ')',
+        (ruleOf($cfg, 'pick')['whenAst'] ?? null) === ['const', true]);
 
     $cfg = pageCfg(mod($resp('0')), '5', '2');
     check('survey page 2: consent 0 settles [consent]=\'1\' false', (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['const', false]);
