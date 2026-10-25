@@ -3,7 +3,9 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
-## Unreleased
+## 2.3.0-rc.3 — 2026-10-25
+
+**The fixes of the 2026-10-21 adversarial review, and lookups that stay fast on large projects.** Pressing Enter in a text field no longer saves a form past a hard block (LIVE-1, Critical), and the review's other findings are fixed, from High to Low, except the durable scan's half of EXS-5 (it still builds its `@UVEXISTS` index in each work request), which waits with the rest of the scan work. `@UVUNIQUE` and `@UVEXISTS` answer from a value index the module keeps: 29 to 45 ms at 400,000 records on the test server, where a read of the field took 33 to 39 s. Upgrading applies schema version 6 (four new tables) when the module is enabled or upgraded or its system settings are saved, and adds the cron `uv_lookup_index`. Live acceptance on a development project is pending.
 
 Three findings of the 2026-10-21 live chart test of 2.3.0-rc.2 on chpr-redcap.org pid 149 (one Medium, two Low), and findings of the 2026-10-21 adversarial review (`reports/adversarial-review-2026-10-21.md`), starting with the Critical LIVE-1. One new rule option, `@UVASSERT` `"exact"` (with its Configure dialog box), and a value index for the live `@UVUNIQUE` and `@UVEXISTS` lookups: schema version 6 adds four tables, and one new system setting turns the index off.
 
