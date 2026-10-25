@@ -453,7 +453,9 @@ namespace {
     // project's tags (temporalActivationProblems); keeping them on does not.
     $on=['enable-event-instance-refs'=>true,'rules'=>[]];
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
-    check('QUA-4: turning references on with sound tags passes the preflight',$m->validateSettings($on)===null);
+    $warned=[];set_error_handler(function($no,$msg)use(&$warned){$warned[]=$msg;return true;});
+    $pre=$m->validateSettings($on);restore_error_handler();
+    check('QUA-4: turning references on with sound tags passes the preflight, and the untagged fields raise no warning (got '.json_encode([$pre,$warned]).')',$pre===null&&!$warned);
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');$m->projectSettings['enable-event-instance-refs']=false;
     REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT='.json_encode(['assert'=>'[a_val]<[baseline_arm_1][nosuch][2]']);
     $pre=$m->validateSettings($on);

@@ -28,7 +28,8 @@ trait TemporalIntegration
         if (!$shape->events()) return ['Event/instance preflight could not read event metadata.'];
         $errors=[];$rules=[];
         foreach ($dd as $field=>$meta) {
-            foreach (AnnotationRules::parseAllTags($meta['field_annotation'] ?? '', ['qualified'=>true]) as $rule) {
+            // null for a field with no module tag, which is most fields: PHP 8 warned on each.
+            foreach (AnnotationRules::parseAllTags($meta['field_annotation'] ?? '', ['qualified'=>true]) ?: [] as $rule) {
                 if (isset($rule['type'])) {$rule['fields']=[$field];$rules[]=$rule;}
                 if (!TemporalRules::extended($rule)) continue;
                 foreach (array_merge(TemporalRules::validate($rule),TemporalRules::validateProject($rule,$shape)) as $error) $errors[]=$field.': '.$error;
