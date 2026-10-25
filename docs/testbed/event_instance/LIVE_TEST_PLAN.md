@@ -101,7 +101,7 @@ save unless the step says so.
 | xv_window | 379 | 2026-06-01 | "Outside the 120-day window" |
 | xv_date_dmy | 379 | 09-01-2026 | "Before consent (D-M-Y)"; 11-01-2026 passes |
 | xv_dt | 379 | 01-10-2026 08:59 | "Before the consent time"; 09:00 passes |
-| xv_dmy_legacy | 380 | (seeded 10-02-2026) | page shows a violation, audit/scan stay silent: finding C1 |
+| xv_dmy_legacy | 380 | (seeded 10-02-2026) | passes on the page, as the audit and scan do (finding C1, fixed); before the fix the page showed a violation |
 | xv_dose | 379 | 40 | "Total dose exceeds the enrolment limit" (40+5+5+5 > 50) |
 | xv_hr | 379 | 71 | "Highest heart rate so far" (others max 70) |
 | xv_kit | 380 | K-001 | duplicate of Baseline kit (record scope) |

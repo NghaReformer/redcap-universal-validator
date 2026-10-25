@@ -473,6 +473,24 @@ namespace {
     $m->projectSettings['enable-event-instance-refs']=true;$after=render($m,'fa')['raw'];
     check('enabled legacy-only browser payload identical',$before===$after);
 
+    // Wargame C1-B/C: on a D-M-Y field the page gets the saved Y-M-D values and the
+    // field's display format, so it converts what it shows before it compares
+    // (tests/deferral_dom_js.cjs boots the engine on these shapes).
+    $dmy=function($m,array $fields){foreach($fields as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_dmy';return $m;};
+    $m=$dmy(temporal('',null,'UVUNIQUE'),['a_val']);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2024-01-05';REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2024-01-07';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2024-01-09';
+    $p=render($m,'fa','1',1,3);$u=json_encode(ruleOf($p,'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('C1-B: record uniqueness on a D-M-Y field sends the other entries as saved, with the format (got '.json_encode([$p['cfg']['dateFormats']??null,$u]).')',
+        ($p['cfg']['dateFormats']['a_val']??null)===['date','dmy']&&strpos($u,'"2024-01-05"')!==false&&strpos($u,'"2024-01-09"')!==false&&strpos($u,'"2024-01-07"')===false);
+    check('C1-B: ... and the scan finds no duplicate there',!$m->scanProject(PID)['violations']);
+    $m=$dmy(temporal('[a_val]>={t}',['t'=>['field'=>'b_open','match'=>['key_b'=>'[key_a]']]]),['key_a','key_b']);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['key_a']='2024-01-05';REDCap::$data[1]['repeat_instances'][1]['fb'][2]['key_b']='2024-01-05';
+    $p=render($m,'fa','1',1,1);$a=assertAst($p,'a_val');
+    check('C1-C: a match keyed on a D-M-Y field guards the saved key, with the format (got '.json_encode([$p['cfg']['dateFormats']??null,$a]).')',
+        ($p['cfg']['dateFormats']['key_a']??null)===['date','dmy']&&strpos($a,'["guard",[["key_a","2024-01-05"]],["lit","11"]]')!==false);
+    check('C1-C: ... and the scan reports the same violation',count($m->scanProject(PID)['violations'])===1);
+
     $m=temporal('',null,'UVUNIQUE');
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
     $ctx=$m->durableScanContext(PID,['generation'=>null]);

@@ -115,6 +115,20 @@ Advisory only, but the page contradicts the audit. The examples guide uses the
 failing form without a warning. Live case: `xv_dmy_legacy` on pid 149.
 Repro: `php tools/temporal_sem_display_format.php`.
 
+**Fixed (A before the 2026-10-21 review, B and C checked 2026-10-25).** The page config
+carries `dateFormats`, each D-M-Y or M-D-Y date or datetime field of the form
+with its display order, and the engine turns the value it shows into the saved
+Y-M-D form before any comparison, a uniqueness tuple or a match key
+(`QRID_logicValue`). The three repro cases now agree with the scan. The documented example
+passes on the page, a typed duplicate under `@UVUNIQUE=record` is flagged
+where the scan finds 2, and an unchanged D-M-Y match key is judged where the
+scan reports 1. `tools/temporal_sem_display_format.php` still prints DIVERGE:
+it evaluates the tree without the page's `dateFormats`, and it calls
+`scanProject()`, which QUA-3 moved to `tests/support/scan_facade.php`. Tests:
+`tests/temporal_integration_php.php` (the config the page gets) and
+`tests/deferral_dom_js.cjs` (the engine on those shapes). Not yet re-tested
+live on `xv_dmy_legacy`.
+
 ### C2. Row existence taken from the event row
 `php/AddressResolver.php:175-176, 304-315, 336` never read `<form>_complete`,
 although the module fetches it for this purpose. Effects: `exists` says 1 and
