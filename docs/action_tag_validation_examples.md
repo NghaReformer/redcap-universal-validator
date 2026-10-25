@@ -5877,7 +5877,7 @@ number keeps. `blockSave` is refused.
 | Members in one collection | 10,000 |
 | Digits in exact decimal arithmetic | 4,096 |
 | Evaluation budget per record | 100,000 units |
-| Codes in one `show`/`hide` list | 200 |
+| Codes in one `show`/`hide` list | 10,000 |
 | Composite `with` fields | 5 |
 | `@UVUNIQUE` `also` fields | 5 |
 | `keepChars` length | 64 |

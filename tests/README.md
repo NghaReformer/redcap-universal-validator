@@ -59,6 +59,7 @@ node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mod
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode and growth-outputs blocks in js/engine.js (--check: fail if stale)
 node tests/engine_min_js.cjs     # js/engine.min.js names the current js/engine.js, and every browser suite passes on it
+node tests/ci_workflow_js.cjs    # every suite here is named by a CI workflow, and no plain run: step folds its lines into one command
 node tests/config_notice_js.cjs  # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
@@ -719,7 +720,9 @@ stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
 `when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
-matching). Green CI means the module's client and server engines agree with
+matching). `tests/ci_workflow_js.cjs` fails when a suite in `tests/` is named by no
+workflow, or when a plain `run:` has lines under it, which YAML folds into one
+command. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 

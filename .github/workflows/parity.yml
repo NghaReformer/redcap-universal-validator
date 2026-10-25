@@ -31,6 +31,8 @@ jobs:
         run: node tests/pooled_dom_js.cjs
       - name: JS risky-pattern heuristic
         run: node tests/risky_js.cjs
+      - name: Every suite is named by a workflow, and no run step folds its lines into one command
+        run: node tests/ci_workflow_js.cjs
       - name: Qualified reference parser and deferral contracts
         run: |
           node tests/qualified_js.cjs
@@ -259,10 +261,10 @@ jobs:
           php tests/growth_return_module_php.php
           php tests/growth_curve_php.php
           php tests/growth_chart_module_php.php
-      - name: Each bundled growth table's rows script (js/growth) matches the table (PRF-7)
-        run: php tools/build_growth_rows.php --check
           php tests/growth_chart_gaps_module_php.php
           php tests/convert_php.php
+      - name: Each bundled growth table's rows script (js/growth) matches the table (PRF-7)
+        run: php tools/build_growth_rows.php --check
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
         run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path
