@@ -212,6 +212,12 @@ Tests in `tests/temporal_integration_php.php`.
   keyed by rule and in-record position, no record id; 3 exhausted records gave
   2 notes, `incomplete=[]`. Durable scan is correct.
   Repro: `php tools/temporal_perf_scan.php`.
+  **Fixed 2026-10-23:** the direct scan is now the test facade
+  (`tests/support/scan_facade.php`, QUA-3), and nothing in the module calls
+  it. The facade keeps per-record notes per record, with a `record` key, and
+  lists each record that spent its budget in `incomplete`. Since P3 that
+  repro no longer spends the budget; the test in
+  `tests/temporal_integration_php.php` uses long values.
 - **P6** `AddressResolver.php:355` charges raw bytes, `UniversalValidator.php:924`
   escapes `<` to 6 bytes: 13.18 MB payload for 4 x 9,000 members.
   `js/engine.js:1234-1263` costs 236-302 ms per keystroke with big decimals.

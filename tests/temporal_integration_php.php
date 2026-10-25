@@ -347,6 +347,16 @@ namespace {
     $res=$m->scanProject(PID);
     check('C8: ... and the scan still says instance 1 was not judged (got '.json_encode(array_column($res['unconfigurable'],'why')).')',
         (bool)preg_grep('/instance 1: absent/',array_column($res['unconfigurable'],'why')));
+    // Wargame P5: three records that each spend the evaluation budget are three unfinished
+    // records, each named, not two notes shared by rule and position.
+    $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]<={x}','references'=>['x'=>['field'=>'a_val','aggregate'=>'average','excludeCurrent'=>true]]]));
+    $rows=[];for($k=1;$k<=60;$k++)$rows[$k]=['a_val'=>str_repeat('7',4000),'key_a'=>'A','fa_complete'=>'2'];
+    REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;REDCap::$data[2]=REDCap::$data[3]=REDCap::$data[1];
+    $res=$m->scanProject(PID);
+    $spent=array_column(array_filter($res['unconfigurable'],function($u){return strpos($u['why'],'budget exhausted')!==false;}),'record');sort($spent);
+    check('P5: each of three records names its spent budget (got '.json_encode([$spent,$res['incomplete'],$res['status']]).')',
+        $spent===['1','2','3']&&count(preg_grep('/^record [123] was not fully checked/',$res['incomplete']))===3&&$res['status']==='incomplete');
+    unset(REDCap::$data[2],REDCap::$data[3]);
     $m=$many('@UVASSERT='.json_encode(['assert'=>'[a_val]>={mx}','references'=>['mx'=>['field'=>'a_val','aggregate'=>'maximum','excludeCurrent'=>true]],'blockSave'=>'hard']));
     $m->redcap_save_record(PID,'1','fa',1,null,null,null,3);
     check('P4: ... a binding over the saved form too (got '.json_encode($at($m)).')',in_array(3,$at($m),true)&&in_array(2,$at($m),true));

@@ -408,7 +408,25 @@ function scan_project(UniversalValidator $m, $pid, $dagFilter = null, $chunkSize
                     continue;
                 }
                 try {
-                    $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
+                    $mine = [];
+                    $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $mine);
+                    // A rule's problem is the same in every record and is listed once.
+                    // An extended context that could not be resolved, or a spent budget,
+                    // is this record's: keyed by rule and position alone, three unfinished
+                    // records gave two notes and no incomplete line (wargame P5). The
+                    // durable scan keeps them per record the same way.
+                    foreach ($mine as $k => $u) {
+                        $code = explode('|', (string) $k, 3)[1] ?? '';
+                        if (!in_array($code, ['temporal', 'temporal-group', 'temporal-budget'], true)) {
+                            if (!isset($unconf[$k])) $unconf[$k] = $u;
+                            continue;
+                        }
+                        $who = $this->reportRecordId($plan, $rec);
+                        $unconf[$k . '|' . $rec] = ['record' => $who] + $u;
+                        if ($code === 'temporal-budget') {
+                            $result['incomplete'][] = 'record ' . $who . ' was not fully checked: the extended evaluation budget ran out';
+                        }
+                    }
                 } catch (\Throwable $e) {
                     // The SINK is a caller-supplied consumer - it writes to a
                     // spool, a socket, a table. When it threw, the exception

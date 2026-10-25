@@ -673,7 +673,10 @@ one-request scan, `scan_project()`, with its time and memory guard and the two
 sinks only it used. Sixteen suites call `$module->scanProject(...)`, which
 their framework stub forwards there. Each record still goes through the
 module's own `scanRecord()` and `ruleFindings()`, which the durable scan and
-the save audit use, so a verdict it finds is the module's verdict. Batching,
+the save audit use, so a verdict it finds is the module's verdict. A rule's
+problem is listed once; an extended context that could not be resolved, or a
+spent evaluation budget, is listed per record with a `record` key, and a spent
+budget also adds a line to `incomplete`, as the durable scan keeps them. Batching,
 leases and memory of the durable scan are tested in `scan_service_php.php`,
 `scan_worker_php.php` and the MySQL matrix, not here.
 `return_targets.php` gives every field a `"return"` writes to `@READONLY`,
