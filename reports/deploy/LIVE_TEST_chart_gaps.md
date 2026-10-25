@@ -2,19 +2,24 @@
 
 Date: 2026-10-21. Server: REDCap 17.0.6. Module folder `universal_validator_v2.3.1`, whose
 `js/engine.js` is byte for byte the one tagged `v2.3.0-rc.2` (456,415 characters, SHA-256
-`ce5fc550…0ef4`). The browser was the Claude desktop app's built-in pane, signed in as ngha.ndze.
+`ce5fc550…0ef4`). Browser: the Claude desktop app's built-in pane, signed in as ngha.ndze.
 
 Run sheet and fixture: [`docs/testbed/RANGE_LIVE_ACCEPTANCE.md`](../../docs/testbed/RANGE_LIVE_ACCEPTANCE.md),
 section "Section K, continued", and
 [`docs/testbed/uvrange_chart_gaps_fields.csv`](../../docs/testbed/uvrange_chart_gaps_fields.csv),
-on the local branch `test/uvrange-chart-gaps` (not pushed):
+All of it is on local `main` (not pushed). Another session fixed F1, L1 and L2 in b82f3f1,
+merged into `main` as 3bfb250. The branch `test/uvrange-chart-gaps` then went into `main` as
+2a15ff1:
 
 | Commit | What |
 |---|---|
 | 923c7c7 | Steps K18 to K36, the 14-field fixture, `tests/growth_chart_gaps_module_php.php` and `tests/growth_chart_gaps_dom_js.cjs` |
 | b1b9adb | Run sheet notes from the first live run: MLM per-form switch, values that come back, column width, K14 wording |
-| 64859c4 | Fixes for F1 and L2 in the engine alone. Left out when this branch was merged into main, which keeps the fix in b82f3f1 (see Defects) |
+| 64859c4 | An engine-only fix of F1 and L2. The merge kept b82f3f1's version of every file the two commits share, so none of 64859c4 is on `main` |
 | e50a093 | K34 and K35 wording from the second live run; instance 2's table row checked offline |
+| 79db777 | This report, first version |
+| 2a15ff1 | The merge. It also writes the gaps fixture again on main's server output |
+| on `test/uvrange-chart-gaps` after 2a15ff1 | The CHANGELOG entry for K18 to K36, and this report brought up to date |
 
 The steps ran in two parts. The parent session ran K18 to K27 and K29 to K32 from 14:44 to
 15:55; its results are in `reports/deploy/LIVE_TEST_v2.3.0-rc.2_charts.md` in the main
@@ -27,10 +32,8 @@ pid 149 (see K35 below). The new paths showed no engine or server defect: labels
 languages, inputs saved on another form or event, branches that switch reference by age,
 comma decimals, a repeating instrument, and a z-score chart with percentile lines.
 
-The parent's run of K1 to K17 found F1, L1 and L2. Main fixes all three in b82f3f1 (merged as
-3bfb250), each with a test that fails against the rc.2 engine. This branch carried its own fix
-of F1 and L2 (64859c4); the merge into main kept b82f3f1's instead. The fixes are not live
-yet, because they need a build from main deployed to the server.
+The parent's run of K1 to K17 found F1, L1 and L2. All three are fixed in b82f3f1 on local
+`main`. The fixes are not live yet: the server still runs the rc.2 engine.
 
 ## Results
 
@@ -78,54 +81,54 @@ three fields for the step. Setup step 6 of the run sheet now says this (e50a093)
 
 No defect was found in K18 to K36. These come from the parent's run of K1 to K17.
 
-### F1 (Medium): a chart of the median alone cuts off usual values. Fixed in b82f3f1
+All three are fixed in b82f3f1 on local `main`; the CHANGELOG's "Unreleased" section has the
+details.
 
-It shows on rc.2 with a rule that has `"show":{"chart":true}` on `who-wfa`, or `"lines":{"z":[0]}`. The
-y axis fits the lines drawn, so with the median alone it hugs the median. A girl of 12 months
-with a head circumference of 46.0 cm (z 0.81) drew on the top frame, and 47.0 cm (z 1.55)
-drew as the "outside the chart" arrow.
+### F1 (Medium): a chart of the median alone cuts off usual values
 
-Fix (b82f3f1, on main): `GrowthCurve::build` returns the reference at z -2 and 2 for each sex
-as an `extent`, leaving out a side the drawn curves already reach. `attachGrowthCurves` sends
-it with the curve set, and `QRID_growthChart` (js/engine.js) adds it to the lines the value
-axis is fitted to, without drawing it. A z-score axis keeps its -3 to 3 floor. The server
-builds the extent because a page that reads a saved sex and date of birth carries only the
-reference rows that age needs. Test: `tests/growth_chart_dom_js.cjs` section 8, a median-only
-weight chart for a girl with points at z 1.5 and -1.5 at 365 and 10 days. Each point sits
-inside the plot, the axis spans z -2 to 2 over the window, and without the extent the same
-z 1.5 point is the arrow, as on rc.2. The server fixture gained a `median` page
-(`tests/growth_chart_module_php.php`).
+Repro on rc.2: a rule whose chart draws only the median, such as `ugc_head` with
+`"lines":{"z":[0]}`. The y axis fits the lines drawn, so it hugs the median. A girl of 12
+months with a head circumference of 46.0 cm (z 0.81) drew on the top frame, and 47.0 cm
+(z 1.55) drew as the "outside the chart" arrow.
 
-This branch's own fix, 64859c4, read the extent in the engine from the rows the page carries
-(`frameOf`, `QRID_CHART.frameZ`). It was dropped in the merge.
+Fix: `GrowthCurve::build` returns the reference at z -2 and 2 (`GrowthCurve::EXTENT_Z`) per
+sex as `extent`, leaving out a side the drawn curves already reach. The engine adds it to the
+lines the y axis is sized from and does not draw it. Tests: `tests/growth_curve_php.php`,
+`tests/growth_chart_module_php.php` (a `median` page) and `tests/growth_chart_dom_js.cjs`
+(points at z 1.5 and -1.5 at 10 and 365 days inside the plot; without `extent` the point at
+1.5 and 365 days is the arrow). Charts of percentiles 3 to 97 carry the extent too, since
+their outer lines sit at z ±1.88. That is why the gaps fixture changed in the merge: the
+sets of `ucg_comma` and `ucr_weight` (percentiles 3, 50 and 97) gained `extent`, and their
+lines were simplified again against the wider y range. Sets with the band at z -2 and 2,
+such as `ucg_mlm`'s, send none.
 
-### L2 (Low): a page table's caption sits under the rows. Fixed in b82f3f1
+### L1 (Low, open since rc.1): the save dialog reads one label as two fields
 
-It shows on rc.2 with any `"table"` on a REDCap 17 page. Bootstrap's `caption-side: bottom` puts the
-caption under the rows, where it reads like a footer. Fix: the engine sets `caption-side: top`
-on the caption inline. Test: `tests/growth_chart_dom_js.cjs` checks the caption's style.
+The "Validation FAILED for:" confirm and the "Cannot save yet" alert joined labels with ", ".
+Each label now has its own line after a bullet. Test: `tests/silent_change_dom_js.cjs`.
 
-### L1 (Low, open since rc.1): fixed in b82f3f1
+### L2 (Low): a page table's caption sits under the rows
 
-The save confirm joined field labels with ", ", so a label with a comma read as two fields.
-The "Validation FAILED for:" confirm and the "Cannot save yet" alert now list each label on
-its own line (`tests/silent_change_dom_js.cjs`).
+REDCap 17's Bootstrap sets `caption-side: bottom`, so the caption read like a footer. The
+engine sets the caption's `captionSide` to `top` through its `style` object. Test:
+`tests/growth_chart_dom_js.cjs`.
 
 ## Offline checks
 
-- `tests/growth_chart_gaps_module_php.php`: 29 checks, on PHP 8.3 and 7.4.
-- `tests/growth_chart_gaps_dom_js.cjs`: 51 checks.
-- On the branch, before the merge: `tests/growth_chart_module_php.php` 116 checks and
-  `tests/growth_chart_dom_js.cjs` 129 checks, with every suite passing after 64859c4.
-- On main after the merge (b82f3f1's fix): `growth_chart_module_php` 119 checks,
-  `growth_chart_dom_js` 134, `growth_chart_gaps_module_php` 29 and `growth_chart_gaps_dom_js`
-  51. The gaps fixture was regenerated for the server's `extent`. All 81 `run` steps of the
-  js-parity and php-parity jobs pass on PHP 8.3 and Node 24.
+Run on a tree whose code, tests and fixtures match `main` at 2a15ff1 (it differs only in
+the CHANGELOG and this report):
+
+- All 61 PHP suites pass on PHP 8.3.32 and on PHP 7.4.33, and all 40 JavaScript suites pass
+  on Node 24.14.
+- `tests/growth_chart_gaps_module_php.php`: 29 checks on each PHP version.
+  `tests/growth_chart_gaps_dom_js.cjs`: 51 checks.
+- `tests/growth_chart_module_php.php`: 119 checks; `tests/growth_curve_php.php`: 145;
+  `tests/growth_chart_dom_js.cjs`: 134.
 
 ## Other observations
 
 - The growth note of a comma field writes the z-score with a point ("z-score -2.90") while the
-  chart and the table use the comma. The server does this on purpose, because growth limits are
+  chart and the table use the comma. The server does this on purpose: growth limits are
   z-scores, plain numbers whatever the field's decimal mark. K24 says so.
 - The configuration error of K33 reads `a "age" "dob" field`. It is grammatical slack in an
   existing message, not part of the chart work, and was left as it is.
@@ -176,6 +179,6 @@ Left behind:
 ## Not covered
 
 - K35 on the server (above).
-- F1, L1 and L2 on the server. They need a build from main deployed, then K1 to K17 rerun
-  where they touch the value axis, the save confirm and the table caption.
+- F1, L1 and L2 on the server: they need a build of `main` deployed, then run sheet K6 and
+  K12 (which b82f3f1 updated), a table caption and a save with a failed check.
 - The module's own audit log entries for this session's saves were not read.
