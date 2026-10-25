@@ -15,7 +15,8 @@
  * page carries (and that no page carries the server's justifyBy), every log
  * entry of each save in the sheet's order (uvalidate-justified with
  * justified_by for a finding whose reason is given, invalid-id-saved for an
- * open one, and never the reason itself), the answers the lookup and the
+ * open one, and never the reason itself), over one module log that holds
+ * each entry once (PRF-9), the answers the lookup and the
  * duplicate check give the page, the legacy scan's rows, column, sentence
  * and counts, and the durable scan's rows, counts and outcome, on pid 149
  * and on the scratch project of section H. The page configs it builds are
@@ -30,6 +31,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The module log of the project: every entry each request wrote, read back by queryLogs(). */
+        public static $stored = [];
         public $logCalls = []; public $projectSettings = [];
         public function getSubSettings($k, $pid = null) { return []; }
         public function getProjectSetting($k, $pid = null) { return $this->projectSettings[$k] ?? null; }
@@ -37,7 +40,24 @@ namespace ExternalModules {
         public function setSystemSetting($k, $v) {}
         public function getProjectId() { return \Project::$pid; }
         public function getUrl($p) { return '/x/' . $p; }
-        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; self::$stored[] = [$m, $p]; return count($this->logCalls); }
+        /**
+         * The one read the module makes of its log (PRF-9), answered from the
+         * entries of earlier requests as the framework's log table would: an
+         * entry whose fingerprint the log holds is not written again.
+         */
+        public function queryLogs($sql, $params) {
+            if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                throw new \Exception('unexpected log query: ' . $sql);
+            }
+            $rows = [];
+            foreach (self::$stored as $c) {
+                if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
+                    $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                }
+            }
+            return new LogRows($rows);
+        }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
         public function getUser() { return new TestUser('tester'); }
@@ -47,6 +67,10 @@ namespace ExternalModules {
         public function getUsername() { return $this->n; }
         public function hasDesignRights() { return true; }
         public function getRights($pid = null) { return \REDCap::$rights['tester'] ?? null; }
+    }
+    class LogRows {
+        private $r; public function __construct(array $r) { $this->r = $r; }
+        public function fetch_assoc() { return array_shift($this->r); }
     }
 }
 
@@ -344,16 +368,16 @@ namespace {
         'uj_ro' => ['range'], 'uj_emb' => ['range'], 'uj_code' => ['single', 'unique'], 'uj_lock' => ['range'], 'uj_far' => ['range']], $modes);
 
     // ---- Section B: each rule a reason stands for, on XE-1 ------------------------------------------
-    // The log entries of each save. Every save audits every rule of the form,
-    // so a finding saved with its reason is logged again by each later save.
-    $LIVE = [];
+    // The log entries of each save. Every save audits every rule of the form
+    // and writes an entry for each finding the module log does not hold yet
+    // (PRF-9): a finding saved with its reason is logged once, by the save
+    // that gives the reason, and again only when its value or its reason
+    // field changes. The reason text is not part of what is compared.
     $J = function ($f, $what) use (&$REASON) { return "uvalidate-justified $f $what > " . $REASON[$f]; };
     $O = function ($f, $what) { return "invalid-id-saved $f $what"; };
-    $step = function ($label, $m, array $add = [], array $drop = []) use (&$LIVE) {
-        foreach ($drop as $e) $LIVE = array_values(array_diff($LIVE, [$e]));
-        foreach ($add as $e) $LIVE[] = $e;
-        sort($LIVE);
-        check("$label: every log entry of the save", entries($m) === $LIVE, entries($m));
+    $step = function ($label, $m, array $new = []) {
+        sort($new);
+        check("$label: every log entry of the save", entries($m) === $new, entries($m));
         check("$label: no rule problem for a field that is set up right", problems($m) === [], problems($m));
     };
     $quiet = function ($label, $m, array $texts) {
@@ -372,12 +396,21 @@ namespace {
     $refused = ['uj_bad_bare', 'uj_bad_form', 'uj_bad_none', 'uj_bad_self', 'uj_bad_twice', 'uj_bad_type', 'uj_rr'];
     check('B1b: the save\'s only rule problems are the refused tags of A1, one "configuration error:" entry each (VAL-15)',
         $named === $refused && $configOnly, $named);
+    // A rule problem is logged once for each place of the form (PRF-9): no later save logs one.
+    $problemsLogged = function () {
+        return count(array_filter(\ExternalModules\AbstractExternalModule::$stored, function ($c) { return $c[0] === 'uvalidate-unconfigurable'; }));
+    };
+    $B1bProblems = $problemsLogged();
     $open('B2', 'form');
     $m = $save('XE-1', ['uj_wt' => '300.0', 'uj_wt_why' => 'Scale checked twice'], '20261026090500');
     $step('B2b', $m, [$J('uj_wt', 'range:hard-high')]);
     $quiet('B2b', $m, ['Scale checked twice']);
     $open('B3', 'form');
     $e = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uvalidate-justified' && $c[1]['field'] === 'uj_wt'; }))[0][1] ?? [];
+    // the fingerprint (PRF-9) is a keyed hash: its form is checked, the rest of the entry word for word
+    $fp = $e['fingerprint'] ?? null;
+    unset($e['fingerprint']);
+    check('B2b: the uj_wt entry carries a fingerprint, 64 lowercase hex digits', is_string($fp) && preg_match('/^[0-9a-f]{64}$/D', $fp) === 1, $fp);
     check('B2b: the uj_wt entry in full: the value, the record, event and instance, and the reason field\'s name', $e === [
         'field' => 'uj_wt', 'type' => 'range', 'algorithm' => 'range', 'reason' => 'hard-high', 'instrument' => 'uv_justify_test', 'event_id' => '380',
         'instance' => '1', 'justified_by' => 'uj_wt_why', 'record' => 'XE-1', 'value' => '300.0'], $e);
@@ -409,8 +442,12 @@ namespace {
     $m = $save('XE-1', ['uj_mother' => 'XE-9', 'uj_mother_why' => 'Mother enrolled at another site'], '20261026094000');
     $step('B9b', $m, [$J('uj_mother', 'exists:not-found')]);
     $quiet('B9b', $m, ['Mother enrolled at another site']);
-    check('B9b: the save writes nine uvalidate-justified entries', count(array_filter(entries($m), function ($e) { return strpos($e, 'uvalidate-justified ') === 0; })) === 9, entries($m));
-    $B9 = $LIVE;
+    $justifiedXE1 = function () {
+        return count(array_filter(\ExternalModules\AbstractExternalModule::$stored, function ($c) {
+            return $c[0] === 'uvalidate-justified' && ($c[1]['record'] ?? '') === 'XE-1';
+        }));
+    };
+    check('B9b: by now the module log holds nine uvalidate-justified entries for XE-1, one per finding', $justifiedXE1() === 9, $justifiedXE1());
 
     // ---- Section C: what is no reason ----------------------------------------------------------------
     $open('C1', 'form');
@@ -430,7 +467,7 @@ namespace {
     $m = $save('XE-1', [], '20261026095400');
     $step('C7', $m, [$O('uj_ro', 'range:hard-high')]);
     $m = $save('XE-1', ['uj_ro_why' => 'Device recalibrated'], '20261026095500');
-    $step('C7b', $m, [$J('uj_ro', 'range:hard-high')], [$O('uj_ro', 'range:hard-high')]);
+    $step('C7b', $m, [$J('uj_ro', 'range:hard-high')]);
     $quiet('C7b', $m, ['Device recalibrated']);
     // C8: the reason field is embedded in the label of the line below the value
     $open('C8', 'form');
@@ -439,7 +476,7 @@ namespace {
     $quiet('C8b', $m, ['Second scale checked']);
     $open('C8c', 'form');
     $m = $save('XE-1', ['uj_emb' => '', 'uj_emb_why' => ''], '20261026095630');
-    $step('C8c', $m, [], [$J('uj_emb', 'range:hard-high')]);
+    $step('C8c', $m);
     $open('D1', 'form');
 
     // ---- Section D: "Save anyway?", and a rule that never blocks --------------------------------------
@@ -450,7 +487,7 @@ namespace {
     $m = $save('XE-1', ['uj_off' => '85'], '20261026100000');
     $step('D3', $m, [$O('uj_off', 'constraint:assert:[uj_off]>=90')]);
     $m = $save('XE-1', ['uj_off_why' => 'Known lung disease'], '20261026100500');
-    $step('D4', $m, [$J('uj_off', 'constraint:assert:[uj_off]>=90')], [$O('uj_off', 'constraint:assert:[uj_off]>=90')]);
+    $step('D4', $m, [$J('uj_off', 'constraint:assert:[uj_off]>=90')]);
     $quiet('D4', $m, ['Known lung disease']);
 
     // ---- Section E: the Enter key -------------------------------------------------------------------
@@ -467,7 +504,7 @@ namespace {
     $open('F2', 'form');
     check('F2: the duplicate check finds UJ-001 free on XE-1', $ask('F2', 'unique-check', 'uj_code', 'UJ-001', 'XE-1') === ['used' => false, 'record' => null]);
     $m = $save('XE-1', ['uj_code' => 'UJ-001'], '20261026102000');
-    $step('F2', $m, [], [$J('uj_code', 'single:format')]);
+    $step('F2', $m);
     $p = $open('F3', 'xe2', 'XE-2');
     check('F3: on XE-2 the duplicate check finds UJ-001 used, by XE-1 (staff see the record)', $ask('F3', 'unique-check', 'uj_code', 'UJ-001', 'XE-2') === ['used' => true, 'record' => 'XE-1']);
     $m = $save('XE-2', ['uj_req_why' => '1'], '20261026102500');
@@ -479,15 +516,15 @@ namespace {
     $p = $open('F5', 'locked');
     check('F5: reopened, the enrolment weight is locked', (bool) rulesOn($p, 'uj_lock', 'writeonce'), rulesOn($p, 'uj_lock'));
     $m = $save('XE-1', ['uj_lock_why' => ''], '20261026103500');
-    $step('F5b', $m, [$O('uj_lock', 'range:hard-high')], [$J('uj_lock', 'range:hard-high')]);
+    $step('F5b', $m, [$O('uj_lock', 'range:hard-high')]);
     $import('XE-1', ['uj_lock' => '310.0', 'uj_lock_why' => 'Weighed in a cast'], '20261026104000');
     $p = $open('F6', 'locked310');
     $m = $save('XE-1', [], '20261026104500');
-    $step('F6', $m, [$O('uj_lock', 'writeonce:changed'), $J('uj_lock', 'range:hard-high')], [$O('uj_lock', 'range:hard-high')]);
+    // the range finding is saved with its reason again, at the new value: a new entry
+    $step('F6', $m, [$O('uj_lock', 'writeonce:changed'), $J('uj_lock', 'range:hard-high')]);
     $wo = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved' && ($c[1]['type'] ?? '') === 'writeonce'; }))[0][1] ?? [];
     check('F6: the write-once entry names when the lock was set and when the import changed it, and no reason field',
         ($wo['locked_at'] ?? '') === '2026-10-26 10:30' && ($wo['changed_at'] ?? '') === '2026-10-26 10:40' && !isset($wo['justified_by']), $wo);
-    $F6 = $LIVE;
 
     // ---- Section G: a survey of five pages --------------------------------------------------------------
     $ps = surveyPage(mod($D), 'XE-4');
@@ -503,19 +540,20 @@ namespace {
     $pages['surveyErrors'] = [];
     foreach (array_keys($ERR) as $f) $pages['surveyErrors'][$f] = errOf($ps, $f);
     $m = $surveySave('XE-4', ['uj_req_why' => '2', 'uj_wt' => '300.0', 'uj_wt_why' => 'Scale checked twice', 'uv_justify_test_complete' => '0'], '20261026105000');
-    $G = [$J('uj_req', 'required:required-blank'), $J('uj_wt', 'range:hard-high')];
     // @UVREQUIRED judges a survey response once it is complete (REQ-5): until Submit, only the range finding
-    $Gopen = [$J('uj_wt', 'range:hard-high')];
-    check('G1c: Next saves the first page: the range finding saved with its reason; the required field waits for Submit', entries($m) === $Gopen, entries($m));
+    check('G1c: Next saves the first page: the range finding saved with its reason; the required field waits for Submit',
+        entries($m) === [$J('uj_wt', 'range:hard-high')], entries($m));
     $quiet('G1c', $m, ['Scale checked twice']);
     $m = $surveySave('XE-4', [], '20261026105100');
-    check('G2: Next on the second page logs the same one', entries($m) === $Gopen, entries($m));
+    check('G2: Next on the second page finds the same one, which G1c logged: no entry', entries($m) === [], entries($m));
     $m = $surveySave('XE-4', ['uj_far' => '12'], '20261026105200');
-    check('G4: Next on the third page, the hours fixed: the same one', entries($m) === $Gopen, entries($m));
+    check('G4: Next on the third page, the hours fixed: no entry', entries($m) === [], entries($m));
     $m = $surveySave('XE-4', [], '20261026105300');
-    check('G4: Next on the fourth page: the same one', entries($m) === $Gopen, entries($m));
+    check('G4: Next on the fourth page: no entry', entries($m) === [], entries($m));
     $m = $surveySave('XE-4', ['uv_justify_test_complete' => '2'], '20261026105400');
-    check('G5: Submit completes the response: both findings, the required one now judged', entries($m) === $G, entries($m));
+    check('G5: Submit completes the response: the required finding, now judged, is the one new entry', entries($m) === [$J('uj_req', 'required:required-blank')], entries($m));
+    check('B2b to G5: no save after B1b logged a rule problem, the refused tags of A1 included',
+        $problemsLogged() === $B1bProblems, $problemsLogged() - $B1bProblems);
 
     // ---- Section H: the scans --------------------------------------------------------------------------
     /** "record field type:reason open|justified" for each finding of the legacy scan on this instrument, with the stats. */
@@ -657,6 +695,7 @@ namespace {
     $REASON['uj_rr'] = 'uj_sql_why';
     $m = $save('XE-1', ['uj_rr' => '70', 'uj_sql_why' => '2'], '20261026112500');
     $step('J4b', $m, [$J('uj_rr', 'range:hard-high')]);
+    check('J4b: no rule problem logged, the six refused tags left included', $problemsLogged() === $B1bProblems, $problemsLogged() - $B1bProblems);
 
     // The labels, field types and sections the engine replay builds its page from.
     $pages['labels'] = $LABELS;

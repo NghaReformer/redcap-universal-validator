@@ -606,8 +606,10 @@ inner spaces.
 - `delta_live_twin_php.php` runs the module over the live fixture on a copy of
   pid 149's events and checks every answer of
   `docs/testbed/DELTA_LIVE_ACCEPTANCE.md`: the configuration errors word for
-  word, every log entry of each save in the sheet's order, and the scan with
-  its detail lines. It keeps the page configs in `delta_live_pages.json`
+  word, every log entry of each save in the sheet's order, over one module
+  log whose `queryLogs` stub answers from the entries already written, so a
+  finding or rule problem is logged once (PRF-9), and the scan with its
+  detail lines. It keeps the page configs in `delta_live_pages.json`
   (`--write` after a change) for `delta_live_twin_js.cjs`, which replays the
   sheet's typing through the engine and checks each note, each save and the
   label the save dialog names. The pages B, C2 and D1 open with the values
@@ -755,7 +757,8 @@ inner spaces.
   save the sheet makes, and checks every answer of
   `docs/testbed/WRITEONCE_LIVE_ACCEPTANCE.md`: the configuration errors word
   for word (and the survey's general wording), which fields each page locks,
-  each log entry of each save in order, the Data Import Tool change found by
+  each log entry of each save in order over one module log that holds each
+  entry once (PRF-9), the Data Import Tool change found by
   the scan and the next save, and the roles read as they are when the audit
   or scan runs. For section I, whose steps read what REDCap itself logs, it
   checks the module's answer for the log each step expects and for the other
@@ -843,7 +846,8 @@ to a finding saved with a reason.
   page and import of `docs/testbed/JUSTIFY_LIVE_ACCEPTANCE.md` leaves them. It
   checks every server answer of the sheet: the configuration errors word for
   word, the justify rules each page carries, every `uvalidate-justified` and
-  `invalid-id-saved` entry (never the reason text), the lookup and duplicate
+  `invalid-id-saved` entry (never the reason text) over one module log that
+  holds each entry once (PRF-9), the lookup and duplicate
   answers, and both scans on pid 149 and a scratch project. It writes the page
   configs to `tests/justify_live_pages.json` with `--write`, and fails when
   that file differs from what the module builds now.

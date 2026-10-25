@@ -237,6 +237,10 @@ MUTATIONS = [
     ('a justify rule on several fields refused on its first field only', UV,
      '            foreach ($mine as $x) $refused[] = $x;\n',
      '', MODULE),
+    # VAL-15 logs the refused rules of the saved form only
+    ('a refused @UVJUSTIFY on another form logged on this form\'s save', UV,
+     '                if (is_string($f) && isset($onForm[$f])) $own[] = $f;',
+     '                if (is_string($f)) $own[] = $f;', MODULE),
     ('a reason field makes a locked field hold the save', UV,
      "            foreach (array_map('strval', ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList'])) as $x) {",
      "            foreach (array_map('strval', ModeRegistry::refFields($r)) as $x) {", MODULE),

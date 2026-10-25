@@ -13,7 +13,8 @@
  * then in it, then out again.
  *
  * It checks the configuration errors word for word, which fields each page
- * locks, every log entry of each save in the sheet's order, and the scan
+ * locks, every log entry of each save in the sheet's order, over one module
+ * log that holds each entry once (PRF-9), and the scan
  * with its detail lines: on the visit (380), on a whole repeating event (382,
  * an import of two instances), on a survey whose first page is saved by Next,
  * and after a deletion of the form's data, which the check cannot place.
@@ -32,6 +33,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The module log of the project: every entry each request wrote, read back by queryLogs(). */
+        public static $stored = [];
         public $logCalls = []; public $projectSettings = [];
         public function getSubSettings($k, $pid = null) { return []; }
         public function getProjectSetting($k, $pid = null) { return $this->projectSettings[$k] ?? null; }
@@ -39,7 +42,24 @@ namespace ExternalModules {
         public function setSystemSetting($k, $v) {}
         public function getProjectId() { return 149; }
         public function getUrl($p) { return '/x/' . $p; }
-        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; self::$stored[] = [$m, $p]; return count($this->logCalls); }
+        /**
+         * The one read the module makes of its log (PRF-9), answered from the
+         * entries of earlier requests as the framework's log table would: an
+         * entry whose fingerprint the log holds is not written again.
+         */
+        public function queryLogs($sql, $params) {
+            if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                throw new \Exception('unexpected log query: ' . $sql);
+            }
+            $rows = [];
+            foreach (self::$stored as $c) {
+                if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
+                    $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                }
+            }
+            return new LogRows($rows);
+        }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
         public function getUser() { return new TestUser('tester'); }
@@ -49,6 +69,10 @@ namespace ExternalModules {
         public function getUsername() { return $this->n; }
         public function hasDesignRights() { return true; }
         public function getRights($pid = null) { return \REDCap::$rights['tester'] ?? null; }
+    }
+    class LogRows {
+        private $r; public function __construct(array $r) { $this->r = $r; }
+        public function fetch_assoc() { return array_shift($this->r); }
     }
 }
 
@@ -209,15 +233,37 @@ namespace {
         sort($out);
         return $out;
     }
+    /** "field@event" for each refused rule ("configuration error:") among log entries, sorted. */
+    function refusals(array $calls) {
+        $out = [];
+        foreach ($calls as $c) {
+            if ($c[0] === 'uvalidate-unconfigurable' && strpos((string) ($c[1]['why'] ?? ''), 'configuration error:') === 0) $out[] = $c[1]['fields'] . '@' . $c[1]['event_id'];
+        }
+        sort($out);
+        return $out;
+    }
     /** the rule problems a save logged for the good fields (the bad ones are configuration errors) */
     function problems($m) {
         $out = [];
         foreach ($m->logCalls as $c) if ($c[0] === 'uvalidate-unconfigurable' && strpos((string) $c[1]['fields'], 'uw_bad_') === false) $out[] = $c[1];
         return $out;
     }
+    /** One save, over the module log the saves before it left (PRF-9: a finding logged once is not logged again). */
     function save(array $data, array $roles, $record = 'XE-3', $event = 380, $instance = 1) {
         $m = mod($data, $roles);
         $m->redcap_save_record(149, $record, 'uv_writeonce_test', $event, null, null, null, $instance);
+        return $m;
+    }
+    /** One save over an empty module log: it logs every finding and rule problem the audit makes. */
+    function firstSave(array $data, array $roles, $record = 'XE-3', $event = 380, $instance = 1) {
+        \ExternalModules\AbstractExternalModule::$stored = [];
+        return save($data, $roles, $record, $event, $instance);
+    }
+    /** What a save finds: the same save over an empty module log, which is then put back as it was. */
+    function found(array $data, array $roles, $record = 'XE-3', $event = 380, $instance = 1) {
+        $keep = \ExternalModules\AbstractExternalModule::$stored;
+        $m = firstSave($data, $roles, $record, $event, $instance);
+        \ExternalModules\AbstractExternalModule::$stored = $keep;
         return $m;
     }
     function surveyPage($m, $record) {
@@ -313,6 +359,9 @@ namespace {
     logSave('20261023090000', $B1 + ['uv_writeonce_test_complete' => '0']);
     $m = save($D, $ROLE_OUT);
     check('B1: the first save logs no write-once finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    $BAD = ['uw_bad_calc', 'uw_bad_role', 'uw_bad_setvalue', 'uw_bad_value', 'uw_bad_when'];
+    $at = function ($evt) use ($BAD) { return array_map(function ($f) use ($evt) { return $f . '@' . $evt; }, $BAD); };
+    check('B1: ... and, as the form\'s first save at the visit, the five refused rules, once each (VAL-15, PRF-9)', refusals($m->logCalls) === $at(380), refusals($m->logCalls));
     $p = $opened('b2', $D, $ROLE_OUT);
     check('B2: reopened, every saved field with the tag is locked; the blank site, the weight (lock from 2099) and the untagged field are not',
         lockedOn($p) === ['uw_arm', 'uw_consent', 'uw_notes', 'uw_pain', 'uw_yn'], lockedOn($p));
@@ -381,8 +430,10 @@ namespace {
     $D['XE-3'][380]['uw_arm'] = '2';
     logSave('20261023093000', ['uw_arm' => '2']);
     $m = save($D, $ROLE_IN);
-    check('D2: the arm changed by the role: no finding; the import of the site now counts as the role\'s', hits($m) === [
-        'uw_consent:changed 2026-10-23 09:00 > 2026-10-23 09:20', 'uw_notes:cleared 2026-10-23 09:00 > 2026-10-23 09:20'], hits($m));
+    $d2 = found($D, $ROLE_IN);
+    check('D2: the arm changed by the role: no finding; the import of the site now counts as the role\'s', hits($d2) === [
+        'uw_consent:changed 2026-10-23 09:00 > 2026-10-23 09:20', 'uw_notes:cleared 2026-10-23 09:00 > 2026-10-23 09:20'], hits($d2));
+    check('D2: the two findings left are the ones C3 logged, so the save writes no entry (PRF-9)', hits($m) === [], hits($m));
     $got = scan($D, $ROLE_IN);
     check('D3: the scan agrees', $got === ['uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00'], $got);
     $p = $opened('d4', $D, $ROLE_OUT);
@@ -396,6 +447,7 @@ namespace {
     logSave('20261023094000', ['uw_consent' => '2026-10-03', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-3', 382, 1);
     $m = save($D, $ROLE_OUT, 'XE-3', 382, 1);
     check('E1: the first save at instance 1 of the repeating event: no finding', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
+    check('E1: ... and the five refused rules, logged by the form\'s first save at this event', refusals($m->logCalls) === $at(382), refusals($m->logCalls));
     check('E1: reopened, it is locked', lockedOn(page(mod($D, $ROLE_OUT), 'XE-3', 382, 1)) === ['uw_consent']);
     $D['XE-3']['repeat_instances'][382][''][1]['uw_consent'] = '2026-10-04';
     $D['XE-3']['repeat_instances'][382][''][2] = ['uw_consent' => '2026-10-09'];
@@ -443,11 +495,15 @@ namespace {
     check('H3: the scan lists XE-4\'s consent date as not checked, never as a pass or a finding',
         !array_filter($got, function ($g) { return strpos($g, 'XE-4') === 0; })
         && (bool) array_filter($prob, function ($u) { return in_array('uw_consent', $u['fields'], true) && strpos((string) ($u['why'] ?? ''), 'deletion') !== false; }), [$got, $prob]);
+    $all = refusals(\ExternalModules\AbstractExternalModule::$stored);
+    $want = array_merge($at(380), $at(382));
+    sort($want);
+    check('A to H: the module log holds the refused rules of B1 and of E1, and no save logged them again', $all === $want, $all);
 
     // ---- Section I: what REDCap writes to its log, as far as the module's answer goes ------------
     // Each step reads what REDCap logs on the real server; the twin checks what the module answers for
     // the shape the sheet expects, and for the other shape the step says to record. Each runs on its own
-    // copy of the log, so the steps above are left as they are.
+    // copy of the log, so the steps above are left as they are, and its first save on an empty module log.
     $KEEP = $LOG;
     $one = function ($rec, array $values) { return [$rec => [351 => ['record_id' => $rec], 380 => $values]]; };
     $why = function (array $prob, $f) {
@@ -489,7 +545,7 @@ namespace {
         }
         $dict = $new;
         logSave('20261023102400', $import, 'tester', 'XE-9', 380);
-        $m = save($one('XE-9', $now), $ROLE_OUT, 'XE-9');
+        $m = firstSave($one('XE-9', $now), $ROLE_OUT, 'XE-9');
         $dict = $saved;
         return $m;
     };
@@ -569,7 +625,7 @@ namespace {
     $LOG = $KEEP;
     logSave('20261023104000', ['record_id' => 'XE-R1', 'uw_consent' => '2026-10-07', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-R1', 380, 1, 'INSERT');
     logSave('20261023104100', ['record_id' => 'XE-R2'], 'tester', 'XE-R2', 380);
-    $m = save($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
+    $m = firstSave($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
     check('I3 (a): the old rows stay under XE-R1: the save of XE-R2 is no finding, and a rule problem for the record not made',
         hits($m) === [] && strpos($why(problems($m), 'uw_consent'), 'the project log does not show the record being made') !== false, [hits($m), problems($m)]);
     check('I3: XE-R2 opens locked at the saved date', lockedOn(page(mod($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT), 'XE-R2')) === ['uw_consent']);
@@ -580,7 +636,7 @@ namespace {
     $LOG = $KEEP;
     logSave('20261023104000', ['record_id' => 'XE-R1', 'uw_consent' => '2026-10-07', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-R2', 380, 1, 'INSERT');
     logSave('20261023104100', ['record_id' => 'XE-R2'], 'tester', 'XE-R2', 380);
-    $m = save($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
+    $m = firstSave($one('XE-R2', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-R2');
     check('I3 (b): the old rows moved to XE-R2: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     logSave('20261023104500', ['uw_consent' => '2026-10-08'], 'tester', 'XE-R2', 380);
     $got = scanAt($one('XE-R2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);
@@ -590,7 +646,7 @@ namespace {
     logSave('20261023105000', ['record_id' => 'XE-1', 'uw_consent' => '2026-10-07'], 'tester', 'XE-1', 380, 1, 'INSERT');
     logSave('20261023105100', [], 'tester', '149', null, 1, 'DELETE', 'Erase all data');
     logSave('20261023105200', ['record_id' => 'XE-1', 'uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380, 1, 'INSERT');
-    $m = save($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-1');
+    $m = firstSave($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-1');
     check('I5: the save after the erase writes no entry: the save before it no longer counts', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     logSave('20261023105300', ['uw_consent' => '2026-10-09'], 'tester', 'XE-1', 380);
     $m = save($one('XE-1', ['uw_consent' => '2026-10-09']), $ROLE_OUT, 'XE-1');
@@ -602,7 +658,7 @@ namespace {
         logSave('20261023105500', ['record_id' => 'XE-2', 'uw_consent' => '2026-10-07'], 'tester', 'XE-2', 380, 1, 'INSERT');
         logSave('20261023105600', [], 'tester', $del[0], $del[1], 1, 'DELETE', $del[2]);
         logSave('20261023105700', ['record_id' => 'XE-2', 'uw_consent' => '2026-10-08'], 'tester', 'XE-2', 380, 1, 'INSERT');
-        $m = save($one('XE-2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-2');
+        $m = firstSave($one('XE-2', ['uw_consent' => '2026-10-08']), $ROLE_OUT, 'XE-2');
         check("I5b ($shape): the save after the production move writes no entry", hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
         logSave('20261023105800', ['uw_consent' => '2026-10-09'], 'tester', 'XE-2', 380);
         $m = save($one('XE-2', ['uw_consent' => '2026-10-09']), $ROLE_OUT, 'XE-2');
@@ -639,7 +695,7 @@ namespace {
     };
     $ren('uw_consent_old');
     check('I7: the renamed field opens locked at the saved value', lockedOn(page(mod($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT), 'XE-1')) === ['uw_consent']);
-    $m = save($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
+    $m = firstSave($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
     check('I7 (a): the save after the rename is no finding, and a rule problem: the log does not show the save of the value it holds',
         hits($m) === [] && strpos($why(problems($m), 'uw_consent'), 'the project log does not show the save of the value it holds') !== false, [hits($m), problems($m)]);
     logSave('20261023111100', ['uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380);
@@ -647,7 +703,7 @@ namespace {
     check('I7 (a): the import after the rename is taken for the first save under the new name: no finding and no rule problem (the documented limit)',
         $got === [] && $why($prob, 'uw_consent') === '', [$got, $prob]);
     $ren('uw_consent');
-    $m = save($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
+    $m = firstSave($one('XE-1', ['uw_consent' => '2026-10-07']), $ROLE_OUT, 'XE-1');
     check('I7 (b): the earlier save shown under the new name: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
     logSave('20261023111100', ['uw_consent' => '2026-10-08'], 'tester', 'XE-1', 380);
     $got = scanAt($one('XE-1', ['uw_consent' => '2026-10-08']), $ROLE_OUT, $prob);

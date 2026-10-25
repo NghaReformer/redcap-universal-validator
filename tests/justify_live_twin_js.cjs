@@ -315,7 +315,7 @@ modeStep('B6', 'uj_dose', 'uj_dose_why', (e) => { pick(e, 'uj_arm', '1'); pick(e
   { '-ch': '✗ The selected choice is no longer available while: [uj_arm]=\'2\' — pick one of the choices shown (the current answer is kept until you do).' },
   (e) => type(e, 'uj_dose_why', 'Dose by weight'));
 modeStep('B7', 'uj_visit', 'uj_visit_why', (e) => { type(e, 'uj_anchor', '2026-10-01'); type(e, 'uj_visit', '2026-10-20'); },
-  { '-w': '✗ This date must be between 2026-10-01 and 2026-10-15. (0 to 14 days from [uj_anchor])' },
+  { '-w': '✗ This date must be between 2026-10-01 and 2026-10-15. (0 to 14 days after [uj_anchor])' },
   (e) => type(e, 'uj_visit_why', 'Clinic closed for a week'), { note: 'Say why this visit date is right.' });
 modeStep('B8', 'uj_wt2', 'uj_wt2_why', (e) => type(e, 'uj_wt2', '302.5'),
   { '-d': '✗ This value rose by 2.5 kg (0.8%) from 300.0 kg ([uj_wt]). Allowed: a change of at most 1 kg.' }, (e) => pick(e, 'uj_wt2_why', '1'));

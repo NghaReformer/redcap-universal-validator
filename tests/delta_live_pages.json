@@ -343,7 +343,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "visit1_on": {
         "algorithm": "iso7064_mod37_36",
@@ -767,7 +768,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "baseline_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1187,7 +1189,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "visit2_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1611,7 +1614,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "specimen2_on": {
         "algorithm": "iso7064_mod37_36",
@@ -1698,7 +1702,8 @@
         "numberMarks": {
             "xs_hb": "point",
             "ud_rep": "point"
-        }
+        },
+        "configShape": 1
     },
     "visit1_survey_on": {
         "algorithm": "iso7064_mod37_36",
@@ -2066,7 +2071,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "sheet_b1": {
         "algorithm": "iso7064_mod37_36",
@@ -2412,7 +2418,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "sheet_b1_values": {
         "ud_c": "72,5",
@@ -2852,7 +2859,8 @@
             "ud_bad_nofield": "point",
             "ud_bad_inst": "point",
             "ud_bad_nolimit": "point"
-        }
+        },
+        "configShape": 1
     },
     "sheet_c2_values": {
         "ud_c": "72,5",
@@ -2956,7 +2964,8 @@
         "numberMarks": {
             "xs_hb": "point",
             "ud_rep": "point"
-        }
+        },
+        "configShape": 1
     },
     "sheet_d1_values": {},
     "labels": {

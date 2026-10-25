@@ -70,6 +70,17 @@ Read the injected config at any point with:
 JSON.parse(document.getElementById('inspire-validator-config').textContent)
 ```
 
+The module log holds each finding once. A save writes an `invalid-id-saved`
+entry, with a `fingerprint`, for a finding the log does not hold yet: one
+found for the first time, or one whose value or `vs` has changed. A save that
+finds the same thing again (same record, field, event, instance, reason, value
+and `vs`) writes nothing for it. A refused rule is logged by the first save of
+its form at each event, and again once the form's rules are numbered
+differently (C3), as one `uvalidate-unconfigurable` entry whose `why` starts
+"configuration error:". The entries below assume the log holds none
+from an earlier run of this sheet; on a rerun the saves write nothing for what
+was logged then.
+
 A "note" below is the message under the field. Red notes start with ✗.
 "Leave the field" means Tab out of it or click elsewhere. Fields validated as
 "Number (1 decimal place)" take `70.0`, not `70`; the comma-decimal fields take
@@ -96,26 +107,26 @@ A "note" below is the message under the field. Red notes start with ✗.
 | A12 | `ud_grp` = Check, `ud_when` = 80, leave; Save | "✗ This value rose by 9.5 (13.5%) from 70.5 ([ud_w1]). Allowed: a change of at most 1." Save is blocked |
 | A12b | `ud_grp` = Skip; Save | The note goes away and the record saves |
 | A13 | `ud_sbp2` = 145; Save, answer "save anyway" | The record saves |
-| A14 | Module log (External Modules → View Logs) | `invalid-id-saved` entries with `type: delta`, all at event 380, instance 1. Each save that went through logs every finding left on the form: A6 `ud_htcalc` reason `up`, `vs` `[ud_ht0]`. A11 `ud_htcalc` `up` `[ud_ht0]` and `ud_two` `up` `[ud_w1]`. A12b `ud_htcalc` `up` `[ud_ht0]` only (`ud_two` is blank and `ud_when` is off). A13 `ud_htcalc` `up` `[ud_ht0]` and `ud_sbp2` `up` `[ud_sbp1]`. The saves the sheet held or cancelled (A2, A4, A5, A10, A11b, A12) log nothing |
+| A14 | Module log (External Modules → View Logs) | `invalid-id-saved` entries with `type: delta`, all at event 380, instance 1, one per finding: A6 `ud_htcalc` reason `up`, `vs` `[ud_ht0]`. A11 `ud_two` `up` `[ud_w1]`; the `ud_htcalc` finding stands, and A6 logged it. A12b nothing (`ud_two` is blank and `ud_when` is off). A13 `ud_sbp2` `up` `[ud_sbp1]`. The saves the sheet held or cancelled (A2, A4, A5, A10, A11b, A12) log nothing. A6 also logs the refused rules of event 380: one `uvalidate-unconfigurable` entry for each `ud_bad_*` field, and, with references off, for `ud_wt`, `ud_height`, `ud_bl` and `ud_twoev` (two for `ud_twoev`, one per tag). The later saves at event 380 log no rule problem |
 
 ## Section B: a value of another form (references off), visit 1
 
 | # | Action | Expect |
 |---|---|---|
 | B1 | `ud_snap` = 74, leave | "✗ This value rose by 2 kg (2.8%) from 72 kg ([xv_weight]). Allowed: a change of at most 1 kg. (compared with xv_weight, read when this page was opened — reload if it has changed since. This check does not block saving; it is re-checked after the save.)" |
-| B2 | Save; the dialog asks "save anyway?" for `ud_sbp2` alone (left at 145 in A13): answer yes | The record saves although `ud_snap`'s rule says `hard`. Log at event 380: `ud_htcalc` `up` `[ud_ht0]`, `ud_sbp2` `up` `[ud_sbp1]` and `ud_snap` `up` `[xv_weight]` |
-| B3 | Open `xe_visit` at visit 1, set `xv_weight` = 73.5, Save. Then set it back to 72, Save | First save: no `type: delta` entry at all (74 is within 1 kg of 73.5, and a save of `xe_visit` re-checks only the rules that read it). Second: one entry, `ud_snap` `up` `[xv_weight]`. Saving the form that holds the `vs` re-checks the rule |
+| B2 | Save; the dialog asks "save anyway?" for `ud_sbp2` alone (left at 145 in A13): answer yes | The record saves although `ud_snap`'s rule says `hard`. One new entry at event 380: `ud_snap` `up` `[xv_weight]`. The findings of `ud_htcalc` and `ud_sbp2` stand; A6 and A13 logged them |
+| B3 | Open `xe_visit` at visit 1, set `xv_weight` = 73.5, Save. Then set it back to 72, Save | First save: no `type: delta` entry (74 is within 1 kg of 73.5, and a save of `xe_visit` re-checks only the rules that read it). Second: saving the form that holds the `vs` re-checks the rule, and `ud_snap` is a finding again, with the value 74 and the `vs` B2 logged, so no entry is written. E1's scan lists it |
 
 ## Section C: other events (references on)
 
 | # | Action | Expect |
 |---|---|---|
 | C0 | Before switching the setting on, open visit 1 | Configuration errors: `ud_wt` '"vs": "previous-event" reads another event or instance, which needs event and instance references — enable them in project settings first.' (`ud_height`, `ud_twoev` and `ud_bad_inst` the same, with their shorthand); `ud_bl` 'a "vs" value in another event or instance needs event and instance references — enable them in project settings first.' Now switch the setting on (see Setup 4) and reload: the four rule fields configure |
-| C1 | Baseline (379): `ud_wt` = 70, `ud_height` = 170.0, `ud_bl` = 70, `ud_twoev` = 70; Save | No note and no `type: delta` entry. `ud_wt`, `ud_height` and `ud_twoev`: baseline is the first event that has `uv_delta_test`, so there is nothing earlier. `ud_bl` is compared with `xv_weight` at baseline, which is 70 too, so there is no change. The only rule problems logged are one `uvalidate-unconfigurable` entry for each of the six `ud_bad_*` fields, its `why` starting "configuration error:" (every save of the form logs its refused rules) |
+| C1 | Baseline (379): `ud_wt` = 70, `ud_height` = 170.0, `ud_bl` = 70, `ud_twoev` = 70; Save | No note and no `type: delta` entry. `ud_wt`, `ud_height` and `ud_twoev`: baseline is the first event that has `uv_delta_test`, so there is nothing earlier. `ud_bl` is compared with `xv_weight` at baseline, which is 70 too, so there is no change. This is the form's first save at baseline, so it logs the refused rules there: one `uvalidate-unconfigurable` entry for each of the six `ud_bad_*` fields at event 379, its `why` starting "configuration error:", and no other rule problem |
 | C2 | Visit 1 (380): `ud_wt` = 78, `ud_height` = 169.4, `ud_bl` = 85, `ud_twoev` = 74, leaving each | `ud_wt`: "✗ This value rose by 8 kg (11.4%) from 70 kg (the previous event). Allowed: a change of at most 10%." `ud_height`: "✗ This value fell by 0.6 cm (0.4%) from 170.0 cm (the first event). Allowed: a fall of at most 0.5 cm." `ud_bl`: "✗ This value rose by 15 (21.4%) from 70 ([baseline_arm_1][xv_weight]). Allowed: a change of at most 20%." `ud_twoev`: one line, "… rose by 4 (5.7%) from 70 (the previous event). Allowed: a change of at most 5%." Each ends with "(compared with saved event/instance values, read when this page was opened — … re-checked after the save.)" |
-| C3 | Save; the dialog asks "save anyway?" for `ud_sbp2` alone, as in B2: answer yes | The record saves, although `ud_wt` says `hard`. Seven entries, all at event 380: `ud_wt` `up` `[previous-event-name][ud_wt]`, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]`, `ud_twoev` `up` `[previous-event-name][ud_twoev]`, and the three findings left from A and B: `ud_htcalc` `up` `[ud_ht0]`, `ud_sbp2` `up` `[ud_sbp1]`, `ud_snap` `up` `[xv_weight]` |
-| C4 | Visit 2 (381): `ud_wt` = 80, `ud_height` = 170.0, `ud_twoev` = 82; Save | `ud_twoev` shows two lines: "… rose by 8 (10.8%) from 74 (the previous event) …" and "… rose by 12 (17.1%) from 70 (the first event). Allowed: a change of at most 15%. …". No note under `ud_wt` (80 is 2.6% above 78) or `ud_height` (no fall from 170.0). The record saves. Six entries: at event 381, `ud_twoev` `up` `[previous-event-name][ud_twoev]` and `ud_twoev` `up` `[first-event-name][ud_twoev]`; at event 380, which the save re-checks because its rules read other events, `ud_wt`, `ud_height`, `ud_bl` and `ud_twoev` as in C3. The rules of event 380 that read only their own entry (`ud_htcalc`, `ud_sbp2`, `ud_snap`) are not re-checked |
-| C5 | Baseline: `ud_wt` = 76; Save | The save re-checks visit 1 and visit 2. Five entries: at event 380, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]` and `ud_twoev` `up` `[previous-event-name][ud_twoev]`, and no longer `ud_wt` (78 is 2.6% above 76); at event 381, the two `ud_twoev` entries of C4 |
+| C3 | Save; the dialog asks "save anyway?" for `ud_sbp2` alone, as in B2: answer yes | The record saves, although `ud_wt` says `hard`. Four new entries, all at event 380: `ud_wt` `up` `[previous-event-name][ud_wt]`, `ud_height` `down` `[first-event-name][ud_height]`, `ud_bl` `up` `[baseline_arm_1][xv_weight]` and `ud_twoev` `up` `[previous-event-name][ud_twoev]`. The three findings left from A and B (`ud_htcalc`, `ud_sbp2`, `ud_snap`) stand and are not logged again. Six `uvalidate-unconfigurable` entries at event 380, one for each `ud_bad_*` field: with references on, the form's rules are numbered differently, and a rule problem's entry names its rule's number |
+| C4 | Visit 2 (381): `ud_wt` = 80, `ud_height` = 170.0, `ud_twoev` = 82; Save | `ud_twoev` shows two lines: "… rose by 8 (10.8%) from 74 (the previous event) …" and "… rose by 12 (17.1%) from 70 (the first event). Allowed: a change of at most 15%. …". No note under `ud_wt` (80 is 2.6% above 78) or `ud_height` (no fall from 170.0). The record saves. Two entries at event 381: `ud_twoev` `up` `[previous-event-name][ud_twoev]` and `ud_twoev` `up` `[first-event-name][ud_twoev]`, and six `uvalidate-unconfigurable` entries at event 381, one for each `ud_bad_*` field. The save re-checks event 380, because its rules read other events, and finds `ud_wt`, `ud_height`, `ud_bl` and `ud_twoev` as in C3; C3 logged them, so nothing is written for them. The rules of event 380 that read only their own entry (`ud_htcalc`, `ud_sbp2`, `ud_snap`) are not re-checked |
+| C5 | Baseline: `ud_wt` = 76; Save | The save re-checks visit 1 and visit 2 and writes no entry. `ud_wt` at event 380 is no longer a finding (78 is 2.6% above 76), and E1's scan no longer lists it. The other findings at events 380 and 381 are those C3 and C4 logged |
 
 ## Section D: repeating instances (references on)
 

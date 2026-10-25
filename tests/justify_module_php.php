@@ -18,7 +18,8 @@
  *   - the post-save audit logs a broken rule whose reason is given as
  *     'uvalidate-justified' with justified_by (never the reason), leaves it
  *     'invalid-id-saved' while the reason is blank, spaces or a Missing Data
- *     Code, reads the reason of the same event and instance only,
+ *     Code, reads the reason of the same event and instance only, and logs a
+ *     refused @UVJUSTIFY on a save of its field's form only (VAL-15),
  *   - the scan marks the same findings, counts them apart from the open ones,
  *     shows the "Saved with a reason" column and sentence, and the durable
  *     rows carry the flag.
@@ -526,6 +527,30 @@ namespace {
     check('codes that cannot be read: a code is not taken for a reason (got ' . json_encode(audit($m, 'wt')) . ')',
         audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
     check('... nor is any other text (got ' . json_encode(audit($m2, 'wt')) . ')', audit($m2, 'wt') === ['invalid-id-saved:range:hard-low']);
+
+    // A save logs the refused rules whose fields are on the saved form only (VAL-15): a
+    // refused @UVJUSTIFY on another form waits for a save of that form, and so does one
+    // on another form whose reason field is on the saved form.
+    $XF = ['record_id' => f('enrol_form'),
+        'e_note' => f('enrol_form', '', '', 'notes'),
+        'e_bad' => f('enrol_form', '@UVRANGE={"hard":[0,1]} ' . $J('e_bad'), 'integer'),
+        'v_far' => f('visit_form', '@UVRANGE={"hard":[0,1]} ' . $J('e_note'), 'integer'),
+        'v_bad' => f('visit_form', '@UVRANGE={"hard":[0,1]} ' . $J('v_bad'), 'integer')];
+    $XROW = ['2' => [351 => ['record_id' => '2', 'e_note' => 'n', 'e_bad' => '5', 'v_far' => '5', 'v_bad' => '5']]];
+    $refusedLogged = function ($m) {
+        $out = [];
+        foreach (logged($m, 'uvalidate-unconfigurable') as $e) {
+            if (strpos((string) ($e['why'] ?? ''), 'configuration error: @UVJUSTIFY on ') === 0) $out[] = $e['fields'];
+        }
+        sort($out);
+        return $out;
+    };
+    $m = save($XF, $XROW, 'enrol_form');
+    check('a save of enrol_form logs its own refused @UVJUSTIFY only, not those of visit_form, the one whose reason field is on enrol_form included (got '
+        . json_encode($refusedLogged($m)) . ')', $refusedLogged($m) === ['e_bad']);
+    $m = save($XF, $XROW, 'visit_form');
+    check('a save of visit_form logs its own two, not the one of enrol_form (got ' . json_encode($refusedLogged($m)) . ')',
+        $refusedLogged($m) === ['v_bad', 'v_far']);
 
     // ---- 3) the scan ---------------------------------------------------------------------
     $m = mod($DICT, $data(['wt_why' => 'scale recalibrated', 'pair_why' => 'both above the scale']), $FULL);

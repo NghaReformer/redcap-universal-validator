@@ -6,8 +6,9 @@
  * docs/testbed/DELTA_LIVE_ACCEPTANCE.md is the module's own answer.
  *
  * It checks the configuration errors word for word, the page fold of each
- * rule, every log entry of each save the sheet makes, in the sheet's order,
- * and the scan with its detail lines. The page configs it builds are the
+ * rule, every log entry of each save the sheet makes, in the sheet's order
+ * and over one module log (an entry the log holds is not written again,
+ * PRF-9), and the scan with its detail lines. The page configs it builds are the
  * input of tests/delta_live_twin_js.cjs, which replays the sheet's typing
  * through js/engine.js; they are kept in tests/delta_live_pages.json, and
  * this suite fails when that file is not what the module builds now.
@@ -18,6 +19,8 @@
 
 namespace ExternalModules {
     class AbstractExternalModule {
+        /** The module log of the project: every entry each request wrote, read back by queryLogs(). */
+        public static $stored = [];
         public $logCalls = []; public $projectSettings = [];
         public function getSubSettings($k, $pid = null) { return []; }
         public function getProjectSetting($k, $pid = null) { return $this->projectSettings[$k] ?? null; }
@@ -25,7 +28,24 @@ namespace ExternalModules {
         public function setSystemSetting($k, $v) {}
         public function getProjectId() { return 149; }
         public function getUrl($p) { return '/x/' . $p; }
-        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; self::$stored[] = [$m, $p]; return count($this->logCalls); }
+        /**
+         * The one read the module makes of its log (PRF-9), answered from the
+         * entries of earlier requests as the framework's log table would: an
+         * entry whose fingerprint the log holds is not written again.
+         */
+        public function queryLogs($sql, $params) {
+            if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                throw new \Exception('unexpected log query: ' . $sql);
+            }
+            $rows = [];
+            foreach (self::$stored as $c) {
+                if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
+                    $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                }
+            }
+            return new LogRows($rows);
+        }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
         public function getUser() { return new TestUser('tester'); }
@@ -35,6 +55,10 @@ namespace ExternalModules {
         public function getUsername() { return $this->n; }
         public function hasDesignRights() { return true; }
         public function getRights($pid = null) { return \REDCap::$rights['tester'] ?? null; }
+    }
+    class LogRows {
+        private $r; public function __construct(array $r) { $this->r = $r; }
+        public function fetch_assoc() { return array_shift($this->r); }
     }
 }
 
@@ -168,10 +192,23 @@ namespace {
         sort($out);
         return $out;
     }
+    /** One save, over the module log the saves before it left (PRF-9: a finding logged once is not logged again). */
     function save(array $data, $refs, $evt, $form, $inst = 1) {
         $m = mod($data, $refs);
         $m->redcap_save_record(149, 'XE-1', $form, $evt, null, null, null, $inst);
         return $m;
+    }
+    /** One save over an empty module log: it logs every finding the audit makes. */
+    function firstSave(array $data, $refs, $evt, $form, $inst = 1) {
+        \ExternalModules\AbstractExternalModule::$stored = [];
+        return save($data, $refs, $evt, $form, $inst);
+    }
+    /** "fields@event" for each rule problem a save logged, sorted. */
+    function problems($m) {
+        $out = [];
+        foreach (logs($m, 'uvalidate-unconfigurable') as $e) $out[] = $e['fields'] . '@' . $e['event_id'];
+        sort($out);
+        return $out;
     }
     $pages = [];
 
@@ -221,32 +258,35 @@ namespace {
     check('C: ud_bl reads xv_weight at baseline (70)', ($r['deltaVsOp'] ?? null) === ['lit', '70'], $r);
 
     // ---- Section A: saves -------------------------------------------------------------------
+    // Sections A to D check what each save finds, so each save starts from an
+    // empty module log and logs every finding. The sheet in order, below,
+    // keeps the log from save to save, as a live run does.
     // A13: "Save anyway" with ud_sbp2 145 against 120, ud_two 130 (fails the 5% line only).
     $d = $SEED;
     $d['XE-1'][380] += ['ud_w1' => '70.5', 'ud_sbp1' => '120', 'ud_sbp2' => '145', 'ud_two' => '130'];
-    $m = save($d, false, 380, 'uv_delta_test');
+    $m = firstSave($d, false, 380, 'uv_delta_test');
     check('A13: the audit logs the two changes saved anyway', hits($m) === ['ud_sbp2@380#1:up [ud_sbp1]', 'ud_two@380#1:up [ud_w1]'], hits($m));
     // A14: a calc that rose: saved, logged.
     $d['XE-1'][380] = array_merge($d['XE-1'][380], ['ud_sbp2' => '125', 'ud_two' => '', 'ud_ht0' => '150.0', 'ud_ht' => '152.0', 'ud_htcalc' => '152']);
-    $m = save($d, false, 380, 'uv_delta_test');
+    $m = firstSave($d, false, 380, 'uv_delta_test');
     check('A14: the calc\'s rise is logged, the height\'s rise is not', hits($m) === ['ud_htcalc@380#1:up [ud_ht0]'], hits($m));
 
     // ---- Section B: the snapshot saves and is logged ------------------------------------------
     $d = $SEED; $d['XE-1'][380] += ['ud_snap' => '74'];
-    $m = save($d, false, 380, 'uv_delta_test');
+    $m = firstSave($d, false, 380, 'uv_delta_test');
     check('B2: ud_snap 74 against xv_weight 72 is logged', hits($m) === ['ud_snap@380#1:up [xv_weight]'], hits($m));
     // B3: xv_weight corrected to 73.5 on xe_visit: saving xe_visit re-checks ud_snap.
     $d['XE-1'][380]['xv_weight'] = '73.5';
-    $m = save($d, false, 380, 'xe_visit');
+    $m = firstSave($d, false, 380, 'xe_visit');
     check('B3: saving xe_visit with 73.5 re-checks ud_snap, now within 1 kg', hits($m) === [], hits($m));
     $d['XE-1'][380]['xv_weight'] = '72';
-    $m = save($d, false, 380, 'xe_visit');
-    check('B3: and back to 72 logs it again', hits($m) === ['ud_snap@380#1:up [xv_weight]'], hits($m));
+    $m = firstSave($d, false, 380, 'xe_visit');
+    check('B3: and back to 72 finds it again', hits($m) === ['ud_snap@380#1:up [xv_weight]'], hits($m));
 
     // ---- Section C: other events --------------------------------------------------------------
     $C = $SEED;
     $C['XE-1'][379] += ['ud_wt' => '70', 'ud_height' => '170.0', 'ud_bl' => '70', 'ud_twoev' => '70'];
-    $m = save($C, true, 379, 'uv_delta_test');
+    $m = firstSave($C, true, 379, 'uv_delta_test');
     $c1 = [];
     $c1Config = true;
     foreach (logs($m, 'uvalidate-unconfigurable') as $e) {
@@ -254,25 +294,25 @@ namespace {
         if (strpos((string) ($e['why'] ?? ''), 'configuration error:') !== 0) $c1Config = false;
     }
     sort($c1);
-    check('C1: baseline compares with nothing (no earlier event has the form); the only rule problems are the six refused ud_bad_* rules, logged by every save of the form (VAL-15)',
+    check('C1: baseline compares with nothing (no earlier event has the form); the only rule problems are the six refused ud_bad_* rules, which the first save of the form at an event logs (VAL-15, PRF-9)',
         hits($m) === [] && $c1Config && $c1 === ['ud_bad_email', 'ud_bad_inst', 'ud_bad_nofield', 'ud_bad_nolimit', 'ud_bad_self', 'ud_bad_vs'],
         [hits($m), $c1]);
     $pages['baseline_on'] = page(mod($C, true), 379, 'uv_delta_test');
     $C['XE-1'][380] += ['ud_wt' => '78', 'ud_height' => '169.4', 'ud_bl' => '85', 'ud_twoev' => '74'];
-    $m = save($C, true, 380, 'uv_delta_test');
+    $m = firstSave($C, true, 380, 'uv_delta_test');
     check('C3: visit_1 against baseline', hits($m) === ['ud_bl@380#1:up [baseline_arm_1][xv_weight]',
         'ud_height@380#1:down [first-event-name][ud_height]', 'ud_twoev@380#1:up [previous-event-name][ud_twoev]',
         'ud_wt@380#1:up [previous-event-name][ud_wt]'], hits($m));
     // C4: visit_2 against visit_1 (previous) and baseline (first).
     $C['XE-1'][381] += ['ud_wt' => '80', 'ud_height' => '170.0', 'ud_twoev' => '82'];
     $pages['visit2_on'] = page(mod($C, true), 381, 'uv_delta_test');
-    $m = save($C, true, 381, 'uv_delta_test');
+    $m = firstSave($C, true, 381, 'uv_delta_test');
     check('C4: visit_2: 80 is 2.6% above 78; 82 is 10.8% above 74 and 17.1% above 70', hits($m, 381) === [
         'ud_twoev@381#1:up [first-event-name][ud_twoev]', 'ud_twoev@381#1:up [previous-event-name][ud_twoev]'], hits($m, 381));
     check('C4: the same save re-checks visit_1, whose findings stand', count(hits($m, 380)) === 4, hits($m, 380));
     // C5: correcting baseline re-checks the later visits that compare with it.
     $C['XE-1'][379]['ud_wt'] = '76';
-    $m = save($C, true, 379, 'uv_delta_test');
+    $m = firstSave($C, true, 379, 'uv_delta_test');
     check('C5: baseline 76 clears the weight of visit_1 (78 is 2.6% above 76); its other findings stand', hits($m, 380) === [
         'ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
         'ud_twoev@380#1:up [previous-event-name][ud_twoev]'], hits($m, 380));
@@ -283,9 +323,9 @@ namespace {
     $D['XE-1']['repeat_instances'][379]['xr_specimen'][2]['ud_rep'] = '7.5';
     $pages['specimen2_on'] = page(mod($D, true), 379, 'xr_specimen', 2);
     check('D: instance 2 reads instance 1', (ruleOf($pages['specimen2_on'], 'ud_rep')['deltaVsOp'] ?? null) === ['lit', '10.0'], ruleOf($pages['specimen2_on'], 'ud_rep'));
-    $m = save($D, true, 379, 'xr_specimen', 2);
+    $m = firstSave($D, true, 379, 'xr_specimen', 2);
     check('D2: 7.5 is 25% below 10.0', hits($m) === ['ud_rep@379#2:down [ud_rep][previous-instance]'], hits($m));
-    $m = save($D, true, 379, 'xr_specimen', 1);
+    $m = firstSave($D, true, 379, 'xr_specimen', 1);
     check('saving instance 1: it compares with nothing, and the save re-checks instance 2', hits($m) === ['ud_rep@379#2:down [ud_rep][previous-instance]'], hits($m));
 
     // ---- Section E: the scan ------------------------------------------------------------------
@@ -319,9 +359,15 @@ namespace {
     check('survey: a vs on another form is withheld', ($r['deltaVsOp'] ?? null) === ['withheld'], $r);
 
     // ---- The sheet in order: the saves it makes, then the scan of what it leaves ------------
+    // One module log from the first save on, as on the server: a save logs a
+    // finding or a rule problem the log does not hold yet, and nothing else.
+    \ExternalModules\AbstractExternalModule::$stored = [];
     $S = $SEED;
     $S['XE-1'][380] += ['ud_w1' => '70.5', 'ud_w2' => '70.3', 'ud_sbp1' => '120', 'ud_sbp2' => '125', 'ud_ht0' => '150.0', 'ud_ht' => '152.0', 'ud_htcalc' => '152'];
-    $step = function ($label, $m, array $want) { check('sheet ' . $label . ': every log entry', hits($m) === $want, hits($m)); };
+    $step = function ($label, $m, array $want, array $bad = []) {
+        check('sheet ' . $label . ': every log entry', hits($m) === $want, hits($m));
+        check('sheet ' . $label . ': every rule problem logged', problems($m) === $bad, problems($m));
+    };
     // A page the sheet opens, and the values of its form saved by then (the JS twin fills the inputs with them).
     $opened = function ($key, array $data, $refs, $evt, $form, $inst = 1) use (&$pages, $dict) {
         $pages[$key] = page(mod($data, $refs), $evt, $form, $inst);
@@ -331,35 +377,40 @@ namespace {
         ksort($vals);
         $pages[$key . '_values'] = (object) $vals;
     };
-    $step('A6', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]']);
+    // the refused rules of the form at an event, each logged by the first save of the form there
+    $refused = function ($evt, array $fields) { return array_map(function ($f) use ($evt) { return $f . '@' . $evt; }, $fields); };
+    $BAD6 = ['ud_bad_email', 'ud_bad_inst', 'ud_bad_nofield', 'ud_bad_nolimit', 'ud_bad_self', 'ud_bad_vs'];
+    // with references off, the four rules that read another event are refused too (ud_twoev's two tags apart)
+    $step('A6', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]'],
+        $refused(380, array_merge($BAD6, ['ud_bl', 'ud_height', 'ud_twoev', 'ud_twoev', 'ud_wt'])));
     $S['XE-1'][380] += ['ud_pct0' => '0', 'ud_c0' => '70,0', 'ud_c' => '72,5', 'ud_pain0' => '2', 'ud_pain' => '4', 'ud_two' => '130'];
-    $step('A11', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_two@380#1:up [ud_w1]']);
+    $step('A11', save($S, false, 380, 'uv_delta_test'), ['ud_two@380#1:up [ud_w1]']);
     $S['XE-1'][380] = array_merge($S['XE-1'][380], ['ud_two' => '', 'ud_grp' => '2', 'ud_when' => '80']);
-    $step('A12b', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]']);
+    $step('A12b', save($S, false, 380, 'uv_delta_test'), []);
     $S['XE-1'][380]['ud_sbp2'] = '145';
-    $step('A13', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]']);
+    $step('A13', save($S, false, 380, 'uv_delta_test'), ['ud_sbp2@380#1:up [ud_sbp1]']);
     $opened('sheet_b1', $S, false, 380, 'uv_delta_test');
     $S['XE-1'][380]['ud_snap'] = '74';
-    $step('B2', save($S, false, 380, 'uv_delta_test'), ['ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]', 'ud_snap@380#1:up [xv_weight]']);
+    $step('B2', save($S, false, 380, 'uv_delta_test'), ['ud_snap@380#1:up [xv_weight]']);
     $S['XE-1'][380]['xv_weight'] = '73.5';
     $step('B3 (73.5)', save($S, false, 380, 'xe_visit'), []);
     $S['XE-1'][380]['xv_weight'] = '72';
-    $step('B3 (72)', save($S, false, 380, 'xe_visit'), ['ud_snap@380#1:up [xv_weight]']);
+    // ud_snap is found again, with the value and "vs" B2 logged: nothing new
+    $step('B3 (72)', save($S, false, 380, 'xe_visit'), []);
     $S['XE-1'][379] += ['ud_wt' => '70', 'ud_height' => '170.0', 'ud_bl' => '70', 'ud_twoev' => '70'];
-    $step('C1', save($S, true, 379, 'uv_delta_test'), []);
+    $step('C1', save($S, true, 379, 'uv_delta_test'), [], $refused(379, $BAD6));
     $opened('sheet_c2', $S, true, 380, 'uv_delta_test');
     $S['XE-1'][380] += ['ud_wt' => '78', 'ud_height' => '169.4', 'ud_bl' => '85', 'ud_twoev' => '74'];
+    // With references on, the form's rules are numbered differently, and a rule problem's
+    // entry names its rule's number: the six refusals are new entries.
     $step('C3', save($S, true, 380, 'uv_delta_test'), ['ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
-        'ud_htcalc@380#1:up [ud_ht0]', 'ud_sbp2@380#1:up [ud_sbp1]', 'ud_snap@380#1:up [xv_weight]',
-        'ud_twoev@380#1:up [previous-event-name][ud_twoev]', 'ud_wt@380#1:up [previous-event-name][ud_wt]']);
+        'ud_twoev@380#1:up [previous-event-name][ud_twoev]', 'ud_wt@380#1:up [previous-event-name][ud_wt]'],
+        $refused(380, $BAD6));
     $S['XE-1'][381] += ['ud_wt' => '80', 'ud_height' => '170.0', 'ud_twoev' => '82'];
-    $step('C4', save($S, true, 381, 'uv_delta_test'), ['ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
-        'ud_twoev@380#1:up [previous-event-name][ud_twoev]', 'ud_twoev@381#1:up [first-event-name][ud_twoev]',
-        'ud_twoev@381#1:up [previous-event-name][ud_twoev]', 'ud_wt@380#1:up [previous-event-name][ud_wt]']);
+    $step('C4', save($S, true, 381, 'uv_delta_test'), ['ud_twoev@381#1:up [first-event-name][ud_twoev]',
+        'ud_twoev@381#1:up [previous-event-name][ud_twoev]'], $refused(381, $BAD6));
     $S['XE-1'][379]['ud_wt'] = '76';
-    $step('C5', save($S, true, 379, 'uv_delta_test'), ['ud_bl@380#1:up [baseline_arm_1][xv_weight]', 'ud_height@380#1:down [first-event-name][ud_height]',
-        'ud_twoev@380#1:up [previous-event-name][ud_twoev]', 'ud_twoev@381#1:up [first-event-name][ud_twoev]',
-        'ud_twoev@381#1:up [previous-event-name][ud_twoev]']);
+    $step('C5', save($S, true, 379, 'uv_delta_test'), []);
     $opened('sheet_d1', $S, true, 379, 'xr_specimen', 1);
     $S['XE-1']['repeat_instances'][379]['xr_specimen'][1]['ud_rep'] = '10.0';
     $step('D1', save($S, true, 379, 'xr_specimen', 1), []);

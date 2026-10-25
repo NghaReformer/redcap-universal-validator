@@ -727,9 +727,11 @@ MUTATIONS = [
     ('a value too long for an ID field judged by its format', ENGINE,
      '    if(v.length > QRID_MAX_SINGLE_LEN) return { ok: false };\n', '', DOM),
     ('the slow trim back in the Missing Data Code check', ENGINE,
-     '    if(!QRID_HAS_MISSING_CODES || value === null || value === undefined) return false;\n    var s = String(value), i = 0, j = s.length;\n    function ws(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11; }\n'
-     '    while(i < j && ws(s.charCodeAt(i))) i++;\n    while(j > i && ws(s.charCodeAt(j - 1))) j--;\n    var t = s.slice(i, j);',
-     '    if(!QRID_HAS_MISSING_CODES || value === null || value === undefined) return false;\n    var t = String(value).replace(/^[ \\t\\r\\n\\0\\x0B]+|[ \\t\\r\\n\\0\\x0B]+$/g, "");', DOM),
+     '    var t = String(value), i = 0, j = t.length, c;\n'
+     '    while(i < j && ((c = t.charCodeAt(i)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) i++;\n'
+     '    while(j > i && ((c = t.charCodeAt(j - 1)) === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11)) j--;\n'
+     '    t = t.slice(i, j);',
+     '    var t = String(value).replace(/^[ \\t\\r\\n\\0\\x0B]+|[ \\t\\r\\n\\0\\x0B]+$/g, "");', DOM),
     ('a survey told why the growth table cap deferred a rule', UV,
      "        if ($context === 'survey') {\n            foreach ($config['rules'] as $i => $r) {\n                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);",
      "        if (false) {\n            foreach ($config['rules'] as $i => $r) {\n                if (is_array($r)) $config['rules'][$i] = ModeRegistry::withoutSurveyTexts($r);", GROWTH_MODULE),

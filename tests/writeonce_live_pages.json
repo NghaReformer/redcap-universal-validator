@@ -99,7 +99,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "a1_values": {},
     "b1": {
@@ -181,7 +182,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "b1_values": {},
     "errors": {
@@ -295,7 +297,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "b2_values": {
         "uw_arm": "1",
@@ -420,7 +423,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "b4_values": {
         "uw_arm": "1",
@@ -546,7 +550,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "b6_values": {
         "uw_arm": "1",
@@ -672,7 +677,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "b7_values": {
         "uw_arm": "1",
@@ -792,7 +798,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "c2_values": {
         "uw_arm": "1",
@@ -889,7 +896,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "d1_values": {
         "uw_arm": "1",
@@ -1008,7 +1016,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "d4_values": {
         "uw_arm": "2",
@@ -1110,7 +1119,8 @@
             "uw_pain": "point",
             "uw_weight": "point",
             "uw_bad_calc": "point"
-        }
+        },
+        "configShape": 1
     },
     "labels": {
         "uw_consent": "Consent date",

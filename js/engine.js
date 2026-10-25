@@ -7181,7 +7181,7 @@ function QRIDDeltaInit(QRID_CONFIG){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} },
+                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "delta");
     }
@@ -7482,7 +7482,7 @@ function QRIDWriteOnceInit(QRID_CONFIG){
     var GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridLock: true,
                   __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(anchor, fieldName), __qridLabelEl: anchor,
                   readOnly: false, disabled: false,
-                  focus: function(){ try { anchor.focus(); } catch(e){} },
+                  focus: function(){ try { QRID_focusTarget(anchor, fieldName).focus(); } catch(e){} },
                   __qridRecheck: function(){
                     var ok = restore();
                     GITEM.__qridInvalid = !ok;

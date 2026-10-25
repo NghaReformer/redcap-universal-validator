@@ -1040,6 +1040,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "errors": {
@@ -1502,6 +1503,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "locked": {
@@ -1961,6 +1963,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "locked310": {
@@ -2420,6 +2423,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "survey": {
@@ -2879,6 +2883,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "surveyErrors": {
@@ -3348,6 +3353,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
+        "configShape": 1,
         "jsmoName": "EM.T.UV"
     },
     "labels": {

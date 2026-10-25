@@ -109,6 +109,13 @@ Read the injected config at any point with:
 JSON.parse(document.getElementById('inspire-validator-config').textContent)
 ```
 
+The module log holds each finding once. A save writes a `type: writeonce`
+entry, with a `fingerprint`, for a finding the log does not hold yet. A
+finding found again with the same value, `locked_at` and `changed_at` writes
+nothing. A rule problem is logged once for each form, event and instance where
+it arises. The entries below assume the log holds none from an earlier run of
+this sheet.
+
 A "lock note" below is the grey box under the field, starting with 🔒. Write
 down the time of each save in sections B, C, D and E: the module log and the
 scan give the lock times to the minute, in the project's time zone. The twin
@@ -131,7 +138,7 @@ Section I's steps each run on their own copy of the log in the twin, from
 
 | # | Action | Expect |
 |---|---|---|
-| B1 | `uw_consent` = 2026-10-01, `uw_arm` = Arm A, `uw_yn` = Yes, `uw_notes` = "First note", Enter, "second line" (two lines), `uw_pain` slider to 50, `uw_weight` = 70.0, `uw_free` = a. Leave `uw_site` blank. Type anything in the `uw_bad_*` text boxes. Save | The record saves. The broken rules never block. The module log has no `type: writeonce` entry |
+| B1 | `uw_consent` = 2026-10-01, `uw_arm` = Arm A, `uw_yn` = Yes, `uw_notes` = "First note", Enter, "second line" (two lines), `uw_pain` slider to 50, `uw_weight` = 70.0, `uw_free` = a. Leave `uw_site` blank. Type anything in the `uw_bad_*` text boxes. Save | The record saves. The broken rules never block. The module log has no `type: writeonce` entry. As the form's first save at visit 1, it logs one rule-problem entry (`uvalidate-unconfigurable`) for each of the five `uw_bad_*` fields, its `why` starting "configuration error:"; no later save at visit 1 logs them again |
 | B2 | Reopen the form | Locked, each with the lock note "🔒 This value was saved once and is locked. It cannot be changed here.": `uw_consent` (read-only, the date picker does not open, and its calendar button and REDCap's Today button are gone), `uw_arm` and `uw_yn` (buttons greyed out, the "reset" link gone), `uw_notes` (read-only, both lines), `uw_pain` (the slider does not move, its number box is read-only). Not locked and no note: `uw_site` (blank), `uw_weight` (its lock starts in 2099), `uw_free` (no tag). The page source names neither "UV Data manager" nor 2099 |
 | B2b | Click Arm B | Nothing changes |
 | B2c | Only if the project has Missing Data Codes: click the "M" button beside `uw_consent` and pick a code | The date comes back, and the note ends " A change was undone." |
@@ -158,7 +165,7 @@ Section I's steps each run on their own copy of the log in the twin, from
 | # | Action | Expect |
 |---|---|---|
 | D1 | User Rights: assign the tester to "UV Data manager". Reopen the form | `uw_arm`, `uw_site` and `uw_yn` are open, with no note. `uw_consent` and `uw_pain` stay locked: their rules name no role |
-| D2 | `uw_arm` = Arm B. Save | The record saves. Two `type: writeonce` entries: `uw_consent` `changed` and `uw_notes` `cleared`. No entry for `uw_arm`, changed by the role. None for `uw_site` either, because the tester who imported it holds the role now |
+| D2 | `uw_arm` = Arm B. Save | The record saves with no `type: writeonce` entry. The audit finds `uw_consent` `changed` and `uw_notes` `cleared` again, with the values and times C3 logged, so it writes nothing for them. No finding for `uw_arm`, changed by the role. None for `uw_site` either, because the tester who imported it holds the role now. D3's scan shows the two findings left |
 | D3 | Run the scan | Two findings: `uw_consent` and `uw_notes` |
 | D4 | User Rights: take the tester out of the role (back to the role noted in Setup 5, if any). Reopen the form, then run the scan | `uw_arm` is locked at Arm B, and `uw_site` and `uw_yn` are locked again. The scan has four findings: `uw_arm` "Changed after it was locked" (locked at B1, changed at D2), `uw_consent`, `uw_notes` and `uw_site`. The arm and the site count as changes again because the scan reads the roles as they are now (see "How the lock works") |
 
@@ -171,7 +178,7 @@ row past the first instance with "[instance = N]".
 
 | # | Action | Expect |
 |---|---|---|
-| E1 | Open XE-3 at `unscheduled_arm_1`, add instance 1 of the event, `uw_consent` = 2026-10-03. Save. Reopen. On the Logging page, copy the row this save wrote into the run report | The record saves with no `type: writeonce` entry and no rule-problem entry. `uw_consent` is locked at instance 1. This is the record's first save at a second event: whether its row lists `record_id = 'XE-3'` changes nothing, since only the row that made the record starts its history |
+| E1 | Open XE-3 at `unscheduled_arm_1`, add instance 1 of the event, `uw_consent` = 2026-10-03. Save. Reopen. On the Logging page, copy the row this save wrote into the run report | The record saves with no `type: writeonce` entry. As the form's first save at this event, it logs the five `uw_bad_*` refusals of B1 again, at event 382, and no other rule problem. `uw_consent` is locked at instance 1. This is the record's first save at a second event: whether its row lists `record_id = 'XE-3'` changes nothing, since only the row that made the record starts its history |
 | E2 | Data Import Tool, CSV with the columns `record_id,redcap_event_name,redcap_repeat_instrument,redcap_repeat_instance,uw_consent` and the rows `XE-3,unscheduled_arm_1,,1,2026-10-04` and `XE-3,unscheduled_arm_1,,2,2026-10-09`. Import, then run the scan | Five `@UVWRITEONCE` findings. Four are those of D4 at visit 1. The fifth is `uw_consent` at `unscheduled_arm_1` instance 1, "Changed after it was locked", locked at E1's time. Instance 2 has none, because its first save is the import, which locks it |
 | E3 | Open instance 2 | `uw_consent` shows 2026-10-09, locked |
 | E4 | Open instance 1 and save it without changing anything | One `type: writeonce` entry at event 382, instance 1: `uw_consent` reason `changed`, `locked_at` E1's time, `changed_at` E2's time |
@@ -198,9 +205,9 @@ role name never reaches a respondent.
 | # | Action | Expect |
 |---|---|---|
 | G1 | Open XE-4 at `visit_1_arm_1` on the data entry form, then "Survey options", "Open survey" | The first page opens with nothing locked: XE-4 has no saved value on this form |
-| G2 | `uw_consent` = 2026-10-05, `uw_arm` = Arm A, `uw_free` = s. Click Next | The second page (the `uw_bad_*` fields) opens. Next saved the first page. The module log has no `type: writeonce` entry and no rule-problem entry for a `uw_*` field other than the five `uw_bad_*` |
+| G2 | `uw_consent` = 2026-10-05, `uw_arm` = Arm A, `uw_free` = s. Click Next | The second page (the `uw_bad_*` fields) opens. Next saved the first page and wrote no `type: writeonce` entry and no rule-problem entry; B1 logged the five `uw_bad_*` refusals at visit 1 |
 | G3 | Click Previous | `uw_consent` and `uw_arm` are locked, each with the lock note; `uw_free` is open. A survey respondent holds no role, so `uw_arm` would be locked for a member of the role too. The page source names no role, and each `uw_bad_*` error reads the survey's general wording |
-| G4 | Click Next, then Submit | The survey closes. No `type: writeonce` entry, and no rule-problem entry for `uw_consent` or `uw_arm` |
+| G4 | Click Next, then Submit | The survey closes. No `type: writeonce` entry and no rule-problem entry |
 
 ## Section H: a deletion of the form's data
 

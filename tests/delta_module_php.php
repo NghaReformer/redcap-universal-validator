@@ -174,10 +174,11 @@ namespace {
         return null;
     }
     /**
-     * The entries of one audit of $type. Each save also logs every refused
-     * rule with fields on the form (VAL-15, tests/hook_php.php); those
-     * "configuration error:" entries are left out here, so a rule problem
-     * means one the save itself met.
+     * The entries of one audit of $type. A save also logs each refused rule
+     * with fields on the form that the module log does not hold yet (VAL-15,
+     * PRF-9, tests/hook_php.php; this stub has no queryLogs, so every save
+     * logs them); those "configuration error:" entries are left out here, so
+     * a rule problem means one the save itself met.
      */
     function findings($m, $type = 'invalid-id-saved') {
         return array_values(array_map(function ($c) { return $c[1]; },

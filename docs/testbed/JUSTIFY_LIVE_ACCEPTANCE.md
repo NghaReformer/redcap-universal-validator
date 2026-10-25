@@ -76,10 +76,11 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
   never holds the save, so no note asks for its reason (C7, F5).
 - The reason field must be on the same form. On a survey page without it the
   tag does nothing, and the rule holds as it would alone (G3).
-- Each save of the form audits all of it. A finding whose reason is given is
-  logged as `uvalidate-justified` with `justified_by` naming the reason field;
-  an open one as `invalid-id-saved`. No entry holds the reason text. An
-  import runs no module hook, so it logs nothing (J5).
+- Each save of the form audits all of it and logs each finding the module
+  log does not hold yet. A finding whose reason is given is logged as
+  `uvalidate-justified` with `justified_by` naming the reason field; an open
+  one as `invalid-id-saved`. No entry holds the reason text. An import runs
+  no module hook, so it logs nothing (J5).
 - The durable scan counts findings saved with a reason apart from the open
   ones, and a run whose findings all have their reason is clean (H3).
 
@@ -123,11 +124,17 @@ opens with `Cannot save yet — please fix the flagged field(s):` and one line
 per field. A line ends " (or give a reason in “<label>”)" while a reason can
 still release that field.
 
-The module log entries of each save repeat every finding still on the form.
-Each Expect cell names the entry a save adds or changes; the others are those
-of the step before. By B9b a save of XE-1 writes nine `uvalidate-justified`
-entries. No save writes a rule-problem entry (`uvalidate-unconfigurable`),
-the refused tags of A1 included.
+The module log holds each finding once. A save writes an entry, with a
+`fingerprint`, for each finding the log does not hold yet. A finding found
+again (same record, field, event, instance, type, `reason` code, value and
+`justified_by`) writes nothing, so each Expect cell names the entries a save
+adds. A finding whose value changes, or that gains or loses its reason (it
+moves between `invalid-id-saved` and `uvalidate-justified`), gets a new
+entry, and the earlier entry stays as it was. The reason text is not part of
+the comparison: a reworded reason writes nothing. By B9b the log holds nine
+`uvalidate-justified` entries for XE-1. B1b logs the refused tags of A1, and
+no later save writes a rule-problem entry (`uvalidate-unconfigurable`). The
+entries below assume the log holds none from an earlier run of this sheet.
 
 Write down the time of each save and import. The module log gives F6's lock
 times to the minute, in the project's time zone. The twin uses 2026-10-26
@@ -174,9 +181,9 @@ form saves as it opens, since every reason saved before still stands.
 | # | Action | Expect |
 |---|---|---|
 | B1 | Save with nothing typed | Held, one line: "• Required field (or give a reason in “Why it is blank”)" |
-| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr` and the six `uj_bad_*` fields), its `why` starting "configuration error:"; every save of the form logs them, and the later steps leave them out |
+| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr` and the six `uj_bad_*` fields), its `why` starting "configuration error:". This first save of the form logs them, and no later save logs them again |
 | B2 | "Weight" = 300.0 and leave | "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note "Fix this value, or say why it is right in “Reason for change”." Save is held: "• Weight (or give a reason in “Reason for change”)" |
-| B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0. No entry holds "Scale checked twice" |
+| B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0, and a `fingerprint` of 64 hex digits. No entry holds "Scale checked twice" |
 | B3 | "Lab number" = 79927398710 and leave | `✗ This ID's check character does not match — probably a typo or mis-scan. Please re-scan or re-type it.` and the reason note naming “Why the lab number is right”. Held: "• Lab number (Luhn check digit) (or give a reason in “Why the lab number is right”)" |
 | B3b | "Why the lab number is right" = Number printed on the tube. Save | The reason note goes. The record saves. New entry for `uj_id`, with type `single`, reason `check-character`, `justified_by` `uj_id_why` |
 | B4 | "Pooled lab numbers" = `79927398713 79927398710` and leave | `2 IDs read — 1 check-character mismatch`, with ✓ 79927398713 and ✗ 79927398710, and the reason note naming “Why the pooled numbers are right”. Held: "• Pooled lab numbers (or give a reason in “Why the pooled numbers are right”)" |
@@ -185,12 +192,12 @@ form saves as it opens, since every reason saved before still stands.
 | B5b | "Why the pressures are right" = Re-measured, same result. Save | The reason note goes. The record saves. New entry for `uj_dia`, with type `constraint`, reason `assert:[uj_dia]<[uj_sys]`, `justified_by` `uj_dia_why` |
 | B6 | "Age group" = Adult, "Dose" = 500 mg, then "Age group" = Child | Dose keeps 500 mg with `✗ The selected choice is no longer available while: [uj_arm]='2' — pick one of the choices shown (the current answer is kept until you do).` and the reason note naming “Why this dose”. Held: "• Dose (or give a reason in “Why this dose”)" |
 | B6b | "Why this dose" = Dose by weight. Save | The reason note goes. The record saves. New entry for `uj_dose`, with type `choices`, reason `hidden-choice`, `justified_by` `uj_dose_why` |
-| B7 | "Screening date" = 2026-10-01, "Visit date" = 2026-10-20, leave | "✗ This date must be between 2026-10-01 and 2026-10-15. (0 to 14 days from [uj_anchor])" and the rule's own reason note "Say why this visit date is right." Held: "• Visit date (or give a reason in “Why the visit date is right”)" |
+| B7 | "Screening date" = 2026-10-01, "Visit date" = 2026-10-20, leave | "✗ This date must be between 2026-10-01 and 2026-10-15. (0 to 14 days after [uj_anchor])" and the rule's own reason note "Say why this visit date is right." Held: "• Visit date (or give a reason in “Why the visit date is right”)" |
 | B7b | "Why the visit date is right" = Clinic closed for a week. Save | The reason note goes. The record saves. New entry for `uj_visit`, with type `window`, reason `window-late`, `justified_by` `uj_visit_why` |
 | B8 | "Second weighing" = 302.5 and leave | `✗ This value rose by 2.5 kg (0.8%) from 300.0 kg ([uj_wt]). Allowed: a change of at most 1 kg.` and the reason note naming “Why the two weighings differ”. Held: "• Second weighing (kg) (or give a reason in “Why the two weighings differ”)" |
 | B8b | "Why the two weighings differ" = Another scale. Save | The reason note goes. The record saves. New entry for `uj_wt2`, with type `delta`, reason `up`, `justified_by` `uj_wt2_why` |
 | B9 | "Mother's record ID" = XE-2 and leave. Then XE-9 and leave | With XE-2 there is no ✗ note and no reason note, since XE-2 is a saved record. With XE-9, "✗ This value is not saved where it should be. Check it, or record it there first." and the reason note naming “Why the mother has no record”. Held: "• Mother's record ID (or give a reason in “Why the mother has no record”)" |
-| B9b | "Why the mother has no record" = Mother enrolled at another site. Save | The reason note goes. The record saves. New entry for `uj_mother`, with type `exists`, reason `not-found`, `justified_by` `uj_mother_why`. The save writes nine `uvalidate-justified` entries |
+| B9b | "Why the mother has no record" = Mother enrolled at another site. Save | The reason note goes. The record saves. New entry for `uj_mother`, with type `exists`, reason `not-found`, `justified_by` `uj_mother_why`. The log now holds nine `uvalidate-justified` entries for XE-1, one for each step from B1b to B9b |
 
 ## Section C: what is no reason (XE-1)
 
@@ -202,16 +209,16 @@ C1 to C4 change the page only, and each puts the reason back.
 | C2 | Type three spaces in "Reason for change" and leave. Save. Put the reason back | As C1 |
 | C3 | Click the "M" button beside "Reason for change" and choose UNK. Save. Clear the code and put the reason back | The box shows UNK (J1). As C1, since a Missing Data Code is no reason |
 | C4 | "Why the pressures are right" = the blank choice. Save. Choose Re-measured, same result again | The reason note is back under Diastolic pressure. Held: "• Diastolic pressure (mmHg) (or give a reason in “Why the pressures are right”)". With the choice back the note goes |
-| C4b | Save | The record saves, with the entries of B9b and nothing new |
+| C4b | Save | The record saves and writes no entry: each finding on the form is one the log holds |
 | C5 | "Heart rate" = 250 and leave. Save. Then "Explain the heart rate?" = Yes, and type Athlete, resting rate checked in "Why the heart rate is right" | "✗ This value is above the plausible range (allowed 30 to 220)." and the reason note naming “Why the heart rate is right”, a row the page still hides. Held: "• Heart rate (bpm) (or give a reason in “Why the heart rate is right”)". Yes shows the reason box and the note stays until the reason is typed |
 | C5b | Save | The record saves. New entry for `uj_hr`, with type `range`, reason `hard-high`, `justified_by` `uj_hr_why` |
 | C6 | "Explain the heart rate?" = No. If REDCap asks whether to erase the value of "Why the heart rate is right", click OK and write down that it asked. Save | The reason row hides. The reason note is back under Heart rate at once, with no other click, whether or not the text was erased. Held, the line of C5 |
-| C6b | "Explain the heart rate?" = Yes. If C6 erased the reason, type Athlete, resting rate checked again. Save | Once the reason shows with its text the note goes. The record saves, with the entries of C5b |
+| C6b | "Explain the heart rate?" = Yes. If C6 erased the reason, type Athlete, resting rate checked again. Save | Once the reason shows with its text the note goes. The record saves and writes no entry |
 | C7 | Data Import Tool, CSV `record_id,redcap_event_name,uj_ro` with the row `XE-1,visit_1_arm_1,300.0`. Import. Reopen the form. Save | "Weight from the device" is read-only and shows "✗ This value is above the plausible range (allowed 30 to 250 kg)." No reason note, because the person cannot change the field here and it never holds the save. The record saves. New entry `invalid-id-saved` for `uj_ro`, with type `range`, reason `hard-high`, no `justified_by` |
-| C7b | "Why the device weight is right" = Device recalibrated. Save | Still no reason note; the range note stays. The record saves. The `uj_ro` entry is now `uvalidate-justified` with `justified_by` `uj_ro_why` |
+| C7b | "Why the device weight is right" = Device recalibrated. Save | Still no reason note; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_ro`, with `justified_by` `uj_ro_why`. C7's `invalid-id-saved` entry stays in the log |
 | C8 | "Weight on the second scale" = 300.0 and leave. Save. Then type Second scale checked in the box of the line "Reason for the second-scale weight:" | No row "Why the second-scale weight is right" shows; its box sits in the line "Reason for the second-scale weight:". "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note naming “Why the second-scale weight is right”. Held: "• Weight on the second scale (or give a reason in “Why the second-scale weight is right”)". Once the reason is typed the note goes and the range note stays |
 | C8b | Save | The record saves. New entry for `uj_emb`, with type `range`, reason `hard-high`, `justified_by` `uj_emb_why` |
-| C8c | Clear the box of "Reason for the second-scale weight:" and leave. Save. Then clear "Weight on the second scale" and leave. Save | With the reason cleared the note is back. Held, the line of C8. With the weight cleared both notes go and the record saves, with the entries of C7b |
+| C8c | Clear the box of "Reason for the second-scale weight:" and leave. Save. Then clear "Weight on the second scale" and leave. Save | With the reason cleared the note is back. Held, the line of C8. With the weight cleared both notes go and the record saves, writing no entry |
 
 ## Section D: "Save anyway?", and a rule that never blocks (XE-1)
 
@@ -220,14 +227,14 @@ C1 to C4 change the page only, and each puts the reason back.
 | D1 | "Temperature" = 43.0 and leave. Save | "✗ This value is above the plausible range (allowed 34 to 42 C)." and the reason note naming “Why the temperature is right”. Save opens a dialog that reads "Validation FAILED for:", then "• Temperature (degrees C) (or give a reason in “Why the temperature is right”)", then "Save anyway?". Click Cancel. The form stays open and nothing is saved |
 | D2 | "Why the temperature is right" = Fever confirmed with a second thermometer. Save | The reason note goes. Save asks nothing and the record saves. New entry for `uj_temp`, with type `range`, reason `hard-high`, `justified_by` `uj_temp_why` |
 | D3 | "Oxygen saturation" = 85 and leave. Save | `✗ Below 90%: check the probe.` and no reason note, since the rule never blocks. The record saves with no alert and no dialog. New entry `invalid-id-saved` for `uj_off`, with type `constraint`, reason `assert:[uj_off]>=90` |
-| D4 | "Why the saturation is right" = Known lung disease. Save | The warning stays and still no reason note. The record saves. The `uj_off` entry is now `uvalidate-justified` with `justified_by` `uj_off_why`. A reason marks the finding although the rule never blocks |
+| D4 | "Why the saturation is right" = Known lung disease. Save | The warning stays and still no reason note. The record saves. New entry `uvalidate-justified` for `uj_off`, with `justified_by` `uj_off_why`. A reason marks the finding although the rule never blocks |
 
 ## Section E: the Enter key (XE-1)
 
 | # | Action | Expect |
 |---|---|---|
 | E1 | Clear "Reason for change". Click into "Weight" and press Enter | Held: "• Weight (or give a reason in “Reason for change”)". Nothing is saved |
-| E2 | Type Scale checked twice in "Reason for change" and press Enter there | The record saves, since Enter saves the form as REDCap does. The entries of D4 |
+| E2 | Type Scale checked twice in "Reason for change" and press Enter there | The record saves, since Enter saves the form as REDCap does. No new entry |
 
 ## Section F: a reason does not release @UVUNIQUE or @UVWRITEONCE
 
@@ -235,15 +242,15 @@ C1 to C4 change the page only, and each puts the reason back.
 |---|---|---|
 | F1 | XE-1. "Participant code" = UJ-1 and leave | `✗ FORMAT error — the ID is incomplete. Still remaining: 2 x digit.`, "✓ Not used before." and the reason note naming “Why the code is right”. Held: "• Participant code (or give a reason in “Why the code is right”)" |
 | F1b | "Why the code is right" = Code from the paper form. Save | The reason note goes; the format note stays. The record saves. New entry for `uj_code`, with type `single`, reason `format`, `justified_by` `uj_code_why` |
-| F2 | "Participant code" = UJ-001 and leave. Save | "✓ ID format OK. (This project's IDs carry no check character, so typos that keep the format cannot be detected.)" and "✓ Not used before."; no reason note. The record saves, and the `uj_code` entry is gone |
+| F2 | "Participant code" = UJ-001 and leave. Save | "✓ ID format OK. (This project's IDs carry no check character, so typos that keep the format cannot be detected.)" and "✓ Not used before."; no reason note. The record saves and writes no entry, since `uj_code` is no longer a finding; F1b's entry stays in the log |
 | F3 | Open XE-2 at `visit_1_arm_1`. "Why it is blank" = Not done. "Participant code" = UJ-001 and leave. Save | "✗ This value is already recorded (record XE-1)." and no reason note. Held, one line, "• Participant code", offering no reason |
 | F3b | "Why the code is right" = Code from the paper form. Save | Still held, the same line, and still no reason note |
 | F3c | Clear "Participant code" and its reason. Save | XE-2 saves, with one entry, `uvalidate-justified` for XE-2's `uj_req` |
 | F4 | XE-1. "Enrolment weight" = 300.0 and leave | The range note of B2 and the reason note naming “Why the enrolment weight is right”. Held: "• Enrolment weight (kg) (or give a reason in “Why the enrolment weight is right”)" |
 | F4b | "Why the enrolment weight is right" = Weighed in a cast. Save | The reason note goes. The record saves. New entry for `uj_lock`, with type `range`, reason `hard-high`, `justified_by` `uj_lock_why` |
 | F5 | Reopen the form | "Enrolment weight" is read-only, with "🔒 This value was saved once and is locked. It cannot be changed here." and the range note. No reason note |
-| F5b | Clear "Why the enrolment weight is right". Save | Still no reason note, as a locked field never holds the save. The record saves. The `uj_lock` entry is now `invalid-id-saved`, with no `justified_by` |
-| F6 | Data Import Tool, CSV `record_id,redcap_event_name,uj_lock,uj_lock_why` with the row `XE-1,visit_1_arm_1,310.0,Weighed in a cast`. Import. Reopen the form. Save | 310.0, read-only, with the lock note and the range note, and no reason note. The record saves with two entries for `uj_lock`. One is `invalid-id-saved` with type `writeonce`, reason `changed`, `locked_at` F4b's time, `changed_at` the import's time and no `justified_by`. The other is `uvalidate-justified` with type `range` and `justified_by` `uj_lock_why`. The reason releases the range finding and leaves the write-once finding open |
+| F5b | Clear "Why the enrolment weight is right". Save | Still no reason note, as a locked field never holds the save. The record saves. New entry `invalid-id-saved` for `uj_lock`, with type `range`, reason `hard-high` and no `justified_by` |
+| F6 | Data Import Tool, CSV `record_id,redcap_event_name,uj_lock,uj_lock_why` with the row `XE-1,visit_1_arm_1,310.0,Weighed in a cast`. Import. Reopen the form. Save | 310.0, read-only, with the lock note and the range note, and no reason note. The record saves with two new entries for `uj_lock`. One is `invalid-id-saved` with type `writeonce`, reason `changed`, `locked_at` F4b's time, `changed_at` the import's time and no `justified_by`. The other is `uvalidate-justified` with type `range`, `value` 310.0 and `justified_by` `uj_lock_why`, new because the value is. The reason releases the range finding and leaves the write-once finding open |
 
 ## Section G: a survey of five pages (XE-4)
 
@@ -252,10 +259,10 @@ C1 to C4 change the page only, and each puts the reason back.
 | G1 | Open XE-4 at `visit_1_arm_1` on the data entry form, then "Survey options", "Open survey". Click Next with nothing typed | Page 1 shows section A of the form only. Under "Respiratory rate": "⚠ Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)." Next is held: "• Required field (or give a reason in “Why it is blank”)" |
 | G1b | "Why it is blank" = Refused. "Weight" = 300.0 and leave. Next | The reason note under Weight. Held: "• Weight (or give a reason in “Reason for change”)" |
 | G1c | "Reason for change" = Scale checked twice. Next | Page 2 opens. XE-4 gets one entry, `uvalidate-justified` for `uj_wt`. `uj_req` is judged once the response is complete (G5), so a page turn logs nothing for it. No entry holds the reason |
-| G2 | Page 2 (participant code, enrolment weight). Next | Page 3 opens. The same entry for `uj_wt` |
+| G2 | Page 2 (participant code, enrolment weight). Next | Page 3 opens. No new entry, since G1c logged the `uj_wt` finding |
 | G3 | Page 3. "Hours fasted" = 30 and leave. Next | "✗ This value is above the plausible range (allowed 0 to 24)." and no reason note, because the reason field is on page 4. Next is held: "• Hours fasted", offering no reason |
-| G4 | "Hours fasted" = 12. Next. On page 4, Next | Pages 4 and 5 open. Each Next writes the same entry for `uj_wt` |
-| G5 | Page 5. Submit | Each `uj_bad_*` field shows the general line of G1. The survey closes. Two entries, `uvalidate-justified` for `uj_wt` and, now that the response is complete, for `uj_req` |
+| G4 | "Hours fasted" = 12. Next. On page 4, Next | Pages 4 and 5 open. Neither Next writes an entry |
+| G5 | Page 5. Submit | Each `uj_bad_*` field shows the general line of G1. The survey closes. One new entry, `uvalidate-justified` for `uj_req`, now that the response is complete |
 
 ## Section H: the Validation scan
 
