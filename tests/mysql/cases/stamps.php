@@ -74,6 +74,8 @@ $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN as_of');
 $A->query('ALTER TABLE ' . Schema::table('unique_candidate') . ' DROP COLUMN lookup');
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN z_score');
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN growth_reference');
+$A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN justified');
+$A->query('ALTER TABLE ' . Schema::table('scan_run') . ' DROP COLUMN detail_justified');
 $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version > 2');
 $mig = Schema::migrate($ca);
 check('stamps: an installation at version 2 migrates to 3 and on (got ' . json_encode($mig) . ')',
