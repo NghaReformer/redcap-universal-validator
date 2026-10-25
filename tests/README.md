@@ -28,7 +28,7 @@ php  tests/exists_return_php.php  # @UVEXISTS "return": grammar, setup checks, e
 node tests/exists_return_dom_js.cjs  # @UVEXISTS "return": fields filled, emptied or left on the page
 php  tests/exists_where_php.php   # @UVEXISTS "where": grammar, setup checks, entry tests, confirm read, audit, scan
 node tests/exists_where_dom_js.cjs   # @UVEXISTS "where": the filtered line, whereMessage and languages, surveys
-php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form
+php  tests/exists_table_php.php   # @UVEXISTS data-table reads, groups, rights on returned fields, read-only pages, "in" on the same form; runs again through a fake value index
 php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the static method; "return"/"where" on REDCap 17
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
@@ -68,7 +68,7 @@ node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEn
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
-php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table and through a fake value index
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
 php  tests/rule_scope_php.php          # a live lookup builds only its field's rules, as the full build has them (PRF-3)
@@ -354,8 +354,8 @@ cron reads answers, and a change it syncs reaches the field being built; a
 data dictionary change while the cron reads keeps that build from counting;
 the refresh before the 7 days are up answers throughout and replaces a key no
 log row reported; a field wanted for 15 minutes is left to a cron that ran a
-minute ago and built by a lookup when none has run; and the cron stops at its deadline and drops a field no lookup asked
-for in 30 days. `tests/scan_cron_php.php` checks the cron's declaration, its
+minute ago and built by a lookup when none has run; and the cron stops at its
+deadline and drops a field no lookup asked for in 30 days. `tests/scan_cron_php.php` checks the cron's declaration, its
 off switch and that a database failure comes back as its summary line.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup

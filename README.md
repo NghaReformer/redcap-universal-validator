@@ -814,7 +814,7 @@ the specimen ID on the collection form.
   index cannot answer, the module reads the searched field's rows of every
   record from the data table; where that cannot be read either, the searched
   fields of every record through REDCap, as before. A lookup in another
-  project (`pid`) and a survey lookup with `where` do not use the index
+  project (`"project"`) and a survey lookup with `where` skip the index
   (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
 - **`in` on this form.** When the searched field is on the tagged field's own
   form, the page sends what that field holds now, and the record being edited
@@ -1210,13 +1210,13 @@ REDCap settings  ->  UniversalValidator.php  ->  window.INSPIRE_VALIDATOR_CONFIG
 ### Lookups on large projects: the value index
 
 REDCap keeps no index on saved values, so a lookup that reads the data table
-reads one row per record: 3 to 8 seconds at 100,000 records on a test server
-whose database had 128 MB of memory for its tables, and longer at 400,000. The
-module
-therefore keeps its own index of the fields that `@UVUNIQUE` and `@UVEXISTS`
-search, in four tables (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
-`uv_lookup_record`). They are created when the module is enabled or upgraded and
-when its configuration is saved, whether or not the Validation scan is on.
+reads one row per record: 3 to 9 seconds at 100,000 records on a test server
+whose database had 128 MB of memory for its tables, and 33 to 39 seconds at
+400,000. The module therefore keeps its own index of the fields that
+`@UVUNIQUE` and `@UVEXISTS` search, in four tables (`uv_lookup_key`,
+`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`). They are created when
+the module is enabled or upgraded and when its system settings are saved,
+whether or not the Validation scan is on.
 
 - **Built once per field.** A build reads all the field's rows once and
   stores one key per value and record: a hash of the value as lookups compare
@@ -1248,8 +1248,8 @@ when its configuration is saved, whether or not the Validation scan is on.
   no log row (another module's direct SQL, for example), and a log row that
   becomes visible more than an hour after later rows. The 7-day rebuild picks
   both up. The Validation scan reads the data table and is not affected.
-- **Not used for** a lookup in another project (`@UVEXISTS` with `pid`) and a
-  survey lookup with `where`; those read as before.
+- **Not used for** a lookup in another project (`@UVEXISTS` with `"project"`)
+  and a survey lookup with `where`; those read as before.
 - **Size.** One row of `uv_lookup_key` per saved value of a searched field,
   about 100 bytes with its indexes. The cron drops the keys of a field no
   lookup has asked for in 30 days.

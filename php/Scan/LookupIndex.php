@@ -12,7 +12,7 @@ use INSPIRE\UniversalValidator\Logic;
  *
  * WHY. FieldValues answers by reading every row of the searched field. REDCap
  * keeps no index on a value, so each of those rows is a separate read of the
- * data table: 3 to 7 s at 100,000 records on a test server with a cold
+ * data table: 3 to 9 s at 100,000 records on a test server with a cold
  * buffer pool, one disk read per record when the rows are not in memory. A
  * lookup through this index reads one key.
  *
