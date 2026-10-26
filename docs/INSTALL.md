@@ -4,11 +4,41 @@
 
 **From a downloaded copy**
 
-1. Put the module folder on the server under `modules/` named with its version,
-   e.g. `redcap/modules/universal_validator_v0.4.0/` (the folder must contain
-   `config.json` at its top level).
+1. Unzip the release archive `universal_validator_vX.Y.Z.zip` into the server's
+   `modules/` folder. The archive holds one folder, `universal_validator_vX.Y.Z/`,
+   with `config.json` at its top level, e.g.
+   `redcap/modules/universal_validator_v2.3.3/`. Keep that folder name:
+   External Modules reads the module's version from it.
 2. In the **Control Center → External Modules → Manage**, the module appears as
    available. Click **Enable**.
+
+### Version numbers
+
+- A release is tagged `vX.Y.Z` in git, digits only. The same number is the
+  first version heading of `CHANGELOG.md`, the name of the zip and the name of
+  the folder in it. The 2.3.0 release candidates (`v2.3.0-rc.1` to
+  `v2.3.0-rc.3`) were the last tags with a suffix.
+- Each release has a higher number than the one before, so REDCap lists it as
+  an upgrade. To upgrade, unzip the new release next to the old folder and
+  enable the new version in **Control Center → External Modules → Manage**.
+  REDCap runs one version for all projects.
+- Do not rename a module folder, and do not copy a build into a folder with
+  another number. REDCap would then show a version the code is not.
+- To see which build a folder holds, open its `CHANGELOG.md`, on disk or at
+  `<your REDCap URL>/modules/universal_validator_vX.Y.Z/CHANGELOG.md`. Its first
+  version heading must be the folder's number.
+
+**Folder numbers already in use.** Before this rule, the 2.3.0 release
+candidates were installed on the CHPR test server (chpr-redcap.org) in folders
+renamed to plain numbers. No release takes these numbers, and CI refuses a tag
+that does (`tools/release_reserved_versions.json`). On that server, a module log
+entry or a report that names one of these versions means the tag beside it:
+
+| Folder | REDCap shows | Holds tag |
+| --- | --- | --- |
+| `universal_validator_v2.3.0` | v2.3.0 | `v2.3.0-rc.1` (78d1acd) |
+| `universal_validator_v2.3.1` | v2.3.1 | `v2.3.0-rc.2` (680b8fb) |
+| `universal_validator_v2.3.2` | v2.3.2 | `v2.3.0-rc.3` (ba09488) |
 
 **From the REDCap repository** (once published): Control Center → External
 Modules → **View modules available in the repository** → find *Universal Field

@@ -1,0 +1,8 @@
+{
+  "about": "Module folder numbers that a REDCap server already uses for a build whose git tag is another number. External Modules reads the version from the folder name, so a release with one of these numbers would land in a folder that holds older code. tools/release_version.cjs refuses them, and docs/INSTALL.md lists them for administrators (tests/release_version_js.cjs keeps the two in step).",
+  "reserved": [
+    { "version": "2.3.0", "holds": "v2.3.0-rc.1", "commit": "78d1acd", "server": "chpr-redcap.org" },
+    { "version": "2.3.1", "holds": "v2.3.0-rc.2", "commit": "680b8fb", "server": "chpr-redcap.org" },
+    { "version": "2.3.2", "holds": "v2.3.0-rc.3", "commit": "ba09488", "server": "chpr-redcap.org" }
+  ]
+}

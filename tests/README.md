@@ -749,7 +749,12 @@ builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
 matching). `tests/ci_workflow_js.cjs` fails when a suite in `tests/` is named by no
 workflow, or when a plain `run:` has lines under it, which YAML folds into one
-command. Green CI means the module's client and server engines agree with
+command. The `package` job takes the version from `tools/release_version.cjs`,
+which on a tag refuses a suffix such as `-rc.3`, a tag that is not the first
+`CHANGELOG.md` version, a number not above every earlier one, and a folder number
+listed in `tools/release_reserved_versions.json`. `tests/release_version_js.cjs`
+drives those rules on made-up changelogs, runs the tool on the real one, and
+fails when the folder table in `docs/INSTALL.md` and the reserved list differ. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 
