@@ -26,7 +26,8 @@
   another number. REDCap would then show a version the code is not.
 - To see which build a folder holds, open its `CHANGELOG.md`, on disk or at
   `<your REDCap URL>/modules/universal_validator_vX.Y.Z/CHANGELOG.md`. Its first
-  version heading must be the folder's number.
+  version heading must be the folder's number, except in the folders listed
+  below.
 
 **Folder numbers already in use.** Before this rule, the 2.3.0 release
 candidates were installed on the CHPR test server (chpr-redcap.org) in folders

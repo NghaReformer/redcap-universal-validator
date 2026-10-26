@@ -754,7 +754,11 @@ which on a tag refuses a suffix such as `-rc.3`, a tag that is not the first
 `CHANGELOG.md` version, a number not above every earlier one, and a folder number
 listed in `tools/release_reserved_versions.json`. `tests/release_version_js.cjs`
 drives those rules on made-up changelogs, runs the tool on the real one, and
-fails when the folder table in `docs/INSTALL.md` and the reserved list differ. Green CI means the module's client and server engines agree with
+fails when the folder table in `docs/INSTALL.md` and the reserved list differ or
+when `README.md` names a current version other than the changelog's. It tests
+`tools/`, which is not in the release package, so it is left out of the package
+too. The package job also requires `CHANGELOG.md`, which `docs/INSTALL.md` tells
+administrators to open. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 

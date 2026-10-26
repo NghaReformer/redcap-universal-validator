@@ -1,6 +1,6 @@
 # Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
-**Version:** the first entry of the [changelog](CHANGELOG.md) is the current build, with its features, migration notes and verification limits. A release is tagged `vX.Y.Z` and installs as the folder `universal_validator_vX.Y.Z`; see "Version numbers" in [Install and configure](docs/INSTALL.md).
+**Version:** the first version heading of the [changelog](CHANGELOG.md), below any "Unreleased" section, is the current build, with its features, migration notes and verification limits. A release is tagged `vX.Y.Z` and installs as the folder `universal_validator_vX.Y.Z`; see "Version numbers" in [Install and configure](docs/INSTALL.md).
 
 **Opt-in event and repeat validation:** see [Event and instance references](docs/EVENT-INSTANCE-REFERENCES.md) for qualified references, matching, collections, dates, record-local uniqueness, activation and rollback.
 
