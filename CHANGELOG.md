@@ -3,6 +3,22 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Each release is tagged `vX.Y.Z` and installs as the module folder `universal_validator_vX.Y.Z` (see "Version numbers" in `docs/INSTALL.md`). A build for testing on a development project says so in its entry, not in its number.
 
+## 2.3.4 — unreleased
+
+**Old time zone names work on servers without `tzdata-legacy`.** A project that saved a name such as `Asia/Calcutta` as its `@UVWINDOW` time zone keeps it on a Debian 13 or Ubuntu 26.04 server that lacks that package. This build is not tagged yet. Nothing in the database changes from 2.3.3.
+
+### Fixed
+
+- **An old time zone name stopped applying on servers without the `tzdata-legacy` package (WIN-4 again, Low).** The "Time zone for @UVWINDOW" setting accepts the backward-compatible IANA names, such as `Asia/Calcutta`, `US/Eastern` and `Europe/Kiev`, so a name saved before it was renamed keeps working (WIN-4, 2.3.0-rc.3). PHP knows those names when it carries its own time zone database. The Debian and Ubuntu packages of PHP read the system's database instead, and Debian 13 and Ubuntu 26.04 put the old names in a separate package, `tzdata-legacy`. On such a server without that package, a project that had saved an old name got the server's "today" and "now" for `@UVWINDOW`, with no message, and the next save of its module settings refused the name. Found when GitHub's `ubuntu-latest` runner moved to Ubuntu 26.04 and the WIN-4 checks of 2.3.3 failed in CI on every PHP version.
+  - `php/timezone_links.json` maps the 151 links of tzdata 2026e to the zone each one names now, and `php/ClockZones.php` uses it. A name PHP knows is used as it is. For any other name the module opens the zone that name stands for now, then any other name of that zone, so `Europe/Kyiv` also works where PHP knows only `Europe/Kiev`. The map is read only when PHP does not know a saved name.
+  - The map was written from Ubuntu's copy of tzdata 2026e, which keeps 11 old names as zones of their own: `CET`, `CST6CDT`, `EET`, `EST`, `EST5EDT`, `HST`, `MET`, `MST`, `MST7MDT`, `PST8PDT` and `WET`. Debian's `tzdata-legacy` holds these too, and a server without it refuses them as before. A city name such as `Europe/Brussels` or `America/New_York` works everywhere.
+  - `tools/build_timezone_links.php` writes the map from a `tzdata.zi` or from the IANA source files. It does not ship.
+  - Tests: `tests/clock_zones_php.php` (30 checks: the map, a server without the old names, the lookup order, an unreadable map) and 6 new checks in `tests/window_module_php.php`, 2 of which fail on 2.3.3.
+
+### Changed
+
+- **CI installs `tzdata-legacy`.** The `php-parity` job runs `tests/clock_zones_php.php` once before it installs the package, so on Ubuntu 26.04 the old names go through the map, as on a server without it. Every suite after that runs with the package, as on a server that has the old names.
+
 ## 2.3.3 — 2026-10-27
 
 **2.3.0-rc.3, accepted live, released under a plain version number.** This build holds everything in 2.3.0-rc.3 and two changes on top: release tags are plain `vX.Y.Z`, and the save alert says when a lookup is held by the server's limit. Its number is 2.3.3 because the test server already runs rc.1 to rc.3 in folders named v2.3.0 to v2.3.2. Install it as the folder `universal_validator_v2.3.3`. Upgrading from 2.3.0-rc.2 or earlier applies schema version 6 and adds the cron `uv_lookup_index`, as rc.3 does; from rc.3 nothing in the database changes.

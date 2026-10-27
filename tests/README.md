@@ -21,6 +21,7 @@ php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDCap's log
+php  tests/clock_zones_php.php    # old time zone names, with and without tzdata-legacy
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
@@ -252,6 +253,12 @@ repeats.
   paging and its cap, the record ID compared as bytes, the time zones, and the
   records held in memory. `tests/mysql/cases/stamps.php` runs the same reader
   against a real server, with the durable finding's `as_of` column.
+- `clock_zones_php.php` checks the old time zone names the `window-timezone`
+  setting accepts (`php/ClockZones.php`, `php/timezone_links.json`): the map
+  itself, a server whose PHP knows none of the old names (each one still opens
+  a zone with the same offset, summer and winter), the lookup order on a
+  made-up map, and a map that cannot be read. CI runs it before and after it
+  installs `tzdata-legacy`.
 
 ## `lookup_php.php` and `lookup_js.cjs` — how lookups compare values
 

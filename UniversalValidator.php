@@ -33,6 +33,7 @@ require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ScanRuns.php';
 require_once __DIR__ . '/php/LiveLookups.php';
 require_once __DIR__ . '/php/ValueStamps.php';
+require_once __DIR__ . '/php/ClockZones.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
@@ -3963,27 +3964,21 @@ class UniversalValidator extends AbstractExternalModule
         if (array_key_exists($key, $this->clockZoneMemo)) return $this->clockZoneMemo[$key];
         $name = null;
         try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::clockZone'); }
-        $name = is_string($name) ? trim($name) : '';
-        return $this->clockZoneMemo[$key] = ($name === '' || !self::isClockZone($name)) ? null : new \DateTimeZone($name);
+        $use = is_string($name) ? ClockZones::resolve(trim($name)) : null;
+        return $this->clockZoneMemo[$key] = $use === null ? null : new \DateTimeZone($use);
     }
-
-    /** @var array|null every zone name the "window-timezone" setting accepts, name => true */
-    private static $clockZoneNames = null;
 
     /**
      * Whether $name is a timezone the "window-timezone" setting accepts: an
      * IANA name, the backward-compatible ones included. A name saved while it
      * was current (Europe/Kiev before tzdata 2022b, then Europe/Kyiv) was
      * dropped without a word after a tzdata update, and today became the
-     * server's date (WIN-4). PHP still builds every one of them.
+     * server's date (WIN-4). A server whose PHP does not know the old name
+     * opens the zone it names now (ClockZones).
      */
     private static function isClockZone($name)
     {
-        if (!is_string($name)) return false;
-        if (self::$clockZoneNames === null) {
-            self::$clockZoneNames = array_fill_keys(\DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true);
-        }
-        return isset(self::$clockZoneNames[$name]);
+        return ClockZones::resolve($name) !== null;
     }
 
     /**
