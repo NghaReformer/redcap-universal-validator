@@ -661,6 +661,9 @@ check('published in the namespace', (() => { const t = one('x'); const env = boo
   check('throttled + hard: the save is held', !saved(env));
   check('throttled + hard: Save asks again', t.stub.calls.length === asked + 1);
   check('throttled + hard: the alert says to wait', /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('throttled + hard: the alert names the limit, not a check underway',
+    /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || '')
+    && !/still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
   t.stub.next = { state: 'found', record: '7' };
   check('throttled + hard: once answered, the save goes through', saved(env) && /Found/.test(msg.innerHTML));
 }
