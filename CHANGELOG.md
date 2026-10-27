@@ -3,11 +3,25 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Each release is tagged `vX.Y.Z` and installs as the module folder `universal_validator_vX.Y.Z` (see "Version numbers" in `docs/INSTALL.md`). A build for testing on a development project says so in its entry, not in its number.
 
-## Unreleased
+## 2.3.3 — 2026-10-27
+
+**2.3.0-rc.3, accepted live, released under a plain version number.** This build holds everything in 2.3.0-rc.3 and two changes on top: release tags are plain `vX.Y.Z`, and the save alert says when a lookup is held by the server's limit. Its number is 2.3.3 because the test server already runs rc.1 to rc.3 in folders named v2.3.0 to v2.3.2. Install it as the folder `universal_validator_v2.3.3`. Upgrading from 2.3.0-rc.2 or earlier applies schema version 6 and adds the cron `uv_lookup_index`, as rc.3 does; from rc.3 nothing in the database changes.
+
+Live acceptance of rc.3 on chpr-redcap.org (REDCap 17.0.6), 2026-10-26 and 2026-10-27, all passed (`reports/deploy/LIVE_TEST_v2.3.0-rc.3_results.md`):
+
+- pid 149: Enter and every save button held by a hard block (LIVE-1, REQ-6); check characters with characters outside printable ASCII caught by the save audit (VAL-1, VAL-15), each finding logged once (PRF-9); the save confirm with one label a line (L1); configuration errors kept off the public survey (LIVE-2) and other forms' errors shown only to designers (LIVE-4, designer side); invisible and full-width characters and number checks (LIVE-5); the lookup limit holding a blocking save (UNQ-3); `@UVUNIQUE` lookups; and the rc.2 chart findings, the median-only chart's axis (F1) and the table caption above the rows (L2).
+- pid 151: Enter on a hard `@UVRANGE` limit, and `@UVEXISTS` found and not found.
+- pid 81, 328,501 to 328,600 records: `@UVUNIQUE` lookups answered in 356 to 1,013 ms once the field's index was built. The first lookups, before the cron had built it, took about two to three minutes in all, as designed for a field over 20,000 rows.
+
+Not checked live: the cron's own record of its runs, which no web page shows, and LIVE-4 for a user without design rights.
+
+### Fixed
+
+- **The save alert said a lookup held by the server's limit was "still being checked" (Low).** When the server refuses a `@UVUNIQUE` or `@UVEXISTS` lookup because the session asked more than 60 times in a minute (UNQ-3), a rule that blocks holds the save and the field says it could not be checked. The alert at Save added " (still being checked)" to that field, as it does for a lookup on its way. It now adds " (not checked yet: too many checks in the last minute)" (`QRID_THROTTLED_NOTE`). The note stays while Save's own question about that value is out, and a real answer or a new value clears it. Found in the live UNQ-3 test of rc.3. Tests: `tests/unique_dom_js.cjs` (2 new checks), `tests/exists_dom_js.cjs` (1) and `tests/save_guard_enter_dom_js.cjs` (1); all four fail on rc.3.
 
 ### Changed
 
-- **Release tags are plain `vX.Y.Z` from the next build on.** External Modules reads a module's version from its folder name. The `-rc.N` tags of the 2.3.0 candidates gave folders that the test server's administrator renamed by hand: rc.1 to rc.3 run there as v2.3.0, v2.3.1 and v2.3.2, numbers no tag carries, and the first upload of v2.3.2 held rc.2's files. `tools/release_version.cjs` reads the version from this file. On a tag it refuses a suffix, a tag that differs from the first version heading, a number not above every earlier version, and the folder numbers listed in `tools/release_reserved_versions.json` (2.3.0 to 2.3.2). CI's `package` job runs it and now requires `CHANGELOG.md` in the package. `docs/INSTALL.md` tells administrators to keep the folder name, shows how to see which build a folder holds, and lists the test server's renamed folders. The README no longer names a release candidate; it still said 2.1.0-rc.1. Tests: 30 checks in `tests/release_version_js.cjs`, which CI runs.
+- **Release tags are plain `vX.Y.Z` from this build on.** External Modules reads a module's version from its folder name. The `-rc.N` tags of the 2.3.0 candidates gave folders that the test server's administrator renamed by hand: rc.1 to rc.3 run there as v2.3.0, v2.3.1 and v2.3.2, numbers no tag carries, and the first upload of v2.3.2 held rc.2's files. `tools/release_version.cjs` reads the version from this file. On a tag it refuses a suffix, a tag that differs from the first version heading, a number not above every earlier version, and the folder numbers listed in `tools/release_reserved_versions.json` (2.3.0 to 2.3.2). CI's `package` job runs it and now requires `CHANGELOG.md` in the package. `docs/INSTALL.md` tells administrators to keep the folder name, shows how to see which build a folder holds, and lists the test server's renamed folders. The README no longer names a release candidate; it still said 2.1.0-rc.1. Tests: 30 checks in `tests/release_version_js.cjs`, which CI runs.
 
 ## 2.3.0-rc.3 — 2026-10-25
 
