@@ -877,10 +877,11 @@ to a finding saved with a reason.
   hooks, `applyJustify` (a field no covered rule checks is an error of its
   own, split from a rule written alike on several fields; two tags on one
   field refused; a reason field that is the record ID field, that REDCap
-  fills in, that is read-only, that bare `@HIDDEN` hides, that carries
+  fills in, that is read-only, that `@HIDDEN`, `@HIDDEN-FORM` or
+  `@HIDDEN-SURVEY` hides, that carries
   `@UVJUSTIFY` itself or `@UVWRITEONCE`, or that another rule's `"return"`
   writes into refused word for word, in any letter case, and none of them
-  releases a finding in the audit; `@HIDDEN-FORM`, `-SURVEY`, `-APP`, `-PDF`
+  releases a finding in the audit; `@HIDDEN-APP`, `@HIDDEN-PDF`
   and a tag name inside another tag's value refuse nothing), the page config (no `justifyBy` reaches the page; a reason
   field never makes a locked field hold the save), the post-save audit
   (`uvalidate-justified` with `justified_by`, never the reason; a blank,

@@ -1,5 +1,5 @@
 {
-  "about": "Whether a reason field's value gives a reason (@UVJUSTIFY). Logic::reasonGiven (tests/justify_php.php) and QRID_reasonGiven (tests/justify_js.cjs) read every case. A reason is a value that is not blank by the test @UVREQUIRED asks (Logic::isBlank and QRID_isBlank, pinned by tests/blank_fixture.json: spaces, tabs, line breaks, NUL, vertical tab, form feed, no-break and other Unicode spaces, zero-width characters and the byte-order mark hold nothing) and is not one of the project's Missing Data Codes, compared once PHP's trim() set (space, tab, line feed, carriage return, NUL, vertical tab) is taken from both ends. \"codes\" lists the Missing Data Codes of the case; a value given as {\"repeat\":...} is built by repeating it.",
+  "about": "Whether a reason field's value gives a reason (@UVJUSTIFY). Logic::reasonGiven (tests/justify_php.php) and QRID_reasonGiven (tests/justify_js.cjs) read every case. A reason is a value that is not blank by the test @UVREQUIRED asks (Logic::isBlank and QRID_isBlank, pinned by tests/blank_fixture.json: spaces, tabs, line breaks, NUL, vertical tab, form feed, no-break and other Unicode spaces, zero-width characters, the byte-order mark, the soft hyphen, the Hangul fillers and the other characters Unicode marks as ignorable hold nothing) and is not one of the project's Missing Data Codes, compared once PHP's trim() set (space, tab, line feed, carriage return, NUL, vertical tab) is taken from both ends. \"codes\" lists the Missing Data Codes of the case; a value given as {\"repeat\":...} is built by repeating it.",
   "cases": [
     { "name": "a word",                              "value": "fasting",            "codes": [],               "given": true },
     { "name": "a sentence with inner spaces",        "value": "clinic was closed",  "codes": [],               "given": true },
@@ -15,6 +15,11 @@
     { "name": "an ideographic space alone",          "value": "　",             "codes": [],               "given": false },
     { "name": "invisible characters and spaces mixed", "value": "  ​\t﻿　\f⁠ ", "codes": [], "given": false },
     { "name": "a word after a no-break space",       "value": " fasting",      "codes": [],               "given": true },
+    { "name": "a soft hyphen alone (J3A-3)", "value": "\u00ad", "codes": [], "given": false },
+    { "name": "a Hangul filler alone (J3A-3)", "value": "\u3164", "codes": [], "given": false },
+    { "name": "next line U+0085 alone (J3A-3)", "value": "\u0085", "codes": [], "given": false },
+    { "name": "invisible separators and a tag character (J3A-3)", "value": "\u2063\u180e\udb40\udc20", "codes": [], "given": false },
+    { "name": "a word after a Hangul filler", "value": "\u3164ok", "codes": [], "given": true },
     { "name": "a word between zero-width spaces",    "value": "​x​",      "codes": [],               "given": true },
     { "name": "a zero",                              "value": "0",                  "codes": [],               "given": true },
     { "name": "a dropdown code",                     "value": "3",                  "codes": ["UNK", "NA"],    "given": true },

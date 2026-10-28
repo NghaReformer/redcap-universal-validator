@@ -366,8 +366,9 @@ namespace {
     // ---- 1b) a reason field that is never blank, or that nobody writes -------------------
     // Any value in the reason field stands for every broken value of the field, so
     // the record ID field, a field REDCap fills in itself, a read-only field, a
-    // field bare @HIDDEN hides, a field with a @UVJUSTIFY of its own and a
-    // write-once field are refused, word for word, in any letter case. A tag
+    // field @HIDDEN, @HIDDEN-FORM or @HIDDEN-SURVEY hides, a field with a
+    // @UVJUSTIFY of its own and a write-once field are refused, word for
+    // word, in any letter case. A tag
     // name inside another tag's value is text (AnnotationRules::maskValues).
     $R = function ($reason) use ($J) { return '@UVRANGE={"hard":[0,10]} ' . $J($reason); };
     $FILLED = ['ct_why' => '@CALCTEXT(if([r_ct]>10,"auto","auto"))', 'cd_why' => '@CALCDATE([r_cd],1,"d")', 'df_why' => '@DEFAULT="n/a"',
@@ -376,12 +377,14 @@ namespace {
         'un_why' => '@USERNAME', 'aun_why' => '@APPUSERNAME-APP', 'lat_why' => '@LATITUDE', 'lon_why' => '@LONGITUDE',
         'dc_why' => '@DOWNLOAD-COUNT(consent_file)', 'lcf_why' => '@LANGUAGE-CURRENT-FORM', 'lcs_why' => '@LANGUAGE-CURRENT-SURVEY',
         'ro_why' => '@READONLY', 'rof_why' => '@READONLY-FORM', 'ros_why' => '@READONLY-SURVEY', 'hd_why' => '@HIDDEN', 'wo_why' => '@UVWRITEONCE',
+        // hidden on the form or on the survey: the page there asks for a reason no one can write (J3A-6)
+        'hf_why' => '@HIDDEN-FORM', 'hs_why' => '@HIDDEN-SURVEY',
         // lower case, as REDCap reads its own tags
-        'dfl_why' => '@default="n/a"', 'rol_why' => '@readonly-survey', 'hdl_why' => '@hidden', 'wol_why' => '@uvwriteonce',
+        'dfl_why' => '@default="n/a"', 'rol_why' => '@readonly-survey', 'hdl_why' => '@hidden', 'wol_why' => '@uvwriteonce', 'hfl_why' => '@hidden-form',
         // a real tag after a value that holds a tag name
         'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'"];
-    // reason fields that stay: the place-bound forms of @HIDDEN, and tag names inside another tag's value
-    $KEPT = ['hs_why' => '@HIDDEN-SURVEY', 'hf_why' => '@HIDDEN-FORM', 'ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF',
+    // reason fields that stay: the forms of @HIDDEN that hide nothing on a form or a survey, and tag names inside another tag's value
+    $KEPT = ['ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF',
         'tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
         'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'"];
     $BADR = ['record_id' => f('visit_form'), 'r_rid' => f('visit_form', $R('record_id'), 'integer')];
@@ -414,8 +417,9 @@ namespace {
         $head = '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", ';
         if (strpos($name, 'READONLY') === 0) {
             $want = $head . 'which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.';
-        } elseif ($name === 'HIDDEN') {
-            $want = $head . 'which has @HIDDEN — the field is hidden on every page, so the person cannot write a reason there; name a field the person fills in.';
+        } elseif (strpos($name, 'HIDDEN') === 0) {
+            $where = ['HIDDEN' => 'on every page', 'HIDDEN-FORM' => 'on the data entry form', 'HIDDEN-SURVEY' => 'on the survey'][$name];
+            $want = $head . 'which has @' . $name . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.';
         } elseif ($name === 'UVWRITEONCE') {
             $want = $head . 'which carries @UVWRITEONCE — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.';
         } else {
@@ -454,9 +458,10 @@ namespace {
 
     // ---- 1c) a reason field another rule returns a value to ------------------------------
     // The save writes the weight's growth range into ht_why, so the field would hold
-    // a reason nobody wrote: the justify rule on ht is refused (applyJustify). ht_why
-    // is hidden on the form and on a survey, as a field a rule returns to must be
-    // (EXS-13), and a reason field may be.
+    // a reason nobody wrote: the justify rule on ht is refused. A field a rule returns
+    // to must be read-only or hidden where the rule fills it (EXS-13), and a reason
+    // field may be neither (J3A-6), so that refusal comes first; applyJustify's own
+    // refusal of a return target stays behind it.
     $G = '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[vdate]"},'
         . '"soft":[-2,2],"hard":[-5,5],"return":{"range":"[ht_why]"}}';
     $RET = ['record_id' => f('visit_form'), 'sex' => f('visit_form', '', '', 'radio', '1, Male | 2, Female'),
@@ -469,14 +474,14 @@ namespace {
     $rp = page(mod($RET, ['2' => [351 => $rrow]], $FULL), '2', 'visit_form');
     $rerr = '';
     foreach (rulesOn($rp, 'ht') as $r) if (!empty($r['configError']) && strpos((string) $r['configError'], '@UVJUSTIFY on "ht"') === 0) $rerr = (string) $r['configError'];
-    check('a reason field another rule returns a value to is refused (got ' . $rerr . ')', $rerr === '@UVJUSTIFY on "ht": "reason" names "[ht_why]", which the rule on "weight"'
-        . ' returns a value to — the save writes it, so it would hold a reason nobody wrote; name a field the person fills in.');
+    check('a reason field another rule returns a value to is refused (got ' . $rerr . ')', $rerr === '@UVJUSTIFY on "ht": "reason" names "[ht_why]", which has @HIDDEN-FORM'
+        . ' — the field is hidden on the data entry form, so the person cannot write a reason there; name a field the person fills in.');
     $wr = rulesOn($rp, 'weight', 'range');
     check('... and the rule that returns the value keeps working', $wr && empty($wr[0]['configError']) && ($wr[0]['rangeReturn']['range'] ?? null) === 'ht_why');
     $m = save($RET, ['2' => [351 => $rrow]], 'visit_form');
     check('... so the value the save wrote releases nothing in the audit (got ' . json_encode(audit($m, 'ht')) . ')', audit($m, 'ht') === ['invalid-id-saved:range:hard-high']);
     $named = array_filter(logged($m, 'uvalidate-unconfigurable'), function ($e) {
-        return strpos((string) ($e['why'] ?? ''), 'configuration error:') === 0 && strpos((string) $e['why'], 'which the rule on "weight" returns a value to') !== false;
+        return strpos((string) ($e['why'] ?? ''), 'configuration error:') === 0 && strpos((string) $e['why'], '"reason" names "[ht_why]", which has @HIDDEN-FORM') !== false;
     });
     check('... and the save logs the refusal as the other refused tags are logged (VAL-15)', count($named) === 1);
 

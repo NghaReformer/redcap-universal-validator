@@ -125,12 +125,14 @@ per field. A line ends " (or give a reason in “<label>”)" while a reason can
 still release that field.
 
 The module log holds each finding once. A save writes an entry, with a
-`fingerprint`, for each finding the log does not hold yet. A finding found
-again (same record, field, event, instance, type, `reason` code, value and
-`justified_by`) writes nothing, so each Expect cell names the entries a save
-adds. A finding whose value changes, or that gains or loses its reason (it
-moves between `invalid-id-saved` and `uvalidate-justified`), gets a new
-entry, and the earlier entry stays as it was. The reason text is not part of
+`fingerprint` and a `finding` key, for each finding whose newest entry in the
+log does not already say the same. A finding found again (same record, field,
+event, instance, type, `reason` code, value and `justified_by`) writes
+nothing, so each Expect cell names the entries a save adds. A finding whose
+value changes gets a new entry. One that gains or loses its reason moves
+between `invalid-id-saved` and `uvalidate-justified` and gets a new entry each
+time, also when it goes back to a kind of entry it had before (C7c, C7d). The
+earlier entries stay as they were. The reason text is not part of
 the comparison: a reworded reason writes nothing. By B9b the log holds nine
 `uvalidate-justified` entries for XE-1. B1b logs the refused tags of A1, and
 no later save writes a rule-problem entry (`uvalidate-unconfigurable`). The
@@ -141,7 +143,7 @@ times to the minute, in the project's time zone. The twin uses 2026-10-26
 09:00 for B1b, 09:05 for B2b, 09:10 for B3b, 09:15 for B4b, 09:20 for B5b,
 09:25 for B6b, 09:30 for B7b, 09:35 for B8b, 09:40 for B9b, 09:45 for C4b,
 09:50 for C5b, 09:52 for C6b, 09:53 for the import of C7 and 09:54 for its
-save, 09:55 for C7b, 09:56 for C8b and C8c, 09:57 for D2, 10:00 for D3, 10:05 for D4, 10:10 for E2,
+save, 09:55 for C7b to C7e, 09:56 for C8b and C8c, 09:57 for D2, 10:00 for D3, 10:05 for D4, 10:10 for E2,
 10:15 for F1b, 10:20 for F2, 10:25 for F3c, 10:30 for F4b, 10:35 for F5b,
 10:40 for the import of F6 and 10:45 for its save, 10:50 to 10:54 for the
 five survey pages, 11:00, 11:05 and 11:10 for the imports of H2, 11:15 and
@@ -183,7 +185,7 @@ form saves as it opens, since every reason saved before still stands.
 | B1 | Save with nothing typed | Held, one line: "• Required field (or give a reason in “Why it is blank”)" |
 | B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr` and the six `uj_bad_*` fields), its `why` starting "configuration error:". This first save of the form logs them, and no later save logs them again |
 | B2 | "Weight" = 300.0 and leave | "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note "Fix this value, or say why it is right in “Reason for change”." Save is held: "• Weight (or give a reason in “Reason for change”)" |
-| B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0, and a `fingerprint` of 64 hex digits. No entry holds "Scale checked twice" |
+| B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0, a `fingerprint` of 64 hex digits and a `finding` key of 64 hex digits that differs from it. No entry holds "Scale checked twice" |
 | B3 | "Lab number" = 79927398710 and leave | `✗ This ID's check character does not match — probably a typo or mis-scan. Please re-scan or re-type it.` and the reason note naming “Why the lab number is right”. Held: "• Lab number (Luhn check digit) (or give a reason in “Why the lab number is right”)" |
 | B3b | "Why the lab number is right" = Number printed on the tube. Save | The reason note goes. The record saves. New entry for `uj_id`, with type `single`, reason `check-character`, `justified_by` `uj_id_why` |
 | B4 | "Pooled lab numbers" = `79927398713 79927398710` and leave | `2 IDs read — 1 check-character mismatch`, with ✓ 79927398713 and ✗ 79927398710, and the reason note naming “Why the pooled numbers are right”. Held: "• Pooled lab numbers (or give a reason in “Why the pooled numbers are right”)" |
@@ -216,6 +218,9 @@ C1 to C4 change the page only, and each puts the reason back.
 | C6b | "Explain the heart rate?" = Yes. If C6 erased the reason, type Athlete, resting rate checked again. Save | Once the reason shows with its text the note goes. The record saves and writes no entry |
 | C7 | Data Import Tool, CSV `record_id,redcap_event_name,uj_ro` with the row `XE-1,visit_1_arm_1,300.0`. Import. Reopen the form. Save | "Weight from the device" is read-only and shows "✗ This value is above the plausible range (allowed 30 to 250 kg)." No reason note, because the person cannot change the field here and it never holds the save. The record saves. New entry `invalid-id-saved` for `uj_ro`, with type `range`, reason `hard-high`, no `justified_by` |
 | C7b | "Why the device weight is right" = Device recalibrated. Save | Still no reason note; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_ro`, with `justified_by` `uj_ro_why`. C7's `invalid-id-saved` entry stays in the log |
+| C7c | Clear "Why the device weight is right". Save | Still no reason note. The record saves. New entry `invalid-id-saved` for `uj_ro`, with type `range`, reason `hard-high`, no `justified_by`, though C7 wrote one like it: the newest entry for the finding said it had a reason |
+| C7d | "Why the device weight is right" = Device recalibrated. Save | The record saves. New entry `uvalidate-justified` for `uj_ro`, with `justified_by` `uj_ro_why`, as in C7b |
+| C7e | Save | The record saves and writes no entry: the newest entry for `uj_ro` already says what this save would |
 | C8 | "Weight on the second scale" = 300.0 and leave. Save. Then type Second scale checked in the box of the line "Reason for the second-scale weight:" | No row "Why the second-scale weight is right" shows; its box sits in the line "Reason for the second-scale weight:". "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note naming “Why the second-scale weight is right”. Held: "• Weight on the second scale (or give a reason in “Why the second-scale weight is right”)". Once the reason is typed the note goes and the range note stays |
 | C8b | Save | The record saves. New entry for `uj_emb`, with type `range`, reason `hard-high`, `justified_by` `uj_emb_why` |
 | C8c | Clear the box of "Reason for the second-scale weight:" and leave. Save. Then clear "Weight on the second scale" and leave. Save | With the reason cleared the note is back. Held, the line of C8. With the weight cleared both notes go and the record saves, writing no entry |

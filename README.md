@@ -465,8 +465,9 @@ the two things it lacks: a **condition** and a **real block**:
 
 - A blank field shows the notice while the requirement is in force. Blank
   means empty or holding only spaces, tabs, line breaks, no-break spaces, other
-  Unicode spaces (U+2000 to U+200A, U+3000) or invisible characters (a
-  zero-width space, a byte-order mark): the page, the audit and the scan use
+  Unicode spaces (U+2000 to U+200A, U+3000) or invisible characters (Unicode's
+  Default_Ignorable_Code_Point, such as a zero-width space, a byte-order mark,
+  a soft hyphen or a Hangul filler): the page, the audit and the scan use
   one test, pinned by `tests/blank_fixture.json`. The requirement turns on and off **live** as referenced fields
   change. Filling the field clears the notice — deliberately no green "OK",
   because required mode never judges the *value*. Pair it with `@UVALIDATE`
@@ -1391,9 +1392,9 @@ the open ones:
   `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
   `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
   `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any
-  form of `@READONLY`, a field with bare `@HIDDEN` (`@HIDDEN-FORM`,
-  `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are allowed), a field
-  that carries `@UVJUSTIFY` itself, which would let two fields stand for each
+  form of `@READONLY`, a field with `@HIDDEN`, `@HIDDEN-FORM` or
+  `@HIDDEN-SURVEY`, which hide it where the reason is written (`@HIDDEN-APP`
+  and `@HIDDEN-PDF` are allowed), a field that carries `@UVJUSTIFY` itself, which would let two fields stand for each
   other, a field with `@UVWRITEONCE`, whose reason could never be cleared,
   and a field another rule's `"return"` writes into. A tag name inside
   another tag's value, such as a message or a placeholder, refuses nothing.
@@ -1411,7 +1412,8 @@ the open ones:
   `@UVJUSTIFY` and a second one on the field are configuration errors.
 - **What counts as a reason.** Any value that is not blank by the test
   `@UVREQUIRED` uses: spaces, tabs, line breaks, no-break and other Unicode
-  spaces, zero-width characters and byte-order marks alone give none. A
+  spaces, zero-width characters, byte-order marks, soft hyphens and other
+  invisible characters alone give none. A
   missing data code gives none either, so a reason field marked "unknown"
   still asks for one. On the form, a
   reason field the person cannot see gives no reason: its row hidden by
@@ -1428,10 +1430,11 @@ the open ones:
   lookup still being checked still holds the save, and a field locked by
   `@UVWRITEONCE` stays locked. On a survey page that does not carry the
   reason field, the tag does nothing; the audit after the save still reads
-  the reason. On a rule that only warns (`blockSave` `"off"`, or an
-  `@UVDELTA` that compares with another event or instance, which the page
-  shows only as advice) a reason never shows a note on the page; it only
-  labels the finding in the audit and the scan.
+  the reason. On a rule that only warns (`blockSave` `"off"`, or any rule
+  that reads another event or instance, which the page shows only as advice;
+  an `@UVWINDOW` whose condition reads this page alone keeps its `blockSave`)
+  a reason never shows a note on the page; it only labels the finding in the
+  audit and the scan.
 - **Audited.** The post-save audit logs a broken rule whose reason is given,
   in the same record, event and instance, as `uvalidate-justified` with
   `justified_by` naming the reason field; open findings stay

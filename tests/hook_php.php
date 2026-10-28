@@ -422,13 +422,15 @@ namespace {
                 {
                     $this->logQueries[] = [$sql, $params];
                     if ($this->queryThrows) throw new \Exception('log table unreadable');
-                    if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                    if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                         throw new \Exception('unexpected log query: ' . $sql);
                     }
                     $rows = [];
-                    foreach ($this->stored as $c) {
+                    foreach ($this->stored as $i => $c) {
                         if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1]
-                            && isset($c[1]['fingerprint'])) $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                            && isset($c[1]['fingerprint'])) {
+                            $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                        }
                     }
                     return new class($rows) {
                         private $r;

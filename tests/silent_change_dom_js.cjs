@@ -277,9 +277,13 @@ const BMI = { type: 'range', fields: ['bmi'], rangeSoftLo: '16', rangeSoftHi: '3
     disconnect() { this.live = false; }
   };
   const RANGE = (f) => ({ type: 'range', fields: [f], rangeSoftLo: '12', rangeSoftHi: '17.5', rangeSoftText: '12 to 17.5' });
+  /* @UVDELTA, @UVWRITEONCE and @UVJUSTIFY share the one timer and observer too (J3A-5) */
   const ghosts = (k) => {
     const all = [RANGE('g1'), { type: 'single', fields: ['g2'] }, { type: 'required', fields: ['g3'] },
-      { type: 'constraint', fields: ['g4'], assert: '[g4]>1' }, { type: 'pooled', fields: ['g5'] }, RANGE('g6')];
+      { type: 'constraint', fields: ['g4'], assert: '[g4]>1' }, { type: 'pooled', fields: ['g5'] },
+      { type: 'delta', fields: ['g7'], deltaVs: '[g7p]', deltaVsOp: ['ref', 'g7p', null], deltaVsLabel: '[g7p]', deltaMax: '5',
+        deltaText: 'a change of at most 5', deltaGroup: '[g7p] both', blockSave: 'hard' },
+      { type: 'writeonce', fields: ['g8'] }, { type: 'justify', fields: ['g9'], justifyReason: 'g9_why' }, RANGE('g6')];
     return all.slice(0, k);
   };
   const here = numEl('here', '');
@@ -287,8 +291,8 @@ const BMI = { type: 'range', fields: ['bmi'], rangeSoftLo: '16', rangeSoftHi: '3
   boot([here], { rules: ghosts(1) });
   const oneObs = observers.length, oneLive = liveIntervals();
   observers.length = 0;
-  const env = boot([here], { rules: ghosts(6) });
-  check('PRF-6: six rules whose fields are not on the page arm no more observers than one ('
+  const env = boot([here], { rules: ghosts(9) });
+  check('PRF-6: nine rules whose fields are not on the page, @UVDELTA, @UVWRITEONCE and @UVJUSTIFY among them, arm no more observers than one ('
     + oneObs + ' and ' + observers.length + ')', observers.length === oneObs && oneObs >= 1);
   check('PRF-6: ...nor more timers (' + oneLive + ' and ' + liveIntervals() + ')', liveIntervals() === oneLive);
   // A field that arrives late is attached when the page changes.

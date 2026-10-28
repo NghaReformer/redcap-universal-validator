@@ -1165,20 +1165,28 @@ class Logic
      * returned null, which read as a blank value.
      */
     /**
-     * Whether a value holds nothing a person could read: only spaces, tabs,
-     * line breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode
-     * spaces U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and
-     * paragraph separators, and the invisible U+200B to U+200F, U+2060 and
-     * U+FEFF (REQ-8). @UVREQUIRED asks it on the page, in the audit and in the
-     * scan; a no-break space pasted into a field no longer counts as an answer.
-     * A value that is not valid UTF-8 holds something. Twin: QRID_isBlank;
-     * tests/blank_fixture.json pins both.
+     * Whether a value holds nothing a person could read: only NUL and the
+     * characters Unicode calls White_Space (spaces, tabs, line breaks, U+0085,
+     * no-break spaces, U+1680, U+2000 to U+200A, the line and paragraph
+     * separators, U+202F, U+205F, U+3000) or Default_Ignorable_Code_Point,
+     * which a renderer draws as nothing (the soft hyphen U+00AD, U+034F,
+     * U+061C, the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0, U+17B4,
+     * U+17B5, U+180B to U+180F, the zero-width characters and direction marks
+     * U+200B to U+200F and U+202A to U+202E, U+2060 to U+206F, the variation
+     * selectors U+FE00 to U+FE0F, U+FEFF, U+FFF0 to U+FFF8, U+1BCA0 to
+     * U+1BCA3, U+1D173 to U+1D17A and U+E0000 to U+E0FFF) (REQ-8, J3A-3).
+     * @UVREQUIRED asks it on the page, in the audit and in the scan, and
+     * @UVJUSTIFY asks it of a reason; a no-break space pasted into a field
+     * is no answer. A value that is not valid UTF-8 holds something. Twin:
+     * QRID_isBlank; tests/blank_fixture.json pins both.
      */
     public static function isBlank($value)
     {
         $v = (string) $value;
         if ($v === '') return true;
-        return preg_match('/^[\x00\x09-\x0D\x20\x{A0}\x{1680}\x{2000}-\x{200F}\x{2028}\x{2029}\x{202F}\x{205F}\x{2060}\x{3000}\x{FEFF}]*$/uD', $v) === 1;
+        return preg_match('/^[\x00\x09-\x0D\x20\x{85}\x{A0}\x{AD}\x{34F}\x{61C}\x{115F}\x{1160}\x{1680}\x{17B4}\x{17B5}\x{180B}-\x{180F}'
+            . '\x{2000}-\x{200F}\x{2028}-\x{202F}\x{205F}-\x{206F}\x{3000}\x{3164}\x{FE00}-\x{FE0F}\x{FEFF}\x{FFA0}\x{FFF0}-\x{FFF8}'
+            . '\x{1BCA0}-\x{1BCA3}\x{1D173}-\x{1D17A}\x{E0000}-\x{E0FFF}]*$/uD', $v) === 1;
     }
 
     public static function lookupTrim($s)

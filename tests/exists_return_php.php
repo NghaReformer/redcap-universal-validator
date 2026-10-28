@@ -532,7 +532,10 @@ namespace {
     $d7 = \lock_return_targets($DICT);
     $d7['r_lock'] = f('result', ux('{"in":"[specimen_id]","return":{"code_id":"[t_lock]"}}'));
     $locks = ['' => 'can be typed into on the data-entry form', '@READONLY-SURVEY' => 'can be typed into on the data-entry form',
-              '@HIDDEN-PDF' => 'can be typed into on the data-entry form', '@READONLY' => null, '@READONLY-FORM' => null, '@HIDDEN' => null, '@HIDDEN-FORM' => null];
+              '@HIDDEN-PDF' => 'can be typed into on the data-entry form', '@READONLY' => null, '@READONLY-FORM' => null, '@HIDDEN' => null, '@HIDDEN-FORM' => null,
+              // a tag name inside another tag's value locks nothing (J3A-9)
+              "@PLACEHOLDER='set @READONLY by hand'" => 'can be typed into on the data-entry form',
+              "@PLACEHOLDER='not @HIDDEN' @HIDDEN" => null];
     foreach ($locks as $tagHere => $want) {
         $d7['t_lock'] = f('result', $tagHere);
         foreach ($d7 as $k => $_) $d7[$k]['field_name'] = $k;

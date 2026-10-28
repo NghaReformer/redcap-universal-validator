@@ -4781,7 +4781,8 @@ to texts.
   that tag names can change it.
 - A reason is any value that is not blank by the test `@UVREQUIRED` uses:
   spaces, tabs, line breaks, no-break and other Unicode spaces, zero-width
-  characters and byte-order marks alone give none. A missing data code gives
+  characters, byte-order marks, soft hyphens and other invisible characters
+  alone give none. A missing data code gives
   none, so a reason field marked "unknown" still asks for one. On the form, a
   reason field the person cannot see gives none either: its row hidden by
   branching logic, or, for a reason field embedded in another field's label,
@@ -4793,10 +4794,11 @@ to texts.
   and no reason is given. The rules' own notes stay once the reason is given.
 - A reason never lets anything else through. A rule with `blockSave` `"off"`
   still only warns, and a lookup still being checked still holds the save.
-- On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
-  compares with another event or instance, which the page shows only as
-  advice) a reason never shows a note on the page; it only labels the finding
-  in the audit and the scan.
+- On a rule that only warns (`blockSave` `"off"`, or any rule that reads
+  another event or instance, which the page shows only as advice; an
+  `@UVWINDOW` whose condition reads this page alone keeps its `blockSave`) a
+  reason never shows a note on the page; it only labels the finding in the
+  audit and the scan.
 - On a survey page that does not carry the reason field, the tag does nothing
   on that page. The audit after the save still reads the reason.
 - The audit logs a finding whose reason is given, in the same record, event
@@ -4836,9 +4838,9 @@ in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
 `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
 `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
 `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any form
-of `@READONLY`, a field with bare `@HIDDEN`, which hides it on every page
-(`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF` are
-allowed), and a field that carries `@UVJUSTIFY` itself. It refuses a field
+of `@READONLY`, a field with `@HIDDEN`, `@HIDDEN-FORM` or `@HIDDEN-SURVEY`,
+which hide it on every page, on the data entry form or on the survey
+(`@HIDDEN-APP` and `@HIDDEN-PDF` are allowed), and a field that carries `@UVJUSTIFY` itself. It refuses a field
 with `@UVWRITEONCE`, since a reason must be cleared when the value changes
 for another reason, and a field another rule's `"return"` writes into, such
 as an `@UVRANGE` that returns its growth range there, since the save would
@@ -6511,7 +6513,7 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 
 | Key       | Type          | Default         | Notes                                                                              |
 | --------- | ------------- | --------------- | ---------------------------------------------------------------------------------- |
-| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in and can clear (not the record ID field, a field REDCap fills in, a read-only field, one with bare `@HIDDEN`, `@UVJUSTIFY` or `@UVWRITEONCE`, or one another rule's `"return"` writes into) |
+| `reason`  | string        | *(required)*    | One field reference on the same form: Text, Notes, dropdown, radio or SQL; not the field itself, no event or instance; one the person fills in and can clear (not the record ID field, a field REDCap fills in, a read-only field, one with `@HIDDEN`, `@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@UVJUSTIFY` or `@UVWRITEONCE`, or one another rule's `"return"` writes into) |
 | `message` | string or map | generic line    | The note under the field that asks for the reason                                  |
 
 No `when`, `caseSensitive`, `blockSave` or `references`.

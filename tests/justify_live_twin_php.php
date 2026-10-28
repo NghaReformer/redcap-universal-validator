@@ -49,13 +49,13 @@ namespace ExternalModules {
          * entry whose fingerprint the log holds is not written again.
          */
         public function queryLogs($sql, $params) {
-            if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+            if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                 throw new \Exception('unexpected log query: ' . $sql);
             }
             $rows = [];
-            foreach (self::$stored as $c) {
+            foreach (self::$stored as $i => $c) {
                 if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
-                    $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
                 }
             }
             return new LogRows($rows);
@@ -410,10 +410,13 @@ namespace {
     $quiet('B2b', $m, ['Scale checked twice']);
     $open('B3', 'form');
     $e = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uvalidate-justified' && $c[1]['field'] === 'uj_wt'; }))[0][1] ?? [];
-    // the fingerprint (PRF-9) is a keyed hash: its form is checked, the rest of the entry word for word
+    // the fingerprint and the finding key (PRF-9, J3A-2) are keyed hashes: their form is checked, the rest of the entry word for word
     $fp = $e['fingerprint'] ?? null;
-    unset($e['fingerprint']);
+    $fk = $e['finding'] ?? null;
+    unset($e['fingerprint'], $e['finding']);
     check('B2b: the uj_wt entry carries a fingerprint, 64 lowercase hex digits', is_string($fp) && preg_match('/^[0-9a-f]{64}$/D', $fp) === 1, $fp);
+    check('B2b: ... and a finding key of the same form, apart from the fingerprint',
+        is_string($fk) && preg_match('/^[0-9a-f]{64}$/D', $fk) === 1 && $fk !== $fp, $fk);
     check('B2b: the uj_wt entry in full: the value, the record, event and instance, and the reason field\'s name', $e === [
         'field' => 'uj_wt', 'type' => 'range', 'algorithm' => 'range', 'reason' => 'hard-high', 'instrument' => 'uv_justify_test', 'event_id' => '380',
         'instance' => '1', 'justified_by' => 'uj_wt_why', 'record' => 'XE-1', 'value' => '300.0'], $e);
@@ -472,6 +475,16 @@ namespace {
     $m = $save('XE-1', ['uj_ro_why' => 'Device recalibrated'], '20261026095500');
     $step('C7b', $m, [$J('uj_ro', 'range:hard-high')]);
     $quiet('C7b', $m, ['Device recalibrated']);
+    // C7c to C7e: the newest entry of a finding decides (J3A-2), so a reason
+    // cleared and given again is logged each time, though the log held an
+    // entry of that kind for the finding already
+    $m = $save('XE-1', ['uj_ro_why' => ''], '20261026095520');
+    $step('C7c', $m, [$O('uj_ro', 'range:hard-high')]);
+    $m = $save('XE-1', ['uj_ro_why' => 'Device recalibrated'], '20261026095540');
+    $step('C7d', $m, [$J('uj_ro', 'range:hard-high')]);
+    $quiet('C7d', $m, ['Device recalibrated']);
+    $m = $save('XE-1', [], '20261026095550');
+    $step('C7e', $m);
     // C8: the reason field is embedded in the label of the line below the value
     $open('C8', 'form');
     $m = $save('XE-1', ['uj_emb' => '300.0', 'uj_emb_why' => 'Second scale checked'], '20261026095600');

@@ -4256,9 +4256,9 @@ class UniversalValidator extends AbstractExternalModule
      * It must also be a field only the person fills in, since any value in it
      * stands for every broken value of the field: not the record ID field,
      * not one REDCap fills in itself (JUSTIFY_FILLED_TAGS), not a read-only
-     * one, not one bare @HIDDEN hides on every page (@HIDDEN-FORM, -SURVEY,
-     * -APP and -PDF hide it in one place, and a hidden row gives no reason on
-     * the page), not one with a @UVJUSTIFY of its own, which would let two
+     * one, not one @HIDDEN, @HIDDEN-FORM or @HIDDEN-SURVEY hides on a form or
+     * a survey, since a hidden row gives no reason on the page (@HIDDEN-APP
+     * and -PDF are allowed), not one with a @UVJUSTIFY of its own, which would let two
      * fields stand for each other, and not a write-once one, since a reason
      * must be cleared when the value changes for another reason. A tag name
      * inside another tag's value is text (AnnotationRules::maskValues). A
@@ -4295,9 +4295,15 @@ class UniversalValidator extends AbstractExternalModule
             return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
                 . ' — the person cannot write a reason there; name a field the person fills in.');
         }
-        if (preg_match('/@HIDDEN(?![\w-])/i', $ann)) {
-            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN'
-                . ' — the field is hidden on every page, so the person cannot write a reason there; name a field the person fills in.');
+        /* @HIDDEN-FORM and @HIDDEN-SURVEY too (J3A-6): where the row is
+           hidden the note and the save would ask for a reason the person
+           cannot write, and a reason saved elsewhere gives none there, since
+           a hidden row gives no reason on the page. @HIDDEN-APP and
+           @HIDDEN-PDF hide nothing on a form or a survey. */
+        if (preg_match('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', $ann, $m)) {
+            $where = !isset($m[1]) || $m[1] === '' ? 'on every page' : (strtoupper($m[1]) === '-FORM' ? 'on the data entry form' : 'on the survey');
+            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN' . (isset($m[1]) ? strtoupper($m[1]) : '')
+                . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.');
         }
         if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
             return $err('"reason" names "[' . $reason . ']", which carries ' . AnnotationRules::TAG_JUSTIFY
@@ -4761,10 +4767,23 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * PRF-9. What the module log already holds, read once per request: a key
-     * of loggedAlready() => [fingerprint => true], or false when the log could
-     * not be read, and then every entry is written as before.
+     * of loggedAlready() => ['fps' => [fingerprint => true], 'newest' =>
+     * [finding => [order, fingerprint]]], or false when the log could not be
+     * read, and then every entry is written as before.
      */
     private $loggedBefore = [];
+
+    /**
+     * The two entries one finding of the audit is logged as: open, or saved
+     * with a reason (@UVJUSTIFY). Both carry the same "finding" key, and the
+     * newest entry of a finding decides whether a save writes another
+     * (J3A-2): a finding that loses its reason, or gets it back, is logged
+     * again, though an entry of that kind for it was written before.
+     */
+    const FINDING_MESSAGES = ['invalid-id-saved', 'uvalidate-justified'];
+
+    /** How many entries this request wrote, to order them after every row read. */
+    private $logWrites = 0;
 
     /** The project of the save being audited, for logUnconfigurable(). */
     private $auditPid = null;
@@ -4794,39 +4813,76 @@ class UniversalValidator extends AbstractExternalModule
      * instrument) and made once per request for each value of it. Without a
      * fingerprint, without queryLogs(), or when the read fails, the answer is
      * no, so a standing problem is logged again rather than lost.
+     *
+     * $finding names the finding an entry of FINDING_MESSAGES is about. Then
+     * the newest entry of either kind that names it decides: the save writes
+     * nothing only when that entry says what this one would. A finding no
+     * entry names yet, logged before entries named their finding, goes by
+     * the fingerprint alone, as before.
      */
-    private function loggedAlready($message, $where, $value, $fp)
+    private function loggedAlready($message, $where, $value, $fp, $finding = null)
     {
         if ($fp === null || $value === null || $value === '') return false;
+        if ($finding !== null) {
+            $newest = null;
+            foreach (self::FINDING_MESSAGES as $m) {
+                $read = $this->fingerprintsOf($m, $where, $value);
+                if ($read === false) return false;
+                if (isset($read['newest'][$finding]) && ($newest === null || $read['newest'][$finding][0] > $newest[0])) {
+                    $newest = $read['newest'][$finding];
+                }
+            }
+            if ($newest !== null) return $newest[1] === $fp;
+        }
+        $read = $this->fingerprintsOf($message, $where, $value);
+        return $read !== false && isset($read['fps'][$fp]);
+    }
+
+    /** What the log holds for one kind of entry and one record or instrument, read once per request. */
+    private function fingerprintsOf($message, $where, $value)
+    {
         $k = $message . "\0" . $where . "\0" . $value;
         if (!array_key_exists($k, $this->loggedBefore)) {
             $this->loggedBefore[$k] = $this->readFingerprints($message, $where, $value);
         }
-        return $this->loggedBefore[$k] !== false && isset($this->loggedBefore[$k][$fp]);
+        return $this->loggedBefore[$k];
     }
 
     /** Count an entry just written, so a second save in this request skips it. */
-    private function noteLogged($message, $where, $value, $fp)
+    private function noteLogged($message, $where, $value, $fp, $finding = null)
     {
         $k = $message . "\0" . $where . "\0" . $value;
         if ($fp !== null && isset($this->loggedBefore[$k]) && $this->loggedBefore[$k] !== false) {
-            $this->loggedBefore[$k][$fp] = true;
+            $this->loggedBefore[$k]['fps'][$fp] = true;
+            // after every row read: log ids stay far below this
+            if ($finding !== null) $this->loggedBefore[$k]['newest'][$finding] = [(PHP_INT_MAX >> 1) + (++$this->logWrites), $fp];
         }
     }
 
-    /** @return array|false fingerprint => true, or false when the log cannot be read */
+    /**
+     * @return array|false ['fps' => fingerprint => true, 'newest' => finding =>
+     *         [log id, fingerprint] of its newest entry], or false when the log
+     *         cannot be read
+     */
     private function readFingerprints($message, $where, $value)
     {
         if (!in_array($where, ['record', 'record_hmac', 'instrument'], true)) return false;
         if (!is_callable([$this, 'queryLogs'])) return false;
         try {
-            $res = $this->queryLogs('select fingerprint where message = ? and ' . $where . ' = ?',
+            $res = $this->queryLogs('select log_id, fingerprint, finding where message = ? and ' . $where . ' = ?',
                 [(string) $message, (string) $value]);
             if (!is_object($res) || !is_callable([$res, 'fetch_assoc'])) return false;
-            $out = [];
+            $out = ['fps' => [], 'newest' => []];
+            $i = 0;
             while ($row = $res->fetch_assoc()) {
-                if (isset($row['fingerprint']) && is_string($row['fingerprint']) && $row['fingerprint'] !== '') {
-                    $out[$row['fingerprint']] = true;
+                $i++;
+                if (!isset($row['fingerprint']) || !is_string($row['fingerprint']) || $row['fingerprint'] === '') continue;
+                $fp = $row['fingerprint'];
+                $out['fps'][$fp] = true;
+                if (isset($row['finding']) && is_string($row['finding']) && $row['finding'] !== '') {
+                    $order = isset($row['log_id']) && is_numeric($row['log_id']) ? (int) $row['log_id'] : $i;
+                    $f = $row['finding'];
+                    if (!isset($out['newest'][$f]) || $order > $out['newest'][$f][0]) $out['newest'][$f] = [$order, $fp];
                 }
             }
             return $out;
@@ -4964,10 +5020,19 @@ class UniversalValidator extends AbstractExternalModule
         ksort($extra);
         foreach ($extra as $k => $v) { $parts[] = (string) $k; $parts[] = (string) $v; }
         $fp = $this->logFingerprint($pid, $parts);
-        if ($this->loggedAlready($message, $where, $scope, $fp)) return;
+        /* The finding: what both kinds of entry for it share, so neither the
+           kind nor the field that holds the reason (J3A-2). */
+        $finding = null;
+        if (in_array($message, self::FINDING_MESSAGES, true)) {
+            $fparts = array_slice($parts, 1, 8);
+            foreach ($extra as $k => $v) if ($k !== 'justified_by') { $fparts[] = (string) $k; $fparts[] = (string) $v; }
+            $finding = $this->logFingerprint($pid, array_merge(['finding'], $fparts));
+        }
+        if ($this->loggedAlready($message, $where, $scope, $fp, $finding)) return;
         if ($fp !== null) $entry['fingerprint'] = $fp;
+        if ($finding !== null) $entry['finding'] = $finding;
         $this->log($message, $entry);
-        $this->noteLogged($message, $where, $scope, $fp);
+        $this->noteLogged($message, $where, $scope, $fp, $finding);
     }
 
     /**
@@ -9817,11 +9882,13 @@ class UniversalValidator extends AbstractExternalModule
      * (EXS-13). The next answer replaces or empties what was typed, without a
      * word, so the field must be @READONLY or @HIDDEN where the rule fills
      * it: on the data-entry form, and with $surveys on a survey page too. The
-     * -FORM and -SURVEY forms of each tag count for their own page.
+     * -FORM and -SURVEY forms of each tag count for their own page. A tag
+     * name inside another tag's value is text (AnnotationRules::maskValues):
+     * "@PLACEHOLDER='not @READONLY'" leaves the field open to typing.
      */
     private static function returnTargetTypable($t, $label, array $dd, $surveys)
     {
-        $note = isset($dd[$t]['field_annotation']) ? (string) $dd[$t]['field_annotation'] : '';
+        $note = AnnotationRules::maskValues(isset($dd[$t]['field_annotation']) ? (string) $dd[$t]['field_annotation'] : '');
         $locked = function ($page) use ($note) {
             return preg_match('/@(?:READONLY|HIDDEN)(?:-' . $page . ')?(?![-\w])/i', $note) === 1;
         };

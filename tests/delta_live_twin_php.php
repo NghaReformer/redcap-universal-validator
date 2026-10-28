@@ -37,13 +37,13 @@ namespace ExternalModules {
          * entry whose fingerprint the log holds is not written again.
          */
         public function queryLogs($sql, $params) {
-            if (!preg_match('/^select fingerprint where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+            if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                 throw new \Exception('unexpected log query: ' . $sql);
             }
             $rows = [];
-            foreach (self::$stored as $c) {
+            foreach (self::$stored as $i => $c) {
                 if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
-                    $rows[] = ['fingerprint' => $c[1]['fingerprint']];
+                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
                 }
             }
             return new LogRows($rows);

@@ -406,6 +406,11 @@ modeStep('B8', 'uj_wt2', 'uj_wt2_why', (e) => type(e, 'uj_wt2', '302.5'),
   type(env, 'uj_ro_why', 'Device recalibrated');
   check('C7b the reason typed: still no note asking, the range note stays', ask(env, 'uj_ro') === '' && shown(env, 'uj_ro', 'n') === W(), notes(env, 'uj_ro'));
   check('C7b the record saves', save(env) === 'saved');
+  type(env, 'uj_ro_why', '');
+  check('C7c the reason cleared: still no note asking, the record saves', ask(env, 'uj_ro') === '' && save(env) === 'saved', ask(env, 'uj_ro'));
+  type(env, 'uj_ro_why', 'Device recalibrated');
+  check('C7d the reason given again: the record saves', ask(env, 'uj_ro') === '' && save(env) === 'saved', ask(env, 'uj_ro'));
+  check('C7e Save again goes through', save(env) === 'saved');
 }
 {
   // C8: the reason box sits in the line below the value, embedded in its label; REDCap hides the reason field's own row

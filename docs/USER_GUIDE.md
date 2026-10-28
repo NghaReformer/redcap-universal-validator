@@ -1062,8 +1062,8 @@ with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
 FHIR or another). A reason (`@UVJUSTIFY`) may stand for the rules of
 any field another tag checks, and the reason field itself is a Text, Notes,
 dropdown, radio or SQL field on the same form that the person fills in: not
-the record ID field, a field with any form of `@READONLY`, a field with bare
-`@HIDDEN` (`@HIDDEN-FORM`, `@HIDDEN-SURVEY`, `@HIDDEN-APP` and `@HIDDEN-PDF`
+the record ID field, a field with any form of `@READONLY`, a field with
+`@HIDDEN`, `@HIDDEN-FORM` or `@HIDDEN-SURVEY` (`@HIDDEN-APP` and `@HIDDEN-PDF`
 are allowed), a field that carries `@UVJUSTIFY` itself, a field with
 `@UVWRITEONCE`, a field another rule's `"return"` writes into, or a field
 REDCap fills in (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`,
@@ -1325,15 +1325,17 @@ reason in" with the reason field's label. Once the reason is written, the
 field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
 `@UVRANGE`, `@UVDELTA` and `@UVEXISTS` rules no longer hold the save. A reason
 never releases `@UVUNIQUE` or `@UVWRITEONCE`, and never turns a warning into a
-block. On a rule that only warns (`blockSave` `"off"`, or an `@UVDELTA` that
-compares with another event or instance) a reason shows no note on the page;
-it only labels the finding in the audit and the scan. A blank reason (blank
-as `@UVREQUIRED` reads it, so a no-break space or a zero-width space alone is
-blank too), a missing data code and a reason field the person cannot see (its
+block. On a rule that only warns (`blockSave` `"off"`, or any rule that reads
+another event or instance, which the page shows only as advice; an `@UVWINDOW`
+whose condition reads this page alone keeps its `blockSave`) a reason shows no
+note on the page; it only labels the finding in the audit and the scan. A blank reason (blank
+as `@UVREQUIRED` reads it, so a no-break space, a zero-width space or a soft
+hyphen alone is blank too), a missing data code and a reason field the person cannot see (its
 row hidden by branching logic, or the row it is embedded in hidden) count as
 no reason. The module refuses a reason field the person does not fill in: the
 record ID field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`,
-`@NOW` and the like), a field with `@READONLY` or bare `@HIDDEN`, a field with
+`@NOW` and the like), a field with `@READONLY`, `@HIDDEN`, `@HIDDEN-FORM` or
+`@HIDDEN-SURVEY`, a field with
 its own `@UVJUSTIFY`, a field with `@UVWRITEONCE`, and a field another rule's
 `"return"` writes into. A
 reason stands until someone clears it, so a later, different broken value of

@@ -27,8 +27,8 @@ reason", apart from the open ones.</p>
     <code>@USERNAME</code>, <code>@APPUSERNAME-APP</code>, <code>@LATITUDE</code>,
     <code>@LONGITUDE</code>, <code>@DOWNLOAD-COUNT</code>,
     <code>@LANGUAGE-CURRENT-FORM</code>, <code>@LANGUAGE-CURRENT-SURVEY</code>), a field
-    with any form of <code>@READONLY</code>, a field with bare <code>@HIDDEN</code>
-    (<code>@HIDDEN-FORM</code>, <code>@HIDDEN-SURVEY</code>, <code>@HIDDEN-APP</code> and
+    with any form of <code>@READONLY</code>, a field with <code>@HIDDEN</code>,
+    <code>@HIDDEN-FORM</code> or <code>@HIDDEN-SURVEY</code> (<code>@HIDDEN-APP</code> and
     <code>@HIDDEN-PDF</code> are allowed), a field that carries <code>@UVJUSTIFY</code>
     itself, a field with <code>@UVWRITEONCE</code>, whose reason could never be cleared,
     and a field another rule's <code>"return"</code> writes into. A tag name inside
@@ -59,8 +59,8 @@ shows a configuration error under that field.</p>
 
 <ul>
 <li>Any value that is not blank by the test <code>@UVREQUIRED</code> uses. Spaces,
-    tabs, line breaks, no-break and other Unicode spaces, zero-width characters and
-    byte-order marks alone give no reason.</li>
+    tabs, line breaks, no-break and other Unicode spaces, zero-width characters,
+    byte-order marks, soft hyphens and other invisible characters alone give no reason.</li>
 <li>A <strong>missing data code</strong> gives no reason. A reason field marked "unknown"
     still asks for one.</li>
 <li>On the form, a reason field the person cannot see gives no reason: its row hidden
@@ -85,9 +85,10 @@ shows a configuration error under that field.</p>
     <code>"off"</code> still only warns. A lookup still being checked
     (<code>@UVUNIQUE</code>, <code>@UVEXISTS</code>) still holds the save until its answer
     comes. A field locked by <code>@UVWRITEONCE</code> stays locked.</li>
-<li>On a rule that only warns (<code>blockSave</code> <code>"off"</code>, or an
-    <code>@UVDELTA</code> that compares with another event or instance, which the page
-    shows only as advice) a reason never shows a note on the page. It only labels the
+<li>On a rule that only warns (<code>blockSave</code> <code>"off"</code>, or any rule
+    that reads another event or instance, which the page shows only as advice; an
+    <code>@UVWINDOW</code> whose condition reads this page alone keeps its
+    <code>blockSave</code>) a reason never shows a note on the page. It only labels the
     finding in the audit and the scan.</li>
 <li>On a survey whose reason field is on another page, the tag does nothing on the
     page of the field. The audit after the save still reads the reason.</li>

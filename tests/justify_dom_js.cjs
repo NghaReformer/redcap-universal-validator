@@ -319,7 +319,22 @@ for (const order of ['reason first', 'reason last']) {
   const stub = makeTransportStub(); stub.next = 'HANG';
   const spec = text('spec', 'SP-1'), why = text('spec_why', 'lab sent it late');
   const env = boot([spec, why], { jsmoName: 'EMStub.UV', rules: [{ type: 'exists', fields: ['spec'], blockSave: 'hard' }, J(['spec'], 'spec_why')] }, { stub });
-  check('a lookup still being checked holds the save, reason or not', save(env) === 'held' && /still being checked/.test(said(env)), said(env));
+  /* the line names the wait and offers no reason, which could not release it */
+  check('a lookup still being checked holds the save, reason or not, and offers no reason',
+    save(env) === 'held' && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (still being checked)', said(env));
+  type(env, why, '');
+  check('... nor with the reason field empty',
+    save(env) === 'held' && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (still being checked)', said(env));
+}
+{
+  // a lookup held by the server's limit (UNQ-3) waits too, and says why
+  const stub = makeTransportStub();
+  stub.next = { state: 'unknown', why: 'too many checks in the last minute', throttled: true };
+  const spec = text('spec', 'SP-1'), why = text('spec_why', 'lab sent it late');
+  const env = boot([spec, why], { jsmoName: 'EMStub.UV', rules: [{ type: 'exists', fields: ['spec'], blockSave: 'hard' }, J(['spec'], 'spec_why')] }, { stub });
+  check('a throttled lookup holds the save with its own words and offers no reason',
+    save(env) === 'held'
+    && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (not checked yet: too many checks in the last minute)', said(env));
 }
 {
   // a not-found answer is released by the reason
@@ -329,6 +344,27 @@ for (const order of ['reason first', 'reason last']) {
   check('a value not found holds the save without a reason', save(env) === 'held' && /or give a reason in/.test(said(env)), said(env));
   type(env, why, 'specimen logged on paper');
   check('... and not with one', save(env) === 'saved');
+}
+{
+  /* Save asks again about a "not found" older than QRID_RECHECK_MS (30 s)
+     and waits for the answer; with the field's reason given it has nothing
+     to wait for, since the reason releases a "not found" and a "found"
+     holds nothing. */
+  const realNow = Date.now; let shift = 0; Date.now = () => realNow() + shift;
+  try {
+    const stub = makeTransportStub(); stub.next = { state: 'not-found' };
+    const spec = text('spec', 'SP-1'), why = text('spec_why', 'specimen logged on paper');
+    const env = boot([spec, why], { jsmoName: 'EMStub.UV', rules: [{ type: 'exists', fields: ['spec'], blockSave: 'hard' }, J(['spec'], 'spec_why')] }, { stub });
+    check('a reason saved before: the save within 30 s goes through', save(env) === 'saved', said(env));
+    shift += 31000; stub.next = 'HANG';
+    const asked = stub.calls.length;
+    check('31 s later, the reason still given: the save goes through without waiting', save(env) === 'saved', said(env));
+    check('... and asks the server nothing', stub.calls.length === asked, stub.calls.length - asked);
+    type(env, why, '');
+    shift += 31000;
+    check('the reason cleared, 31 s on: Save asks again and waits for the answer',
+      save(env) === 'held' && /• spec \(still being checked\)$/.test(said(env)) && stub.calls.length === asked + 1, said(env));
+  } finally { Date.now = realNow; }
 }
 {
   // a duplicate: a reason does not stand for @UVUNIQUE
@@ -590,6 +626,36 @@ function checkboxOption(field, code) {
     save(env, 'submit-btn-saverecord') === 'held' && /• req/.test(said(env)) && !/• wt/.test(said(env)), said(env));
   type(env, rwhy, 'not asked at this visit');
   check('... until its own reason is given', save(env, 'submit-btn-saverecord') === 'saved', said(env));
+}
+
+// ---- 18) a field drawn after the engine started (J3A-8) ------------------------------------
+/* A slow form, or a row REDCap draws late, puts the reason field or the
+   field itself on the page after boot. The tag waits for it through the
+   page's one late-render timer and observer (QRID_lateAttach) and pairs the
+   two once both are there. */
+{
+  const wt = text('wt', '30');
+  const env = boot([wt], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  check('a reason field not on the page yet: the save is held, offering no reason', save(env) === 'held' && !/or give a reason/.test(said(env)), said(env));
+  const why = text('wt_why', ''); const holder = makeEl('div');
+  holder.appendChild(why); env.doc.body.appendChild(holder); env.allEls.push(holder, why);
+  env.poll();
+  check('the reason field drawn late: the note asks for it', shown(env, 'wt', 'j') === NOTE('wt_why'), shown(env, 'wt', 'j'));
+  type(env, why, 'scale recalibrated');
+  check('... and a reason typed there releases the save', save(env) === 'saved', said(env));
+}
+{
+  const why = text('wt_why', '');
+  const env = boot([why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  const wt = text('wt', '30'); const holder = makeEl('div');
+  holder.appendChild(wt); env.doc.body.appendChild(holder); env.allEls.push(holder, wt);
+  env.holders.wt = holder;
+  env.poll();
+  wt.fire('change'); flush();
+  check('the field drawn late: its broken rule holds the save, offering the reason field',
+    save(env) === 'held' && /• wt \(or give a reason in “wt_why”\)/.test(said(env)), said(env));
+  type(env, why, 'scale recalibrated');
+  check('... and the reason releases it', save(env) === 'saved', said(env));
 }
 
 console.log('justify_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

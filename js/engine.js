@@ -2732,18 +2732,33 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers, codes){
    alternative from every character of a long inner run of spaces, so one
    check of a Notes value with 80,000 inner spaces took 3.8 s. */
 function QRID_whenSpace(c){ return c === 32 || c === 9 || c === 13 || c === 10; }
-/* Whether a value holds nothing a person could read: only spaces, tabs, line
-   breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode spaces
-   U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and paragraph
-   separators, and the invisible U+200B to U+200F, U+2060 and U+FEFF (REQ-8).
-   @UVREQUIRED asks it, so a no-break space pasted into a field is no answer.
-   Twin of Logic::isBlank; tests/blank_fixture.json pins both. */
+/* Whether a value holds nothing a person could read: only NUL and the
+   characters Unicode calls White_Space or Default_Ignorable_Code_Point, which
+   a renderer draws as nothing (REQ-8, J3A-3; Logic::isBlank lists them).
+   @UVREQUIRED asks it, and @UVJUSTIFY asks it of a reason, so a no-break
+   space or a soft hyphen pasted into a field is no answer. An astral
+   character is read from its two halves; a lone half holds something, as a
+   value that is not valid UTF-8 does on the server. Twin of Logic::isBlank;
+   tests/blank_fixture.json pins both. */
+function QRID_blankUnit(c){
+  return c === 0 || (c >= 9 && c <= 13) || c === 32 || c === 0x85 || c === 0xA0 || c === 0xAD || c === 0x34F || c === 0x61C
+    || c === 0x115F || c === 0x1160 || c === 0x1680 || c === 0x17B4 || c === 0x17B5 || (c >= 0x180B && c <= 0x180F)
+    || (c >= 0x2000 && c <= 0x200F) || (c >= 0x2028 && c <= 0x202F) || (c >= 0x205F && c <= 0x206F) || c === 0x3000
+    || c === 0x3164 || (c >= 0xFE00 && c <= 0xFE0F) || c === 0xFEFF || c === 0xFFA0 || (c >= 0xFFF0 && c <= 0xFFF8);
+}
 function QRID_isBlank(v){
   var s = (v === null || v === undefined) ? "" : String(v);
   for(var i = 0; i < s.length; i++){
     var c = s.charCodeAt(i);
-    if(c === 0 || (c >= 9 && c <= 13) || c === 32 || c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200F)
-       || c === 0x2028 || c === 0x2029 || c === 0x202F || c === 0x205F || c === 0x2060 || c === 0x3000 || c === 0xFEFF) continue;
+    if(c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length){
+      var d = s.charCodeAt(i + 1);
+      if(d >= 0xDC00 && d <= 0xDFFF){
+        var cp = (c - 0xD800) * 0x400 + (d - 0xDC00) + 0x10000;
+        if((cp >= 0x1BCA0 && cp <= 0x1BCA3) || (cp >= 0x1D173 && cp <= 0x1D17A) || (cp >= 0xE0000 && cp <= 0xE0FFF)){ i++; continue; }
+      }
+      return false;
+    }
+    if(QRID_blankUnit(c)) continue;
     return false;
   }
   return true;
@@ -7422,16 +7437,8 @@ function QRIDDeltaInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7630,16 +7637,8 @@ function QRIDWriteOnceInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -7733,16 +7732,8 @@ function QRIDJustifyInit(QRID_CONFIG){
       return;
     }
     var pending = (QRID_CONFIG.fields || []).slice();
-    var mo = null;
-    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
-    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
-    if(sweep()) return;
-    var tries = 0;
-    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
-    if(typeof MutationObserver !== "undefined" && document.body){
-      mo = new MutationObserver(function(){ sweep(); });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }
+    /* the page's one late-render timer and observer (QRID_lateAttach, PRF-6) */
+    QRID_lateAttach(function(){ pending = pending.filter(function(f){ return !attach(f); }); return !pending.length; });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
@@ -9078,9 +9069,13 @@ function QRIDExistsInit(QRID_CONFIG){
          since (another tab, a colleague). The guard holds the save until the
          answer lands. A re-ask that gets no usable answer keeps the old one.
          A rule that cannot block holds the save only while a lookup is
-         already on its way. */
+         already on its way. A field whose reason is given (@UVJUSTIFY) is
+         not asked again: the reason releases a "not found" and a "found"
+         holds nothing, so the save has nothing to wait for, unless the rule
+         fills fields from the entry it finds. */
       var prior = (cached && saving === true && cached.state === "not-found" && V.blockSave !== "off" && EDITABLE
-                   && QRID_answerStale(cached)) ? cached : null;
+                   && QRID_answerStale(cached)
+                   && !(GITEM && !returnsOf(V).length && QRID_justified(GITEM))) ? cached : null;
       if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */

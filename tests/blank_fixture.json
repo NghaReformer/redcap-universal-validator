@@ -1,5 +1,5 @@
 {
-  "note": "What @UVREQUIRED reads as blank (REQ-8). QRID_isBlank (js/engine.js) and Logic::isBlank (php/Logic.php) must give each row's verdict. tests/required_dom_js.cjs runs the rows through the page factory, tests/required_pages_php.php through the save audit and tests/lookup_php.php through Logic::isBlank. A value is blank when it holds only spaces, tabs, line breaks, NUL, vertical tab, form feed, no-break spaces, the Unicode spaces U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000, the line and paragraph separators, or the invisible U+200B to U+200F (zero-width characters and direction marks), U+2060 and U+FEFF. Before the fix the page read a no-break space as an answer and the audit read NUL and vertical tab as blank.",
+  "note": "What @UVREQUIRED reads as blank (REQ-8), and @UVJUSTIFY as no reason. QRID_isBlank (js/engine.js) and Logic::isBlank (php/Logic.php) must give each row's verdict. tests/required_dom_js.cjs runs the rows through the page factory, tests/required_pages_php.php through the save audit and tests/lookup_php.php through Logic::isBlank. A value is blank when it holds only NUL and characters Unicode calls White_Space (spaces, tabs, line breaks, U+0085, no-break spaces, U+1680, U+2000 to U+200A, the line and paragraph separators, U+202F, U+205F, U+3000) or Default_Ignorable_Code_Point (the soft hyphen, U+034F, U+061C, the Hangul fillers, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200F, U+202A to U+202E, U+2060 to U+206F, the variation selectors, U+FEFF, U+FFF0 to U+FFF8, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and U+E0000 to U+E0FFF). Before REQ-8 the page read a no-break space as an answer and the audit read NUL and vertical tab as blank; before J3A-3 a soft hyphen, U+0085, U+180E or a Hangul filler alone was an answer.",
   "rows": [
     {"name": "empty", "value": "", "blank": true},
     {"name": "space", "value": " ", "blank": true},
@@ -28,8 +28,28 @@
     {"name": "a dash", "value": "-", "blank": false},
     {"name": "a dot", "value": ".", "blank": false},
     {"name": "an emoji", "value": "\ud83d\ude00", "blank": false},
-    {"name": "a soft hyphen", "value": "\u00ad", "blank": false},
+    {"name": "a soft hyphen", "value": "\u00ad", "blank": true},
     {"name": "a combining mark", "value": "\u0301", "blank": false},
-    {"name": "left-to-right mark", "value": "\u200e", "blank": true}
+    {"name": "left-to-right mark", "value": "\u200e", "blank": true},
+    {"name": "next line U+0085", "value": "\u0085", "blank": true},
+    {"name": "combining grapheme joiner U+034F", "value": "\u034f", "blank": true},
+    {"name": "Arabic letter mark U+061C", "value": "\u061c", "blank": true},
+    {"name": "Hangul choseong filler U+115F", "value": "\u115f", "blank": true},
+    {"name": "Mongolian vowel separator U+180E", "value": "\u180e", "blank": true},
+    {"name": "left-to-right embedding U+202A", "value": "\u202a", "blank": true},
+    {"name": "invisible times U+2062", "value": "\u2062", "blank": true},
+    {"name": "inhibit symmetric swapping U+206A", "value": "\u206a", "blank": true},
+    {"name": "Hangul filler U+3164", "value": "\u3164", "blank": true},
+    {"name": "variation selector-16 U+FE0F", "value": "\ufe0f", "blank": true},
+    {"name": "halfwidth Hangul filler U+FFA0", "value": "\uffa0", "blank": true},
+    {"name": "unassigned U+FFF0 (default ignorable)", "value": "\ufff0", "blank": true},
+    {"name": "shorthand format letter overlap U+1BCA0", "value": "\ud82f\udca0", "blank": true},
+    {"name": "musical symbol begin beam U+1D173", "value": "\ud834\udd73", "blank": true},
+    {"name": "tag space U+E0020", "value": "\udb40\udc20", "blank": true},
+    {"name": "a mix of default ignorables and spaces", "value": " \u00ad\u3164\u2063\udb40\udc41 ", "blank": true},
+    {"name": "interlinear annotation anchor U+FFF9 (a format character Unicode does not ignore)", "value": "\ufff9", "blank": false},
+    {"name": "replacement character U+FFFD", "value": "\ufffd", "blank": false},
+    {"name": "a letter after a Hangul filler", "value": "\u3164x", "blank": false},
+    {"name": "an astral letter after a tag character", "value": "\udb40\udc20\ud835\udc00", "blank": false}
   ]
 }
