@@ -3,9 +3,9 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Each release is tagged `vX.Y.Z` and installs as the module folder `universal_validator_vX.Y.Z` (see "Version numbers" in `docs/INSTALL.md`). A build for testing on a development project says so in its entry, not in its number.
 
-## 2.3.4 — unreleased
+## 2.3.4 — 2026-10-28
 
-**Old time zone names work on servers without `tzdata-legacy`.** A project that saved a name such as `Asia/Calcutta` as its `@UVWINDOW` time zone keeps it on a Debian 13 or Ubuntu 26.04 server that lacks that package. This build is not tagged yet. Nothing in the database changes from 2.3.3.
+**Old time zone names work on servers without `tzdata-legacy`.** A project that saved a name such as `Asia/Calcutta` as its `@UVWINDOW` time zone keeps it on a Debian 13 or Ubuntu 26.04 server that lacks that package. Install it as the folder `universal_validator_v2.3.4`. Nothing in the database changes from 2.3.3.
 
 ### Fixed
 
