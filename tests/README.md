@@ -914,8 +914,8 @@ to a finding saved with a reason.
   that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
   read-only field, and a reason on another survey page. A reason typed in
   the embedded box releases the field (C8).
-- `justify_mutations.py` applies 133 mutations to a copy of the code, one at a
-  time, and fails if the named suite still passes on any of them. Twelve mutate
+- `justify_mutations.py` applies 164 mutations to a copy of the code, one at a
+  time, and fails if the named suite still passes on any of them. Twenty-two mutate
   the stores, the rollup, the kept counts and the status poll of the durable
   scan and are killed only by `tests/mysql/run.php`; they run
   when `UV_DB_HOST` and the other `UV_DB_*` variables name a server, and are
