@@ -1614,7 +1614,9 @@ warning.
   day. A computer clock moved forward while the form is open moves it too; the
   post-save audit reads the server clock and still logs the date. The date is
   taken in the server's time zone unless the project setting **Time zone for
-  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. The same
+  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. An older
+  name of a zone, such as `Asia/Calcutta` or `US/Eastern`, works too, also on a
+  Debian or Ubuntu server without the `tzdata-legacy` package. The same
   setting decides `notPast` and a `from` of `today` or `now`. A page left open
   across a daylight-saving change follows it. The page knows only the next
   change, so a page left open across two of them (40 days or more in

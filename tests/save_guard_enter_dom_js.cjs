@@ -270,6 +270,13 @@ const pending = [];
   check('5 Enter waits for a lookup in flight', r === false && env.calls.length === 0);
   check('5 the alert asks to wait', env.win._alerts.length === 1 && /please wait a moment/.test(env.win._alerts[0])
     && /Specimen ID \(still being checked\)/.test(env.win._alerts[0]));
+  // A lookup held by the server's limit carries its own note (UNQ-3).
+  lookup.__qridPendingNote = ' (not checked yet: too many checks in the last minute)';
+  check('5 a lookup held by the limit says so instead', pressEnter(env, input, saveButton('submit-btn-saverecord')) === false
+    && env.calls.length === 0 && env.win._alerts.length === 2
+    && /Specimen ID \(not checked yet: too many checks in the last minute\)/.test(env.win._alerts[1])
+    && !/still being checked/.test(env.win._alerts[1]));
+  lookup.__qridPendingNote = null;
   lookup.__qridPending = false;
   check('5 once answered, Enter saves', pressEnter(env, input, saveButton('submit-btn-saverecord')) === 'redcap-result');
 }

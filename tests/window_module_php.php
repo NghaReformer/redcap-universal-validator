@@ -477,6 +477,25 @@ namespace {
     check('WIN-4: Asia/Calcutta still sets the clock', $clockOf('Asia/Calcutta')['offset'] === $offsetOf('Asia/Kolkata'));
     check('WIN-4: US/Eastern still sets the clock', $clockOf('US/Eastern')['offset'] === $offsetOf('America/New_York'));
     check('WIN-4: a backward-compatible name saves', $vs->validateSettings(['window-timezone' => 'Europe/Kiev']) === null);
+    // ...also where PHP does not know the old name, as on a server without
+    // tzdata-legacy (Debian 13, Ubuntu 26.04): it opens the zone it names now
+    // (ClockZones). No PHP knows Test/Calcutta, so it stands for such a name
+    // on any server.
+    $tzLinks = tempnam(sys_get_temp_dir(), 'uvtz');
+    file_put_contents($tzLinks, json_encode(['links' => ['Test/Calcutta' => 'Asia/Kolkata']]));
+    \INSPIRE\UniversalValidator\ClockZones::useFile($tzLinks);
+    check('WIN-4, an old name PHP does not know: it still sets the clock', $clockOf('Test/Calcutta')['offset'] === $offsetOf('Asia/Kolkata'));
+    check('WIN-4, an old name PHP does not know: it saves', $vs->validateSettings(['window-timezone' => 'Test/Calcutta']) === null);
+    \INSPIRE\UniversalValidator\ClockZones::useFile(null);
+    @unlink($tzLinks);
+    // The shipped map, with the old names taken away from what PHP knows.
+    \INSPIRE\UniversalValidator\ClockZones::useKnown(array_values(array_diff(
+        \DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), ['Asia/Calcutta', 'US/Eastern', 'Europe/Kiev'])));
+    check('WIN-4 without tzdata-legacy: Asia/Calcutta still sets the clock', $clockOf('Asia/Calcutta')['offset'] === $offsetOf('Asia/Kolkata'));
+    check('WIN-4 without tzdata-legacy: US/Eastern still sets the clock', $clockOf('US/Eastern')['offset'] === $offsetOf('America/New_York'));
+    check('WIN-4 without tzdata-legacy: an old name saves', $vs->validateSettings(['window-timezone' => 'US/Eastern']) === null);
+    check('WIN-4 without tzdata-legacy: an unknown name is still refused', is_string($vs->validateSettings(['window-timezone' => 'Mars/Olympus'])));
+    \INSPIRE\UniversalValidator\ClockZones::useKnown(null);
     // WIN-5: the setting is read once per request, however many values are judged.
     $z = mod($DICT, $DATA, $FULL, 'nurse');
     $rp = new \ReflectionProperty($z, 'clockOverride'); $rp->setAccessible(true); $rp->setValue($z, null);

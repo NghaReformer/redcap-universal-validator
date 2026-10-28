@@ -33,6 +33,8 @@ jobs:
         run: node tests/risky_js.cjs
       - name: Every suite is named by a workflow, and no run step folds its lines into one command
         run: node tests/ci_workflow_js.cjs
+      - name: Release tags are plain vX.Y.Z, match CHANGELOG.md, go up and avoid folder numbers in use; docs/INSTALL.md lists those numbers and README.md names no other current version
+        run: node tests/release_version_js.cjs
       - name: Qualified reference parser and deferral contracts
         run: |
           node tests/qualified_js.cjs
@@ -157,6 +159,18 @@ jobs:
           php-version: '${{ matrix.php }}'
           # intl: Logic::roleKey puts role names in composed form only where it is loaded
           extensions: mbstring, ctype, intl
+      # ubuntu-latest is Ubuntu 26.04, which keeps the backward-compatible
+      # time zone names (Asia/Calcutta, US/Eastern, Europe/Kiev) in a separate
+      # package, tzdata-legacy, as Debian 13 does; PHP here reads the system's
+      # time zone database. The first step runs before that package is
+      # installed, so the old names go through php/timezone_links.json, as on
+      # such a server. Every later step runs with the package.
+      - name: Time zone names on a server without tzdata-legacy
+        run: php tests/clock_zones_php.php
+      - name: Install tzdata-legacy (the backward-compatible time zone names)
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tzdata-legacy
       - name: Qualified resolution, matching, exact aggregates and typed dates
         run: |
           php tests/qualified_php.php
@@ -195,6 +209,7 @@ jobs:
           php -l php/GrowthCurve.php
           php -l php/ReturnedValues.php
           php -l php/ValueStamps.php
+          php -l php/ClockZones.php
           php -l data/references/convert.php
           php -l php/ScanPageView.php
           php -l php/FindingSink.php
@@ -263,6 +278,7 @@ jobs:
           php tests/window_module_php.php
           php tests/window_glue_php.php
           php tests/value_stamps_php.php
+          php tests/clock_zones_php.php
       - name: PHP @UVEXISTS grammar, hooks, endpoint (rights, throttle, surveys), audit and scan index
         run: php tests/exists_php.php
       - name: PHP @UVEXISTS in another project (consent, rights there, probe log, budgets, audit, scan)
@@ -386,21 +402,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
       - name: Build and verify the release-shaped archive
         run: |
           set -e
-          VERSION=$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)([[:space:]].*)?$/\1/p' CHANGELOG.md | head -1)
-          test -n "$VERSION" || { echo "could not read the version from CHANGELOG.md"; exit 1; }
+          # A tag must be a plain vX.Y.Z equal to the first CHANGELOG.md version,
+          # above every earlier one and not a folder number a server already uses
+          # (tools/release_version.cjs says why).
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            test "${GITHUB_REF_NAME}" = "v${VERSION}" || { echo "tag and changelog version differ"; exit 1; }
+            VERSION=$(node tools/release_version.cjs --tag "${GITHUB_REF_NAME}")
+          else
+            VERSION=$(node tools/release_version.cjs)
           fi
+          test -n "$VERSION" || { echo "could not read the version from CHANGELOG.md"; exit 1; }
           DIR="universal_validator_v${VERSION}"
           git archive --prefix="${DIR}/" -o "${DIR}.zip" HEAD
           unzip -q "${DIR}.zip" -d /tmp/pkg
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/CollectionIndex.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/LookupIndex.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/ScanMaintenance.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php js/engine.min.js data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
+          for f in config.json UniversalValidator.php README.md CHANGELOG.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/CollectionIndex.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/FieldValues.php php/Scan/LookupIndex.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php php/Scan/ScanMaintenance.php php/Scan/FindingRowMapper.php php/Scan/ScanReport.php php/Faults.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php php/GrowthOutputs.php php/GrowthCurve.php php/growth_outputs.json php/ReturnedValues.php php/ValueStamps.php php/ClockZones.php php/timezone_links.json js/engine.min.js data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           # Every bundled growth table ships, byte for byte as index.json pins it.

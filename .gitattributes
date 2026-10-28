@@ -27,5 +27,7 @@ site           export-ignore
 CLAUDE.md      export-ignore
 .graphifyignore export-ignore
 PLAN-*.md      export-ignore
+# Tests the release tooling in tools/, which does not ship either.
+tests/release_version_js.cjs export-ignore
 *.pdf          export-ignore
 /*temporal*    export-ignore

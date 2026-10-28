@@ -1,6 +1,6 @@
 # Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
-**Current release candidate: `v2.3.0-rc.3`.** See the [changelog](CHANGELOG.md) for features, case-comparison migration guidance, scan-storage changes, and verification limits.
+**Version:** the first version heading of the [changelog](CHANGELOG.md), below any "Unreleased" section, is the current build, with its features, migration notes and verification limits. A release is tagged `vX.Y.Z` and installs as the folder `universal_validator_vX.Y.Z`; see "Version numbers" in [Install and configure](docs/INSTALL.md).
 
 **Opt-in event and repeat validation:** see [Event and instance references](docs/EVENT-INSTANCE-REFERENCES.md) for qualified references, matching, collections, dates, record-local uniqueness, activation and rollback.
 
@@ -1868,6 +1868,8 @@ check-character primitive, but the full runtime path the module actually uses:
   and `tests/window_module_php.php` the server side: annotation checks, the
   page fold of an off-page `from` date, the audit, reverse dependencies, the
   scan, the scan clock and the `window-timezone` setting.
+  `tests/clock_zones_php.php` checks the old zone names that setting accepts on
+  a server without `tzdata-legacy`.
 - `tests/exists_php.php` — `@UVEXISTS` on the server: the grammar and
   dictionary checks, the page config without the lookup target, the
   `exists-check` endpoint (found / not found / could not check, a narrowed read
@@ -1988,6 +1990,7 @@ php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDCap's log
+php  tests/clock_zones_php.php    # old time zone names, with and without tzdata-legacy
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)

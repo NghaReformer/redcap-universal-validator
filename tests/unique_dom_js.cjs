@@ -356,6 +356,17 @@ const JSMO = 'EMStub.UV';
   check('throttled: the save is held, and Save asked again',
     ev._prevented === true && stub.calls.length === 2
     && /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
+  // The alert names the limit, not a check underway (live UNQ-3, 2026-10-27).
+  check('throttled: the alert says the value is not checked yet because of the limit',
+    /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || '')
+    && !/still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  // While Save's question about the refused value is still out, the alert
+  // keeps the reason.
+  stub.next = 'HANG';
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled: with the second question still out, the alert keeps the reason',
+    ev._prevented === true
+    && /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || ''));
   stub.next = { used: true, record: '4' };
   ev = submitEv(); env.doc.fire('submit', ev);
   check('throttled: a duplicate found once the limit clears blocks', ev._prevented === true && /already recorded/.test(msg.innerHTML));

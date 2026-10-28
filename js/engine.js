@@ -3984,6 +3984,10 @@ function QRID_answerCache(max){
 /* How long a save waits on a lookup still in flight before the lookup counts
    as unanswered (QRID_registerBlocker holds the save meanwhile). */
 var QRID_PENDING_MS = 10000;
+/* What the save alert adds to a lookup held because the server refused it for
+   its limit (UNQ-3), in place of " (still being checked)": the field already
+   says it could not be checked, and the alert should not say it is underway. */
+var QRID_THROTTLED_NOTE = " (not checked yet: too many checks in the last minute)";
 /* How long Save trusts a cached answer that blocks it ("used", "not found").
    Older, Save asks the server again, since another record may have changed
    in the meantime, and holds the save until the answer lands. A fresh answer
@@ -4178,7 +4182,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       return QRID_justifiable(el)
         ? label(el) + " (or give a reason in \u201C" + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
     }
-    var names = bad.map(badLabel).concat(pend.map(function(el){ return label(el) + " (still being checked)"; }))
+    var names = bad.map(badLabel).concat(pend.map(function(el){ return label(el) + (el.__qridPendingNote || " (still being checked)"); }))
       .map(function(t){ return "\n• " + t; }).join("");
     var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
@@ -8514,10 +8518,15 @@ function QRIDUniqueInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    /* note: what the save alert says of this field while it is pending (null:
+       " (still being checked)") */
+    function setPending(on, note){ if(GITEM){ GITEM.__qridPending = !!on; GITEM.__qridPendingNote = on && note ? note : null; } }
     function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); setPending(false); QRID_setModeState(input, "q", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* candidate key already asked, awaiting an answer */
+    /* The key the server last refused for its limit: Save asks it again, and
+       while that question is out the alert still says why it waits. */
+    var throttledKey = null;
     /* Answer cache. The direct input listeners and the when-registry self-watch
        BOTH recheck on a change; the cache turns the second pass (and a gate
        re-flip over the same values) into a synchronous render instead of a
@@ -8546,7 +8555,7 @@ function QRIDUniqueInit(QRID_CONFIG){
        Save asks again (UNQ-3). */
     function held(why){
       unknown(why);
-      setPending(true);
+      setPending(true, QRID_THROTTLED_NOTE);
       msg.innerHTML += " The save waits until it can be checked.";
     }
     function renderResp(resp, V){
@@ -8650,7 +8659,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       msg.innerHTML = "&#8230; checking whether this value is already recorded&hellip;";
       QRID_setModeState(input, "q", "info");
       setGuard(false);
-      setPending(V.blockSave !== "off");
+      setPending(V.blockSave !== "off", throttledKey === key ? QRID_THROTTLED_NOTE : null);
       QRID_setModeState(input, "q", null);
       setTimeout(function(){
         if(my === seq && pendingKey === key){
@@ -8666,13 +8675,14 @@ function QRIDUniqueInit(QRID_CONFIG){
         /* "unknown": the server could not settle it (its read budget, a
            failed read). Not an error, and not "free" either. */
         var unsettled = !err && resp && !resp.error && resp.unknown === true;
+        throttledKey = null;
         if(err || !resp || resp.error || unsettled || typeof resp.used === "undefined"){
           if(!unsettled){
             try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
           }
           if(prior){ keepPrior(); return; }
           if(unsettled && resp.throttled === true && V.blockSave !== "off" && !QRID_IS_SURVEY){
-            failedKey = null; held(typeof resp.why === "string" ? resp.why : null); return;
+            failedKey = null; throttledKey = key; held(typeof resp.why === "string" ? resp.why : null); return;
           }
           failedKey = key;
           failedWhy = (resp && typeof resp.why === "string" && resp.why !== "") ? resp.why : null;
@@ -8848,10 +8858,14 @@ function QRIDExistsInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off", "exists");
     }
     function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    /* note: what the save alert says of this field while it is pending (null:
+       " (still being checked)") */
+    function setPending(on, note){ if(GITEM){ GITEM.__qridPending = !!on; GITEM.__qridPendingNote = on && note ? note : null; } }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* payload already asked, awaiting an answer */
+    /* The payload the server last refused for its limit, as for @UVUNIQUE. */
+    var throttledKey = null;
     var answers = QRID_answerCache(16);   /* found / not-found answers only */
     /* The last payload that got no usable answer (unknown, an error, or none
        in time), and why. Save does not ask it again: a server that cannot
@@ -8874,7 +8888,7 @@ function QRIDExistsInit(QRID_CONFIG){
        the server answers again, and Save asks again (UNQ-3). */
     function held(V, why){
       unknown(V, why);
-      setPending(true);
+      setPending(true, QRID_THROTTLED_NOTE);
       msg.innerHTML += " The save waits until it can be checked.";
     }
     /* Write the fields the rule fills: vals is field -> text, and a field it
@@ -9089,7 +9103,7 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
-      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0);
+      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0, throttledKey === key ? QRID_THROTTLED_NOTE : null);
       setTimeout(function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
@@ -9107,6 +9121,7 @@ function QRIDExistsInit(QRID_CONFIG){
         if(lookupKey(lookupValues(V), QRID_condValues(VS.all)) !== key) return;
         pendingKey = null;
         setPending(false);
+        throttledKey = null;
         if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
           if(prior){ keepPrior(); return; }
@@ -9115,7 +9130,7 @@ function QRIDExistsInit(QRID_CONFIG){
         }
         if(resp.state === "unknown" && prior){ keepPrior(); return; }
         if(resp.state === "unknown" && resp.throttled === true && V.blockSave !== "off" && EDITABLE && !QRID_IS_SURVEY){
-          unanswered = { key: null, why: null }; held(V, typeof resp.why === "string" ? resp.why : null); return;
+          unanswered = { key: null, why: null }; throttledKey = key; held(V, typeof resp.why === "string" ? resp.why : null); return;
         }
         if(resp.state !== "unknown") answers.put(key, QRID_stampAnswer(resp));
 

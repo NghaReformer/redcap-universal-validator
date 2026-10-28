@@ -116,6 +116,19 @@ until all are done and recorded (date, versions, who ran it):
       `CHANGELOG.md`, and the release archive downloads anonymously. The CI
       `package` job proves the archive shape; a person must prove the public
       URL.
+- [ ] **One number for every build an administrator installs.** Every build
+      that goes to a server, a test server included, is a release: its
+      first `CHANGELOG.md` heading is a plain `X.Y.Z`, and the tag is `vX.Y.Z`
+      with no `-rc.N` or other suffix. The number is above every earlier
+      `CHANGELOG.md` version and is not one of the folder numbers that
+      `tools/release_reserved_versions.json` lists. A build being tested says
+      so in its `CHANGELOG.md` entry, not in its number. CI's `package` job runs
+      `node tools/release_version.cjs --tag <tag>` on a tag and fails on any of
+      these. Build the archive from the tag, so the folder carries the same
+      number and git writes the commit id as the zip comment:
+      `git archive --prefix=universal_validator_vX.Y.Z/ -o universal_validator_vX.Y.Z.zip vX.Y.Z`.
+      Give the administrator that zip unchanged, and point them to "Version
+      numbers" in [`INSTALL.md`](INSTALL.md).
 - [ ] **REDCap security scan.** Install the release candidate on the latest
       REDCap, run *Control Center → External Modules → Manage → Module Security
       Scanning*, resolve every real finding, and record the scan output,
