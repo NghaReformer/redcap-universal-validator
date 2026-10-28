@@ -267,7 +267,7 @@ $REEX = 982;
         is_array($first) && $s->commitBatch($o['run'], 'w', $o['epoch'], $one($first[0], 0)) === true);
     check('re-examined: catch-up sends it back to pending',
         $s->advancePhase($o['run'], $o['epoch'], ScanPhase::CATCH_UP)
-        && $s->requeue($o['run'], $o['epoch'], ['X-1']) === 1);
+        && $s->requeue($o['run'], $o['epoch'], [hash('sha256', 'X-1', true)]) === 1);
     $back = $s->claimPending($o['run'], 'w', $o['epoch'], 1);
     $second = is_array($back) && count($back) === 1
         ? $s->commitBatch($o['run'], 'w', $o['epoch'], $one($back[0], 1)) : 'not offered again';
@@ -283,7 +283,7 @@ $REEX = 982;
         count($page) === 1 && (string) $page[0]['justified'] === '1');
 
     // The reason is emptied again: the next version is open.
-    check('re-examined: sent back once more', $s->requeue($o['run'], $o['epoch'], ['X-1']) === 1);
+    check('re-examined: sent back once more', $s->requeue($o['run'], $o['epoch'], [hash('sha256', 'X-1', true)]) === 1);
     $again = $s->claimPending($o['run'], 'w', $o['epoch'], 1);
     $third = is_array($again) && count($again) === 1
         ? $s->commitBatch($o['run'], 'w', $o['epoch'], $one($again[0], 0)) : 'not offered again';
@@ -452,9 +452,9 @@ $ROLL = 984;
 // Built from Schema::statements(1) to (6) and their version rows, the shape a
 // 2.3.0-rc.3 installation holds, with a run and findings stored the way a
 // version-6 build wrote them. The migration adds the column, keeps every row
-// at 0 and records version 7. Run again it does nothing. With the column added and the
-// version row lost (the state an interrupted migration leaves) it skips the
-// ALTER and records the version.
+// at 0 and records version 7 and every version after it. Run again it does
+// nothing. With the columns added and the version rows lost (the state an
+// interrupted migration leaves) it skips the ALTERs and records the versions.
 {
     foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
     for ($v = 1; $v <= 6; $v++) {
@@ -467,19 +467,21 @@ $ROLL = 984;
     $h = Schema::health($ca);
     check('v6: which health() refuses, naming the version it is at', $h['ok'] === false && $h['version'] === 6);
 
-    // startRun()'s INSERT and writeManifest() name no version-7 column, so a
-    // run can be planted through the store. startRun() then reads the row back
-    // through run(), which names detail_justified (version 7) and so fails at
-    // version 6; the row is written by then, and its id, generation and epoch
-    // are read here. The findings are written as a version-6 build wrote them,
-    // with no justified in the column list.
+    // The run row is the INSERT a version-6 build sent: startRun()'s, less the
+    // kept counts version 8 added (open_unstored, open_findings and their
+    // justified parts), which this build's startRun() names and a version-6
+    // table does not have. writeManifest() names no column added after
+    // version 6, so the manifest goes through the store. The findings are
+    // written as a version-6 build wrote them, with no justified in the
+    // column list.
     $s5 = new SqlScanStore($dbA);
     $open5 = function ($pid, array $ids) use ($s5, $dbA) {
-        try {
-            $s5->startRun($pid, ['created_by' => 'alice', 'fence_open' => '10']);
-        } catch (\Throwable $e) {
-            // the read-back of a version-6 row, as above
-        }
+        $dbA->execNoCount('INSERT INTO ' . Schema::table('scan_run') . '
+            (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+             coverage, detail, values_state, policy_json, policy_revision, fingerprint, fence_open,
+             created_at, updated_at, active_slot)
+            VALUES (?, ?, 1, 1, "alice", "global", "full", "planning", "partial", "complete", "none",
+                    "{}", 1, REPEAT("0", 64), "10", NOW(), NOW(), 1)', [random_bytes(16), $pid]);
         $r = $dbA->select('SELECT run_id, generation_id, lease_epoch FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
         $rid = (int) $r[0][0];
@@ -570,13 +572,15 @@ $ROLL = 984;
         $r2['ok'] === true && $r2['from'] === Schema::VERSION && $r2['applied'] === 0
         && $definition() === $WANT && $count() === 5);
 
-    // HALF APPLIED: the ALTER took and the version row did not.
+    // HALF APPLIED: the ALTERs took and the version rows did not. Every
+    // statement from version 7 on is an ALTER with a skip test, and each finds
+    // its column or index there, so none is sent again.
     $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version >= 7');
     check('half applied: the column is there and the version row says 6',
         Schema::currentVersion($ca) === 6 && $definition() === $WANT);
     $r3 = Schema::migrate($ca);
-    check('half applied: the migration skips the ALTER it would repeat and records the version',
-        $r3['ok'] === true && $r3['from'] === 6 && $r3['applied'] === $statementsFrom(8)
+    check('half applied: the migration skips the ALTERs it would repeat and records the versions',
+        $r3['ok'] === true && $r3['from'] === 6 && $r3['applied'] === 0
         && Schema::currentVersion($ca) === Schema::VERSION);
     if ($r3['ok'] !== true) fwrite(STDERR, '  migrate said: ' . (string) $r3['why'] . "\n");
     $sum = $dbA->select('SELECT COUNT(*), SUM(justified) FROM ' . $F);
