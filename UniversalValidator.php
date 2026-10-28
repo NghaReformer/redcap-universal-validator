@@ -10972,7 +10972,7 @@ class UniversalValidator extends AbstractExternalModule
         'repeatProbeCache', 'eventFormsCache', 'mappedFormsCache', 'formEventsCache', 'eventLayoutCache',
         'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
         'conditionNumbersCache', 'branchingCache', 'choicesMemo', 'valueHistoryMemo', 'roleBookMemo',
-        'clockZoneMemo', 'loggedBefore', 'deltaTagsMemo', 'deltaHeldMemo', 'lookupIndexer', 'fieldValuesReader',
+        'clockZoneMemo', 'loggedBefore', 'logWrites', 'deltaTagsMemo', 'deltaHeldMemo', 'lookupIndexer', 'fieldValuesReader',
         'temporalOptionsMemo', 'referenceDirMemo',
     ];
 
