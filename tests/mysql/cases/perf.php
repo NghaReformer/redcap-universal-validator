@@ -373,7 +373,27 @@ $RECORDS = 6;
     $report('status (finished)');
     check('perf: a finished run is polled with one census read and one plan',
         $after['ok'] === true && $m->count('SELECT state, COUNT(*)') === 1 && $m->plans === 1);
+    check('perf: and none of its summary, the run row keeping its counts',
+        $m->count('FROM ' . Schema::table('scan_aggregate')) === 0);
     $donePollCount = $m->counted();
+
+    /* -----------------------------------------------------------------------
+     * THE SAME RUN, AS ONE FROM BEFORE THE KEPT COUNTS. A run the previous
+     * build started while the version 8 migration ran has open_findings,
+     * open_unstored and their justified parts NULL, and its counts come from
+     * the summary (ScanPromotion::kept()). status() reads the summary once for
+     * both of them.
+     * -------------------------------------------------------------------- */
+    $dbA->exec('UPDATE ' . Schema::table('scan_run') . ' SET open_unstored = NULL, open_findings = NULL,
+        open_justified = NULL, open_unstored_justified = NULL WHERE run_id = ?', array($runId));
+    $old = $request(function ($svc) use ($PID, $runId) { return $svc->status($PID, $runId); });
+    $report('status (finished, old)');
+    check('perf: a finished run from before the kept counts reads its summary once, and shows the same findings (got '
+        . json_encode(array(isset($after['findings']) ? $after['findings'] : null,
+            isset($old['findings']) ? $old['findings'] : null)) . ')',
+        $old['ok'] === true && $m->count('FROM ' . Schema::table('scan_aggregate')) === 1
+        && $old['findings'] === $after['findings'] && $old['justified'] === $after['justified']);
+    $oldPollCount = $m->counted();
 
     // THE BOUNDS, measured on this tree on MySQL 5.7 and MariaDB 10.5, which
     // send the same statements; see the header for why they are exact, and
@@ -418,12 +438,17 @@ $RECORDS = 6;
     // its answer from the fence's opening, so the start sends 46, the work
     // request with records left 75 and the one that finishes 76, measured on
     // MariaDB 10.11 and 10.5. A status poll opens the log once either way.
+    // The kept counts (schema version 8) took the summary read off the status
+    // of a finished run that keeps them: 8 where it was 9. A run from before
+    // them still reads it, once. Measured after the merge of scan/finish on
+    // MySQL 8.0 and 5.7 and MariaDB 10.5 and 10.11: 47, 8, 76, 77, 8 and 9.
     $bounds = array(
         'start'                              => array($startCount, 47),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 76),
-        'the work request that finishes'     => array($finishCount, 78),
-        'a status poll of a finished run'    => array($donePollCount, 9),
+        'the work request that finishes'     => array($finishCount, 77),
+        'a status poll of a finished run'    => array($donePollCount, 8),
+        'the same poll of a run from before the kept counts' => array($oldPollCount, 9),
     );
     foreach ($bounds as $what => $b) {
         if ($b[0] > $b[1]) fwrite(STDERR, '  perf: ' . $what . ' sent ' . $b[0] . ', bound ' . $b[1] . "\n");
