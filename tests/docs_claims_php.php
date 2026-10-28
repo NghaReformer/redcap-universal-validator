@@ -470,9 +470,15 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     preg_match('/^## (\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\b/m', (string) $read('CHANGELOG.md'), $vm);
-    preg_match('/Current release candidate: `v([^`]+)`/', (string) $docs['README.md'], $rmv);
-    check('README.md names the newest release of CHANGELOG.md as the current release candidate',
-        isset($vm[1], $rmv[1]) && $vm[1] === $rmv[1]);
+    /* The README names no version of its own: it sends the reader to the
+       changelog's first version heading (tests/release_version_js.cjs holds the
+       same rule beside the release tooling). */
+    $readme = (string) $docs['README.md'];
+    $stated = preg_match('/Current (?:release|release candidate|version)[^`\n]*`v?([^`]+)`/i', $readme, $rmv) ? $rmv[1] : null;
+    check('README.md names no current version other than the newest of CHANGELOG.md (it says '
+        . ($stated === null ? 'none' : $stated) . ')',
+        isset($vm[1]) && ($stated === null || $stated === $vm[1]));
+    check('README.md sends the reader to CHANGELOG.md for the current build', strpos($readme, '](CHANGELOG.md)') !== false);
 
     echo "docs_claims_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
